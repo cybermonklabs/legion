@@ -1,6 +1,6 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { onlineManager, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
@@ -9,12 +9,15 @@ import { heldAnswers } from "../../__tests__/held-answers";
 import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
 import { pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { answerAskSnoozes } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
+import { inboxQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
-import type { Artifact, ArtifactApproval, ArtifactReview } from "../../api/types";
+import type { Artifact, ArtifactApproval, ArtifactReview, InboxRow } from "../../api/types";
 import { ArtifactHeader } from "../artifacts/ArtifactHeader";
+import { useAskSnoozeWrites } from "../inbox/useAskSnooze";
 import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { NoTooltips } from "../issue-page/NoTooltips";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -999,6 +1002,82 @@ test("the line a review's reads the bound ended draws goes as the next review la
     expect(heldNotDisabled(approve, "Approve")).toBe(false);
     expect(screen.queryByRole("alert")).toBeNull();
   } finally {
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    createArtifactVersionReview.mockRestore();
+  }
+});
+
+// A Snooze gives the Inbox's read up as it moves its row (`useAskSnoozeWrites`), and asks nothing
+// then. A cancel is no answer (`DispatchQueryClient`): a landed review, which reads the Inbox
+// again among its reads, still holds Approve through that read until a later read of the Inbox
+// answers or the bound comes.
+test("a Snooze that gives the Inbox's read up leaves Approve held through its landed review's reads", async () => {
+  // Each review's answer and the snooze's, held until the row gives it, so what it sets off runs
+  // in `act`.
+  const { answers, next } = heldAnswers<ArtifactReview>();
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockImplementation(
+    next
+  );
+  const snoozed = Promise.withResolvers<never>();
+  const snooze = answerAskSnoozes().mockImplementation(() => snoozed.promise);
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  // The Inbox, as the page around the chip reads it: its first read answers, and every later one
+  // is held until the row answers it.
+  const inbox = Promise.withResolvers<InboxRow[]>();
+  let inboxReads = 0;
+  function InboxRead(): ReactNode {
+    useQuery({
+      queryFn: () => {
+        inboxReads += 1;
+        return inboxReads === 1 ? Promise.resolve([]) : inbox.promise;
+      },
+      queryKey: inboxQuery().queryKey,
+    });
+    return null;
+  }
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  );
+  const view = render(
+    <>
+      <InboxRead />
+      <IssueReadChip
+        read={() =>
+          Promise.resolve({ artifacts: [artifact({ latest_version: 3, state: "awaiting" })] })
+        }
+      />
+    </>,
+    { wrapper }
+  );
+  const snoozes = renderHook(() => useAskSnoozeWrites(), { wrapper });
+  const approve = (await screen.findByRole("button", { name: "Approve" })) as HTMLButtonElement;
+  await waitFor(() => expect(inboxReads).toBe(1));
+  jest.useFakeTimers();
+  try {
+    await userOnFakeClock().click(approve);
+    await tick(0);
+    await act(async () => answers[0]?.(approvedReview(3)));
+    await tick(0);
+    expect(inboxReads).toBe(2);
+    expect(heldNotDisabled(approve, "Approve")).toBe(true);
+
+    act(() => snoozes.result.current.of("ask-1").submit("2026-12-01T09:00:00Z"));
+    await tick(0);
+    expect(snooze).toHaveBeenCalledTimes(1);
+    expect(
+      heldNotDisabled(approve, "Approve"),
+      "a Snooze let Approve go with no read of the Inbox answered"
+    ).toBe(true);
+  } finally {
+    await act(async () => {
+      snoozed.reject(new ApiError(404, { error: "no such ask" }));
+      inbox.resolve([]);
+    });
+    snoozes.unmount();
     view.unmount();
     queryClient.clear();
     realClock();

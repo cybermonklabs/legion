@@ -14,12 +14,12 @@
 // the only role Dispatch has, so the controls are offered to any signed-in person (`useIsHuman`)
 // and the server refuses the rest; its refusal is shown under the form as it wrote it.
 import { useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useMemo, useRef, useState } from "react";
 
 import { apiErrorMessage, legionDaemonRemovalRequest, legionDaemonRequest } from "../../api/client";
 import { legionDaemonQuery } from "../../api/queries";
 import { invalidateWaitingForPaused, replaceQueryData } from "../../api/query-client";
-import { useReadBound } from "../../api/read-bound";
+import { useReadBounds } from "../../api/read-bound";
 import type { LegionSetting } from "../../api/types";
 import { ARM_ON_PRESS, useFocusPlace } from "../../components/focus-place";
 import { heldField, heldPress } from "../../components/held-press";
@@ -67,7 +67,7 @@ type FailedAction = { readonly kind: "save" | "remove" | "input"; readonly messa
 type PreviousDaemon = { previous: LegionSetting | null | undefined };
 
 /** What the section says when its daemons failed to load, and before why a project's read after
- *  a landed write has not settled (`useReadBound`). */
+ *  a landed write has not settled (`useReadBounds`). */
 const LEGION_DAEMONS_NOT_LOADED = "Couldn't load the Legion daemons.";
 
 /** The daemon base URL a setting may hold, trimmed, or the refusal that names what is wrong with
@@ -127,10 +127,14 @@ export function LegionDaemonsSection(): ReactNode {
     () => list.current,
     () => null
   );
-  // Each project's daemon is a read of its own, and the section's one line says why the latest
-  // write's read of a daemon has not settled: the hold is over the reads of every project's
-  // daemon, under the key each of them begins with.
-  const [unsettled, holdThrough] = useReadBound(["legion-daemon"]);
+  // Each project's daemon is a read of its own, with a hold of its own, so a write of one
+  // project's daemon forgets nothing of another's: the section says once each reason a project's
+  // read after a landed write has not settled for. Two writes of one daemon share its one hold.
+  const daemonKeys = useMemo(
+    () => (legion.projects ?? []).map((named) => legionDaemonQuery(named.key).queryKey),
+    [legion.projects]
+  );
+  const [unsettled, holdThrough] = useReadBounds(daemonKeys);
   const daemonKey = (named: string) => legionDaemonQuery(named).queryKey;
   // The line both writes of a daemon go on (`target`), in press order.
   const daemonTarget = (named: string) => `legion-daemon:${named}`;
@@ -193,7 +197,7 @@ export function LegionDaemonsSection(): ReactNode {
       return { previous };
     },
     // A landing with no answer keeps the optimistic row; reading the project again leaves the page
-    // on the server's state, bounded by `useReadBound` so a paused offline read does not hold the
+    // on the server's state, bounded by `useReadBounds` so a paused offline read does not hold the
     // form forever. An answer goes over any read of the project still out, asked before it
     // (`replaceQueryData`).
     onSuccess: (setting, variables) => {
@@ -203,7 +207,8 @@ export function LegionDaemonsSection(): ReactNode {
       setFailedAction(undefined);
       setProject("");
       setStateUrl("");
-      return holdThrough(invalidateWaitingForPaused(queryClient, daemonKey(variables.project)));
+      const key = daemonKey(variables.project);
+      return holdThrough(key, invalidateWaitingForPaused(queryClient, key));
     },
   });
   const removeDaemon = useKeyedWrite<void, string, PreviousDaemon>({
@@ -239,7 +244,8 @@ export function LegionDaemonsSection(): ReactNode {
     },
     onSuccess: (_answer, named) => {
       setFailedAction(undefined);
-      return holdThrough(invalidateWaitingForPaused(queryClient, daemonKey(named)));
+      const key = daemonKey(named);
+      return holdThrough(key, invalidateWaitingForPaused(queryClient, key));
     },
   });
 
@@ -361,11 +367,11 @@ export function LegionDaemonsSection(): ReactNode {
               )}
             </TableBody>
           </TableShell>
-          {unsettled === undefined ? null : (
-            <div className="mt-4">
-              <QueryError message={`${LEGION_DAEMONS_NOT_LOADED} ${unsettled}.`} />
+          {unsettled.map((reason) => (
+            <div className="mt-4" key={reason}>
+              <QueryError message={`${LEGION_DAEMONS_NOT_LOADED} ${reason}.`} />
             </div>
-          )}
+          ))}
 
           {human ? (
             <form

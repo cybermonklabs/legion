@@ -2,7 +2,7 @@ import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the in-the-step row submits and checks in one synchronous step, which user-event has no form for
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 
 import { holdNotifications } from "../../__tests__/commits";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
@@ -516,11 +516,13 @@ test.each(savesAndRemovals)(
   }
 );
 
-// The line a removal's project read the bound ended draws is that removal's own: the next Remove
-// takes it away as its removal lands, though the earlier read is still out, and that removal's
-// read answering says nothing more. A removal takes its row away at the press, so the next press
-// is the other project's Remove, whose read Dispatch answers at once.
-test("the line a removal's project read the bound ended draws goes as the next removal lands, whose read answers", async () => {
+// The line a removal's project read the bound ended draws is that project's read's own: the next
+// write of that project's daemon takes it away as it lands, though the earlier read is still out,
+// and that read answering says nothing more. A removal takes its row away at the press, so the
+// next write of ACME's daemon is a Save that names it again, whose read Dispatch answers at once.
+// A write of another project's daemon leaves the line, a read of its own being no answer to
+// ACME's (`useReadBounds`).
+test("the line a removal's project read the bound ended draws goes as the next write of that daemon lands, whose read answers", async () => {
   const server = legionServer([
     setting,
     { ...setting, project: "CORE", state_url: "https://daemon.example" },
@@ -528,13 +530,17 @@ test("the line a removal's project read the bound ended draws goes as the next r
   // The first read of ACME once the row asks for it, held until the row answers it.
   const reread = Promise.withResolvers<void>();
   let holding = false;
-  // Each removal's answer, held until the row gives it, so what it sets off runs in `act`.
-  const removals: (() => void)[] = [];
+  // The removal's answer and the save's, held until the row gives each, so what each sets off
+  // runs in `act`.
+  const removed = Promise.withResolvers<void>();
   answerDaemonRemovals().mockImplementation(async (project) => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    removals.push(resolve);
-    await promise;
+    await removed.promise;
     await server.remove(project);
+  });
+  const saved = Promise.withResolvers<void>();
+  const save = answerDaemonSaves().mockImplementation(async (project, body) => {
+    await saved.promise;
+    return server.put(project, body.state_url);
   });
   const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   const section = await renderSection(
@@ -562,28 +568,164 @@ test("the line a removal's project read the bound ended draws goes as the next r
     holding = true;
     await user.click(section.getByRole("button", { name: "Remove the Legion daemon of ACME" }));
     await tick(0);
-    await act(async () => removals[0]?.());
+    await act(async () => removed.resolve());
     await tick(0);
     expect(heldNotDisabled(removeCore, "Remove the Legion daemon of CORE")).toBe(true);
     await tick(REQUEST_DEADLINE_MS);
     expect(heldNotDisabled(removeCore, "Remove the Legion daemon of CORE")).toBe(false);
     expect(section.getByRole("alert").textContent).toBe(why);
 
-    await user.click(removeCore);
+    await saveDaemon(user, "ACME", "http://127.0.0.1:9732");
     await tick(0);
-    expect(removals).toHaveLength(2);
-    await act(async () => removals[1]?.());
+    expect(save).toHaveBeenCalledTimes(1);
+    await act(async () => saved.resolve());
     await tick(0);
-    expect(section.queryByRole("cell", { name: "CORE" })).toBeNull();
+    expect(section.getByRole("cell", { name: "http://127.0.0.1:9732" })).toBeInTheDocument();
     expect(
       section.queryByRole("alert"),
-      "the earlier removal's read kept its line past the next removal"
+      "the earlier removal's read kept its line past the next write of its daemon"
     ).toBeNull();
 
     await act(async () => reread.resolve());
     await tick(0);
     expect(section.queryByRole("alert")).toBeNull();
   } finally {
+    await act(async () => {
+      removed.resolve();
+      saved.resolve();
+      reread.resolve();
+    });
+    cleanup();
+    queryClient.clear();
+    realClock();
+  }
+});
+
+/** The section over ACME's and CORE's daemons in the app's own client, with each Save's answer
+ *  held until the row gives it (`saves`, in press order), and every read of ACME held from
+ *  `holdAcme` until `answerAcme`. */
+async function renderHeldSaves() {
+  const server = legionServer([
+    setting,
+    { ...setting, project: "CORE", state_url: "https://daemon.example" },
+  ]);
+  const saves: (() => void)[] = [];
+  answerDaemonSaves().mockImplementation(async (project, body) => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    saves.push(resolve);
+    await promise;
+    return server.put(project, body.state_url);
+  });
+  const acme = Promise.withResolvers<void>();
+  let holding = false;
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const section = await renderSection(
+    {
+      ...server,
+      get: async (project) => {
+        if (holding && project === "ACME") await acme.promise;
+        return server.get(project);
+      },
+    },
+    true,
+    queryClient
+  );
+  await section.findByRole("cell", { name: "CORE" });
+  return {
+    answerAcme: () => {
+      holding = false;
+      acme.resolve();
+    },
+    holdAcme: () => {
+      holding = true;
+    },
+    queryClient,
+    saves,
+    section,
+  };
+}
+
+/** Names `url` as `project`'s daemon through the section's form, on the held clock's `user`, and
+ *  presses Save. */
+async function saveDaemon(user: UserEvent, project: string, url: string) {
+  await pickFromLabelled(user, "Legion project", `${project} · ${project}`);
+  await user.click(screen.getByLabelText("Legion daemon state URL"));
+  await user.paste(url);
+  await user.click(screen.getByRole("button", { name: "Save Legion daemon" }));
+}
+
+// A second Save of a daemon gives the read of its project up at its press, before its own write
+// lands, and asks nothing then. A cancel is no answer (`DispatchQueryClient`), so the line the
+// first Save's read left at the bound stays while that write is out: no read of the project has
+// answered (the tester's row of `legion.e2e.ts`).
+test("a second Save of a daemon leaves the line its first Save's read left at the bound while its own write is out", async () => {
+  const { answerAcme, holdAcme, queryClient, saves, section } = await renderHeldSaves();
+  const why = "Couldn't load the Legion daemons. Dispatch did not answer within 30 seconds.";
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await saveDaemon(user, "ACME", "http://127.0.0.1:9732");
+    await tick(0);
+    holdAcme();
+    await act(async () => saves[0]?.());
+    await tick(0);
+    const save = section.getByRole("button", { name: "Save Legion daemon" }) as HTMLButtonElement;
+    expect(heldNotDisabled(save, "Save Legion daemon")).toBe(true);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(heldNotDisabled(save, "Save Legion daemon")).toBe(false);
+    expect(section.getByRole("alert").textContent).toBe(why);
+
+    await saveDaemon(user, "ACME", "http://127.0.0.1:9733");
+    await tick(0);
+    expect(saves).toHaveLength(2);
+    expect(
+      section.queryByRole("alert")?.textContent,
+      "the second Save took the line while no read of ACME had answered"
+    ).toBe(why);
+  } finally {
+    await act(async () => {
+      saves[1]?.();
+      answerAcme();
+    });
+    cleanup();
+    queryClient.clear();
+    realClock();
+  }
+});
+
+// Each project's daemon is a read of its own, with a hold of its own: a Save of another project,
+// whose read answers, takes nothing of the line ACME's read left at the bound, which goes once
+// ACME's read answers (the tester's row of `legion.e2e.ts`).
+test("a Save of another project whose read answers leaves the line the first project's read left at the bound", async () => {
+  const { answerAcme, holdAcme, queryClient, saves, section } = await renderHeldSaves();
+  const why = "Couldn't load the Legion daemons. Dispatch did not answer within 30 seconds.";
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await saveDaemon(user, "ACME", "http://127.0.0.1:9732");
+    await tick(0);
+    holdAcme();
+    await act(async () => saves[0]?.());
+    await tick(REQUEST_DEADLINE_MS);
+    expect(section.getByRole("alert").textContent).toBe(why);
+
+    await saveDaemon(user, "CORE", "https://core.example");
+    await tick(0);
+    await act(async () => saves[1]?.());
+    await tick(0);
+    const save = section.getByRole("button", { name: "Save Legion daemon" }) as HTMLButtonElement;
+    expect(heldNotDisabled(save, "Save Legion daemon"), "CORE's read has answered").toBe(false);
+    expect(section.getByRole("cell", { name: "https://core.example" })).toBeInTheDocument();
+    expect(
+      section.queryByRole("alert")?.textContent,
+      "CORE's answered read took the line ACME's unanswered read left"
+    ).toBe(why);
+
+    await act(async () => answerAcme());
+    await tick(0);
+    expect(section.queryByRole("alert")).toBeNull();
+  } finally {
+    await act(async () => answerAcme());
     cleanup();
     queryClient.clear();
     realClock();

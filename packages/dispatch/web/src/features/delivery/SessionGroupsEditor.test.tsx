@@ -414,6 +414,41 @@ test("a group's buttons held for a live update that never comes are free again a
   }
 });
 
+// The hold that the write deadline ends says why on the group's card, as every hold through a
+// read does at its bound: the live update that would carry the write has not come, in the words
+// the editor says for a read of its groups that failed. The line goes once that update is drawn.
+test("a group's write whose live update never comes says why on its card at the write deadline, until the update is drawn", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  // Held, and given inside `act` after the press, as docs/testing.md ("The act rule of a Dispatch
+  // unit test") says.
+  const answer = Promise.withResolvers<DeliverySessionGroup>();
+  const update = spyOn(api, "updateDeliverySessionGroup").mockReturnValue(answer.promise);
+  const { draw } = renderEditor([crew]);
+  const why = "Couldn't load the session groups. Dispatch did not answer within 30 seconds.";
+  try {
+    const group = screen.getByRole("group", { name: "Release crew" });
+    await user.click(within(group).getByRole("button", { name: "Remove Planner two" }));
+    await act(async () => answer.resolve(crew));
+    await jump(SEND_DEADLINE_MS - 1_000);
+    expect(within(group).queryByRole("alert")).toBeNull();
+
+    await jump(1_000);
+    for (const button of groupButtons(group)) expect(button).not.toHaveAttribute("aria-disabled");
+    expect(
+      within(group).queryByRole("alert")?.textContent,
+      "the card let its buttons go at the deadline and said nothing of the update it waited for"
+    ).toBe(why);
+
+    draw([{ ...crew, sessions: ["s9"], updated_at: "2026-10-11T00:01:00Z" }]);
+    expect(within(group).queryByRole("alert")).toBeNull();
+  } finally {
+    realClock();
+    cleanup();
+    update.mockRestore();
+  }
+});
+
 /** Lets the write that `pressed` made land, with Chromium's way with a button that turns disabled
  *  (`emulateChromiumFocusFixup`): `pressed` is held by `aria-disabled`, which no engine takes the
  *  focus off, and keeps the focus. Then draws `next`, the live update carrying the write, and

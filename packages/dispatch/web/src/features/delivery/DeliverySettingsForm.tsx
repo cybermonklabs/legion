@@ -19,6 +19,7 @@ import {
 } from "../settings/classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite, usePendingKeyedPress, useRefusalOfSubject } from "../writes/useKeyedWrite";
+import { DELIVERY_TIMELINE_NOT_LOADED } from "./delivery-words";
 import { useHoldUntilDrawn } from "./useHoldUntilDrawn";
 
 /** The characters that separate the entries of a list field, as a character class's body: line
@@ -180,8 +181,9 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
  *  so the control the reader pressed from keeps the focus until the form goes. A save past its
  *  deadline (`SEND_DEADLINE_MS`) lets them go then, still tried under its key, and a record read
  *  that has not settled by the request deadline (`REQUEST_DEADLINE_MS`) lets them go then, with
- *  the reason under the form (`useReadBound`). A refusal lets them go at once, with its reason
- *  under the form. */
+ *  the reason under the form (`useReadBound`); so does a caller that has not replaced the form by
+ *  the write deadline after the save landed, with the reason its timeline is not drawn
+ *  (`useHoldUntilDrawn`). A refusal lets them go at once, with its reason under the form. */
 function DeliverySettingsFields({
   record,
   replacedByCaller,
@@ -205,8 +207,18 @@ function DeliverySettingsFields({
   }
   // The write time of the record the newest press was made over.
   const [pressedOver, setPressedOver] = useState(version);
-  const [drawing, holdUntilDrawn] = useHoldUntilDrawn(version);
+  const [drawing, holdUntilDrawn, undrawn] = useHoldUntilDrawn(version);
   const [unsettled, holdThrough] = useReadBound(deliverySettingsQuery().queryKey);
+  // Why what the save changed is not drawn yet, once the hold for it ran out, in the words the
+  // page says for a read of it that failed: a caller holding the record draws its timeline in the
+  // form's place, and the form reads no record of its own then.
+  const notDrawn = replacedByCaller
+    ? undrawn === undefined
+      ? undefined
+      : `${DELIVERY_TIMELINE_NOT_LOADED} ${undrawn}.`
+    : unsettled === undefined
+      ? undefined
+      : `${DELIVERY_SETTINGS_NOT_LOADED} ${unsettled}.`;
   // The save goes under a name of its own, and the form reads its press from TanStack's mutation
   // cache, which tells its listeners at once (`usePendingKeyedPress`). The observer `useMutation`
   // reads is told a timer later, a task after the bound that ends the save's hold has drawn why
@@ -454,11 +466,11 @@ function DeliverySettingsFields({
             }
           />
         </div>
-      ) : unsettled === undefined ? null : (
+      ) : notDrawn === undefined ? null : (
         <div className="mt-4">
-          {/* A read of the record that has not settled is said in the words the form says for a
+          {/* What the save changed and is not drawn is said in the words the page says for a
               read of it that failed. */}
-          <QueryError message={`${DELIVERY_SETTINGS_NOT_LOADED} ${unsettled}.`} />
+          <QueryError message={notDrawn} />
         </div>
       )}
     </>

@@ -14,7 +14,7 @@ import { Link } from "react-router-dom";
 
 import { api, issueStateRequest, type WriteBounds } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
-import { replaceQueryData } from "../../api/query-client";
+import { invalidateWaitingForPaused, replaceQueryData } from "../../api/query-client";
 import { type ListReadHold, useListReadBound } from "../../api/read-bound";
 import type {
   Agent,
@@ -825,15 +825,16 @@ function CommentTurn({
    *  holds the edit - its editor, and within its deadline every Edit of the card
    *  (`savingCommentEditId`) - until the comments are read again with the saved words, or until
    *  the request deadline where that read has not settled - one the network paused while the
-   *  browser is offline - so no read holds the edit for good, and the turn says why beneath the
-   *  card until the read settles or the next save of any comment's edit lands
-   *  (`holdEditThrough`). */
+   *  browser is offline, one a margin action's cancel gave up that no later read has answered -
+   *  so no read holds the edit for good, and the turn says why beneath the card until the read
+   *  settles or the next save of any comment's edit lands (`holdEditThrough`,
+   *  `invalidateWaitingForPaused`). */
   const editComment = useCallback(
     async (id: string, body: string, carried: CarriedBlockIds | undefined, bounds: WriteBounds) => {
       const comment = await api.editComment(id, { body, ...carried }, bounds);
       await holdEditThrough(
         item.id,
-        queryClient.invalidateQueries({ queryKey: ["comments", issueKey] })
+        invalidateWaitingForPaused(queryClient, ["comments", issueKey])
       );
       return comment;
     },

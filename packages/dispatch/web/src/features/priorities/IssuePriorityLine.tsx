@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 
 import { apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
+import { waitingForPausedReads } from "../../api/query-client";
 import { useListReadBound } from "../../api/read-bound";
 import type { Issue, PriorityRow } from "../../api/types";
 import { CappedGroup } from "../../components/CappedGroup";
@@ -138,18 +139,25 @@ export function usePriorityLineWrite(issueKey: string): PriorityLineWrite {
       // its own, and a refused write leaves this issue's read stale, so the next write must
       // carry the revision it holds now. The priorities body and the rail's two counts move with
       // the relation as well.
-      const rereads = [
-        queryClient.invalidateQueries({ queryKey: ["issue"] }),
-        queryClient.invalidateQueries({ queryKey: ["priorities"] }),
-      ];
+      const reread = () =>
+        Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["issue"] }),
+          queryClient.invalidateQueries({ queryKey: ["priorities"] }),
+        ]);
       // Outside `NoTooltips` the write stops pending as it lands and these reads go on after it,
       // as on `main`. Inside, `onSettled` returns them, which TanStack Query awaits before the
       // write stops pending: the trigger stays `aria-disabled`, and refuses to open, until the
       // issue it draws is the one read after the write, or until the request deadline where
       // that read has not settled - one the network paused while the browser is offline - so no
       // read holds the line for good, and the line says why until the reads settle or the next
-      // write lands (`useListReadBound`).
-      if (page === null) return;
+      // write lands (`useListReadBound`). There they wait on a fetch the network had already
+      // paused, and past one another press's cancel gives up - a components save's of the issue
+      // - which the deadline ends as well (`waitingForPausedReads`).
+      if (page === null) {
+        void reread();
+        return;
+      }
+      const rereads = waitingForPausedReads(queryClient, reread);
       // The line reads the priorities only while its picker is open or the issue advances one
       // (`PriorityLine`), so the invalidation reads them only then. A set that lands with a
       // priority in it, written by a line that read none - the first priority added, the picker
@@ -160,7 +168,7 @@ export function usePriorityLineWrite(issueKey: string): PriorityLineWrite {
         refusal === null && written.advances.length > 0
           ? [queryClient.fetchQuery(prioritiesQuery()).catch(() => undefined)]
           : [];
-      return holdThrough(issueKey, Promise.all([...rereads, ...named]));
+      return holdThrough(issueKey, Promise.all([rereads, ...named]));
     },
   });
   // Held while a write is out within its deadline: the trigger keeps the focus and sends nothing

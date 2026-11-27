@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { unsettledReason } from "../../api/read-bound";
 import { holdHandOff } from "../../components/focus-place";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 
@@ -15,18 +16,23 @@ import { SEND_DEADLINE_MS } from "../writes/keyed-write";
  * Delivery page's settings form, which the timeline replaces, and the Session groups editor, a
  * dialog of its own - so a control that update takes away leaves the focus where the browser
  * leaves it. An update that never comes ends the hold at the app's write deadline
- * (`SEND_DEADLINE_MS`), counted from the latest `hold`, so no control is ever locked. Answers
- * whether the hold is on, and what puts it on: called as the write lands, never on a refusal,
- * whose control comes back with its error at once. A `hold` of a render whose version a later
- * commit has already replaced, or of a component no longer mounted, puts on no hold: the update
- * it would wait for is already drawn, or nothing is left to hold.
+ * (`SEND_DEADLINE_MS`), counted from the latest `hold`, so no control is ever locked, and the hold
+ * then says why that update is not drawn, in a read's words for a wait that bound ended
+ * (`unsettledReason`), until the update comes, the component goes or the next `hold` begins.
+ * Answers whether the hold is on, what puts it on, and that reason: `hold` is called as the write
+ * lands, never on a refusal, whose control comes back with its error at once. A `hold` of a
+ * render whose version a later commit has already replaced, or of a component no longer mounted,
+ * puts on no hold: the update it would wait for is already drawn, or nothing is left to hold.
  */
 export function useHoldUntilDrawn(
   version: string | null
-): readonly [held: boolean, hold: () => void] {
+): readonly [held: boolean, hold: () => void, undrawn: string | undefined] {
   // The version the hold is on, a new object at every `hold`, so the deadline counts from the
   // latest one.
   const [heldOn, setHeldOn] = useState<{ readonly version: string | null } | null>(null);
+  // Why the latest hold ended at its deadline, with the version it was on: the reason holds while
+  // that version is drawn.
+  const [late, setLate] = useState<{ readonly reason: string; readonly version: string | null }>();
   // The hold's part in the press's action, and the version it was begun on. It is kept apart
   // from `heldOn`, so it ends even where the state that put the hold on never commits: the
   // version changed in the same batch, or the component went.
@@ -51,7 +57,10 @@ export function useHoldUntilDrawn(
   if (heldOn !== null && heldOn.version !== version) setHeldOn(null);
   useEffect(() => {
     if (heldOn === null) return;
-    const bound = window.setTimeout(() => setHeldOn(null), SEND_DEADLINE_MS);
+    const bound = window.setTimeout(() => {
+      setHeldOn(null);
+      setLate({ reason: unsettledReason(SEND_DEADLINE_MS), version: heldOn.version });
+    }, SEND_DEADLINE_MS);
     return () => window.clearTimeout(bound);
   }, [heldOn]);
   // The hold's part in the press's action ends in the commit that lets the hold go, at a new
@@ -72,7 +81,9 @@ export function useHoldUntilDrawn(
       if (drawn.current !== version) return;
       open.current?.answered();
       open.current = { answered: holdHandOff(), version };
+      setLate(undefined);
       setHeldOn({ version });
     },
+    late?.version === version ? late.reason : undefined,
   ];
 }

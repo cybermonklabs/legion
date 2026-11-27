@@ -6,8 +6,16 @@ import {
   QueryClientProvider,
   useQuery,
 } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: the two clicks of one same-tick double press, which user-event cannot fire inside a single task
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  // biome-ignore lint/style/noRestrictedImports: the two clicks of one same-tick double press, which user-event cannot fire inside a single task
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -36,7 +44,7 @@ import { wholeText } from "../../__tests__/whole-text";
 import type { WriteBounds } from "../../api/client";
 import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
 import { markCorrectedPost } from "../../api/corrected-post";
-import { userStateQuery } from "../../api/queries";
+import { inboxQuery, userStateQuery } from "../../api/queries";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type {
   Actor,
@@ -58,6 +66,7 @@ import type {
 } from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
 import { PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
+import { useMarginItems } from "../margin/useMarginItems";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
@@ -3156,6 +3165,100 @@ test("a comment edit's save whose read has not answered by the request deadline 
     queryClient.clear();
     realClock();
     editComment.mockRestore();
+    stub.restore();
+  }
+});
+
+// A margin action - a thread resolved beside the spec - gives the issue's comments read up as it
+// shows its change (`useMarginItems`), and asks nothing then. A cancel is no answer
+// (`DispatchQueryClient`): a comment edit's save, which reads the comments again, still holds the
+// edit through that read until a later read of the comments answers or the bound comes.
+test("a margin action that gives the comments' read up leaves a landed edit's save held through its read", async () => {
+  const user = userEvent.setup();
+  const root = comment("root-comment", { body: "Root comment" });
+  const reply = comment("reply-comment", { body: "Reply comment", reply_to: "root-comment" });
+  const stub = stubLists({ comments: [root, reply] });
+  const listComments = api.listComments as Mock<typeof api.listComments>;
+  // The save's answer and the action's, held until the row gives each, so what each sets off
+  // runs in `act`.
+  const save = Promise.withResolvers<Comment>();
+  const editComment = spyOn(api, "editComment").mockImplementation(() => save.promise);
+  const resolved = Promise.withResolvers<never>();
+  const resolveComment = spyOn(api, "resolveComment").mockImplementation(() => resolved.promise);
+  const reread = Promise.withResolvers<Comment[]>();
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  // What the margin reads beside the comments, as the issue page holds it already.
+  queryClient.setQueryData(inboxQuery().queryKey, []);
+  queryClient.setQueryData(userStateQuery().queryKey, {});
+  queryClient.setQueryData(["asks", "CORE-1"], []);
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const margin = renderHook(
+    () =>
+      useMarginItems(
+        { key: "CORE-1", kind: "issue" },
+        "comments",
+        undefined,
+        new Map(),
+        new Map(),
+        undefined
+      ),
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        </MemoryRouter>
+      ),
+    }
+  );
+
+  try {
+    const card = await screen.findByTestId("margin-comment-root-comment");
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
+    await waitFor(() =>
+      expect(within(card).getAllByRole("button", { name: "Edit" })).toHaveLength(2)
+    );
+    await user.click(within(card).getAllByRole("button", { name: "Edit" })[0] as HTMLElement);
+    const editField = screen.getByLabelText("Edit comment");
+    await user.clear(editField);
+    await user.click(editField);
+    await user.paste("Updated root");
+    listComments.mockImplementation(() => reread.promise);
+    jest.useFakeTimers();
+    await userOnFakeClock().click(screen.getByRole("button", { name: "Save" }));
+    await settle();
+    expect(editComment).toHaveBeenCalledTimes(1);
+
+    // The save lands, and the comments' read it starts goes unanswered.
+    await act(async () => {
+      save.resolve({ ...root, body: "Updated root" });
+      await save.promise;
+    });
+    await tick(0);
+    expect(screen.getByLabelText("Edit comment")).toBeInTheDocument();
+
+    act(() => margin.result.current.mutateItem({ id: "reply-comment", kind: "resolve" }));
+    await tick(0);
+    expect(resolveComment).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByLabelText("Edit comment") !== null,
+      "a margin action let the edit go with no read of the comments answered"
+    ).toBe(true);
+  } finally {
+    await act(async () => {
+      resolved.reject(new ApiError(404, { error: "no such comment" }));
+      reread.resolve([{ ...root, body: "Updated root" }, reply]);
+    });
+    margin.unmount();
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    editComment.mockRestore();
+    resolveComment.mockRestore();
+    getInbox.mockRestore();
     stub.restore();
   }
 });

@@ -45,16 +45,21 @@ type GroupEdit = GroupChange & { readonly group: DeliverySessionGroup };
 const sectionLabel = `text-xs tracking-wide uppercase ${textMutedOnSurface}`;
 const fieldClass = `h-8 min-w-0 flex-1 rounded border px-2 text-sm ${inputClasses(true)} ${textPrimaryOnSurface}`;
 
+/** What a group's card says before why the live update carrying its write is not drawn, once the
+ *  hold for it ran out (`useHoldUntilDrawn`): the editor reads its groups from that update. */
+const SESSION_GROUPS_NOT_LOADED = "Couldn't load the session groups.";
+
 /** One group: its name, renamable, its members, each removable, and the window's selected
  *  sessions to add, drawn as an item of the editor's list of groups, keyed by the group's id.
  *  Until a group write's deadline, every mutating button is held so a second click cannot race
- *  it. A write of this card's own that lands keeps them
- *  held until the live update carrying it brings the group's new `updated_at`, or takes the group
- *  away (`useHoldUntilDrawn`); a refusal lets them go at once. That update fills the name again
- *  from the stored group in place, so the card and its buttons stay the same elements. Rename
- *  with no new name and Add selected with no session to add are held as well. Every hold is by
- *  `aria-disabled`, not `disabled` (`heldPress`): a held button keeps its Tab stop and the focus
- *  the reader's press left on it, and a press on it does nothing. */
+ *  it. A write of this card's own that lands keeps them held until the live update carrying it
+ *  brings the group's new `updated_at`, or takes the group away (`useHoldUntilDrawn`); a refusal
+ *  lets them go at once. An update that never comes lets them go at the write deadline, and the
+ *  card says why until it comes. That update fills the name again from the stored group in place,
+ *  so the card and its buttons stay the same elements. Rename with no new name and Add selected
+ *  with no session to add are held as well.
+ *  Every hold is by `aria-disabled`, not `disabled` (`heldPress`): a held button keeps its Tab
+ *  stop and the focus the reader's press left on it, and a press on it does nothing. */
 function GroupCard({
   group,
   pending,
@@ -80,7 +85,7 @@ function GroupCard({
     setFilledFrom(group.updated_at);
     setName(group.name);
   }
-  const [drawing, holdUntilDrawn] = useHoldUntilDrawn(group.updated_at);
+  const [drawing, holdUntilDrawn, undrawn] = useHoldUntilDrawn(group.updated_at);
   const held = pending || drawing;
   // The press's render hands its own `holdUntilDrawn`, so the hold is on the version pressed on.
   const send = (change: GroupEdit) => write(change, holdUntilDrawn);
@@ -174,6 +179,9 @@ function GroupCard({
           Delete group
         </button>
       </div>
+      {undrawn === undefined ? null : (
+        <QueryError message={`${SESSION_GROUPS_NOT_LOADED} ${undrawn}.`} />
+      )}
     </fieldset>
   );
 }

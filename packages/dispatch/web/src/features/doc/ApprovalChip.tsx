@@ -9,6 +9,7 @@ import {
   isCapExceeded,
 } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
+import { waitingForPausedReads } from "../../api/query-client";
 import { type ListReadBound, useListReadBound } from "../../api/read-bound";
 import type { Artifact, ArtifactApproval } from "../../api/types";
 import { heldPress } from "../../components/held-press";
@@ -514,10 +515,12 @@ export function ApprovalChip({ reviewReads, ...chip }: ApprovalChipProps): React
   );
 }
 
-/** The chip where its line holds no reads for it: the chip holds its own, through its document's
- *  read, which its review reads again first (`approvalReads`). */
+/** The chip where its line holds no reads for it: the chip holds its own, under the key of its
+ *  document's reviews, the read only a review makes again. Its review's reads are no other
+ *  read's: Rebuild reads the document alone (`ProofDocument`), under the document's key, so a
+ *  hold of one forgets nothing of the other's. */
 function ChipWithOwnReads(chip: Omit<ApprovalChipProps, "reviewReads">): ReactNode {
-  const reviewReads = useListReadBound(["artifact", chip.artifact?.id]);
+  const reviewReads = useListReadBound(["artifact-reviews", chip.artifact?.id]);
   return <ChipOfReads {...chip} reviewReads={reviewReads} />;
 }
 
@@ -583,19 +586,25 @@ function ChipOfReads({
       // until the reads settle or the next review of its line lands (`reviewReads`). Outside
       // `NoTooltips` the dialog closes as the write lands, as on `main`. Inside, it closes once
       // the reads are in, and a dialog the reader has not closed (`onClose`) then gives the focus
-      // back to the button that opened it. The reads are the reviewed document's, from the press.
+      // back to the button that opened it. The reads are the reviewed document's, from the press,
+      // read waiting on a fetch the network had already paused, and past one another press's
+      // cancel gives up, which the deadline ends as well (`waitingForPausedReads`).
       if (page === null) setRequestChangesOpen(false);
       onReviewed?.();
       const rereads = holdThrough(
         reviewed.id,
-        Promise.all([
-          queryClient.invalidateQueries({ queryKey: ["artifact-reviews", reviewed.id] }),
-          queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey }),
-          ...(reviewed.issue_key === null
-            ? []
-            : [queryClient.invalidateQueries({ queryKey: ["asks", reviewed.issue_key] })]),
-          ...approvalReads(reviewed).map((queryKey) => queryClient.invalidateQueries({ queryKey })),
-        ])
+        waitingForPausedReads(queryClient, () =>
+          Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["artifact-reviews", reviewed.id] }),
+            queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey }),
+            ...(reviewed.issue_key === null
+              ? []
+              : [queryClient.invalidateQueries({ queryKey: ["asks", reviewed.issue_key] })]),
+            ...approvalReads(reviewed).map((queryKey) =>
+              queryClient.invalidateQueries({ queryKey })
+            ),
+          ])
+        )
       );
       return page === null ? rereads : rereads.then(() => setRequestChangesOpen(false));
     },

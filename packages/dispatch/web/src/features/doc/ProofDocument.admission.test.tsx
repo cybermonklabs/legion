@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, expect, jest, spyOn, test } from "bun:test";
 import type { ArtifactRebuildReport } from "@legion/contracts";
-import { onlineManager } from "@tanstack/react-query";
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { onlineManager, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import manifest from "../../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
@@ -24,10 +24,11 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
 import { DispatchQueryClient } from "../../api/query-client";
-import type { ArtifactText } from "../../api/types";
+import type { ArtifactReview, ArtifactText } from "../../api/types";
 import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SEND_DEADLINE_MS, stoppedWriteNote } from "../writes/keyed-write";
+import { ApprovalChip } from "./ApprovalChip";
 import { deletePendingEdits, openPendingEdits } from "./pending-edits";
 import { compiledSchemaCreatable } from "./schema";
 
@@ -665,6 +666,114 @@ test("inside NoTooltips, a rebuild whose read has not answered by the request de
     stopFocusFixup();
     realClock();
     confirm.mockRestore();
+    rebuildArtifact.mockRestore();
+    getArtifactText.mockRestore();
+    getArtifactBlocks.mockRestore();
+    getArtifact.mockRestore();
+  }
+});
+
+// Rebuild reads the document again (`["artifact", id]`), and a review of the document's approval
+// reads its reviews, the Inbox, its asks and every read its approval is drawn from: two reads that
+// differ, each with a hold of its own. So a Rebuild whose read answers takes nothing of the line
+// the same document's approval chip draws once the bound ended the hold through its review's
+// reads, which are still out, and the line goes once they answer (the tester's row of
+// `issue-page-i.e2e.ts`).
+test("inside NoTooltips, a Rebuild whose read answers leaves the line the same document's approval chip draws for its review's reads", async () => {
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(artifact);
+  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
+    new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL })
+  );
+  // The rebuild's answer and the review's, held until the row gives each, so what each sets off
+  // runs in `act`.
+  const rebuilt = Promise.withResolvers<ArtifactRebuildReport>();
+  const rebuildArtifact = spyOn(api, "rebuildArtifact").mockImplementation(() => rebuilt.promise);
+  const reviewed = Promise.withResolvers<ArtifactReview>();
+  const createReview = spyOn(api, "createArtifactVersionReview").mockImplementation(
+    () => reviewed.promise
+  );
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const queryClient = freshReadsQueryClient();
+  const { view } = renderProofDocument({ noTooltips: true, queryClient });
+  // The document's reviews, as the chip's list of them reads them: the first read answers, and
+  // the one its review makes is held until the row answers it.
+  const reviews = Promise.withResolvers<ArtifactReview[]>();
+  let reviewReads = 0;
+  function DetailsChip() {
+    useQuery({
+      queryFn: () => {
+        reviewReads += 1;
+        return reviewReads === 1 ? Promise.resolve([]) : reviews.promise;
+      },
+      queryKey: ["artifact-reviews", artifact.id],
+    });
+    return (
+      <ApprovalChip
+        artifact={{ ...artifact, approval: { latest_version: 3, state: "awaiting" } }}
+        variant="header"
+      />
+    );
+  }
+  const details = render(
+    <QueryClientProvider client={queryClient}>
+      <DetailsChip />
+    </QueryClientProvider>
+  );
+  const chip = within(details.container);
+  const why = "The new approval is not read yet. Dispatch did not answer within 30 seconds.";
+  try {
+    const name = "Rebuild from the latest version";
+    const rebuild = await screen.findByRole<HTMLButtonElement>("button", { name });
+    const approve = await chip.findByRole("button", { name: "Approve" });
+    await waitFor(() => expect(reviewReads).toBe(1));
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(approve);
+    await tick(0);
+    expect(createReview).toHaveBeenCalledTimes(1);
+    await act(async () =>
+      reviewed.resolve({
+        actor: { id: "alice", kind: "user" },
+        artifact_id: artifact.id,
+        ask_id: null,
+        content_sha256: null,
+        content_sha256_source: null,
+        created_at: "2026-09-11T00:00:00Z",
+        id: "review-1",
+        kind: "person",
+        reason: null,
+        state: "approved",
+        version: 3,
+      })
+    );
+    await tick(0);
+    expect(reviewReads).toBe(2);
+    await tick(REQUEST_DEADLINE_MS);
+    expect(chip.getByRole("alert").textContent).toBe(why);
+
+    await user.click(rebuild);
+    await tick(0);
+    expect(rebuildArtifact).toHaveBeenCalledTimes(1);
+    await act(async () => rebuilt.resolve(REBUILT_REPORT));
+    await tick(0);
+    expect(heldNotDisabled(rebuild, name), "Rebuild's read has answered").toBe(false);
+    expect(
+      chip.queryByRole("alert")?.textContent,
+      "Rebuild's answered read took the line of the approval's reads still out"
+    ).toBe(why);
+
+    await act(async () => reviews.resolve([]));
+    await tick(0);
+    expect(chip.queryByRole("alert")).toBeNull();
+  } finally {
+    reviews.resolve([]);
+    details.unmount();
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    confirm.mockRestore();
+    createReview.mockRestore();
     rebuildArtifact.mockRestore();
     getArtifactText.mockRestore();
     getArtifactBlocks.mockRestore();

@@ -1,4 +1,4 @@
-import { type MutationKey, useMutationState, useQueryClient } from "@tanstack/react-query";
+import { hashKey, type MutationKey, useMutationState, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
 import {
@@ -11,7 +11,7 @@ import {
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { advancesIssuesParams } from "../../api/queries";
-import { invalidateWaitingForPaused } from "../../api/query-client";
+import { waitingForPausedReads } from "../../api/query-client";
 import { useUnsettledRead } from "../../api/read-bound";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { holdHandOff } from "../../components/focus-place";
@@ -459,9 +459,21 @@ export function useIssueTableActions({
       // the view is not in it, and the focus goes to the row now at its place
       // (`useLastMarkedPlace`). Where the row marked last is still listed, the focus goes to its
       // checkbox. An action that failed or changed nothing keeps the selection.
-      // Read again waiting on a fetch the network has paused, since the hold below has a bound
-      // of its own (`invalidateWaitingForPaused`, `useUnsettledRead`).
-      const listed = invalidateWaitingForPaused(client, ["issues"]);
+      // The hold below is through the List's own listing reads alone, the full one and the open
+      // one, each by its exact key: what the List draws. They are read again waiting on a fetch
+      // the network has paused, and past one another press's cancel gives up, since the hold has
+      // a bound of its own (`waitingForPausedReads`, `useUnsettledRead`). Every other read of
+      // issues - the sidebar's pinned issues, another view's listing - is read again beside them
+      // and holds nothing.
+      const own = [listingQuery(listing).queryKey, listingQuery(listing, true).queryKey];
+      const listed = waitingForPausedReads(client, () =>
+        Promise.all(own.map((queryKey) => client.invalidateQueries({ exact: true, queryKey })))
+      );
+      const owned = new Set(own.map((queryKey) => hashKey(queryKey)));
+      void client.invalidateQueries({
+        predicate: (query) => !owned.has(query.queryHash),
+        queryKey: ["issues"],
+      });
       void client.invalidateQueries({ queryKey: ["issue"] });
       void client.invalidateQueries({ queryKey: ["inbox"] });
       if (mayHaveChanged) await waitWithinBound(told, listed);

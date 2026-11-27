@@ -1,5 +1,10 @@
 import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
-import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  onlineManager,
+  QueryClient,
+  QueryClientProvider,
+  QueryObserver,
+} from "@tanstack/react-query";
 import { act, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ComponentProps, ReactNode } from "react";
@@ -3742,6 +3747,67 @@ test("the line a Start next's list read the bound ended adds goes as the next St
   }
 });
 
+// An action holds its controls through the List's own listing reads alone
+// (`useIssueTableActions`): every other read of issues it makes stale - the sidebar's pinned
+// issues among them - is read again behind them and holds nothing. So where the listing answers
+// and the pinned issues' read does not, the action lets go once the listing has answered, and at
+// the bound the notice says what it did and nothing of a read the List does not draw (the
+// tester's row of `table-controls.e2e.ts`).
+test("a Start next whose listing answers lets go and says only what it did, though the pinned issues' read is out", async () => {
+  // Each write's answer, held until the row gives it, so what it sets off runs in `act`.
+  const { answers, next } = heldAnswers<Issue>();
+  const send = spyOn(api, "send").mockImplementation(() => next() as never);
+  restores.push(() => send.mockRestore());
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The sidebar's read of the pinned issues: its first answers, and every later one is held until
+  // the row ends.
+  const pinned = Promise.withResolvers<IssueSummary[]>();
+  let pinnedReads = 0;
+  const sidebar = new QueryObserver(client, {
+    queryFn: () => {
+      pinnedReads += 1;
+      return pinnedReads === 1 ? Promise.resolve([]) : pinned.promise;
+    },
+    queryKey: ["issues", "pinned"],
+  });
+  restores.push(sidebar.subscribe(() => {}));
+  table(
+    [
+      issue("CORE-1", { labels: ["legion"], rank: "B" }),
+      issue("CORE-2", { labels: ["legion"], rank: "C" }),
+    ],
+    "",
+    { client }
+  );
+  const row = await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  const startNext = within(row).getByRole("button", { name: "Start next" });
+  await waitFor(() => expect(pinnedReads).toBe(1));
+  const done = "CORE-2 “Work CORE-2” now starts next.";
+  jest.useFakeTimers();
+  try {
+    await userOnFakeClock().click(startNext);
+    await tick(0);
+    await act(async () => answers[0]?.(savedIssue("CORE-2")));
+    await tick(0);
+    expect(pinnedReads).toBe(2);
+    expect(
+      startNext,
+      "the action held its controls through a read the List does not draw"
+    ).not.toHaveAttribute("aria-disabled");
+    expect(screen.getByText(done)).toHaveAttribute("role", "status");
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(
+      screen.queryByRole("alert"),
+      "the notice said the List is not read while only the pinned issues' read was out"
+    ).toBeNull();
+    expect(screen.getByText(done)).toHaveAttribute("role", "status");
+  } finally {
+    await act(async () => pinned.resolve([]));
+    realClock();
+  }
+});
+
 // A List drawn again while an action's list read is out holds its controls by that read's hold and
 // by the action as the mutation cache holds it (`useIssueTableActions`), since no press of its own
 // made the action. The request deadline ends the hold and draws why in the notice in one change of
@@ -6178,8 +6244,15 @@ test("Finish's question, open when the table goes away, ends the Finish and writ
   const invalidated = spyOn(client, "invalidateQueries");
   restores.push(() => invalidated.mockRestore());
   view.unmount();
-  // Finish has ended: its last step reads the issues again.
-  await waitFor(() => expect(invalidated).toHaveBeenCalledWith({ queryKey: ["issues"] }));
+  // Finish has ended: its last step reads the List's listing again, and every other read of the
+  // issues beside it.
+  await waitFor(() =>
+    expect(invalidated).toHaveBeenCalledWith({
+      exact: true,
+      queryKey: ["issues", "project", "CORE"],
+    })
+  );
+  expect(invalidated).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["issues"] }));
   expect(sent).toEqual([["status-change", "CORE-2", intoWorkDryRun]]);
   expect(JSON.parse(localStorage.getItem("dispatch.project-table.CORE") ?? "{}").action?.id).toBe(
     "merging"

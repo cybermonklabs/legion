@@ -5,10 +5,20 @@ import {
   type QueryKey,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useMemo, useRef, useSyncExternalStore } from "react";
 
 import { holdHandOff } from "../components/focus-place";
 import { NETWORK_ERROR_MESSAGE, REQUEST_DEADLINE_MS, requestTimeoutMessage } from "./client";
+
+/**
+ * Why a read has not settled once a bound of `deadlineMs` ended the wait for it, in the words of
+ * the error a read that failed for that reason ends with: a `NetworkError`'s while the browser is
+ * offline (`onlineManager`), and a `RequestTimeoutError`'s otherwise. A wait with no read to wait
+ * on says it too, for the update it waits for in its place (`useHoldUntilDrawn`).
+ */
+export function unsettledReason(deadlineMs: number): string {
+  return onlineManager.isOnline() ? requestTimeoutMessage(deadlineMs) : NETWORK_ERROR_MESSAGE;
+}
 
 /**
  * Waits for `read`, the re-read that draws what a landed write changed, for `REQUEST_DEADLINE_MS`
@@ -18,20 +28,14 @@ import { NETWORK_ERROR_MESSAGE, REQUEST_DEADLINE_MS, requestTimeoutMessage } fro
  * offline. A read of a query whose fetch the network had already paused is the one that does
  * settle at once, since TanStack answers its refetch there and then: a caller that waits on such
  * a read reads again through `query-client.ts`'s `waitingForPausedReads`, which has it answered
- * when the fetch is, and this bound ends the wait either way. Answers `undefined` once the read
- * settles, either way. At the bound it answers why the read has not settled, in the words of the
- * error a read that failed for that reason ends with: a `NetworkError`'s while the browser is
- * offline (`onlineManager`), and a `RequestTimeoutError`'s otherwise.
+ * when the fetch is, and past a cancel of the fetch by another press once a later fetch answers,
+ * and this bound ends the wait either way. Answers `undefined` once the read settles, either way.
+ * At the bound it answers why the read has not settled (`unsettledReason`).
  */
 export function readWithinBound(read: Promise<unknown>): Promise<string | undefined> {
   const { promise, resolve } = Promise.withResolvers<string | undefined>();
   const bound = setTimeout(
-    () =>
-      resolve(
-        onlineManager.isOnline()
-          ? requestTimeoutMessage(REQUEST_DEADLINE_MS)
-          : NETWORK_ERROR_MESSAGE
-      ),
+    () => resolve(unsettledReason(REQUEST_DEADLINE_MS)),
     REQUEST_DEADLINE_MS
   );
   const settled = () => {
@@ -233,6 +237,61 @@ export function useReadBound(
   return [own?.unsettled, holdThrough, own?.holding === true];
 }
 
+/**
+ * One hold through each read `readKeys` names, as `useReadBound` takes for one, for a part of the
+ * page that draws several reads and holds its controls through whichever one a press reads
+ * again: each project's daemon on Settings, each its own read (`LegionDaemonsSection`).
+ * `holdThrough` takes the key of the read it holds through with the read, so a press of one read
+ * forgets nothing of another read's hold, and two presses of one read share its one hold
+ * (`useUnsettledRead`). `unsettled` is why each of those reads whose latest hold ran out has not
+ * settled, each reason once, in the order of `readKeys`: the same array until one of them
+ * changes. `readKeys` is a dependency: a caller passes the same array until the reads it names
+ * change.
+ */
+export function useReadBounds(
+  readKeys: readonly QueryKey[]
+): readonly [
+  unsettled: readonly string[],
+  holdThrough: (readKey: QueryKey, read: Promise<unknown>) => Promise<void>,
+] {
+  const holds = boundHoldsOf(useQueryClient());
+  const hashes = useMemo(() => readKeys.map((readKey) => hashKey(readKey)), [readKeys]);
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      const stops = hashes.map((hash) => holds.subscribe(hash, listener));
+      return () => {
+        for (const stop of stops) stop();
+      };
+    },
+    [hashes, holds]
+  );
+  // The reasons last drawn, handed back while they read the same, since a snapshot of the store
+  // must hold still until the store changes (`useSyncExternalStore`).
+  const drawn = useRef<readonly string[]>([]);
+  const unsettled = useSyncExternalStore(subscribe, () => {
+    const reasons = [
+      ...new Set(
+        hashes.flatMap((hash) => {
+          const hold = holds.latest(hash);
+          return hold?.row === undefined && hold?.unsettled !== undefined ? [hold.unsettled] : [];
+        })
+      ),
+    ];
+    const last = drawn.current;
+    if (reasons.length === last.length && reasons.every((reason, at) => reason === last[at])) {
+      return last;
+    }
+    drawn.current = reasons;
+    return reasons;
+  });
+  const holdThrough = useCallback(
+    (readKey: QueryKey, read: Promise<unknown>) =>
+      holdWithPress((row, held) => holds.wait(hashKey(readKey), row, held), undefined, read),
+    [holds]
+  );
+  return [unsettled, holdThrough];
+}
+
 /** A list's hold through its re-read, as each of its rows takes it (`useListReadBound`): it holds
  *  as `useReadBound`'s `holdThrough` does, with `row` the list's key for the row whose press made
  *  `read`. */
@@ -257,7 +316,7 @@ export type ListReadBound = readonly [
  * cards, each through the Inbox's read (`ThreadRowCard`), the comments of an issue's
  * Conversation, whose every edit reads the comments again (`ConversationTab`), the approval chips
  * of the new issue page's header, whose every review reads the issue again
- * (`IssuePropertiesRow`), every other approval chip, through its own document's read
+ * (`IssuePropertiesRow`), every other approval chip, through its own document's reviews read
  * (`ApprovalChip`), and the priority line of each issue, through the priorities read
  * (`usePriorityLineWrite`). `holdThrough` takes the row whose press made the read with the
  * read (`ListReadHold`). Each press begins a new read of the same list, so it forgets why an

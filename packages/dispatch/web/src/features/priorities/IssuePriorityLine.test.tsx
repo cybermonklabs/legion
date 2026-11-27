@@ -1,8 +1,14 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
-import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  onlineManager,
+  QueryClient,
+  QueryClientProvider,
+  QueryObserver,
+} from "@tanstack/react-query";
+import { act, cleanup, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { holdNotifications } from "../../__tests__/commits";
@@ -16,7 +22,8 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
 import { DispatchQueryClient } from "../../api/query-client";
-import type { Issue, Priorities, PriorityRow } from "../../api/types";
+import type { Issue, IssueDetails, Priorities, PriorityRow } from "../../api/types";
+import { useIssueComponents } from "../issue/useIssueComponents";
 import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { NoTooltips } from "../issue-page/NoTooltips";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -714,6 +721,70 @@ test("inside NoTooltips, the line a write's reads the bound ended draws goes as 
     expect(heldNotDisabled(trigger, name)).toBe(false);
     expect(view.q.queryByRole("alert")).toBeNull();
   } finally {
+    cleanup();
+    view.unmountAll();
+    view.queryClient.clear();
+    realClock();
+  }
+});
+
+// A components save gives the issue's read up as it shows its change (`useIssueComponents`), and
+// asks nothing then. A cancel is no answer (`DispatchQueryClient`): inside `NoTooltips` a landed
+// write of the line, which reads the issue again among its reads, still holds the trigger through
+// that read until a later read of the issue answers or the bound comes.
+test("inside NoTooltips, a components save that gives the issue's read up leaves the trigger held through its landed write's reads", async () => {
+  const view = renderLine([{ id: "evals-now", inherited: false }], false, body, {
+    page: true,
+    queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
+  });
+  // Each write's answer, the line's and the components save's, held until the row gives it, so
+  // what it sets off runs in `act`.
+  const { answers, next } = heldAnswers<never>();
+  view.patchIssue.mockImplementation(next);
+  // The issue, as the page around the line reads it: its first read answers, and every later one
+  // is held until the row answers it.
+  const issueRead = Promise.withResolvers<IssueDetails>();
+  let issueReads = 0;
+  const page = new QueryObserver(view.queryClient, {
+    queryFn: () => {
+      issueReads += 1;
+      return issueReads === 1 ? Promise.resolve({} as IssueDetails) : issueRead.promise;
+    },
+    queryKey: ["issue", "CORE-9"],
+  });
+  const stopPage = page.subscribe(() => {});
+  const components = renderHook(
+    () => useIssueComponents({ key: "CORE-9", project: "CORE", status: "todo", title: "Work" }),
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={view.queryClient}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+  const name = "Edit priorities";
+  try {
+    await waitFor(() => expect(issueReads).toBe(1));
+    const trigger = view.trigger() as HTMLButtonElement;
+    await closeAndHold(view, name);
+    await act(async () => answers[0]?.({} as never));
+    await tick(0);
+    expect(issueReads).toBe(2);
+    expect(heldNotDisabled(trigger, name)).toBe(true);
+
+    act(() => void components.result.current.submit({ mode: "none", reason: "Hiring" }));
+    await tick(0);
+    expect(view.patchIssue).toHaveBeenCalledTimes(2);
+    expect(
+      heldNotDisabled(trigger, name),
+      "a components save let the trigger go with no read of the issue answered"
+    ).toBe(true);
+  } finally {
+    await act(async () => {
+      answers[1]?.({} as never);
+      issueRead.resolve({} as IssueDetails);
+    });
+    stopPage();
+    components.unmount();
     cleanup();
     view.unmountAll();
     view.queryClient.clear();

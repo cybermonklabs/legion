@@ -9,6 +9,7 @@ import {
   DispatchQueryClient,
   hearLiveEvent,
   holdBackReads,
+  invalidateWaitingForPaused,
   QUERY_RETRY_DELAY_MS,
   queryRetry,
   queryRetryDelay,
@@ -227,8 +228,9 @@ test("an invalidation whose read a value is put over answers once the read asked
 });
 
 // A bare cancel - a board move's, an optimistic write's in its `onMutate` - asks nothing of its
-// own, so an invalidation whose read it gives up has no newer read to wait for: it answers at the
-// cancel, and nothing reads the query again.
+// own, so an invalidation whose read it gives up has no newer read to wait for. One made by a
+// caller with no bound of its own answers at the cancel, as TanStack's does, and nothing reads the
+// query again.
 test("an invalidation whose read a bare cancel gives up answers at the cancel, and reads nothing more", async () => {
   const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   const server = heldServer("before");
@@ -264,6 +266,70 @@ test("an invalidation whose read a bare cancel gives up answers at the cancel, a
       data: queryClient.getQueryData<string>(["issues", "CORE"]),
       requests: server.requests(),
     }).toEqual({ data: "before", requests: 2 });
+  } finally {
+    unsubscribe();
+  }
+});
+
+// A caller whose hold over a read has a bound of its own reads again waiting for paused reads
+// (`invalidateWaitingForPaused`), and for it a cancel is no answer: a bare cancel - another
+// press's optimistic write in its `onMutate` - gives its read up and asks nothing, so it waits
+// on for a later fetch of the query to settle. A value put into the query is no answer either, nor
+// is a later fetch given up in its turn; the first later fetch that answers answers it.
+test("an invalidation waiting for paused reads whose read a bare cancel gives up answers once a later fetch answers", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const server = heldServer("before");
+  const key = ["me", "replies"];
+  const observer = new QueryObserver(queryClient, { queryFn: server.queryFn, queryKey: key });
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await settle();
+    server.answer();
+    await settle();
+
+    let invalidated = false;
+    void invalidateWaitingForPaused(queryClient, key).then(() => {
+      invalidated = true;
+    });
+    await settle();
+    expect(server.requests()).toBe(2);
+
+    // Another press's optimistic write gives the read up and puts its own value in.
+    void queryClient.cancelQueries({ exact: true, queryKey: key });
+    queryClient.setQueryData(key, "the other press");
+    await settle();
+    expect({
+      fetchStatus: queryClient.getQueryState(key)?.fetchStatus,
+      invalidated,
+    }).toEqual({ fetchStatus: "idle", invalidated: false });
+
+    // A later read, given up in its turn, answers nothing either.
+    void queryClient.invalidateQueries({ queryKey: key });
+    await settle();
+    expect(server.requests()).toBe(3);
+    void queryClient.cancelQueries({ exact: true, queryKey: key });
+    await settle();
+    expect(invalidated).toBe(false);
+
+    // The next later read answers it, once the server answers that read: the two reads given up
+    // land first, and are dropped.
+    server.write("after");
+    void queryClient.invalidateQueries({ queryKey: key });
+    await settle();
+    expect(server.requests()).toBe(4);
+    server.answer();
+    server.answer();
+    await settle();
+    expect({ data: queryClient.getQueryData(key), invalidated }).toEqual({
+      data: "the other press",
+      invalidated: false,
+    });
+    server.answer();
+    await settle();
+    expect({ data: queryClient.getQueryData(key), invalidated }).toEqual({
+      data: "after",
+      invalidated: true,
+    });
   } finally {
     unsubscribe();
   }

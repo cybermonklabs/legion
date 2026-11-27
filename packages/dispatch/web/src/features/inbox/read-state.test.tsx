@@ -16,7 +16,11 @@ import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
-import { answerAgentStates, answerThreadReads } from "../../__tests__/send-answers";
+import {
+  answerAgentStates,
+  answerInboxDismisses,
+  answerThreadReads,
+} from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
@@ -32,6 +36,7 @@ import { DispatchQueryClient } from "../../api/query-client";
 import type {
   Agent,
   Comment,
+  InboxDismissResponse,
   IssueDetails,
   Message,
   MessageRead,
@@ -465,6 +470,89 @@ test("the line one card's Mark read leaves goes as another card's mark lands", a
     expect(within(secondCard).getByRole("alert")).toHaveTextContent(why);
     expect(within(firstCard).queryByRole("alert")).toBeNull();
   } finally {
+    cleanup();
+    client.clear();
+    realClock();
+  }
+});
+
+// A Dismiss gives the Inbox's reads up as it takes its row out (`useInboxDismiss`), and asks
+// nothing then. A cancel is no answer (`DispatchQueryClient`), so another card's Mark read stays
+// held through the read its own mark made until a later read of the Inbox answers or the bound
+// comes, and past the bound that card says why until such a read answers: a Dismiss then takes
+// the line no more than it took the hold (the tester's rows of `inbox-read-state.e2e.ts`).
+test("another card's Dismiss leaves Mark read held through its re-read, and its line past the bound, until an Inbox read answers", async () => {
+  // Each mark's answer and each dismissal's, held until the row gives it, so what it sets off
+  // runs in `act`.
+  const { answers: marks, next } = heldAnswers<void>();
+  answerThreadReads().mockImplementation(next);
+  const dismissals = heldAnswers<InboxDismissResponse>();
+  const dismiss = answerInboxDismisses().mockImplementation(dismissals.next);
+  mockCommentReads();
+  // Dispatch answers no read of the Inbox until the row lets it.
+  const reread = Promise.withResolvers<MyRepliesResponse>();
+  restores.push(spyOn(api, "listMyReplies").mockReturnValue(reread.promise));
+  const read = (row: MyReplyRow): MyReplyRow => ({ ...row, unread: false, unread_count: 0 });
+  const marked = read(commentRow("comment-1", "The retry budget"));
+  const client = seeded(
+    [marked, read(commentRow("comment-5", "Owners")), read(commentRow("comment-9", "Timeouts"))],
+    new DispatchQueryClient({
+      defaultOptions: {
+        mutations: { retry: false },
+        queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
+      },
+    })
+  );
+  // The cards are the list's that selects nothing, the Peek drawer's.
+  renderInbox(client, { pane: false });
+  const why = "Could not load your inbox. Dispatch did not answer within 30 seconds.";
+  const card = (id: string) =>
+    document.querySelector<HTMLElement>(`[data-inbox-row="reply:${id}"]`) as HTMLElement;
+  const dismissOf = (id: string) =>
+    card(id).querySelector<HTMLButtonElement>("[data-inbox-dismiss]") as HTMLButtonElement;
+  try {
+    await waitFor(() => expect(screen.getAllByTestId("inbox-thread-comment")).toHaveLength(3));
+    const first = card("comment-1");
+    const mark = within(first).getByRole<HTMLButtonElement>("button", { name: "Mark read" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(mark);
+    await tick(0);
+    await act(async () => marks[0]?.());
+    await tick(0);
+    expect(heldNotDisabled(mark, "Mark read")).toBe(true);
+
+    // Within the bound another card's Dismiss gives the Inbox read up, and lands.
+    await user.click(dismissOf("comment-5"));
+    await tick(0);
+    expect(dismiss).toHaveBeenCalledTimes(1);
+    await act(async () => dismissals.answers[0]?.({ dismissed: 1 }));
+    await tick(0);
+    expect(
+      heldNotDisabled(mark, "Mark read"),
+      "another card's Dismiss let Mark read go with no read of the Inbox answered"
+    ).toBe(true);
+
+    await tick(REQUEST_DEADLINE_MS);
+    expect(heldNotDisabled(mark, "Mark read")).toBe(false);
+    expect(within(first).getByRole("alert")).toHaveTextContent(why);
+
+    // Past it a third card's Dismiss gives the read up again, and lands.
+    await user.click(dismissOf("comment-9"));
+    await tick(0);
+    expect(dismiss).toHaveBeenCalledTimes(2);
+    await act(async () => dismissals.answers[1]?.({ dismissed: 1 }));
+    await tick(0);
+    expect(
+      within(first).queryByRole("alert"),
+      "another card's Dismiss took the line with no read of the Inbox answered"
+    ).toHaveTextContent(why);
+
+    await act(async () => reread.resolve(threadsRead([marked])));
+    await tick(0);
+    expect(within(first).queryByRole("alert")).toBeNull();
+  } finally {
+    reread.resolve(threadsRead([marked]));
     cleanup();
     client.clear();
     realClock();

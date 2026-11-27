@@ -495,10 +495,13 @@ export function ProofDocument({
   const oneVersion = useOneCreateOut(nameVersion);
   // Why the read of the latest rebuilt document has not settled, once the hold over it ran out,
   // and whether that hold is on: an editor drawn again while the rebuild's read is out - the row's
-  // editor closed and opened again - finds both (`useReadBound`). One drawn again while the
-  // rebuild itself is out, before it lands, draws the offer again, the document's text being
-  // refused still, and finds that rebuild by the document's name for it: its Rebuild is held from
-  // that press until the rebuild's deadline, as the one pressed was (`usePendingKeyedPress`).
+  // editor closed and opened again - finds both (`useReadBound`). The hold is under the key of the
+  // read it waits on, the document's, which no hold of another read shares: an approval chip of
+  // the document holds its review's reads under its reviews' key (`ApprovalChip`). One drawn
+  // again while the rebuild itself is out, before it lands, draws the offer again, the document's
+  // text being refused still, and finds that rebuild by the document's name for it: its Rebuild
+  // is held from that press until the rebuild's deadline, as the one pressed was
+  // (`usePendingKeyedPress`).
   const [rebuildUnsettled, holdThrough, rebuildHolding] = useReadBound(["artifact", artifact.id]);
   const rebuildKey = ["artifact-rebuild", artifact.id];
   const rebuildOut = usePendingKeyedPress(rebuildKey);
