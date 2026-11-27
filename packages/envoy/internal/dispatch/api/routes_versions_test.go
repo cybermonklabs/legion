@@ -62,7 +62,7 @@ func readV1OnlyRoutes(t *testing.T) map[string]bool {
 
 // v1OnlyRowsOutside names every row of rows - the routes /api/v1 alone serves - that the frozen
 // list does not hold, and every line of the list that is no such row, sorted.
-func v1OnlyRowsOutside(rows []v1Row, frozen map[string]bool) []string {
+func v1OnlyRowsOutside(rows []routeDecl, frozen map[string]bool) []string {
 	var outside []string
 	held := map[string]bool{}
 	for _, row := range rows {
@@ -74,11 +74,18 @@ func v1OnlyRowsOutside(rows []v1Row, frozen map[string]bool) []string {
 	}
 	for name := range frozen {
 		if !held[name] {
-			outside = append(outside, name+": "+v1OnlyRoutesList+" holds it, and it is no row of v1Rows")
+			outside = append(outside, name+": "+v1OnlyRoutesList+" holds it, and no route file declares it")
 		}
 	}
 	slices.Sort(outside)
 	return outside
+}
+
+// v1Declarations is every route file's declaration but a test hook's: the routes /api/v1 alone
+// serves, each naming its Successor, by pattern and then method.
+func v1Declarations() []routeDecl {
+	declared := slices.SortedFunc(slices.Values(routeRegistry), byPatternThenMethod)
+	return slices.DeleteFunc(declared, func(route routeDecl) bool { return route.TestHook })
 }
 
 // successorRoute is the /api/v2 route a successor names, by method and version-free pattern.
@@ -88,7 +95,7 @@ func successorRoute(next successor) string {
 
 // successorsOfC8a44f97 is the distinct /api/v2 routes the rows of c8a44f97 among rows name: the
 // rows the frozen list holds with no note.
-func successorsOfC8a44f97(rows []v1Row, frozen map[string]bool) map[string]bool {
+func successorsOfC8a44f97(rows []routeDecl, frozen map[string]bool) map[string]bool {
 	named := map[string]bool{}
 	for _, row := range rows {
 		if later, listed := frozen[row.Method+" "+row.Pattern]; listed && !later {
@@ -100,7 +107,7 @@ func successorsOfC8a44f97(rows []v1Row, frozen map[string]bool) map[string]bool 
 
 // successorBoundFault is R2's bound over rows: an error naming the count when the rows of
 // c8a44f97 name more than v2RouteBound distinct /api/v2 routes.
-func successorBoundFault(rows []v1Row, frozen map[string]bool) error {
+func successorBoundFault(rows []routeDecl, frozen map[string]bool) error {
 	if named := len(successorsOfC8a44f97(rows, frozen)); named > v2RouteBound {
 		return fmt.Errorf("the rows of c8a44f97 name %d distinct /api/v2 routes, over R2's bound of %d", named, v2RouteBound)
 	}
@@ -142,7 +149,7 @@ func wildcardsOf(pattern string) []string {
 // route /api/v2 serves (successors-are-mounted).
 func TestEveryV1RowNamesItsV2Route(t *testing.T) {
 	served := &server{}
-	rows := served.v1Rows()
+	rows := v1Declarations()
 	routes := served.routes()
 	frozen := readV1OnlyRoutes(t)
 	mounted := map[string]apiRoute{}
@@ -300,7 +307,7 @@ func TestEveryV1RowNamesItsV2Route(t *testing.T) {
 // fails the check whatever successor it names, and so does a line of the list that is no row.
 func TestAV1OnlyRowOutsideTheFrozenListFails(t *testing.T) {
 	frozen := readV1OnlyRoutes(t)
-	rows := (&server{}).v1Rows()
+	rows := v1Declarations()
 	if outside := v1OnlyRowsOutside(rows, frozen); len(outside) > 0 {
 		t.Fatalf("the v1 rows and %s disagree:\n%s", v1OnlyRoutesList, strings.Join(outside, "\n"))
 	}
@@ -311,7 +318,7 @@ func TestAV1OnlyRowOutsideTheFrozenListFails(t *testing.T) {
 		deletedFor(http.MethodGet, "/issues?widget={widget}"),
 		successorIs(http.MethodGet, ""),
 	} {
-		scratch := append(slices.Clone(rows), v1Row{http.MethodGet, "/api/v1/widgets", authAny, "A made-up row /api/v1 alone serves.", nil, next})
+		scratch := append(slices.Clone(rows), routeDecl{Method: http.MethodGet, Pattern: "/api/v1/widgets", Auth: authAny, Description: "A made-up route /api/v1 alone serves.", Successor: next})
 		outside := v1OnlyRowsOutside(scratch, frozen)
 		if len(outside) != 1 || !strings.HasPrefix(outside[0], "GET /api/v1/widgets:") {
 			t.Errorf("a made-up v1 row naming %+v was answered %q, want it refused alone", next, outside)
@@ -320,7 +327,7 @@ func TestAV1OnlyRowOutsideTheFrozenListFails(t *testing.T) {
 
 	stale := maps.Clone(frozen)
 	stale["GET /api/v1/widgets"] = false
-	if outside := v1OnlyRowsOutside(rows, stale); len(outside) != 1 || !strings.Contains(outside[0], "no row of v1Rows") {
+	if outside := v1OnlyRowsOutside(rows, stale); len(outside) != 1 || !strings.Contains(outside[0], "no route file declares it") {
 		t.Errorf("a line of the list no row serves was answered %q, want it named", outside)
 	}
 }

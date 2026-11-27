@@ -76,8 +76,8 @@ func newKeyedRigAt(t *testing.T, pattern string, answer func(run int32, w http.R
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	rig := &keyedRig{database: database, server: served}
 	mux := http.NewServeMux()
-	mux.HandleFunc(http.MethodPost+" "+pattern, trackTransactions(served.keyedWrites(
-		v1Route(routeRow{Method: http.MethodPost, Pattern: pattern}, nil),
+	mux.HandleFunc(http.MethodPost+" "+pattern, routeContext(served.keyedWrites(
+		v1Route(served, routeDecl{Method: http.MethodPost, Pattern: pattern}, nil),
 		func(w http.ResponseWriter, r *http.Request) { answer(rig.runs.Add(1), w, r) },
 	)))
 	rig.handler = mux

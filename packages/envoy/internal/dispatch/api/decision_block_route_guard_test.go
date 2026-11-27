@@ -151,8 +151,14 @@ func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
 	if len(stale) > 0 {
 		t.Errorf("an exemption describes the opposite of what its route does:\n\t%s\nDelete the route's line from decisionBlockExempt.", strings.Join(stale, "\n\t"))
 	}
-	if unmounted := routesNotMounted(maps.Keys(decisionBlockExempt)); len(unmounted) > 0 {
-		t.Errorf("decisionBlockExempt names routes the server does not serve: %s\nDelete each line, or point it at the row that replaced it.", strings.Join(unmounted, ", "))
+	var undeclared []string
+	for _, name := range slices.Sorted(maps.Keys(decisionBlockExempt)) {
+		if _, keyed := routes[name]; !keyed {
+			undeclared = append(undeclared, name)
+		}
+	}
+	if len(undeclared) > 0 {
+		t.Errorf("decisionBlockExempt names routes the server does not serve: %s\nDelete each line, or point it at the route that replaced it.", strings.Join(undeclared, ", "))
 	}
 }
 
@@ -168,7 +174,7 @@ func TestTheDecisionBlockGuardSeesWhatItGuards(t *testing.T) {
 	for _, name := range decisionBlockGuardSees {
 		handlers, mounted := routes[name]
 		if !mounted {
-			t.Errorf("the guard reads no %s off the table", name)
+			t.Errorf("the guard reads no %s off the route declarations", name)
 			continue
 		}
 		if !slices.ContainsFunc(requests[name], requestCarriesBody) {

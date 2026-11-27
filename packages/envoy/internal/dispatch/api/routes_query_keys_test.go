@@ -5,7 +5,6 @@ import (
 	"go/parser"
 	"go/token"
 	"maps"
-	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -142,13 +141,30 @@ func queryKeysNamedByShapes(t *testing.T, routes []apiRoute) (map[string]namedKe
 			}
 		}
 	}
+	// A route file's handler is a method expression, which v1Route binds in a closure that names
+	// no method (server.bound), so it is read off the declaration: at its /api/v1 path, and for a
+	// test hook at its /api/v2/_test path too. A routeRow's mount carries its method value.
+	declared := map[string]any{}
+	for _, declaration := range routeRegistry {
+		declared[declaration.Method+" "+declaration.Pattern] = declaration.Handler
+		if declaration.TestHook {
+			declared[declaration.Method+" "+testHookV2Pattern(declaration.Pattern)] = declaration.Handler
+		}
+	}
 	byFile := map[string]namedKeys{}
 	anywhere := namedKeys{params: map[string]bool{}, bodies: map[string]bool{}}
 	for _, route := range routes {
-		file, known := declaredIn[handlerName(route.Handler)]
+		var handler any = route.Handler
+		if !route.columns {
+			var named bool
+			if handler, named = declared[route.Method+" "+route.Pattern]; !named {
+				t.Fatalf("%s %s: no route file declares it", route.Method, route.Pattern)
+			}
+		}
+		file, known := declaredIn[handlerName(handler)]
 		if !known {
 			t.Fatalf("%s %s: no file of this package declares its handler %s",
-				route.Method, route.Pattern, handlerName(route.Handler))
+				route.Method, route.Pattern, handlerName(handler))
 		}
 		if _, started := byFile[file]; !started {
 			byFile[file] = namedKeys{params: map[string]bool{}, bodies: map[string]bool{}}
@@ -172,9 +188,9 @@ func queryKeysNamedByShapes(t *testing.T, routes []apiRoute) (map[string]namedKe
 	return byFile, anywhere
 }
 
-// handlerName is the method behind a route's handler value: runtime names a method value
-// "<package>.(*server).listIssues-fm".
-func handlerName(handler http.HandlerFunc) string {
+// handlerName is the method behind a handler: runtime names a method expression
+// "<package>.(*server).listIssues", and a method value the same with "-fm" after it.
+func handlerName(handler any) string {
 	full := runtime.FuncForPC(reflect.ValueOf(handler).Pointer()).Name()
 	return strings.TrimSuffix(full[strings.LastIndex(full, ".")+1:], "-fm")
 }

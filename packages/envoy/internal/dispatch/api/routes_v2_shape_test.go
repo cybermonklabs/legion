@@ -709,9 +709,9 @@ func TestTheShapeRulesRefuseTheV1Rows(t *testing.T) {
 		return len(rules[rule].faults(route, table)) > 0
 	}
 	var actions, lists, bare, slugAddresses, slugs []string
-	for _, row := range (&server{}).v1Rows() {
+	for _, row := range v1Declarations() {
 		name := row.Method + " " + row.Pattern
-		route := v1Route(routeRow{Method: row.Method, Pattern: row.Pattern, Auth: row.Auth, Description: row.Description, Handler: row.Handler}, nil)
+		route := v1Route(&server{}, row, nil)
 		route.Pattern = "/api/v2" + strings.TrimPrefix(row.Pattern, "/api/v1")
 		if refuses("action-words", route, shapeTable{}) {
 			actions = append(actions, name)

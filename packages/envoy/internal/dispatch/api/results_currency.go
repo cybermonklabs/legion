@@ -12,7 +12,7 @@ import "github.com/sjawhar/envoy/internal/dispatch/model"
 // Once no client older than pi-envoy 17.1.0 is in use, remove this file and
 // results_currency_test.go, the answerCompatibilityCurrency call in listCheckResults,
 // model.CheckResult.Currency and model.Currency*, and the currency descriptions in
-// packages/envoy/cmd/dispatch/README.md and routes_table.go.
+// packages/envoy/cmd/dispatch/README.md and the route files.
 // From the repository root, grep for `pi-envoy 17[.]1[.]0|Currency` in packages/envoy and
 // packages/contracts to find the compatibility code, tests and documentation together.
 // Regenerate packages/contracts/schemas/dispatch-openapi.json and dispatch-openapi-v2.json

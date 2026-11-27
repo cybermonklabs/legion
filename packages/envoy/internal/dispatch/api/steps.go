@@ -1,10 +1,12 @@
 package api
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -329,12 +331,15 @@ func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pg
 	return project, true
 }
 
-// listIssueSteps is every run of every step of one issue, task by task in the order of each
-// task's first run: GET /api/v1/issues/{key}/steps. A closed issue's runs read as an open one's,
-// and a key no issue carries answers as GET /api/v1/issues/{key} does, 404 NOT_FOUND, so a
-// mistyped key never reads as an issue Legion never ran. Only a read that finds no run looks for
-// the issue: the write reads the issue before it records a run (404 ISSUE_NOT_FOUND), and no issue
-// is ever deleted, so a read that finds a run has found its issue.
+// listIssueSteps is GET /api/v1/issues/{key}/steps: the tasks of the issue's newest plan
+// (workflowstore.NewestPlan), in the plan's order, each with the needs its node records (null
+// where the node recorded none), the steps the plan gives it and every run of them ([] where none
+// ran); then every other task with a run, in the order of each such task's first run. It reads the
+// plan node and the runs alone, and no document. A closed issue's runs read as an open one's, and a
+// key no issue carries answers as GET /api/v1/issues/{key} does, 404 NOT_FOUND, so a mistyped key
+// never reads as an issue Legion never ran. Only a read that finds no run looks for the issue: the
+// write reads the issue before it records a run (404 ISSUE_NOT_FOUND), and no issue is ever
+// deleted, so a read that finds a run has found its issue.
 func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -357,14 +362,59 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	WriteJSON(w, http.StatusOK, issueStepTasks(key, steps))
+	plan, err := workflowstore.NewestPlan(r.Context(), s.deps.Store.Pool, key)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, issueStepTasks(key, plan, steps))
 }
 
-// issueStepTasks is the runs of issue, steps as workflowstore.IssueSteps reads them, task by task
-// in the order of each task's first run: /api/v1's answer, which /api/v2 lists in that order.
-func issueStepTasks(issue string, steps []workflowstore.StepRead) model.IssueSteps {
+// issueStepTasks is what GET /api/v1/issues/{key}/steps answers of issue: the tasks of its newest
+// plan first, plan as workflowstore.NewestPlan reads it (nil for an issue with no plan), in the
+// plan's order and each with its planned steps and its needs, then each other task a run of steps
+// names, in the order of its first run, each task with its runs in the order they ran. GET
+// /api/v2/issues/{key}/steps lists the runs in that order.
+func issueStepTasks(issue string, plan *workflowstore.Plan, steps []workflowstore.StepRead) model.IssueSteps {
 	read := model.IssueSteps{Issue: issue, Tasks: []model.StepTask{}}
 	tasks := map[string]int{}
+	if plan != nil {
+		// A planned step stands where the newest run of it stands among the records of the plan's
+		// own run of the issue (its generation): the runs come in the order they happened. A run is
+		// of the step only where it stands at the step's place with the step's role: a later version
+		// of the plan in force can put another step at a place where an earlier step already ran.
+		// A run names no agent key, so a step `role:key` is matched by its role, which this release
+		// names at most once in a task. Its state is a word of contracts' PLANNED_STEP_STATES, which
+		// PlannedStep.State's enum tag holds (TestTheStepRouteNamesContractsWords).
+		type stepOf struct {
+			task string
+			step int
+			role string
+		}
+		newest := map[stepOf]string{}
+		for _, step := range steps {
+			if step.Generation == plan.Generation && step.Kind == workflowstore.StepKindStep {
+				newest[stepOf{step.Task, step.Place, step.Role}] = step.Result
+			}
+		}
+		for _, task := range plan.Tasks {
+			tasks[task.ID] = len(read.Tasks)
+			planned := model.StepTask{Task: task.ID, Planned: make([]model.PlannedStep, len(task.Steps)), Steps: []model.StepRecord{}}
+			for index, name := range task.Steps {
+				role, _, _ := strings.Cut(name, ":")
+				state := contracts.PlannedStepNotStarted
+				if result, ran := newest[stepOf{task.ID, index + 1, role}]; ran {
+					state = cmp.Or(result, contracts.PlannedStepRunning)
+				}
+				planned.Planned[index] = model.PlannedStep{Step: index + 1, Name: name, State: state}
+			}
+			if task.Needs != nil {
+				needs := append([]string{}, (*task.Needs)...)
+				planned.Needs = &needs
+			}
+			read.Tasks = append(read.Tasks, planned)
+		}
+	}
 	for _, step := range steps {
 		index, known := tasks[step.Task]
 		if !known {

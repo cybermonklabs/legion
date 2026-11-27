@@ -7,8 +7,8 @@ package api
 // acts as its person with the scopes person and approve (brokerApproveOnlyScopes), never p0, so
 // these checks alone keep it to approvals.
 //
-// The approve list (approveScopeRoutes) is compiled against the route table once, as the table is
-// built (applyApprovePolicy), and the rows carry the result: ApproveOnly, ApproveStates and
+// The approve list (approveList: the route files that state ApproveOnly) is compiled against the
+// route table once, as the table is built (applyApprovePolicy), and the rows carry the result: ApproveOnly, ApproveStates and
 // ApproveApprovalAsks. The three checks and the refusal's wording read those rows, never the list.
 // The checks sit at three places in a route's chain (routeHandler), each before the layers that
 // look a key up, claim it or replay what it holds:
@@ -57,35 +57,32 @@ type approveRoute struct {
 	approvalsOnly bool
 }
 
-// approveScopeRoutes is the approve list: every /api/v1 route an approve-only token may call, each
-// with what it takes of the /api/v2 route that answers for it. Every other row of the table, and
-// GET /ws/live beside it, answers the token 403 APPROVE_ONLY_TOKEN before anything else the route
-// does (refuseApproveOnlyToken), so a route added later stays closed to it until it is listed here.
-// The token may call, on /api/v2, the route each entry has as its Successor and no other, whole or
-// for the one state its entry names, so the list is written once and the two versions cannot
-// drift.
+// approveList is the approve list: every /api/v1 route an approve-only token may call, each route
+// file whose declaration states ApproveOnly, in the order declared walks them, with what it takes
+// of the /api/v2 route that answers for it (ApproveState, ApproveApprovalAsks). Every other route
+// of the table, and GET /ws/live beside it, answers the token 403 APPROVE_ONLY_TOKEN before anything
+// else the route does (refuseApproveOnlyToken), so a route added later stays closed to it until its
+// file states ApproveOnly. The token may call, on /api/v2, the route each entry has as its
+// Successor and no other, whole or for the one state its entry names, so the list is written once
+// and the two versions cannot drift.
 //
-// The list is the rows routeScopes gives approve, the routes that settle what a person settles,
-// less two: the mint and the change of a personal token, since a token they made or widened would
-// be an approve credential written to the box the session runs on, which is what the proxy exists
-// to keep off it. The revoke of a personal token stays. Beside them is the answer of an ask, which
-// checks approve in its handler for an approval request and refuses an approve-only token the
-// answer of every other ask. The answer's entry names the state answered: the other states of the
-// ask's /api/v2 route are no answer, so the token is not served them.
+// The list is the routes whose OAuthScopes name approve, the routes that settle what a person
+// settles, less two: the mint and the change of a personal token, since a token they made or
+// widened would be an approve credential written to the box the session runs on, which is what
+// the proxy exists to keep off it. The revoke of a personal token stays. Beside them is the answer
+// of an ask, which checks approve in its handler for an approval request and refuses an
+// approve-only token the answer of every other ask. The answer's entry names the state answered:
+// the other states of the ask's /api/v2 route are no answer, so the token is not served them.
 //
 // routes refuses a table this list does not map onto (applyApprovePolicy).
-var approveScopeRoutes = []approveRoute{
-	{v1: "POST /api/v1/artifacts/{id}/reviews"},
-	{v1: "POST /api/v1/artifacts/{id}/versions/{number}/reviews"},
-	{v1: "POST /api/v1/artifacts/{id}/blocks/{block_id}/keep", state: "kept"},
-	{v1: "POST /api/v1/credential-requests/{id}/approve", state: "approved"},
-	{v1: "POST /api/v1/credential-requests/{id}/deny", state: "denied"},
-	{v1: "POST /api/v1/credential-requests/machine-lookup"},
-	{v1: "POST /api/v1/credential-grants/{id}/revoke"},
-	{v1: "POST /api/v1/machine-logins/{id}/revoke"},
-	{v1: "POST /api/v1/signins/{id}/revoke"},
-	{v1: "DELETE /api/v1/me/agent-tokens/{id}"},
-	{v1: "POST /api/v1/asks/{id}/answer", state: "answered", approvalsOnly: true},
+func approveList(declared []routeDecl) []approveRoute {
+	var list []approveRoute
+	for _, route := range declared {
+		if route.ApproveOnly {
+			list = append(list, approveRoute{v1: route.Method + " " + route.Pattern, state: route.ApproveState, approvalsOnly: route.ApproveApprovalAsks})
+		}
+	}
+	return list
 }
 
 // applyApprovePolicy compiles list against table once and stamps the result on table's rows:

@@ -13,7 +13,7 @@ import (
 
 // Snoozing an Inbox row is a human's own view state, like the Agents page's Clear: the ask
 // stays open, stays listed, and reaches everyone else unchanged, while this viewer's Inbox
-// folds it away until snoozed_until. The routes need the person scope (routeScopes) because
+// folds it away until snoozed_until. The routes need the person scope (their routes' OAuthScopes) because
 // the Inbox does; a session has no inbox to snooze a row out of.
 //
 // No job ever wakes a snoozed row. GET /api/v1/inbox carries snoozed_until on the row, and

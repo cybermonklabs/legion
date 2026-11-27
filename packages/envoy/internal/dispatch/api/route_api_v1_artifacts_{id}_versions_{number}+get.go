@@ -1,0 +1,23 @@
+package api
+
+import (
+	"net/http"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
+)
+
+var _ = declareRoute(routeDecl{
+	Method:      http.MethodGet,
+	Pattern:     "/api/v1/artifacts/{id}/versions/{number}",
+	Auth:        authAny,
+	Description: "One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. {number} is a version from 1 to 2147483647 (the largest the store holds), and any other is 400 INVALID_VERSION. A version's author carries proven: true only when the credential of every write that author made to the version proved it. With ?blocks=true a document version's JSON carries that version's typed blocks, each under the id its opening line writes, with byte ranges into the markdown of the same answer: the version as this build renders it.",
+	Handler:     (*server).getArtifactVersion,
+	Successor:   successorIs(http.MethodGet, "/artifacts/{id}/versions/{number}"),
+	ID:          &idRoute{Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	Read:        readEntry{Writes: readWritesNothing},
+	Shape: routeShape{
+		Status: http.StatusOK, Response: artifactVersionText{}, Params: artifactVersionQuery{},
+		Opaque:             "a file version answers that file's bytes under its own content type, named by Content-Disposition (serveFileVersion); with download=true a document version answers its Markdown as text/markdown; only a document version read without that parameter carries the JSON above",
+		OpaqueContentTypes: []string{"application/octet-stream", "text/markdown"},
+	},
+})

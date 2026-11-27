@@ -23,9 +23,9 @@ import (
 // true, are scopeProject and declare no OAuth scope, so the project's daemon can turn it on with
 // its own project-scoped token. Turning it off makes a check weaker, so it needs the person scope,
 // as the project's default assignee does: DELETE /api/v1/projects/{key}/proven-sessions declares
-// it (routeScopes), and PATCH /api/v2/projects/{key} with proven_sessions false needs it by the
-// row's authority rule. Both record the person (actingPerson). No credential the deployment
-// configured holds that scope, so no machine turns the setting off.
+// it (its declaration's OAuthScopes), and PATCH /api/v2/projects/{key} with proven_sessions false
+// needs it by the row's authority rule. Both record the person (actingPerson). No credential the
+// deployment configured holds that scope, so no machine turns the setting off.
 //
 // Turning it on before the project's daemon writes with a credential that proves its session
 // stops every architect write and every role-holder publication on the shared token, until a

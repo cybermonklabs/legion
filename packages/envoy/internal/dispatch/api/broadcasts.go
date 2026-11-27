@@ -43,8 +43,8 @@ import (
 // same capability list, and the response covers the race where a session's capabilities or
 // liveness changed in between. What the broadcast persists is who was actually sent to.
 //
-// Broadcasting needs the person scope (routeScopes at /api/v1, the row's OAuthScopes at /api/v2),
-// like the one-session route it is built from.
+// Broadcasting needs the person scope (its route's OAuthScopes, at /api/v1 its declaration's and
+// at /api/v2 the row's), like the one-session route it is built from.
 
 // broadcastDeliveryWorkers is how many recipients are delivered to at once, once the create
 // request has already answered. Each worker takes a tracking context of its own

@@ -312,75 +312,61 @@ type sourceRow struct {
 	handler ast.Expr
 }
 
-// tableRowsInSource reads the table's rows from the source of the functions that declare them,
-// since a handler read at run time is a function value and what these guards ask is what that
-// function's source runs: v1Rows and testHookRows, whose rows are positional literals, and every
-// v2<Group>Rows, whose rows name their columns. A row is named by every route the server mounts it
-// as, read off the table with its test hooks in: a v1Row at its pattern, a hook at its /api/v1 and
-// its /api/v2/_test path, a routeRow at /api/v1 and /api/v2 where it is mounted there.
+// tableRowsInSource reads the table's routes from the source that declares them, since a handler
+// read at run time is a function value and what these guards ask is what that function's source
+// runs: each route file's routeDecl, whose method, pattern and handler fields name an http.Method
+// constant, a pattern and a method expression of the server, and each routeRow, whose method,
+// pattern and handler columns name an http.Method constant, a version-free pattern and a method
+// of the server. A route is named by every route the server mounts it as, read off the table with
+// its test hooks in: a route file at its pattern, a hook at its /api/v1 and its /api/v2/_test
+// path, a routeRow at /api/v1 and /api/v2 where it is mounted there. Every route the table mounts
+// is named by one route read here, so a declaration the read misses fails rather than leaving its
+// route out.
 func tableRowsInSource(t *testing.T, graph *lockGraph) []sourceRow {
 	t.Helper()
-	// Each mounted route, and whether it is the mount of a routeRow rather than a route of the v1
-	// table, so a routeRow is never named by a v1 route at the same path (GET /api/v1 is a v1Row;
+	// Each mounted route, and whether it is the mount of a routeRow rather than a route file's, so
+	// a routeRow is never named by a /api/v1 route at the same path (GET /api/v1 is a route file;
 	// the routeRow of the index at /api/v2 writes no /api/v1 path).
 	mounted := map[string]bool{}
 	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
 		mounted[route.Method+" "+route.Pattern] = route.columns
 	}
+	// methodOf is the method an http.Method constant names; any other expression, such as the
+	// declaration's own Method that v1Route copies into a routeRow, names no route.
 	methodOf := func(expression ast.Expr) (string, bool) {
 		method, ok := ast.Unparen(expression).(*ast.SelectorExpr)
 		if !ok || !strings.HasPrefix(method.Sel.Name, "Method") {
 			return "", false
 		}
+		if pkg, ok := method.X.(*ast.Ident); !ok || pkg.Name != "http" {
+			return "", false
+		}
 		return strings.ToUpper(strings.TrimPrefix(method.Sel.Name, "Method")), true
 	}
 	var rows []sourceRow
+	named := map[string]bool{}
 	add := func(declaring, method string, handler ast.Expr, columns bool, patterns ...string) {
 		row := sourceRow{handler: handler}
 		for _, pattern := range patterns {
 			name := method + " " + pattern
 			if isColumns, served := mounted[name]; served && isColumns == columns {
 				row.names = append(row.names, name)
+				named[name] = true
 			}
 		}
 		if len(row.names) == 0 {
-			t.Errorf("%s declares a %s row at %v that the server mounts at none of them", declaring, method, patterns)
+			t.Errorf("%s declares a %s route at %v that the server mounts at none of them", declaring, method, patterns)
 			return
 		}
 		rows = append(rows, row)
 	}
-	for _, declaring := range slices.Sorted(maps.Keys(graph.named)) {
-		positional := declaring == "api.server.v1Rows" || declaring == "api.server.testHookRows"
-		declared := strings.HasPrefix(declaring, "api.server.v2") && strings.HasSuffix(declaring, "Rows")
-		if !positional && !declared {
+	for _, source := range graph.sources {
+		if source.file.Name.Name != "api" || strings.HasSuffix(source.path, "_test.go") {
 			continue
 		}
-		fn := graph.named[declaring]
-		ast.Inspect(fn.body, func(node ast.Node) bool {
-			literal, ok := node.(*ast.CompositeLit)
-			if !ok {
-				return true
-			}
-			if positional {
-				if len(literal.Elts) < 5 {
-					return true
-				}
-				method, ok := methodOf(literal.Elts[0])
-				if !ok {
-					return true
-				}
-				pattern, ok := literalText(literal.Elts[1], fn.pkg, graph.constants)
-				if !ok {
-					t.Errorf("%s holds a %s row whose pattern the guard cannot read", declaring, method)
-					return false
-				}
-				patterns := []string{pattern}
-				if declaring == "api.server.testHookRows" {
-					patterns = append(patterns, testHookV2Pattern(pattern))
-				}
-				add(declaring, method, literal.Elts[4], false, patterns...)
-				return false
-			}
+		// declare reads one declaration, a routeDecl or a routeRow literal, kind naming which, and
+		// adds the route it declares; a literal that names no http.Method constant declares none.
+		declare := func(literal *ast.CompositeLit, kind string) {
 			columns := map[string]ast.Expr{}
 			for _, element := range literal.Elts {
 				if pair, ok := element.(*ast.KeyValueExpr); ok {
@@ -390,20 +376,61 @@ func tableRowsInSource(t *testing.T, graph *lockGraph) []sourceRow {
 				}
 			}
 			if columns["Method"] == nil || columns["Pattern"] == nil || columns["Handler"] == nil {
-				return true
+				return
 			}
 			method, ok := methodOf(columns["Method"])
-			pattern, readable := literalText(columns["Pattern"], fn.pkg, graph.constants)
-			if !ok || !readable {
-				t.Errorf("%s holds a row whose method or pattern the guard cannot read", declaring)
+			if !ok {
+				return
+			}
+			pattern, readable := literalText(columns["Pattern"], "api", graph.constants)
+			if !readable {
+				t.Errorf("%s holds a %s %s whose pattern the guard cannot read", source.path, method, kind)
+				return
+			}
+			if kind == "routeRow" {
+				add(source.path, method, columns["Handler"], true, "/api/v1"+pattern, "/api/v2"+pattern)
+				return
+			}
+			patterns := []string{pattern}
+			if hook, ok := columns["TestHook"].(*ast.Ident); ok && hook.Name == "true" {
+				patterns = append(patterns, testHookV2Pattern(pattern))
+			}
+			add(source.path, method, columns["Handler"], false, patterns...)
+		}
+		ast.Inspect(source.file, func(node ast.Node) bool {
+			literal, ok := node.(*ast.CompositeLit)
+			if !ok {
+				return true
+			}
+			switch kind := literal.Type.(type) {
+			case *ast.Ident:
+				if kind.Name != "routeDecl" && kind.Name != "routeRow" {
+					return true
+				}
+				declare(literal, kind.Name)
+				return false
+			case *ast.ArrayType:
+				// A []routeRow literal's rows leave their type out.
+				if element, ok := kind.Elt.(*ast.Ident); !ok || element.Name != "routeRow" {
+					return true
+				}
+				for _, row := range literal.Elts {
+					if row, ok := row.(*ast.CompositeLit); ok && row.Type == nil {
+						declare(row, "routeRow")
+					}
+				}
 				return false
 			}
-			add(declaring, method, columns["Handler"], true, "/api/v1"+pattern, "/api/v2"+pattern)
-			return false
+			return true
 		})
 	}
+	for _, name := range slices.Sorted(maps.Keys(mounted)) {
+		if !named[name] {
+			t.Errorf("the guard reads no declaration off the source for %s, which the table mounts", name)
+		}
+	}
 	if len(rows) == 0 {
-		t.Fatal("the guard reads no row off the route table's source (v1Rows, testHookRows, v2<Group>Rows)")
+		t.Fatal("the guard reads no route off the source (route files, routeRows)")
 	}
 	return rows
 }

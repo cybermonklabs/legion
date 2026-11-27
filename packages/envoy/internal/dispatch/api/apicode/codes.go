@@ -520,8 +520,8 @@ var (
 	// a dependency graph deeper than the walk that looks for one (assertNoWaitPath).
 	DependencyCycle = renamed("DEPENDENCY_CYCLE", http.StatusConflict, "ISSUE_CYCLE")
 
-	// BlockNotFound is a {block_id} the path's document does not hold, the 404 idRoutes'
-	// BlockNotFound names. /api/v1 answers it as it answers a block an operation names
+	// BlockNotFound is a {block_id} the path's document does not hold, the 404 a route's ID names
+	// as its BlockNotFound. /api/v1 answers it as it answers a block an operation names
 	// (TargetNotFound); /api/v2 names it as the object its path names
 	// (dispatch://INFRA-4071/spec R7).
 	BlockNotFound = renamed("TARGET_NOT_FOUND", http.StatusNotFound, "BLOCK_NOT_FOUND")

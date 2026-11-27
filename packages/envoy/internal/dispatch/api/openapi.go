@@ -1,15 +1,16 @@
 // openapi.go emits the OpenAPI 3.1 documents of the Dispatch HTTP API from the route table and the
-// Go types each of its rows takes and answers (INFRA-1406): one document per version of the API,
-// /api/v1's from the v1 table and routeShapes, and /api/v2's from the query, body and answer types
-// each /api/v2 row declares (dispatch://INFRA-4071, R6). It is the one generator between the
+// Go types each of its routes takes and answers (INFRA-1406): one document per version of the API,
+// /api/v1's from the route declarations and the Go types each states as its Shape, and /api/v2's
+// from the query, body and answer types each /api/v2 routeRow declares (dispatch://INFRA-4071, R6).
+// It is the one generator between the
 // server and its clients: the dashboard's and the CLI's TypeScript types are rendered from the
 // documents this file writes, so a route the table grows reaches them without anyone hand-writing
 // a type for it, and a shape that changes cannot quietly disagree with the handler that answers it.
 //
 // Nothing here reads the database or opens a listener, as WriteRouteIndex needs neither: the table
-// with its test hooks in, routeShapes beside it and reflection over the Go types are the whole
-// input. `envoy-dispatch openapi` writes both documents and `--check` holds each committed
-// artifact to them.
+// with its test hooks in and reflection over the Go types its routes name are the whole input.
+// `envoy-dispatch openapi` writes both documents and `--check` holds each committed artifact to
+// them.
 package api
 
 import (
@@ -46,7 +47,7 @@ const openAPISchemaPrefix = "#/components/schemas/"
 
 // openAPISessionParameter is the one query parameter every operation carries. It is read by
 // actingPerson (server.go) on every route that resolves a person rather than by any one handler,
-// so it belongs to the whole API and routeShapes names it on no row.
+// so it belongs to the whole API and no route's Shape names it.
 const openAPISessionParameter = "the session the caller's credential acts for, where that " +
 	"credential proved none; a credential that proved a session is refused a parameter naming " +
 	"another (403 ACTOR_SESSION_MISMATCH)"
@@ -204,9 +205,9 @@ func openAPIDocuments() (map[apiVersion]openAPIEmit, error) {
 
 // openAPIDocument builds the document of one version, and answers the emitter beside it, whose
 // failures are the faults of this document alone. It walks the table with its test hooks in,
-// since a hook's row is a row of the table wherever a deployment leaves it out
-// (scopedRoutesNotMounted), and marks each hook row x-test-hook so a reader of the document can
-// tell them apart.
+// since a hook's route is a route of the table wherever a deployment leaves it out, and marks
+// each hook's operation x-test-hook so a reader of the document can tell them apart
+// (openAPIHookRoutes).
 func openAPIDocument(version apiVersion) (*openAPIEmitter, *openapi31.Spec, error) {
 	routes := openAPIRoutes(version)
 	emitter, bothDirections := newOpenAPIEmitter(version, routes)
@@ -239,8 +240,9 @@ func openAPIDocument(version apiVersion) (*openAPIEmitter, *openapi31.Spec, erro
 	default:
 		spec.Info.WithVersion("1")
 		spec.Info.WithDescription(
-			"Generated from the Go route table (internal/dispatch/api/routes_table.go) and the Go " +
-				"types beside it (routes_shapes.go) by `envoy-dispatch openapi`. Edit those, never " +
+			"Generated from Dispatch's route declarations (one file per route in " +
+				"internal/dispatch/api) and the Go types they name (routes_shapes.go) by " +
+				"`envoy-dispatch openapi`. Edit those, never " +
 				"this document: it is committed so a client's types can be rendered from it, and " +
 				"`envoy-dispatch openapi --check` refuses a tree where it is stale.")
 	}
@@ -285,8 +287,8 @@ func openAPIDocument(version apiVersion) (*openAPIEmitter, *openapi31.Spec, erro
 }
 
 // openAPIRoutes are the routes the document of version describes: every route that version
-// serves, with the test hooks in, since a hook's row is a row of the table wherever a deployment
-// leaves it out (scopedRoutesNotMounted).
+// serves, with the test hooks in, since a hook's route is a route of the table wherever a
+// deployment leaves it out.
 func openAPIRoutes(version apiVersion) []apiRoute {
 	return servedAt(version, (&server{deps: Deps{TestHooksEnabled: true}}).routes())
 }

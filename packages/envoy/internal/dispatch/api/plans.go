@@ -28,7 +28,8 @@ import (
 // The write is the daemon's alone, as a step record's is (403 STEP_WRITER), appends no issue
 // event and reads the issue with no open check. The read writes nothing, reads the project, then
 // all its finished issues in one statement whatever their number, and is a read of the read
-// class (readClasses), which a read-only token may call.
+// class (routeDecl.Read at /api/v1, v2ReadClasses at /api/v2), which a read-only credential may
+// call.
 //
 // The refusals of a plan write, beside the step write's STEP_WRITER, the package's own decode
 // error and 404 ISSUE_NOT_FOUND, are each the code contracts gives it, which the Legion daemon
@@ -49,13 +50,27 @@ type planRecordInput struct {
 	Tasks      []planTaskInput `json:"tasks" required:"true"`
 }
 
-// planTaskInput is one task of a written plan: its id and its steps in order, each a role or
-// `role:key`. It has the fields of workflowstore.PlanTask and model.PlanTask, so a task converts
-// between the three, and a field added to one of them alone fails the build rather than being
-// dropped on the way.
+// planTaskInput is one task of a written plan: its id, its steps in order, each a role or
+// `role:key`, and the tasks of the plan it needs, each by its id, [] for a task that needs none. A
+// write with no needs, a daemon's of the release before, records the task's needs as not recorded,
+// as does a write a Dispatch of the release before took, since it ignores the member.
+//
+// So needs is an exception to decodeJSON's rule that a member whose loss changes what a request
+// does ships as a new route: a Dispatch of the release before drops it, and a later write at the
+// same version cannot put it back (workflowstore.PutPlan). It ships as a member because the loss
+// changes only what the steps read shows, never what Legion runs: the daemon, the one writer of
+// this route, reads no need back from Dispatch. And the release that adds it deploys Dispatch
+// before the daemon (docs/kubernetes.md, "Rolling back the release that records each task's
+// needs"), so a daemon that writes needs reaches a Dispatch that drops them only when that order
+// is not kept, and then each such plan reads its needs as not recorded.
+//
+// It has the fields of workflowstore.PlanTask and model.PlanTask, so a task converts between the
+// three, and a field added to one of them alone fails the build rather than being dropped on the
+// way.
 type planTaskInput struct {
-	ID    string   `json:"id" required:"true"`
-	Steps []string `json:"steps" required:"true"`
+	ID    string    `json:"id" required:"true"`
+	Steps []string  `json:"steps" required:"true"`
+	Needs *[]string `json:"needs"`
 }
 
 // putIssuePlan writes the plan of one run of an issue and answers it as it stands after the

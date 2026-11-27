@@ -139,7 +139,7 @@ type idPrefixRoute struct {
 	shortStatus int
 	shortCode   string
 	// notFoundCode is the 404 the route answers for a whole id of its kind that names no
-	// item, which is what the prefix layer answers for a prefix that names none (idRoutes).
+	// item, which is what the prefix layer answers for a prefix that names none (its ID).
 	notFoundCode string
 }
 
@@ -1049,12 +1049,12 @@ func unknownIDRouteRequest(t *testing.T, handler http.Handler, method, path stri
 	return response
 }
 
-// idRoutes names, per route of the v1 table, the 404 that route answers for an id of its kind it
-// does not hold, and a routeRow's IDs column names it for its /api/v2 route; the prefix layer
-// answers a prefix that names none with that code, copied there by hand (resolvePathValue). This
-// drives every resolving route of both versions with a whole uuid nothing carries - which the
-// layer leaves as written (text.IsIDPrefix), so the answer is the handler's own - and holds what
-// the handler writes to what the table claims, the {block_id} of the block routes with a document
+// A route's ID names the 404 that route answers for an id of its kind it does not hold - a route
+// file's declaration states it, and a routeRow its IDs column - and the prefix layer answers a
+// prefix that names none with that code, copied there by hand (resolvePathValue). This drives
+// every resolving route of both versions with a whole uuid nothing carries - which the layer
+// leaves as written (text.IsIDPrefix), so the answer is the handler's own - and holds what the
+// handler writes to what the table claims, the {block_id} of the block routes with a document
 // that exists and a block id nothing carries. A /api/v1 route is sent a probe of its own; a /api/v2
 // route is sent the request of the route tour's step of it that sends that wildcard missing
 // (tourStep.Missing), its first step where none does, which its decoder reads. A route whose code
@@ -1076,10 +1076,11 @@ func TestEveryResolvingIDRouteAnswersTheNotFoundItNames(t *testing.T) {
 	}
 	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
 		name := route.Method + " " + route.Pattern
-		entry, named := idRoutes[name]
-		if !named || !entry.resolves() {
+		// Each /api/v2 route is driven by the route tour, below.
+		if route.Version != apiV1 || route.IDs == nil || !route.IDs.resolves() {
 			continue
 		}
+		entry := *route.IDs
 		t.Run(name, func(t *testing.T) {
 			probe := unknownIDRouteProbes[name]
 			// Each wildcard the row resolves, with every other value naming something that
@@ -1100,17 +1101,17 @@ func TestEveryResolvingIDRouteAnswersTheNotFoundItNames(t *testing.T) {
 				answer := unknownIDRouteRequest(t, handler, route.Method, each.path, probe, routeProbeBody(route))
 				if each.none {
 					if answer.Code == http.StatusNotFound {
-						t.Fatalf("%s answers 404 %s for %s nothing carries; idRoutes says it answers none: %s",
+						t.Fatalf("%s answers 404 %s for %s nothing carries; its ID says it answers none: %s",
 							name, decodeBody[refusedAnswer](t, answer).Code, each.what, answer.Body.String())
 					}
 					continue
 				}
 				if answer.Code != http.StatusNotFound {
-					t.Fatalf("%s answers %d for %s nothing carries, not the 404 idRoutes names (%s): %s",
+					t.Fatalf("%s answers %d for %s nothing carries, not the 404 its ID names (%s): %s",
 						name, answer.Code, each.what, each.want.V1Name(), answer.Body.String())
 				}
 				if code := decodeBody[refusedAnswer](t, answer).Code; code != each.want.V1Name() {
-					t.Fatalf("%s answers 404 %q for %s nothing carries; idRoutes names %q, which is what a prefix nothing carries gets",
+					t.Fatalf("%s answers 404 %q for %s nothing carries; its ID names %q, which is what a prefix nothing carries gets",
 						name, code, each.what, each.want.V1Name())
 				}
 			}

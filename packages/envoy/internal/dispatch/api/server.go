@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -314,6 +315,9 @@ type DepsInput struct {
 	App           *auth.AppConfig
 	GitHubAPIBase string
 	OIDC          ServiceTokenVerifier
+	// GitHubRate is the process's one count of its calls to GitHub, which the GitHub client
+	// counts on (githubapp.WithRateCounter) and the rate reading reports; nil counts none.
+	GitHubRate *githubrate.Counter
 	// BrokerTokens decides a broker-issued DPoP token; nil where no broker is configured. See
 	// Deps.BrokerTokens; cmd/dispatch builds it (brokerTokenVerifier).
 	BrokerTokens *ciphertoken.Verifier
@@ -404,9 +408,10 @@ func NewDeps(input DepsInput) (Deps, error) {
 		}
 		envoyClient = envoy.New(envoyURL, options...)
 	}
-	// The GitHub client obeys and records the rate limits every process shares (github_rate_limits):
-	// GitHub budgets the App and each installation, not this process.
-	var githubOptions []githubapp.Option
+	// The GitHub client counts its calls on the process's one Counter for the rate reading, and
+	// obeys and records the rate limits every process shares (github_rate_limits): GitHub budgets
+	// the App and each installation, not this process.
+	githubOptions := []githubapp.Option{githubapp.WithRateCounter(input.GitHubRate)}
 	if input.Store != nil {
 		githubOptions = append(githubOptions, githubapp.WithLimits(ratelimit.New(input.Store.Pool)))
 	}
@@ -742,9 +747,10 @@ type RouteMux interface {
 	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
 }
 
-// Register mounts every native-workspace route on mux, at /api/v1 and at /api/v2. The routes live
-// in routes_table.go and the v2_<group>.go files (routes_versions.go); the same table answers GET
-// /api/v1 and GET /api/v2, each with the routes of its own version.
+// Register mounts every native-workspace route on mux, at /api/v1 and at /api/v2. Each /api/v1
+// route is declared in a file of its own (routeDecl, routes_table.go) and each /api/v2 route in a
+// v2_<group>.go file (routes_versions.go); the same table answers GET /api/v1 and GET /api/v2,
+// each with the routes of its own version.
 //
 // Every route is marked so the shared pool can refuse a second connection to a handler that
 // already holds one of its transactions (store.ErrNestedAcquire): one caller, one connection is
@@ -765,7 +771,7 @@ type RouteMux interface {
 // one decoder, from the types its row declares, and holds each value its row gives an authority to
 // that authority before its handler runs (decode_v2.go, authorities_v2.go).
 //
-// Every route outside the read class (readClasses), GET /ws/live among them, answers a read-only
+// Every route outside the read class (routeDecl.Read), GET /ws/live among them, answers a read-only
 // token 403 READ_ONLY_TOKEN before anything else it does, and every read but GET /api/v1/whoami
 // and GET /api/v2/me answers one that carries a cut 403 AS_OF_TOKEN_NOT_SERVED
 // (refuseReadOnlyToken).
@@ -925,18 +931,13 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		// write nothing judged, so the table is refused rather than mounted (project_scope.go).
 		panic("api.Register: the route table holds a mutating row the project-scope check cannot decide: " + strings.Join(undecidable, "; "))
 	}
-	if unmounted := scopedRoutesNotMounted(); len(unmounted) > 0 {
-		// A scope named on a route nothing serves is a scope nothing enforces — a row renamed or
-		// deleted and its entry left behind — so the table is refused rather than mounted
-		// (routeScopes).
-		panic("api.Register: the route table's scope map names a route the table does not mount: " + strings.Join(unmounted, "; "))
-	}
-	if refused := readClassRefusals(); len(refused) > 0 {
-		// A GET row with no class is a row nobody has read for what it writes, and an entry that
-		// names no GET row reads as though it classed a route that is not there, so the table is
-		// refused rather than mounted with a read-only token served or refused by nothing anyone
-		// decided (readClasses).
-		panic("api.Register: the route table's read class does not class every GET row exactly once: " + strings.Join(refused, "; "))
+	if refused := readClassRefusals(routes); len(refused) > 0 {
+		// A GET route with no class is one nobody has read for what it writes, a route that is not
+		// a GET stating one would open a write to a token minted only to read, and an entry of
+		// v2ReadClasses that names no GET routeRow reads as though it classed a route that is not
+		// there, so the table is refused rather than mounted with a read-only token served or
+		// refused by nothing anyone decided (routeDecl.Read, v2ReadClasses).
+		panic("api.Register: the route table's read class does not class every GET route exactly once: " + strings.Join(refused, "; "))
 	}
 	// The approve list was compiled into the rows as routes built them (applyApprovePolicy), which
 	// refused a table it does not map onto; the refusal's wording is read from those rows.
@@ -961,16 +962,10 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		// mounted (routes_shapes.go).
 		panic("api.Register: the route table holds a row with no request and response shape: " + strings.Join(shapeless, "; "))
 	}
-	if unshaped := shapedRoutesNotMounted(); len(unshaped) > 0 {
-		// A shape for a route nothing serves is a shape the document would describe and no
-		// caller could reach — a row renamed or deleted and its entry left behind — so the
-		// table is refused rather than mounted (routeShapes).
-		panic("api.Register: the route table's shape map names a route the table does not mount: " + strings.Join(unshaped, "; "))
-	}
 	if undecided := undecidedIDRoutes(routes); len(undecided) > 0 {
 		// A route whose id wildcard says neither what it names nor why no prefix is resolved there
-		// would answer a short id as no id at all - a row of the v1 table missing from idRoutes, a
-		// routeRow with no IDs column - so the table is refused rather than mounted (idRoutes).
+		// would answer a short id as no id at all - a route file stating no ID, a routeRow
+		// with no IDs column - so the table is refused rather than mounted (routeDecl.ID, a routeRow's IDs).
 		panic("api.Register: the route table holds a route whose id the prefix layer cannot decide: " + strings.Join(undecided, "; "))
 	}
 	if undecodable := undecodableRoutes(routes); len(undecodable) > 0 {
@@ -1123,14 +1118,16 @@ func (s *server) routeHandler(route apiRoute) http.HandlerFunc {
 		// body's first read, and otherwise closes the connection once the answer begins rather
 		// than wait on a body that never comes. It decides from the expect-continue reader its
 		// own response keeps (go1.27's response.ecReader and reqBody), not from the request's
-		// Body, so it is not that trackTransactions hands this layer a copy of the request: the
+		// Body, so it is not that routeContext hands this layer a copy of the request: the
 		// handling holds with the drain's body put on net/http's own request. What keeps the body
 		// unread is the drain's guard (drainingWriter.askedContinue) and the keyed layer's
 		// (answerDrainedRepeat), which TestAnEarlyAnswerToAClientWaitingToContinueAsksForNoBody
 		// pins: without either, the client is told to continue and the answer waits on its body.
 		handler = s.drainBeforeAnswer(route, handler)
 	}
-	handler = s.decideBrokerToken(trackTransactions(handler))
+	// The row's request context is made once, with its transaction tracking and its calls to
+	// GitHub tagged as the API's (routeContext).
+	handler = s.decideBrokerToken(routeContext(handler))
 	if route.Method+" "+route.Pattern == statusChangeRoute {
 		handler = addChangedToRefusals(handler)
 	}
@@ -1172,19 +1169,46 @@ const liveSocketPattern = "/ws/live"
 // the upgrade. The socket is no row of the table and no read, since a socket delivers whatever
 // its views carry, so the gate takes the zero entry, which classes nothing, and a read-only token
 // of every kind is answered 403 READ_ONLY_TOKEN before a socket is ever opened for it. The
-// approve-only gate sits beside it, and no approve list names the socket, so an approve-only token
-// is answered 403 APPROVE_ONLY_TOKEN there too. The socket is admitted by whichever credential
-// optionalActor resolves - a bearer, a broker-issued token or a sign-in cookie - so its heartbeat
-// resolves that same credential again (callerStillResolves).
+// approve-only gate sits beside it, and the socket is no route that states ApproveOnly, so an
+// approve-only token is answered 403 APPROVE_ONLY_TOKEN there too. The socket is admitted by
+// whichever credential optionalActor resolves - a bearer, a broker-issued token or a sign-in
+// cookie - so its heartbeat resolves that same credential again (callerStillResolves).
 func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
 	return accesslog.HandlerOn(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
 		s.refuseReadOnlyToken(http.MethodGet+" "+liveSocketPattern, readEntry{},
 			s.refuseApproveOnlyToken(false, trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve)))))), s.clock())
 }
 
+// trackTransactions marks the request's context for the pool's nested-acquire check
+// (store.WithTransactionTracking), for a mount beside the route table: the websockets.
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		handler(w, r.WithContext(store.WithTransactionTracking(r.Context())))
+	}
+}
+
+// routeContext is the request context of a row of the route table, made in one copy of the
+// request: transaction tracking, as trackTransactions marks it, and every call to GitHub the row
+// makes tagged as the API's (GitHubCaller), as TagGitHubCalls tags it.
+func routeContext(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		handler(w, r.WithContext(githubrate.WithCaller(store.WithTransactionTracking(r.Context()), GitHubCaller)))
+	}
+}
+
+// GitHubCaller is the caller kind of every call to GitHub an API request makes
+// (githubrate.WithCaller), which the rate reading counts the process's own calls by: the rows of
+// the route table, and the GitHub proxy the routes package mounts beside them.
+const GitHubCaller = "api"
+
+// TagGitHubCalls tags the request's calls to GitHub as the API's (GitHubCaller): the handler's
+// own, those of the keyed layer's run of it, which keeps the request's values past its cancel,
+// and those of an architecture sync a route starts, whose flight keeps its starter's values. The
+// route table's rows take it with their transaction tracking (routeContext); the routes package's
+// GitHub proxy, which is no row, takes it alone.
+func TagGitHubCalls(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		handler(w, r.WithContext(githubrate.WithCaller(r.Context(), GitHubCaller)))
 	}
 }
 
@@ -1739,11 +1763,12 @@ func missingScopeError(scope, message string) *apiError {
 }
 
 // gateRouteScopes is the one place a route's OAuth scopes are enforced: register wraps every row
-// that declares any (routeScopes) in it, ahead of the keyed, project and session layers, so the
-// table is what decides and a handler restates nothing. What each credential holds is said once,
-// above routeScopes. The first scope the credential lacks, in the order the row declares them, is
-// 403 OAUTH_SCOPE_REQUIRED (refuseMissingScope); a caller that does not resolve at all answers
-// through writeAuthenticationError, as every gate on this server does.
+// that declares any (routeDecl.OAuthScopes) in it, ahead of the keyed, project and session
+// layers, so the declaration is what decides and a handler restates nothing. What each
+// credential holds is said once, on routeDecl.OAuthScopes. The first scope the credential lacks,
+// in the order the row declares them, is 403 OAUTH_SCOPE_REQUIRED (refuseMissingScope); a caller
+// that does not resolve at all answers through writeAuthenticationError, as every gate on this
+// server does.
 //
 // The caller it resolved rides along (resolvedCallerKey), so no layer behind it verifies the
 // same bearer twice or presents the same DPoP proof twice.
@@ -1767,9 +1792,9 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 }
 
 // refuseReadOnlyToken is the one place a read-only credential (model.Credential.ReadOnly) is held
-// to the read class: register wraps every row of the table in it, name being the row's
-// "<method> <pattern>" and entry its read class (apiRoute.Read), and GET /ws/live with the zero
-// entry, which classes nothing. It reads every credential that can be read-only:
+// to the read class: register wraps every route of the table in it, name being the route's
+// "<method> <pattern>" and entry the read class its declaration states (apiRoute.Read), and
+// GET /ws/live with the zero entry, which classes nothing. It reads every credential that can be read-only:
 //
 //   - A broker-issued token is already decided by decideBrokerToken, which runs outside it and
 //     carries its decision on the context (resolvedCallerKey); verifying it again would present
@@ -2076,9 +2101,9 @@ func requireUUIDPath(w http.ResponseWriter, r *http.Request, kind string, code a
 
 // idPathProblem is how a route refuses a path id that names nothing, worded once so every route
 // that reads one says the same thing. An ask's, a comment's and a message's id is resolved from
-// a prefix before a handler sees it (idRoutes), so their rule is a whole uuid or a prefix of one
-// long enough to name a single item. A handoff's and a thread's is not, so theirs is the whole
-// uuid it has always been.
+// a prefix before a handler sees it (routeDecl.ID), so their rule is a whole uuid or a prefix of
+// one long enough to name a single item. A handoff's and a thread's is not, so theirs is the
+// whole uuid it has always been.
 func idPathProblem(kind string) string {
 	switch kind {
 	case "ask", "comment", "message":

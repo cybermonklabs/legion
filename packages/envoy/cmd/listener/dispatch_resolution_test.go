@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -20,12 +21,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	dispatchstore "github.com/sjawhar/envoy/internal/dispatch/store"
+	dispatchstoretest "github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testpg"
 )
 
 // This file is the one proof that spans both services. Every other test of INFRA-249 exercises
@@ -53,6 +54,9 @@ const (
 	// rigDeliveryMode is the targeted delivery mode every mention and broadcast here asks for,
 	// and one every session in this file advertises: resolution, not capability, is under test.
 	rigDeliveryMode = "steer"
+	// dispatchRigAgentWait is the delivery listener's agent wait (ENVOY_UNPLACEABLE_RETRY_WINDOW):
+	// a copy for a session with no record waits this long before its wake is reported.
+	dispatchRigAgentWait = 2 * time.Second
 )
 
 // dispatchRig is the pair of services one test here drives.
@@ -128,8 +132,6 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer 
 	t.Cleanup(attemptCache.Stop)
 	met := metrics.New()
 	logger, logs := listenerRigLog(t, "delivery listener")
-	lifetime, stop := context.WithCancel(context.Background())
-	t.Cleanup(stop)
 	config := listenerDeliveryHandlerConfig{
 		client:      d.client,
 		forwardRole: startRoleForward(d.client),
@@ -145,16 +147,15 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer 
 		messagesDelivered: met.NewCounter("rig_messages_delivered", "test"),
 		messagesNAKed:     met.NewCounter("rig_messages_naked", "test"),
 		deliveryDuration:  met.NewHistogram("rig_delivery_duration", "test", metrics.DefaultBuckets),
-		// A copy this listener cannot place - the copy Dispatch queues for a session no store
-		// holds - is held for one deferral, as main.go holds one for its minute, and then given
-		// up with the agent wake it reports here. Every other copy in these tests is placed on
-		// its first delivery, which no window touches.
-		unplaceableRetryWindow: oneDeferralWindow,
-		wakes:                  newWakeReporter(lifetime, d.client),
+		// A copy for a session with no record - the copy Dispatch queues for a session no store
+		// holds - waits once for the rig's agent wait, as main.go's waits for its minute, and then
+		// its agent wake is reported here. Every other copy in these tests is for a session with
+		// a record, which no wait touches.
+		unplaceableRetryWindow: dispatchRigAgentWait,
 		// The set every handler built from one config shares; main.go builds one for the whole
 		// process and passes it through deliveryConfig, so a durable rebound after a flap draws on
 		// the budget its predecessor held rather than opening a second one.
-		deferredUnplaceable: newUnplaceableDeferrals(),
+		deferredUnplaceable: newUnplaceableDeferrals(dispatchRigAgentWait),
 		// The guards two drains of one role take inside one listener, which main.go keeps one set
 		// of for the process. This rig needs one because the handler refuses a config without
 		// it; nothing here keeps a role message.
@@ -202,19 +203,21 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer 
 	return logs
 }
 
-// migratedDispatchDatabase opens an empty Postgres database of this test's own, carries every
-// Dispatch migration into it, and records the person whose writes the tests make.
+// migratedDispatchDatabase is a Dispatch store on an empty database of this test's own carrying
+// every migration (Dispatch's storetest.Open), with the person whose writes the tests make
+// recorded. It is storetest's rather than internal/testpg's, which starts a container when
+// DISPATCH_TEST_DATABASE_URL is unset: testpg links testcontainers-go, whose package init reads
+// every process on the machine, and this test binary starts itself as the listener
+// (start_credential_wait_test.go's startListenerChild), so every such start would pay that init.
+// Without the variable the row skips, as every Postgres-backed Dispatch test does, and its skip
+// says what to set; CI's envoy-go-race job sets it for the step that runs this package.
 func migratedDispatchDatabase(t *testing.T) *dispatchstore.Store {
 	t.Helper()
+	if os.Getenv(dispatchstoretest.DatabaseURLEnv) == "" {
+		t.Skip(dispatchstoretest.DatabaseURLEnv + " is unset, so this row has no Postgres for Dispatch's store: set it to a Postgres server's admin URL, such as postgres://postgres:<password>@127.0.0.1:5432/postgres?sslmode=disable, as .github/workflows/ci-job-envoy-go-race.yaml does")
+	}
 	ctx := context.Background()
-	database, err := dispatchstore.Open(ctx, testpg.URL(t))
-	if err != nil {
-		t.Fatalf("open the Dispatch database: %v", err)
-	}
-	t.Cleanup(database.Pool.Close)
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("migrate the Dispatch database: %v", err)
-	}
+	database := dispatchstoretest.Open(t)
 	people := dispatchstore.NewPgPeopleStore(database.Pool, auth.SingleSigningKey("signing-key"), nil)
 	if err := people.Record(ctx, rigHuman); err != nil {
 		t.Fatalf("record %s as having signed in: %v", rigHuman, err)
@@ -729,23 +732,32 @@ func (rig *dispatchRig) claim(
 	})
 }
 
+// recordsFor is the records among records that name sessionID.
+func recordsFor(records []deliveryRecord, sessionID string) []deliveryRecord {
+	var found []deliveryRecord
+	for _, record := range records {
+		if record.SessionID == sessionID {
+			found = append(found, record)
+		}
+	}
+	return found
+}
+
 // A person's targeted message to a session that neither the listener's registry nor its
-// known-session store holds is queued, not failed. That is a released Legion role's session whose
-// record is gone, while its interest row, naming the listener it registered through, stays until
-// the reaper's pass. Dispatch stores on the session's own subject the envelope the listener's send
-// route would have stored. The listener's own delivery of that copy finds no record, holds it for
-// its window, and gives it up with the agent wake that brings the pod back. The session that
-// registers again under that id is then handed the copy by its consumer. Before, the attempt
-// failed "no live session", nothing was stored or woken, and the person had to send the message
-// again once the pod was back.
+// known-session store holds is queued, not failed: Dispatch stores on the session's own subject
+// the envelope the listener's send route would have stored. That makes Dispatch a writer of the
+// session's agent subject, and the listener decides that copy as it decides any other there
+// (session.HandleAgentMessage): it finds no record, waits once for its agent wait, and then
+// reports one agent wake, which brings a released pod back. It never acknowledges the copy in
+// silence, and it logs no deferral, give-up or failure. The session that registers again under
+// that id is then handed the copy by its consumer. Two sessions take that path here: a released
+// Legion role's, whose interest row still names the listener it registered through until the
+// reaper's pass, and one that no interest row names. An attempt that failed "no live session"
+// would store nothing and wake nothing, and the person would have to send the message again once
+// the pod is back (#4088).
 func TestDispatchQueuesATargetedMessageForASessionNoStoreHolds(t *testing.T) {
 	t.Parallel()
 	rig := newDispatchRig(t)
-	const released = "ses_released"
-	subject := contracts.LegacyAgentSubject(released)
-	if _, err := rig.warm.registry.Upsert(store.Interest{SessionID: released, MachineID: rigMachineID}, []string{subject}); err != nil {
-		t.Fatalf("register %s's interest naming this listener: %v", released, err)
-	}
 	wakes, err := rig.warm.client.Conn.SubscribeSync(bus.LegionWakeTopic)
 	if err != nil {
 		t.Fatalf("subscribe to %s: %v", bus.LegionWakeTopic, err)
@@ -755,53 +767,75 @@ func TestDispatchQueuesATargetedMessageForASessionNoStoreHolds(t *testing.T) {
 		t.Fatalf("flush the wake subscription: %v", err)
 	}
 
-	response := rig.asHuman(t, http.MethodPost, "/api/v1/agents/"+released+"/messages", map[string]any{
-		"body": "Pick the release back up.", "delivery": rigDeliveryMode,
-	})
-	if response.Code != http.StatusCreated {
-		t.Fatalf("message %s: status=%d body=%s", released, response.Code, response.Body.String())
-	}
-	message := decodeRigBody[struct {
-		ID         string        `json:"id"`
-		Deliveries []rigDelivery `json:"deliveries"`
-	}](t, response)
-	if len(message.Deliveries) != 1 || message.Deliveries[0].State != "queued" || message.Deliveries[0].Error != nil ||
-		message.Deliveries[0].SessionID == nil || *message.Deliveries[0].SessionID != released {
-		t.Fatalf("the message's attempt = %#v, want it queued for %s with no failure", message.Deliveries, released)
-	}
+	// Both cases run in the rig's own test, not in subtests: a subtest's connections get a NATS
+	// account of their own (testnats.URL), so the stand-in registerSession starts there would hear
+	// nothing the rig's listener relays.
+	for _, tc := range []struct {
+		session string
+		row     bool
+	}{
+		// A session that no interest row names: each listener decides the copy from its own durable.
+		{session: "ses_unknown", row: false},
+		// A released Legion role's session, whose interest row names this listener.
+		{session: "ses_released", row: true},
+	} {
+		subject := contracts.LegacyAgentSubject(tc.session)
+		if tc.row {
+			if _, err := rig.warm.registry.Upsert(store.Interest{SessionID: tc.session, MachineID: rigMachineID}, []string{subject}); err != nil {
+				t.Fatalf("register %s's interest naming this listener: %v", tc.session, err)
+			}
+		}
 
-	stored, err := rig.warm.client.JS().GetLastMsg(bus.Stream, subject)
-	if err != nil {
-		t.Fatalf("read the copy stored on %s: %v", subject, err)
-	}
-	var queued contracts.Envelope
-	if err := json.Unmarshal(stored.Data, &queued); err != nil {
-		t.Fatalf("decode the stored copy %s: %v", stored.Data, err)
-	}
-	if queued.Topic != subject || queued.Source != "dispatch" ||
-		queued.DedupeKey != contracts.AgentSendDedupeKey(released, message.ID+":"+rigDeliveryMode) ||
-		queued.PayloadSummary != "Pick the release back up." || !strings.Contains(queued.Payload, message.ID) {
-		t.Fatalf("the stored copy = %#v, want message %s from dispatch under its send's key, its frame as payload", queued, message.ID)
-	}
+		response := rig.asHuman(t, http.MethodPost, "/api/v1/agents/"+tc.session+"/messages", map[string]any{
+			"body": "Pick the release back up.", "delivery": rigDeliveryMode,
+		})
+		if response.Code != http.StatusCreated {
+			t.Fatalf("message %s: status=%d body=%s", tc.session, response.Code, response.Body.String())
+		}
+		message := decodeRigBody[struct {
+			ID         string        `json:"id"`
+			Deliveries []rigDelivery `json:"deliveries"`
+		}](t, response)
+		if len(message.Deliveries) != 1 || message.Deliveries[0].State != "queued" || message.Deliveries[0].Error != nil ||
+			message.Deliveries[0].SessionID == nil || *message.Deliveries[0].SessionID != tc.session {
+			t.Fatalf("the message's attempt = %#v, want it queued for %s with no failure", message.Deliveries, tc.session)
+		}
 
-	waitFor(t, "the listener to give the copy up", func() bool {
-		return len(recordsFor(deliveryRecords(t, rig.deliveryLog.String(), "listener agent delivery given up"), released)) > 0
-	})
-	logs := rig.deliveryLog.String()
-	if giveUps := recordsFor(deliveryRecords(t, logs, "listener agent delivery given up"), released); len(giveUps) != 1 ||
-		giveUps[0].Reason != "no_session_record" || giveUps[0].EventID != queued.EventID {
-		t.Fatalf("want one give-up of the queued copy naming no_session_record, got %#v:\n%s", giveUps, logs)
-	}
-	if deferrals := recordsFor(deliveryRecords(t, logs, "listener agent delivery deferred"), released); len(deferrals) != 1 {
-		t.Fatalf("%d deferrals of the queued copy, want the one its window buys:\n%s", len(deferrals), logs)
-	}
-	if got := agentWakesFor(t, wakes, released, 10*time.Second, time.Second); got != 1 {
-		t.Fatalf("%d agent wake reports for %s, want the one beside the give-up:\n%s", got, released, logs)
-	}
+		stored, err := rig.warm.client.JS().GetLastMsg(bus.Stream, subject)
+		if err != nil {
+			t.Fatalf("read the copy stored on %s: %v", subject, err)
+		}
+		var queued contracts.Envelope
+		if err := json.Unmarshal(stored.Data, &queued); err != nil {
+			t.Fatalf("decode the stored copy %s: %v", stored.Data, err)
+		}
+		if queued.Topic != subject || queued.Source != "dispatch" ||
+			queued.DedupeKey != contracts.AgentSendDedupeKey(tc.session, message.ID+":"+rigDeliveryMode) ||
+			queued.PayloadSummary != "Pick the release back up." || !strings.Contains(queued.Payload, message.ID) {
+			t.Fatalf("the stored copy = %#v, want message %s from dispatch under its send's key, its frame as payload", queued, message.ID)
+		}
 
-	returned := rig.registerSession(t, released, "Released planner")
-	var handed contracts.Envelope
-	if frame := returned.awaitFrame(t); json.Unmarshal([]byte(frame), &handed) != nil || handed.EventID != queued.EventID {
-		t.Fatalf("the session that came back was handed %q, want the queued copy %s", frame, queued.EventID)
+		waitFor(t, "the listener to report the wake of "+tc.session, func() bool {
+			return len(recordsFor(deliveryRecords(t, rig.deliveryLog.String(), "listener agent wake reported"), tc.session)) > 0
+		})
+		if waited := time.Since(stored.Time); waited < dispatchRigAgentWait {
+			t.Errorf("the wake of %s was reported %s after the copy was stored, want at least the agent wait of %s: the copy waits once first",
+				tc.session, waited, dispatchRigAgentWait)
+		}
+		logs := rig.deliveryLog.String()
+		if reports := recordsFor(deliveryRecords(t, logs, "listener agent wake reported"), tc.session); len(reports) != 1 ||
+			reports[0].Level != "INFO" || reports[0].EventID != queued.EventID || reports[0].Topic != subject {
+			t.Fatalf("want one INFO wake line for the queued copy %s on %s, got %#v:\n%s", queued.EventID, subject, reports, logs)
+		}
+		requireEventLines(t, "the listener's delivery log", logs, queued.EventID, aloneEventLines...)
+		if got := agentWakesFor(t, wakes, tc.session, 5*time.Second, time.Second); got != 1 {
+			t.Fatalf("%d agent wake reports for %s, want one:\n%s", got, tc.session, logs)
+		}
+
+		returned := rig.registerSession(t, tc.session, "Released planner")
+		var handed contracts.Envelope
+		if frame := returned.awaitFrame(t); json.Unmarshal([]byte(frame), &handed) != nil || handed.EventID != queued.EventID {
+			t.Fatalf("the session %s that came back was handed %q, want the queued copy %s", tc.session, frame, queued.EventID)
+		}
 	}
 }

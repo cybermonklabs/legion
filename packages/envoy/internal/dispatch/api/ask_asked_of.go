@@ -18,11 +18,11 @@ import (
 // for, when that is not whoever the two steps below it name. The ask keeps everything else -
 // its question, its thread, its followers - and stays open; only whose Inbox it sits in moves.
 //
-// It is a person's act, so it needs the person scope (routeScopes at /api/v1, askAskedOfAuthority
-// at /api/v2) and nobody else may make it: a credential the deployment configured holds no person
-// to hand a question from, and handing a question to somebody is how one person asks another.
-// The row records who handed it on and when (asked_of_by, asked_of_at) whatever else the write
-// leaves, so the ask card can say it.
+// It is a person's act, so it needs the person scope (its declaration's OAuthScopes at /api/v1,
+// askAskedOfAuthority at /api/v2) and nobody else may make it: a credential the deployment
+// configured holds no person to hand a question from, and handing a question to somebody is how one
+// person asks another. The row records who handed it on and when (asked_of_by, asked_of_at)
+// whatever else the write leaves, so the ask card can say it.
 
 // askAskedOfInput is the body of PUT /api/v1/asks/{id}/asked-of: the person the ask waits on
 // from now on. It is a plain required string, as the bodies in asks.go are, since the field is

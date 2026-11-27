@@ -569,9 +569,9 @@ func (c GoingCatalogue) Lookup(name string) (GoingAction, bool) {
 
 // mutatingRoutes is every route of the table at version that changes something, in the shape
 // TestEveryMutatingRouteIsClassed reads the table in: a route whose method is not GET, each of
-// which writeClasses must class (undecidableWrites), or a v2 row its own Scope. It is the one
-// classification of a write the server has, and each catalogue is held to the routes of its own
-// version.
+// which must state a write class, a route file in its declaration's WriteClass and a routeRow in
+// its Scope column (undecidableWrites). It is the one classification of a write the server has,
+// and each catalogue is held to the routes of its own version.
 func mutatingRoutes(routes []apiRoute, version apiVersion) map[string]bool {
 	mutating := make(map[string]bool, len(routes))
 	for _, route := range routes {

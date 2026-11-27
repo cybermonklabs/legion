@@ -249,12 +249,17 @@ func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 // body to match exactly one of them, since the rich body carries code and error as well.
 func TestARefusalStatusAlsoAnswersThePlainErrorBody(t *testing.T) {
 	t.Parallel()
-	tree, _ := readOpenAPITree(t)
-	paths, _ := tree.(map[string]any)["paths"].(map[string]any)
+	// Each version's routes are read in its own document.
+	documents := map[apiVersion]map[string]any{}
+	for _, version := range []apiVersion{apiV1, apiV2} {
+		tree, _ := readOpenAPITreeOf(t, version)
+		documents[version], _ = tree.(map[string]any)["paths"].(map[string]any)
+	}
 	plain := openAPISchemaPrefix + "ErrorBody"
 	checked := 0
-	for name, shape := range routeShapes {
-		method, pattern, _ := strings.Cut(name, " ")
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		paths := documents[route.Version]
+		name, method, pattern, shape := route.Method+" "+route.Pattern, route.Method, route.Pattern, route.Shape
 		for _, refusal := range shape.Refusals {
 			status := fmt.Sprint(refusal.Status)
 			operation, _ := paths[pattern].(map[string]any)[strings.ToLower(method)].(map[string]any)
@@ -281,7 +286,7 @@ func TestARefusalStatusAlsoAnswersThePlainErrorBody(t *testing.T) {
 		t.Fatal("no route declares a refusal, so this test read nothing")
 	}
 	// The issue PATCH's 409 is the case that showed it: its rich body and the plain one.
-	patch, _ := paths["/api/v1/issues/{key}"].(map[string]any)["patch"].(map[string]any)
+	patch, _ := documents[apiV1]["/api/v1/issues/{key}"].(map[string]any)["patch"].(map[string]any)
 	conflict, _ := patch["responses"].(map[string]any)["409"].(map[string]any)
 	encoded, err := json.Marshal(conflict)
 	if err != nil {

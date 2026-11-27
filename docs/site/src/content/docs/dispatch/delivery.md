@@ -104,7 +104,8 @@ newest day first; a day the window only partly covers is marked partial.
 
 The filters narrow every figure drawn from pull requests: lead time, rework share and the per-pull
 request failure rate. Deploys and runs follow the window alone, and a deploy counts as one that
-shipped a pull request when it shipped any pull request merged in the window, whatever the filters.
+shipped a pull request when it is, for at least one pull request, the first production deploy that
+contains it, whenever that pull request merged and whatever the filters.
 
 ## The targets
 

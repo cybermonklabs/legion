@@ -21,7 +21,6 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // acceptSuggestion posts, to target, a suggestion on the document slug whose body is body,
@@ -767,26 +766,6 @@ func TestAKeptAnswerHoldsTheObjectsItsOwnIDsName(t *testing.T) {
 // (routeRow.Replay), and no refusal, which every route replays as kept, holds one.
 func TestEveryKeyedAnswerThatCanHoldAReplyBlockIsReadAfresh(t *testing.T) {
 	t.Parallel()
-	block := reflect.TypeFor[model.ReplyBlock]()
-	var holds func(ty reflect.Type, seen map[reflect.Type]bool) bool
-	holds = func(ty reflect.Type, seen map[reflect.Type]bool) bool {
-		for ty.Kind() == reflect.Pointer || ty.Kind() == reflect.Slice || ty.Kind() == reflect.Array || ty.Kind() == reflect.Map {
-			ty = ty.Elem()
-		}
-		if ty == block {
-			return true
-		}
-		if ty.Kind() != reflect.Struct || seen[ty] {
-			return false
-		}
-		seen[ty] = true
-		for index := range ty.NumField() {
-			if field := ty.Field(index); field.Tag.Get("json") != "-" && holds(field.Type, seen) {
-				return true
-			}
-		}
-		return false
-	}
 	found := 0
 	for _, route := range (&server{}).routes() {
 		if !keyedMethod(route) {
@@ -795,7 +774,7 @@ func TestEveryKeyedAnswerThatCanHoldAReplyBlockIsReadAfresh(t *testing.T) {
 		name, shape := route.Method+" "+route.Pattern, route.shape()
 		rereads, recovers := route.Reread != nil, route.Replay != nil
 		for _, answer := range append([]routeAnswer{{Status: shape.Status, Body: shape.Response}, {Status: shape.Status, Body: shape.Advice}}, shape.Also...) {
-			if answer.Body == nil || !holds(reflect.TypeOf(answer.Body), map[reflect.Type]bool{}) {
+			if answer.Body == nil || !holdsReplyBlock(reflect.TypeOf(answer.Body)) {
 				continue
 			}
 			found++
@@ -804,7 +783,7 @@ func TestEveryKeyedAnswerThatCanHoldAReplyBlockIsReadAfresh(t *testing.T) {
 			}
 		}
 		for _, refusal := range shape.Refusals {
-			if holds(reflect.TypeOf(refusal.Body), map[reflect.Type]bool{}) {
+			if holdsReplyBlock(reflect.TypeOf(refusal.Body)) {
 				t.Errorf("%s refuses with %T at %d, which can hold a reply block, and a refusal is replayed as kept", name, refusal.Body, refusal.Status)
 			}
 		}

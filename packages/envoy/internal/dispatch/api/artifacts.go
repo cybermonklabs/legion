@@ -2648,7 +2648,7 @@ func (s *server) loadArtifactRow(ctx context.Context, q queryer, row pgx.Row) (m
 }
 
 // scanArtifactOrNotFound reads the artifact's own row, answering the 404 every artifact read
-// answers for a row that is not there, the one idRoutes names for these routes. It is the step
+// answers for a row that is not there, the one these routes' ID names. It is the step
 // both reads of an artifact share: the one that goes on to carry the versions and the approval
 // (loadArtifactRow) and the one that takes the row alone (loadArtifactRowByID).
 func scanArtifactOrNotFound(row pgx.Row) (model.Artifact, error) {
@@ -3080,11 +3080,11 @@ func lockProjectArtifacts(ctx context.Context, tx pgx.Tx, project string) error 
 // is the preamble the title correction and the removal share (renameArtifactTo, removeArtifact),
 // and each of them holds only its own refusals after it.
 //
-// Both writes are mounted on an artifact's id alone, /api/v1/artifacts/{id} (routes_table.go) and
-// /api/v2/artifacts/{id} (v2_documents.go), so the id the request names is what each read takes,
-// and each takes the row alone (loadArtifactRowByID): the versions and the approval an artifact
-// read carries cost a second round trip, which neither read here needs. The removal reads them
-// nowhere, and the correction reads them once, of the row it wrote, for its answer
+// Both writes are mounted on an artifact's id alone, /api/v1/artifacts/{id} (their route files)
+// and /api/v2/artifacts/{id} (v2_documents.go), so the id the request names is what each read
+// takes, and each takes the row alone (loadArtifactRowByID): the versions and the approval an
+// artifact read carries cost a second round trip, which neither read here needs. The removal reads
+// them nowhere, and the correction reads them once, of the row it wrote, for its answer
 // (loadArtifactDetails in renameArtifactTo).
 //
 // The owner's own refusals come first, as every write to an owner takes them: a closed issue is

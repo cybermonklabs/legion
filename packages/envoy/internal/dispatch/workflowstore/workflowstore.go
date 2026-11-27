@@ -16,13 +16,13 @@
 // field the node does not hold yet, but returned_to, which only the write that sets the result
 // sets, and leaves each field it holds (PutStep); it sets the experiment and the variant together
 // or neither. A plan's source, document, version and tasks are one fact, which a write of a higher
-// version replaces whole and any other write leaves (PutPlan). The read of an issue (IssueSteps)
-// answers each run with its attempt, which no write stores, and the read of a project
-// (ProjectPlans) answers each of its finished issues with its plan, its ratings, its time, its
-// count of failed steps, and the experiment and the variant the step records of its newest run
-// name, nil where they name none. A run's write that appends a tuple signals its issue on
-// RunsChannel at its commit, and IssueRunsRevision counts the tuples of an issue's runs, which each
-// such commit raises.
+// version replaces whole and any other write leaves (PutPlan). The reads of an issue answer each
+// run with its attempt, which no write stores (IssueSteps), and the plan of its newest run
+// (NewestPlan); the read of a project (ProjectPlans) answers each of its finished issues with its
+// plan, its ratings, its time, its count of failed steps, and the experiment and the variant the
+// step records of its newest run name, nil where they name none. A run's write that appends a
+// tuple signals its issue on RunsChannel at its commit, and IssueRunsRevision counts the tuples of
+// an issue's runs, which each such commit raises.
 //
 // The vocabulary is the graph's node and tuple store's, which this tree does not hold yet, as
 // internal/dispatch/prioritystore's is: the rows copy into that store's tables column for column
@@ -215,6 +215,11 @@ type StepRead struct {
 type PlanTask struct {
 	ID    string   `json:"id"`
 	Steps []string `json:"steps"`
+	// Needs are the tasks of the plan this task needs, each by its id, as the daemon resolved
+	// them when it took the plan; [] for a task that needs none, and nil where the write carried
+	// no needs (a daemon of the release before), which stores no member and reads as not recorded.
+	// A Dispatch of the release before ignores the member, so a node it stored reads the same.
+	Needs *[]string `json:"needs,omitempty"`
 }
 
 // Plan is the plan one run of an issue ran from, as its node holds it: its source, the owner's

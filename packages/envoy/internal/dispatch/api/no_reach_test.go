@@ -119,10 +119,10 @@ func onePersonRead(t *testing.T) {
 	}
 	// What a caller may hand it: the login the path names, and the page. A node kind, a filter
 	// or an edge to walk is what this route exists not to take.
-	shape, shaped := routeShapes[personNodesRoute]
-	if !shaped {
+	if !read.Shape.stated() {
 		t.Fatalf("%s declares no shape", personNodesRoute)
 	}
+	shape := read.Shape
 	keys := queryTagsOf(shape.Params)
 	sort.Strings(keys)
 	if want := []string{"limit", "offset"}; !slices.Equal(keys, want) {

@@ -1876,8 +1876,13 @@ func (s *server) listIssueStepsV2(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	plan, err := workflowstore.NewestPlan(r.Context(), s.deps.Store.Pool, key)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
 	records := make([]model.StepRecord, 0, len(steps))
-	for _, task := range issueStepTasks(key, steps).Tasks {
+	for _, task := range issueStepTasks(key, plan, steps).Tasks {
 		records = append(records, task.Steps...)
 	}
 	WriteJSON(w, http.StatusOK, pageOf(records, v2Query[issueStepsV2Query](r).pageQuery))

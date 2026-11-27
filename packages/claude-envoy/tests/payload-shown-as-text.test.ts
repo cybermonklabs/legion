@@ -31,6 +31,7 @@ test("createChannelDelivery (envoy-channel-server.ts enqueue): a message whose p
       reply: async () => {
         throw new Error("a peer's message takes no Dispatch reply")
       },
+      stderr: (line) => void process.stderr.write(line),
     })
     const raw = JSON.stringify({
       event_id: "evt-deep",
@@ -68,6 +69,7 @@ test("createChannelDelivery (envoy-channel-server.ts enqueue, list): a copy of a
       reply: async () => {
         throw new Error("a peer's message takes no Dispatch reply")
       },
+      stderr: (line) => void process.stderr.write(line),
     })
     const raw = JSON.stringify({
       event_id: "evt-again",

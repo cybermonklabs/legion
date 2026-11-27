@@ -6,8 +6,6 @@ import (
 	"net/url"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
@@ -34,12 +32,6 @@ type deliveryPipelineResponse struct {
 	Targets           measures.Targets               `json:"targets"`
 	Freshness         delivery.DeliveryFreshnessView `json:"freshness"`
 }
-
-const (
-	pipelineProductionApplyCard measures.DeployJobCardID = "production_apply"
-	pipelineStagingE2ECard      measures.DeployJobCardID = "staging_e2e"
-	pipelineStagingApplyCard    measures.DeployJobCardID = "staging_apply"
-)
 
 // deliveryPipelinePRChecks is the PR-checks workflow's part of the Pipeline page: its whole runs'
 // timing, its slowest jobs and the jobs that failed in the last 24 hours, both lists never null.
@@ -89,39 +81,25 @@ type pipelinePopulation struct {
 
 // readPipelinePopulation reads the Pipeline page's runs and pull requests for the shown days
 // ending on at's UTC day. Runs are read by start over the whole of the shown days, today included
-// past at.
+// past at, by delivery.ReadCIRows: the PR-checks runs with every job, which their job timings and
+// failing jobs tally whatever their names (measures.PRChecks), and the deploy runs with the jobs
+// the deploy cards follow and no other (measures.DeployJobs reads none else). The two reads depend
+// on neither of each other, and are read side by side.
 func (s *server) readPipelinePopulation(ctx context.Context, settings delivery.DeliverySettings, at time.Time) (pipelinePopulation, error) {
-	pool := s.deps.Store.Pool
 	from := measures.WindowStart(at)
 	to := from.AddDate(0, 0, measures.ShownDayCount)
-
-	// The two run reads are independent, so they run side by side, each on a hold mark of its own
-	// (store.ForConcurrentRead), as readDeliveryPopulation runs its reads.
 	var pop pipelinePopulation
-	reads, readsCtx := errgroup.WithContext(ctx)
-	for _, read := range []struct {
-		into                *delivery.RunsWithJobs
-		kind                delivery.DeliveryRunKind
-		branch, githubEvent string
-	}{
-		{&pop.checks, delivery.DeliveryRunKindPRChecks, "", "pull_request"},
-		{&pop.deploys, delivery.DeliveryRunKindDeploy, "main", "push"},
-	} {
-		readCtx, err := store.ForConcurrentRead(readsCtx)
-		if err != nil {
-			_ = reads.Wait()
-			return pipelinePopulation{}, err
-		}
-		reads.Go(func() (err error) {
-			*read.into, err = delivery.ListRunsWithJobsStartedIn(readCtx, pool, settings.DeployRepo, read.kind, read.branch, read.githubEvent, from, to)
+	if err := store.ReadSideBySide(ctx,
+		func(ctx context.Context) error {
+			ci, err := delivery.ReadCIRows(ctx, s.deps.Store.Pool, settings.DeployRepo, from, to, measures.DeployCardJobNames(measures.DeployCards(settings)))
+			pop.checks, pop.deploys = ci.Checks, ci.Deploys
 			return err
-		})
-	}
-	if err := reads.Wait(); err != nil {
-		return pipelinePopulation{}, err
-	}
-	var err error
-	if pop.leadTimes, err = s.readDeliveryRows(ctx, settings, from, to, url.Values{}, false, false); err != nil {
+		},
+		func(ctx context.Context) (err error) {
+			pop.leadTimes, err = s.readDeliveryRows(ctx, settings, from, to, url.Values{}, false, false)
+			return err
+		},
+	); err != nil {
 		return pipelinePopulation{}, err
 	}
 	return pop, nil
@@ -129,36 +107,21 @@ func (s *server) readPipelinePopulation(ctx context.Context, settings delivery.D
 
 // deliveryPipelineCompute is the body of GET /api/v1/delivery/pipeline and GET
 // /api/v2/delivery/pipeline as of at, from a population read for at or narrowed to it. It reads
-// nothing; now is only computed_at.
+// nothing; now is only computed_at. The PR checks, the deploy cards and the lead times build each
+// shown day's rows into day parts and fold them (measures.PRChecks, DeployJobs and LeadTimes), the
+// slowest jobs ranked by the head of measures.FoldSlowestJobs' ranking at
+// measures.SlowestMinResults; the failing-jobs table is read from the run jobs themselves
+// (measures.FailingJobs).
 func deliveryPipelineCompute(settings delivery.DeliverySettings, pop pipelinePopulation, at, now time.Time) deliveryPipelineResponse {
 	days := measures.ShownDays(at)
 	rollup := ""
 	if settings.PRChecksRollupJobName != nil {
 		rollup = *settings.PRChecksRollupJobName
 	}
-	run, slowest, failing := measures.PRChecks(pop.checks.Runs, pop.checks.Jobs, days, at, rollup)
-	cards := []measures.DeployJobCard{{
-		CardID:     pipelineProductionApplyCard,
-		Production: settings.Production(),
-	}}
-	for _, optional := range []struct {
-		cardID measures.DeployJobCardID
-		name   *string
-	}{
-		{pipelineStagingE2ECard, settings.StagingE2EJobName},
-		{pipelineStagingApplyCard, settings.StagingApplyJobName},
-	} {
-		if optional.name == nil {
-			continue
-		}
-		cards = append(cards, measures.DeployJobCard{
-			CardID:     optional.cardID,
-			Production: delivery.Production{JobNames: []string{*optional.name}},
-		})
-	}
-	timings := measures.DeployJobs(pop.deploys.Runs, pop.deploys.Jobs, cards, days)
-	stagingE2E := optionalDeployJobTiming(timings, pipelineStagingE2ECard)
-	stagingApply := optionalDeployJobTiming(timings, pipelineStagingApplyCard)
+	run, slowest, failing := measures.PRChecks(pop.checks.Runs, pop.checks.Jobs, days, at, rollup, measures.SlowestMinResults)
+	timings := measures.DeployJobs(pop.deploys.Runs, pop.deploys.Jobs, measures.DeployCards(settings), days)
+	stagingE2E := optionalDeployJobTiming(timings, measures.CardStagingE2E)
+	stagingApply := optionalDeployJobTiming(timings, measures.CardStagingApply)
 	derived := pop.leadTimes.derive(settings)
 	mergeToProduction, openedToMerge := measures.LeadTimes(derived.measuresPRs(), days)
 	return deliveryPipelineResponse{
@@ -167,7 +130,7 @@ func deliveryPipelineCompute(settings delivery.DeliverySettings, pop pipelinePop
 		PRChecks:          deliveryPipelinePRChecks{Run: run, SlowestJobs: slowest, FailingJobs: failing},
 		StagingE2E:        stagingE2E,
 		StagingApply:      stagingApply,
-		ProductionApply:   timings[pipelineProductionApplyCard],
+		ProductionApply:   timings[measures.CardProductionApply],
 		MergeToProduction: mergeToProduction,
 		OpenedToMerge:     openedToMerge,
 		Targets:           measures.DefaultTargets,
@@ -195,9 +158,9 @@ func (p pipelinePopulation) narrowedTo(settings delivery.DeliverySettings, at ti
 	return narrowed
 }
 
-// pipelineNextExpiry is the next UTC midnight (measures.ShownDays, pipeline.go:142) or the earliest
+// pipelineNextExpiry is the next UTC midnight (measures.ShownDays, pipeline.go:153) or the earliest
 // failing-jobs edge, whichever comes first: just past a timed PR-checks run's completion +
-// measures.FailingWindow (pipeline.go:33), when it leaves the 24 hours the table counts, or a timed
+// measures.FailingWindow (pipeline.go:45), when it leaves the 24 hours the table counts, or a timed
 // run's completion itself when that is after now (a clock ahead of Dispatch's), when it enters them.
 func pipelineNextExpiry(pop pipelinePopulation, now time.Time) time.Time {
 	next := nextUTCMidnight(now)

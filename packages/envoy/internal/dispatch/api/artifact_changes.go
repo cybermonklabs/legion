@@ -97,7 +97,7 @@ type artifactBlockChange struct {
 
 // getArtifactChanges answers GET /api/v1/artifacts/{id}/changes: what changed between versions
 // from and to of one document (artifactChanges), its document read first (changedDocument), so
-// an id that names nothing answers that 404 whatever the query holds, as idRoutes says it does.
+// an id that names nothing answers that 404 whatever the query holds, as its route's ID says it does.
 // Both numbers must be version numbers a document can have (parseVersionNumber) and from below
 // to (400 INVALID_VERSION). GET /api/v2/artifacts/{id}/changes answers the same change set from
 // its decoded query (getArtifactChangesV2), and both write it in writeArtifactChanges.

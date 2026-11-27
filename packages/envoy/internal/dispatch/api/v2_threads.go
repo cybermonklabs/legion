@@ -104,12 +104,13 @@ func commentWriteRefusals(more ...apicode.Refusal) []apicode.Refusal {
 
 // messageWriteRefusals are the refusals of the message an issue's or a session's message list
 // takes (createStoredMessage), with more, the route's own, after them: its body, its target,
-// delivery and in_reply_to, a reply to a deleted message, and a target that moved under its first
-// attempt.
+// delivery and in_reply_to, a reply to a deleted message, a target that moved under its first
+// attempt, and a quote its in_reply_to_block does not hold or holds more than once
+// (replyQuoteRefusal, namedBlock.setQuote).
 func messageWriteRefusals(more ...apicode.Refusal) []apicode.Refusal {
 	return append([]apicode.Refusal{
 		undeclaredKeyRefusal, messageInvalidRefusal, messageInputRefusal, valuePastBoundRefusal,
-		bodyDecisionBlockRefusal, postDeletedRefusal, messageTargetMovedRefusal,
+		bodyDecisionBlockRefusal, postDeletedRefusal, messageTargetMovedRefusal, targetMissingRefusal, quoteAmbiguousRefusal,
 	}, more...)
 }
 
@@ -254,7 +255,7 @@ func (s *server) v2ThreadRows() []routeRow {
 		{
 			Method: http.MethodPost, Pattern: "/comments/{id}/replies", Auth: authBearer, Versions: onlyV2,
 			Description: "The mentioned session's answer to one delivery attempt of a comment {actor, attempt, target?, " +
-				"body | error, reply_to_block?}, under a bearer credential: the session names itself in actor, and the " +
+				"body | error, reply_to_block?, quote?, occurrence?}, under a bearer credential: the session names itself in actor, and the " +
 				"attempt, of the mention target names (required where the comment has several mentions, 400 " +
 				"MENTION_INPUT), must be that session's own; a cookie caller, an attempt that is not that session's own and " +
 				"a body naming neither or both of body and error are 403 REPLY_FORBIDDEN. For a mention of a role " +
@@ -266,7 +267,8 @@ func (s *server) v2ThreadRows() []routeRow {
 				"the comment's thread, its reply_to_block naming one block of the comment it answers, and marks the attempt " +
 				"sent; answers 201 the reply with ask_waiting_on, and appends comment.answered. An attempt already answered " +
 				"posts nothing and answers 200 the stored reply. An error marks the attempt failed and answers 200 the " +
-				"attempt. 404 COMMENT_NOT_FOUND for an id no comment has, or an attempt the mention does not have.",
+				"attempt. 404 COMMENT_NOT_FOUND for an id no comment has, or an attempt the mention does not have. " +
+				replyQuoteDescription("reply_to_block", "INVALID_COMMENT"),
 			Handler:  s.replyCommentV2,
 			Resource: "replies", Kind: kindCollection, Key: "{id}",
 			Body: requestBody{Kind: bodyJSON, Type: commentReplyInput{}},
@@ -283,6 +285,7 @@ func (s *server) v2ThreadRows() []routeRow {
 			Refusals: []apicode.Refusal{
 				undeclaredKeyRefusal, commentMissingRefusal, replyNotRecipientRefusal, envoyUnreachableRefusal,
 				mentionInvalidRefusal, commentInvalidRefusal, valuePastBoundRefusal, bodyDecisionBlockRefusal, postDeletedRefusal,
+				targetMissingRefusal, quoteAmbiguousRefusal,
 			},
 		},
 		{
@@ -355,7 +358,7 @@ func (s *server) v2ThreadRows() []routeRow {
 		{
 			Method: http.MethodPost, Pattern: "/issues/{key}/comments", Auth: authAny, Versions: onlyV2,
 			Description: "Comment on an issue, a quote of one of its documents, or an ask {body, anchor?, reply_to?, " +
-				"reply_to_block?, ask_id?, mentions?, delivery?, turn?, suggestion?}, a bearer naming its session in actor: a " +
+				"reply_to_block?, quote?, occurrence?, ask_id?, mentions?, delivery?, turn?, suggestion?}, a bearer naming its session in actor: a " +
 				"reply names the comment it answers in reply_to and one block of it in reply_to_block; with ask_id in place of " +
 				"reply_to, reply_to_block names one part of that ask. mentions [{target}] (at most 10, role:<name> or " +
 				"session:<id>) deliver the comment in delivery's mode (btw, aside or steer, the default), and a suggestion " +
@@ -365,7 +368,7 @@ func (s *server) v2ThreadRows() []routeRow {
 				"201 the comment with ask_waiting_on and advice beside it; a repeat under its Idempotency-Key answers the " +
 				"comment as it stands, its owed mentions sent again. 400 INVALID_COMMENT, MENTION_INPUT or TURN_REQUIRES_ASK " +
 				"for a comment it refuses, 400 CAP_EXCEEDED past a bound, 409 ROUTE_CHANGED when the issue's route moves under " +
-				"the write, 404 ISSUE_NOT_FOUND.",
+				"the write, 404 ISSUE_NOT_FOUND. " + replyQuoteDescription("reply_to_block", "INVALID_COMMENT"),
 			Handler:  s.createIssueCommentV2,
 			Resource: "comments", Kind: kindCollection, Key: "{id}",
 			Body:  requestBody{Kind: bodyJSON, Type: commentInput{}},
@@ -521,7 +524,7 @@ func (s *server) v2ThreadRows() []routeRow {
 		{
 			Method: http.MethodPost, Pattern: "/messages/{id}/replies", Auth: authBearer, Versions: onlyV2,
 			Description: "The targeted session's answer to one delivery attempt of a message {actor, attempt, body | error, " +
-				"in_reply_to_block?}, under a bearer credential: the session names itself in actor, and the attempt must be " +
+				"in_reply_to_block?, quote?, occurrence?}, under a bearer credential: the session names itself in actor, and the attempt must be " +
 				"its own; a cookie caller, an attempt that is not its own and a body naming neither or both of body and " +
 				"error are 403 REPLY_FORBIDDEN. For an attempt sent for a route to a role (role:<name>), the role's live " +
 				"holder, as the Envoy listener names it, may answer it too; for one sent to a session (session:<id>), so " +
@@ -534,7 +537,7 @@ func (s *server) v2ThreadRows() []routeRow {
 				"text as the session's follow-up, threaded under its first reply (201); with follow_up=false (the default), or " +
 				"with text the session already posted there, nothing is posted and the stored message answers 200 marked " +
 				"duplicate. An error marks the attempt failed and answers 200 the attempt. 404 MESSAGE_NOT_FOUND for an id no " +
-				"message has, or an attempt it does not have.",
+				"message has, or an attempt it does not have. " + replyQuoteDescription("in_reply_to_block", "INVALID_MESSAGE"),
 			Handler:  s.replyMessageV2,
 			Resource: "replies", Kind: kindCollection, Key: "{id}",
 			Query: messageRepliesV2Query{},
@@ -552,6 +555,7 @@ func (s *server) v2ThreadRows() []routeRow {
 			Refusals: []apicode.Refusal{
 				undeclaredKeyRefusal, messageMissingRefusal, replyNotRecipientRefusal, envoyUnreachableRefusal,
 				messageInputRefusal, messageInvalidRefusal, valuePastBoundRefusal, bodyDecisionBlockRefusal, postDeletedRefusal,
+				targetMissingRefusal, quoteAmbiguousRefusal,
 			},
 		},
 		{
@@ -567,7 +571,8 @@ func (s *server) v2ThreadRows() []routeRow {
 		},
 		{
 			Method: http.MethodPost, Pattern: "/issues/{key}/messages", Auth: authAny, Versions: onlyV2,
-			Description: "Post a message on an issue {body, in_reply_to?, in_reply_to_block?, target?, delivery?, urgency?}, " +
+			Description: "Post a message on an issue {body, in_reply_to?, in_reply_to_block?, quote?, occurrence?, target?, delivery?, " +
+				"urgency?}, " +
 				"a bearer naming its session in actor: a reply names the message of this issue it answers in in_reply_to and " +
 				"one block of it in in_reply_to_block; target (role:<name> or session:<id>) with delivery (btw, aside or " +
 				"steer) delivers it, and a person's reply that names no target is delivered as its thread was; urgency is " +
@@ -575,7 +580,7 @@ func (s *server) v2ThreadRows() []routeRow {
 				"withdrawn post taking no new text. Answers 201 the message once a targeted one's first " +
 				"attempt has settled, with advice beside it; a repeat under its Idempotency-Key answers the message as it " +
 				"stands, its owed attempt sent first. 400 INVALID_MESSAGE or MESSAGE_INPUT for a message it refuses, 404 " +
-				"ISSUE_NOT_FOUND.",
+				"ISSUE_NOT_FOUND. " + replyQuoteDescription("in_reply_to_block", "INVALID_MESSAGE"),
 			Handler:  s.createIssueMessageV2,
 			Resource: "messages", Kind: kindCollection, Key: "{id}",
 			Body:  requestBody{Kind: bodyJSON, Type: createMessageInput{}},
@@ -601,7 +606,7 @@ func (s *server) v2ThreadRows() []routeRow {
 		{
 			Method: http.MethodPost, Pattern: "/agents/{session_id}/messages", Auth: authAny, Versions: onlyV2,
 			Description: "Send an issue-less targeted message to a session {body, delivery, in_reply_to?, in_reply_to_block?, " +
-				"connected_only?}, which needs the person scope: delivery is btw, aside or steer, and a reply names a message " +
+				"quote?, occurrence?, connected_only?}, which needs the person scope: delivery is btw, aside or steer, and a reply names a message " +
 				"of this session's conversation in in_reply_to. It is answered 201 once its own " +
 				"attempt has settled. A session the Envoy listener knows and that is not running is a recipient: the listener " +
 				"stores the message and hands it over when that session runs again, and the attempt is recorded queued; one " +
@@ -609,7 +614,8 @@ func (s *server) v2ThreadRows() []routeRow {
 				"session running now and fails the attempt with \"the session is stopped\", nothing stored, as a person's own " +
 				"Send or Aside whose whole body is one /model or /effort line always does. A repeat under its Idempotency-Key " +
 				"answers the message as it stands, its owed attempt sent first. 400 INVALID_MESSAGE or MESSAGE_INPUT for a " +
-				"message it refuses, the second for an in_reply_to outside this session's conversation among others.",
+				"message it refuses, the second for an in_reply_to outside this session's conversation among others. " +
+				replyQuoteDescription("in_reply_to_block", "INVALID_MESSAGE"),
 			Handler:  s.createAgentMessageV2,
 			Resource: "messages", Kind: kindCollection, Key: "{id}",
 			Body:        requestBody{Kind: bodyJSON, Type: createAgentMessageInput{}},

@@ -24,7 +24,7 @@ import (
 // and stays quiet about every other document.
 //
 // The write belongs to the deployment's daemon and to no person, which is why the route declares
-// no personal scope — routeScopes names it nowhere (routes_table.go): the daemon presents the
+// no personal scope — its declaration states no OAuthScopes: the daemon presents the
 // credential the deployment configured, as it does on PUT /api/v1/projects/{key}/gated-steps,
 // and such a credential holds no person scope. The shared token holds no scope at all, and the
 // daemon's own broker token holds legion-status alone (brokerTokenActor), which no route's

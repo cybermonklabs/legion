@@ -15,7 +15,6 @@ package api
 
 import (
 	"encoding/json"
-	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -195,11 +194,10 @@ func TestNoBrokerTokenGetsApprove(t *testing.T) {
 }
 
 // TestNoJobTokenReachesARowThatNeedsAPerson: a job's token names its identity and no person, so it
-// holds no OAuth scope, and each row routeScopes says needs person refuses both of a job's tokens
-// 403 OAUTH_SCOPE_REQUIRED naming person before its handler runs; a row that needs approve as well
-// names person, the first scope of its set. The walk is over routeScopes itself, on a server that
-// mounts the test hooks so that every row it names is served, and a row the server does not serve
-// fails the walk rather than passing unprobed.
+// holds no OAuth scope, and each route whose declaration's OAuthScopes name person refuses both of
+// a job's tokens 403 OAUTH_SCOPE_REQUIRED naming person before its handler runs; a route that needs
+// approve as well names person, the first scope of its set. The walk is over every route the
+// server mounts, on a server that mounts the test hooks, so every declaration is probed.
 func TestNoJobTokenReachesARowThatNeedsAPerson(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
@@ -214,21 +212,12 @@ func TestNoJobTokenReachesARowThatNeedsAPerson(t *testing.T) {
 	for _, token := range tokens {
 		rig.broker.Says(token.token, token.answer)
 	}
-	served := make(map[string]apiRoute)
-	for _, route := range rig.served.routes() {
-		served[route.Method+" "+route.Pattern] = route
-	}
-
 	probed := 0
-	for _, name := range slices.Sorted(maps.Keys(routeScopes)) {
-		if !slices.Contains(routeScopes[name], model.ScopePerson) {
+	for _, route := range rig.served.routes() {
+		if !slices.Contains(route.OAuthScopes, model.ScopePerson) {
 			continue
 		}
-		route, mounted := served[name]
-		if !mounted {
-			t.Errorf("routeScopes names %s, which this server does not serve: the walk cannot hold it to the rule", name)
-			continue
-		}
+		name := route.Method + " " + route.Pattern
 		probed++
 		t.Run(name, func(t *testing.T) {
 			path := routeProbePath(route.Pattern)
@@ -251,7 +240,7 @@ func TestNoJobTokenReachesARowThatNeedsAPerson(t *testing.T) {
 		})
 	}
 	if probed == 0 {
-		t.Fatal("routeScopes names no row that needs person: the walk held nothing to the rule")
+		t.Fatal("no route's OAuthScopes name person: the walk held nothing to the rule")
 	}
-	t.Logf("routeScopes names person on %d rows", probed)
+	t.Logf("%d routes' OAuthScopes name person", probed)
 }

@@ -318,11 +318,11 @@ func (s *server) deleteMessageAs(w http.ResponseWriter, r *http.Request, actor m
 // edit is written - reply_body, and reply_block with its text - as its create carried the preview
 // of the post as it read then. Its message.deleted carries no text at all: the deleted message's
 // body is already cleared in the message this payload is built from, and of the post the reply
-// answers it carries no reply_body and the reply_block with every field but its text
-// (deleteEventReplyBlock). It keeps every field that routes it: in_reply_to, thread_target, the
-// block's node id and id, and the thread_logins. The payload reaches every subscriber and every
-// reader of the conversation, so the block is read as everyReader, as the create's is
-// (finishPendingMessageDelivery).
+// answers it carries no reply_body and the reply_block with every field but its text, its quote
+// and its occurrence (deleteEventReplyBlock). It keeps every field that routes it: in_reply_to,
+// thread_target, the block's node id and id, and the thread_logins. The payload reaches every
+// subscriber and every reader of the conversation, so the block is read as everyReader, as the
+// create's is (finishPendingMessageDelivery).
 func (s *server) messageCorrectionEvent(
 	ctx context.Context,
 	tx pgx.Tx,

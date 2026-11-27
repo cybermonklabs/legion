@@ -288,7 +288,7 @@ func (s *server) recordAnswer(w http.ResponseWriter, r *http.Request, actor mode
 	//
 	// An approve-only token (model.Credential.ApproveOnly) reaches this answer because the approve
 	// list names it on both versions (POST /api/v1/asks/{id}/answer, and PUT /api/v2/asks/{id}/state
-	// for the state answered alone: approveScopeRoutes) for the answer of an approval request, and
+	// for the state answered alone: approveList) for the answer of an approval request, and
 	// for nothing else: an answer of any other ask, a question's free text among them, is no
 	// approval, so it is refused here (approveOnlyAnswerRefusal), under the same lock and for the
 	// same reason, with the approve-only checks' own code. This is the check of the write itself. A

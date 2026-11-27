@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/shapetest"
@@ -188,6 +189,36 @@ func TestDeliverSubjectIsNotStored(t *testing.T) {
 	}
 	if StreamCaptures(subject) {
 		t.Fatalf("the stream captures %s", subject)
+	}
+}
+
+// A relay frame is a stored message's bytes with the relay's headers, so a message that fits the
+// server's max payload alone can make a frame past it, which nats.go refuses before sending.
+// Publish names that refusal ErrTooLarge, an ErrRefused, with the frame's size, headers included,
+// and the limit. The connection stays up and still sends a frame at the limit.
+func TestPublishNamesAFramePastTheMaxPayloadTooLarge(t *testing.T) {
+	t.Parallel()
+	_, consumers := sessionConsumersOnStream(t)
+	limit := int(consumers.client.Connection().MaxPayload())
+	header := nats.Header{}
+	header.Set("Envoy-Subject", "notifications.agent.ses_abc")
+	headerBytes := len("NATS/1.0\r\nEnvoy-Subject: notifications.agent.ses_abc\r\n\r\n")
+	frame := func(data int) *nats.Msg {
+		return &nats.Msg{Subject: DeliverSubject("ses_abc"), Reply: "_INBOX.relay.token", Header: header, Data: make([]byte, data)}
+	}
+
+	err := consumers.Publish(context.Background(), frame(limit-headerBytes+1))
+	if !errors.Is(err, ErrTooLarge) || !errors.Is(err, ErrRefused) {
+		t.Fatalf("publish of a frame one byte past the max payload = %v, want ErrTooLarge, an ErrRefused", err)
+	}
+	if want := fmt.Sprintf("a frame of %d bytes, headers included, against the server's max payload of %d bytes", limit+1, limit); !strings.Contains(err.Error(), want) {
+		t.Fatalf("publish error = %q, want it to say %q", err, want)
+	}
+	if !consumers.client.Connection().IsConnected() {
+		t.Fatalf("the refusal left the connection %v, want it connected", consumers.client.Connection().Status())
+	}
+	if err := consumers.Publish(context.Background(), frame(limit-headerBytes)); err != nil {
+		t.Fatalf("publish of a frame at the max payload: %v", err)
 	}
 }
 
@@ -1177,7 +1208,12 @@ func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 		t.Fatalf("ack %d: %v", first.StreamSeq, err)
 	}
 	// One pull request asks for a whole batch, so the server delivered all three: the two this
-	// row never read sit unread in the pull's queue, and they are what the consumer awaits.
+	// row never read are what the consumer awaits, and Release returns them once the pull holds
+	// them. The row waits for the pull to hold both (waitForQueued), which is the state Release
+	// gives back from. The server's count of the two awaiting an ack is no wait for that: the
+	// server counts a message delivered before the message reaches the pull, and a Release run in
+	// between returned the one the pull held.
+	waitForQueued(t, pull, 2)
 	held := waitForAckPending(t, consumers, session, 2)
 	t.Logf("before Release the consumer has NumWaiting %d and NumAckPending %d", held.NumWaiting, held.NumAckPending)
 	if returned, err := pull.Release(); returned != 2 || err != nil {
@@ -1394,9 +1430,11 @@ func TestListedConsumersAreKeptWhenARestartWouldChangeNothing(t *testing.T) {
 			t.Fatalf("the list holds no consumer for %s (%d listed)", id, len(listed))
 		}
 	}
+	// The start carries the floor it kept the consumer at, StartSeq-1, as every other start does,
+	// so the relay drops what it passed at or below that floor (cmd/listener relayPassedSet.prune).
 	start, ok, err := consumers.KeepListed(ctx, kept, []string{contracts.LegacyAgentSubject(kept)}, listed[kept])
-	if want := (SessionConsumerStart{StartSeq: written + 1, StreamID: streamIDOf(t, consumers)}); err != nil || !ok || start != want {
-		t.Fatalf("KeepListed of an acked consumer = %+v, %t, %v; want %+v kept", start, ok, err, want)
+	if want := (SessionConsumerStart{StartSeq: written + 1, StreamID: streamIDOf(t, consumers), AckFloor: written}); err != nil || !ok || start != want {
+		t.Fatalf("KeepListed of an acked consumer = %+v, %t, %v; want %+v kept, its AckFloor StartSeq-1", start, ok, err, want)
 	}
 	if _, ok, err := consumers.KeepListed(ctx, held, []string{contracts.LegacyAgentSubject(held)}, listed[held]); err != nil || ok {
 		t.Fatalf("KeepListed of a consumer with a message awaiting an ack = %t, %v; want it left to RestartAtFloor", ok, err)

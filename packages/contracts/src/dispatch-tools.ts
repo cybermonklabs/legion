@@ -946,6 +946,13 @@ export const STEP_KINDS = ["step", "retro", "merge"] as const;
  *  `contracts.StepResultFailed` and `contracts.StepResultStopped`. A run that still runs has none. */
 export const STEP_RESULTS = ["passed", "failed", "stopped"] as const;
 
+/** Where a step of an issue's plan stands in the steps read (`PlannedStep.state`), from the records
+ *  of the plan's own run of the issue: not started before any run of it, running while its newest
+ *  run has no end, then that run's result (`STEP_RESULTS`). Generated into Go as
+ *  `contracts.PlannedStepNotStarted` and `contracts.PlannedStepRunning`, which Dispatch's steps read
+ *  writes; the OpenAPI document names them as the state's enum, which the web client switches on. */
+export const PLANNED_STEP_STATES = ["not started", "running", ...STEP_RESULTS] as const;
+
 /** The codes of the step write's refusals that no retry changes: a value outside its form, a writer
  *  that is not the daemon's session, and an id whose record is a run of another issue. Generated
  *  into Go as `contracts.StepInputCode`, `contracts.StepWriterCode` and
@@ -972,6 +979,22 @@ export const STEP_AGENT_TEXT_PATTERN = /^[!-~]{1,128}$/;
 /** STEP_AGENT_TEXT_PATTERN's rule in words, which Dispatch's refusal gives: generated into Go as
  *  `contracts.StepAgentTextRule`. */
 export const STEP_AGENT_TEXT_RULE_WORDS = "printable ASCII with no space, from 1 to 128 characters";
+
+/** The most bytes the id of a task a step record names holds. A task id is ASCII, so its bytes and
+ *  its characters are one count. Generated into Go as `contracts.StepTaskMax`. */
+export const STEP_TASK_MAX = 64;
+
+/** The form of the id of a task a step record names, which is also the id of a `plan_task` block
+ *  of an owner's plan: lowercase letters, digits and hyphens, the first a letter or a digit, at
+ *  most `STEP_TASK_MAX` bytes. Generated into Go as `contracts.StepTaskPattern`: Dispatch refuses
+ *  a step write and a plan write that names a task outside it, and the Legion daemon, through
+ *  `github.com/sjawhar/envoy/steprecord`, refuses a plan whose task block has such an id, whose
+ *  steps Dispatch could record none of. */
+export const STEP_TASK_PATTERN = new RegExp(`^[a-z0-9][a-z0-9-]{0,${STEP_TASK_MAX - 1}}$`);
+
+/** STEP_TASK_PATTERN's rule in words, which the refusal of either side gives: generated into Go as
+ *  `contracts.StepTaskRule`. */
+export const STEP_TASK_RULE_WORDS = `lowercase letters, digits and hyphens, starting with a letter or a digit, at most ${STEP_TASK_MAX} bytes`;
 
 /** A handoff's phase, the `{phase}` segment of the handoff routes: a lowercase slug. Legion writes
  *  `plan`, `implement`, `test` and `review`. Generated into Go as `contracts.HandoffPhasePattern`,
@@ -3243,22 +3266,29 @@ export const dispatchToolSpecs = [
     name: "dispatch_steps",
     example: { issue: "DSP-1" },
     description:
-      "Print each step that ran on an issue, as the Legion daemon recorded it at the step's " +
-      "start and at its end, and the experiment and the variant the issue was drawn into, where " +
-      "its records name one. The first line is `<KEY>: <n> steps in <m> tasks`. Where the " +
-      "records of the issue's newest run name an experiment, the next line is `Experiment " +
-      "<experiment>: variant <variant>.`, and an issue whose newest run's records name none " +
-      "prints no such line. Then each run of a step prints one line, task by task, in the order " +
-      "each task first ran: `<task> " +
+      "Print each task of an issue's plan and each step that ran on the issue, as the Legion " +
+      "daemon recorded it at the step's start and at its end, and the experiment and the " +
+      "variant the issue was drawn into, where its records name one. The first line is " +
+      "`<KEY>: <n> steps in <m> tasks`, where m counts each task listed, a task of the plan " +
+      "with no run included. Where the records of the issue's newest run name an experiment, " +
+      "the next line is `Experiment <experiment>: variant <variant>.`, and an issue whose " +
+      "newest run's records name none prints no such line. The tasks of the issue's newest " +
+      "plan come first, in the plan's order, then each other task with a run, in the order " +
+      "each first ran. A task of the plan prints `task <task> needs <needs>: <place> <step> " +
+      "<state>, ...`: needs is the tasks it needs as a list, [a,b], [] where it needs none, " +
+      "and - where its plan node recorded none, then each step the plan gives it, where state " +
+      "is where Dispatch says it stands among the records of the plan's own run: not started, " +
+      "running, or the result of its newest run there. Then each run of a step of the task " +
+      "prints one line: `<task> " +
       "<step> <kind> <role> <type> attempt <attempt> <agent> <model> <started_at> <ended_at> " +
       "<result>`. kind is step, retro or merge. step is the step's place in its task, from 1, " +
       "and 0 for a retro or a merge. attempt counts the runs of the same task, step and kind, " +
       "from 1. agent is the claim of the role that ran the step, and model is the model that " +
       "answered it, as provider/model. result is passed, failed or stopped. A field with no " +
       "value prints -, and a run that has not ended prints running for its end and its result. " +
-      "A closed issue's steps read too. An issue that no step ran on prints 0 steps in 0 tasks, " +
-      "and a key Dispatch does not hold fails as dispatch read fails for it, NOT_FOUND: not " +
-      `found. ${ISSUE_REFERENCE}`,
+      "A closed issue's steps read too. An issue that no step ran on and that has no plan prints " +
+      "0 steps in 0 tasks, and a key Dispatch does not hold fails as dispatch read fails for it, " +
+      `NOT_FOUND: not found. ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
     }),

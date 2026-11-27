@@ -1,37 +1,36 @@
 package api
 
 // routes_versions.go is how one route table serves two versions of the API (R2 of
-// dispatch://INFRA-4071/spec). Three kinds of row feed it, and routes() makes one apiRoute of
-// each (version, row) pair they declare:
+// dispatch://INFRA-4071/spec). Three kinds of declaration feed it, and routes() makes one apiRoute
+// of each (version, route) pair they declare:
 //
-//   - A v1Row (v1Rows, routes_table.go) is a route of /api/v1 as it stood when /api/v2 began, at
-//     its literal /api/v1 pattern. Its facts stand beside the table in the side maps, keyed by
-//     "<method> <pattern>" (writeClasses, routeScopes, idRoutes, routeShapes, keyedReplays,
-//     keyedRereads, answerHoldsSecret, keyedUploads), and in the pattern constants
-//     (issueUploadRoute, handoffWriteRoute, markdownRoundTripRoute, fileRoundTripRoute). The
-//     routes with a body limit of their own (routeBody) are the three uploads of keyedUploads,
-//     issueUploadRoute among them, and the routes of the other three constants; issueUploadRoute
-//     is also the v1Row that refuses a closed owner (RefusesClosedOwner). It names the route that
-//     answers it under /api/v2 in its Successor. /api/v1 alone serves it, and
-//     testdata/v1-only-routes.txt holds every one of them: those rows go when /api/v1 ends, so
-//     they keep the keys every open route pull request names rather than being re-keyed.
+//   - A route file's declaration (routeDecl, route_<path>+<method>.go) is a route of /api/v1 as it
+//     stood when /api/v2 began, at its literal /api/v1 pattern. Its facts are its declaration's
+//     fields - its write class, its ID, its scopes, its read class, its shape, its approve facts
+//     and the route that answers it under /api/v2 (Successor) - and, for the keyed layer, the side
+//     maps keyed by "<method> <pattern>" (keyedReplays, keyedRereads, answerHoldsSecret,
+//     keyedUploads) and the pattern constants (issueUploadRoute, handoffWriteRoute,
+//     markdownRoundTripRoute, fileRoundTripRoute). The routes with a body limit of their own
+//     (routeBody) are the three uploads of keyedUploads, issueUploadRoute among them, and the
+//     routes of the other three constants; issueUploadRoute is also the route that refuses a
+//     closed owner (RefusesClosedOwner). /api/v1 alone serves it, and
+//     testdata/v1-only-routes.txt holds every one of them: those routes go when /api/v1 ends.
 //   - A routeRow (the v2<Group>Rows functions of the v2_<group>.go files) is a route written once,
 //     with a version-free pattern, and every fact a wrapper of register or a reader of the route
 //     reads is one of its named columns. It is served at /api/v2 and, unless its Versions says
 //     otherwise, at /api/v1 too: a row a later change adds is served in both versions by one
 //     declaration (R2), and the decoder and the authority gate read and hold its Query, its Body
-//     and its Authorities at both paths (apiRoute.decoded). A row that answers for /api/v1 rows
+//     and its Authorities at both paths (apiRoute.decoded). A row that answers for /api/v1 routes
 //     which keep their own answer is served at /api/v2 alone (Versions: onlyV2).
-//   - A testHookRow (testHookRows) is a test hook, served at its /api/v1 path and at
-//     /api/v2/_test/<that path without /api/v1 and /_test>, both only when Deps.TestHooksEnabled.
-//     Its facts are its side-map entries, as a v1Row's are.
+//   - A test hook's declaration (routeDecl.TestHook) is served at its /api/v1 path and at
+//     /api/v2/_test/<that path without /api/v1 and /_test>, both only when Deps.TestHooksEnabled
+//     (testHookRoutes). Its facts are its declaration's, as a route file's are.
 //
-// Every wrapper of register reads the apiRoute and never a string key: routes() copies a v1Row's
-// side-map entries into the columns of the routeRow its apiRoute carries, so a wrapper reads one
-// field whichever kind of row declared the route.
+// Every wrapper of register reads the apiRoute and never a string key: routes() copies a
+// declaration's facts into the columns of the routeRow its apiRoute carries (v1Route), so a
+// wrapper reads one field whichever kind of declaration declared the route.
 
 import (
-	"cmp"
 	"encoding/json"
 	"net/http"
 	"slices"
@@ -41,15 +40,16 @@ import (
 )
 
 // routeVersions is which versions of the API serve a routeRow. Its zero value is both. A route
-// only /api/v1 serves is no routeRow: it is a v1Row, which names its successor, and the frozen
-// list testdata/v1-only-routes.txt holds it (TestAV1OnlyRowOutsideTheFrozenListFails).
+// only /api/v1 serves is no routeRow: it is a route file's declaration, which names its successor,
+// and the frozen list testdata/v1-only-routes.txt holds it
+// (TestAV1OnlyRowOutsideTheFrozenListFails).
 type routeVersions int
 
 const (
 	// bothVersions serves the row at /api/v1<Pattern> and at /api/v2<Pattern>.
 	bothVersions routeVersions = iota
 	// onlyV2 serves the row at /api/v2<Pattern> alone: a route of the new shape, which answers
-	// what the v1Rows that name it as their Successor answered, while those rows keep their own
+	// what the /api/v1 routes that name it as their Successor answered, while those rows keep their own
 	// answer at /api/v1. A row with no older /api/v1 answer takes the zero value instead.
 	onlyV2
 )
@@ -62,20 +62,7 @@ func versionPrefix(version apiVersion) string {
 	return "/api/v1"
 }
 
-// v1Row is a row of v1Rows: the five columns every route has, written as a positional literal
-// in the order of today's /api/v1 table, and the route that answers it under /api/v2. Its other
-// facts stand in the side maps beside the table, keyed by "<method> <pattern>" (routes_versions.go,
-// the file comment).
-type v1Row struct {
-	Method      string
-	Pattern     string
-	Auth        routeAuth
-	Description string
-	Handler     http.HandlerFunc
-	Successor   successor
-}
-
-// successor is what answers a v1Row under /api/v2 (R2): the route the route map names for it
+// successor is what answers a /api/v1 route under /api/v2 (R2): the route the route map names for it
 // (dispatch://INFRA-2946/artifact/route-map-md, section (a)), but for row 67, which maps to the
 // deployment-wide GET /deploy-runs/{id} since its run is read from the deployment's own
 // repository, and for the two near-copy rows of #4103, which the map predates and which map to GET
@@ -112,7 +99,7 @@ type successor struct {
 	None string
 }
 
-// successorIs is the successor of a v1Row that keeps a route of its own in /api/v2: target is
+// successorIs is the successor of a /api/v1 route that keeps a route of its own in /api/v2: target is
 // the version-free pattern with the successor's query after a `?` where it has one, and each
 // binding is `<wildcard>=<value>` (successor.Path).
 func successorIs(method, target string, bindings ...string) successor {
@@ -128,7 +115,7 @@ func successorIs(method, target string, bindings ...string) successor {
 	return next
 }
 
-// deletedFor is the successor of a v1Row /api/v2 has no route for, written as successorIs
+// deletedFor is the successor of a /api/v1 route /api/v2 has no route for, written as successorIs
 // writes one: target is the v2 route that answers for it.
 func deletedFor(method, target string, bindings ...string) successor {
 	next := successorIs(method, target, bindings...)
@@ -136,23 +123,11 @@ func deletedFor(method, target string, bindings ...string) successor {
 	return next
 }
 
-// whenNone is next for a row whose answer lists every value of the wildcard its handler
+// whenNone is next for a route whose answer lists every value of the wildcard its handler
 // resolves, where an answer listing none links pattern (successor.None).
 func (next successor) whenNone(pattern string) successor {
 	next.None = pattern
 	return next
-}
-
-// testHookRow is a test hook's row: the five columns as a v1Row writes them, its pattern the
-// /api/v1 path the hook has always answered at. A hook names no successor of its own: it is
-// served in both versions (testHookV2Pattern), its /api/v1 answer links its /api/v2 path, and it
-// is none of R1's rows.
-type testHookRow struct {
-	Method      string
-	Pattern     string
-	Auth        routeAuth
-	Description string
-	Handler     http.HandlerFunc
 }
 
 // testHookV2Pattern is the /api/v2 path of a hook at pattern: /api/v2/_test/ and the hook's v1
@@ -411,8 +386,8 @@ type routeRow struct {
 	// Handler answers the route.
 	Handler http.HandlerFunc
 	// Versions is which versions serve the row; its zero value is both, and a row served in both
-	// is decoded and gated at both paths (apiRoute.decoded). A row that answers for v1Rows which
-	// keep their own answer at /api/v1 names onlyV2; a row a later change adds, which has no older
+	// is decoded and gated at both paths (apiRoute.decoded). A row that answers for /api/v1 routes
+	// which keep their own answer at /api/v1 names onlyV2; a row a later change adds, which has no older
 	// /api/v1 answer to keep, takes the zero value and is served at both by its one declaration.
 	Versions routeVersions
 	// OfINFRA979 marks a row of the INFRA-979 tree, which v2Infra979Rows declares and marks each
@@ -520,23 +495,23 @@ func (row routeRow) bodyLimit() routeBodyLimit {
 	}
 }
 
-// apiRoute is one mounted route: one (version, row) pair. register mounts each, and GET /api/v1
-// and GET /api/v2 each list those of their own version, so the server and its indexes can never
-// disagree about what is served. Its routeRow is the row whole, its Pattern the whole pattern
-// the route is mounted at, and for a route of the v1 table (a v1Row's, or a test hook's) every
-// column the side maps hold is copied in from them (v1Route), so a wrapper reads one field
-// whichever kind of row declared the route.
+// apiRoute is one mounted route: one (version, declaration) pair. register mounts each, and GET
+// /api/v1 and GET /api/v2 each list those of their own version, so the server and its indexes can
+// never disagree about what is served. Its routeRow is the row whole, its Pattern the whole
+// pattern the route is mounted at, and for a route file's declaration (a /api/v1 route, or a test
+// hook) every fact the declaration states is copied into the column a routeRow states it in
+// (v1Route), so a wrapper reads one field whichever kind of declaration declared the route.
 type apiRoute struct {
 	routeRow
 	// Version is the version the route is mounted under.
 	Version apiVersion
 	// Successor is the /api/v2 route that answers the route's own under /api/v1, which its Link
-	// header names (linkSuccessor): a v1Row's Successor, the /api/v2 mount of a routeRow served in
-	// both versions, a test hook's /api/v2/_test path. Zero on every /api/v2 route.
+	// header names (linkSuccessor): a route file's Successor, the /api/v2 mount of a routeRow served
+	// in both versions, a test hook's /api/v2/_test path. Zero on every /api/v2 route.
 	Successor successor
 	// Read is the read class of a mounted GET row, or the zero entry on other methods.
 	Read readEntry
-	// ApproveOnly is true on the /api/v1 routes the approve list names (approveScopeRoutes) and on
+	// ApproveOnly is true on the /api/v1 routes the approve list names (approveList) and on
 	// the /api/v2 route each of them has as its Successor, and on no other: the approve-only route
 	// check reads it (refuseApproveOnlyToken), so an approve-only token is refused on every other
 	// route of both versions before the route does anything. applyApprovePolicy stamps it, with
@@ -552,24 +527,15 @@ type apiRoute struct {
 	// may call for an approval request alone, on both versions: an approve-only token's keyed
 	// answer of any other ask is refused before its key is judged (gateApproveOnlyAskAnswer).
 	ApproveApprovalAsks bool
-	// columns marks the mount of a routeRow, whose facts are its own columns. A route of the v1
-	// table - and a route a test builds by hand - carries false, and the mount guards read its
-	// facts where the side maps hold them (sideMapName), so a side-map entry stays held to the
-	// table.
+	// columns marks the mount of a routeRow, whose Query, Body and Authorities the decoder and the
+	// authority gate read and hold (apiRoute.decoded). A route file's declaration - a /api/v1
+	// route or a test hook - and a route a test builds by hand carry false: their facts are copied
+	// into the columns too (v1Route), and /api/v1 keeps the decoding its handlers have always done.
 	columns bool
-	// sideMapPattern is the pattern the side maps hold a test hook's facts under, for the hook at
-	// its /api/v2 path; empty for every other route, whose own pattern is that key.
-	sideMapPattern string
-}
-
-// sideMapName is the "<method> <pattern>" the side maps hold the route's facts under, for a route
-// whose facts they hold.
-func (route apiRoute) sideMapName() string {
-	return route.Method + " " + cmp.Or(route.sideMapPattern, route.Pattern)
 }
 
 // shape is what the route takes and answers, as the OpenAPI emitter and the mount guards read it:
-// for a route of the v1 table its routeShapes entry, and for the mount of a routeRow its Shape
+// for a route file's declaration the Shape it states, and for the mount of a routeRow its Shape
 // with its Query and Body as the request. A union's arms are the document's to describe from
 // Body.Arms (openAPIUnionArms, unionBody), so they leave Request nil here.
 func (route apiRoute) shape() routeShape {
@@ -589,18 +555,19 @@ func (route apiRoute) shape() routeShape {
 	return shape
 }
 
-// v1Route is the apiRoute of a route of the v1 table at its literal /api/v1 pattern: the row's
-// five columns, and every fact the side maps and the pattern constants hold for it copied into
-// the columns a routeRow declares them in. For a v1 route these are the facts register has always
-// read, so every /api/v1 behaviour stays what it was.
-func v1Route(row routeRow, replays map[string]keyedRoute) apiRoute {
-	name := row.Method + " " + row.Pattern
-	row.Scope = writeClasses[name]
-	row.OAuthScopes = routeScopes[name]
-	row.Shape = routeShapes[name]
-	if entry, named := idRoutes[name]; named {
-		row.IDs = &entry
+// v1Route is the apiRoute of a route file's declaration at its literal /api/v1 pattern, its
+// handler bound to s: its five columns, and every fact the declaration, the keyed layer's side maps
+// and the pattern constants hold for it copied into the columns a routeRow declares them in. For a
+// /api/v1 route these are the facts register has always read, so every /api/v1 behaviour stays
+// what it was.
+func v1Route(s *server, declaration routeDecl, replays map[string]keyedRoute) apiRoute {
+	row := routeRow{
+		Method: declaration.Method, Pattern: declaration.Pattern, Auth: declaration.Auth,
+		Description: declaration.Description, Handler: s.bound(declaration.Handler),
+		Scope: declaration.WriteClass, OAuthScopes: declaration.OAuthScopes, Shape: declaration.Shape,
+		IDs: declaration.ID,
 	}
+	name := row.Method + " " + row.Pattern
 	row.ProjectOf = projectPathOf(row.Pattern)
 	if strings.Contains(row.Pattern, "{session_id}") {
 		row.SessionPath = "session_id"
@@ -613,12 +580,12 @@ func v1Route(row routeRow, replays map[string]keyedRoute) apiRoute {
 	row.Reread = keyedRereads[name]
 	row.AnswerHoldsSecret = answerHoldsSecret[name]
 	row.DocumentOwner = documentOwnerOf(row.Pattern)
-	return apiRoute{routeRow: row, Version: apiV1}
+	return apiRoute{routeRow: row, Version: apiV1, Successor: declaration.Successor, Read: declaration.Read}
 }
 
 // documentOwnerOf is whose documents a /api/v1 pattern looks a document up among by its slug or
-// filename, read from its shape as projectPathOf reads the object a pattern names, which routes()
-// copies onto a v1 route's DocumentOwner column (v1Route): an issue's under
+// filename, read from its shape as projectPathOf reads the object a pattern names, which v1Route
+// copies onto a /api/v1 route's DocumentOwner column: an issue's under
 // /api/v1/issues/{key}/artifacts/{slug}, a project's under /api/v1/projects/{key}/artifacts/{slug},
 // each with anything under it.
 func documentOwnerOf(pattern string) documentOwnerKind {
@@ -653,13 +620,12 @@ func mountRow(row routeRow) []apiRoute {
 }
 
 // testHookRoutes is a hook's two routes: at its /api/v1 path, whose successor is the other, and
-// at its /api/v2/_test path with the same facts, read from the side maps under the v1 path.
-func testHookRoutes(hook testHookRow) []apiRoute {
-	atV1 := v1Route(routeRow{Method: hook.Method, Pattern: hook.Pattern, Auth: hook.Auth, Description: hook.Description, Handler: hook.Handler}, nil)
+// at its /api/v2/_test path with the same facts, its declaration's.
+func testHookRoutes(s *server, hook routeDecl) []apiRoute {
+	atV1 := v1Route(s, hook, nil)
 	atV2 := atV1
 	atV2.Pattern = testHookV2Pattern(hook.Pattern)
 	atV2.Version = apiV2
-	atV2.sideMapPattern = hook.Pattern
 	atV1.Successor = successor{Method: hook.Method, Pattern: strings.TrimPrefix(atV2.Pattern, "/api/v2")}
 	return []apiRoute{atV1, atV2}
 }

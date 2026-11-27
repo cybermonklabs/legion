@@ -136,7 +136,8 @@ var (
 	BodyHoldsDecisionBlock = Condition{"decision block in a body"}
 	// CommentInvalid is a comment's body or thread members the write refuses: no body, a reply
 	// that carries an anchor or a suggestion, a reply_to or an ask_id naming nothing of the owner,
-	// a turn that is neither human nor agent.
+	// a turn that is neither human nor agent, a quote or an occurrence of its reply_to_block's words
+	// given outside their form (replyQuoteRefusal).
 	CommentInvalid = Condition{"comment input invalid"}
 	// MentionInvalid is a comment's mentions, a delivery mode, or a mention target the write
 	// refuses, or a mention reply's blank body.
@@ -185,7 +186,8 @@ var (
 	// SuggestionActionInvalid is an accept of an unanchored suggestion, or an accept or a reject of
 	// a comment that holds no suggestion.
 	SuggestionActionInvalid = Condition{"suggestion action invalid"}
-	// MessageInvalid is a message's body given blank, or an in_reply_to_block the write refuses.
+	// MessageInvalid is a message's body given blank, an in_reply_to_block the write refuses, or a
+	// quote or an occurrence of that block's words given outside their form (replyQuoteRefusal).
 	MessageInvalid = Condition{"message input invalid"}
 	// MessageInputRefused is a message's target, delivery mode or in_reply_to the write refuses,
 	// or a delivery reply's blank body.
@@ -287,7 +289,7 @@ var (
 	// it could be versioned.
 	EditLost = Condition{"edit lost to a concurrent change"}
 	// QuoteAmbiguous is a quote an edit or an anchor names that the document holds in several
-	// places.
+	// places, or a quote a reply names that its block holds more than once, with no occurrence.
 	QuoteAmbiguous = Condition{"quote ambiguous"}
 	// RouteMoved is a comment whose issue's delivery route changed while it was being written.
 	RouteMoved = Condition{"delivery route changed"}
@@ -330,7 +332,8 @@ var (
 	// SessionNotFollowing is the unfollow of an ask by a session that does not follow it.
 	SessionNotFollowing = Condition{"session not following"}
 	// TargetMissing is a quote, a heading or a block that an edit or an anchor names and the
-	// document does not hold.
+	// document does not hold, or a quote a reply names that its block does not hold at the
+	// occurrence it names.
 	TargetMissing = Condition{"target missing"}
 	// AskBlockMissing is an answer, a resolution, a decline or a reword of a block ask whose block
 	// its document no longer holds, which settlement has not retracted the ask for yet.

@@ -43,11 +43,11 @@ package api
 //     reading, which may name the project it reads as, or an account it would have written as):
 //     the read-only gate register puts outside it answers every such credential 403
 //     READ_ONLY_TOKEN on every route outside the read class, every write among them
-//     (refuseReadOnlyToken, readClasses). A job's `named` token is no such credential: it carries
-//     the one project its entry names, and the check below judges it as it judges a person's
-//     named token for that project. That is the rule and not a transitional measure: every caller
-//     that exists today writes exactly what it wrote before, which is what lets this deploy before
-//     anything presents a broker token.
+//     (refuseReadOnlyToken, routeDecl.Read). A job's `named` token is no such credential: it
+//     carries the one project its entry names, and the check below judges it as it judges a
+//     person's named token for that project. That is the rule and not a transitional measure:
+//     every caller that exists today writes exactly what it wrote before, which is what lets this
+//     deploy before anything presents a broker token.
 //
 // A credential that names one project writes every project's objects that a credential naming
 // none may write. The one exception is a private project that the credential does not name.
@@ -477,7 +477,7 @@ func outsideProjectScopeError(covers string) *apiError {
 // A row that declares OAuth scopes passes whatever session the credential proved, because those
 // rows are the person's own writes into someone else's conversation:
 // `POST /api/v1/agents/{session_id}/messages` and `PUT /api/v1/me/agents/{session_id}/state`
-// need the `person` scope (routeScopes), and a person writing to a session is by design writing
+// need the `person` scope (its route's OAuthScopes), and a person writing to a session is by design writing
 // into a session that is not theirs. Without this a person's own broker-issued credential could
 // only ever address the session it was issued for, which is nobody's conversation but its own.
 // The row decides it, not the request: gateRouteScopes stands ahead of this wrapper and has
@@ -629,15 +629,14 @@ func writesAsItsService(credential *model.Credential) bool {
 	return credential != nil && slices.Contains(writingServiceScopes, credential.ProjectScope)
 }
 
-// undecidableWrites names every mutating row the project check cannot decide: one that names no
-// write class - in writeClasses for a route of the v1 table, in its Scope column for a routeRow -
-// and one classed scopeProject whose path names no object to resolve (ProjectOf). Every other
-// class is decided: scopeDeployment and scopeProjectInBody by the class itself, scopeSession by
+// undecidableWrites names every mutating route the project check cannot decide: one that states no
+// write class - a route file in its declaration's WriteClass, a routeRow in its Scope column - and
+// one classed scopeProject whose path names no object to resolve (ProjectOf). Every other class is
+// decided: scopeDeployment and scopeProjectInBody by the class itself, scopeSession by
 // withinSessionScope and the handlers behind it, and scopeNoWrite by writing nothing at all.
 // TestEveryMutatingRouteIsClassed walks the table through it, and register refuses to mount a
-// table it names anything in, so a row added later cannot be left undecided. The other direction,
-// a writeClasses name that is no row of the table, is the same test's (nothing is served by it,
-// so it cannot admit a write).
+// table it names anything in, so a route added later cannot be left undecided. A class naming no
+// route cannot happen: a class is a field of the route's own declaration or row.
 func (s *server) undecidableWrites(routes []apiRoute) []string {
 	var undecidable []string
 	for _, route := range routes {
@@ -652,7 +651,7 @@ func (s *server) undecidableWrites(routes []apiRoute) []string {
 				undecidable = append(undecidable, name+": classed as a project's write, but its address names no object whose project can be resolved")
 			}
 		default:
-			source := "writeClasses"
+			source := "routeDecl.WriteClass"
 			if route.columns {
 				source = "its Scope column"
 			}
