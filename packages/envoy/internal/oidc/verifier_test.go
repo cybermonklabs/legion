@@ -128,7 +128,10 @@ func TestVerifyClassifiesRejection(t *testing.T) {
 func TestAVerifierOfAListOfAudiencesJudgesATokenByTheAudienceItCarries(t *testing.T) {
 	issuer := oidctest.New(t)
 	keys, signing := keysFor(t, issuer, "signing-key")
-	list := NewWithKeysFor(issuer.URL(), []string{"a", "b"}, keys)
+	list, err := NewWithKeysFor(issuer.URL(), []string{"a", "b"}, keys)
+	if err != nil {
+		t.Fatalf("NewWithKeysFor: %v", err)
+	}
 	one := NewWithKeys(issuer.URL(), "a", keys)
 	// Same key id as the published key, different key material: the key set resolves, only the
 	// signature fails.
@@ -211,6 +214,18 @@ func TestAVerifierOfAListOfAudiencesJudgesATokenByTheAudienceItCarries(t *testin
 				t.Errorf("Verify error %q repeats the token", err)
 			}
 		})
+	}
+}
+
+// NewWithKeysFor refuses a list of no audience where the verifier is built, rather than building
+// one whose first Verify fails.
+func TestNewWithKeysForRefusesAnEmptyList(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "signing-key")
+	for _, audiences := range [][]string{nil, {}} {
+		if verifier, err := NewWithKeysFor(issuer.URL(), audiences, keys); err == nil || verifier != nil {
+			t.Errorf("NewWithKeysFor(%#v) = %v, %v, want no verifier and an error", audiences, verifier, err)
+		}
 	}
 }
 

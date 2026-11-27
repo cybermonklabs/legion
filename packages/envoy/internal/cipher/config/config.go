@@ -1477,6 +1477,20 @@ func parsePodRegistrars(setting, value string) (api.PodRegistrars, error) {
 	return registrars, nil
 }
 
+// parseAudienceList reads setting's whitespace-separated audiences, BROKER_K8S_OIDC_AUDIENCE, in
+// the order given. A value of no audience answers nil, as an unset setting does. It refuses an
+// audience given twice, naming setting and the audience, since a listed audience is taken once.
+func parseAudienceList(setting, value string) ([]string, error) {
+	var audiences []string
+	for _, audience := range strings.Fields(value) {
+		if slices.Contains(audiences, audience) {
+			return nil, fmt.Errorf("%s lists the audience %q twice; list each audience once", setting, audience)
+		}
+		audiences = append(audiences, audience)
+	}
+	return audiences, nil
+}
+
 // parseSessionAccountPairs reads setting's whitespace-separated <account>=<account> entries, the
 // pairs BROKER_SESSION_ACCOUNT_PAIRS lists, in order, each as its two ServiceAccount subjects in
 // the order the entry gives them. It refuses, naming the setting and the entry: one that is not
@@ -3404,11 +3418,8 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	cfg.K8sOIDCIssuer = issuer
 	if issuer != "" {
-		cfg.K8sOIDCAudiences = strings.Fields(audience)
-		for i, listed := range cfg.K8sOIDCAudiences {
-			if slices.Contains(cfg.K8sOIDCAudiences[:i], listed) {
-				return Config{}, fmt.Errorf("BROKER_K8S_OIDC_AUDIENCE lists the audience %q twice; list each audience once", listed)
-			}
+		if cfg.K8sOIDCAudiences, err = parseAudienceList("BROKER_K8S_OIDC_AUDIENCE", audience); err != nil {
+			return Config{}, err
 		}
 	}
 	if len(cfg.ServiceLogins) > 0 && cfg.K8sOIDCIssuer == "" {

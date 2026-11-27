@@ -104,17 +104,25 @@ type cognitoClaims struct {
 
 // Verifier verifies bearer tokens issued by one issuer to one or more audiences.
 type Verifier struct {
-	// audiences are the audiences a token may be issued to, in the order the caller listed them,
-	// and verifiers[i] is go-oidc's verifier of audiences[i]: the same issuer, the same keys, and
-	// ClientID audiences[i]. verify checks each token with one of them (verifierOf).
-	audiences []string
-	verifiers []*gooidc.IDTokenVerifier
-	issuer    string
-	// skipExpiry is set when verifiers skip the exp check (gooidc.Config.SkipExpiryCheck), as
-	// IAPVerifier's does, which checks the verified exp itself. classify then reports no failure
-	// as ErrExpired: an exp it reads is from a payload whose signature, issuer or audience failed,
-	// and says nothing about a token's age.
+	// byAudience holds one entry for each audience a token may be issued to, in the order the
+	// caller listed them, each with go-oidc's verifier of that audience: the same issuer, the same
+	// keys, and the audience as ClientID. Each constructor builds its own, so it shares no memory
+	// with a caller's list, and it holds one or more. verify checks each token with one of them
+	// (verifierOf).
+	byAudience []audienceVerifier
+	issuer     string
+	// skipExpiry is set when byAudience's verifiers skip the exp check
+	// (gooidc.Config.SkipExpiryCheck), as IAPVerifier's does, which checks the verified exp
+	// itself. classify then reports no failure as ErrExpired: an exp it reads is from a payload
+	// whose signature, issuer or audience failed, and says nothing about a token's age.
 	skipExpiry bool
+}
+
+// audienceVerifier is one audience a Verifier lists and go-oidc's verifier of the tokens issued
+// to it.
+type audienceVerifier struct {
+	audience string
+	verifier *gooidc.IDTokenVerifier
 }
 
 // New reads the issuer's OIDC discovery document now and returns a verifier for
@@ -140,12 +148,14 @@ func New(ctx context.Context, issuer, audience string) (*Verifier, error) {
 // one per MinRefresh while reads succeed, and one per FailureSpacing while they
 // fail, across both of them.
 func NewWithKeys(issuer, audience string, keys *Keys) *Verifier {
-	return NewWithKeysFor(issuer, []string{audience}, keys)
+	return newWithKeys(issuer, []string{audience}, keys)
 }
 
 // NewWithKeysFor is NewWithKeys for tokens issuer issued to any of audiences, all checked against
 // the one keys. The caller passes one or more audiences and none of them twice; config.Load holds
-// that for the broker's BROKER_K8S_OIDC_AUDIENCE.
+// that for the broker's BROKER_K8S_OIDC_AUDIENCE. An empty list is refused with an error here,
+// where the verifier is built, since a verifier of no audience could take no token. The verifier
+// keeps no reference to audiences.
 //
 // A token is judged by the listed audience it carries, so a token fails for the reason it fails
 // at a verifier of that audience alone: Verify checks it with the go-oidc verifier of the first
@@ -154,21 +164,30 @@ func NewWithKeys(issuer, audience string, keys *Keys) *Verifier {
 // an audience the list does not hold is ErrAudience, expired or not, as at a verifier of one
 // audience. Each token gets one signature check. An aud written into a forged token gains
 // nothing, because the verifier chosen checks aud again on the payload the signature covers.
-func NewWithKeysFor(issuer string, audiences []string, keys *Keys) *Verifier {
+func NewWithKeysFor(issuer string, audiences []string, keys *Keys) (*Verifier, error) {
+	if len(audiences) == 0 {
+		return nil, errors.New("oidc: a verifier needs one or more audiences")
+	}
+	return newWithKeys(issuer, audiences, keys), nil
+}
+
+// newWithKeys is the verifier NewWithKeys and NewWithKeysFor return, of audiences, which holds one
+// or more: one go-oidc verifier of each audience, in the order listed, all on keys.
+func newWithKeys(issuer string, audiences []string, keys *Keys) *Verifier {
 	set := keySet{keys: keys}
 	// SupportedSigningAlgs is set because gooidc.NewVerifier, unlike the verifier a discovered
 	// provider builds, defaults to RS256 alone: the pair named here is the pair keySet parses and
 	// the pair a cluster signs its projected tokens with, so an ES256 cluster's tokens go on
 	// verifying.
 	algs := supportedSigningAlgs()
-	verifiers := make([]*gooidc.IDTokenVerifier, len(audiences))
+	byAudience := make([]audienceVerifier, len(audiences))
 	for i, audience := range audiences {
-		verifiers[i] = gooidc.NewVerifier(issuer, set, &gooidc.Config{
+		byAudience[i] = audienceVerifier{audience: audience, verifier: gooidc.NewVerifier(issuer, set, &gooidc.Config{
 			ClientID:             audience,
 			SupportedSigningAlgs: algs,
-		})
+		})}
 	}
-	return &Verifier{audiences: audiences, verifiers: verifiers, issuer: issuer}
+	return &Verifier{byAudience: byAudience, issuer: issuer}
 }
 
 // supportedSigningAlgs names keySetAlgorithms as go-oidc's configuration takes them.
@@ -186,9 +205,8 @@ func supportedSigningAlgs() []string {
 // so there is no second reader to share a *Keys with (codeflow.go).
 func newVerifier(provider *gooidc.Provider, issuer, audience string) *Verifier {
 	return &Verifier{
-		audiences: []string{audience},
-		verifiers: []*gooidc.IDTokenVerifier{provider.Verifier(&gooidc.Config{ClientID: audience})},
-		issuer:    issuer,
+		byAudience: []audienceVerifier{{audience: audience, verifier: provider.Verifier(&gooidc.Config{ClientID: audience})}},
+		issuer:     issuer,
 	}
 }
 
@@ -270,14 +288,14 @@ func (v *Verifier) verify(ctx context.Context, raw string) (*gooidc.IDToken, Cla
 // unverified aud picks a verifier and admits nothing: the verifier picked checks aud again on the
 // payload the signature covers.
 func (v *Verifier) verifierOf(compact string) *gooidc.IDTokenVerifier {
-	if len(v.verifiers) > 1 {
+	if len(v.byAudience) > 1 {
 		if claims, err := decodeUnverifiedClaims(compact); err == nil {
-			if i := slices.IndexFunc(v.audiences, func(listed string) bool { return slices.Contains(claims.Audience, listed) }); i >= 0 {
-				return v.verifiers[i]
+			if i := slices.IndexFunc(v.byAudience, func(listed audienceVerifier) bool { return slices.Contains(claims.Audience, listed.audience) }); i >= 0 {
+				return v.byAudience[i].verifier
 			}
 		}
 	}
-	return v.verifiers[0]
+	return v.byAudience[0].verifier
 }
 
 // classify decides the failure class from the token's own claims rather than
@@ -321,10 +339,14 @@ func (v *Verifier) classify(ctx context.Context, raw string, err, keySetErr erro
 	case !v.namesIssuer(claims.Issuer):
 		return fmt.Errorf("%w: %q, want %q", ErrIssuer, claims.Issuer, v.issuer)
 	case !slices.ContainsFunc(claims.Audience, v.lists):
-		if len(v.audiences) == 1 {
-			return fmt.Errorf("%w: %q, want %q", ErrAudience, []string(claims.Audience), v.audiences[0])
+		if len(v.byAudience) == 1 {
+			return fmt.Errorf("%w: %q, want %q", ErrAudience, []string(claims.Audience), v.byAudience[0].audience)
 		}
-		return fmt.Errorf("%w: %q, want one of %q", ErrAudience, []string(claims.Audience), v.audiences)
+		listed := make([]string, len(v.byAudience))
+		for i, each := range v.byAudience {
+			listed[i] = each.audience
+		}
+		return fmt.Errorf("%w: %q, want one of %q", ErrAudience, []string(claims.Audience), listed)
 	case !v.skipExpiry && claims.Expiry != 0 && time.Unix(int64(claims.Expiry), 0).Before(time.Now()):
 		return fmt.Errorf("%w at %s", ErrExpired, time.Unix(int64(claims.Expiry), 0).UTC().Format(time.RFC3339))
 	case errors.Is(keySetErr, ErrKeySet):
@@ -335,7 +357,9 @@ func (v *Verifier) classify(ctx context.Context, raw string, err, keySetErr erro
 }
 
 // lists reports whether audience is one of the verifier's listed audiences.
-func (v *Verifier) lists(audience string) bool { return slices.Contains(v.audiences, audience) }
+func (v *Verifier) lists(audience string) bool {
+	return slices.ContainsFunc(v.byAudience, func(listed audienceVerifier) bool { return listed.audience == audience })
+}
 
 // LooksLikeJWT reports whether s is three dot-separated non-empty segments. It
 // is the callers' cheap discriminator between a JWT and the other bearer shapes

@@ -1866,7 +1866,11 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 			return verifiers{}, err
 		}
 		found.K8sKeys = keys
-		found.Pod = enroll.K8sPodVerifier{Verifier: oidc.NewWithKeysFor(cfg.K8sOIDCIssuer, cfg.K8sOIDCAudiences, keys)}
+		podVerifier, err := oidc.NewWithKeysFor(cfg.K8sOIDCIssuer, cfg.K8sOIDCAudiences, keys)
+		if err != nil {
+			return verifiers{}, err
+		}
+		found.Pod = enroll.K8sPodVerifier{Verifier: podVerifier}
 		if cfg.PodRegistrationAudience != "" {
 			found.PodRegistration = enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(cfg.K8sOIDCIssuer, cfg.PodRegistrationAudience, keys)}
 		}
