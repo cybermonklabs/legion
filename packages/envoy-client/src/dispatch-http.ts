@@ -2884,7 +2884,7 @@ export class DispatchClient {
       if (refusal === undefined) {
         return stalePresentation === undefined ? sent : { ...sent, stalePresentation };
       }
-      const waitMs = retryAfterMs(answer) || DEFAULT_RETRY_AFTER_SECONDS * 1_000;
+      const waitMs = retryAfterMs(answer.headers) || DEFAULT_RETRY_AFTER_SECONDS * 1_000;
       const seconds = Math.round(waitMs / 1_000);
       const wait = waitMs + Math.random() * RETRY_JITTER_MS;
       const refused =
