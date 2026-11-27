@@ -16,7 +16,7 @@ import { backoffMs, type Fetch, type Sleep } from "./production-dispatch";
 /** Anthropic's own endpoint, for the --key-file route. */
 const ANTHROPIC_URL = "https://api.anthropic.com";
 const ANTHROPIC_VERSION = "2023-06-01";
-/** The longest the key command may run. */
+/** The longest the key command, every process it starts included, may run. */
 const KEY_COMMAND_TIMEOUT_MS = 30_000;
 
 /** Where the model calls go, and how each call gets its key. */
@@ -47,16 +47,43 @@ async function readKeyFile(file: string): Promise<string> {
   return key;
 }
 
-/** The key that the program `file` prints, run now. Throws naming the program, never its output. */
-async function runKeyCommand(file: string): Promise<string> {
-  const child = Bun.spawn([file], { stdout: "pipe", stderr: "ignore", stdin: "ignore" });
-  const timer = setTimeout(() => child.kill(), KEY_COMMAND_TIMEOUT_MS);
-  const [output, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
-  clearTimeout(timer);
-  if (code !== 0) throw new Error(`the key command ${file} exited ${code}`);
-  const key = output.trim();
-  if (key === "") throw new Error(`the key command ${file} printed no key`);
-  return key;
+/** The key that the program `file` prints, run now. Throws naming the program, never its output.
+ * The program runs in a process group of its own, and at `limitMs` (KEY_COMMAND_TIMEOUT_MS unless
+ * a test names a shorter limit) the whole group is killed: a wrapper's own child that hangs (a
+ * `curl` to a metadata server) holds the output pipe open after the wrapper itself is gone, and the
+ * key is read before a try's own timeout starts. */
+export async function runKeyCommand(
+  file: string,
+  limitMs = KEY_COMMAND_TIMEOUT_MS
+): Promise<string> {
+  const child = Bun.spawn([file], {
+    stdout: "pipe",
+    stderr: "ignore",
+    stdin: "ignore",
+    detached: true,
+  });
+  let stopped = false;
+  const timer = setTimeout(() => {
+    stopped = true;
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      // Every process of the group has exited already.
+    }
+  }, limitMs);
+  try {
+    const [output, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    if (stopped)
+      throw new Error(
+        `the key command ${file} ran past its limit of ${limitMs} ms, so every process it started was stopped`
+      );
+    if (code !== 0) throw new Error(`the key command ${file} exited ${code}`);
+    const key = output.trim();
+    if (key === "") throw new Error(`the key command ${file} printed no key`);
+    return key;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** The model route that the flags name, or the refusal. */

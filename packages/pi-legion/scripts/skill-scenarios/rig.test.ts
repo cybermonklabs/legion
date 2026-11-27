@@ -2006,6 +2006,58 @@ describe.skipIf(withoutCaseTools)("lane R dry world builders", () => {
       'task(agent="plan-reviewer")'
     );
   });
+
+  // Catches: a pane told one default branch while the daemon stand-in's record of the issue
+  // answers another, as a world with no GitHub once had the pane told the rig's own `trunk` and
+  // the stand-in `main`. A real daemon tells a launch its record's repository and default branch,
+  // so both take the one pair launch.json holds: the world's GitHub repository, or the rig's own
+  // (worker_repo) where the world has none, and the default branch of the world's remote, here one
+  // with no `main` in the world with no GitHub.
+  test("the daemon stand-in and the pane are given one repository and default branch", () => {
+    const rigRepository = assignment("worker_repo").slice("worker_repo=".length);
+    const example = JSON.parse(readFileSync(heldoutExample, "utf8"));
+    const bare = structuredClone(example);
+    bare.cases[0].world.github = null;
+    bare.cases[0].world.git.remote.branches[0].name = "develop";
+    for (const [name, cases, want] of [
+      ["with-github", example, ["cybermonklabs/legion", "main"]],
+      ["no-github", bare, [rigRepository, "develop"]],
+    ] as const) {
+      const file = path.join(freshDir(`${name}-input`), "cases.json");
+      writeFileSync(file, JSON.stringify(cases));
+      const R = freshDir(name);
+      const run = dryRun(R, file, "heldout", "P05");
+      expect({ code: run.exitCode, error: run.stderr.toString() }).toEqual({ code: 0, error: "" });
+      mkdirSync(path.join(R, "logs"));
+      writeFileSync(path.join(R, "logs", "daemon.log"), "listening on http://127.0.0.1:1\n");
+      // The stand-in's command line (after `daemon bun`) and the pane's (after case-world.ts),
+      // each recorded rather than run.
+      const launched = bash(
+        [
+          "set -euo pipefail",
+          defs("case_legion_pane"),
+          'start_process() { shift 2; printf "%s\\n" "$@" >"$R/standin.argv"; daemon_pid=1; }',
+          "await_start() { :; }",
+          'bun() { shift; printf "%s\\n" "$@" >"$R/pane.argv"; : >"$R/worker.env"; }',
+          "R=$1 here=$2 co=/label/checkout profile=skills-base",
+          "case_legion_pane implementer",
+        ].join("\n"),
+        [R, scenarios]
+      );
+      expect({ code: launched.code, stderr: launched.stderr }).toEqual({ code: 0, stderr: "" });
+      const words = (record: string) =>
+        readFileSync(path.join(R, record), "utf8").trimEnd().split("\n");
+      // daemon-standin.ts's seventh and eighth words, after its port, log and boot token file;
+      // case-world.ts pane's last two.
+      expect({
+        standin: words("standin.argv").slice(7, 9),
+        pane: words("pane.argv").slice(-2),
+      }).toEqual({
+        standin: [...want],
+        pane: [...want],
+      });
+    }
+  });
 });
 
 // A batch of a held-out or a skill-use set counts the gaps of the whole file (heldoutGaps,
@@ -3241,6 +3293,74 @@ describe.skipIf(withoutPython || withoutLibpq)("a batch given its Postgres and N
       SKILL_SCENARIOS_POSTGRES_URL: url,
     });
     expect(half).toEqual({ code: 0, stdout: "none\n", stderr: "" });
+  });
+
+  // Catches: a case batch, which runs one `rig.sh run` at a time, that sizes the given Postgres
+  // for SKILL_SCENARIOS_PARALLEL's default of 5 runs, and so is refused on a server that fits one.
+  test("a case batch sizes the given Postgres for the one run it runs at a time", () => {
+    const dir = freshDir("case-batch");
+    const bin = freshDir("case-batch-bin");
+    const calls = path.join(dir, "calls");
+    writeFileSync(
+      path.join(bin, "psql"),
+      `#!/bin/sh\ncase "$*" in *"SHOW max_connections"*) echo 200 ;; esac\n`,
+      { mode: 0o755 }
+    );
+    writeFileSync(path.join(bin, "docker"), `#!/bin/sh\necho "docker $*" >>${calls}\nexit 1\n`, {
+      mode: 0o755,
+    });
+    const script = [
+      "set -euo pipefail",
+      '. "$1"',
+      '. "$2"',
+      defs(
+        "fail",
+        "note",
+        "given_services",
+        "safe_url",
+        "pg_sql",
+        "owner_only",
+        "services_up",
+        "cmd_case_batch"
+      ),
+      'until_true() { shift 2; "$@"; }',
+      "connections_needed() { per_run=117; needs=$((per_run * parallel + 20)); }",
+      "nats_ready() { :; }",
+      "listener_up() { envoy_port=1; }",
+      "load_label() { :; }",
+      "next_run() { echo 1; }",
+      "lock_services() { :; }",
+      "on_exit() { :; }",
+      'case_input() { echo "$cases"; }',
+      // case-world.ts's check passes and its order gives the one arm; each run is recorded.
+      'bun() { [ "$2" != order ] || echo base; }',
+      'bash() { shift; echo "rig.sh $*" >>"$calls"; }',
+      "root=$3 here=$3/packages/pi-legion/scripts/skill-scenarios S=$4/services calls=$4/calls",
+      "cases=$4/cases.json work=$4/work tag=t",
+      'mkdir -p "$S"',
+      "services_env=$S/env services_postgres=$S/postgres-url",
+      "cmd_case_batch heldout P05 1 base",
+    ].join("\n");
+    const result = bash(
+      script,
+      [
+        path.join(root, "packages/envoy/scripts/lib/pg-url.sh"),
+        path.join(root, "scripts/e2e/lib/loopback-dsn.sh"),
+        root,
+        dir,
+      ],
+      {
+        PATH: `${bin}:${callerPath}`,
+        SKILL_SCENARIOS_POSTGRES_URL: "postgres://rig:pw@127.0.0.1:5999/postgres?sslmode=disable",
+        SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:4999",
+        SKILL_SCENARIOS_SEED: "rig-seed",
+      }
+    );
+    expect({ code: result.code, stderr: result.code === 0 ? "" : result.stderr }).toEqual({
+      code: 0,
+      stderr: "",
+    });
+    expect(readFileSync(calls, "utf8")).toBe("rig.sh run heldout P05 base 1\n");
   });
 });
 

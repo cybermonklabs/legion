@@ -67,8 +67,9 @@
  * why. The call is the reader's instruction as its system prompt and one user message: the
  * rubric lines of the batch's cases, then the items. It holds no tool, no history, no prompt text,
  * no arm, no label, no route, no token count and no transcript; it sets no sampling or thinking
- * setting, and max_tokens is 8000. The route, and its tries after a 429 or 5xx answer, are
- * model-call.ts's. A reply cut at max_tokens is refused: grade fewer runs in one batch.
+ * setting, and max_tokens is 8000. The route, and its tries again after an outage (a 5xx, a 408 or
+ * a 429) or a call that failed before its answer's body arrived, are model-call.ts's. A reply cut
+ * at max_tokens is refused: grade fewer runs in one batch.
  *
  * The reply is one JSON object: for each item, each line of its case's rubric with its pass and a
  * one-sentence reason; a pass is null only for a line of an item with `observedThrough`. A reply
@@ -142,7 +143,8 @@ import { type CliIo, processIo } from "./production-dispatch";
 export const MODEL = "claude-opus-5-5";
 /** The most the reader may write in one answer. */
 export const MAX_TOKENS = 8000;
-/** How many times the call is tried after a 429, a 5xx or a failed connection. */
+/** How many tries the call gets in all, the first included: each try after the first follows an
+ * outage (a 5xx, a 408 or a 429) or a call that failed before its answer's body arrived. */
 const MODEL_TRIES = 8;
 /** The longest one try may take. */
 const MODEL_TIMEOUT_MS = 900_000;

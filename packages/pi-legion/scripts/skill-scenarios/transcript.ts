@@ -5,6 +5,7 @@ import path from "node:path";
 import { DISPATCH_FIRST_MARKER } from "@legion/envoy-client/dispatch-first";
 import { z } from "zod";
 import type { OutcomeRecord } from "./heldout-case";
+import { parseInstant } from "./production-dispatch";
 
 /** An Oh My Pi session transcript line: a message, whose assistant content holds each tool call
  * whole (`toolCall`: id, tool name, arguments) and whose tool results name the call they answer,
@@ -128,22 +129,28 @@ export function resultText(message: SessionEntry["message"]): string {
   return (message?.content ?? []).map((part) => part.text ?? "").join("");
 }
 
-/** Count the bytes delivered, not the path banner or the text of a failure. Match by call id:
- * tool results in a parallel batch can finish in a different order than their calls. */
-export function skillReads(entries: readonly SessionEntry[]): OutcomeRecord["skillReads"] {
+/** Each `skill://` read, in call order, as heldout-case.ts's SkillRead records it. Count the bytes
+ * delivered, not the path banner or the text of a failure. Match by call id: tool results in a
+ * parallel batch can finish in a different order than their calls. `beforeFirstAction` is whether
+ * the read came before the run's first scored action, the first action of its outcome record,
+ * whose time `firstAction` is in nanoseconds on the host clock that stamps the transcript's entries
+ * (undefined where the run took no scored action): the read's place in the transcript, the time of
+ * the entry that carries its call, is earlier than that action's. A tool call that makes no scored
+ * action, such as a `bash` or a `grep`, is no first action, and where the run took none every read
+ * came before it. */
+export function skillReads(
+  entries: readonly SessionEntry[],
+  firstAction?: bigint
+): OutcomeRecord["skillReads"] {
   const results = new Map(
     entries
       .map((entry) => entry.message)
       .filter((message) => message?.role === "toolResult" && message.toolCallId !== undefined)
       .map((message) => [message?.toolCallId, message])
   );
-  let beforeFirstAction = true;
   const reads: OutcomeRecord["skillReads"] = [];
-  for (const { call } of sessionCalls(entries)) {
-    if (call.name !== "read") {
-      beforeFirstAction = false;
-      continue;
-    }
+  for (const { entry, call } of sessionCalls(entries)) {
+    if (call.name !== "read") continue;
     const args = call.arguments;
     const uri = typeof args === "object" && args !== null ? Reflect.get(args, "path") : undefined;
     if (typeof uri !== "string") continue;
@@ -152,6 +159,15 @@ export function skillReads(entries: readonly SessionEntry[]): OutcomeRecord["ski
     const result = results.get(call.id);
     const text = resultText(result);
     const resolved = result !== undefined && !result.isError && !/^Unknown skill\b/i.test(text);
+    let beforeFirstAction = true;
+    if (firstAction !== undefined) {
+      const calledAt = parseInstant(entry.timestamp ?? "");
+      if (calledAt === undefined)
+        throw new Error(
+          `the read of ${uri} is in a transcript entry with no RFC 3339 timestamp, so whether it came before the first scored action is unknown`
+        );
+      beforeFirstAction = calledAt < firstAction;
+    }
     reads.push({
       skill: match[1],
       path: match[2] || "SKILL.md",

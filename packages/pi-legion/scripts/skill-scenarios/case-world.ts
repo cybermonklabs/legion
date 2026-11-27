@@ -11,16 +11,7 @@ import path from "node:path";
 import { isLegionRole } from "@legion/contracts";
 import { workerPane } from "./daemon-pane";
 import { buildGitWorld, defaultBranch, stageJob, translateCommits } from "./git-world";
-import {
-  HELDOUT_ROLES,
-  heldoutGaps,
-  legionAgents,
-  legionPartition,
-  parseHeldoutFile,
-  parseSkillUseFile,
-  skillUseGaps,
-  World,
-} from "./heldout-case";
+import { caseFileGaps, parseHeldoutFile, parseSkillUseFile, type World } from "./heldout-case";
 
 /** The case file `file` in the shape of `set`; throws when the file holds another set. */
 function loadCaseFile(file: string, set: string) {
@@ -37,17 +28,13 @@ export function loadCase(file: string, set: string, id: string) {
 }
 
 /** What a batch of case `id` checks before its first run: the case parses and is in `file`, and
- * the gaps of the whole file, which the batch refuses to start on. A held-out set's gaps are
- * heldoutGaps and a skill-use set's skillUseGaps, counted as `heldout-case.ts gaps` counts them,
- * against this checkout's agents and Legion skill partition. A development set holds a few cases
- * and no population, so it has none. */
+ * the gaps of the whole file, which the batch refuses to start on, as `heldout-case.ts gaps`
+ * counts them (caseFileGaps): none for a development set. */
 export function batchGaps(file: string, set: string, id: string): string[] {
   const input = loadCaseFile(file, set);
   if (!input.cases.some((entry) => entry.id === id))
     throw new Error(`${file} has no ${set} case ${id}`);
-  if (input.set === "skilluse") return skillUseGaps(legionPartition(), input.cases);
-  if (input.set === "heldout") return heldoutGaps(HELDOUT_ROLES, legionAgents(), input.cases);
-  return [];
+  return caseFileGaps(input);
 }
 
 interface Route {
@@ -230,6 +217,24 @@ export function githubFixtures(github: World["github"], branch: string, issue: s
   return { routes };
 }
 
+/** The rig's own repository: daemon-pane.go's rigRepository and rig.sh's worker_repo. */
+const RIG_REPOSITORY = "example/widgets";
+
+/** The repository a case's issue is on and that repository's default branch, the one pair both
+ * the pane and the daemon stand-in are given (launch.json): a real daemon tells a launch the
+ * repository and default branch of its record of the issue (specs.workerSpawnSpec, from
+ * workflowRuntime.launchRepository), the very fields its read of that record answers (`repo`,
+ * `defaultBranch`), and refuses a launch on an issue that has no repository. The repository is
+ * the world's GitHub repository, or the rig's own where the world has no GitHub; the branch is the
+ * default branch of the world's remote (git-world.ts), its HEAD, which a world with no GitHub has
+ * as well. */
+export function caseRepository(world: World): { repository: string; defaultBranch: string } {
+  return {
+    repository: world.github?.repository ?? RIG_REPOSITORY,
+    defaultBranch: defaultBranch(world.git),
+  };
+}
+
 /** Shuffle label pairs independently of launch time. Hashing seed + pair + label makes ordering
  * repeatable even if the shell has a different PRNG. Callers run the printed rows serially. */
 export function armOrder(seed: string, pair: string, labels: string[]): string[] {
@@ -259,11 +264,10 @@ export function prepareCase(dir: string, file: string, set: string, id: string):
   text("launch-world.json", JSON.stringify(launch));
   text("case.txt", id);
   text("clock.txt", world.clock);
+  const where = caseRepository(launch);
   text(
     "fixtures.json",
-    JSON.stringify(
-      githubFixtures(launch.github, defaultBranch(launch.git), launch.dispatch.issue.key)
-    )
+    JSON.stringify(githubFixtures(launch.github, where.defaultBranch, launch.dispatch.issue.key))
   );
   for (const log of ["daemon.log", "calls.jsonl", "staging.jsonl", "deployments.jsonl"])
     writeFileSync(path.join(dir, log), "");
@@ -291,6 +295,7 @@ export function prepareCase(dir: string, file: string, set: string, id: string):
       plain: agent !== undefined || ("session" in scenario && scenario.session === "plain-envoy"),
       tools: agent === undefined ? scenario.tools : ["task"],
       stage,
+      ...where,
     })
   );
   if (stage)
@@ -316,6 +321,8 @@ function sh(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
+/** The pane of the case's claim on `repository` and its default branch `branch`, the pair the
+ * daemon stand-in was given (launch.json's, caseRepository). */
 async function casePane(
   dir: string,
   checkout: string,
@@ -324,7 +331,9 @@ async function casePane(
   project: string,
   role: string,
   issue: string,
-  tree: string
+  tree: string,
+  repository: string,
+  branch: string
 ): Promise<void> {
   if (role !== "controller" && !isLegionRole(role)) throw new Error(`not a claim role: ${role}`);
   const base = Object.fromEntries(
@@ -337,17 +346,13 @@ async function casePane(
         return [line.slice(0, equals), line.slice(equals + 1)];
       })
   );
-  // The pane names the issue's repository and its default branch as the daemon's record does: the
-  // case world's, where the world has a GitHub repository.
-  const world = World.parse(JSON.parse(readFileSync(path.join(dir, "launch-world.json"), "utf8")));
   const claim = {
     project,
     issue: role === "controller" ? "" : issue,
     role: role as Parameters<typeof workerPane>[2]["role"],
     ...(role === "controller" ? { controller: "headless" as const } : { tree }),
-    ...(world.github === null
-      ? {}
-      : { repository: world.github.repository, defaultBranch: defaultBranch(world.git) }),
+    repository,
+    defaultBranch: branch,
   };
   const pane = await workerPane({ rig: dir, port: Number(port), profile }, base, claim, {
     daemonModule: path.join(checkout, "packages", "daemon"),
@@ -384,13 +389,13 @@ if (import.meta.main) {
   } else if (mode === "stage" && a && b && args.length <= 3)
     console.log(JSON.stringify(stageJob(a, b, c)));
   else if (mode === "order" && a && b && c) console.log(armOrder(a, b, args.slice(2)).join("\n"));
-  else if (mode === "pane" && args.length === 8 && a && b && c && d) {
-    const [, , , , project, role, issue, tree] = args;
-    if (!project || !role || !issue || !tree)
-      throw new Error("pane needs project, claim role, issue and tree");
-    await casePane(a, b, c, d, project, role, issue, tree);
+  else if (mode === "pane" && args.length === 10 && a && b && c && d) {
+    const [, , , , project, role, issue, tree, repository, branch] = args;
+    if (!project || !role || !issue || !tree || !repository || !branch)
+      throw new Error("pane needs project, claim role, issue, tree, repository and default branch");
+    await casePane(a, b, c, d, project, role, issue, tree, repository, branch);
   } else
     throw new Error(
-      "usage: case-world.ts prepare <run dir> <case file> <set> <id> | check <case file> <set> <id> | stage <run dir> <job> [checkout] | order <seed> <pair> <labels...>"
+      "usage: case-world.ts prepare <run dir> <case file> <set> <id> | check <case file> <set> <id> | stage <run dir> <job> [checkout] | order <seed> <pair> <labels...> | pane <run dir> <checkout> <port> <profile> <project> <claim role> <issue> <tree> <repository> <default branch>"
     );
 }

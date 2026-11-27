@@ -1,6 +1,8 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { batchGaps } from "./case-world";
 import {
   HELDOUT_ROLES,
   type HeldoutCase,
@@ -161,6 +163,43 @@ describe("the inventory", () => {
       expect(skillUseGaps(partition, without(fullSkillUse(), id))).toEqual([gap]);
     });
   }
+});
+
+describe("heldout-case.ts gaps", () => {
+  const dir = temporaryDirectory("heldout-case-gaps");
+
+  // Catches: a count that holds a development file to the held-out population, where a case batch
+  // of that file (case-world.ts batchGaps) holds it to none, so the two disagree on whether the
+  // file may run. The command names the gaps a batch of each file refuses to start on.
+  test("names the gaps a batch of the file names: a held-out file's, and none of a development file", () => {
+    const heldout = path.join(dir, "heldout.json");
+    const devcase = path.join(dir, "devcase.json");
+    writeFileSync(heldout, heldoutText);
+    writeFileSync(devcase, JSON.stringify({ ...heldoutJson(), set: "devcase" }));
+    expect(batchGaps(heldout, "heldout", "P05")).not.toEqual([]);
+    expect(batchGaps(devcase, "devcase", "P05")).toEqual([]);
+    for (const [file, set] of [
+      [heldout, "heldout"],
+      [devcase, "devcase"],
+    ] as const) {
+      const counted = batchGaps(file, set, "P05");
+      const run = Bun.spawnSync([
+        process.execPath,
+        path.join(import.meta.dir, "heldout-case.ts"),
+        "gaps",
+        file,
+      ]);
+      expect({
+        code: run.exitCode,
+        stdout: run.stdout.toString(),
+        stderr: run.stderr.toString(),
+      }).toEqual({
+        code: counted.length === 0 ? 0 : 1,
+        stdout: `${file}: ${counted.length} gaps\n`,
+        stderr: counted.map((gap) => `${file}: ${gap}\n`).join(""),
+      });
+    }
+  });
 });
 
 describe("parseHeldoutFile", () => {

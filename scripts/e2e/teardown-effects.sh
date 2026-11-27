@@ -13,7 +13,8 @@ usage() {
   echo 'usage: teardown-effects.sh --controls --cases <file> | --runs <directory>' >&2
   exit 2
 }
-root=$(cd "$(dirname "$0")/../.." && pwd)
+# The physical path, as realpath gives the case file below, so a symlinked checkout keeps its label.
+root=$(cd "$(dirname "$0")/../.." && pwd -P)
 case ${1:-} in
   --controls)
     [[ $# == 3 && $2 == --cases && -f $3 ]] || usage

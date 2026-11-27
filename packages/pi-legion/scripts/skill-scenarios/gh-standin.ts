@@ -44,11 +44,12 @@
 // moving with each push. Its number is one above every number the routes hold, as lane D numbers
 // it; it opens the issue's branch when no head is named. GitHub's refusals hold: a head the remote
 // does not hold, or a branch that has an open pull request into the same base, is refused with gh's
-// own words, exit status 1. Help (`--help`, `-h`, `gh help`) and `gh --version` (`gh version`) reach
-// no GitHub: the real gh answers them, the first executable `gh` on PATH outside the run's own bin
-// directory that is no script (the daemon's rule for the real gh: this stand-in's wrapper and
-// Legion's `legion gh` wrapper are scripts). They are recorded to gh-local.jsonl, not calls.jsonl,
-// so none of them is a GitHub call: `gh pr create --help` opens no pull request.
+// own words, exit status 1. Help (`--help` or `-h` as a flag of the call, as readGhArgs reads it,
+// and `gh help`) and `gh --version` (`gh version`) reach no GitHub: the real gh answers them, the
+// first executable `gh` on PATH outside the run's own bin directory that is no script (the daemon's
+// rule for the real gh: this stand-in's wrapper and Legion's `legion gh` wrapper are scripts). They
+// are recorded to gh-local.jsonl, not calls.jsonl, so none of them is a GitHub call: `gh pr create
+// --help` opens no pull request, and `gh pr create --body -h` opens one whose body is `-h`.
 // A route that holds `pages` (each page the whole JSON answer as GitHub sends it: a GraphQL answer
 // with its `pageInfo {hasNextPage endCursor}`, or a list) answers a paged read as gh does. With
 // `--paginate`: every page, as one JSON text per page with nothing between them (plain), each
@@ -537,10 +538,15 @@ async function realGh(runDir: string): Promise<string | undefined> {
 
 async function main(run: string, as: string, args: string[]): Promise<never> {
   const at = new Date().toISOString();
+  const call = readGhArgs(args);
+  // Help is `--help` or `-h` as a flag of the call, as gh reads its arguments, never a flag's value
+  // (`--body -h` is a body), or `help`, `--help` or `-h` as its first word; the version is
+  // `version` or `--version` there.
   if (
     as === "gh" &&
-    (args.some((arg) => arg === "--help" || arg === "-h") ||
-      ["help", "version", "--version"].includes(args[0] ?? ""))
+    (call.flags.has("help") ||
+      call.flags.has("-h") ||
+      ["help", "--help", "-h", "version", "--version"].includes(args[0] ?? ""))
   ) {
     const real = await realGh(run);
     let status = 1;
@@ -565,7 +571,6 @@ async function main(run: string, as: string, args: string[]): Promise<never> {
 
   const fixtures = Fixtures.parse(JSON.parse(readFileSync(`${run}/fixtures.json`, "utf8")));
   let routes = fixtures.routes;
-  const call = readGhArgs(args);
   let stdin: string | undefined;
   const files: Record<string, string> = {};
   if (as === "gh") {
