@@ -935,9 +935,11 @@ stands:
   and the tree carries on at the generation and phase it stands at.
 - **Its root is parked or lingers, or the controller restarted the tree** (`backlog`, then `todo`
   in the same turn): leave the claim as it is. The tree's re-admission retries it at a new
-  generation; a retry by hand would run it outside the admission cap, and it would be sent no
-  catch-up. To restart the tree by hand, write the same pair. On a root whose work merged, the pair
-  starts one next change of it instead:
+  generation. A retry by hand would run it outside the admission cap, and it would be sent no
+  catch-up. A root that closed with no merge in its record is the exception: the controller's pair
+  leaves it waiting for its merge read, and only a person's pair runs its tree again. To restart
+  the tree by hand, write the same pair. On a root whose work merged, the pair starts one next
+  change of it instead:
 
   ```sh
   legion issue status <KEY> backlog --config legion.yaml --operator-token-file operator-token
@@ -968,9 +970,11 @@ worker starts with its task, and the generation, the review rounds, the pod and 
 the admission line stay as they were. A person's move of the root to `todo` in the Dispatch
 dashboard and the controller's own `set_status` do the same, since all three write the one status
 the daemon reads. It reaches a root alone: a held child set to `todo` comes back at a new generation
-of its own, and a root whose tree lingers or stands at `phase: done` is re-admitted: as one next
-change of it where its work merged, and at a new generation of its tree where its work never merged,
-which is what the restart above does.
+of its own, and a root whose tree lingers or stands at `phase: done` is re-admitted. Where its work
+merged, that is one next change of it. Where it was parked and its record shows no merge, it is a
+new generation of its tree. A closed root whose record shows no merge waits for its merge read
+instead: write `backlog`, then `todo`, as the restart above does, to confirm that its work never
+merged.
 
 `legion claims compact --claim <token>` is the first recovery for a claim whose session a
 provider keeps refusing: the daemon has Oh My Pi write a handoff document of that session, with

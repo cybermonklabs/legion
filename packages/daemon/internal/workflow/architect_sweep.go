@@ -340,7 +340,23 @@ func (e *Engine) StartPromotedArchitect(ctx context.Context, tx pgx.Tx, root rec
 
 // startArchitect is StartArchitect's and StartPromotedArchitect's one body, decided being the mark
 // the start carries.
+//
+// A root on its next change whose architect still has the work of its phases row's entry to take
+// (architectWorkStands) has its standing run resumed instead (D17, "The tree generation and the
+// architect"): the start only launches the claim, raises no entry and carries no task, so the
+// pending task stands, and the admission pass sends the entry's own work as for any role. The
+// next-change notice tells it of the change. Any other root on a next change gets the ordinary
+// start, whose derived task leads with the request where one started the change.
 func (e *Engine) startArchitect(ctx context.Context, tx pgx.Tx, root record.Issue, decided bool) error {
+	if record.OnNextChange(root) {
+		stands, err := e.architectWorkStands(ctx, tx, root)
+		if err != nil {
+			return err
+		}
+		if stands {
+			return e.enqueueArchitectStart(ctx, tx, root, "", nil, 0, decided)
+		}
+	}
 	task, kept, err := e.architectStartWork(ctx, tx, root)
 	if err != nil {
 		return err
@@ -352,6 +368,32 @@ func (e *Engine) startArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 		}
 	}
 	return e.enqueueArchitectStart(ctx, tx, root, task, kept, entry, decided)
+}
+
+// architectWorkStands says whether root's architect has not yet been given the work of the entry
+// its phases row names: the row names an entry, and the claim was given an earlier one or none.
+func (e *Engine) architectWorkStands(ctx context.Context, tx pgx.Tx, root record.Issue) (bool, error) {
+	rows, err := e.store.Phases(ctx, tx, root.Key)
+	if err != nil {
+		return false, err
+	}
+	row := record.PhaseRowOf(rows, claim.RoleArchitect)
+	if row.Entry == 0 {
+		return false, nil
+	}
+	project, err := claim.ProjectToken(root.Project)
+	if err != nil {
+		return false, err
+	}
+	token, err := claim.NewToken(project, root.Key, claim.RoleArchitect)
+	if err != nil {
+		return false, err
+	}
+	run, err := e.store.RoleRun(ctx, tx, token, root, claim.RoleArchitect)
+	if err != nil {
+		return false, err
+	}
+	return GivenEntry(run) < row.Entry, nil
 }
 
 // architectStartWork is the task a root architect's start carries, derived from the record as it

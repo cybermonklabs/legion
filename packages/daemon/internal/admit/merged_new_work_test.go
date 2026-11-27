@@ -284,7 +284,9 @@ func mnwState(t *testing.T, pool *pgxpool.Pool, key string) string {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	return fmt.Sprintf("%+v %v", withoutMovement(*got), claims)
+	parent := deref(got.Parent)
+	got.Parent = nil
+	return fmt.Sprintf("%+v under %q %v", withoutMovement(*got), parent, claims)
 }
 
 // mnwMove is key's move to status at seq under parent ("" for a root), as who made it: "person"
@@ -320,15 +322,26 @@ func mnwMoves(t *testing.T, pool *pgxpool.Pool, admission *Admission, moves ...i
 	}
 }
 
-// mnwStarted fails the test unless key's one next change started at generation, at admitted with
-// the record's status todo, in tree under parent, carrying one request of role, with the branch
+// mnwListed applies summary as the boot listing does once the consumer has caught up with it, so
+// the listing's move is taken and not held behind the stream.
+func mnwListed(t *testing.T, pool *pgxpool.Pool, admission *Admission, summary dispatch.IssueSummary) {
+	t.Helper()
+	reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{summary}, summary.LastSeq, summary.LastSeq, true)
+}
+
+// mnwStarted fails the test unless key's one next change started at generation, waiting at
+// admitted or promoted into its first phase, in tree under parent, carrying one request of role, with the branch
 // origin of mnwMerged. It answers the record.
 func mnwStarted(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, tree string, parent *string, role claim.Role) record.Issue {
 	t.Helper()
 	got := issue(t, pool, key)
-	if got.Generation != generation || got.NextChange != generation || got.NextChanges != 1 || got.Phase != phase.Admitted || got.Status != "todo" {
-		t.Fatalf("%s stands at generation %d in %s with status %s, change %d of %d; want its next change %d at admitted with todo, the first",
+	if got.Generation != generation || got.NextChange != generation || got.NextChanges != 1 {
+		t.Fatalf("%s stands at generation %d in %s with status %s, change %d of %d; want its next change %d, the first",
 			key, got.Generation, got.Phase, got.Status, got.NextChange, got.NextChanges, generation)
+	}
+	// The change waits at admitted, or a free slot has already promoted it into its first phase.
+	if got.Phase == phase.Done || got.Phase == phase.Verifying {
+		t.Fatalf("%s's next change %d stands in %s, want it at admitted or in its first phase", key, generation, got.Phase)
 	}
 	if got.Tree != tree || !sameParent(got.Parent, parent) {
 		t.Fatalf("%s's next change runs in tree %s under %v, want tree %s under %v", key, got.Tree, deref(got.Parent), tree, deref(parent))
@@ -423,8 +436,12 @@ func mnwClosedRoot(t *testing.T, pool *pgxpool.Pool, lingers, members bool) {
 	seedLifecycle(t, pool, mnwRoot)
 	if !lingers {
 		inTx(t, pool, func(tx pgx.Tx) {
-			if _, err := treelifecycle.ReserveCleanup(context.Background(), tx, "legion", mnwRoot, treelifecycle.AuthorityWorkflow); err != nil {
+			reserved, err := treelifecycle.ReserveCleanup(context.Background(), tx, "legion", mnwRoot, treelifecycle.AuthorityWorkflow)
+			if err != nil {
 				t.Fatalf("reserve the cleanup of %s's tree: %v", mnwRoot, err)
+			}
+			if err := treelifecycle.ConfirmCleanup(context.Background(), tx, "legion", mnwRoot, reserved.Epoch); err != nil {
+				t.Fatalf("confirm the cleanup of %s's tree: %v", mnwRoot, err)
 			}
 		})
 	}
@@ -587,8 +604,8 @@ func TestMergedNewWorkUsesOneContinuationFromEveryDoor(t *testing.T) {
 		move := mnwMove(mnwRoot, "", "todo", mnwSeq+1, "person")
 		apply(t, pool, admission, "mnw-twice-1", move, admission.engine)
 		apply(t, pool, admission, "mnw-twice-2", move, admission.engine)
-		reconcile(t, pool, admission, []dispatch.IssueSummary{{Key: mnwRoot, Title: mnwRoot, Status: "todo", Rank: "B", HandedOver: true,
-			LastSeq: mnwSeq + 1, ResolvedRepo: "acme/widgets"}})
+		mnwListed(t, pool, admission, dispatch.IssueSummary{Key: mnwRoot, Title: mnwRoot, Status: "todo", Rank: "B", HandedOver: true,
+			LastSeq: mnwSeq + 1, ResolvedRepo: "acme/widgets"})
 		mnwStarted(t, pool, mnwRoot, 2, mnwRoot, nil, record.RequesterPerson)
 	})
 
@@ -753,13 +770,13 @@ func TestOnlyAPersonCanConfirmNeverMergedWork(t *testing.T) {
 				}
 				switch who {
 				case "boot listing":
-					reconcile(t, pool, admission, []dispatch.IssueSummary{{Key: mnwChild, Title: mnwChild, Status: "backlog", Parent: new(mnwRoot),
-						Rank: "B", HandedOver: true, LastSeq: mnwSeq + 1, ResolvedRepo: "acme/widgets"}})
+					mnwListed(t, pool, admission, dispatch.IssueSummary{Key: mnwChild, Title: mnwChild, Status: "backlog", Parent: new(mnwRoot),
+						Rank: "B", HandedOver: true, LastSeq: mnwSeq + 1, ResolvedRepo: "acme/widgets"})
 					if got := issue(t, pool, mnwChild); got.Status != "done" {
 						t.Fatalf("%s's record status after the listing's backlog = %s, want done: no person confirmed anything", mnwChild, got.Status)
 					}
-					reconcile(t, pool, admission, []dispatch.IssueSummary{{Key: mnwChild, Title: mnwChild, Status: "todo", Parent: new(mnwRoot),
-						Rank: "B", HandedOver: true, LastSeq: mnwSeq + 2, ResolvedRepo: "acme/widgets"}})
+					mnwListed(t, pool, admission, dispatch.IssueSummary{Key: mnwChild, Title: mnwChild, Status: "todo", Parent: new(mnwRoot),
+						Rank: "B", HandedOver: true, LastSeq: mnwSeq + 2, ResolvedRepo: "acme/widgets"})
 				default:
 					mnwMoves(t, pool, admission, mnwMove(mnwChild, mnwRoot, "backlog", mnwSeq+1, who))
 					if got := mnwClass(t, pool, mnwChild); got != class {
@@ -1008,8 +1025,8 @@ func TestStrandedMergedChildrenUseTheContinuation(t *testing.T) {
 		pool := migratedPool(t)
 		admission := quiet(t, 4)
 		seed(t, pool)
-		reconcile(t, pool, admission, []dispatch.IssueSummary{{Key: mnwChild, Title: mnwChild, Status: "todo", Parent: new(mnwRoot), Rank: "B",
-			LastSeq: mnwSeq + 1, ResolvedRepo: "acme/widgets"}})
+		mnwListed(t, pool, admission, dispatch.IssueSummary{Key: mnwChild, Title: mnwChild, Status: "todo", Parent: new(mnwRoot), Rank: "B",
+			LastSeq: mnwSeq + 1, ResolvedRepo: "acme/widgets"})
 		mnwMoves(t, pool, admission, rootTodo)
 		tick(t, pool, admission, "mnw-stranded-pass")
 		entered(t, pool)

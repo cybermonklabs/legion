@@ -366,6 +366,9 @@ func TestAPersonsRequestDoesNotEndOnTheOwnersWithdrawal(t *testing.T) {
 			t.Fatalf("the requests of %s = %+v, want one of the controller", waitChild, request)
 		}
 		rig.withdraw(waitChild, request[0].id, "the work is done: #43 holds it")
+		// The change opened no pull request, and the withdrawal resolved its one reason: the fresh
+		// read of the change's generation, which every end with no pull request waits for, ends it.
+		rig.readAt(waitChild, changeGeneration, answerOf(waitChild, nil, passing("c-after", waitChildMerge)))
 		got := rig.issue(waitChild)
 		if got.Phase != phase.Verifying || got.NextChange != 0 || got.Generation != changeGeneration {
 			t.Fatalf("%s stands in %s with change %d at generation %d after the withdrawal, want the change %d ended in verifying",

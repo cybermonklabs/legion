@@ -449,9 +449,9 @@ decision: it stays on the ask for the person who asked, and nothing wakes.
 A held root is not a parked one. Its work stopped because a worker's budget ran out
 ([Supervision](#supervision)), and it is still in the workflow. Setting it to `todo` releases the
 hold: the issue returns to the phase it was held from and that phase's worker starts again, with
-no new run of the tree. A root you parked, by contrast, runs again when you set it to `todo`: as
-one next change of it where its work merged ([the close](#the-close)), and as a new run of its tree
-where its work never merged.
+no new run of the tree. A root you parked, by contrast, runs again when you set it to `todo`.
+Where its record shows that its work merged, that is one next change of it ([the close](#the-close)).
+Where its record shows no merge, it is a new run of its tree.
 
 ## The design gate
 
@@ -800,7 +800,11 @@ Where it finds none, it starts nothing and tells the controller (`merge-unread`)
 A person then ends the wait: links the merged pull request to the issue
 (`dispatch issue-update --external-links`), or confirms that the work never merged by setting the
 issue to `backlog`, then `todo`.
-Only that confirmation runs the tree again whole, as a new generation from its architect.
+A `backlog` by anyone else leaves the issue closed, so its next `todo` waits again.
+For a closed issue, only that confirmation runs the tree again whole, as a new generation from its
+architect.
+An issue parked before it closed is no closed issue: where its record shows no merge, its `todo`
+runs its tree again, as before.
 
 ## The production check
 

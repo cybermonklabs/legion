@@ -58,8 +58,11 @@ func TestAClearedMergedChildRecoversItsMergeFromDispatch(t *testing.T) {
 	if after := r.gates(mnwChild); !reflect.DeepEqual(after, gates) {
 		t.Fatalf("%s's gate after its next change started = %v, want the approved design %v", mnwChild, after, gates)
 	}
-	if reentered := r.noticed(mnwChild, "child-status"); reentered != 0 {
-		t.Fatalf("child-status notices of %s = %d, want none: its next change is no re-entry", mnwChild, reentered)
+	// The todo queued no child-status (r.waits). The one that stands now is the start of the change's
+	// first phase, which every child that takes a slot is told with (ChildStartedNotice); a re-entry
+	// would add its own beside it.
+	if told := r.noticed(mnwChild, "child-status"); told != 1 {
+		t.Fatalf("child-status notices of %s = %d, want one, the start of its change's first phase: a re-entry adds another", mnwChild, told)
 	}
 	if client.counted("results") != 1 {
 		t.Fatalf("the merge read read %s's results %d times, want once: the results route names its merge", mnwChild, client.counted("results"))

@@ -45,11 +45,10 @@ func (a *Admission) readmitRequest(ctx context.Context, tx pgx.Tx, stored record
 // its tree's slots under a pause (releaseTreeSlots). A child already handed stays its own root.
 // The members are owed their return (OweMembers), which the promotion or the pass that finds the
 // tree running makes. It writes no generation of its own and keeps no stale approval, since the
-// gate stays, and it calls no StartHandout, no RestartCaughtUp and no ClearTreeGeneration. Where
-// the tree's runtime still stands (its lifecycle is open under the workflow, a linger that has not
-// ended), no promotion will come, so the root's architect, which the linger suspended, is started
-// again here with no task: its pending task stands, and the next-change notice tells it of the
-// request. Where the runtime has gone, the promotion starts the architect with the request's task.
+// gate stays, and it calls no StartHandout, no RestartCaughtUp and no ClearTreeGeneration. The
+// change waits in the admission line at admitted, and its promotion starts the root's architect
+// (workflow's startArchitect): it resumes a standing run whose task the architect has not taken,
+// and otherwise starts it with the request's task. The next-change notice tells a live one.
 //
 // A child that leaves its tree keeps its Dispatch parent and records the tree it left, as an
 // orphan's re-admission does: StopLeftTree, HandedOverFrom, DeleteHandover and CarryAssignments.
@@ -119,12 +118,7 @@ func (a *Admission) continueChange(ctx context.Context, tx pgx.Tx, stored record
 	if orphan {
 		return a.carryGateTo(ctx, tx, *started, gates)
 	}
-	lifecycle, _, err := record.RootFacts(ctx, a.store, tx, *started, a.engine.GatedSteps())
-	if err != nil || !lifecycle.OpenUnderWorkflow() {
-		return err
-	}
-	return a.enqueue(ctx, tx, started.Key, record.SuperviseRequest{Op: "start", Tree: started.Tree, Role: claim.RoleArchitect,
-		Generation: started.GenerationOf("start", claim.RoleArchitect)}, a.now())
+	return nil
 }
 
 // carryGateTo copies gates, the design gate of the tree root a child leaves, onto root, the child
