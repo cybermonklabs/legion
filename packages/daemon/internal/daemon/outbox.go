@@ -2326,34 +2326,26 @@ func (r *outbox) ciNewsStale(ctx context.Context, key string, role claim.Role, p
 	return why, nil
 }
 
-// besideBranchesDelete deletes on GitHub the branches beside a fix of a task
-// (record.BesideBranchesDelete): those under claim.BesideFixPrefix of the row's fix, or, where the
-// row names fix 0, under claim.BesideFixPrefix of each fix from 1 to the row's Through, the newest
-// fix the task held when the row was queued. It never lists the whole task's prefix: a later
-// version can add the task again in the generation, or a move back can take it out of its retro,
-// while the row waits on its retries, and the branches of each fix opened then stand under a
-// higher number. It mints the implement App's token for the owner of the repository GitHub holds
-// the issue's under now, as createBranch does, lists each prefix (git/matching-refs) and deletes
-// each branch it names. The list is GitHub's answer, and a delete removes whatever ref it names, so
-// each entry is checked before either request: an entry that is not a branch under the prefix the
-// list asked for, `refs/heads/` and the prefix, is refused with a Warn line naming its ref, asks
-// nothing of GitHub and fails the row. A deletion logs the branch and the commit it stood at.
-// GitHub answers 404 for a branch already gone, which finishes that branch as absent with a line
-// of its own; and 422 both for a branch that is gone and for one it refuses to delete, so a 422 is
-// read again by the branch's exact ref, and only that read's 404 finishes it as absent. A branch
-// still there, a refused entry, a read or a list that failed, and any other answer fail the row,
-// which keeps it on its backoff, and log no deletion; its replay lists each prefix again, so a
+// besideBranchesDelete deletes on GitHub the branches beside the fixes of a task
+// (record.BesideBranchesDelete): those under claim.BesideFixPrefix of each fix from 1 to the row's
+// Through, the newest fix the task held when the row was queued. It never lists the whole task's
+// prefix: a later version can add the task again in the generation, or a move back can take it out
+// of its retro, while the row waits on its retries, and the branches of each fix opened then stand
+// under a higher number. It mints the implement App's token for the owner of the repository GitHub
+// holds the issue's under now, as createBranch does, lists each prefix (git/matching-refs) and
+// deletes each branch it names. The list is GitHub's answer, and a delete removes whatever ref it
+// names, so each entry is checked before either request: an entry that is not a branch under the
+// prefix the list asked for, `refs/heads/` and the prefix, is refused with a Warn line naming its
+// ref, asks nothing of GitHub and fails the row. A deletion logs the branch and the commit it stood
+// at. GitHub answers 404 for a branch already gone, which finishes that branch as absent with a
+// line of its own; and 422 both for a branch that is gone and for one it refuses to delete, so a
+// 422 is read again by the branch's exact ref, and only that read's 404 finishes it as absent. A
+// branch still there, a refused entry, a read or a list that failed, and any other answer fail the
+// row, which keeps it on its backoff, and log no deletion; its replay lists each prefix again, so a
 // branch deleted meanwhile is not asked for twice.
 func (r *outbox) besideBranchesDelete(ctx context.Context, row record.OutboxRow, payload record.BesideBranchesDelete) error {
-	fixes := []int{payload.Fix}
-	if payload.Fix == 0 {
-		fixes = make([]int, 0, payload.Through)
-		for fix := 1; fix <= payload.Through; fix++ {
-			fixes = append(fixes, fix)
-		}
-	}
-	prefixes := make([]string, 0, len(fixes))
-	for _, fix := range fixes {
+	prefixes := make([]string, 0, payload.Through)
+	for fix := 1; fix <= payload.Through; fix++ {
 		prefix, err := claim.BesideFixPrefix(row.Issue, payload.Generation, payload.Task, fix)
 		if err != nil {
 			return fmt.Errorf("outbox row %d: %w", row.ID, err)

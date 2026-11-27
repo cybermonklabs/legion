@@ -167,9 +167,9 @@ func TestAStepBesideAFixIsToldToPushToItsOwnBranch(t *testing.T) {
 	})
 }
 
-// deletions is each deletion of branches beside a fix queued for LEGION-208, oldest first, as
-// `<generation> <task> fix <n>`, and `<generation> <task> fix 0 through <m>` for every fix of the
-// task to m, the newest fix it held when the row was queued (record.BesideBranchesDelete).
+// deletions is each deletion of branches beside the fixes of a task queued for LEGION-208, oldest
+// first, as `<generation> <task> through <m>`, m being the newest fix the task held when the row
+// was queued (record.BesideBranchesDelete).
 func (r *fixRig) deletions() []string {
 	r.t.Helper()
 	var lines []string
@@ -178,10 +178,7 @@ func (r *fixRig) deletions() []string {
 		if err := json.Unmarshal(row.payload, &deletion); err != nil {
 			r.t.Fatalf("decode the deletion %s: %v", row.payload, err)
 		}
-		line := fmt.Sprintf("%d %s fix %d", deletion.Generation, deletion.Task, deletion.Fix)
-		if deletion.Fix == 0 {
-			line += fmt.Sprintf(" through %d", deletion.Through)
-		}
+		line := fmt.Sprintf("%d %s through %d", deletion.Generation, deletion.Task, deletion.Through)
 		lines = append(lines, line)
 	}
 	return lines
@@ -242,7 +239,7 @@ func (r *fixRig) parks() {
 // deletes at the failed claim's way 2 and at the stop; and the deletion after every way 2 or 3 of
 // the fix's own completion (afterFix) deletes at the no-commit way 2 and at the way 3.
 func TestBesideBranchesAreDeletedAtTheirEnds(t *testing.T) {
-	task := []string{"1 a fix 0 through 1"}
+	task := []string{"1 a through 1"}
 	t.Run("a new-commit way 2 deletes none", func(t *testing.T) {
 		r := fixAtTheEnd(t, returnEngine())
 		r.fixEnds(headTwo)
@@ -423,7 +420,7 @@ func TestANewGenerationQueuesDeletionAfterItsLastOldStartEnds(t *testing.T) {
 		return r.engine.store.ClearTreeGeneration(ctx, tx, issue.Tree, stepClock.Add(time.Hour))
 	})
 
-	assertStrings(t, "the deletion after every old start ended", r.deletions(), []string{"1 a fix 0 through 1"})
+	assertStrings(t, "the deletion after every old start ended", r.deletions(), []string{"1 a through 1"})
 	r.assertDeletionAfterOldEnds(since)
 	if fix := r.latestFix(); fix.Pushed[string(claim.RoleTester)] != pushed {
 		t.Fatalf("the old tester's push = %+v, want %s", fix.Pushed, pushed)
@@ -444,7 +441,7 @@ func TestALeaveQueuesDeletionAfterItsLastOldStartEnds(t *testing.T) {
 
 	r.parks()
 
-	assertStrings(t, "the deletion after every old start ended", r.deletions(), []string{"1 a fix 0 through 1"})
+	assertStrings(t, "the deletion after every old start ended", r.deletions(), []string{"1 a through 1"})
 	r.assertDeletionAfterOldEnds(since)
 	if fix := r.latestFix(); fix.Pushed[string(claim.RoleTester)] != pushed {
 		t.Fatalf("the leaving tester's push = %+v, want %s", fix.Pushed, pushed)

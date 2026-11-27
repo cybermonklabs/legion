@@ -120,7 +120,6 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 			Assigned: &CIAssigned{Check: "k-ci", Head: "c0de", CICase: "failure", Fix: 1}, Branch: "legion-beside/LEGION-208/3/a/fix-1/tester", Body: "Fix 1 runs."},
 		CINews{Purpose: CINewsStepReport, Role: "legion-legion-legion-208-implementer", Generation: 3, Task: "a", Head: "c0de",
 			Reader: &CIReader{Fix: 1, Entry: 5}, Branch: "legion-beside/LEGION-208/3/a/fix-1/tester", Body: "The tester failed."},
-		BesideBranchesDelete{Generation: 3, Task: "a", Fix: 1},
 		BesideBranchesDelete{Generation: 3, Task: "a", Through: 2},
 	}
 	for _, payload := range payloads {
@@ -619,10 +618,9 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 			Reader: &CIReader{Phase: phase.Testing}, Body: "b"}, reason: "is for the running fix"},
 		{name: "a prompt naming what Legion does next", payload: CINews{Purpose: CINewsState, Role: "r", Generation: 3, Task: "a", Repo: "acme/widgets", Head: "c0de",
 			Reader: &CIReader{Phase: phase.Reviewing}, Checks: &[]string{}, Next: CINextEndHoldCI, Body: "b"}, reason: "only a report names what Legion does next"},
-		{name: "a deletion of no task", payload: BesideBranchesDelete{Generation: 3, Fix: 1}, reason: "a deletion of the branches beside a fix names"},
-		{name: "a deletion of every fix that names no newest fix", payload: BesideBranchesDelete{Generation: 3, Task: "a"}, reason: besideThroughRefusal},
-		{name: "a deletion of every fix through a fix below 1", payload: BesideBranchesDelete{Generation: 3, Task: "a", Through: -1}, reason: besideThroughRefusal},
-		{name: "a deletion of one fix that names a newest fix", payload: BesideBranchesDelete{Generation: 3, Task: "a", Fix: 1, Through: 1}, reason: besideThroughRefusal},
+		{name: "a deletion of no task", payload: BesideBranchesDelete{Generation: 3, Through: 1}, reason: besideThroughRefusal},
+		{name: "a deletion that names no newest fix", payload: BesideBranchesDelete{Generation: 3, Task: "a"}, reason: besideThroughRefusal},
+		{name: "a deletion through a fix below 1", payload: BesideBranchesDelete{Generation: 3, Task: "a", Through: -1}, reason: besideThroughRefusal},
 		{name: "unsupported payload", payload: unsupportedOutboxPayload{}, reason: "unknown outbox payload"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -784,8 +782,9 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a fix's job read of no check", row: OutboxRow{ID: 68, Kind: OutboxKindFixJobRead, Payload: json.RawMessage(`{"generation":3,"task":"a","fix":1,"head":"c0de"}`)}, reason: "a fix's job read names"},
 		{name: "a CI news row with an unknown field", row: OutboxRow{ID: 69, Kind: OutboxKindCINews, Payload: json.RawMessage(`{"purpose":"state","role":"r","generation":3,"task":"a","repo":"acme/widgets","head":"c0de","reader":{"phase":"reviewing","entry":2},"checks":[],"body":"b","verdict":"yes"}`)}, reason: "unknown field"},
 		{name: "a prompt whose set of checks is null", row: OutboxRow{ID: 70, Kind: OutboxKindCINews, Payload: json.RawMessage(`{"purpose":"state","role":"r","generation":3,"task":"a","repo":"acme/widgets","head":"c0de","reader":{"phase":"reviewing","entry":2},"checks":null,"body":"b"}`)}, reason: "carries a check's state or the head's set of checks"},
-		{name: "a deletion of the branches beside a fix with an unknown field", row: OutboxRow{ID: 71, Kind: OutboxKindBesideBranchesDelete, Payload: json.RawMessage(`{"generation":3,"task":"a","fix":1,"prefix":"legion-beside/"}`)}, reason: "unknown field"},
-		{name: "a deletion of every fix stored with no newest fix", row: OutboxRow{ID: 72, Kind: OutboxKindBesideBranchesDelete, Payload: json.RawMessage(`{"generation":3,"task":"a"}`)}, reason: besideThroughRefusal},
+		{name: "a deletion of the branches beside a fix with an unknown field", row: OutboxRow{ID: 71, Kind: OutboxKindBesideBranchesDelete, Payload: json.RawMessage(`{"generation":3,"task":"a","through":1,"prefix":"legion-beside/"}`)}, reason: "unknown field"},
+		{name: "a deletion stored with a fix of its own", row: OutboxRow{ID: 73, Kind: OutboxKindBesideBranchesDelete, Payload: json.RawMessage(`{"generation":3,"task":"a","fix":1,"through":1}`)}, reason: "unknown field"},
+		{name: "a deletion stored with no newest fix", row: OutboxRow{ID: 72, Kind: OutboxKindBesideBranchesDelete, Payload: json.RawMessage(`{"generation":3,"task":"a"}`)}, reason: besideThroughRefusal},
 		{name: "a retro's stored reason without its rating", row: OutboxRow{ID: 62, Kind: OutboxKindStepRecord, Payload: json.RawMessage(`{"id":"` + stepRecordID +
 			`","task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-leg-leg-1-implementer","generation":1,"rating_reason":"The plan put the tests after the review."}`)},
 			reason: "its reason or neither"},
@@ -802,9 +801,9 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 	}
 }
 
-// besideThroughRefusal is the validation's words for a deletion of the branches beside a fix that
-// names fix 0 with no newest fix of the task to delete through, or one fix with one.
-const besideThroughRefusal = "a deletion of the branches beside every fix of a task names the newest fix the task held, and one of a single fix names none"
+// besideThroughRefusal is the validation's words for a deletion of the branches beside the fixes of
+// a task that names no run, no task, or no newest fix of the task to delete through.
+const besideThroughRefusal = "a deletion of the branches beside the fixes of a task names the run, the task and the newest fix the task held"
 
 // checkLookRefusal is the validation's words for a supervise row whose check look is not a start
 // of the implementer or the tester with no phase.

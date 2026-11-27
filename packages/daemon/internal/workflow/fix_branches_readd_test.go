@@ -34,7 +34,7 @@ func (r *fixRig) applyTaken(id string, fact intake.Fact) {
 }
 
 // A version that removes a stopped task queues the deletion of the branches beside each fix the
-// task holds then, through the newest one: fix 0 through fix 1. While that row waits, as it does
+// task holds then, through the newest one: through fix 1. While that row waits, as it does
 // when GitHub answers its deletes 500, a later version adds the task again in the same
 // generation, and a failure opens the task's next fix. That fix is fix 2, above the row's newest,
 // since the task's fixes stay when its plan rows go, so the row names none of its branches. Once

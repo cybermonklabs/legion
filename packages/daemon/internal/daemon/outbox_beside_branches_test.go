@@ -120,34 +120,31 @@ func requestsOf(refs *githubtest.Refs, method, branch string) []int {
 	return statuses
 }
 
-// The deletion of the branches beside a fix deletes the three beside fix 1 and no other: the
-// branch beside fix 2, the one beside another task and the issue's own branch stand. A delete
-// GitHub answers 404 finishes that branch as absent with a line of its own. The row of fix 0
-// through fix 2 then deletes the branch beside fix 2 too, and leaves the other task's and the
-// issue's. A delete GitHub answers 422 is read again by the branch's exact ref: where the ref still
-// stands, the row fails and is kept for its retry, logging a failure and no deletion of it, and its
-// replay deletes it; where the ref reads 404, the branch finishes as absent, not as deleted. A 500
-// keeps the row for its retry too. A ref the list answers outside the prefix it was asked for, the
+// The deletion of the branches beside the fixes of a task, through fix 1, deletes the three beside
+// fix 1 and no other: the branch beside fix 2, which a fix the task opened later in the generation
+// pushed (a later version adds the task again, or a move back takes it out of its retro), the one
+// beside another task and the issue's own branch stand, and GitHub is asked no delete of fix 2's. A
+// delete GitHub answers 404 finishes that branch as absent with a line of its own. The row through
+// fix 2 then deletes the branch beside fix 2 too, and leaves the other task's and the issue's. A
+// delete GitHub answers 422 is read again by the branch's exact ref: where the ref still stands, the
+// row fails and is kept for its retry, logging a failure and no deletion of it, and its replay
+// deletes it; where the ref reads 404, the branch finishes as absent, not as deleted. A 500 keeps
+// the row for its retry too. A ref the list answers outside the prefix it was asked for, the
 // issue's own branch or a tag, is refused before either request: it is logged at WARN by its ref,
 // GitHub is asked no delete of it, and the row fails and is kept for its retry, while the list's
 // branches of fix 1 are deleted. Each runs on a whole daemon (besideDaemon), the row on its
-// role-message lane.
-//
-// The control, a kept subtest: the row of fix 2 leaves fix 1's three branches. On its daemon, a
-// row of every fix through fix 1 then deletes fix 1's three and leaves a branch pushed under fix 2
-// after it, as a fix the task opens later in the generation pushes one (a later version adds the
-// task again, or a move back takes it out of its retro), and GitHub is asked no delete of it; the
-// row of fix 0 through fix 2 in the first subtest is its control, which deletes fix 2's branch.
+// role-message lane. The red of the fence is a row that listed the whole task's prefix, which
+// deleted fix 2's branch with fix 1's.
 func TestTheBranchesBesideAFixAreDeleted(t *testing.T) {
 	t.Parallel()
-	t.Run("fix 1's branches go, a 404 is an absence, and fix 0 takes the task's rest", func(t *testing.T) {
+	t.Run("the row through fix 1 takes fix 1's branches, a 404 is an absence, and the row through fix 2 the task's rest", func(t *testing.T) {
 		t.Parallel()
 		d, refs, b := besideDaemon(t)
 		refs.Fail(http.MethodDelete, liveRepo, b.fix1[0], http.StatusNotFound, true)
-		id := d.queue(record.BesideBranchesDelete{Generation: 1, Task: "default", Fix: 1})
+		id := d.queue(record.BesideBranchesDelete{Generation: 1, Task: "default", Through: 1})
 		d.until("", "fix 1's row to finish", func() bool { return !d.rowLeft(id) })
 		if held := standing(refs, b.fix1...); len(held) != 0 {
-			t.Fatalf("after fix 1's row %v of fix 1 stand, want none", held)
+			t.Fatalf("after the row through fix 1 %v of fix 1 stand, want none", held)
 		}
 		deletes := 0
 		for _, request := range refs.Requests() {
@@ -165,7 +162,10 @@ func TestTheBranchesBesideAFixAreDeleted(t *testing.T) {
 				d.besideLines(besideDeletedLine, b.fix1[0]), d.besideLines(besideDeletedLine, b.fix1[1]), d.besideLines(besideDeletedLine, b.fix1[2]))
 		}
 		if held := standing(refs, b.fix2, b.other, b.issue); len(held) != 3 {
-			t.Fatalf("after fix 1's row %v stand, want fix 2's, the other task's and the issue's", held)
+			t.Fatalf("after the row through fix 1 %v stand, want fix 2's, the other task's and the issue's", held)
+		}
+		if deletes := requestsOf(refs, http.MethodDelete, b.fix2); len(deletes) != 0 {
+			t.Fatalf("GitHub answered the deletes of %s %v, want none: the row through fix 1 never names fix 2", b.fix2, deletes)
 		}
 		task := d.queue(record.BesideBranchesDelete{Generation: 1, Task: "default", Through: 2})
 		d.until("", "the task's row to finish", func() bool { return !d.rowLeft(task) })
@@ -177,7 +177,7 @@ func TestTheBranchesBesideAFixAreDeleted(t *testing.T) {
 		t.Parallel()
 		d, refs, b := besideDaemon(t)
 		refs.Fail(http.MethodDelete, liveRepo, b.fix1[2], http.StatusUnprocessableEntity, false)
-		id := d.queue(record.BesideBranchesDelete{Generation: 1, Task: "default", Fix: 1})
+		id := d.queue(record.BesideBranchesDelete{Generation: 1, Task: "default", Through: 1})
 		d.until("", "the row's replay to finish it", func() bool { return !d.rowLeft(id) })
 		if deletes, reads := requestsOf(refs, http.MethodDelete, b.fix1[2]), requestsOf(refs, http.MethodGet, b.fix1[2]); len(deletes) != 2 ||
 			deletes[0] != http.StatusUnprocessableEntity || len(reads) == 0 || reads[0] != http.StatusOK {
@@ -199,7 +199,7 @@ func TestTheBranchesBesideAFixAreDeleted(t *testing.T) {
 		t.Parallel()
 		d, refs, b := besideDaemon(t)
 		refs.Fail(http.MethodDelete, liveRepo, b.fix1[2], http.StatusUnprocessableEntity, true)
-		id := d.queue(record.BesideBranchesDelete{Generation: 1, Task: "default", Fix: 1})
+		id := d.queue(record.BesideBranchesDelete{Generation: 1, Task: "default", Through: 1})
 		d.until("", "the row to finish", func() bool { return !d.rowLeft(id) })
 		if len(d.besideLines(beside422Line, b.fix1[2])) != 1 || len(d.besideLines(besideDeletedLine, b.fix1[2])) != 0 || len(d.ciLines(rowFailedLine, id)) != 0 {
 			t.Fatalf("after a 422 of a branch gone: absence lines %v, deletion lines %v, %d failures of the row; want one absence line, no deletion line and no failure",
@@ -210,7 +210,7 @@ func TestTheBranchesBesideAFixAreDeleted(t *testing.T) {
 		t.Parallel()
 		d, refs, b := besideDaemon(t)
 		refs.Fail(http.MethodDelete, liveRepo, b.fix1[1], http.StatusInternalServerError, false)
-		id := d.queue(record.BesideBranchesDelete{Generation: 1, Task: "default", Fix: 1})
+		id := d.queue(record.BesideBranchesDelete{Generation: 1, Task: "default", Through: 1})
 		d.until("", "the row's retry to finish it", func() bool { return !d.rowLeft(id) })
 		if deletes := requestsOf(refs, http.MethodDelete, b.fix1[1]); len(deletes) != 2 || deletes[0] != http.StatusInternalServerError || len(d.ciLines(rowFailedLine, id)) == 0 {
 			t.Fatalf("GitHub answered the deletes of %s %v, the row failed %d times; want a 500 that kept the row, then its retry's delete",
@@ -219,32 +219,6 @@ func TestTheBranchesBesideAFixAreDeleted(t *testing.T) {
 		if held := standing(refs, b.fix1...); len(held) != 0 {
 			t.Fatalf("after the retry %v of fix 1 stand, want none", held)
 		}
-	})
-	t.Run("control: fix 2's row leaves fix 1's branches", func(t *testing.T) {
-		t.Parallel()
-		d, refs, b := besideDaemon(t)
-		id := d.queue(record.BesideBranchesDelete{Generation: 1, Task: "default", Fix: 2})
-		d.until("", "fix 2's row to finish", func() bool { return !d.rowLeft(id) })
-		if held := standing(refs, b.fix1...); len(held) != 3 || len(standing(refs, b.fix2)) != 0 {
-			t.Fatalf("fix 2's row left %v of fix 1 and %v of fix 2; want fix 1's three and none of fix 2", held, standing(refs, b.fix2))
-		}
-		t.Run("a row of every fix through fix 1 leaves a later fix's branch", func(t *testing.T) {
-			refs.Set(liveRepo, b.fix2, "e000000000000000000000000000000000000000")
-			if planted := standing(refs, b.fix2); len(planted) != 1 {
-				t.Fatalf("UNKNOWN: the planting holds %v beside fix 2, want its one branch: a row that never reached fix 2 would pass", planted)
-			}
-			id := d.queue(record.BesideBranchesDelete{Generation: 1, Task: "default", Through: 1})
-			d.until("", "the row through fix 1 to finish", func() bool { return !d.rowLeft(id) })
-			if held := standing(refs, b.fix1...); len(held) != 0 {
-				t.Fatalf("after the row through fix 1 %v of fix 1 stand, want none", held)
-			}
-			if held := standing(refs, b.fix2, b.other, b.issue); !slices.Equal(held, []string{b.fix2, b.other, b.issue}) {
-				t.Fatalf("after the row through fix 1 %v stand, want fix 2's, the other task's and the issue's", held)
-			}
-			if deletes := requestsOf(refs, http.MethodDelete, b.fix2); len(deletes) != 1 {
-				t.Fatalf("GitHub answered the deletes of %s %v, want the one of fix 2's row and none of the row through fix 1", b.fix2, deletes)
-			}
-		})
 	})
 	t.Run("a listed ref outside the prefix is refused, and nothing is deleted for it", func(t *testing.T) {
 		t.Parallel()
@@ -256,7 +230,7 @@ func TestTheBranchesBesideAFixAreDeleted(t *testing.T) {
 		issueRef, tagRef := "refs/heads/"+b.issue, "refs/tags/"+b.fix1[1]
 		refs.ListAlso(liveRepo, prefix, issueRef, "f000000000000000000000000000000000000000")
 		refs.ListAlso(liveRepo, prefix, tagRef, "f100000000000000000000000000000000000000")
-		id := d.queue(record.BesideBranchesDelete{Generation: 1, Task: "default", Fix: 1})
+		id := d.queue(record.BesideBranchesDelete{Generation: 1, Task: "default", Through: 1})
 		d.until("", "the row's first run to end", func() bool { return !d.rowLeft(id) || len(d.ciLines(rowFailedLine, id)) > 0 })
 		if held := standing(refs, b.issue); len(held) != 1 {
 			t.Fatalf("after the row the issue's own branch %s stands %v, want it standing: GitHub listed it outside fix 1's prefix", b.issue, held)

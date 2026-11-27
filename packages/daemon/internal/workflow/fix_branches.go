@@ -34,13 +34,25 @@ func offHeadWaitReason(head, prHead string) string {
 		"the tester records its results at the pull request's head and completes again", head, prHead, head)
 }
 
+// pushesBesideFix says whether role's step pushes commits of its own while a fix of its task runs,
+// and so has a branch beside the fix: every role of a step but the reviewer, which reads the task's
+// head and creates no commit. It is the one owner of that rule: besideBranchOf names no branch for
+// any other role, so no start, binding, fix-started row or update ask names one.
+func pushesBesideFix(role claim.Role) bool {
+	return role != "" && role != claim.RoleReviewer
+}
+
 // besideBranchOf is the branch beside fix of task in issue's generation that role's step pushes to
-// (claim.BesideBranch), and true. Where no such name can be made, which only an issue key and a
+// (claim.BesideBranch), and true. A role whose step pushes nothing beside a fix (pushesBesideFix)
+// has none, and answers false. Where no such name can be made, which only an issue key and a
 // generation beyond Dispatch's key rule can cause, it logs that one task by name with the error
 // and answers false, and the caller gives that task nothing of the branch, so every other fact of
 // the issue goes on. The fix rule refuses to open such a task's fix at all (openFix), so no fix
 // that runs meets this.
 func (e *Engine) besideBranchOf(issue record.Issue, task string, fix int, role claim.Role) (string, bool) {
+	if !pushesBesideFix(role) {
+		return "", false
+	}
 	branch, err := claim.BesideBranch(issue.Key, issue.Generation, task, fix, role)
 	if err != nil {
 		e.log.Error("workflow: no branch beside a fix can be named for this task, which gets none", "issue", issue.Key,
@@ -108,8 +120,9 @@ func (e *Engine) UpdatePushes(ctx context.Context, tx pgx.Tx, key string) (map[c
 		if err != nil {
 			return nil, err
 		}
-		role := RoleFor(at)
-		if start.Run != record.RunOpen || role == claim.RoleReviewer {
+		// A step's open start is bound to a branch beside a fix only where its role pushes one
+		// (bindBesideFix, toldBranch, by besideBranchOf), so the reviewer's names none.
+		if start.Run != record.RunOpen {
 			continue
 		}
 		branch := start.PushBranch
@@ -142,12 +155,12 @@ func (e *Engine) fixBranchOf(issue record.Issue, fix record.TaskFix) string {
 
 // bindBesideFix writes what start number starts of place, a step of issue's task that role runs,
 // names of the fix of its task that reads its job or runs: the fix (record.Store.MarkStepBesideFix)
-// and, for every role but the reviewer, which creates no commit, the branch beside the fix it pushes
-// to until its run ends (SetStepPushBranch). The task of that start named the same (startFacts), and
-// the fix's start tells no fix-started row to a step whose start named the fix (tellStepsOfFix). A
-// start of no step, of the fix's own place or of no role (a fix's own start), and one while no fix is
-// open, names no fix: the store wrote none at the start, so a binding of an earlier start never
-// reaches it.
+// and, for a role whose step pushes beside a fix (besideBranchOf, which names the reviewer none),
+// the branch beside the fix it pushes to until its run ends (SetStepPushBranch). The task of that
+// start named the same (startFacts), and the fix's start tells no fix-started row to a step whose
+// start named the fix (tellStepsOfFix). A start of no step, of the fix's own place or of no role (a
+// fix's own start), and one while no fix is open, names no fix: the store wrote none at the start,
+// so a binding of an earlier start never reaches it.
 func (e *Engine) bindBesideFix(ctx context.Context, tx pgx.Tx, issue record.Issue, place record.StepPlace, starts int64, role claim.Role) error {
 	if role == "" || place.Kind != record.PlaceStep {
 		return nil
@@ -158,9 +171,6 @@ func (e *Engine) bindBesideFix(ctx context.Context, tx pgx.Tx, issue record.Issu
 	}
 	if err := e.store.MarkStepBesideFix(ctx, tx, issue.Key, place, starts, open.Fix); err != nil {
 		return err
-	}
-	if role == claim.RoleReviewer {
-		return nil
 	}
 	branch, ok := e.besideBranchOf(issue, place.Task, open.Fix, role)
 	if !ok {
@@ -180,14 +190,12 @@ func (e *Engine) toldByStart(start record.StepStart, fix record.TaskFix) bool {
 }
 
 // toldBranch is the branch beside fix that role's step at place pushes to, which the fix-started row
-// to it names, "" for the reviewer, which creates no commit: the branch the step's open start is
-// bound to already, which a later fix's start keeps, else the step's branch beside fix, which the
-// open start is bound to here (SetStepPushBranch). A step whose run has ended is bound to nothing.
+// to it names, "" for a role whose step pushes none (besideBranchOf): the branch the step's open
+// start is bound to already, which a later fix's start keeps, else the step's branch beside fix,
+// which the open start is bound to here (SetStepPushBranch). A step whose run has ended is bound to
+// nothing.
 func (e *Engine) toldBranch(ctx context.Context, tx pgx.Tx, issue record.Issue, place record.StepPlace, start record.StepStart, fix record.TaskFix,
 	role claim.Role) (string, error) {
-	if role == claim.RoleReviewer {
-		return "", nil
-	}
 	open := start.Run == record.RunOpen
 	if open && start.PushBranch != "" {
 		return start.PushBranch, nil

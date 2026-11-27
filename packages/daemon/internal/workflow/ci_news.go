@@ -36,10 +36,13 @@ type ciReader struct {
 // step the issue stands in where that step runs (its phases row holds an open entry), with that
 // entry, the implementer in the retro and the merger in merging among them; the owner where the
 // issue stands in accepting, whose acceptance starts no worker, so its work is the acceptance
-// alone; and the implementer where a fix of the task runs, with the fix's number and entry. A
-// task held at its end runs no step, so a hold for its CI or its fix prompts no retro that was
-// never made: the hold's own release decides. A released claim is a reader all the same, which
-// the row wakes.
+// alone; and the implementer where a fix of the task runs, with the fix's number and entry
+// (fixReader). A task held at its end runs no step, so a hold for its CI or its fix prompts no
+// retro that was never made: the hold's own release decides. A released claim is a reader all the
+// same, which the row wakes. It is the one owner of who reads a task's CI news and for which work:
+// a settlement's receivers (ciReceivers, readerOf), the fix rule's repair assignment in a step
+// (fixFailure) and the fix-started rows (tellStepsOfFix, stepReaderOf) each take their reader from
+// it.
 func (e *Engine) ciReaders(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) ([]ciReader, error) {
 	var readers []ciReader
 	standsAt := record.StandsAt(issue)
@@ -68,7 +71,7 @@ func (e *Engine) ciReaders(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 		return nil, err
 	}
 	if fix != nil && fix.State == record.FixRunning {
-		readers = append(readers, ciReader{role: claim.RoleImplementer, issue: issue.Key, reader: record.CIReader{Fix: fix.Fix, Entry: fix.Entry}})
+		readers = append(readers, ciReader{role: claim.RoleImplementer, issue: issue.Key, reader: *fixReader(*fix)})
 	}
 	return readers, nil
 }
@@ -84,11 +87,33 @@ func readerOf(readers []ciReader, to roleRecipient) *record.CIReader {
 	return nil
 }
 
+// stepReaderOf is the work to reads its task's CI news for at a step, among readers (ciReaders),
+// nil where to's step is no current reader. It never answers a fix's reader, which is the
+// implementer's work for the fix, not for a step of its own.
+func stepReaderOf(readers []ciReader, to roleRecipient) *record.CIReader {
+	for _, r := range readers {
+		if r.role == to.role && r.issue == to.issue && r.reader.Fix == 0 {
+			reader := r.reader
+			return &reader
+		}
+	}
+	return nil
+}
+
+// fixReader is the work the implementer reads its task's CI news for while fix runs: the fix and
+// its entry. It is the one form of that reader, which ciReaders, the repair assignment of a failure
+// that joins the fix (joinFix) and a step's report to the fix (reportToFix) each carry.
+func fixReader(fix record.TaskFix) *record.CIReader {
+	return &record.CIReader{Fix: fix.Fix, Entry: fix.Entry}
+}
+
 // ciReceivers is who is told of a settlement of issue's pull request, as main tells it: the
 // architect that owns the issue (owningArchitect), the role of the step the issue stands in, and
 // the implementer, whose code the checks ran on, except in merging, where the merge and what
 // breaks it are the merger's (cybermonklabs/legion#4979). A phase the architect itself holds
-// (accepting) is the owner's own step, so the owner is told once, as the owner.
+// (accepting) is the owner's own step, so the owner is told once, as the owner. Who is told is not
+// who reads: each receiver's row carries the work ciReaders gives it (readerOf), so a receiver that
+// reads for no current work gets a row the outbox finishes undelivered.
 func (e *Engine) ciReceivers(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]roleRecipient, error) {
 	owner, err := e.owningArchitect(ctx, tx, issue)
 	if err != nil {

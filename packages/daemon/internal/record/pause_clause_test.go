@@ -48,7 +48,7 @@ var pauseQueue = []pauseQueued{
 		payload: CINews{Purpose: CINewsState, Role: "legion-legion-legion-313-reviewer", Generation: 1, Task: "a", Repo: "acme/widgets", Head: "c0de",
 			Reader: &CIReader{Phase: phase.Reviewing, Entry: 2}, Checks: &[]string{}, Body: ReadPromptBody("LEGION-313", "c0de", nil)}},
 	{name: "a deletion of the branches beside a fix", issue: "LEGION-314", held: true,
-		payload: BesideBranchesDelete{Generation: 1, Task: "a", Fix: 1}},
+		payload: BesideBranchesDelete{Generation: 1, Task: "a", Through: 1}},
 	{name: "a check's wake", issue: "LEGION-308", held: true, payload: CheckWakeDue{Look: 1, Reason: "the tester's own wake"}},
 	{name: "a check's look bound", issue: "LEGION-309", held: true, payload: CheckLook{Look: 1}},
 	{name: "a check's bound", issue: "LEGION-310", held: true, payload: CheckBound{}},

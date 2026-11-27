@@ -2735,16 +2735,11 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return err
 		}
 	case BesideBranchesDelete:
-		if value.Generation == 0 || value.Task == "" || value.Fix < 0 {
-			return fmt.Errorf("a deletion of the branches beside a fix names the run, the task and the fix, 0 for every fix; it names generation %d, task %q and fix %d",
-				value.Generation, value.Task, value.Fix)
-		}
-		// A row of every fix deletes the branches beside fixes 1 to Through, so a row with no
-		// newest fix would delete none, and a fix the task opens later numbers above it; a row of
-		// one fix deletes that fix's alone and names no newest fix.
-		if (value.Fix == 0) != (value.Through > 0) || value.Through < 0 {
-			return fmt.Errorf("a deletion of the branches beside every fix of a task names the newest fix the task held, and one of a single fix names none; it names fix %d through %d",
-				value.Fix, value.Through)
+		// The row deletes the branches beside fixes 1 to Through, so a row with no newest fix
+		// would delete none.
+		if value.Generation == 0 || value.Task == "" || value.Through < 1 {
+			return fmt.Errorf("a deletion of the branches beside the fixes of a task names the run, the task and the newest fix the task held; it names generation %d, task %q and fix %d",
+				value.Generation, value.Task, value.Through)
 		}
 	case MergeForwardMessage:
 		if _, known := mergeForwardRoles[value.Step]; !known {

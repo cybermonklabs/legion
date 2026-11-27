@@ -191,16 +191,19 @@ func (e *Engine) fixFailure(ctx context.Context, tx pgx.Tx, pass *fixPass, state
 	switch {
 	case w.Place.Kind == record.PlaceStep && w.Place.Position >= 1 && w.Place.Position <= len(w.Steps) &&
 		w.Steps[w.Place.Position-1].Type == plan.TypeImplementation:
-		entry, err := e.stepEntry(ctx, tx, issue.Key, claim.Role(w.Steps[w.Place.Position-1].Role))
-		if err != nil || entry == 0 {
+		readers, err := e.ciReaders(ctx, tx, issue, w)
+		if err != nil {
 			return err
+		}
+		reader := stepReaderOf(readers, roleRecipient{issue: issue.Key, role: claim.Role(w.Steps[w.Place.Position-1].Role)})
+		if reader == nil {
+			return nil
 		}
 		failure.WentTo = record.CIFailureToImplementer
 		if _, err := e.store.PutCIFailure(ctx, tx, failure); err != nil {
 			return err
 		}
-		reader := record.CIReader{Phase: w.steps()[w.Place.Position-1], Entry: entry}
-		return e.assignRepair(ctx, tx, pass, state, reader, 0, " Fix it in this step.")
+		return e.assignRepair(ctx, tx, pass, state, *reader, 0, " Fix it in this step.")
 	case hasImplementation && w.Place.Kind == record.PlaceStep && w.Place.Position > first:
 		return e.openFix(ctx, tx, pass, state.Check, first, failure, nil)
 	}
@@ -285,7 +288,7 @@ func (e *Engine) joinFix(ctx context.Context, tx pgx.Tx, pass *fixPass, state re
 	if fix.State != record.FixRunning {
 		return nil
 	}
-	return e.assignRepair(ctx, tx, pass, state, record.CIReader{Fix: fix.Fix, Entry: fix.Entry}, fix.Fix, " It is part of your fix.")
+	return e.assignRepair(ctx, tx, pass, state, *fixReader(fix), fix.Fix, " It is part of your fix.")
 }
 
 // openFix starts fix of the task of the pass for check at the pass's head, at place, the task's
@@ -641,17 +644,15 @@ func (e *Engine) startFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 
 // besideFacts is the start facts of a step at place, a step of w's task of issue other than the
 // fix's own, while open, a fix of the task, reads its job or runs (startFacts): the fix's number,
-// check and head, and, for each role but the reviewer, the step's branch: the one its open start
-// is bound to already (record.StepStart.PushBranch), which a later fix's start keeps, else its own
-// branch beside open, which its start binds (bindBesideFix); and the head the daemon holds of a
-// push of that branch, read from the fix the branch is of. The role is the role of the step's phase,
-// a phase of a step of the plan, which admitted never is.
+// check and head, and, for a role whose step pushes beside a fix (besideBranchOf, which names the
+// reviewer none), the step's branch: the one its open start is bound to already
+// (record.StepStart.PushBranch), which a later fix's start keeps, else its own branch beside open,
+// which its start binds (bindBesideFix); and the head the daemon holds of a push of that branch,
+// read from the fix the branch is of. The role is the role of the step's phase, a phase of a step of
+// the plan, which admitted never is.
 func (e *Engine) besideFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, place int, open record.TaskFix) (startFacts, error) {
 	facts := startFacts{Fix: open.Fix, Check: open.Check, Head: open.Head}
 	role := RoleFor(w.steps()[place-1])
-	if role == claim.RoleReviewer || role == "" {
-		return facts, nil
-	}
 	bound, pushed, err := e.boundBranch(ctx, tx, issue, w, place)
 	if err != nil {
 		return startFacts{}, err
@@ -867,6 +868,12 @@ func (e *Engine) tellStepsOfFix(ctx context.Context, tx pgx.Tx, issue record.Iss
 	if err != nil {
 		return err
 	}
+	// Who reads the task's CI news, and for which work, is ciReaders' alone: a step told here is
+	// told for its current work where it is a current reader, and for none otherwise.
+	readers, err := e.ciReaders(ctx, tx, issue, w)
+	if err != nil {
+		return err
+	}
 	for i, at := range w.steps() {
 		role := RoleFor(at)
 		if i+1 == fix.Place || role == "" {
@@ -883,7 +890,6 @@ func (e *Engine) tellStepsOfFix(ctx context.Context, tx pgx.Tx, issue record.Iss
 			}
 		}
 		to := roleRecipient{issue: issue.Key, role: role, row: issue.Key}
-		var reader *record.CIReader
 		if role == claim.RoleArchitect {
 			// The owner's acceptance is no worker's step: the owner is told while the issue
 			// stands in it, the acceptance being its work.
@@ -893,7 +899,6 @@ func (e *Engine) tellStepsOfFix(ctx context.Context, tx pgx.Tx, issue record.Iss
 			if to.issue, err = e.owningArchitect(ctx, tx, issue); err != nil {
 				return err
 			}
-			reader = &record.CIReader{Phase: at}
 		} else {
 			row, err := e.phaseRow(ctx, tx, issue.Key, role)
 			if err != nil {
@@ -902,10 +907,8 @@ func (e *Engine) tellStepsOfFix(ctx context.Context, tx pgx.Tx, issue record.Iss
 			if row.Entry == 0 || row.EntryTask == "" {
 				continue
 			}
-			if !row.Completed() && start.Run == record.RunOpen {
-				reader = &record.CIReader{Phase: at, Entry: row.Entry}
-			}
 		}
+		reader := stepReaderOf(readers, to)
 		if e.toldByStart(start, fix) {
 			continue
 		}
@@ -1344,7 +1347,7 @@ func (e *Engine) reportToFix(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	}
 	for _, to := range addressed {
 		if err := e.enqueue(ctx, tx, to.issue, record.CINews{Purpose: record.CINewsStepReport, Role: string(to.token), Generation: issue.Generation,
-			Task: w.Task, Repo: prRepo(issue, pr), PullRequest: number, Head: fix.Head, Reader: &record.CIReader{Fix: fix.Fix, Entry: fix.Entry},
+			Task: w.Task, Repo: prRepo(issue, pr), PullRequest: number, Head: fix.Head, Reader: fixReader(fix),
 			Branch: branch, Body: body}); err != nil {
 			return err
 		}
