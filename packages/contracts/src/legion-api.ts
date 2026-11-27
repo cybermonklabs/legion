@@ -1340,8 +1340,11 @@ const legionCapabilityState = z.object({
 /** `api.Settings` — the daemon's resolved legion.yaml with every credential, credential source and
  * credential file path left out (contract 35). Its keys are legion.yaml's own; the two the spec
  * names are typed, the rest ride as the daemon writes them, so a new legion.yaml key is no
- * contract change. `max_fix_attempts` was typed here until contract 59 removed the key, and
- * `review_round_cap` is the one cap left that blocks a pull request. */
+ * contract change. `max_fix_attempts` was typed here until contract 59 removed the key.
+ * `review_round_cap` moves nothing: after that many counted review rounds (the daemon's
+ * `recordRound` counts them, less the conflict rounds), the daemon posts a message on the issue
+ * and sends the architect a `pr-blocked` notice, once for each value the cap holds; the work goes
+ * on, and the architect decides what to do. */
 const legionSettings = z.looseObject({
   review_round_cap: z.number().int().positive().optional(),
   worker_boot_timeout_seconds: z.number().int().positive().optional(),
