@@ -6,7 +6,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
 import { ApiError } from "../../api/client";
@@ -27,6 +27,8 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { issueDecisionsQuery } from "../doc/spec-marks";
+import { HeldIssueTitles } from "../refs/held-issue-titles";
+import { HeldReferenceNames } from "../refs/reference-names";
 import { type IssueRoute, parseIssuePath } from "../refs/routes";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
@@ -44,6 +46,7 @@ import { StageSlot } from "./slots/stage";
 import { ViewRowSlot } from "./slots/view-row";
 import { outlineOf, outlineQuery } from "./tree-read/tree-read";
 import { issueMessagesQuery } from "./useIssueTree";
+import { ViewPressProvider } from "./view-press";
 
 /** The new issue page's root, drawn at an issue's address for a reader who chose it. Everything
  *  it draws, a refused address included, is inside the element that carries `data-issue-page`,
@@ -86,6 +89,25 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
   // While the page is mounted, the shell's Details drawer draws its head in the page's words and
   // lands an address on its cards by the page's rule.
   useDrawerPage(issue.data);
+  // The titles of the issue and its children, which a reference to one of them draws from the
+  // first drawing rather than once its summary or the page's batched read of names answers
+  // (`HeldIssueTitles`, `HeldReferenceNames`), so a row that names a child does not grow a line
+  // as that read answers (R3).
+  const children = issue.data?.children;
+  const key = issue.data?.key;
+  const title = issue.data?.title;
+  const titles = useMemo(
+    () =>
+      new Map([
+        ...(key === undefined || title === undefined ? [] : [[key, title] as const]),
+        ...(children ?? []).map((child) => [child.key, child.title] as const),
+      ]),
+    [children, key, title]
+  );
+  const heldNames = useMemo(
+    () => new Map([...titles].map(([issueKey, name]) => [`dispatch://${issueKey}`, name])),
+    [titles]
+  );
 
   useDocumentTitle(
     issue.data === undefined ? "Dispatch" : `${issue.data.key} · ${issue.data.title} · Dispatch`
@@ -134,29 +156,36 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
   // (`FOOT_LAYERS` in `hooks/useFootInset.ts` says why).
   // The tree's owner stands around the slots, inside the page's providers, so the issue's tree is
   // built once for the page and every slot that draws from it reads that one
-  // (`issue-tree-owner.tsx`); a press on a view mounts no reader that builds it again.
+  // (`issue-tree-owner.tsx`); a press on a view mounts no reader that builds it again. A press on
+  // the view row waits on the view's reads before it draws the view (`view-press.tsx`).
   const props: SlotProps = { issue: issue.data, route };
   return (
-    <ProvidersSlot {...props}>
-      <IssueTreeOwnerProvider issue={issue.data}>
-        <IssueBlockRoom issue={issue.data}>
-          <HeaderSlot {...props} />
-          <ViewRowSlot {...props} />
-          <div className="flex min-w-0 items-start">
-            <IssueContentsPane {...props} />
-            <div
-              className={`flex min-h-dvh min-w-0 flex-1 flex-col pt-2.5 ${PAGE_INSET}`}
-              data-testid="issue-column"
-              {...{ [DOCUMENT_SCROLL_ATTRIBUTE]: "" }}
-            >
-              <StageSlot {...props} />
-              <FootSlot {...props} />
-            </div>
-          </div>
-          <DetailsSlot {...props} />
-        </IssueBlockRoom>
-      </IssueTreeOwnerProvider>
-    </ProvidersSlot>
+    <HeldIssueTitles.Provider value={titles}>
+      <HeldReferenceNames held={heldNames}>
+        <ProvidersSlot {...props}>
+          <IssueTreeOwnerProvider issue={issue.data}>
+            <IssueBlockRoom issue={issue.data}>
+              <ViewPressProvider>
+                <HeaderSlot {...props} />
+                <ViewRowSlot {...props} />
+                <div className="flex min-w-0 items-start">
+                  <IssueContentsPane {...props} />
+                  <div
+                    className={`flex min-h-dvh min-w-0 flex-1 flex-col pt-2.5 ${PAGE_INSET}`}
+                    data-testid="issue-column"
+                    {...{ [DOCUMENT_SCROLL_ATTRIBUTE]: "" }}
+                  >
+                    <StageSlot {...props} />
+                    <FootSlot {...props} />
+                  </div>
+                </div>
+                <DetailsSlot {...props} />
+              </ViewPressProvider>
+            </IssueBlockRoom>
+          </IssueTreeOwnerProvider>
+        </ProvidersSlot>
+      </HeldReferenceNames>
+    </HeldIssueTitles.Provider>
   );
 }
 

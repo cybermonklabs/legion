@@ -813,9 +813,35 @@ export function holdEditorAtBlock(host: HTMLElement, blockId: string | undefined
  * shorter than its block scrolls, since a box that scrolls makes a box of its own that a float
  * beside the words would push (`styles.css`'s `[data-block-editor]`).
  */
-export function holdBlockEditorBox(row: HTMLElement): void {
+/** The geometry of a row and its words read while layout is clean, before the block editor
+ *  mutates the DOM (`measureBlockEditorRow`), so `holdBlockEditorBox` sets `maxHeight` without
+ *  forcing a synchronous style recalc and layout right after `rebindElement`. */
+export interface BlockEditorRowMeasure {
+  readonly boxRect: DOMRect;
+  readonly lineHeight: number;
+  readonly rowRect: DOMRect;
+}
+
+/** Reads `row` and its `words` box while layout is clean, before the block editor mounts into
+ *  `row` (`useNodeEditing.ts`). */
+export function measureBlockEditorRow(row: HTMLElement, words: HTMLElement): BlockEditorRowMeasure {
+  return {
+    boxRect: words.getBoundingClientRect(),
+    lineHeight: lineHeightOf(words),
+    rowRect: row.getBoundingClientRect(),
+  };
+}
+
+export function holdBlockEditorBox(row: HTMLElement, measured?: BlockEditorRowMeasure): void {
   const box = row.querySelector<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
   if (box === null) return;
+  if (measured !== undefined) {
+    holdBoxInRow(row, box, LEAST_BOX_LINES * measured.lineHeight, false, measured);
+    window.requestAnimationFrame(() => {
+      if (box.isConnected && box.scrollHeight > box.clientHeight) box.style.overflowY = "auto";
+    });
+    return;
+  }
   const editable = box.querySelector<HTMLElement>('[contenteditable="true"]');
   holdBoxInRow(row, box, LEAST_BOX_LINES * lineHeightOf(editable ?? box), false);
   if (box.scrollHeight > box.clientHeight) box.style.overflowY = "auto";
@@ -839,7 +865,13 @@ const NORMAL_LINE_HEIGHT = 1.2;
  * the tag, the author and the time stand beside the words at every width (`NodeRow.tsx`'s
  * `NODE_ROW_LAYOUT`).
  */
-function holdBoxInRow(row: HTMLElement, box: HTMLElement, least: number, bring = true): void {
+function holdBoxInRow(
+  row: HTMLElement,
+  box: HTMLElement,
+  least: number,
+  bring = true,
+  measured?: BlockEditorRowMeasure
+): void {
   const published = getComputedStyle(document.documentElement);
   const height = (property: string) => {
     const value = Number.parseFloat(published.getPropertyValue(property));
@@ -847,8 +879,8 @@ function holdBoxInRow(row: HTMLElement, box: HTMLElement, least: number, bring =
   };
   const floor = window.innerHeight - height(FOOT_HEIGHT_PROPERTY);
   const room = floor - height(IDENTITY_HEIGHT_PROPERTY);
-  const rowRect = row.getBoundingClientRect();
-  const boxRect = box.getBoundingClientRect();
+  const rowRect = measured?.rowRect ?? row.getBoundingClientRect();
+  const boxRect = measured?.boxRect ?? box.getBoundingClientRect();
   const below = rowRect.bottom - boxRect.bottom;
   // The room the row leaves its box, and the room under the box's top the body leaves it.
   const fits = room - (boxRect.top - rowRect.top) - below;

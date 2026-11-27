@@ -459,15 +459,35 @@ export function useStartOutlineRead(key: string): () => void {
  * holds an answer no one has asked for again, nor where it was refused and no one has asked for
  * it since (`mayReadOnMount`), nor while a write of the issue holds it (`mayReadNow`). A read the
  * cache holds no state of, or one a load reset (`resetViews`), is sent. The readers then find it
- * out, and send nothing of their own.
+ * out, and send nothing of their own. Answers the reads it sent: a press waits on those of them
+ * still out with no answer held before it draws the view (`view-press.tsx`), and on no read the
+ * load sent, which the view draws itself as loading while it is out.
  */
-export function startPressedViewRead(queryClient: QueryClient, key: string, preset: Preset): void {
+export function startPressedViewRead(
+  queryClient: QueryClient,
+  key: string,
+  preset: Preset
+): readonly Query[] {
   const outline = outlineOf(preset);
-  if (outline !== undefined && preset !== "spec") {
-    sendAsReadersWould(queryClient, outlineQuery(key, outline));
-  }
   const filter = TREE_FILTERS.find((one) => one === preset);
-  if (filter !== undefined) sendAsReadersWould(queryClient, viewQuery(key, filter));
+  const decisions =
+    preset === "decisions"
+      ? queryClient
+          .getQueryCache()
+          .find({ exact: true, queryKey: issueDecisionsQuery(key, true).queryKey })
+      : undefined;
+  return [
+    outline !== undefined && preset !== "spec"
+      ? sendAsReadersWould(queryClient, outlineQuery(key, outline))
+      : undefined,
+    filter === undefined ? undefined : sendAsReadersWould(queryClient, viewQuery(key, filter)),
+    decisions !== undefined && readOut(decisions) ? decisions : undefined,
+  ].filter((sent) => sent !== undefined);
+}
+
+/** Whether `query` is out with no answer held. */
+export function readOut(query: Pick<Query, "state">): boolean {
+  return query.state.data === undefined && query.state.fetchStatus === "fetching";
 }
 
 /**
@@ -481,22 +501,23 @@ export function startPressedViewRead(queryClient: QueryClient, key: string, pres
  * that watched this read - Conversation's body watches Graph's - was its last observer for that
  * moment, before the view's readers subscribe after the commit. Given up, the read was sent a
  * second time by those readers. Held, it goes on whatever leaves, and a press on another view
- * before it answers keeps its answer for its view.
+ * before it answers keeps its answer for its view. Answers the read's query where it sent it.
  */
 function sendAsReadersWould<TKey extends QueryKey>(
   queryClient: QueryClient,
   read: FetchQueryOptions<TreeAnswer, DefaultError, TreeAnswer, TKey>
-): void {
+): Query | undefined {
   const held = queryClient.getQueryCache().find({ exact: true, queryKey: read.queryKey });
   const sends =
     held === undefined ||
     (held.state.fetchStatus === "idle" &&
       mayReadNow(held) &&
       (!outlineBegun(held) || (held.isStale() && mayReadOnMount(held))));
-  if (!sends) return;
+  if (!sends) return held !== undefined && readOut(held) ? held : undefined;
   const sent = queryClient.prefetchQuery(read);
   const release = new QueryObserver(queryClient, { ...read, enabled: false }).subscribe(() => {});
   void sent.finally(release);
+  return queryClient.getQueryCache().find({ exact: true, queryKey: read.queryKey });
 }
 
 /** One role's blocks from the read that holds them (`TreeRead.blocksOf`), answered as the blocks

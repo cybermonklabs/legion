@@ -621,10 +621,6 @@ function PlanChart({
       }),
     [inView, places, reveal]
   );
-  const bars = useMemo(
-    () => places.flatMap((row) => (row.kind === "bar" && inView.has(row.task.id) ? [row] : [])),
-    [inView, places]
-  );
   const [focused, setFocused] = useState<string | undefined>(undefined);
   // Where the chart's one tab stop rests, which outlives the focus leaving it.
   const [stop, setStop] = useState<string | undefined>(undefined);
@@ -706,8 +702,8 @@ function PlanChart({
 
   // The lines between a bar and the bars it needs, from where the browser laid the bars out:
   // from the end of the needed bar to the start of the one that needs it (the prototype's
-  // `drawPlanLinks`). They are read again whenever the chart's box changes. A need whose bar is
-  // not drawn - a cycle's task, or a step the words filter left - has no line.
+  // `drawPlanLinks`). They are read again when the chart's box changes or another slice draws.
+  // A need whose bar is not drawn has no line.
   const [links, setLinks] = useState<{
     readonly height: number;
     readonly paths: readonly { readonly d: string; readonly of: readonly string[] }[];
@@ -728,7 +724,8 @@ function PlanChart({
           y: rect.top - frame.top + rect.height / 2,
         });
       }
-      const paths = bars.flatMap((bar) => {
+      const paths = drawing.drawn.flatMap(({ row: bar }) => {
+        if (bar.kind !== "bar") return [];
         const to = boxes.get(bar.task.id);
         if (to === undefined) return [];
         return bar.needs.flatMap((needed) => {
@@ -766,7 +763,7 @@ function PlanChart({
     const resized = new ResizeObserver(measure);
     resized.observe(element);
     return () => resized.disconnect();
-  }, [bars]);
+  }, [drawing.drawn]);
 
   /** The chart's rows as the browser holds them, bars and cycles, in the order of `rows`. */
   const items = (): HTMLElement[] => [

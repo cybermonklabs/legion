@@ -13,6 +13,7 @@ import type { Preset } from "../page-words";
 import type { SlotProps } from "../slot-props";
 import { focusIsLoose, TAB_STOP_ROW } from "../tree-focus";
 import { ViewReadProvider } from "../tree-read/view-read";
+import { usePendingView } from "../view-press";
 import { BodySlot, ReaderActsWatch } from "./body";
 import { FAILED_READ_RETRY, FailedLineLeaves } from "./failed-read-line";
 import { useDroppedAddress, useFollowing } from "./following";
@@ -405,7 +406,10 @@ export function ViewStage({
  * (`FailedLineLeaves`), and the focus goes to the next failed read's Retry, to the tree's
  * tab-stop row, or to the tree itself, in that order, unless something else took it in the
  * render the line left in: once the line is off the page the browser has moved the focus to the
- * page's body, where nothing says where the reader was.
+ * page's body, where nothing says where the reader was. While a press on the view row waits on
+ * the reads of the view it turned on (`ViewPress`), the box reads busy, from the press's own
+ * commit to the commit that draws that view in its place: the box alone draws again for it, and
+ * not the slot it holds.
  */
 function StageBox({
   box: given,
@@ -418,6 +422,7 @@ function StageBox({
 }): ReactNode {
   const own = useRef<HTMLDivElement>(null);
   const box = given ?? own;
+  const pressed = usePendingView() !== undefined;
   // The line calls this while React takes it off the page, before what replaces it is drawn: the
   // focus is placed once that render is on the page.
   const lineLeaves = useCallback(() => {
@@ -433,7 +438,7 @@ function StageBox({
   }, [box]);
   return (
     <FailedLineLeaves.Provider value={lineLeaves}>
-      <div className="contents" ref={box}>
+      <div aria-busy={pressed || undefined} className="contents" ref={box}>
         {children}
       </div>
     </FailedLineLeaves.Provider>

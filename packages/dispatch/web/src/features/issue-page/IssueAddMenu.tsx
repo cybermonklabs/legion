@@ -154,12 +154,27 @@ export function IssueAddMenu({
   // `features/shell`) and the margin (`features/margin`), `hidden` is set on that `aside`, on
   // elements inside it and on the margin's column, which is drawn only where Details is not, and
   // `inert` on nothing.
+  const pendingRead = useRef<number | undefined>(undefined);
+  const scheduleRead = useCallback(() => {
+    if (pendingRead.current !== undefined) return;
+    pendingRead.current = window.requestAnimationFrame(() => {
+      pendingRead.current = undefined;
+      read();
+    });
+  }, [read]);
   useLayoutEffect(() => {
     committed.current = fields;
-    read();
+    if (drawerBox === null) read();
+    else if (!drawerBox.hidden) scheduleRead();
   });
   useEffect(() => {
-    const watching = new MutationObserver(read);
+    const onMutate =
+      drawerBox === null
+        ? read
+        : () => {
+            if (!drawerBox.hidden) scheduleRead();
+          };
+    const watching = new MutationObserver(onMutate);
     let header: Element | null = null;
     const watch = () => {
       header = document.querySelector(ISSUE_HEADER);
@@ -172,7 +187,8 @@ export function IssueAddMenu({
     // starts again for each `drawerBox`, and the page is read once it is on, so a change made
     // before it started is not missed.
     watch();
-    read();
+    if (drawerBox === null) read();
+    else if (!drawerBox.hidden) scheduleRead();
     // The header can be drawn after Details, or drawn again as another element, and only an
     // element drawn can be watched: so the body is watched for drawn and removed elements alone,
     // and the header is watched again, and the page read, whenever the one found has changed.
@@ -180,14 +196,18 @@ export function IssueAddMenu({
     const arriving = new MutationObserver(() => {
       if (document.querySelector(ISSUE_HEADER) === header) return;
       watch();
-      read();
+      scheduleRead();
     });
     arriving.observe(document.body, { childList: true, subtree: true });
     return () => {
       watching.disconnect();
       arriving.disconnect();
+      if (pendingRead.current !== undefined) {
+        window.cancelAnimationFrame(pendingRead.current);
+        pendingRead.current = undefined;
+      }
     };
-  }, [drawerBox, panel, read]);
+  }, [drawerBox, panel, read, scheduleRead]);
   // The entries of this render's fields the page was last read to reach. A field that got a
   // value in this render is gone from them at once; one that lost it joins once the commit is read.
   const entries = fields.filter((field) => reachable.includes(field.label));

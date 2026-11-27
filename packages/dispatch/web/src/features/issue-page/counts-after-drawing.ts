@@ -27,15 +27,16 @@ export function useCountsAfterDrawing<Counts>(
     let cancelPublish: (() => void) | undefined;
     const compute = () => {
       const next = count();
-      cancelPublish = askForTask(() => flushSync(() => setValue(() => next)));
+      cancelPublish = askForTask(() => flushSync(() => setValue(() => next)), "background");
     };
     const start = askForTask(
       root.views?.verification === undefined
         ? compute
         : () => {
             void root.views?.trees?.verification;
-            cancelCount = askForTask(compute);
-          }
+            cancelCount = askForTask(compute, "background");
+          },
+      "background"
     );
     return () => {
       start();

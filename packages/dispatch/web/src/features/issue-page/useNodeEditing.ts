@@ -21,6 +21,7 @@ import {
   holdEditorAtBlock,
   holdEditsToBlock,
   loadEditsHold,
+  measureBlockEditorRow,
   selectInEditor,
   selectionIntoBlock,
   tabStopsFrom,
@@ -380,8 +381,10 @@ export function useNodeEditing({
     }
     load.current = undefined;
     const words = row.querySelector<HTMLElement>("[data-node-words]");
+    const measured = words === null ? undefined : measureBlockEditorRow(row, words);
     const at = pressAt.current;
     let early: EarlyCaretHold | undefined;
+    let bindingSync = true;
     let active = true;
     let bound = false;
     let refused = false;
@@ -408,7 +411,7 @@ export function useNodeEditing({
           hold.current = "on";
           // A block taller than the room the row leaves its box scrolls inside the box, so the
           // row that edits it is no taller than the window, as a document's editor's row is.
-          holdBlockEditorBox(row);
+          holdBlockEditorBox(row, bindingSync ? measured : undefined);
         }
         if (early !== undefined) {
           if (!view.editable) {
@@ -443,6 +446,7 @@ export function useNodeEditing({
         else dispose();
       },
     });
+    bindingSync = false;
     // A block bound read-only takes no typing, so no stand-in takes keys for it.
     if (!bound && !refused && !editingReadOnly && words !== null) {
       early = openEarlyCaret({
