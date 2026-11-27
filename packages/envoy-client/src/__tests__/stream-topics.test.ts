@@ -12,8 +12,19 @@ import {
   registrationTopics,
   rememberedTopics,
   replayFollowedSubjects,
+  STORED_TOPIC_KINDS,
   warningsForNamedTopics,
 } from "../stream-topics";
+
+// STORED_TOPIC_KINDS names the topic kinds the subscribe and publish tools list in
+// STORED_DELIVERY, so each kind is a unique single lowercase token.
+test("each stored kind is a unique lowercase token", () => {
+  expect(STORED_TOPIC_KINDS.length).toBeGreaterThan(0);
+  expect(new Set(STORED_TOPIC_KINDS).size).toBe(STORED_TOPIC_KINDS.length);
+  for (const kind of STORED_TOPIC_KINDS) {
+    expect(kind, kind).toMatch(/^[a-z]+$/);
+  }
+});
 
 describe("a controller notice lane", () => {
   test("names the role token its project's controller holds, as contracts mints it", () => {

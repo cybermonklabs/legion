@@ -61,7 +61,9 @@ func assertListRefilling(t *testing.T, response *http.Response) {
 	}
 }
 
-// listenerClock is the injected clock the rig's watchers measure a stale episode on.
+// listenerClock is a clock a test injects and moves by hand, under a lock because the listener's
+// own goroutines read it: the rig's watchers measure a stale episode on it, and the known-session
+// store's sweeper reads it (knownSessionRig).
 type listenerClock struct {
 	mu  sync.Mutex
 	now time.Time

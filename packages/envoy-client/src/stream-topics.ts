@@ -11,6 +11,24 @@ import type { Interest } from "./transport";
 export const EXCEPTION_TOPIC_PREFIX = "notifications.envoy.exceptions.";
 
 /**
+ * The kinds of topic the notification stream (`ENVOY_NOTIFICATIONS`) stores, in the order of
+ * `streamSubjects` in packages/envoy/internal/bus/stream.go (each a `notifications.<kind>.>`
+ * prefix, excluding exception and listener-internal prefixes). The subscribe and publish tools
+ * list them (`STORED_DELIVERY` in tool-contract.ts), so a kind the stream comes to store reaches
+ * those texts from this list alone.
+ */
+export const STORED_TOPIC_KINDS: readonly string[] = [
+  "agent",
+  "dispatch",
+  "github",
+  "slack",
+  "legion",
+  "ghostwispr",
+  "whatsapp",
+  "team",
+] as const;
+
+/**
  * The stream subjects whose topics carry one agent session's private payload, or the listener's
  * own record: each session's inbox, the Legion daemon's notices for a project's controller, a
  * failed delivery's report on a session's subject (a session's own lane included), a failed
