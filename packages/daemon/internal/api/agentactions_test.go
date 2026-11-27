@@ -188,8 +188,11 @@ func TestTheControllerStopsAnAgentAndRetriesIt(t *testing.T) {
 		t.Fatalf("the stopped agent's claim is %s on session %q, want it retired with its session kept", got.State, got.Session)
 	}
 
+	// The issue holds no admission slot here, so the phase's start waits for one and the answer
+	// names the wait (dispatch://INFRA-5649 R1).
 	wantAgentActionAnswer(t, askAgentAction(t, h, "/legion/v1/agents/retry", "LEGION-209", claim.RoleImplementer),
-		http.StatusAccepted, AgentActionResponse{State: "retired"})
+		http.StatusAccepted, AgentActionResponse{State: "retired", PhaseNotRestarted: string(token) + " stays retired, and the start of its phase implementing " +
+			"waits for an admission slot of LEGION-209, which holds none; `read_state` (`legion claims list`) shows its state"})
 	applied := facts.recorded()
 	if len(applied) != 1 {
 		t.Fatalf("the retry applied %#v, want the phase's restart alone", applied)

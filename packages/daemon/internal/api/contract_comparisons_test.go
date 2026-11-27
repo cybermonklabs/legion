@@ -111,11 +111,13 @@ var contractComparisonRows = []contractComparisonRow{
 	{row: "A fresh session's stop read as a failure", compares: []comparisonSite{
 		comparedIn("internal/api/freshsession.go", "server.readsTheStopAsAFailure", "at.restore < processReadContract"),
 	}},
-	// The claim start entry's one row (contract_20261127094305_claim-start.go), which answers a
-	// caller below it a start that waits for its issue's slot, or one refused after the fresh
-	// session's forget, as before (dispatch://INFRA-5649 R3); the Design's table predates the entry.
+	// The claim start entry's row (contract_20261127094305_claim-start.go), which answers a caller
+	// below it a start that waits for its issue's slot, or one refused after the fresh session's
+	// forget, as before, and serves it the agent actions' answer without `phaseNotRestarted`
+	// (dispatch://INFRA-5649 R3); the Design's table predates the entry.
 	{row: "A claim's start answered as before", compares: []comparisonSite{
 		comparedIn("internal/api/freshsession.go", "server.answersAsBefore", "at.restore < entryNumber(claimStartContract)"),
+		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(claimStartContract)"),
 	}},
 	{row: "A plan rating is required", compares: []comparisonSite{
 		comparedIn("internal/api/handoff.go", "server.answerCompletion", "c.PluginContract >= PlanRatingContract"),

@@ -3,6 +3,8 @@ body: |-
   The `legion` tool's description of `fresh_session` says that an empty answer means the start is
   under way and that `read_state` shows how it ended, and that `phaseNotRestarted` also names a
   start that waits for an admission slot and a start refused after the session was forgotten.
+  Its description of `retry` says the answer's `phaseNotRestarted` names a start that waits for an
+  admission slot.
 time: 2026-11-24T13:04:48Z
 custom:
     Issue: INFRA-5649

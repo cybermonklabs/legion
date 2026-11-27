@@ -35,6 +35,12 @@ type AgentActionResponse struct {
 	// asked for it; both are absent when none is held.
 	SuspensionHeld   bool   `json:"suspensionHeld,omitempty"`
 	SuspensionHeldBy string `json:"suspensionHeldBy,omitempty"`
+	// PhaseNotRestarted is what the controller's retry did that the state cannot say, and absent
+	// everywhere else: the retry of a failed or retired phase worker whose phase's start the
+	// workflow queued behind its issue's admission slot, which the issue does not hold, so the
+	// claim stays failed or retired until the slot comes (slotWait.stays, retryStart). A caller
+	// below claimStartContract is served the answer without it (shapeAnswer).
+	PhaseNotRestarted string `json:"phaseNotRestarted,omitempty"`
 }
 
 // suspendedByOperator is the refusal of a request the agent door's caller may not make past the
@@ -187,13 +193,7 @@ func (s *server) retryAgent(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if notRestarted != "" {
-		// The agent door's answer is the claim's state (AgentActionResponse), which carries no
-		// sentence: a start that waits for the issue's admission slot is named in the log alone.
-		s.log.Info("api: "+callerName(target.by)+"'s retry did not start an agent at once", "claim", target.token,
-			"issue", target.issue, "role", target.role, "phaseNotRestarted", notRestarted)
-	}
-	s.answerAgentAction(w, r, target, retryOp.did, status)
+	s.answerAgentAction(w, r, target, retryOp.did, status, notRestarted)
 }
 
 // agentEventAction is the agent door's one operator request a single event to the claim's
@@ -225,7 +225,7 @@ func (s *server) agentEventAction(w http.ResponseWriter, r *http.Request, op age
 		s.refuseAgentAction(w, r, target, err, op)
 		return
 	}
-	s.answerAgentAction(w, r, target, op.did, status)
+	s.answerAgentAction(w, r, target, op.did, status, "")
 }
 
 // refuseAgentAction answers an event of the caller's that the claim's machine refused: a
@@ -304,19 +304,22 @@ func (s *server) refuseClaimInATurn(w http.ResponseWriter, r *http.Request, toke
 }
 
 // answerAgentAction writes the claim's state after the caller's action (AgentActionResponse) under
-// status, as the answer the agent actions' row of the table names (AnswerAgentAction), and logs
-// what the caller did to which agent, as the caller named it.
-func (s *server) answerAgentAction(w http.ResponseWriter, r *http.Request, target claimTarget, did string, status int) {
+// status, with the retry's sentence where it has one (notRestarted), as the answer the agent
+// actions' row of the table names (AnswerAgentAction), and logs what the caller did to which agent,
+// as the caller named it.
+func (s *server) answerAgentAction(w http.ResponseWriter, r *http.Request, target claimTarget, did string, status int, notRestarted string) {
 	view := target.machine.View().Claim
 	answer := AgentActionResponse{
-		State:            string(view.State),
-		SuspensionHeld:   view.SuspensionHeld,
-		SuspensionHeldBy: string(view.SuspensionHeldBy),
+		State:             string(view.State),
+		SuspensionHeld:    view.SuspensionHeld,
+		SuspensionHeldBy:  string(view.SuspensionHeldBy),
+		PhaseNotRestarted: notRestarted,
 	}
 	if view.State == supervise.StateSuspended {
 		answer.SuspendedBy = string(view.SuspendedBy)
 	}
 	s.log.Info("api: "+callerName(target.by)+" "+did+" an agent", "claim", target.token, "issue", target.issue, "role", target.role,
-		"state", answer.State, "suspendedBy", answer.SuspendedBy, "suspensionHeldBy", answer.SuspensionHeldBy, "status", status)
+		"state", answer.State, "suspendedBy", answer.SuspendedBy, "suspensionHeldBy", answer.SuspensionHeldBy, "status", status,
+		"phaseNotRestarted", notRestarted)
 	s.writeAnswer(w, r, AnswerAgentAction, status, answer)
 }

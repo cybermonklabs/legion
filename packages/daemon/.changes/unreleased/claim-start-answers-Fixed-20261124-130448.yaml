@@ -3,7 +3,8 @@ body: |-
   The operator's and the controller's claim routes now say what the start they ask for did. A
   fresh session or a retry of a failed or retired phase worker whose phase's start waits for its
   issue's admission slot names that wait in `phaseNotRestarted`, with the issues the issue waits
-  on. Before, the answer was empty, which said the start had run. A start refused after a fresh
+  on; the controller's own `retry` (`POST /legion/v1/agents/retry`) names it in a
+  `phaseNotRestarted` its answer gains. Before, the answer was empty, which said the start had run. A start refused after a fresh
   session has left the claim's session behind answers 200 with the refusal, and no longer an
   error, because the claim has changed. A resume, an operator's task that revives a suspended
   claim, a retry the machine runs itself, and a fresh session answer once the claim is written

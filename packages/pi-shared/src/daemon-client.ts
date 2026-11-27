@@ -207,7 +207,8 @@ export interface LegionDaemonClient {
    * whose claim is stored working (`CLAIM_IN_A_TURN`), for an agent the operator's own suspension
    * holds (`SUSPENDED_BY_OPERATOR`), and for every agent while the project is paused
    * (`PROJECT_PAUSED`, with the pause that stands; its resume lifts that refusal). The answer is
-   * the claim's state after the retry. */
+   * the claim's state after the retry, with `phaseNotRestarted` where a phase worker's start waits
+   * for an admission slot its issue does not hold, which names the wait. */
   readonly retryAgent: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionAgentActionResponse>>;

@@ -1,7 +1,7 @@
 package api
 
 // 20261127094305 claim-start: dispatch://INFRA-5649 -- the operator's and the controller's claim routes answer what the
-// start they ask for did, and no answer's shape moves. First, a fresh session (`POST
+// start they ask for did. First, a fresh session (`POST
 // /legion/v1/claims/fresh-session`, and `POST /legion/v1/operator/claims/{token}/retry` with
 // `freshSession`) or a plain retry of a failed or retired phase worker whose phase's start the
 // workflow queues behind its issue's admission slot — the issue holds no slot while its phase
@@ -9,7 +9,11 @@ package api
 // session left behind where the request asked, and its start waits for the issue's slot, with the
 // issues the issue waits on, where there are any. For a suspended claim, which runs again at once,
 // the sentence says the claim is back in a new session and its phase's task waits for the slot.
-// Where the issue holds its slot, no sentence is written and the start is claimable at once.
+// Where the issue holds its slot, no sentence is written and the start is claimable at once. The
+// controller's own plain retry (`POST /legion/v1/agents/retry`, the agent door) names the same
+// wait in a key its answer gains, `phaseNotRestarted` on `api.AgentActionResponse`, a string
+// absent when empty, with the claim's `state` still failed or retired; it is the one key this
+// entry adds, and `packages/contracts/src/legion-api.ts` mirrors it as optional.
 // Second, once a fresh session has left the claim's session behind, a restart the workflow
 // refuses, the machine's own refusal of the claim's retry, and its refusal of the resume of a
 // claim that was suspended before the request, answer 200 at both routes with the refusal in
@@ -25,10 +29,12 @@ package api
 // writes no launch, such as one whose launch the wake pacing parks, is answered as before. A
 // caller whose contract (the one it states, else its pod's lowest) is below 266 is answered the
 // first and the second as before: no sentence for a start that waits for a slot, and the refusal
-// itself (answersAsBefore, which follows restore as processReadContract's decision does). The
-// third is served to every caller, since its shape does not move and holding it back would keep
-// the caller waiting past its own timeout. The sentences are values of `phaseNotRestarted`, a
-// string no reader enumerates, so the records of 266 are those of 256 at a new number.
+// itself (answersAsBefore, which follows restore as processReadContract's decision does), and the
+// agent actions' answer without `phaseNotRestarted` (shapeAnswer's agent actions' row, which
+// follows strip, and placedByPod places the caller of an answer that carries the key by its pod).
+// The third is served to every caller, since its shape does not move and holding it back would
+// keep the caller waiting past its own timeout. The sentences are values of `phaseNotRestarted`, a
+// string no reader enumerates.
 // (This entry takes 266, the number INFRA-3118's architect, which allocates its tree's contract
 // numbers, gave it at 2026-11-24T17:09:45Z. It had taken 248, which a reading of every open head
 // between 2026-11-24T14:05:55Z and 14:09:16Z found free, and #3993, #4049, #4065 and #4392 declared
@@ -46,8 +52,8 @@ package api
 // claimStartContract is the daemon contract at which the operator's and the controller's claim
 // routes name a start that waits for its issue's admission slot, answer a start refused after a
 // fresh session's forget with 200, and answer a retry or a resume once its start is under way
-// (version.go's 266, dispatch://INFRA-5649). It moved no key path of any answer. It changed what
-// two answers mean, and a caller below it is served each as before (answersAsBefore): no
+// (dispatch://INFRA-5649). It added one key path, the agent actions' `phaseNotRestarted`, which a
+// caller below it is served without (shapeAnswer). It changed what two answers mean, and a caller below it is served each as before (answersAsBefore): no
 // `phaseNotRestarted` for a start that waits for a slot (waitNamed), and the refusal itself, as
 // the error it was, for a start refused after the forget (refusedAfterTheForget), because its
 // `legion` tool description reads an empty answer as a start that ran. The earlier answer of a

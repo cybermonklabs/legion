@@ -191,6 +191,43 @@ func TestAPlainRetryWhoseStartWaitsForASlotNamesTheWait(t *testing.T) {
 	}
 }
 
+// R1: the controller's own plain retry, through the agent door, of a failed tester whose issue
+// holds no slot answers 202 with the claim's state still failed and the wait named in
+// phaseNotRestarted; where the issue holds its slot it names none, and a caller below the new
+// contract is served the answer without the key.
+func TestTheControllersRetryWhoseStartWaitsForASlotNamesTheWait(t *testing.T) {
+	t.Run("the issue holds no slot", func(t *testing.T) {
+		h, _ := freshSessionWorkflow(t)
+		token := failedWorkerInPhase(t, h, claim.RoleTester, phase.Testing)
+
+		wantAgentActionAnswer(t, askAgentAction(t, h, "/legion/v1/agents/retry", "LEGION-209", claim.RoleTester),
+			http.StatusAccepted, AgentActionResponse{State: "failed", PhaseNotRestarted: string(token) + " stays failed, and the start of its phase testing " +
+				"waits for an admission slot of LEGION-209, which holds none; `read_state` (`legion claims list`) shows its state"})
+	})
+	t.Run("the issue holds its slot", func(t *testing.T) {
+		h, _ := freshSessionWorkflow(t)
+		failedWorkerInPhase(t, h, claim.RoleTester, phase.Testing)
+		slotOf(t, h, "LEGION-209")
+
+		recorder := askAgentAction(t, h, "/legion/v1/agents/retry", "LEGION-209", claim.RoleTester)
+		var got AgentActionResponse
+		decodeInto(t, recorder, &got)
+		if recorder.Code != http.StatusAccepted || got.PhaseNotRestarted != "" {
+			t.Fatalf("the retry = %d with phaseNotRestarted %q, want 202 and none; body %s", recorder.Code, got.PhaseNotRestarted, recorder.Body)
+		}
+	})
+	t.Run("a caller below the new contract", func(t *testing.T) {
+		h, _ := freshSessionWorkflow(t)
+		failedWorkerInPhase(t, h, claim.RoleTester, phase.Testing)
+
+		recorder := h.request(http.MethodPost, "/legion/v1/agents/retry",
+			ClaimRequest{GrantID: controllerGrant(t, h).GrantID, Issue: "LEGION-209", Role: string(claim.RoleTester)}, stating(slotBaseContract()))
+		if recorder.Code != http.StatusAccepted || strings.Contains(recorder.Body.String(), "phaseNotRestarted") {
+			t.Fatalf("the retry asked at %d = %d, want 202 and no phaseNotRestarted; body %s", slotBaseContract(), recorder.Code, recorder.Body)
+		}
+	})
+}
+
 // R1: the wait names the issues the issue waits on, read from the mirror of Dispatch.
 func TestAFreshSessionWhoseStartWaitsNamesTheIssueItWaitsOn(t *testing.T) {
 	for _, door := range freshSessionDoors() {

@@ -1085,7 +1085,9 @@ export function createLegionTool(deps: {
         "it instead. " +
         "retry starts an agent that failed, or that a stop retired, again in the session its claim recorded, with " +
         "new launch budgets. A phase worker is started through its issue's current phase, so it has that " +
-        "phase's work, and the answer can show it failed or retired until that start runs. The daemon refuses " +
+        "phase's work, and the answer can show it failed or retired until that start runs. Where that start waits " +
+        "for an admission slot its issue does not hold, the answer's phaseNotRestarted says so, naming the issues " +
+        "its issue waits on, and the agent stays failed or retired until the slot comes. The daemon refuses " +
         "retry for an agent whose claim is stored working (CLAIM_IN_A_TURN) and for a suspended agent: resume_agent that agent instead, unless the operator suspended it. " +
         "suspend stops the agent and keeps its session and the task it owes. An agent in a turn " +
         "keeps that turn until it ends, or until the stop timeout, which cuts the turn off, and the answer " +
