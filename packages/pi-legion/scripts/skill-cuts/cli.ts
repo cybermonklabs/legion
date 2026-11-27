@@ -221,6 +221,16 @@
  *   `--allow-runners` that takes it with the runners already named (`checkRunners`), never
  *   skipped and never made again. `confirm` pools confirms on one runner at one set of texts as
  *   its rule says (score.ts's `confirmScore`).
+ * - A stage that holds runs of an arm makes that arm's further runs with the saved capture those
+ *   runs were made with, and never makes a capture over them: two requests would be in one arm's
+ *   runs. So `screen`, `confirm` and `control` go on with a saved stage still running only where,
+ *   for each arm it holds runs of, the body file its capture note names (`bodyFile`, below
+ *   `--out`) is the capture the command reads back for that arm, it and its record are there,
+ *   and its body's system-prompt digest (capture.ts's `promptDigest`) is the note's
+ *   `captureDigest`; else the command is refused before any model call (exit 2), naming the case,
+ *   the stage, the arm, the body file and the noted digest, and the digest found where the file is
+ *   there (`checkHeldCaptures`; runStage refuses such an arm for every caller). An arm the stage
+ *   holds no run of is read back, or captured, as before.
  * - `report` (no model call) prints, for each stage kind, each runner with its case stages and
  *   runs (a stage whose runs two runners made counts under each, `runnerCounts`), and refuses
  *   (exit 2), naming each runner with its counts, results whose runs more than one runner made,
@@ -315,9 +325,11 @@
  *   `--out`, that `audit-mixed` sorts `continues`, into a new `--out`: the cut review's rule counts a
  *   saved case only once those runs are continued. `--from` is only read, and `--out` may not be
  *   it. Before any model call it refuses a saved stage of another runner unless `--allow-runners`
- *   names it, as the stage commands do, and an `--only` line that names a stage no saved result
- *   holds. A run needs a session id, a saved capture, any earlier answered replies whole, and
- *   the deployment that answered its saved reply (the run's last
+ *   names it, as the stage commands do, an `--only` line that names a stage no saved result
+ *   holds, and a stage it continues one of whose arms holds runs while that arm's saved capture
+ *   under `--from` is not there or is not the one its stage's note names, as the stage commands
+ *   refuse one (`heldCaptureFaults`). A run needs a session id, a saved capture, any earlier
+ *   answered replies whole, and the deployment that answered its saved reply (the run's last
  *   `deployments` entry, or for a run saved before runs recorded one, the one deployment that
  *   answered every request of its session id in `<from>/requests.jsonl`, with that log's path and
  *   SHA-256; never a per-arm `--route-id`). The continuation is replay.ts's `resumeReplay`, the
@@ -548,6 +560,7 @@ import {
   LEGION_TOOL_UNDEFINED,
   LegionToolUndefined,
   listingOf,
+  promptDigest,
   restoredCapture,
   type SessionFacts,
   savedCapture,
@@ -3287,6 +3300,124 @@ function refuseOtherRunners(
   );
 }
 
+/** The files of the capture of case `caseId`'s arm `arm` under `out` at the texts `texts`: the
+ *  capture a stage command reads back, or makes, for the arm (`armCaptureDir`). */
+function armCapturePaths(
+  out: string,
+  caseId: string,
+  arm: Arm,
+  texts: Texts
+): { readonly body: string; readonly record: string } {
+  return capturePaths(armCaptureDir(out, arm, texts), caseId, arm.name);
+}
+
+/** Why stage `state` (`where`: `case <id>'s <stage>`), which may hold runs of arm `arm`, may not
+ *  take the saved capture `taken` of that arm for its further runs, or undefined (always where it
+ *  holds none of them, `heldCaptureFaults`). Its runs replayed the capture its CaptureNote names, so
+ *  `taken` must be the body file the note names (`bodyFile`, below `out`), that file and its record
+ *  must be there, and its body's system-prompt digest (capture.ts's `promptDigest`) must be the
+ *  note's `captureDigest`. A stage that notes no capture of the arm (runStage notes each arm's
+ *  capture before its first run, so only a stage it did not write) only needs `taken` there. */
+function heldCaptureFault(
+  where: string,
+  arm: ArmName,
+  state: StageResult,
+  out: string,
+  taken: { readonly body: string; readonly record: string }
+): string | undefined {
+  const held = state.runs.filter((run) => run.arm === arm).length;
+  if (held === 0) return undefined;
+  const runs = `${where} holds ${counted(held, "run")} of its ${arm} arm`;
+  const note = state.captures[arm];
+  if (note === undefined) {
+    const absent = [taken.body, taken.record].filter((file) => !existsSync(file));
+    return absent.length === 0
+      ? undefined
+      : `${runs} and notes no capture of it, and ${absent.join(" and ")} of its saved capture ${absent.length === 1 ? "is" : "are"} not there`;
+  }
+  const noted = path.resolve(out, note.bodyFile);
+  const made = `${runs}, made with the capture ${noted} (digest ${note.captureDigest ?? "not recorded"})`;
+  if (noted !== path.resolve(taken.body)) {
+    return `${made}, where this command takes the capture ${taken.body}`;
+  }
+  let found: string;
+  try {
+    found = promptDigest(JSON.parse(readFileSync(noted, "utf8")));
+  } catch (error) {
+    return Reflect.get(Object(error), "code") === "ENOENT"
+      ? `${made}, which is not there`
+      : `${made}, which cannot be read: ${messageFor(error)}`;
+  }
+  if (!existsSync(taken.record)) return `${made}, whose record ${taken.record} is not there`;
+  return found === note.captureDigest
+    ? undefined
+    : `${made}, and the capture there now is of digest ${found}`;
+}
+
+/** `heldCaptureFault` of each arm of case `c`'s stage `state` (at `place`) that holds runs, of the
+ *  arms the stage ran (score.ts's `stageArms`, old compared with the arm the stage records), each
+ *  arm built as runStage builds it (from `r.dirs`, with the stage's own planted line), its notes'
+ *  body files below `out`, and `taken` the saved capture the command takes for it. */
+function heldCaptureFaults(
+  r: Runner,
+  c: Case,
+  place: Pick<StagePlace, "stage" | "confirm">,
+  state: StageResult,
+  out: string,
+  taken: (arm: Arm) => { readonly body: string; readonly record: string }
+): string[] {
+  const dirs = stageArmDirs(r.dirs, state);
+  const scratch = armsScratch(r.scratch, c.id);
+  return stageArms(place.stage, recordedArm(state)).flatMap((name) => {
+    if (!state.runs.some((run) => run.arm === name)) return [];
+    const arm = buildArm(c, name, dirs, scratch);
+    const where = `case ${c.id}'s ${placeWords(place)}`;
+    const fault = heldCaptureFault(where, name, state, out, taken(arm));
+    return fault === undefined ? [] : [fault];
+  });
+}
+
+/** Refuses `faults` (each a `heldCaptureFault`), when there is one, with the rule and `advice`. */
+function refuseHeldCaptures(faults: readonly string[], advice: string): void {
+  if (faults.length === 0) return;
+  throw new Refused(
+    `${faults.join("; ")}: a stage that holds runs of an arm makes that arm's further runs with the saved capture those runs were made with, checked against its stage's note of it (the body file, and the system-prompt digest of its body), and makes no capture over them, so that no arm's runs mix two requests. ${advice}`
+  );
+}
+
+/** Refuses, before any model call, the saved `stage` of each of `cases` (with its result in
+ *  `results`) that the command goes on with, one of whose arms holds runs while the saved capture
+ *  the command takes for that arm (`armCapturePaths`) is not the one those runs were made with
+ *  (`heldCaptureFaults`): runStage would refuse it after the cases before it had sent their calls.
+ *  The stages it goes on with are those still running, of a case no drop takes (`caseDrop`, and at
+ *  screen `pathFormDrop`, which screen applies before the stage), made with this command's texts
+ *  and planted line (`checkSameTexts` refuses one of others when its case comes). */
+function checkHeldCaptures(
+  r: Runner,
+  cases: Iterable<Case>,
+  results: ReadonlyMap<string, CaseResult>,
+  stage: Stage
+): void {
+  const plantedLine = stage === "control" ? (r.dirs.plantedLine ?? null) : null;
+  const faults = [...cases].flatMap((c) => {
+    const result = results.get(c.id);
+    const state = result?.stages[stage];
+    if (state === undefined || state.state !== "running" || caseDrop(c, result) !== undefined) {
+      return [];
+    }
+    if (!sameTexts(r, state) || state.plantedLine !== plantedLine) return [];
+    if (stage === "screen" && pathFormDrop(c, r.dirs) !== undefined) return [];
+    return heldCaptureFaults(r, c, latestPlace(stage), state, r.out, (arm) =>
+      armCapturePaths(r.out, c.id, arm, r.texts)
+    );
+  });
+  refuseHeldCaptures(faults, HELD_CAPTURE_ADVICE);
+}
+
+/** What a stage command's refusal of a saved capture advises (`refuseHeldCaptures`). */
+const HELD_CAPTURE_ADVICE =
+  "Put each such capture back where its stage's note names it, as it was saved, or use another --out";
+
 /** The judge controls of case `c`, kept in `result`, which is dropped when they do not hold: its
  *  drop names each control it failed. */
 async function judgeTheControls(r: Runner, c: Case, result: CaseResult): Promise<CaseResult> {
@@ -3915,7 +4046,11 @@ async function continuationCheckout(r: Runner, c: Case): Promise<CaseCheckout> {
  * of runs goes to the deployment its id pins, every arm alike. Throws Stopped, after saving,
  * when the budget refused a call. `place` selects the latest stage by default, or an earlier
  * confirm for which continue-mixed needs fresh runs. A run waiting at FURTHER_ROUND_LIMIT
- * keeps its slot without starting a fresh run.
+ * keeps its slot without starting a fresh run. An arm the stage holds runs of takes only the
+ * saved capture they were made with, as its CaptureNote names it: where that capture is not the
+ * one `r.capture` reads back (`armCapturePaths`), is not there, or holds a body of another
+ * digest, the stage is refused before any capture (`heldCaptureFault`), so no capture is made
+ * over saved runs.
  */
 async function runStage(
   r: Runner,
@@ -3974,6 +4109,12 @@ async function runStage(
       const { replacedOwn, removedReads } = arm.ours;
       ours = { name: arm.skill, replacedOwn, removedReads: [...removedReads] };
     }
+    // An arm the stage holds runs of takes only the saved capture they were made with: none is
+    // made over them (`heldCaptureFault`; the commands refuse such a stage before any model call).
+    const where = `case ${c.id}'s ${placeWords(place)}`;
+    const taken = armCapturePaths(r.out, c.id, arm, r.texts);
+    const held = heldCaptureFault(where, name, state, r.out, taken);
+    if (held !== undefined) refuseHeldCaptures([held], HELD_CAPTURE_ADVICE);
     let capture: Capture;
     try {
       capture = await r.capture(c, arm);
@@ -4388,7 +4529,8 @@ async function finishCase(
 }
 
 /** `behaviour screen`. A saved screen of another runner refuses the command before any model call
- *  (`checkRunners`). */
+ *  (`checkRunners`), and so does a saved screen still running one of whose arms holds runs while
+ *  its saved capture is not the one they were made with (`checkHeldCaptures`). */
 async function screenCommand(r: Runner): Promise<void> {
   const compared =
     r.compared === "none" ? "compared with no skill" : `${r.compared} text ${r.texts[r.compared]}`;
@@ -4416,6 +4558,13 @@ async function screenCommand(r: Runner): Promise<void> {
       `session cases are not screened: ${refused.reason} (--reading-models ${r.readingModels?.file}); the written cases are`
     );
   }
+  // The screen goes on with no session case under the served-sessions refusal, so it checks none.
+  checkHeldCaptures(
+    r,
+    refused === undefined ? r.cases : r.cases.filter((c) => caseKind(c) !== "session"),
+    results,
+    "screen"
+  );
   const kindOf = kindsOf(r);
   const stopped = new Set<CaseKind>();
   // Session cases first, then written ones: up to MAX_SCREENED_CASES screened cases of each kind,
@@ -4550,8 +4699,9 @@ function againRefusal(
  *  confirmed, and report gives no skill verdict over them (`caseResultOnly`) but where
  *  `--merged` says the results are a merged set of all the skill's cases and the registered rule
  *  reaches one (`verdictLine`). A flagged case's saved last confirm of another runner refuses the
- *  command before any model call (`checkRunners`); earlier confirms are pooled by
- *  `confirmScore`'s rule. */
+ *  command before any model call (`checkRunners`), as does one still running whose saved capture
+ *  of an arm it holds runs of is not the one they were made with (`checkHeldCaptures`); earlier
+ *  confirms are pooled by `confirmScore`'s rule. */
 async function confirmCommand(r: Runner): Promise<void> {
   const { results, score } = screened(r, (s) =>
     s.cases.filter((each) => each.flagged).map((each) => each.caseId)
@@ -4571,6 +4721,12 @@ async function confirmCommand(r: Runner): Promise<void> {
   checkRunners(r, results.values(), "confirm");
   const flagged = score.cases.filter((each) => each.flagged);
   const ids = flagged.map((each) => each.caseId);
+  checkHeldCaptures(
+    r,
+    r.cases.filter((c) => ids.includes(c.id)),
+    results,
+    "confirm"
+  );
   say(r, `${ids.length} flagged cases${ids.length === 0 ? "" : `: ${ids.join(", ")}`}`);
   for (const { caseId: id, drop, confirm } of flagged) {
     if (drop !== undefined) {
@@ -4608,7 +4764,9 @@ async function confirmCommand(r: Runner): Promise<void> {
 /** `behaviour confirm --case <id>`: FRESH_RUNS fresh runs of old and of the compared arm on case
  *  `c`, with no flag gate and no gate of MIN_INFORMATIVE_CASES informative cases, scored by the
  *  confirm rule; no screen and no judge controls run. The case's saved confirm of another runner
- *  refuses the command before any model call (`checkRunners`). */
+ *  refuses the command before any model call (`checkRunners`), as does one still running whose
+ *  saved capture of an arm it holds runs of is not the one they were made with
+ *  (`checkHeldCaptures`). */
 async function confirmCaseCommand(r: Runner, c: Case): Promise<void> {
   say(
     r,
@@ -4617,6 +4775,7 @@ async function confirmCaseCommand(r: Runner, c: Case): Promise<void> {
   const phases = newPhases();
   const result = readResult(r, c.id) ?? newResult(c);
   checkRunners(r, [result], "confirm");
+  checkHeldCaptures(r, [c], new Map([[c.id, result]]), "confirm");
   if (result.dropped !== null) {
     say(r, `case ${c.id}: dropped before, skipped: ${result.dropped}`);
     return;
@@ -4633,7 +4792,9 @@ async function confirmCaseCommand(r: Runner, c: Case): Promise<void> {
  *  same, so a loss of one case has its control, and report gives no skill verdict over it
  *  (`caseResultOnly`). A skill with no case to be the control case (`noControl`, or no informative
  *  case at all) gets none either way. The control case's saved control of another runner refuses
- *  the command before any model call (`checkRunners`). */
+ *  the command before any model call (`checkRunners`), as does a saved control still running whose
+ *  saved capture of an arm it holds runs of is not the one they were made with
+ *  (`checkHeldCaptures`). */
 async function controlStageCommand(r: Runner): Promise<void> {
   const { results, score } = screened(r, (s) => [s.controlCase]);
   const tooFew = skillVerdict({
@@ -4670,6 +4831,7 @@ async function controlStageCommand(r: Runner): Promise<void> {
   const result = results.get(id);
   if (c === undefined || result === undefined) throw new Error(`no control case ${id}`);
   checkRunners(r, [result], "control");
+  checkHeldCaptures(r, [c], results, "control");
   const planted = r.dirs.plantedLine;
   say(
     r,
@@ -7306,7 +7468,7 @@ function copyCaptures(
   for (const name of stageArms(stage, recordedArm(state))) {
     const saved = arms.get(name);
     if (saved?.capture === undefined) continue;
-    const target = capturePaths(armCaptureDir(r.out, saved.arm, state.texts), c.id, name);
+    const target = armCapturePaths(r.out, c.id, saved.arm, state.texts);
     for (const part of ["body", "record"] as const) {
       const inside = path.resolve(saved.files[part]).startsWith(`${path.resolve(from)}${path.sep}`);
       if (existsSync(target[part]) || !inside) continue;
@@ -7385,8 +7547,10 @@ function onlyStages(file: string): Set<string> {
  * mixed-reply rule continues are continued, and this does it, from the saved `--out` `from`,
  * which it only reads, into `r.out`. Before any model call it refuses a saved stage (or one it
  * wrote in `r.out` before) of a runner that is neither this one nor one `--allow-runners` names
- * (`refuseOtherRunners`), and an `--only` (`onlyFile`, `onlyStages`) that names a case the file
- * lacks or a stage its result does not hold. Then per case in the file's order: a case with no
+ * (`refuseOtherRunners`), an `--only` (`onlyFile`, `onlyStages`) that names a case the file
+ * lacks or a stage its result does not hold, and a stage it would continue one of whose arms holds
+ * runs while that arm's saved capture under `from` is not there or is not the one its stage's note
+ * names (`heldCaptureFaults`). Then per case in the file's order: a case with no
  * saved result is skipped, and a dropped one (`caseDrop`) is written as saved; any other gets,
  * for each stage its saved result holds (screen, each confirm, control), the stage
  * `continueStage` makes (only the stages `--only` names are continued, the others written as
@@ -7433,7 +7597,7 @@ async function continueMixedCommand(
       const state = place.get(result);
       return state === undefined
         ? []
-        : [{ caseId: c.id, label: placeWords(place), state, out: each.out }];
+        : [{ c, place, caseId: c.id, label: placeWords(place), state, out: each.out }];
     });
   });
   const unheld = [...(o.only ?? [])].filter((each) => !held.has(each));
@@ -7451,6 +7615,19 @@ async function continueMixedCommand(
       "to continue those stages, or use another --from"
     );
   }
+  // Each arm that holds runs of a stage it continues: its continuations replay the saved capture
+  // under `from` its runs were made with, and its fresh runs that capture copied to `r.out`
+  // (`copyCaptures`), so one not there, or of another body, refuses the command before any call.
+  refuseHeldCaptures(
+    checked.flatMap(({ c, place, state }) =>
+      sameTexts(r, state) && selectedBy(o, c, place)
+        ? heldCaptureFaults(r, c, place, state, from, (arm) =>
+            stageCaptureFiles(from, c.id, arm, state, r.texts)
+          )
+        : []
+    ),
+    "Put each such capture back in --from where its stage's note names it, as it was saved, or use another --from"
+  );
   say(
     r,
     `${r.cases.length} cases of the skill ${r.cases[0]?.skill} in ${r.casesFile}; the saved runs in ${from} the mixed-reply rule continues are continued into ${r.out}, ${o.only === undefined ? "every stage selected" : `the ${counted(o.only.size, "stage")} --only ${onlyFile} names selected`}, ${furtherRounds === undefined ? "each continuation as far as the live rule goes" : `each continuation at most ${counted(furtherRounds, "further round")}`}; texts ${textWords(r.texts)}`
@@ -8049,11 +8226,9 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       values.repos === undefined ? githubRemote(repo) : path.join(values.repos, `${repo}.git`),
     dotfilesRepo: config.dotfilesRepo,
     capture: async (c, arm) => {
-      const outDir = armCaptureDir(given.out, arm, texts);
-      const saved = await restoredCapture(c, arm, capturePaths(outDir, c.id, arm.name), {
-        source,
-        cacheDir,
-      });
+      const files = armCapturePaths(given.out, c.id, arm, texts);
+      const outDir = path.dirname(files.body);
+      const saved = await restoredCapture(c, arm, files, { source, cacheDir });
       if (saved !== undefined) return saved;
       if (models === undefined || omp === undefined) {
         throw new Error(

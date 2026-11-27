@@ -80,6 +80,7 @@ func TestABoundedTransactionOnADatabaseThatStopsAnsweringEndsAtItsWriteBound(t *
 		if err == nil || errors.Is(err, errAcquireBound) {
 			t.Fatalf("a transaction on a server that answers no connection = %v, want the dial's failure at the write bound, not the acquire bound's", err)
 		}
+		t.Logf("the transaction on a server that answers no connection ended after %s", took)
 		if took > 1500*time.Millisecond {
 			t.Fatalf("a transaction on a server that answers no connection took %s (%v), want about its 500ms write bound, far short of its %s acquire bound", took, err, acquire)
 		}
@@ -97,6 +98,7 @@ func TestABoundedTransactionOnADatabaseThatStopsAnsweringEndsAtItsWriteBound(t *
 		if err == nil || errors.Is(err, errAcquireBound) {
 			t.Fatalf("a transaction whose BEGIN the server never answers = %v, want the write bound's failure, not the acquire bound's", err)
 		}
+		t.Logf("the transaction whose BEGIN the server never answers ended after %s", took)
 		if took > 1500*time.Millisecond {
 			t.Fatalf("a transaction whose BEGIN the server never answers took %s, want about its 500ms write bound, short of its 3s acquire bound", took)
 		}
@@ -115,6 +117,7 @@ func TestABoundedTransactionOnADatabaseThatStopsAnsweringEndsAtItsWriteBound(t *
 		if err == nil || errors.Is(err, errAcquireBound) {
 			t.Fatalf("a transaction on an idle connection of a silent server = %v, want the write bound's failure, not the acquire bound's", err)
 		}
+		t.Logf("the transaction on an idle connection of a silent server ended after %s", took)
 		if took > 1500*time.Millisecond {
 			t.Fatalf("a transaction on an idle connection of a silent server took %s, want about its 500ms write bound, short of its 3s acquire bound", took)
 		}

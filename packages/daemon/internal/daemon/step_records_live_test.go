@@ -9,7 +9,7 @@
 // (startHandoffDispatch, as handoff-records.sh's driver starts it), on a database of its own on
 // LEGION_TEST_PG_DSN's server, with NATS off; it is stopped and started again on the same database
 // and port for the outage. The daemon is the whole daemon (run, the function `legion start` calls,
-// through startDaemonWithin) with dispatch_url at that server, so every step record it writes goes
+// through startDaemonLogging) with dispatch_url at that server, so every step record it writes goes
 // through its outbox and its Dispatch client to the real route. The issue walks as the package's
 // whole-daemon tests walk it (stepRecordsRig, step_records_rig_test.go): each role over the worker
 // stream and the daemon's own routes, its handoff record written to Dispatch under its own
@@ -30,7 +30,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -64,6 +63,7 @@ type stepRecordsLive struct {
 // once the issue is in reviewing for the second time: the second review, the acceptance, the retro
 // and the merge then walk it to done with Dispatch stopped.
 func TestStepRecordsLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live, in newStepRecordsLive).
 	l := newStepRecordsLive(t, "scripts/e2e/step-records.sh", 1, "steps-reader")
 	l.note("Dispatch %s (database of its own, NATS off), project %s with default repository %s, issue %s on pull request %d; daemon at dispatch_url %s; the reader is the person's personal token",
 		l.dispatch.base, l.cfg.Project, liveRepo, l.key, l.number, l.cfg.DispatchURL)
@@ -316,164 +316,4 @@ func (l *stepRecordsLive) holdsID(read stepRecordsRead, id string) bool {
 		}
 	}
 	return false
-}
-
-// stepsPrinted is what `dispatch steps` printed: its header's counts and one line per run.
-type stepsPrinted struct {
-	steps, tasks int
-	lines        []stepLine
-}
-
-// stepLine is one run as `dispatch steps` prints it: `<task> <step> <kind> <role> <type|->
-// attempt <a> <agent|-> <model|-> <started_at|-> <ended_at|running> <result|running>`.
-type stepLine struct {
-	text                                 string
-	task, kind, role, typ                string
-	step, attempt                        int
-	agent, model, started, ended, result string
-}
-
-// parseSteps reads the output of `dispatch steps --issue key`: the header `<key>: <n> steps in <m>
-// tasks`, then exactly n lines of runs.
-func parseSteps(key, out string) (stepsPrinted, error) {
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	var printed stepsPrinted
-	header := strings.TrimPrefix(lines[0], key+": ")
-	if header == lines[0] {
-		return printed, fmt.Errorf("the first line %q is no header of %s", lines[0], key)
-	}
-	if _, err := fmt.Sscanf(header, "%d steps in %d tasks", &printed.steps, &printed.tasks); err != nil {
-		return printed, fmt.Errorf("the header %q: %v", lines[0], err)
-	}
-	for _, text := range lines[1:] {
-		fields := strings.Fields(text)
-		if len(fields) != 12 || fields[5] != "attempt" {
-			return printed, fmt.Errorf("the line %q is no run", text)
-		}
-		step, err := strconv.Atoi(fields[1])
-		if err != nil {
-			return printed, fmt.Errorf("the line %q: step %v", text, err)
-		}
-		attempt, err := strconv.Atoi(fields[6])
-		if err != nil {
-			return printed, fmt.Errorf("the line %q: attempt %v", text, err)
-		}
-		printed.lines = append(printed.lines, stepLine{
-			text: text, task: fields[0], step: step, kind: fields[2], role: fields[3], typ: fields[4], attempt: attempt,
-			agent: fields[7], model: fields[8], started: fields[9], ended: fields[10], result: fields[11],
-		})
-	}
-	if len(printed.lines) != printed.steps {
-		return printed, fmt.Errorf("the header says %d steps and %d lines follow it", printed.steps, len(printed.lines))
-	}
-	return printed, nil
-}
-
-// holdsTen says whether printed is the walk's read: exactly the ten runs of stepRecordsTen, under
-// the header `10 steps in 1 tasks`.
-func holdsTen(printed stepsPrinted) error {
-	if err := holdsLines(printed.lines, stepRecordsTen, true); err != nil {
-		return err
-	}
-	if printed.steps != len(stepRecordsTen) || printed.tasks != 1 {
-		return fmt.Errorf("the header says %d steps in %d tasks, want %d steps in 1 tasks", printed.steps, printed.tasks, len(stepRecordsTen))
-	}
-	return nil
-}
-
-// holdsLines says whether lines hold each run of want, of the task default, ended (its end a
-// moment, printedMoment) with its result, with an agent, and each of kind step with the model that
-// answered it; with exact, they hold no other run. The error names the first run that is missing
-// or wrong as lineName spells it.
-func holdsLines(lines []stepLine, want []stepWant, exact bool) error {
-	for _, w := range want {
-		got, name, typ := findLine(lines, w), lineName(w), printedType(w)
-		switch {
-		case got.text == "":
-			return fmt.Errorf("no line of %s", name)
-		case got.task != "default" || got.role != w.role || got.typ != typ || got.agent == "-":
-			return fmt.Errorf("%s prints %q: want task default, role %s, type %s and an agent", name, got.text, w.role, typ)
-		case got.started == "-" || !printedMoment(got.ended) || got.result != w.result:
-			return fmt.Errorf("%s prints %q: want a start, an end and result %s", name, got.text, w.result)
-		case w.kind == "step" && got.model != stepRecordsModel:
-			return fmt.Errorf("%s prints %q: want the model %s", name, got.text, stepRecordsModel)
-		}
-	}
-	if exact && len(lines) != len(want) {
-		return fmt.Errorf("%d lines of runs, want %d", len(lines), len(want))
-	}
-	return nil
-}
-
-// printedMoment is whether s, a column of `dispatch steps`, is a moment as Dispatch writes one
-// (RFC 3339): an end is one, and `running`, which steps.ts prints for a run that has not ended, or
-// any other text, is none.
-func printedMoment(s string) bool {
-	_, err := time.Parse(time.RFC3339Nano, s)
-	return err == nil
-}
-
-// findLine is the line of w's kind, step and attempt, the zero line when lines hold none.
-func findLine(lines []stepLine, w stepWant) stepLine {
-	for _, line := range lines {
-		if line.kind == w.kind && line.step == w.step && line.attempt == w.attempt {
-			return line
-		}
-	}
-	return stepLine{}
-}
-
-// printedType is w's type as the command prints it: `-` for the retro and the merge, which have
-// none.
-func printedType(w stepWant) string {
-	if w.typ == "" {
-		return "-"
-	}
-	return w.typ
-}
-
-// lineName spells w as the command prints its leading fields, then its result: `4 step reviewer
-// review attempt 1 … failed`.
-func lineName(w stepWant) string {
-	return fmt.Sprintf("%d %s %s %s attempt %d … %s", w.step, w.kind, w.role, printedType(w), w.attempt, w.result)
-}
-
-// The driver's end check, which the proof runs over what `dispatch steps` prints: a line ends its
-// run only when it prints a moment as its end. steps.ts prints `running` there, and as the result,
-// for a run that has not ended; `-`, which a printer that wrote the end through orDash would print,
-// and any other word are no end either, so each fails the walk's read, naming the line. The control
-// is the same ten lines with every end a moment, which the check passes.
-func TestTheDriverReadsAnEndOnlyFromAMoment(t *testing.T) {
-	const key = "SR-1"
-	printed := func(end, result string) string {
-		lines := []string{key + ": 10 steps in 1 tasks"}
-		for _, w := range stepRecordsTen {
-			model, lineEnd, lineResult := "-", "2026-11-20T09:40:00.123456Z", w.result
-			if w.kind == "step" {
-				model = stepRecordsModel
-			}
-			if w.kind == "step" && w.step == 2 && w.attempt == 2 {
-				lineEnd, lineResult = end, result
-			}
-			lines = append(lines, fmt.Sprintf("default %d %s %s %s attempt %d agent-%s %s 2026-11-20T09:00:00Z %s %s",
-				w.step, w.kind, w.role, printedType(w), w.attempt, w.role, model, lineEnd, lineResult))
-		}
-		return strings.Join(lines, "\n") + "\n"
-	}
-	read := func(out string) error {
-		parsed, err := parseSteps(key, out)
-		if err != nil {
-			t.Fatalf("parse %q: %v", out, err)
-		}
-		return holdsTen(parsed)
-	}
-	if err := read(printed("2026-11-20T09:40:00Z", "passed")); err != nil {
-		t.Fatalf("control: the ten lines, each ended at a moment, read as %v, want the walk's ten", err)
-	}
-	for _, no := range []struct{ end, result string }{{"running", "running"}, {"-", "passed"}, {"unknown", "passed"}} {
-		err := read(printed(no.end, no.result))
-		if err == nil || !strings.Contains(err.Error(), "2 step implementer implementation attempt 2") || !strings.Contains(err.Error(), "an end") {
-			t.Errorf("the ten lines with implementing's second run ending %q %q read as %v, want an error naming that run and its end", no.end, no.result, err)
-		}
-	}
 }

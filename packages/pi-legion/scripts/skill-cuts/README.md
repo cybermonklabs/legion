@@ -427,8 +427,12 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   Give `--new` or `--ours` as the stage ran with, or neither for no skill. The command skips
   and names stages whose recorded texts differ.
   - Before any model call it refuses a saved stage of another runner unless `--allow-runners`
-    names its runner, as the stage commands do, and an `--only` line that names a stage no saved
-    result holds.
+    names its runner, as the stage commands do, an `--only` line that names a stage no saved
+    result holds, and a selected stage one of whose arms holds runs while that arm's saved capture
+    under `--from` is gone or is not the one the stage's note names, as the stage commands refuse
+    one (below, after `score.ts holds the rules`): its continuations replay that capture, and its
+    fresh runs the copy of it in `--out`, so a capture made again would put two requests in one
+    arm's runs.
   - A judged run the rule continues is continued only when its record holds every part its next
     request needs: a session id, its arm's saved capture, the whole earlier answered replies
     where it had any (`answeredReplies`), and the deployment that answered its saved reply.
@@ -521,6 +525,21 @@ order, shuffled by the round's recorded seed (`replay.ts`'s `sendOrder`); the fi
 arm in that order goes alone among its arm's, so its reply writes the prefix cache the arm's
 later runs read, and no place of the order changes. A results file whose stages were run before
 this (they record no `sends`) is refused: use a new `--out`.
+
+A stage started again over the runs it saved (a screen stopped mid-case, a confirm or a control
+run again) makes each arm's further runs with the saved capture that arm's runs were made with,
+and never makes a capture over them (the architect, 2026-11-27): a capture made again would send
+the arm's later runs with another request than its earlier ones. Each stage notes, per arm, the
+capture its runs replay (`captures`: the body file, below `--out`, and `captureDigest`, the
+system-prompt digest of the saved body, `capture.ts`'s `promptDigest`). Before any model call,
+`screen`, `confirm` and `control` check each saved stage they would go on with, as they check its
+runner: for each arm the stage holds runs of, the noted body file must be the capture the command
+reads back for that arm, it and its record must be there, and its body's digest must be the noted
+one. Else the command is refused (exit 2), naming the case, the stage, the arm, the body file and
+the noted digest, and the digest found where the file is there: put the capture back as it was
+saved, or use another `--out`. `continue-mixed` refuses such a stage of `--from` the same way
+(above). An arm the stage holds no run of, and a new stage, reads its capture back or makes one as
+before.
 
 The gateway pins a Messages call to one of its deployments by the request header
 `x-litellm-session-id` (the SHA-256 of its value, placed on the deployments' weighted shares),
@@ -621,9 +640,10 @@ naming the case, the copy's source and both names.
 Oh My Pi asks for temperature 0, but sends no temperature to Opus 4.7 on, Sonnet, Fable and Mythos
 5 on or Haiku 5.5 on, which take none, so their hints run at the API's default of 1. `gateway.ts`
 sends each body to its API's route (the key as `x-api-key`, or as
-`authorization: Bearer` on the Responses route), tries a call again on a 429 or a 5xx, a failed
-connection, a timeout or a reply it cannot read (8 tries in all, 91 s of back-off), but never a
-stream refused on a content policy (the error's type, a Responses error's `code`, ends in `_policy`,
+`authorization: Bearer` on the Responses route), tries a call again on an outage (a 5xx, a 408 or a
+429), a failed connection, a timeout or a reply it cannot read (8 tries in all, 91 s of back-off),
+but never a stream refused on a content policy (the error's type, a Responses error's `code`, ends
+in `_policy`,
 as `cyber_policy`), which fails at once, since the provider refuses the same content on each try. It
 reads the stream whole, and prices each reply at its model's list price (`PRICES`, from
 Anthropic's and OpenAI's pricing pages; gpt-6.1-sol at $2 input, $10 output, $0.10 a cache read
@@ -1835,7 +1855,14 @@ profile file and the SHA-256 of its bytes. A task whose run file holds its judge
 its extra runs, is skipped, so a run started again goes on from what was saved; a task whose
 capture or runs were made under a profile of other bytes is refused, and so is an `--out` whose
 runs were sent before each had its own session id, before this rule, or before the mixed-reply
-rule (its settings' `skillReads` names that rule). A task whose context needs
+rule (its settings' `skillReads` names that rule). A task whose run file holds runs but lacks
+some makes them with the saved capture those runs were made with, and never makes a capture over
+them, as a `behaviour` stage does (above): a run records no digest of its capture's body, only the
+line the capture lists the tested skill under (`listed`), so where the task's saved capture body
+or record is gone, or the capture lists the tested skill under another line than its runs record,
+the command is refused before any capture or run (exit 2), naming the task, its run file, the
+capture and the lines: put the capture back as it was saved, or use another `--out`. A task with
+no runs reads its capture back or makes one as before. A task whose context needs
 a directory no read can give (as `behaviour` drops a case for) is dropped: its line and the
 summary's `dropped` give the reason (`unreadable-directory: ` and the repository, the commit and
 the path), a run started again skips it while its profile file keeps the same bytes, and the
@@ -3815,6 +3842,8 @@ drop no stage makes); 2 refused before any model call or store read (among the r
 `--out` inside a git or jj checkout, from `behaviour`'s stage commands, `load` and
 `build-cases`), or as a case's capture installs a copy Oh My Pi would name otherwise than its
 profile does, or as a saved capture's record names other installed copies than its case's profile
-now gives; 3 stopped (the budget is spent, the peak memory passed 1 GiB in `behaviour` or
+now gives, or as a stage that holds runs of an arm finds that arm's saved capture is not the one
+they were made with (the commands check that before any model call; this is a capture changed
+while one runs); 3 stopped (the budget is spent, the peak memory passed 1 GiB in `behaviour` or
 `build-cases`, or 1.5 GiB in `copies`, or the listing rule dropped more than half of a load's
 tasks); 4 stopped by build-cases' stop rule.

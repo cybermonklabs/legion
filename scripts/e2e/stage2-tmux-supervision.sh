@@ -415,8 +415,11 @@ envoy_role() { curl -fsS -H "@$work/envoy-auth-header" "http://127.0.0.1:$envoy_
 # its back: under box-login the profile's agent.db is the operator's login database.
 envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$omp_home" --dest "$work/pi-envoy" --omp "$pin")
 manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion" --omp "$pin")
-want_contract=$(jq -r .legion.daemonApiVersion "$root/packages/pi-legion/package.json")
-echo "plugins: $(jq -r '.name + "@" + .version' "$envoy_manifest") and $(jq -r '.name + "@" + .version' "$manifest") in OMP profile $profile (daemonApiVersion $want_contract)"
+# The contract this checkout's daemon speaks, which the pack above wrote into the installed
+# manifest: the checkout's own manifest declares none (scripts/daemon-contract.sh, of the working
+# tree, so a `git archive` tree with no .git reads it too).
+want_contract=$(bash "$root/scripts/daemon-contract.sh")
+echo "plugins: $(jq -r '.name + "@" + .version' "$envoy_manifest") and $(jq -r '.name + "@" + .version' "$manifest") in OMP profile $profile (daemon API contract $want_contract)"
 
 (umask 077 && printf 'stage2-operator-%s\n' "$project" >"$work/operator-token")
 cat >"$work/legion.yaml" <<EOF
@@ -452,7 +455,7 @@ begin gate-refuses-another-contract
 cp -p "$work/pi-legion/package.json" "$work/manifest.orig"
 bad_contract=$((want_contract + 1))
 jq --argjson v "$bad_contract" '.legion.daemonApiVersion = $v' "$work/manifest.orig" >"$work/pi-legion/package.json"
-note "the installed pi-legion manifest now declares daemonApiVersion $bad_contract (the checkout's is $want_contract)"
+note "the installed pi-legion manifest now declares daemonApiVersion $bad_contract (the checkout's contract is $want_contract)"
 expect_refusal contract "speaks daemon API contract $bad_contract; this daemon requires $want_contract"
 cp -p "$work/manifest.orig" "$work/pi-legion/package.json"
 cmp -s "$work/manifest.orig" "$work/pi-legion/package.json" || fail "the installed manifest was not restored"
@@ -497,7 +500,7 @@ begin gate-refuses-a-skill-only-a-role-prompt-loads
 # refusal of the plugin without legion-controller names roles/controller-root.md, which only a gate
 # that reads the daemon's own role prompts can name.
 mv "$work/pi-legion/dist/skills/legion-controller" "$work/controller-skill.aside"
-expect_refusal prompt-only-skill "finds no skill legion-controller (loaded by dist/skills/legion-worker/references/findings.md, roles/controller-root.md)"
+expect_refusal prompt-only-skill "finds no skill legion-controller (loaded by dist/skills/legion-architect/references/operations.md, roles/controller-root.md)"
 mv "$work/controller-skill.aside" "$work/pi-legion/dist/skills/legion-controller"
 [ -f "$work/pi-legion/dist/skills/legion-controller/SKILL.md" ] || fail "the legion-controller skill was not restored"
 pass

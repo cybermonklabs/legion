@@ -18,6 +18,7 @@ import {
   type DialLimit,
   type RegistrationInput,
   type RegistrationState,
+  type RoleClaimOutcome,
   taskWasAbandoned,
 } from "./registration-state";
 import type { SessionInbound } from "./session-inbound";
@@ -44,6 +45,13 @@ const interestFor = (sessionID: string): Interest => ({
   machine_id: "machine-1",
   dir: "/w",
   topics: [],
+});
+
+/** The listener's grant of a claim for `sessionID`, with the warnings it answered it with. */
+const grantFor = (sessionID: string, warnings: readonly string[] = []): SetRoleResult => ({
+  claimed: true,
+  interest: interestFor(sessionID),
+  warnings,
 });
 
 // Every registration a listener accepts answers the session's own consumer: this module carries
@@ -124,7 +132,7 @@ interface Harness {
   readonly claims: SetRoleInput[];
   readonly fakeConnection: (name: string) => SessionInbound;
   /** Claims `role` for `id` through a settled role move, as a healthy pass does. */
-  readonly hold: (role: string, id: string) => Promise<boolean | undefined>;
+  readonly hold: (role: string, id: string) => Promise<RoleClaimOutcome | undefined>;
 }
 
 function createHarness(): Harness {
@@ -155,7 +163,7 @@ function createHarness(): Harness {
     open: "",
     deadlineMs: 60_000,
     subscribe: async (input) => subscribeResultFor(input.sessionID),
-    setRole: async () => ({ claimed: true, interest: interestFor("ses_a") }),
+    setRole: async () => grantFor("ses_a"),
     getRole: async (role) => ({ role, holder: "", last_seen: 1, state: "gone" }),
     getInterest: async (sessionID) => interestFor(sessionID),
     unsubscribe: async () => {},
@@ -795,7 +803,7 @@ describe("clearRefusal", () => {
       handle.actFor("ses_a");
       return handle.claimRole("alpha", { soft: true });
     });
-    expect(claimed).toBe(false);
+    expect(claimed).toEqual({ claimed: false });
     expect(state.refusalFor("ses_a")).toBe("alpha");
     state.clearRefusal("ses_a");
     expect(state.refusalFor("ses_a")).toBeUndefined();
@@ -921,7 +929,7 @@ describe("recordClaimAfterDeadline", () => {
     control.setRole = async () => {
       claiming.resolve();
       await release.promise;
-      return { claimed: true, interest: interestFor("ses_a") };
+      return grantFor("ses_a");
     };
     const running = state.roleMoves.run(async (handle) => {
       handle.actFor("ses_a");
@@ -980,7 +988,7 @@ describe("adoptClaimAfterSessionMoved", () => {
     control.setRole = async () => {
       claiming.resolve();
       await release.promise;
-      return { claimed: true, interest: interestFor("ses_a") };
+      return grantFor("ses_a");
     };
     const refusals: boolean[] = [];
     const running = state.roleMoves.run(
@@ -1160,7 +1168,7 @@ describe("claimRole", () => {
     };
     // The claim of beta landed, so it supersedes the hold of alpha: the claim stands whatever
     // became of that hold's release, and the hold it left behind is abandoned, not forgotten.
-    expect(await harness.hold("beta", "ses_a")).toBe(true);
+    expect(await harness.hold("beta", "ses_a")).toEqual({ claimed: true, warnings: [] });
     expect(state.heldRole()).toBe("beta");
     expect(handBacks).toEqual([`${ALPHA}@ses_a`]);
     expect(warnings).toEqual([
@@ -1224,7 +1232,7 @@ describe("claimRole", () => {
       handle.actFor("ses_a");
       return handle.claimRole("alpha", { soft: true });
     });
-    expect(claimed).toBe(false);
+    expect(claimed).toEqual({ claimed: false });
     expect(state.heldRole()).toBeUndefined();
     expect(state.refusalFor("ses_a")).toBe("alpha");
     expect(warnings.at(-1)?.message).toBe(
@@ -1315,7 +1323,7 @@ describe("claimRole", () => {
     expect(state.refusalFor("ses_a")).toBe("alpha");
     // A hold of the same role this process gave up earlier.
     state.recordClaimAfterDeadline(ALPHA, "ses_a");
-    control.setRole = async () => ({ claimed: true, interest: interestFor("ses_a") });
+    control.setRole = async () => grantFor("ses_a");
     await state.roleMoves.run(async (handle) => {
       handle.actFor("ses_a");
       return handle.claimRole("alpha", { soft: true });
@@ -1337,6 +1345,35 @@ describe("claimRole", () => {
     await expect(state.roleMoves.run(async (handle) => handle.claimRole("alpha"))).rejects.toThrow(
       "has not named the session it acts for"
     );
+  });
+
+  // A claim that names the session it replaces can land and still hand over none of that
+  // session's messages; the listener says so in a warning. Every caller of `claimRole` (a pass, the
+  // Legion plugin's claim, `envoy_role_set`) gets it logged here, and the tool repeats what this
+  // answers to the agent.
+  test("a claim that landed logs each of the listener's warnings with the role and the session, and answers them", async () => {
+    const { state, control, warnings } = createHarness();
+    const handover =
+      "no message of ses_old is handed over to this session: the claim's credential and ses_old's last registration name different principals";
+    const edge =
+      "this edge listener hands over no messages: the unread messages of ses_old stay on its own subject, and a claim through a shared listener hands them to this session";
+    control.open = "ses_a";
+    control.setRole = async () => grantFor("ses_a", [handover, edge]);
+    const claimed = await state.roleMoves.run(async (handle) => {
+      handle.actFor("ses_a");
+      return handle.claimRole("alpha", { previousSessionID: "ses_old" });
+    });
+    expect(claimed).toEqual({ claimed: true, warnings: [handover, edge] });
+    expect(warnings).toEqual([
+      {
+        message: "envoy: the listener warned about a role claim",
+        context: { role: "alpha", sessionID: "ses_a", warning: handover },
+      },
+      {
+        message: "envoy: the listener warned about a role claim",
+        context: { role: "alpha", sessionID: "ses_a", warning: edge },
+      },
+    ]);
   });
 });
 
@@ -1389,6 +1426,19 @@ describe("reassertRole", () => {
       },
     ]);
     expect(harness.state.heldRole()).toBe("alpha");
+  });
+
+  test("a re-assertion that landed logs each of the listener's warnings with the role and the session", async () => {
+    const harness = createHarness();
+    await harness.hold("alpha", "ses_a");
+    const legacy = "alpha is the old form of ACME.alpha; claim ACME.alpha";
+    harness.control.setRole = async () => grantFor("ses_a", [legacy]);
+    harness.warnings.length = 0;
+    expect(await reassert(harness, false)).toEqual({ decided: true, regain: "reclaimed" });
+    expect(harness.warnings[0]).toEqual({
+      message: "envoy: the listener warned about a role claim",
+      context: { role: "alpha", sessionID: "ses_a", warning: legacy },
+    });
   });
 
   // The other half of the same rule: the listener refuses that claim while the other process
@@ -1622,7 +1672,7 @@ describe("a claim the listener refuses", () => {
     expect(harness.warnings).toEqual([]);
     expect(harness.notices).toEqual([]);
     // That process stops renewing, and the very next claim is granted without a session event.
-    harness.control.setRole = async () => ({ claimed: true, interest: interestFor("ses_a") });
+    harness.control.setRole = async () => grantFor("ses_a");
     await harness.state.roleMoves.run(async (handle) => {
       handle.actFor("ses_a");
       return handle.claimRole("alpha", { soft: true });

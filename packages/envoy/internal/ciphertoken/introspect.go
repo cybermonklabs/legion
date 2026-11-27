@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/fold"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // IntrospectPath is the broker's RFC 7662 introspection route, which answers what the broker
@@ -31,8 +32,11 @@ const maxIntrospectionBytes = 64 << 10
 // Project scopes an Introspection's Projects is read under: the broker's own wire names, carried
 // here so a reader of a Caller this package decides reads one package (internal/dispatch/api).
 const (
-	// ProjectScopeNamed means Projects is the one project an operator's entry gave the token, or
-	// none for an account entry naming none.
+	// ProjectScopeNamed means Projects is the one project the token is held to: the one an
+	// operator's entry gave it, or none for an account entry that names none, whether it names a
+	// person or acts as its account (a service, no person), or the one a restricted member's
+	// machine login asked for. A job's named token, which names a service and no person, names
+	// exactly one.
 	ProjectScopeNamed = oauthwire.ProjectScopeNamed
 	// ProjectScopePerson means the token acts as its person, and Projects is what its trade
 	// asked for.
@@ -41,6 +45,10 @@ const (
 	// which holds ScopeRead and nothing else beside it (shapeOf) and which a verifier accepts
 	// only under Options.ServesReadOnly.
 	ProjectScopeNone = oauthwire.ProjectScopeNone
+	// ProjectScopePublic means the token is a job's whose entry names public: it names a service
+	// and no person, it reaches every public project, and Projects is the 0 to
+	// oauthwire.MaxProjects private projects its entry lists (shapeOf).
+	ProjectScopePublic = oauthwire.ProjectScopePublic
 )
 
 // ScopeRead is the one OAuth scope every read-only token holds, in the answer's space-separated
@@ -48,6 +56,27 @@ const (
 // ProjectScopeNone or a narrowed project scope it is a read-only token, and beside the project
 // scope named or person it is no session's credential (ErrNotASession).
 const ScopeRead = oauthwire.ScopeRead
+
+// ScopeApprove is the one OAuth scope an approve-only token holds: beside ProjectScopePerson, a
+// person, and no service, no projects and no cut (approveShapeOf) it is the token the broker mints
+// for a person's approve grant and spends through its proxy, which a verifier accepts only under
+// Options.ServesApproveOnly, and in any other shape it is no session's credential
+// (ErrNotASession).
+const ScopeApprove = oauthwire.ScopeApprove
+
+// ScopeLegionStatus is the OAuth scope the broker grants a Legion daemon's own token, in the
+// answer's space-separated Scope: the broker's own wire name, carried here for the reason
+// ScopeRead is. callerOf reads it into Caller.LegionStatus. Beside the project scope named or
+// person, shapeOf reads a token that names a person and holds it as it reads one that does not,
+// but for one beside ScopeApprove: approveShapeOf reads that token first and answers it no
+// session's token. A named answer that names no person and holds any scope word, this one
+// included, is no session's credential (shapeOf).
+const ScopeLegionStatus = oauthwire.ScopeLegionStatus
+
+// LegionDaemonSessionPrefix starts the session a Legion daemon writes its project's issues under,
+// legion-daemon:<PROJECT>: the broker's own spelling (oauthwire), carried here for the reason
+// ScopeLegionStatus is.
+const LegionDaemonSessionPrefix = oauthwire.LegionDaemonSessionPrefix
 
 // ExchangeClientID is the OAuth client every token issued for acting as a session is issued to:
 // the RFC 8693 exchange a pod, a workflow run or a dev box session asks for a Dispatch access
@@ -101,17 +130,44 @@ func cutOf(answer Introspection) (time.Time, error) {
 // answer's cut, which sessionCaller read (cutOf): callerOf runs only on an answer sessionCaller
 // accepted, and sessionCaller lets a read-only answer through only with its switch set, which
 // only a verifier that serves one sets, so a Caller marked read-only is one such a verifier
-// accepted.
+// accepted. A held answer is still live and is kept in the cache for AffirmativeCacheTTL; the
+// Envoy listener refuses a held Caller after its own checks, while Dispatch does not read Held yet.
+// A not-held answer's not_held_until is kept no later than its deadline (answerCache.remember);
+// the Envoy listener refuses a Caller past it (Verifier.Lapsed), while Dispatch does not read it
+// yet. LegionStatus is whether Scope holds the word ScopeLegionStatus, read one word at a time as
+// shapeOf reads it and with no slice built, since this too runs on every request a verifier
+// decides.
 func callerOf(answer Introspection, shape tokenShape, cut time.Time) Caller {
-	return Caller{
+	caller := Caller{
 		Session:      answer.Session,
 		Person:       answer.Person,
 		Service:      answer.Service,
 		Projects:     slices.Clone(answer.Projects),
 		ProjectScope: oauthwire.BaseProjectScope(answer.ProjectScope),
 		ReadOnly:     shape == shapeReadOnly,
+		ApproveOnly:  shape == shapeApproveOnly,
 		Cut:          cut,
+		Held:         answer.Held,
 	}
+	if answer.NotHeldUntil > 0 {
+		caller.NotHeldUntil = time.Unix(answer.NotHeldUntil, 0).UTC()
+	}
+	for word := range strings.FieldsSeq(answer.Scope) {
+		if word == ScopeLegionStatus {
+			caller.LegionStatus = true
+			break
+		}
+	}
+	return caller
+}
+
+// notHeldUntilOf is when a live answer that its person is not held stops being good, or the zero
+// time for an answer naming no deadline and for a held one, which is kept as every held answer is.
+func notHeldUntilOf(answer Introspection) time.Time {
+	if answer.Held || answer.NotHeldUntil <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(answer.NotHeldUntil, 0)
 }
 
 // introspect asks the broker what token is, presenting Dispatch's own projected ServiceAccount
@@ -128,15 +184,18 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 	form := url.Values{"token": []string{token}}.Encode()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, v.brokerURL+IntrospectPath, strings.NewReader(form))
 	if err != nil {
-		return Introspection{}, fmt.Errorf("%w: build the introspection request: %w", ErrBrokerUnreachable, err)
+		return Introspection{}, fmt.Errorf("%w: build the introspection request: %w", ErrBrokerUnreachable, redact.Error(err, v.brokerURL))
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Authorization", "Bearer "+account)
 	response, err := v.http.Do(request)
 	if err != nil {
 		// The error carries the request's URL, which is the broker's and never the token: the
-		// token is in the body, which http.Client puts in no error.
-		return Introspection{}, fmt.Errorf("%w: %w", ErrBrokerUnreachable, err)
+		// token is in the body, which http.Client puts in no error. The URL is printed through
+		// redact.Error, which prints the failure's class alone when the URL carries a credential
+		// (net/http masks a password, not a user name or a query), though boot refuses such a
+		// DISPATCH_AGENT_SECRETS_URL.
+		return Introspection{}, fmt.Errorf("%w: %w", ErrBrokerUnreachable, redact.Error(err, v.brokerURL))
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxIntrospectionBytes))

@@ -324,9 +324,10 @@ func answeredIn(key string, seq int64) json.RawMessage {
 	return issueEvent(key, seq, "ask.answered", alice, map[string]any{"id": "ask-" + key, "kind": "question"})
 }
 
-// A root Dispatch keeps refusing does not hold the boot: an error Dispatch may stop giving (a 5xx)
-// is read again a bounded number of times, a credential refusal (401, 403) not at all, and the root
-// is then skipped and released, so the next root is caught up and the catch-up finishes.
+// A root Dispatch keeps refusing does not hold the boot: an error Dispatch may stop giving (an
+// outage: a 5xx, a 408 or a 429) is read again a bounded number of times, a credential refusal
+// (401, 403) not at all, and the root is then skipped and released, so the next root is caught up
+// and the catch-up finishes.
 func TestCatchUpSkipsARootDispatchKeepsRefusing(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -335,6 +336,8 @@ func TestCatchUpSkipsARootDispatchKeepsRefusing(t *testing.T) {
 	}{
 		{status: http.StatusBadGateway, reads: catchUpAttempts},
 		{status: http.StatusServiceUnavailable, reads: catchUpAttempts},
+		{status: http.StatusRequestTimeout, reads: catchUpAttempts},
+		{status: http.StatusTooManyRequests, reads: catchUpAttempts},
 		{status: http.StatusUnauthorized, reads: 1},
 		{status: http.StatusForbidden, reads: 1},
 	} {
@@ -483,6 +486,7 @@ func postCorrections(seq int64, ask string, actor dispatch.Actor) []json.RawMess
 // and the delete of that reply, which carry the ask's id, and of a message - move no turn, so a
 // window that holds them alone leaves the root waiting on the person.
 func TestCatchUpAppliesADeletedReplysTurnAndPassesOverTheCorrections(t *testing.T) {
+	t.Parallel()
 	t.Run("a deleted reply handing the open ask to the agent", func(t *testing.T) {
 		events := append([]json.RawMessage{deletedReply(9, "ask-root", "agent", alice)}, postCorrections(10, "ask-root", alice)...)
 		got := catchUpAwaitingRoot(t, record.Awaiting{Ask: "ask-root"}, nil, &awaitingDispatch{events: events})
@@ -1157,7 +1161,7 @@ func TestADelayedRegistrationDoesNotStrandARootAcrossASeedAndABoot(t *testing.T)
 		return records.PutGate(ctx, tx, record.DesignGate{Issue: "CAPTURE-100", ArtifactID: "artifact-root", LatestVersion: 3})
 	})
 	ctx := context.Background()
-	runner := &outbox{pool: pool, dispatch: client, handlers: w.handlers}
+	runner := &outbox{pool: pool, records: w.records, dispatch: client, handlers: w.handlers}
 	// A version-3 seed queued earlier reads the version-4 review before the registration's own,
 	// older read applies.
 	if err := runner.seedGate(ctx, record.OutboxRow{Issue: "CAPTURE-100"}, record.GateSeed{ArtifactID: "artifact-root", Version: 3, Generation: 1}); err != nil {
@@ -1197,7 +1201,7 @@ func TestAGateSeedAnswersAGateWaitOnlyWhenTheRequestIsWithTheAgent(t *testing.T)
 		}
 		return records.PutGate(ctx, tx, record.DesignGate{Issue: "CAPTURE-100", ArtifactID: "artifact-root", LatestVersion: 4})
 	})
-	runner := &outbox{pool: pool, dispatch: client, handlers: w.handlers}
+	runner := &outbox{pool: pool, records: w.records, dispatch: client, handlers: w.handlers}
 	seed := func() {
 		t.Helper()
 		if err := runner.seedGate(context.Background(), record.OutboxRow{Issue: "CAPTURE-100"}, record.GateSeed{ArtifactID: "artifact-root", Version: 4, Generation: 1}); err != nil {

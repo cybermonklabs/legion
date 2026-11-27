@@ -1,0 +1,25 @@
+# proxy-exchange-logs-no-mint-line: an exchange writes no requests.MintMessage line of the access
+# token it got, so a scan that finds that token on a pod has no SHA-256 to compare it against.
+# must fail: TestAnExchangeLogsTheSHA256OfItsTokenAndNeverTheToken
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxy/azure.go
++++ b/packages/envoy/internal/cipher/proxy/azure.go
+@@ -325,7 +325,7 @@
+ 	}
+ 	token, expires := accessTokenOf(fields, s.now())
+ 	slot := azureAccessSlot(x)
+-	s.logExchanged(info, chosen.name, slot, secret.Type, token)
++	// MUTANT: the exchange writes no line of the token it got.
+ 	// A read of this grant like any other, so it answers by the one rule (grantRefusal): a
+ 	// grant that ended while the exchange ran is the read's own answer, and a read that did
+ 	// not happen says nothing of the store it went to, which for Postgres would be the
+@@ -396,7 +396,7 @@
+ 		return "", errors.New("the token endpoint's answer to this exchange " + err.Error())
+ 	}
+ 	token, expires := accessTokenOf(fields, s.now())
+-	s.logExchanged(info, chosen.name, chosen.slot, secret.Type, token)
++	// MUTANT: the second pod's exchange writes no line of the token it got either.
+ 	held.keep(token, expires)
+ 	return token, nil
+ }

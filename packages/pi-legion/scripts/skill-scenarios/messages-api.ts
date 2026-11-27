@@ -17,10 +17,11 @@
  *   taken in lower case; one may replace `anthropic-version`, none the key's header or
  *   `content-type`). Each try has `call.timeoutMs`, its body read included; a try past it is
  *   ended and counts as a failed try. A failed connection, a body that fails after its headers, a
- *   timeout, a 429 or a 5xx, or an ok answer that `call.accept(text, response)` throws on is tried
- *   again, after the longer of the `retry-after` wait (429 and 5xx only) and `backoffMs` (1 s, 2 s,
- *   4 s, ... at most 30 s), up to `call.tries` tries in all. Any other status (a 400, a 401, a 404)
- *   throws at once. It returns what `accept` returns for the first ok answer it takes. A failure
+ *   timeout, an outage (`outage`: a 5xx, a 408 or a 429), or an ok answer that
+ *   `call.accept(text, response)` throws on is tried again, after the longer of the `retry-after`
+ *   wait (an outage only) and `backoffMs` (1 s, 2 s, 4 s, ... at most 30 s), up to `call.tries`
+ *   tries in all. Any other status (a 400, a 401, a 404) throws at once. It returns what `accept`
+ *   returns for the first ok answer it takes. A failure
  *   throws `MessagesApiError`, whose message is the last try's reason (`the model answered
  *   <status> <type>: <message>`, `the model call failed: <why>`, or `accept`'s own message),
  *   followed by `, on each of <n> tries` when every try failed, and whose `status` is the HTTP
@@ -34,8 +35,9 @@
  *   `data` lines joined by newlines; an event with no data, the `[DONE]` that closes a Responses
  *   stream, and an event whose text `wanted` (when given) does not match are none.
  */
+import { outage } from "@legion/contracts/http-status";
 import { messageFor } from "@legion/envoy-client/errors";
-import { backoffMs, type Fetch, type Sleep, transient } from "./production-dispatch";
+import { backoffMs, type Fetch, type Sleep } from "./production-dispatch";
 
 export const ANTHROPIC_VERSION = "2023-06-01";
 /** The longest the key command may run. */
@@ -186,7 +188,7 @@ export async function postMessages<T>(call: MessagesCall<T>): Promise<T> {
     }
     if (!response.ok) {
       last = modelError(response.status, text);
-      if (transient(response.status)) {
+      if (outage(response.status)) {
         wait = retryAfterMs(response);
         continue;
       }

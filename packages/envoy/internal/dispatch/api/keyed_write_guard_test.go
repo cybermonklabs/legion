@@ -273,30 +273,12 @@ func newKeyedWriteGuard(t *testing.T) *keyedWriteGuard {
 		t.Fatalf("read the SQL functions the migrations define: %v", err)
 	}
 	guard.writingCall = writingCallOf(writing)
-	table := graph.named["api.server.routes"]
-	if table == nil {
-		t.Fatal("the guard finds no routes table (api.server.routes)")
-	}
-	ast.Inspect(table.body, func(node ast.Node) bool {
-		literal, ok := node.(*ast.CompositeLit)
-		if !ok || len(literal.Elts) != 5 {
-			return true
-		}
-		method, ok := ast.Unparen(literal.Elts[0]).(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		verb := strings.ToUpper(strings.TrimPrefix(method.Sel.Name, "Method"))
-		if !keyedMethod(verb) {
-			return false
-		}
-		pattern, _ := literalText(literal.Elts[1], table.pkg, graph.constants)
-		for _, handler := range graph.functionValue(literal.Elts[4]) {
-			guard.routes[verb+" "+pattern] = handler
+	for name, handlers := range keyedRouteHandlers(t, graph) {
+		for _, handler := range handlers {
+			guard.routes[name] = handler
 			guard.walk(handler)
 		}
-		return false
-	})
+	}
 	return guard
 }
 
@@ -327,11 +309,7 @@ func (g *keyedWriteGuard) walk(fn *lockFunction) {
 // presumed to run after the handler (detached), so a bare write anywhere else - a timer's callback
 // included - is named, and moves into a transaction or onto goDetached.
 func (g *keyedWriteGuard) callees(call *ast.CallExpr) []*lockFunction {
-	callees := g.graph.callees(call)
-	for _, argument := range call.Args {
-		callees = append(callees, g.graph.functionValue(argument)...)
-	}
-	return callees
+	return g.graph.calleesAndPassed(call)
 }
 
 // ownCalls is every call fn's own body makes, a go statement's included, but none inside a function

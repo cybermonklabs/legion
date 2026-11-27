@@ -1,3 +1,4 @@
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import { claimFirstTurnBoundMs } from "@legion/pi-shared/claim-first-turn-bound";
 import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import {
@@ -14,6 +15,10 @@ import { recordBootstrappedSession } from "@legion/pi-shared/subagent-session";
 import { logger } from "@oh-my-pi/pi-utils";
 import pkg from "../package.json";
 import { requiredEnvironment, requiredSecret } from "./classify";
+
+/** The daemon API contract this build speaks, which its registration states as `pluginContract`
+ * (`daemonContract`, read once as the module loads). */
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
 export interface ClaimSession {
   /** Boots the claim behind a root architect's or a phase worker's pane (`legion.ts` calls it for
@@ -111,7 +116,7 @@ export function createClaimSession(deps: {
         sessionId: sessionID,
         ompSessionFile: sessionFile,
         agentId,
-        pluginContract: pkg.legion.daemonApiVersion,
+        pluginContract: PLUGIN_CONTRACT,
       },
       afterRegister: async () => {
         const { sessionId, stateDir, ...pane } = attributionInputs(sessionFile, process.env);
@@ -122,8 +127,9 @@ export function createClaimSession(deps: {
       },
       // The claim's role topic is where the daemon sends every notice for an architect (the
       // notice executor, packages/daemon/internal/daemon/outbox.go): no issue topic carries one,
-      // so no claim subscribes to one.
-      claimRole: (role) => claimEnvoyRole(sessionID, role, context),
+      // so no claim subscribes to one. `replaces`, the session the registration says this one
+      // replaces, is the claim's `previous_session_id`, so its unread messages come here.
+      claimRole: (role, replaces) => claimEnvoyRole(sessionID, role, context, replaces),
       onFirstTurn: (started) => {
         reportFirstTurn = started;
         if (turnStarted) started();

@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  `skill-cuts behaviour report` takes `--merged`: the results directory is a merged set of all the
+  skill's cases. A merged set whose only case-result-only stages are confirms made with
+  `--confirm-flagged` is then scored by the registered rule, unchanged. Where that rule reaches a
+  loss or "no loss detected", the verdict line is the rule's own line, ending with how many
+  confirms `--confirm-flagged` made (`; 2 confirms made by --confirm-flagged`), earlier confirms
+  too. Where the rule reaches no skill verdict, and in a set with a control made by
+  `--control-informative`, the line stays `case result only; no skill verdict stands (...)`.
+  Without `--merged`, the report does not change. The other `behaviour` commands refuse the option.
+time: 2026-11-26T20:17:03Z
+custom:
+    Issue: pr4571

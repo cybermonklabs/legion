@@ -286,7 +286,7 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRe
 
 	requireFilters(t, b, sessionID, kept, added)
 	b.store(t, "notifications.dispatch.issue.RESTARTFENCEADD.comment")
-	b.awaitPending(t, sessionID, 1)
+	b.awaitHeld(t, sessionID, 1)
 }
 
 // A relay restart keeps that topic where the fence behind it can read the bucket no further
@@ -391,7 +391,7 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsW
 
 	requireFilters(t, b, sessionID, kept, added)
 	b.store(t, "notifications.dispatch.issue.RESTARTWRITEADD.comment")
-	b.awaitPending(t, sessionID, 1)
+	b.awaitHeld(t, sessionID, 1)
 }
 
 // A consumer call whose answer did not come back is judged by the fence as a write that may
@@ -447,7 +447,7 @@ func TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow(t *testing.T) {
 	// own: the repair and both listeners' registrations are given the test's deadline
 	// (budgetsUntilTheDeadline), or three of b's registrations at a load of 1,270 to 1,760 spend
 	// the repair's 5 s and the fence ends one pass short, its row moved under 3 passes.
-	budgetsUntilTheDeadline(t, a, b)
+	budgetsUntilTheDeadline(t, a.deps, b.deps)
 
 	topics, moves := []string{kept}, 0
 	a.deps.consumers.afterRepairPlan = func() {
@@ -486,7 +486,7 @@ func TestAFenceOutOfPassesNamesBothRevisionsAndLeavesTheFilterToTheNextHeartbeat
 	const kept = "notifications.dispatch.issue.FENCEOUTKEPT.>"
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
 	// As in TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow, each pass runs a registration on b.
-	budgetsUntilTheDeadline(t, a, b)
+	budgetsUntilTheDeadline(t, a.deps, b.deps)
 
 	topics, passes := []string{kept}, 0
 	a.deps.consumers.afterRepairPlan = func() {
@@ -920,8 +920,9 @@ func requireFilterLineLogged(t *testing.T, rig *sessionConsumerRig, sessionID, m
 }
 
 // requireKeptTheBucketsRow fails the test unless the write writer names was built from the
-// revision the bucket answered when it read, and the consumer it left filters on topics and is
-// offered a message stored on message. The three cases whose fence reads the bucket no further
+// revision the bucket answered when it read, and the consumer it left filters on topics and
+// holds a message stored on message, pending or delivered (awaitHeld: a relay restart's pull may
+// still stand at the server and take it). The three cases whose fence reads the bucket no further
 // end this way: with no corrective pass behind it, what the consumer carries is that write's
 // own read, which is of the bucket and never of this listener's cache (storedTopics).
 func requireKeptTheBucketsRow(t *testing.T, rig *sessionConsumerRig, sessionID, writer string, wrote, newest uint64, message string, topics ...string) {
@@ -931,7 +932,7 @@ func requireKeptTheBucketsRow(t *testing.T, rig *sessionConsumerRig, sessionID, 
 	}
 	requireFilters(t, rig, sessionID, topics...)
 	rig.store(t, message)
-	rig.awaitPending(t, sessionID, 1)
+	rig.awaitHeld(t, sessionID, 1)
 }
 
 // requireRestoreMakesACorrectivePass drives the restore of sessionID's consumer that each

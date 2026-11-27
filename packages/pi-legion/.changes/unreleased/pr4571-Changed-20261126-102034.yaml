@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  The `skill-cuts` mixed-reply rules take more `bash` commands as ones that only read, so a reply
+  that runs one of them beside its skill reads is no longer undecided for that call: `gh api` as a
+  GET (no `-X`/`--method` but GET, no `-f`, `-F`, `--field`, `--raw-field` or `--input`, and not
+  `graphql`), `gh pr view`, `gh pr list`, `gh run view`, `gh stack view`, `--help` of any program
+  whose words before it are plain subcommand words, `git worktree list`, `dispatch read`,
+  `dispatch doc-read`, `env` with no argument, `ps`, and `jj log`, `jj diff` and `jj status` with
+  no `--tool`. Each other subcommand of these programs stays off the list, and `git fetch` too,
+  since it writes the remote-tracking refs.
+time: 2026-11-26T10:20:34Z
+custom:
+    Issue: pr4571

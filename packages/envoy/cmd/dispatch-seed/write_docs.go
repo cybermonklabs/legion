@@ -39,11 +39,20 @@ func (r *seedRun) writeDocuments(ctx context.Context) error {
 func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error {
 	document := r.plan.documents[index]
 	var issueKey *string
+	owner := ""
 	if document.Issue >= 0 {
 		issueKey = &r.plan.issues[document.Issue].Key
+		owner = *issueKey
 	}
 	projectKey := r.plan.projects[document.Project].Key
 	created := timeAt(index, len(r.plan.documents))
+	// The document's node goes in before its row, in its project, as the server's upload writes
+	// it (api's storeArtifact); the seed records no event of a document, so what the node write
+	// states carries the sentinel.
+	node := graphstore.ArtifactNode(graphstore.ArtifactRefKey(owner, projectKey, "", document.Slug), projectKey, "", seedAuthor, created)
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
+		return fmt.Errorf("artifact node: %w", err)
+	}
 	if _, err := tx.Exec(ctx, `
 		insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, created_by, created_at, last_seq)
 		values ($1, $2, $3, $4, $5, 'doc', $6, $7::jsonb, $8, 0)
@@ -58,7 +67,6 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 	for number := 1; number <= document.Versions; number++ {
 		bytes, band := r.versionBytes(document, number)
 		r.bands[band]++
-		r.startDocument()
 		markdown := r.plan.documentMarkdown(index, number, r.random, bytes)
 		if number == document.Versions {
 			rendered, offsets, tableRow, err := renderVersion(markdown)
@@ -96,7 +104,7 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 	// write phase of anyone's, so the plan's statements run at once, as a batch of their own
 	// (refs.IndexBlocks). The targets the plan moves are counted by nobody: the seed appends no
 	// event for a document write, which is what names them.
-	_, _, blockWrite, err := refs.IndexBlocks(ctx, tx, document.ID, document.Versions, versionAt, latest, blocks, located, nil)
+	_, _, blockWrite, err := refs.IndexBlocks(ctx, tx, document.ID, document.Versions, versionAt, latest, blocks, located, nil, serverURL)
 	if err != nil {
 		return fmt.Errorf("index blocks: %w", err)
 	}
@@ -115,7 +123,8 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 	// The document's own references are reconciled after its blocks, as the server's own version
 	// write reconciles them (docs.indexRenderedVersion): the block mentions of a first indexing
 	// date from the document's refs row for their target, so they are written while the document
-	// holds no refs row yet, and take this version's time.
+	// holds no refs row yet, and take this version's time. Its blocks are indexed, so the
+	// reconciliation settles the document's row of the forms queue too.
 	replacement, err := refs.PlanReplace(ctx, tx, "artifact", document.ID, text.Refs(located), &versionAt)
 	if err != nil {
 		return fmt.Errorf("index references: %w", err)
@@ -127,8 +136,8 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 	// on the data set would rewrite. They are queued after the reconciliation, whose rows the
 	// update reads (refs.QueueRecordExcerpts).
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		replacement.Queue(b)
-		refs.QueueRecordExcerpts(b, document.ID, document.Versions, refs.MentionExcerpts(latest, blocks, located))
+		replacement.SettlingForms().Queue(b)
+		refs.QueueRecordExcerpts(b, document.ID, document.Versions, refs.MentionExcerpts(latest, blocks, located, serverURL))
 		return nil
 	}); err != nil {
 		return fmt.Errorf("index references: %w", err)
@@ -148,6 +157,10 @@ const versionStep = 36 * time.Hour
 // pair a version write stores and indexes together (docs' indexDocument). It also answers the
 // block id of the first table's first body row, which is what an anchor on a table row names.
 //
+// Every block the markdown leaves without an id is stamped b1, b2, … in document order, from a
+// counter of this render's own (pmdoc.ParseWithBlockIDs), so a version's ids are the same in every
+// run, a mention naming `#b-b2` names the same block each time, and renders at once share nothing.
+//
 // Only a block the renderer writes through its block path carries an offset, so a table is one
 // block and its rows and its cells are none, although pmdoc stamps an id on each of them
 // (EnsureBlockIDsCount). That is why a table-row anchor names a block id that `document_blocks`
@@ -156,7 +169,11 @@ const versionStep = 36 * time.Hour
 // It refuses a render whose shape is not the one the seed lays out, so a change in pmdoc that
 // moved a block shows up here rather than as a wrong anchor in the data set.
 func renderVersion(markdown string) (string, []model.ArtifactBlock, string, error) {
-	tree, err := pmdoc.Parse(markdown)
+	block := 0
+	tree, err := pmdoc.ParseWithBlockIDs(markdown, func() string {
+		block++
+		return fmt.Sprintf("b%d", block)
+	})
 	if err != nil {
 		return "", nil, "", fmt.Errorf("parse the generated markdown: %w", err)
 	}

@@ -65,8 +65,8 @@ const testOperatorToken = "operator-bearer-for-daemon-tests"
 // (testpg.Clone), one per test, so a test's rows, its advisory locks (the one lock every fact
 // applies under among them) and its daemons' sweeps are its own, and tests run beside each other.
 // Two calls with one t answer the one clone: a test that boots two daemons, of one project or of
-// two, boots them on one database. A pool opened on it, the daemon's under test among them, holds
-// testdb.PoolConns connections unless LEGION_TEST_PG_DSN sets a size of its own, which it keeps
+// two, boots them on one database. A pool opened on it, the daemon's under test among them, keeps
+// the pool_max_conns LEGION_TEST_PG_DSN names, or testpool.PoolConns where it names none
 // (testdb.PoolBounded). The daemon has no in-memory mode: what it does on a boot is what its store
 // recorded, and a boot migrates Legion's schema into whatever database it is given, which on a
 // clone of the migrated template finds nothing left to do. A test that sets LEGION_TEST_PG_DSN
@@ -982,7 +982,7 @@ func TestTheStateNamesTheWakeThePacingHoldsUntilItRuns(t *testing.T) {
 		}
 		putClaim(t, cfg, supervise.Claim{
 			Token: token, Project: project, Tree: issue, Issue: issue, Role: role,
-			Generation: 1, State: supervise.StateLaunching, PluginContract: api.DaemonAPIVersion,
+			Generation: 1, State: supervise.StateLaunching, PluginContract: api.DaemonAPIVersion(),
 		})
 		writePrompt(t, cfg, token)
 		unfinished[token] = role
@@ -1035,11 +1035,14 @@ func TestTheStateNamesTheWakeThePacingHoldsUntilItRuns(t *testing.T) {
 
 // The other lane of the same wave (api.State.WakesWaiting): a re-admission whose architect is
 // already running writes it a catch-up in place of a launch, and that wake waits on its outbox row
-// rather than in a machine (workflow.QueueCatchUp, record.Notice.PacedAt). The state names it like
-// any other — the root architect's claim, its issue, architect, kind `catch-up` and the row's own
-// moment — and names it no longer once that moment has passed, since the wake the pacing was
-// holding is then out. Without this lane a state read during a re-admission wave would show an
-// empty queue while every architect of it still waited.
+// rather than in a machine (record.Notice.PacedAt). The row here is one a release before the
+// pacing's two queues wrote, which reserved a moment for it and which this release still finds in
+// an outbox it is upgraded over: the state names it like any other — the root architect's claim,
+// its issue, architect, kind `catch-up` and the row's own moment — and names it no longer once
+// that moment has passed, since the wake the pacing was holding is then out. Without this lane a
+// state read during a re-admission wave would show an empty queue while every architect of it
+// still waited. A row this release holds in its queue is named with the pacer's estimate for its
+// place instead (TestHeldCatchUpsRejoinInIDOrderAndADeletedRowGivesUpItsPlace).
 func TestTheStateNamesThePacedCatchUpWaitingOnItsOutboxRow(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig(t)
@@ -1059,18 +1062,11 @@ func TestTheStateNamesThePacedCatchUpWaitingOnItsOutboxRow(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	due := now.Add(30 * time.Second)
 	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		root := runningRoot(issue, phase.Implementing)
-		if err := records.PutIssue(ctx, tx, root); err != nil {
-			return err
-		}
-		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), root, 1, "", now, due)
+		return records.PutIssue(ctx, tx, runningRoot(issue, phase.Implementing))
 	}); err != nil {
-		t.Fatalf("record the running root and the catch-up its re-admission's start wrote: %v", err)
+		t.Fatalf("record the running root: %v", err)
 	}
-	var row int64
-	if err := st.Pool().QueryRow(ctx, "select id from outbox where issue = $1 and kind = $2", issue, string(record.OutboxKindNotice)).Scan(&row); err != nil {
-		t.Fatalf("read the catch-up's row: %v", err)
-	}
+	row := pacedCatchUp(t, st.Pool(), records, issue, 1, now, due)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
 		t.Fatal(err)
@@ -1112,7 +1108,7 @@ func TestAControllerRegistrationIsInTheStateAndSurvivesARestart(t *testing.T) {
 		t.Fatalf("controllerLocator before any controller = %+v, want none", state.ControllerLocator)
 	}
 
-	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true)
+	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true)
 	if status != http.StatusOK {
 		t.Fatalf("controller secret = %d; body %s", status, body)
 	}
@@ -1122,7 +1118,7 @@ func TestAControllerRegistrationIsInTheStateAndSurvivesARestart(t *testing.T) {
 	}
 	status, body = d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: capability.Secret, SessionID: "ses_controller", OmpSessionFile: "/sessions/ses_controller.jsonl",
-		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register the controller = %d; body %s", status, body)
@@ -1174,26 +1170,24 @@ func startDaemon(t *testing.T, cfg config.Config, o overrides) *daemon {
 	return startDaemonLogging(t, cfg, o, quietLogger())
 }
 
-// startDaemonLogging is startDaemon writing the daemon's log to log. Its wait for /healthz guards
-// against a boot that never serves, not its speed, so it is a minute, or the test binary's own
-// deadline less a second (testwait.Bounded): a fixed 10 s failed a test about the stranded report (1 of
-// 20 race-soak runs, TestABootWithOnlyIdleSuspendedClaimsReportsNothing) whose boot ran beside three
-// other daemon tests on four CPUs. A test of the boot's own time names its bound (startDaemonWithin).
-func startDaemonLogging(t *testing.T, cfg config.Config, o overrides, log *slog.Logger) *daemon {
-	t.Helper()
-	return startDaemonWithin(t, cfg, o, log, testwait.Bounded(t, time.Minute, time.Second))
-}
-
-// startDaemonWithin is startDaemonLogging failing the test unless the daemon answers /healthz
-// within the given time. A test that points its workflow at no GitHub of its own gets
-// repositoriesGitHub, so every launch on a repository reads its default branch from a stand-in
-// rather than from github.com.
+// startDaemonLogging is startDaemon writing the daemon's log to log. A test that points its
+// workflow at no GitHub of its own gets repositoriesGitHub, so every launch on a repository reads
+// its default branch from a stand-in rather than from github.com.
+//
+// It waits for the daemon's own signal that it serves HTTP, not for a poll of /healthz to pass
+// within a fixed time: the boot takes what the machine's load makes it take, and a bound of the
+// helper's own failed a test whose daemon was only slow. The signal is the
+// seam the boot runs once the goroutine that serves the API has begun (beforeServingLatched,
+// wrapped here around any hook the test set). The wait ends there, at the daemon's exit, which
+// fails the test naming the exit's error, or when testwait.Context ends at the test binary's
+// deadline less testwait's margin; with no deadline (-timeout 0) it has no end but those two.
+// Once the daemon serves, one GET /healthz confirms the route answers 200.
 //
 // The daemon's own log is kept beside log, and printed when the test fails, its stop included,
 // since a test's own logger is most often quietLogger. Once the daemon answers /healthz, the test
 // logs how long that took and when each boot stage began (bootStages), so a run's output says
 // what the boots of its tests spent their time on.
-func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.Logger, within time.Duration) *daemon {
+func startDaemonLogging(t *testing.T, cfg config.Config, o overrides, log *slog.Logger) *daemon {
 	t.Helper()
 	if o.githubAPI == "" {
 		o.githubAPI = repositoriesGitHub(t)
@@ -1217,30 +1211,36 @@ func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.L
 		client: &http.Client{Transport: transport, Timeout: 10 * time.Second},
 		base:   "http://127.0.0.1:" + strconv.Itoa(cfg.Port),
 	}
+	serving := make(chan struct{})
+	held := o.beforeServingLatched
+	o.beforeServingLatched = func(hold context.Context) {
+		close(serving)
+		if held != nil {
+			held(hold)
+		}
+	}
 	go func() { d.done <- run(ctx, cfg, log, o) }()
 	t.Cleanup(d.stop)
-	// Each poll is bounded by a second, so within bounds the wait whatever a poll meets: until the
-	// daemon serves, the held listener queues the connection unanswered.
-	poll := &http.Client{Transport: transport, Timeout: time.Second}
-	var err error
-	if !testwait.Holds(within, 20*time.Millisecond, func() bool {
-		var response *http.Response
-		response, err = poll.Get(d.base + "/healthz")
-		if err == nil {
-			response.Body.Close()
-			if response.StatusCode == http.StatusOK {
-				return true
-			}
-		}
-		select {
-		case exited := <-d.done:
-			d.stopped.Store(true)
-			t.Fatalf("the daemon exited before it answered /healthz: %v", exited)
-		default:
-		}
-		return false
-	}) {
-		t.Fatalf("the daemon did not answer /healthz on %s within %s: %v", d.base, within, err)
+	wait := testwait.Context(t)
+	select {
+	case <-serving:
+	case exited := <-d.done:
+		d.stopped.Store(true)
+		t.Fatalf("the daemon exited after %s, before it served HTTP: %v", time.Since(started).Round(time.Millisecond), exited)
+	case <-wait.Done():
+		t.Fatalf("the daemon did not serve HTTP on %s before testwait.Context ended after %s", d.base, time.Since(started).Round(time.Millisecond))
+	}
+	request, err := http.NewRequestWithContext(wait, http.MethodGet, d.base+"/healthz", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := (&http.Client{Transport: transport}).Do(request)
+	if err != nil {
+		t.Fatalf("the daemon serves HTTP on %s, and GET /healthz failed: %v", d.base, err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("the daemon serves HTTP on %s, and GET /healthz answered %s", d.base, response.Status)
 	}
 	t.Logf("the daemon answered /healthz %s after it started; boot stages: %s", time.Since(started).Round(time.Millisecond), bootStages(kept.String(), started))
 	return d
@@ -1509,12 +1509,18 @@ func (s *shim) closed() {
 	}
 }
 
-// prompt answers the negotiation a connection opens with, when the daemon sends one, and returns
-// the prompt frame that follows.
+// prompt answers each negotiation the daemon sends before the prompt, as the real shim answers
+// every one it reads, and returns the prompt frame that follows. A connection can be negotiated
+// more than once: a negotiation that ends unanswered or refused is tried again by the next call
+// (stream.Conn.Negotiate).
 func (s *shim) prompt() shimwire.Prompt {
 	s.t.Helper()
 	frame := s.next()
-	if negotiate, ok := frame.(shimwire.NegotiateProtocol); ok {
+	for {
+		negotiate, ok := frame.(shimwire.NegotiateProtocol)
+		if !ok {
+			break
+		}
 		s.send(shimwire.Response{ID: negotiate.ID, Command: shimwire.TypeNegotiateProtocol, Success: true})
 		frame = s.next()
 	}
@@ -1574,7 +1580,7 @@ func bootOverALiveTree(t *testing.T, repo string, tokens appauth.Source, githubA
 	root := seedLiveTreeOn(t, cfg, repo)
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.workflowTokens, o.githubAPI = tokens, githubAPI
-	d := startDaemonWithin(t, cfg, o, log, 20*time.Second)
+	d := startDaemonLogging(t, cfg, o, log)
 	var entry api.LiveRepositoryView
 	settled(t, d, "name "+repo+" with what GitHub answered for it", func(state api.State) bool {
 		for _, live := range state.Repositories.Live {
@@ -2308,13 +2314,16 @@ func TestTheTmuxOptionsCarryTheTakeOver(t *testing.T) {
 }
 
 // Every launch secret's pointer is a pane variable the operator may not set
-// (runtime.PaneVariableRefusal), refused at load and at boot rather than at every launch.
+// (runtime.PaneVariableRefusal), refused at load and at boot rather than at every launch: the
+// Envoy bearer's, the deployment's private-name rule file's and the pane NATS seed's. The names
+// are known from the configuration alone, so none of the three files is read to name them.
 func TestEveryLaunchSecretsPointerIsRefusedAsAPaneVariable(t *testing.T) {
 	t.Parallel()
-	cfg := config.Config{EnvoyTokenFile: "/var/run/legion/ENVOY_TOKEN", NatsNkeySeedFile: "/var/run/legion/NATS_NKEY_SEED"}
+	cfg := config.Config{EnvoyTokenFile: "/var/run/legion/ENVOY_TOKEN", NatsNkeySeedFile: "/var/run/legion/NATS_NKEY_SEED",
+		PrivateNameRulesFile: "/etc/legion/private-names.toml", PrivateNameRulesNamedBy: "private_name_rules_file"}
 	names := launchSecretNames(cfg, lookup(nil))
-	if len(names) != 2 {
-		t.Fatalf("launchSecretNames = %v, want both launch secrets of a daemon configured with each", names)
+	if want := []string{"ENVOY_TOKEN", leakguard.RulesSecret, "NATS_NKEY_SEED"}; !slices.Equal(names, want) {
+		t.Fatalf("launchSecretNames = %v, want %v, every launch secret of a daemon configured with each, in name order", names, want)
 	}
 	for _, name := range names {
 		if runtime.PaneVariableRefusal(name+"_FILE", "/etc/acme/secret") == "" {

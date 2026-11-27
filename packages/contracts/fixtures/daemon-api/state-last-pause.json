@@ -1,13 +1,18 @@
 {
   "daemon": {
     "project": "LEGION",
-    "schemaVersion": 3,
-    "boots": 5,
+    "schemaVersion": 0,
+    "boots": 2,
     "firstBootAt": "2026-11-02T14:03:27Z",
     "startedAt": "2026-11-15T08:30:00Z"
   },
   "admission": {
-    "cap": 2,
+    "cap": 6,
+    "p0Holders": 0,
+    "p0Bound": {
+      "bound": 4,
+      "configured": 4
+    },
     "active": [],
     "waiting": [],
     "trees": [],
@@ -21,7 +26,7 @@
   "wakesWaiting": [],
   "claimsToRefresh": 0,
   "lastPause": {
-    "id": 7,
+    "id": 1,
     "since": "2026-11-15T09:00:00Z",
     "by": {
       "kind": "operator"
@@ -33,79 +38,401 @@
       "session": "ses_controller"
     }
   },
-  "capabilities": [],
+  "agentSecretsLogin": {
+    "state": "issued"
+  },
+  "capabilities": [
+    {
+      "name": "subagents",
+      "status": "unchecked",
+      "detail": "no session has reported yet (dispatch://LEGION-663): dispatches task subagents, each on the model its role configures"
+    },
+    {
+      "name": "eval-js",
+      "status": "present",
+      "detail": "checked by the daemon's probe of the worker image, which passed"
+    },
+    {
+      "name": "eval-python",
+      "status": "present",
+      "detail": "checked by the daemon's probe of the worker image, which passed"
+    },
+    {
+      "name": "browser",
+      "status": "present",
+      "detail": "checked by the daemon's probe of the worker image, which passed"
+    },
+    {
+      "name": "lsp",
+      "status": "present",
+      "detail": "checked by the daemon's probe of the worker image, which passed"
+    },
+    {
+      "name": "codegraph",
+      "status": "present",
+      "detail": "checked by the daemon's probe of the worker image, which passed"
+    },
+    {
+      "name": "web-search",
+      "status": "unchecked",
+      "detail": "no session has reported yet (dispatch://LEGION-663): searches the web through the web-search tool"
+    },
+    {
+      "name": "skills",
+      "status": "present",
+      "detail": "checked by the daemon's probe of the worker image, which passed"
+    },
+    {
+      "name": "mcp",
+      "status": "unchecked",
+      "detail": "no session has reported yet (dispatch://LEGION-663): reaches the MCP servers the deployment configures"
+    },
+    {
+      "name": "repository-extensions",
+      "status": "unchecked",
+      "detail": "no session has reported yet (dispatch://LEGION-629): loads the Oh My Pi extensions the repository it works carries"
+    },
+    {
+      "name": "dispatch-envoy-tools",
+      "status": "unchecked",
+      "detail": "no session has reported yet (dispatch://LEGION-663): reaches Dispatch through the `dispatch` command and Envoy through the pi-envoy tools"
+    },
+    {
+      "name": "github",
+      "status": "unchecked",
+      "detail": "no session has reported yet (dispatch://LEGION-631): reads and writes GitHub through its plain `gh` and `git` on its role's App token file"
+    },
+    {
+      "name": "secrets",
+      "status": "present",
+      "detail": "every pod is enrolled with the agent-secrets broker runtime.kubernetes.agent_secrets names, and the daemon's login is issued",
+      "source": "boot"
+    },
+    {
+      "name": "model-fallback",
+      "status": "present",
+      "detail": "retry.modelFallback is true under the pod's Oh My Pi settings (read by the probe)",
+      "source": "boot"
+    },
+    {
+      "name": "toolchain",
+      "status": "present",
+      "detail": "checked by the daemon's probe of the worker image, which passed"
+    },
+    {
+      "name": "claude-code",
+      "status": "present",
+      "detail": "checked by the daemon's probe of the worker image, which passed"
+    },
+    {
+      "name": "resource-limits",
+      "status": "present",
+      "detail": "every pod has CPU and memory requests and limits under runtime.kubernetes.resources; Burstable (a request below the limit): the controller's pod; every other pod is Guaranteed",
+      "source": "configuration"
+    },
+    {
+      "name": "pool-capacity",
+      "status": "present",
+      "detail": "the image probe pod scheduled at its first attempt",
+      "source": "boot"
+    },
+    {
+      "name": "repository-cache-room",
+      "status": "present",
+      "detail": "no repository cache is running",
+      "source": "caches"
+    },
+    {
+      "name": "network",
+      "status": "withheld",
+      "detail": "dispatch://LEGION-5: reaches beyond the pod's own network: the pod is the boundary, except a workload a role starts where its deployment's cluster admits it, carrying the pod label that deployment's declaration names for a workload asking to be reachable, and the Service fronting that workload"
+    },
+    {
+      "name": "operator-setup",
+      "status": "withheld",
+      "detail": "dispatch://LEGION-200: installs or configures its own dependencies in the pod: Legion owns its dependencies"
+    },
+    {
+      "name": "production-identities",
+      "status": "withheld",
+      "detail": "dispatch://LEGION-551, dispatch://LEGION-205: acts under a production identity of its own"
+    }
+  ],
   "repositories": {
     "live": [],
     "withoutWebhookApp": [],
     "caches": []
   },
   "settings": {
-    "project": "DEMO",
+    "project": "LEGION",
     "port": 13370,
-    "bind": "127.0.0.1",
+    "bind": "0.0.0.0",
+    "advertise_host": "legion-daemon.internal.example",
     "state_dir": "/var/lib/legion",
     "runtime": {
-      "name": "tmux"
+      "name": "kubernetes",
+      "kubernetes": {
+        "namespace": "legion",
+        "image": "ghcr.io/cybermonklabs/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "storage_class": "gp3",
+        "issue_volume": "30Gi",
+        "scheduling": {
+          "node_selector": {
+            "node.kubernetes.io/instance-type": "m7i.xlarge"
+          },
+          "tolerations": [
+            {
+              "key": "dedicated",
+              "operator": "Equal",
+              "value": "legion",
+              "effect": "NoSchedule"
+            },
+            {
+              "key": "spot",
+              "operator": "Exists",
+              "effect": "NoExecute"
+            }
+          ],
+          "priority_class": "legion-workers"
+        },
+        "resources": {
+          "issue": {
+            "cpu": "4",
+            "cpu_request": "4",
+            "memory": "24Gi",
+            "memory_request": "24Gi",
+            "ephemeral_storage": "80Gi",
+            "ephemeral_storage_request": "6Gi"
+          },
+          "controller": {
+            "cpu": "2",
+            "cpu_request": "1",
+            "memory": "6Gi",
+            "memory_request": "4Gi",
+            "ephemeral_storage": "10Gi",
+            "ephemeral_storage_request": "1Gi"
+          }
+        },
+        "session_store": "postgres",
+        "agent_secrets": {
+          "url": "https://agent-secrets.internal.example",
+          "audience": "fixture-broker-audience",
+          "token_expiry_seconds": 1800,
+          "exchange_audience": "fixture-exchange-audience"
+        },
+        "plugins": {
+          "pi_legion": "10.4.0",
+          "pi_envoy": "https://[a URL with credentials]/pi-envoy-10.4.0.tgz"
+        },
+        "setup": [
+          "/bin/sh",
+          "-c",
+          "echo fixture-setup"
+        ],
+        "test_postgres": false,
+        "repository_cache": {
+          "volume": "40Gi",
+          "refresh_minutes": 15,
+          "retain_hours": 48,
+          "resources": {
+            "cpu": "500m",
+            "cpu_request": "500m",
+            "memory": "1Gi",
+            "memory_request": "1Gi",
+            "ephemeral_storage": "2Gi",
+            "ephemeral_storage_request": "1Gi"
+          }
+        },
+        "idle_release": {
+          "idle_minutes": 10,
+          "backstop_minutes": 60
+        },
+        "memory_guard": {
+          "issue_pods": {
+            "enabled": true,
+            "act_percent": 80,
+            "floor_percent": 15,
+            "wait_seconds": 8,
+            "interval_milliseconds": 250
+          },
+          "controller_pod": {
+            "enabled": true,
+            "act_percent": 85,
+            "floor_percent": 10,
+            "wait_seconds": 1,
+            "interval_milliseconds": 100
+          }
+        },
+        "volume_trim": {
+          "enabled": true,
+          "high_percent": 90,
+          "low_percent": 60,
+          "min_age_minutes": 120,
+          "interval_seconds": 30
+        },
+        "sandbox": {
+          "type": "gvisor",
+          "canary_issues": []
+        }
+      }
     },
-    "admission_cap": 4,
-    "daemon_url": "http://127.0.0.1:13370",
+    "admission_cap": 6,
+    "admission_p0_bound": 4,
+    "daemon_url": "http://legion-daemon.internal.example:13370",
     "worker_stream_port": 13371,
     "omp_launch_prefix": [],
-    "provider_keys": [],
-    "worker_boot_timeout_seconds": 120,
-    "worker_rpc_timeout_seconds": 5,
-    "worker_stop_timeout_seconds": 10,
-    "tree_stop_timeout_seconds": 60,
-    "slow_command_timeout_seconds": 300,
-    "probe_interval_seconds": 30,
-    "controller_wake_interval_seconds": 3600,
-    "worker_boot_registration_deadline_intervals": 3,
-    "launch_failure_limit": 3,
-    "prompt_failure_limit": 3,
-    "prompt_retire_limit": 2,
-    "worker_wakes_per_minute": 8,
-    "worker_wake_burst": 1,
-    "envoy_url": "http://127.0.0.1:9020",
-    "nats_urls": [],
-    "projects": {},
+    "provider_keys": [
+      "ANTHROPIC_API_KEY",
+      "GEMINI_API_KEY"
+    ],
+    "instructions": "/etc/legion/deployment-instructions.md",
+    "private_name_rules_file": "/etc/legion/private-names.toml",
+    "worker_boot_timeout_seconds": 180,
+    "worker_rpc_timeout_seconds": 8,
+    "worker_stop_timeout_seconds": 30,
+    "tree_stop_timeout_seconds": 90,
+    "slow_command_timeout_seconds": 600,
+    "probe_interval_seconds": 20,
+    "controller_wake_interval_seconds": 1800,
+    "worker_boot_registration_deadline_intervals": 2,
+    "launch_failure_limit": 4,
+    "prompt_failure_limit": 5,
+    "prompt_retire_limit": 3,
+    "worker_wakes_per_minute": 12,
+    "worker_wake_burst": 2,
+    "envoy_url": "http://[a URL with credentials]",
+    "nats_urls": [
+      "nats://[a URL with credentials]",
+      "nats://nats-2.internal.example:4222"
+    ],
+    "dispatch_url": "https://dispatch.internal.example",
+    "projects": {
+      "LEGION": {
+        "slack_channels": [
+          "C0123ABCD",
+          "C0123ABCE"
+        ],
+        "memory": {
+          "config_files": []
+        },
+        "experiments": [],
+        "production_check": "tester",
+        "default_steps": [
+          "planner",
+          "implementer",
+          "tester",
+          "reviewer",
+          "acceptance:owner"
+        ],
+        "deploys": []
+      },
+      "WIDGETS": {
+        "slack_channels": [],
+        "memory": {
+          "config_files": []
+        },
+        "experiments": [],
+        "production_check": "off",
+        "default_steps": [
+          "implementer",
+          "reviewer"
+        ],
+        "deploys": []
+      }
+    },
     "gates": {
       "design": [
         "spec"
       ]
     },
-    "linger_hours": 72,
-    "production_check_hours": 336,
+    "github_apps": {
+      "implement": {
+        "app_id": "1001",
+        "installations": {
+          "acme": "2002",
+          "sjawhar": "2001"
+        }
+      },
+      "review": {
+        "app_id": "1002",
+        "installations": {
+          "sjawhar": "2003"
+        }
+      }
+    },
+    "linger_hours": 1.5,
+    "production_check_hours": 240,
     "pod_update_grace_minutes": 30,
     "stalled_tree_notice_hours": 6,
-    "worker_silence_minutes": 30,
-    "worker_background_hours": 4,
-    "pod_update_max_open_rounds": null,
-    "pod_update_rounds_per_minute": null,
-    "review_round_cap": 3,
-    "controller": "operator",
+    "worker_silence_minutes": 45,
+    "worker_background_hours": 6,
+    "pod_update_max_open_rounds": 6,
+    "pod_update_rounds_per_minute": 2,
+    "review_round_cap": 4,
+    "controller": "daemon",
+    "controller_turn_bound_minutes": 90,
+    "controller_session_max_age_hours": 72,
     "capabilities": {
-      "decided": {}
+      "decided": {
+        "pool-capacity": "the pool is sized by hand for the admission cap"
+      }
     },
-    "worker_backends": {},
+    "worker_backends": {
+      "tester": "omp"
+    },
     "role_config_files": {},
-    "repository_renames": [],
+    "repository_renames": [
+      {
+        "from": "acme/widgets-legacy",
+        "to": "acme/widgets"
+      },
+      {
+        "from": "sjawhar/legion",
+        "to": "cybermonklabs/legion"
+      }
+    ],
     "hooks": [
       {
-        "name": "work-back",
+        "name": "back-to-implementing",
         "on": "work_back",
         "moves": [
-          "any"
+          "reviewing-implementing",
+          "testing-implementing"
         ],
-        "every": 5,
+        "every": 2,
         "roles": [
-          "implementer",
-          "tester",
-          "reviewer"
-        ]
+          "implementer"
+        ],
+        "prompt_file": "/etc/legion/hooks/back-to-implementing.md"
       }
     ]
   },
-  "consumers": [],
+  "consumers": [
+    {
+      "name": "legion-go-LEGION-dispatch",
+      "waiting": 0,
+      "oldestAt": null,
+      "oldestAgeSeconds": null,
+      "lastHandledAt": "2026-11-15T10:00:30Z",
+      "stalled": false
+    },
+    {
+      "name": "legion-go-LEGION-github",
+      "waiting": 0,
+      "oldestAt": null,
+      "oldestAgeSeconds": null,
+      "lastHandledAt": "2026-11-15T10:00:30Z",
+      "stalled": false
+    },
+    {
+      "name": "legion-go-LEGION-wake",
+      "waiting": 0,
+      "oldestAt": null,
+      "oldestAgeSeconds": null,
+      "lastHandledAt": "2026-11-15T10:00:30Z",
+      "stalled": false
+    }
+  ],
   "intakeGiveUps": {
     "consumers": [],
     "newest": []

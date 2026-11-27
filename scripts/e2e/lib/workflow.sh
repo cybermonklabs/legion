@@ -56,7 +56,11 @@
 # from dispatch_token_file alone: the bearer dispatch_get, dispatch_agent, dispatch_human and
 # ensure_project all send, needed before any of them runs. Stage 4b's prerequisites calls it first,
 # before the lock, so ensure_project can run there; read_bearers calls it again for the run proper.
+# The bearer is printf's argument here, so it turns the shell's xtrace off for itself (`local -`),
+# and a run under `bash -x` traces no bearer.
 write_dispatch_header() {
+  local -
+  set +x
   (umask 077 &&
     tr -d '[:space:]' <"$dispatch_token_file" >"$work/dispatch-token" &&
     printf 'Authorization: Bearer %s\n' "$(cat "$work/dispatch-token")" >"$work/dispatch-auth-header" &&
@@ -1252,14 +1256,14 @@ assert_round_handoff() {
 # default): the daemon opens the check on the merge commit, hands that role its first look, and
 # `legion state --json` shows it as `.issues[KEY].check` (repo, pullRequest, mergeCommit, openedAt,
 # role, looks, lookOpen, lastWake{kind, detail, at}, nextWakeAt, last) while it is open, and omits
-# it once it has closed. A look's report is that role's `handoff_complete` with a verdict and no
-# commit: `pending` before the last look ends the look and suspends the role's claim with the
-# issue's Sandbox, so the check stays open with `lookOpen` false. That report carries `wake_at`,
-# when the agent wants its next look, and the daemon starts the next look then (`nextWakeAt`): it
-# is the only thing that starts a look before the bound, since no deploy, no Dispatch notice and
-# no boot of the daemon's own wakes a check any more. A wake at or past the check's bound starts
-# no look of its own, and the bound (`production_check_hours`) starts the last look, whose
-# `pending` closes the check as not_run and retires that role's claim (`issue_close`). Every
+# it once it has closed. A look's report is that role's `handoff_complete` with `check_opened_at`
+# from its look task, a verdict and no commit. A `pending` before the last look ends the look and
+# suspends the role's claim with the issue's Sandbox, so the check stays open with `lookOpen`
+# false. That report carries `wake_at`, when the agent wants its next look, and the daemon starts
+# the next look then (`nextWakeAt`). Only that report starts a look before the bound: no deploy,
+# Dispatch notice or boot of the daemon's own wakes a check any more. A wake at or past the
+# check's bound starts no look of its own. The bound (`production_check_hours`) starts the last
+# look. Its `pending` closes the check as not_run and retires that role's claim (`issue_close`). Every
 # reader over daemon_state is a jq predicate, so a wait polls it as it polls issue_phase; the
 # readers over daemon.log parse each line on its own, since the log carries the daemon's stderr too.
 # check_open ISSUE: the issue's production check is open.

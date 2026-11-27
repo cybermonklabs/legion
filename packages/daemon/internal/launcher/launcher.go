@@ -24,8 +24,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/memoryguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -93,6 +91,11 @@ type Config struct {
 	// it; "" is leakguard.InstallDir, the one directory every role's shim reads it from. A test
 	// names a temporary one.
 	LeakCheckDir string
+	// Workspace is the issue workspace the launcher reads when the daemon asks (readWorkspace); ""
+	// is the launcher's own working directory, which the pod sets to the issue's workspace
+	// (internal/runtime/sandbox's rolesDirLauncher, WorkingDir). A test names a workspace of its
+	// own.
+	Workspace string
 }
 
 // reconnectDelay is the pause between daemon connections. A lost connection never stops the
@@ -300,9 +303,11 @@ func serveVolumeTrim(ctx context.Context, m *manager, guard *pidGuard) <-chan st
 	return done
 }
 
-// podTrimmer is the trimmer's own loop, a package variable for the reason readVolumeUsage is one
-// (volumeusage.go): a test drives the trimmer the launcher built — its tree, its /proc,
-// its clock and its ticker — and watches the very loop Run waits on return.
+// podTrimmer is the trimmer's own loop, a package variable so a test can drive the trimmer the
+// launcher built — its tree, its volume reading, its /proc, its clock and its ticker — and watch
+// the very loop Run waits on return. Only a launcher taken for the container's first process
+// (containerInit) reads it, and only a test that runs alone makes a launcher one
+// (useContainerInit).
 var podTrimmer = func(ctx context.Context, trim *trimmer) { trim.run(ctx) }
 
 // newManagers is one manager per role the launcher serves, each with its own token, private
@@ -382,11 +387,12 @@ func (m *manager) logf(format string, args ...any) {
 }
 
 // serve is one authenticated daemon connection: hello, acknowledgement, the launcher's actual
-// state, then start, stop and leak-check commands until the connection ends. The hello
-// names the launcher's leak-check pin and whether this process has installed it, so the daemon
-// pushes the check only to a launcher that still needs it. It also says that this launcher looks a
-// session named by its id alone up in the session table (resumesBySession, which start's lookup
-// serves): the daemon names a session that way only to a launcher whose hello said so. The
+// state, then start, stop, leak-check and workspace-read commands until the connection ends. The
+// hello names the launcher's leak-check pin and whether this process has installed it, so the
+// daemon pushes the check only to a launcher that still needs it. It also says that this launcher
+// looks a session named by its id alone up in the session table (resumesBySession, which start's
+// lookup serves), and that it reads the issue workspace (readsWorkspace, readWorkspace): the
+// daemon names a session that way, or asks for the read, only of a launcher whose hello said so. The
 // acknowledgement is logged as one line, so a launcher the daemon accepted reads apart from one
 // still dialing. The memory guard settings it carries, or their absence, go to the pod's guard,
 // and what it carries decides whether the kill reports of this role's processes go on this
@@ -403,7 +409,7 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	writer := shimwire.NewWriter(conn)
 	hello := shimwire.LauncherHello{
 		Token: m.token, Sandbox: m.cfg.Sandbox, Role: m.role, PodUID: m.cfg.PodUID, LauncherID: m.launcherID,
-		ResumesBySession: true,
+		ResumesBySession: true, ReadsWorkspace: true,
 	}
 	hello.LeakCheckTag, hello.LeakCheckInstalled = m.check.hello()
 	if err := writer.WriteFrame(hello); err != nil {
@@ -472,6 +478,11 @@ func (m *manager) serve(ctx context.Context, address string) error {
 			answer = m.stop(command)
 		case shimwire.LauncherLeakCheck:
 			answer = m.check.receive(ctx, command, m.logf)
+		case shimwire.WorkspaceWork:
+			// The read answers on this connection when it is done, from a goroutine of its own,
+			// so this role's starts and stops do not wait behind jj (readWorkspace).
+			go m.readWorkspace(ctx, writer, command)
+			continue
 		default:
 			return fmt.Errorf("command: got %T", frame)
 		}
@@ -939,7 +950,7 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 		return abandon(err)
 	}
 	recreated := false
-	var sessions *pgx.Conn
+	var sessions *ompsessions.Conn
 	if command.ResumeFile != "" {
 		if recreated, sessions, err = resumable(ctx, env, command.ResumeFile, clientURL, m.stderr); err != nil {
 			return abandon(err)
@@ -1003,7 +1014,9 @@ func (m *manager) remember(id string, body []byte, result shimwire.Frame) {
 // wait status on and prefixed writers of the generation's own; in the controller's pod, the shim
 // itself in the container's own namespaces, writing to the container's stdout and stderr
 // themselves (cfg.Stdout and cfg.Stderr, never the launcher's own writer, which is no file), so
-// the shim's descriptors are the container's files and no pipe through the launcher.
+// the shim's descriptors are the container's files and no pipe through the launcher. There the
+// shim is told to reap its own orphans (reapingShim); role-init's shim never is, since role-init
+// keeps that shim in role-init's own process group (runRoleShim).
 func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProcess, error) {
 	if m.namespaced {
 		stdout, stderr := m.log.writers(m.role)
@@ -1016,11 +1029,30 @@ func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProc
 		process.output = []io.Writer{stdout, stderr}
 		return process, nil
 	}
-	cmd := exec.Command(start.Argv[0], start.Argv[1:]...)
+	argv := reapingShim(start.Argv)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = env
 	cmd.Stdout, cmd.Stderr = m.cfg.Stdout, m.cfg.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return &roleProcess{cmd: cmd}, nil
+}
+
+// reapOrphansFlag is the flag that makes `legion worker-shim` the child subreaper of everything it
+// starts, reaping their orphans itself (internal/shim's Config.ReapOrphans).
+const reapOrphansFlag = "--" + shimwire.ReapOrphansFlag
+
+// reapingShim is argv with reapOrphansFlag after `legion worker-shim`, where argv runs the shim,
+// and argv as it is otherwise. The controller pod's single-role form starts the shim as this
+// process's own child, in a process group of the shim's own, and this process, the container's
+// PID 1, is in another: an orphan of the shim's group that PID 1 reaped would be reaped by a
+// parent outside that group, which under the cluster's gVisor takes one from the count that keeps
+// the group from reading as orphaned (internal/shim's Config.ReapOrphans says the whole of it).
+// With the flag such orphans come to the shim, in their own group, and the shim reaps them.
+func reapingShim(argv []string) []string {
+	if len(argv) < 2 || argv[1] != shimArgument {
+		return argv
+	}
+	return slices.Concat(argv[:2], []string{reapOrphansFlag}, argv[2:])
 }
 
 // wait reports the generation's exit once its process is gone. A role's exit is the shim's own:
@@ -1436,7 +1468,7 @@ func endSession(proxy *sessionproxy.Proxy, dir string) {
 // only what was pushed. A workspace with no record, or a child with no workspace (the controller),
 // was not. A record that cannot be read, which an init container killed mid-write can leave, only
 // decides that notice: it is written to log and taken as no record, and the resume goes ahead.
-func resumable(ctx context.Context, env []string, file, clientURL string, log io.Writer) (recreated bool, conn *pgx.Conn, err error) {
+func resumable(ctx context.Context, env []string, file, clientURL string, log io.Writer) (recreated bool, conn *ompsessions.Conn, err error) {
 	sessions, err := newSessionDial(env, clientURL)
 	if err != nil {
 		return false, nil, fmt.Errorf("resume session %s: %w: %v", file, shimwire.SessionStoreUnreachable, err)
@@ -1463,10 +1495,10 @@ func resumable(ctx context.Context, env []string, file, clientURL string, log io
 // the child's Oh My Pi keeps it in (resumable) through a connection sessions dials, which it returns
 // open. A table that could not be asked at all is shimwire.SessionStoreUnreachable; a session the
 // table answers it does not hold is shimwire.SessionGone, refused at once.
-func sessionWritten(parent context.Context, sessions sessionDial, file string) (time.Time, *pgx.Conn, error) {
+func sessionWritten(parent context.Context, sessions sessionDial, file string) (time.Time, *ompsessions.Conn, error) {
 	var written time.Time
 	var found bool
-	conn, err := sessions.dial(parent, func(ctx context.Context, conn *pgx.Conn) (err error) {
+	conn, err := sessions.dial(parent, func(ctx context.Context, conn *ompsessions.Conn) (err error) {
 		written, found, err = ompsessions.Written(ctx, conn, file)
 		return err
 	})
@@ -1493,7 +1525,7 @@ func sessionByID(ctx context.Context, env []string, id, clientURL string) (strin
 	}
 	var file string
 	var found bool
-	conn, err := sessions.dial(ctx, func(ctx context.Context, conn *pgx.Conn) (err error) {
+	conn, err := sessions.dial(ctx, func(ctx context.Context, conn *ompsessions.Conn) (err error) {
 		file, found, err = ompsessions.FindByID(ctx, conn, id)
 		return err
 	})

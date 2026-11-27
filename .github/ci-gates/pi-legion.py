@@ -3,8 +3,13 @@
 GATE = gate("pi_legion", "pi-legion", runs=[
     script_run("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts",
                'const result = Bun.spawnSync(["go", "run", "-overlay", overlay, "./cmd/daemon-pane", ...args], {',
-               f"daemon-pane.test.ts, run by {at('pi-legion', 'Test pi-legion')}", DAEMON, ["./cmd/daemon-pane"], mode="build",
+               f"daemon-pane.test.ts and daemon-standin.test.ts, run by {at('pi-legion', 'Test pi-legion')}", DAEMON, ["./cmd/daemon-pane"], mode="build",
                overlay={f"{DAEMON}/cmd/daemon-pane/main.go": "packages/pi-legion/scripts/skill-scenarios/daemon-pane.go"}),
+    script_run("packages/pi-legion/scripts/skill-scenarios/label-texts.sh",
+               'go test -c -o "$bin/" ./internal/workflow ./internal/daemon ./internal/api',
+               "`label-texts.sh build`, which rig.sh batch-scored runs in a build pod's scored Job (scored-job.sh); "
+               f"in {at('pi-legion', 'Test pi-legion')}, label-texts.test.ts runs this line with a planted go, and no row compiles the three packages",
+               DAEMON, ["./internal/workflow", "./internal/daemon", "./internal/api"], mode="test"),
 ], reads=reads(
     ("packages/pi-legion/**", f"{at('pi-legion', 'Test pi-legion')} in packages/pi-legion"),
     ("packages/pi-envoy/**", "`packages/pi-legion/extensions/legion.test.ts#envoyEntryDefault` and `packages/pi-legion/extensions/legion.test.ts#envoyEntry` and `packages/pi-legion/extensions/legion-role-claim.test.ts#envoyEntryDefault` and `packages/pi-legion/extensions/legion-role-claim.test.ts#envoyEntry` import ../../pi-envoy/extensions/envoy; `packages/pi-shared/test/omp-harness.ts#runLegionPane` loads it"),
@@ -16,10 +21,18 @@ GATE = gate("pi_legion", "pi-legion", runs=[
                                                        "imports @legion/envoy-client/test/subscribe-answer, and "
                                                        "`packages/pi-shared/test/omp-harness.ts#consumerDelivery`, which this "
                                                        "package's omp tests drive, imports it too"),
+    ("packages/envoy-client/test/fake-dispatch.ts", "`packages/pi-legion/src/tools.test.ts#fakeDispatchFetch` imports "
+                                                     "it from @legion/envoy-client/test/fake-dispatch"),
     # envoy-client's sources, and cipher-client's with them, are the shared read below.
     (CONTRACTS_SRC, f"{at('pi-legion', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
     (TEST_FIXTURES_SRC, "packages/pi-legion's extensions and src tests import @legion/test-fixtures"),
-    (f"{FIX}/daemon-api/**", "`packages/pi-legion/extensions/legion.test.ts#/legion-claim-controller in a phase worker's pane calls no daemon route and does not exit` and `packages/pi-legion/extensions/legion.test.ts#launchedController`, `packages/pi-legion/extensions/legion-role-claim.test.ts#registered`, `packages/pi-legion/src/daemon-api-version.test.ts#package.json declares the daemon API contract version the daemon requires`"),
+    (f"{FIX}/daemon-api/**", "`packages/pi-legion/extensions/legion.test.ts#/legion-claim-controller in a phase worker's pane calls no daemon route and does not exit` and `packages/pi-legion/extensions/legion.test.ts#launchedController`, `packages/pi-legion/extensions/legion-role-claim.test.ts#registered`; "
+                             "`packages/pi-legion/src/daemon-api-version.test.ts#package.json names no daemon API contract, and the plugin speaks this tree's` reads released-contracts.json and lists contracts/*.json; "
+                             "and `packages/contracts/src/daemon-contract.ts#lastReleased` and `packages/contracts/src/daemon-contract.ts#entryFixtures` read and list the same two for "
+                             "`packages/contracts/src/daemon-contract.ts#daemonContract` of the committed manifest, which names no contract, as "
+                             "`packages/pi-legion/extensions/legion.ts#PLUGIN_CONTRACT`, `packages/pi-legion/src/claim-session.ts#PLUGIN_CONTRACT` and `packages/pi-legion/src/controller-session.ts#PLUGIN_CONTRACT` "
+                             "and `packages/pi-shared/src/legion-phase-ops.ts#pluginBuildOf` for `packages/pi-legion/src/tools.ts#BUILD` take it when a test imports them, "
+                             "and as the tests' own PLUGIN_CONTRACT takes it"),
     (f"{FIX}/capability-redaction.json", "`packages/pi-legion/src/capability-report.test.ts#redaction`"),
     (f"{FIX}/capability-redaction-plugin-report.json", "`packages/pi-legion/src/capability-report.test.ts#every row passes cleanDetail: each branch that quotes upstream text carries it redacted` and `packages/pi-legion/src/capability-report.test.ts#PLUGIN_REPORT`"),
     ("packages/dispatch/e2e/**", "`packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts#packages/dispatch/e2e/run-server.sh` and `packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts#packages/pi-legion/scripts/skill-scenarios/seed.ts` names packages/dispatch/e2e/run-server.sh and seed.ts in the checkout it builds, and `packages/pi-legion/scripts/skill-scenarios/seed.ts#../../../dispatch/e2e/api` imports packages/dispatch/e2e/api.ts"),
@@ -48,12 +61,13 @@ GATE = gate("pi_legion", "pi-legion", runs=[
                   " sweeps it, a root of that test's list"),
     ("scripts/e2e/lib/**", "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#scriptFunctions`, imported from scripts/e2e/lib/script-functions, and `packages/pi-legion/scripts/skill-scenarios/rig.test.ts#loopbackDsn`, which the services_up row sources; `packages/pi-legion/scripts/skill-scenarios/rig.sh#$root/scripts/e2e/lib/rig.sh` sources scripts/e2e/lib/rig.sh"),
     ("packages/envoy/scripts/lib/pg-url.sh", "`packages/pi-legion/scripts/skill-scenarios/rig.sh#$root/packages/envoy/scripts/lib/pg-url.sh` sources it for pg_sql and safe_url; "
-                                             "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#safe_url drops the password of a Postgres URL and keeps the rest` and "
+                                             "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#safe_url drops the password of a URL and keeps the rest` and "
                                              "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#refuses a URL the runs cannot use before psql runs or the URL is written` source it, "
                                              "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#fails, naming the rig's root, when the root is no checkout` copies it beside rig.sh, and "
                                              "`packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts#pgUrl` copies it into its scratch checkout beside rig.sh"),
     (".omp-pin", "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#fails, naming the rig's root, when the root is no checkout` copies .omp-pin"),
     ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts#runDaemonPane` writes the overlay and runs go run"),
+    ("packages/pi-legion/scripts/skill-scenarios/label-texts.sh", "`packages/pi-legion/scripts/skill-scenarios/label-texts.sh#compile` runs go test -c of three daemon packages"),
     (".github/actions/install-skill-cuts-omp/**", at("pi-legion", "./.github/actions/install-skill-cuts-omp")),
 ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                      "import @legion/envoy-client/*")

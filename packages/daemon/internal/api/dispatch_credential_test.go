@@ -26,11 +26,11 @@ func dispatchCredentialServed(t *testing.T, body []byte) (map[string]any, bool) 
 // its own calls run under and the two counts a deployment reads before it removes
 // dispatch_token_transition_file, the time of the last transition launch null before the first.
 func TestTheStateServesTheDaemonsDispatchCredential(t *testing.T) {
-	body := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion))
+	body := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion()))
 	credential, carried := dispatchCredentialServed(t, body)
 	want := map[string]any{
 		"session": "legion-daemon:LEGION", "transitionLaunches": float64(2),
-		"lastTransitionLaunchAt": "2026-09-22T09:17:03Z", "liveLaunchesWithDispatchToken": float64(3),
+		"lastTransitionLaunchAt": "2126-09-22T09:17:03Z", "liveLaunchesWithDispatchToken": float64(3),
 	}
 	if !carried || len(credential) != len(want) {
 		t.Fatalf("the state %s carries dispatchCredential %v (carried %v), want %v", body, credential, carried, want)
@@ -45,13 +45,13 @@ func TestTheStateServesTheDaemonsDispatchCredential(t *testing.T) {
 	none := *state.DispatchCredential
 	none.TransitionLaunches, none.LastTransitionLaunchAt = 0, nil
 	state.DispatchCredential = &none
-	credential, _ = dispatchCredentialServed(t, stateFrom(t, state, "192.0.2.1:41000", podClaims(DaemonAPIVersion)))
+	credential, _ = dispatchCredentialServed(t, stateFrom(t, state, "192.0.2.1:41000", podClaims(DaemonAPIVersion())))
 	if at, written := credential["lastTransitionLaunchAt"]; !written || at != nil {
 		t.Errorf("a daemon that made no transition launch writes lastTransitionLaunchAt = %v (written %v), want null", at, written)
 	}
 
 	state.DispatchCredential = nil
-	if credential, carried := dispatchCredentialServed(t, stateFrom(t, state, "192.0.2.1:41000", podClaims(DaemonAPIVersion))); carried {
+	if credential, carried := dispatchCredentialServed(t, stateFrom(t, state, "192.0.2.1:41000", podClaims(DaemonAPIVersion()))); carried {
 		t.Errorf("a daemon without the setting serves dispatchCredential %v, want no such key", credential)
 	}
 }
@@ -97,8 +97,14 @@ func TestTheDispatchCredentialIsStrippedBelowItsContract(t *testing.T) {
 	if _, carried := dispatchCredentialServed(t, at); !carried {
 		t.Errorf("a caller stating %d is served no dispatchCredential: %s", dispatchCredentialContract, at)
 	}
-	if len(narrowings) != 0 {
-		t.Errorf("a caller stating %d is narrowed: %+v", dispatchCredentialContract, narrowings)
+	// A caller stating dispatchCredentialContract stands below each entry's band, gateBasisContract's
+	// (narrowing_test.go reads its line) and the P0 bound's among them, and each band writes its own
+	// line, so the line this test is for is the one that drops dispatchCredential, which no row may
+	// write for this caller.
+	for _, line := range narrowings {
+		if line.Dropped == "dispatchCredential" {
+			t.Errorf("a caller stating %d is told it lost dispatchCredential: %+v", dispatchCredentialContract, narrowings)
+		}
 	}
 
 	operator, _ := stateNarrowed(t, state, "192.0.2.1:4100", podClaims(memoryContract-1))
@@ -115,8 +121,8 @@ func TestTheDispatchCredentialContractIsTheContractThatAddedTheKey(t *testing.T)
 		t.Fatalf("dispatchCredentialContract = %d, want %d, the contract whose entry in version.go added `dispatchCredential`",
 			dispatchCredentialContract, addedDispatchCredential)
 	}
-	if dispatchCredentialContract > DaemonAPIVersion {
+	if dispatchCredentialContract > DaemonAPIVersion() {
 		t.Fatalf("dispatchCredentialContract = %d, above DaemonAPIVersion %d: no caller could be served the key",
-			dispatchCredentialContract, DaemonAPIVersion)
+			dispatchCredentialContract, DaemonAPIVersion())
 	}
 }

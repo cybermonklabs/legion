@@ -64,6 +64,7 @@ var causedWriter = model.Actor{Kind: "user", ID: "alice"}
 // docs/block_index_fence_test.go runs Caused after the fenced writers it races, but holds no row
 // Caused takes and reads no step of it, so it proves nothing about which rows Caused locks.
 func TestCausedTakesTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 
@@ -170,7 +171,7 @@ func newCausedDocument(t *testing.T, database *store.Store, name, slug string) (
 		t.Fatalf("begin the index of version 1: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	_, won, write, err := IndexBlocks(ctx, tx, document.artifact, 1, first, causedFirstVersion.markdown, causedFirstVersion.blocks, nil, nil)
+	_, won, write, err := IndexBlocks(ctx, tx, document.artifact, 1, first, causedFirstVersion.markdown, causedFirstVersion.blocks, nil, nil, "")
 	if err != nil || !won {
 		t.Fatalf("index version 1 (won %v): %v", won, err)
 	}
@@ -238,7 +239,7 @@ func beginCausedPass(t *testing.T, database *store.Store, document parentDocumen
 		t.Fatalf("take the document's owner row: %v", err)
 	}
 	_, won, write, err := IndexBlocks(ctx, tx, document.artifact, 2, at,
-		causedSecondVersion.markdown, causedSecondVersion.blocks, nil, nil)
+		causedSecondVersion.markdown, causedSecondVersion.blocks, nil, nil, "")
 	if err != nil || !won {
 		t.Fatalf("index version 2 (won %v): %v", won, err)
 	}

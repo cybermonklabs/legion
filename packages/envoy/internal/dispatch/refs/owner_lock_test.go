@@ -50,6 +50,7 @@ func commentRows(t *testing.T, database *store.Store, what, query, comment strin
 // Both drainers run the one edit below, so each of its assertions holds for both, and each case is
 // named for the drainer a failure came from.
 func TestADrainOfACommentWaitsForItsOwnerLock(t *testing.T) {
+	t.Parallel()
 	for _, drainer := range []struct {
 		name string
 		// storedBody is the body the comment holds when the drain lists it, and editedBody the
@@ -172,7 +173,7 @@ func TestADrainOfACommentWaitsForItsOwnerLock(t *testing.T) {
 				t.Fatalf("read the comment's block index: %v", err)
 			}
 			located := text.ExtractAt(drainer.editedBody, itemBlockServer)
-			indexing, err := PlanItemIndex(index.Edited(), ItemComment, comment, drainer.editedBody, editedAt, located, nil)
+			indexing, err := PlanItemIndex(index.Edited(), ItemComment, comment, drainer.editedBody, itemBlockServer, editedAt, located, nil)
 			if err != nil {
 				t.Fatalf("plan the edited comment's blocks: %v", err)
 			}

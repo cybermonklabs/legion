@@ -14,6 +14,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/shapetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -95,6 +96,73 @@ func TestReduceFilterSubjects(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// INFRA-1555. A registration reduces its topics to its consumer's filters (SessionConsumerFilters)
+// inside its own 3.5 s budget, and its role claim renewal runs on what that leaves. At the largest
+// registration production had seen, the reduction spent that budget: it went back to the first
+// pair after every subject it dropped, so the renewal's claim read ran out of time on every
+// heartbeat and the holder's claim was never renewed. The reduction now goes on from a drop
+// (reduceFilterPairs), so between merges it weighs no pair twice. A merge does start the scan
+// again, by design: the merged subject is new and must be weighed against every other.
+//
+// This case holds that by the pairs the reduction weighs, which are the same on every machine, and
+// not by a clock. cmd/listener's TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair
+// counts the allocations of a registration's reductions. Those see a split of both subjects of
+// every pair weighed, the other half of INFRA-1555, and not a scan started again on tokens already
+// split, which allocates nothing: this count sees that scan.
+//
+// The bound, n(n-1)/2 for n subjects, is the pairs there are, and it holds only within one pass, a
+// scan of the pairs that ends in no merge. So the case runs one pass of the reduction
+// (reduceFilterPairs) over the forms as reduceFilters sorts and compacts them, and fails as
+// UNKNOWN when that pass ends on a merge. It reads the merge from the pass itself and not from the
+// filters, since a merged subject can be one of the forms already (`notifications.x.*.c` and
+// `notifications.x.1.*` merge into `notifications.x.>`), which compactFilters then folds into that
+// form, leaving every filter a form. It also fails as UNKNOWN when nothing was dropped, where a
+// restarted scan weighs no pair twice either. A pass that ends in no merge is the whole reduction,
+// so its filters are SessionConsumerFilters', which the case checks.
+//
+// The list is shapetest.Planned, the topics a registration of the largest shape plans, in the
+// forms SessionConsumerFilters gives them: 1,610 topics, the role lane and the agent subject
+// among them, in 1,612 forms, which reduce to 1,604 filters. A registration reduces another list
+// (cmd/listener's sessionFilter): it leaves the role lane out, and puts the session's agent subject
+// first, so the agent subject is in its list twice. That list is 1,610 subjects in 1,612 forms, the
+// agent subject's two forms counted twice; held once each, 1,609 topics in 1,610 forms, which
+// reduce to the 1,602 filters that cmd/listener's
+// TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim counts on the server. The two
+// forms more here are the role lane's. They sort last and overlap nothing, so they add pairs that
+// are each weighed once and change neither the bound's meaning nor a drop.
+func TestReducingTheLargestRegistrationInProductionWeighsEachPairOnce(t *testing.T) {
+	t.Parallel()
+	topics := shapetest.Planned("legion-controller", "ses_largest_holder")
+	forms, _ := sessionConsumerForms(topics, false)
+	pass := make([]filterSubject, 0, len(forms))
+	for _, form := range forms {
+		pass = append(pass, filterSubject{subject: form, tokens: strings.Split(form, ".")})
+	}
+	slices.SortFunc(pass, func(a, b filterSubject) int { return strings.Compare(a.subject, b.subject) })
+	pass = compactFilters(pass)
+	subjects := len(pass)
+	reduced, merged, weighed := reduceFilterPairs(pass)
+	if merged {
+		t.Fatalf("UNKNOWN: the pass over the %d subjects of the %d topics ended on a merge; a merge starts the scan again by design, and the bound of the pairs there are holds only within one pass", subjects, len(topics))
+	}
+	filters := make([]string, len(reduced))
+	for index, filter := range reduced {
+		filters[index] = filter.subject
+	}
+	if want := SessionConsumerFilters(topics); !slices.Equal(filters, want) {
+		t.Fatalf("the pass reduced here gives %d filters and SessionConsumerFilters %d: this case is not weighing the list SessionConsumerFilters reduces", len(filters), len(want))
+	}
+	if subjects == len(filters) {
+		t.Fatalf("UNKNOWN: the %d subjects reduced to as many filters, so nothing was dropped, and a scan that went back to the first pair at a drop would weigh no pair twice: this case cannot tell the two apart", subjects)
+	}
+	pairs := subjects * (subjects - 1) / 2
+	t.Logf("%d topics, %d subjects in all their forms, %d pairs; the pass ended in no merge, dropped %d subjects and weighed %d pairs", len(topics), subjects, pairs, subjects-len(filters), weighed)
+	if weighed > pairs {
+		t.Fatalf("one pass over %d subjects, ending in no merge, weighed %d pairs, %.1f times the %d pairs there are: it weighed some pair again, as a scan that goes back to the first pair after a drop does (INFRA-1555)",
+			subjects, weighed, float64(weighed)/float64(pairs), pairs)
 	}
 }
 
@@ -203,6 +271,8 @@ func next(t *testing.T, pull *SessionPull) SessionMessage {
 // deadline alone takes the ack wait's redelivery as the nak's.
 func nextBefore(t *testing.T, pull *SessionPull, end time.Time, why string) SessionMessage {
 	t.Helper()
+	// The bound under test, not a wait: end tells a message back by the row's own cause from the
+	// ack wait's redelivery (above), so it stays the row's.
 	ctx, cancel := context.WithDeadline(testwait.Context(t), end)
 	defer cancel()
 	msg, err := pull.Next(ctx)
@@ -218,6 +288,7 @@ func nextBefore(t *testing.T, pull *SessionPull, end time.Time, why string) Sess
 // cause, and a redelivery on the ack wait misses the end by half an ack wait, not by a timer's
 // latency.
 func beforeAckWait(ackWait time.Duration) time.Time {
+	// The bound under test, not a wait: half the ack wait, which a redelivery on it misses (above).
 	return time.Now().Add(ackWait / 2)
 }
 
@@ -848,6 +919,8 @@ func TestAPullRequestsAgainAfterABatchAndAnExpiry(t *testing.T) {
 	// A request that outlives two heartbeats is kept alive by them.
 	consumers.pullExpires, consumers.pullHeartbeat = 5*time.Second, 500*time.Millisecond
 	quiet := pullSession(t, consumers, session)
+	// A window, not a wait: nothing is published, so the idle pull must hand over nothing and its
+	// Next must wait out these 2 s, four heartbeats, and answer context.DeadlineExceeded.
 	idle, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	if msg, err := quiet.Next(idle); !errors.Is(err, context.DeadlineExceeded) {
@@ -1104,7 +1177,12 @@ func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 		t.Fatalf("ack %d: %v", first.StreamSeq, err)
 	}
 	// One pull request asks for a whole batch, so the server delivered all three: the two this
-	// row never read sit unread in the pull's queue, and they are what the consumer awaits.
+	// row never read are what the consumer awaits, and Release returns them once the pull holds
+	// them. The row waits for the pull to hold both (waitForQueued), which is the state Release
+	// gives back from. The server's count of the two awaiting an ack is no wait for that: the
+	// server counts a message delivered before the message reaches the pull, and a Release run in
+	// between returned the one the pull held.
+	waitForQueued(t, pull, 2)
 	held := waitForAckPending(t, consumers, session, 2)
 	t.Logf("before Release the consumer has NumWaiting %d and NumAckPending %d", held.NumWaiting, held.NumAckPending)
 	if returned, err := pull.Release(); returned != 2 || err != nil {

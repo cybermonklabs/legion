@@ -37,10 +37,10 @@ func TestAReleaseFreesAClaimsOtherNamesOnlyOnceTheBrokerCarriesNothingOfThem(t *
 		broker := h.withSecrets()
 		h.reach(StateReady)
 		h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
-		h.must(RequestForgetSession{Claim: h.token, Session: session})
+		h.must(RequestForgetSession{Claim: h.token, Session: session, By: SuspendedByOperator})
 		const fresh, freshFile = "ses_after_forget", "/state/sessions/after-forget.jsonl"
 		h.store.fillHolds(h.token, MaxHeldNamesPerClaim-h.store.heldBy(h.token)-len(RecordedHolds(fresh, freshFile))+1)
-		h.must(RequestResume{Claim: h.token})
+		h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 		h.connect()
 		registerFresh := func() error {
 			return h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: fresh, SessionFile: freshFile,
@@ -199,7 +199,7 @@ func TestAReleaseFreesAClaimsOtherNamesOnlyOnceTheBrokerCarriesNothingOfThem(t *
 		broker := h.withSecrets()
 		h.reach(StateReady)
 		h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
-		h.must(RequestForgetSession{Claim: h.token, Session: session})
+		h.must(RequestForgetSession{Claim: h.token, Session: session, By: SuspendedByOperator})
 		// The store as a committed release left it: the abandoned session's names freed, the
 		// mark that commit wrote erased by the claim's next write, which wrote memory's claim.
 		h.store.mu.Lock()
@@ -242,7 +242,7 @@ func TestARefusedClaimWriteFreesNoNameOfARelease(t *testing.T) {
 	h.withSecrets()
 	h.reach(StateReady)
 	h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
-	h.must(RequestForgetSession{Claim: h.token, Session: session})
+	h.must(RequestForgetSession{Claim: h.token, Session: session, By: SuspendedByOperator})
 	held := h.store.heldBy(h.token)
 	if held == 0 {
 		t.Fatal("the claim holds no name of the session it abandoned, so a release would free nothing")
@@ -402,8 +402,8 @@ func TestAReleaseKeepsTheSessionALaunchChoseAndRegistered(t *testing.T) {
 // that it released them is asked three times, a second and then two apart, each failure logged at
 // Warn with the attempt and the broker's reason, and the release frees nothing: it answers
 // ErrReleaseUnanswered for a 5xx, and for a 404 from a broker of a build before the route, and
-// ErrReleaseRefused for any other 4xx, a refusal a retry cannot change. A broker that answers at
-// the third attempt lets every name free.
+// ErrReleaseRefused for any other 4xx but a 408 or a 429, a refusal a retry cannot change. A broker
+// that answers at the third attempt lets every name free.
 //
 // The control (the pull request records the run): releaseSessions reading every permanent refusal
 // as one for good fails the 404 row, which answers ErrReleaseRefused.

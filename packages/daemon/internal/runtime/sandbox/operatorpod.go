@@ -10,11 +10,13 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/sjawhar/envoy/natsurl"
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/ompdirs"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -92,20 +94,21 @@ func exchangeOf(agentSecrets *AgentSecrets, broker bool) PodExchange {
 // session it resumes (runtime.SessionExclusiveVariable), which it tells a launch that resumes a
 // recorded Oh My Pi session alone, in its start command, and the name the
 // providers volume mounts the session database's URL under, ompsessions.DSNFileName), the worker
-// image (ImageEnv), every launch's spec (the role App's git identity, and each launch secret's
-// `<NAME>_FILE` pointer), the pod baseline, the two names this runtime composes for each role out
-// of the operator's own value (roleOperatorEnv: the settings overlays, which are hand-added here
-// since `composed` deliberately leaves them out, and every name of `composed`, the spend
-// attributes alone today), and the operator's own pod env. The exchange identity's two variables
-// (exchangeOwned) are the runtime's only where exchange carries that identity (ExchangeIdentity or
-// ExchangeAndBroker); otherwise nothing of Legion's sets them, and the operator's pod env may, as
-// it could before the key existed. DISPATCH_TOKEN_BROKER (brokerOwned) is the runtime's in the
-// same way, only under ExchangeAndBroker, where the deployment sets dispatch_token_broker: a
-// deployment that does not keeps the name the operator's, as it was before the setting existed.
-// OMP_CONFIG_ROOT (ompdirs.ConfigRootVariable) is named beside the session store's variables though
-// nothing of Legion's sets it: from the pinned Oh My Pi on it replaces the config root the agent
-// directory and a session's path key sit under, so it is refused like them.
-// The first setter of a name is the one named.
+// image (ImageEnv), every launch's spec (the role App's git identity, the table of every role's
+// identity, runtime.RoleIdentitiesVariable, which a workflow role's launch alone carries, and each
+// launch secret's `<NAME>_FILE` pointer), the pod baseline, the two names this runtime composes
+// for each role out of the operator's own value (roleOperatorEnv: the settings overlays, which are
+// hand-added here since `composed` deliberately leaves them out, and every name of `composed`, the
+// spend attributes alone today), and the operator's own pod env. The exchange identity's two
+// variables (exchangeOwned) are the runtime's only where exchange carries that identity
+// (ExchangeIdentity or ExchangeAndBroker); otherwise nothing of Legion's sets them, and the
+// operator's pod env may, as it could before the key existed. DISPATCH_TOKEN_BROKER (brokerOwned)
+// is the runtime's in the same way, only under ExchangeAndBroker, where the deployment sets
+// dispatch_token_broker: a deployment that does not keeps the name the operator's, as it was
+// before the setting existed. OMP_CONFIG_ROOT (ompdirs.ConfigRootVariable) is named beside the
+// session store's variables though nothing of Legion's sets it: from the pinned Oh My Pi on it
+// replaces the config root the agent directory and a session's path key sit under, so it is
+// refused like them. The first setter of a name is the one named.
 func podVariables(pod Pod, launchSecrets []string, exchange PodExchange) map[string]setter {
 	set := map[string]setter{}
 	add := func(name, who string, operatorMay bool) {
@@ -157,6 +160,7 @@ func podVariables(pod Pod, launchSecrets []string, exchange PodExchange) map[str
 	for name := range (runtime.GitIdentity{}).Env() {
 		add(name, "every launch sets (the git identity the role's GitHub App commits as)", false)
 	}
+	add(runtime.RoleIdentitiesVariable, "every launch sets (the identities of the issue's roles, which the push step reads)", false)
 	for _, name := range launchSecrets {
 		add(name+"_FILE", "every launch sets (the pointer to the launch secret "+name+")", false)
 	}
@@ -229,7 +233,7 @@ func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecret
 	// stop every agent's Dispatch writes. Both sides hold to
 	// packages/contracts/fixtures/dispatch-public-url.json.
 	if value, set := pod.Env["DISPATCH_PUBLIC_URL"]; set && !dashboardURL(value) {
-		return fmt.Errorf("runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to %+q, which is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads", value)
+		return fmt.Errorf("runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to %s, which is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads", dashboardShown(value))
 	}
 	carriesIdentity := exchange != NoExchange
 	volumes := legionVolumeNames(carriesIdentity)
@@ -347,17 +351,33 @@ func legionClaim(claim string) bool {
 	return strings.HasPrefix(claim, "legion-") && strings.HasSuffix(claim, "-"+issueVolume)
 }
 
+// dashboardShown is a refused DISPATCH_PUBLIC_URL as the refusal prints it: quoted whole when it can
+// hold no userinfo, query or fragment (none of "@", "?" or "#"), so a typo shows as written, and
+// otherwise through redact.URL, which reads it as a URL and prints none of the three, a password
+// holding a "'" included, which ends a URL for the rule on text.
+func dashboardShown(value string) string {
+	if !strings.ContainsAny(value, "@?#") {
+		return fmt.Sprintf("%+q", value)
+	}
+	return redact.URL(value)
+}
+
 // dashboardURL is whether value is a DISPATCH_PUBLIC_URL boot lets through: a rule narrower than
 // the URL standard's parser the agents' dispatch command reads the value with (envoy-client's
 // dispatchSettings), so boot accepts only values the agents accept, and refuses some they would
 // take (userinfo, a trailing dot, IPv4 shorthand, an internationalized name). It is http or https
-// with no userinfo; a plain host, which is a DNS name of ASCII letters, digits and hyphens (no
-// label empty, longer than 63 or starting `xn--`, and a last label neither all digits nor `0x`,
-// which the agents read as an IPv4 address), a four-octet dotted IPv4 address, or a bracketed
-// IPv6 address with no zone; and, when it names one, a port from 1 to 65535.
+// with no userinfo and no "@" past its host (natsurl.UserinfoPastHost: a credential holding a "/",
+// "?" or "#" written as the user lands there, its head read as the host every dashboard link the
+// agents build would name); a plain host, which is a DNS name of ASCII letters, digits and
+// hyphens (no label empty, longer than 63 or starting `xn--`, and a last label neither all digits
+// nor `0x`, which the agents read as an IPv4 address), a four-octet dotted IPv4 address, or a
+// bracketed IPv6 address with no zone; and, when it names one, a port from 1 to 65535. A query or
+// a fragment is let through: the agents' links refuse such a base (linkBaseOf, through isCleanUrl)
+// and print dispatch:// references instead, and the one reader that resolves a link against it
+// (claude-envoy's codex hook) drops the base's query and fragment.
 func dashboardURL(value string) bool {
 	parsed, err := url.Parse(value)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Opaque != "" || parsed.User != nil {
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Opaque != "" || parsed.User != nil || natsurl.UserinfoPastHost(parsed) {
 		return false
 	}
 	if port := parsed.Port(); port != "" {

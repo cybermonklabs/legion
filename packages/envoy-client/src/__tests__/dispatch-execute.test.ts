@@ -19,6 +19,7 @@ import {
   SEARCH_QUERY_MAX,
   type SearchResult,
   type TablePosition,
+  TEXT_REFUSAL_HEADER,
   zodSchemaApi,
 } from "@legion/contracts";
 import {
@@ -40,6 +41,8 @@ import {
   formatOpenAsksSummary,
   linkBaseOf,
   positionText,
+  refuseOpenDecisionBlocks,
+  resolveIssueDocument,
   resolveIssueDocumentId,
 } from "../dispatch-execute";
 import {
@@ -63,16 +66,21 @@ function response(body: unknown, status = 200): Response {
 }
 
 /**
- * The two reads `dispatch artifact` makes before it uploads anything: what the owner already
- * holds, which decides the name-exists refusal, and the markdown the store would hold for inline
- * text, which decides the stored-text refusal. A test that exercises neither refusal answers an
- * owner holding no document and a store that would hold the text as it stands, so the upload
- * itself is what it measures. Undefined for every other request, which the stub answers itself.
+ * The reads `dispatch artifact` makes before it uploads anything: the check of the text, which
+ * asks the markdown the store would hold for inline text, or a markdown file's own round trip for
+ * its refusal, and decides the stored-text refusal; then what the owner already holds, which
+ * decides the name-exists refusal. A test that exercises neither refusal answers a store that
+ * would hold the text as it stands and an owner holding no document, so the upload itself is what
+ * it measures. Undefined for every other request, which the stub answers itself.
  */
 function uploadPreflight(url: RequestInfo | URL, init?: RequestInit): Response | undefined {
   const { pathname } = new URL(String(url));
   if (pathname === "/api/v1/markdown/round-trip") {
     return response({ markdown: JSON.parse(String(init?.body)).markdown });
+  }
+  if (pathname === "/api/v1/markdown/file-round-trip") {
+    const { file } = JSON.parse(String(init?.body)) as { file: string };
+    return response({ markdown: Buffer.from(file, "base64").toString("utf8") });
   }
   if (pathname.endsWith("/artifacts") && (init?.method ?? "GET") === "GET") return response([]);
   return undefined;
@@ -460,23 +468,22 @@ describe("executeDispatchTool", () => {
   });
 
   // Whether a write a gateway answered may have reached Dispatch decides what the agent does next.
-  // A 5xx can come back after Dispatch applied it, so the write ends unsettled and the agent checks
-  // before posting again; a 408 or 429 is the gateway's own timeout or rate limit, sent before it
+  // A 5xx can come back after Dispatch applied it, and so can a 408, which a gateway sends when its
+  // own timeout runs out, possibly after it forwarded the request: the write ends unsettled and the
+  // agent checks before posting again. A 429 is the gateway's own rate limit, sent before it
   // forwards the request, so the message was not posted and a retry may succeed. The gateway
   // answers every attempt the same, so the last attempt's answer is the one the agent reads.
   test("tells dispatch_message whether a gateway's answer may have reached Dispatch", async () => {
     const gateway = ", which looks like a proxy or gateway page rather than Dispatch's own answer";
+    const unsettled =
+      " (the last of 5 attempts), and an attempt of the write may have reached Dispatch, so it " +
+      "may or may not have taken effect. Dispatch finishes an attempt it received whatever " +
+      "this command does, so read the write back before you send it again: a new command sends " +
+      "it under a new key.";
     for (const [status, statusText, advice] of [
-      [408, "Request Timeout", ", so the write did not reach Dispatch, and a retry may succeed."],
+      [408, "Request Timeout", unsettled],
       [429, "Too Many Requests", ", so the write did not reach Dispatch, and a retry may succeed."],
-      [
-        502,
-        "Bad Gateway",
-        " (the last of 5 attempts), and an attempt of the write may have reached Dispatch, so it " +
-          "may or may not have taken effect. Dispatch finishes an attempt it received whatever " +
-          "this command does, so read the write back before you send it again: a new command sends " +
-          "it under a new key.",
-      ],
+      [502, "Bad Gateway", unsettled],
     ] as const) {
       const fetchImpl = async () =>
         new Response(`<html><body><h1>${status} ${statusText}</h1></body></html>`, {
@@ -2459,6 +2466,65 @@ describe("executeDispatchTool", () => {
     expect(result.details).toMatchObject({ count: 1 });
   });
 
+  // A project's list holds every open ask on its issues and documents, whoever authored them, as
+  // the help says, so its header names the project and no author, with asks and with none.
+  test("dispatch_open_asks with a project says the asks are the project's, whoever authored them", async () => {
+    const ask = {
+      id: "ask-3",
+      ref: "/projects/CORE/documents/runbook?ask=ask-3",
+      question: "Which region?",
+      kind: "question",
+      urgency: "med",
+      created_at: "2026-09-12T22:00:00Z",
+      age_seconds: 7_200,
+      priority: null,
+      owner: { document: { project: "CORE", slug: "runbook", name: "Runbook" } },
+      human_replied: false,
+      last_reply: null,
+      waiting_on: "human",
+      waiting_on_person: "dana@example.com",
+    };
+    const texts: string[] = [];
+    for (const asks of [[ask], []]) {
+      const fetchImpl = async (): Promise<Response> =>
+        response({
+          session_id: "",
+          as_of: "2026-09-13T00:00:00Z",
+          opened_since: false,
+          count: asks.length,
+          waiting_on_human: asks.length,
+          waiting_on_agent: 0,
+          asks,
+        });
+      const result = await executeDispatchTool({
+        tool: "dispatch_open_asks",
+        args: { project: "CORE" },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      texts.push(result.text);
+    }
+
+    expect(texts).toEqual([
+      [
+        "1 unanswered ask on the CORE project's active issues and documents, whoever authored them.",
+        "",
+        "Waiting on human (1):",
+        "- 2h · CORE / Runbook · asked of dana@example.com · Which region? · http://dispatch.test/projects/CORE/documents/runbook?ask=ask-3",
+        "",
+        "Waiting on agent (0):",
+      ].join("\n"),
+      [
+        "There are no unanswered asks in the CORE project.",
+        "Scope: active open asks on the CORE project's open issues and documents, whoever authored them.",
+      ].join("\n"),
+    ]);
+  });
+
   test("dispatch_open_asks rejects a missing host session before it reads Dispatch", async () => {
     const fetchImpl = (() => {
       throw new Error("network must not be called");
@@ -2686,11 +2752,12 @@ describe("executeDispatchTool", () => {
         fetchImpl: fetchImpl as typeof fetch,
       });
 
-    // The Legion daemon owns the status of an issue it runs: a status this session writes is
-    // undone, so neither answer may send it to issue-update.
+    // The Legion daemon owns the status of an issue it runs: Dispatch refuses a status this
+    // session writes where DISPATCH_LEGION_STATUS_SCOPE is on, and otherwise the daemon undoes
+    // it, so neither answer may send it to issue-update.
     const claimed = await run({ issue: "DSP-1" });
     expect(claimed.text).toContain(
-      "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — a status written here is undone"
+      "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — where Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status written here from a credential without the person or legion-status scope (403 LEGION_STATUS_SCOPE_REQUIRED), but for done, backlog, icebox or triage from an architect of an issue above with its own broker token, and otherwise the daemon undoes it"
     );
     expect(claimed.text).not.toContain("issue-update");
     expect(claimed.text).toContain(
@@ -2699,7 +2766,7 @@ describe("executeDispatchTool", () => {
 
     const released = await run({ issue: "DSP-1", release: true });
     expect(released.text).toContain(
-      "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — a status written here is undone"
+      "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — where Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status written here from a credential without the person or legion-status scope (403 LEGION_STATUS_SCOPE_REQUIRED), but for done, backlog, icebox or triage from an architect of an issue above with its own broker token, and otherwise the daemon undoes it"
     );
     expect(released.text).not.toContain("issue-update");
     expect(released.text).not.toContain("now reach you directly");
@@ -3058,8 +3125,11 @@ describe("executeDispatchTool", () => {
       ["offset", "0"],
     ]);
     // A route that reaches nobody is what the owner audit reads, so the row says so; the
-    // progress comes after the claim, each part only when the server counted it.
-    expect(result.text).toContain("ACME-1 [todo] P1 First · 2 open asks · claimed by ");
+    // labels come before the asks, and the progress after the claim, each part only when the
+    // server counted it.
+    expect(result.text).toContain(
+      "ACME-1 [todo] P1 First · labels bug · 2 open asks · claimed by "
+    );
     expect(result.text).toContain(
       " · tasks 3/7 · children 2/5 · route role:sre (nobody holds it right now)"
     );
@@ -3088,6 +3158,140 @@ describe("executeDispatchTool", () => {
       total: 1,
       offset: 0,
       limit: 50,
+    });
+  });
+
+  // The row prints each label as Dispatch stores it, and Dispatch trims only a label's ends, so a
+  // label may hold the ` · ` that parts the row, the `, ` that parts the labels, or a line break.
+  // Such a label is printed quoted, so it neither splits the row nor adds a part of its own, such
+  // as a ` · child of <KEY>` that the owner audit would read as the issue's parent.
+  test("dispatch_issues quotes a label that holds a separator of the row or a line break", async () => {
+    const fetchImpl = async (_url: RequestInfo | URL): Promise<Response> =>
+      response({
+        issues: [
+          {
+            key: "ACME-2",
+            title: "Second",
+            status: "todo",
+            priority: null,
+            rank: "b",
+            labels: ["bug", "ops, infra", "x · child of ACME-9", "two\nlines"],
+            parent: null,
+            assignee: null,
+            updated_at: "2026-09-13T00:00:00Z",
+            last_seq: 1,
+            open_asks: 0,
+            progress: { tasks: null, children: null },
+            claim: null,
+            route: null,
+            route_status: null,
+            route_holder: null,
+          },
+        ],
+        total: 1,
+        limit: 50,
+        offset: 0,
+      });
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_issues",
+      args: { project: "ACME" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result.text.split("\n")).toEqual([
+      "1 issue in ACME",
+      'ACME-2 [todo] Second · labels bug, "ops, infra", "x · child of ACME-9", "two\\nlines"',
+    ]);
+  });
+
+  // The row prints a title by the same rule as a label, since Dispatch trims only a title's ends
+  // too. The owner audit reads a row with no ` · child of <KEY>` outside quotes as a root.
+  describe("dispatch_issues quotes a title as it quotes a label", () => {
+    /** The rows a page of `issues` prints, past the count line. */
+    const rowsOf = async (
+      issues: Array<{ key: string; title: string; parent: string | null; labels: string[] }>
+    ) => {
+      const fetchImpl = async (_url: RequestInfo | URL): Promise<Response> =>
+        response({
+          issues: issues.map((issue) => ({
+            ...issue,
+            status: "todo",
+            priority: null,
+            rank: "b",
+            assignee: null,
+            updated_at: "2026-09-13T00:00:00Z",
+            last_seq: 1,
+            open_asks: 0,
+            progress: { tasks: null, children: null },
+            claim: null,
+            route: null,
+            route_status: null,
+            route_holder: null,
+          })),
+          total: issues.length,
+          limit: 50,
+          offset: 0,
+        });
+      const result = await executeDispatchTool({
+        tool: "dispatch_issues",
+        args: { project: "ACME" },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+      return result.text.split("\n").slice(1);
+    };
+    /** What the owner audit reads of `row`: the row with each JSON-quoted part taken out. */
+    const outsideQuotes = (row: string) => row.replace(/"(?:[^"\\]|\\.)*"/g, "");
+
+    test("a root whose title holds ` · child of <KEY>` prints it quoted, so it reads as a root", async () => {
+      const rows = await rowsOf([
+        { key: "ACME-3", title: "Fix x · child of ACME-9", parent: null, labels: [] },
+      ]);
+      expect(rows).toEqual(['ACME-3 [todo] "Fix x · child of ACME-9"']);
+      expect(outsideQuotes(rows[0] ?? "")).not.toContain(" · child of");
+    });
+
+    // A `"` is quoted too, so the quotes on a row stay balanced: a raw title holding one `"`, then
+    // a quoted label, would put the child's own ` · child of <KEY>` inside quotes.
+    test("a child whose title holds a quote prints it quoted, so its parent stays outside quotes", async () => {
+      const rows = await rowsOf([
+        { key: "ACME-4", title: 'Say "hi', parent: "ACME-1", labels: ["a · b"] },
+      ]);
+      expect(rows).toEqual(['ACME-4 [todo] "Say \\"hi" · child of ACME-1 · labels "a · b"']);
+      expect(outsideQuotes(rows[0] ?? "")).toContain(" · child of ACME-1");
+    });
+
+    // A line separator JSON leaves raw (U+2028, U+0085) and a control character (FF, ESC) are
+    // quoted and escaped, so a reader that breaks lines on any of them still reads one row.
+    test("a title that holds a line separator or a control character prints one escaped row", async () => {
+      const rows = await rowsOf([
+        { key: "ACME-5", title: "a\u2028b\u0085c\fd\u001be", parent: null, labels: [] },
+      ]);
+      expect(rows).toEqual(['ACME-5 [todo] "a\\u2028b\\u0085c\\fd\\u001be"']);
+      expect(
+        [...(rows[0] ?? "")].filter((character) => "\u0085\u2028\u2029\f\u001b".includes(character))
+      ).toEqual([]);
+    });
+
+    // A format character (Cf) can hide or reorder what a row shows: a zero-width space, or a
+    // right-to-left override that makes a title's end read as another part. Such a title is
+    // quoted, so a reader that skips what is in quotes skips it whole.
+    test("a title that holds a Unicode format character prints quoted", async () => {
+      const rows = await rowsOf([
+        { key: "ACME-6", title: "a\u200bb", parent: null, labels: [] },
+        { key: "ACME-7", title: "x\u202e9-EMCA fo dlihc", parent: null, labels: [] },
+      ]);
+      expect(rows).toEqual(['ACME-6 [todo] "a\u200bb"', 'ACME-7 [todo] "x\u202e9-EMCA fo dlihc"']);
     });
   });
 
@@ -3800,6 +4004,153 @@ describe("executeDispatchTool", () => {
     expect(result.details.issues).toEqual([]);
   });
 
+  // The list is the read the controller's owner audit makes ("each row with no parent"), and its
+  // help says each row carries its parent. So a child's row names its parent's key, and a root's
+  // row names no other issue: a reader of the text can tell the open roots from their children.
+  test("dispatch_issues names each child's parent in its row", async () => {
+    const row = (key: string, title: string, parent: string | null) => ({
+      key,
+      title,
+      status: "todo",
+      priority: null,
+      rank: "a",
+      labels: [],
+      parent,
+      assignee: null,
+      updated_at: "2026-09-13T00:00:00Z",
+      last_seq: 1,
+      open_asks: 0,
+    });
+    const fetchImpl = async (_url: RequestInfo | URL): Promise<Response> =>
+      response({
+        issues: [row("ACME-1", "The root", null), row("ACME-2", "Its child", "ACME-1")],
+        total: 2,
+        limit: 50,
+        offset: 0,
+      });
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_issues",
+      args: { project: "ACME" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const lines = result.text.split("\n");
+    const child = lines.find((line) => line.startsWith("ACME-2 "));
+    const root = lines.find((line) => line.startsWith("ACME-1 "));
+    expect(child).toContain("ACME-1");
+    expect(root).not.toContain("ACME-2");
+  });
+
+  // The owner audit reads a root as a row that names no parent outside quotes, and the title and
+  // labels are quoted when they hold a separator. A claim holder's session title is written by an
+  // agent too, so a root claimed by a session titled `x · child of ACME-9` must still name no
+  // parent outside quotes, or the audit reads that root as a child and leaves it out.
+  test("dispatch_issues does not let a claim holder's title forge a parent", async () => {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      if (new URL(String(url)).pathname === "/api/v1/agents") {
+        return response([{ session_id: "s1", title: "x · child of ACME-9" }]);
+      }
+      return response({
+        issues: [
+          {
+            key: "ACME-1",
+            title: "The root",
+            status: "todo",
+            priority: null,
+            rank: "a",
+            labels: [],
+            parent: null,
+            assignee: null,
+            updated_at: "2026-09-13T00:00:00Z",
+            last_seq: 1,
+            open_asks: 0,
+            claim: {
+              actor: {
+                kind: "session",
+                id: "s1",
+                origin: { session_title: "x · child of ACME-9" },
+              },
+              at: "2026-09-13T01:00:00Z",
+            },
+          },
+        ],
+        total: 1,
+        limit: 50,
+        offset: 0,
+      });
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_issues",
+      args: { project: "ACME" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const root = result.text.split("\n").find((line) => line.startsWith("ACME-1 ")) ?? "";
+    expect(root).toContain("claimed by");
+    // What a reader skips: every part the row prints in quotes, as JSON quotes it.
+    const outsideQuotes = root.replace(/"(?:[^"\\]|\\.)*"/g, "");
+    expect(outsideQuotes).not.toContain(" · child of ");
+  });
+
+  // The route part names its holder the same way, from the listener's session list, which this
+  // client does not bound: a holder named `x · child of ACME-9` must stay inside quotes too.
+  test("dispatch_issues does not let a route holder's name forge a parent", async () => {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      if (new URL(String(url)).pathname === "/api/v1/agents") return response([]);
+      return response({
+        issues: [
+          {
+            key: "ACME-1",
+            title: "The root",
+            status: "todo",
+            priority: null,
+            rank: "a",
+            labels: [],
+            parent: null,
+            assignee: null,
+            updated_at: "2026-09-13T00:00:00Z",
+            last_seq: 1,
+            open_asks: 0,
+            claim: null,
+            route: "role:legion-acme-acme-1-architect",
+            route_status: "holder_unresponsive",
+            route_holder: "x · child of ACME-9",
+          },
+        ],
+        total: 1,
+        limit: 50,
+        offset: 0,
+      });
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_issues",
+      args: { project: "ACME" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const root = result.text.split("\n").find((line) => line.startsWith("ACME-1 ")) ?? "";
+    expect(root).toContain("is unresponsive");
+    expect(root.replace(/"(?:[^"\\]|\\.)*"/g, "")).not.toContain(" · child of ");
+  });
+
   test("dispatch_issue returns duplicate candidates instead of throwing", async () => {
     const candidates = [
       {
@@ -4509,6 +4860,7 @@ describe("executeDispatchTool", () => {
       owner: "alice",
       service: null,
       project: null,
+      project_scope: null,
     });
     expect(result.text).toContain("alice");
     expect(result.text).not.toContain("which is not this host session");
@@ -4535,6 +4887,7 @@ describe("executeDispatchTool", () => {
       owner: null,
       service: null,
       project: null,
+      project_scope: null,
     });
     expect(result.text).toContain("shared token");
   });
@@ -4566,6 +4919,7 @@ describe("executeDispatchTool", () => {
       owner: null,
       service: "system:serviceaccount:legion:legion-worker",
       project: null,
+      project_scope: null,
     });
     expect(result.text).toContain("runs as service legion/legion-worker");
     expect(result.text).not.toContain("shared token");
@@ -4761,9 +5115,10 @@ describe("executeDispatchTool", () => {
       owner: "alice",
       service: null,
       project: "INFRA",
+      project_scope: null,
     });
     expect(result.text).toContain("Session session-1 acts for alice");
-    expect(result.text).toContain("It may write project INFRA and no other.");
+    expect(result.text).toContain("Its token names project INFRA.");
     expect(result.text).not.toContain("which is not this host session");
   });
 
@@ -4794,12 +5149,13 @@ describe("executeDispatchTool", () => {
       owner: "alice",
       service: null,
       project: null,
+      project_scope: null,
     });
     expect(result.text).toContain("Session ses_from_the_broker acts for alice");
     expect(result.text).toContain(
       "Your credential names session ses_from_the_broker, which is not this host session (session-1): Dispatch records every write you make as ses_from_the_broker."
     );
-    expect(result.text).not.toContain("may write project");
+    expect(result.text).not.toContain("Its token names project");
   });
 
   test("dispatch_whoami reads an omitted session as an older Dispatch, not as none", async () => {
@@ -4823,18 +5179,19 @@ describe("executeDispatchTool", () => {
       owner: "alice",
       service: null,
       project: null,
+      project_scope: null,
     });
     expect(result.text).toContain("Session session-1 acts for alice");
     expect(result.text).not.toContain("which is not this host session");
   });
 
-  // A token that names a service and no person is refused every Dispatch write with
-  // SIGN_IN_REQUIRED, whose message names `agent-secrets login`. whoami is where a person asks
-  // what their credential may do, so its sentence for that caller must not describe the issue
-  // creation the server refuses, and must name the command that gets them a write. This answer is
-  // an older Dispatch's, which omits sign_in_required, so the command reads the rule from the
-  // shape that Dispatch kept.
-  test("dispatch_whoami tells a service-only caller its writes need a sign-in", async () => {
+  // A Dispatch older than sign_in_required and project_scope refuses every write by a broker
+  // token that names a service and no person with SIGN_IN_REQUIRED, whose message names
+  // `agent-secrets login`. whoami is where a person asks what their credential may do, so its
+  // sentence for that caller must not describe the issue creation the server refuses, and must
+  // name the command that gets them a write. The command reads that older Dispatch's rule from
+  // the shape it kept.
+  test("dispatch_whoami tells a service-only caller of a Dispatch that answers no sign_in_required its writes need a sign-in", async () => {
     const fetchImpl = async (): Promise<Response> =>
       response({
         kind: "agent",
@@ -4937,50 +5294,73 @@ describe("executeDispatchTool", () => {
     expect(writer).not.toContain("read-only");
   });
 
-  // A current Dispatch answers the decision itself (sign_in_required), and the command reads it.
-  test("dispatch_whoami tells a machine Dispatch says needs a sign-in that its writes are refused", async () => {
-    const fetchImpl = async (): Promise<Response> =>
-      response({
-        kind: "agent",
-        owner: null,
-        service: "example-fleet",
-        session: "session-1",
+  // A job's token, which the secrets broker mints from a job entry, names a service and no person
+  // as a machine's does, and Dispatch takes its writes as that service; so it does an exchange
+  // entry's token that names its account. whoami reads which kind a token is from Dispatch's own
+  // decision, sign_in_required: false for a token that writes as its service, and true for a
+  // machine nobody signed in on, which keeps the sentence naming `agent-secrets login`.
+  test.each([
+    [
+      "a job's named token writes as its service and is told of its project what a person's named token is",
+      {
+        service: "system:serviceaccount:example-ns:example-job",
+        project: "EXAMPLE",
+        project_scope: "named",
+      },
+      false,
+      [
+        "Session session-1 runs as service example-ns/example-job and no person, and writes as that service",
+        "Its token names project EXAMPLE.",
+      ],
+      ["agent-secrets login", "refuses every write", "every public project"],
+    ],
+    [
+      "a job's public token writes as its service wherever a token that names no project may",
+      {
+        service: "example-org/example-repo/.github/workflows/release.yaml@refs/heads/main",
         project: null,
-        scopes: [],
-        sign_in_required: true,
-      });
-
-    const result = await executeDispatchTool({
-      tool: "dispatch_whoami",
-      args: {},
-      cwd: "/workspace",
-      host: "omp",
-      sessionId: "session-1",
-      config,
-      env: {},
-      exec: repoExec("owner/repo"),
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-    });
-
-    expect(result.text).toContain("runs as service example-fleet");
-    expect(result.text).toContain("Dispatch refuses every write it makes");
-    expect(result.text).toContain("agent-secrets login");
-  });
-
-  // An exchange entry that names no person mints a token that names its Kubernetes account as
-  // the service and proves a session, the shape of a machine nobody signed in on, but Dispatch
-  // records its writes under the account and answers sign_in_required false. The command must
-  // not tell that session it may not write, nor send it to a sign-in a pod cannot make.
-  test("dispatch_whoami tells an exchange entry's account session that it writes", async () => {
-    const fetchImpl = async (): Promise<Response> =>
-      response({
-        kind: "agent",
-        owner: null,
+        project_scope: "public",
+      },
+      false,
+      [
+        "Session session-1 runs as service example-org/example-repo/.github/workflows/release.yaml@refs/heads/main and no person, and writes as that service",
+        "It names no one project, so it may write wherever a token that names no project may.",
+      ],
+      ["agent-secrets login", "refuses every write", "Its token names project", "private projects"],
+    ],
+    [
+      "a machine's person-scoped token is refused every write and names the sign-in",
+      { service: "example-fleet", project: null, project_scope: "person" },
+      true,
+      [
+        "Session session-1 runs as service example-fleet and no person, so it may read but Dispatch refuses every write it makes",
+        "agent-secrets login",
+      ],
+      ["writes as that service", "may write"],
+    ],
+    [
+      "an exchange entry's account token writes as its account wherever a token that names no project may",
+      {
         service: "system:serviceaccount:example-ns:example-public",
-        session: "session-1",
         project: null,
+        project_scope: "named",
+      },
+      false,
+      [
+        "Session session-1 runs as service example-ns/example-public and no person, and writes as that service",
+        "It names no one project, so it may write wherever a token that names no project may.",
+      ],
+      ["Dispatch refuses every write it makes", "agent-secrets login"],
+    ],
+  ] as const)("dispatch_whoami: %s", async (_, answer, signInRequired, says, never) => {
+    const fetchImpl = async (): Promise<Response> =>
+      response({
+        kind: "agent",
+        owner: null,
+        session: "session-1",
         scopes: [],
-        sign_in_required: false,
+        ...answer,
+        sign_in_required: signInRequired,
       });
 
     const result = await executeDispatchTool({
@@ -4995,15 +5375,9 @@ describe("executeDispatchTool", () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
 
-    expect(result.text).toContain("runs as service example-ns/example-public");
-    expect(result.text).not.toContain("Dispatch refuses every write it makes");
-    expect(result.text).not.toContain("agent-secrets login");
-    expect(result.details).toEqual({
-      session: "session-1",
-      owner: null,
-      service: "system:serviceaccount:example-ns:example-public",
-      project: null,
-    });
+    expect(result.details).toEqual({ session: "session-1", owner: null, ...answer });
+    for (const sentence of says) expect(result.text).toContain(sentence);
+    for (const words of never) expect(result.text).not.toContain(words);
   });
 
   test("dispatch_issue_update moves status and merges external links by URL as the session", async () => {
@@ -5604,10 +5978,11 @@ describe("executeDispatchTool", () => {
 
   // Whether the reason was posted follows one rule with the close's PATCH: only an answer sent
   // before the reason could be stored proves it was not. That is Dispatch's own 4xx, or a
-  // gateway's answer that never reached Dispatch: a 408 or 429 (its own timeout or rate limit,
-  // where the client's advice that a retry may succeed stands) or a status that cannot clear. A
-  // 5xx, Dispatch's own included (it can fail after it committed), a timeout or a transport error
-  // leaves the reason possibly posted, and that account replaces the client's advice. After an
+  // gateway's answer that never reached Dispatch: a 429 (its own rate limit, where the client's
+  // advice that a retry may succeed stands) or a status that cannot clear. A 5xx, Dispatch's own
+  // included (it can fail after it committed), a gateway's 408 (its timeout can run out after it
+  // forwarded the post), a timeout or a transport error leaves the reason possibly posted, and that
+  // account replaces the client's advice. After an
   // error's own message it joins a clause, or starts a sentence where the message ended one. Every
   // failure but a timeout and a refusal that cannot clear is asked again until the write's five
   // attempts run out, each failing the same way, so the last attempt's account is the agent's.
@@ -5633,8 +6008,14 @@ describe("executeDispatchTool", () => {
       "effect. Dispatch finishes an attempt it received whatever this command does, so read " +
       "the write back before you send it again: a new command sends it under a new key.";
     for (const [message, expected, attempts] of [
-      // A 5xx can come after Dispatch committed the reason, so with no ask left the post ends
-      // unsettled (write-outcome.ts), and the reason's account follows as a sentence of its own.
+      // A 5xx or a gateway's 408 can come after Dispatch committed the reason, so with no ask left
+      // the post ends unsettled (write-outcome.ts), and the reason's account follows as a sentence
+      // of its own.
+      [
+        () => gatewayPage(408, "Request Timeout"),
+        `${page("408 Request Timeout", "408 Request Timeout")} (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
+        5,
+      ],
       [
         () => gatewayPage(502, "Bad Gateway"),
         `${page("502 Bad Gateway", "502 Bad Gateway")} (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
@@ -5668,11 +6049,6 @@ describe("executeDispatchTool", () => {
           throw new Error(reset);
         },
         `POST http://dispatch.test/api/v1/issues/ACME-175/messages failed on its last attempt (${reset}) (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
-        5,
-      ],
-      [
-        () => gatewayPage(408, "Request Timeout"),
-        `${answered("408 Request Timeout", "408 Request Timeout")}${retry}${notPosted}`,
         5,
       ],
       [
@@ -5736,15 +6112,12 @@ describe("executeDispatchTool", () => {
     );
   });
 
-  // A gateway's 408 or 429 on the close is its own timeout or rate limit, sent before it forwards
-  // the PATCH, so the issue did not close, as after the reason's post. Nothing refused the close,
-  // so the agent is not told to fix anything: the client's advice that a retry may succeed stands,
-  // and the account says how to retry without posting the reason a second time.
-  test("dispatch_issue_update says a gateway's 408 or 429 on the close left the issue open", async () => {
-    for (const [status, statusText] of [
-      [408, "Request Timeout"],
-      [429, "Too Many Requests"],
-    ] as const) {
+  // A gateway's 429 on the close is its own rate limit, sent before it forwards the PATCH, so the
+  // issue did not close, as after the reason's post. Nothing refused the close, so the agent is not
+  // told to fix anything: the client's advice that a retry may succeed stands, and the account says
+  // how to retry without posting the reason a second time.
+  test("dispatch_issue_update says a gateway's 429 on the close left the issue open", async () => {
+    for (const [status, statusText] of [[429, "Too Many Requests"]] as const) {
       const server = closingServer({
         message: () => response({ id: "message-7", issue_key: "ACME-175" }),
         patch: () => gatewayPage(status, statusText),
@@ -5772,14 +6145,15 @@ describe("executeDispatchTool", () => {
     }
   });
 
-  // A timeout, a transport error, or a 5xx gives no proof the issue stayed open, so the error
-  // must not say it did: an agent that believed it would retry and post its reason twice. A
-  // gateway's 5xx page is the same case, and its account replaces the client's retry advice
-  // rather than following it, so the message never says both that a retry may succeed and that
-  // retrying posts the reason again.
-  test("dispatch_issue_update says the close is unknown when the PATCH times out or 5xxes after the post", async () => {
-    // A 5xx can come after Dispatch committed the close, so with no ask left the PATCH ends
-    // unsettled (write-outcome.ts), and the close's account follows as a sentence of its own.
+  // A timeout, a transport error, a 5xx or a gateway's 408 gives no proof the issue stayed open, so
+  // the error must not say it did: an agent that believed it would retry and post its reason twice.
+  // A gateway's 5xx or 408 page is the same case, and its account replaces the client's retry
+  // advice rather than following it, so the message never says both that a retry may succeed and
+  // that retrying posts the reason again.
+  test("dispatch_issue_update says the close is unknown when the PATCH times out, 5xxes or 408s after the post", async () => {
+    // A 5xx or a gateway's 408 can come after Dispatch committed the close, so with no ask left the
+    // PATCH ends unsettled (write-outcome.ts), and the close's account follows as a sentence of its
+    // own.
     const landedTail =
       "an attempt of the write may have reached Dispatch, so it may or may not have taken " +
       "effect. Dispatch finishes an attempt it received whatever this command does, so read " +
@@ -5808,6 +6182,13 @@ describe("executeDispatchTool", () => {
         "PATCH http://dispatch.test/api/v1/issues/ACME-175 answered 502 Bad Gateway " +
           'with a body that is not Dispatch\'s error JSON ("502 Bad Gateway"), which looks like a ' +
           `proxy or gateway page rather than Dispatch's own answer (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
+        5,
+      ],
+      [
+        () => gatewayPage(408, "Request Timeout"),
+        "PATCH http://dispatch.test/api/v1/issues/ACME-175 answered 408 Request Timeout " +
+          'with a body that is not Dispatch\'s error JSON ("408 Request Timeout"), which looks like ' +
+          `a proxy or gateway page rather than Dispatch's own answer (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
         5,
       ],
     ] as const) {
@@ -8417,9 +8798,9 @@ describe("executeDispatchTool", () => {
     ).toEqual([]);
   });
 
-  // Only a call whose dry run Dispatch answers is run as one: any other command, a retraction
+  // Only a call whose command answers its dry run is run as one: any other command, a retraction
   // among them, would make its write.
-  test("executeDispatchTool refuses a dry run of a call whose dry run asks Dispatch nothing", async () => {
+  test("executeDispatchTool refuses a dry run of a call whose dry run runs no command", async () => {
     const asked: string[] = [];
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       asked.push(new URL(String(url)).pathname);
@@ -8442,7 +8823,7 @@ describe("executeDispatchTool", () => {
           fetchImpl: fetchImpl as typeof fetch,
           dryRun: true,
         })
-      ).rejects.toThrow(`dispatch ${tool}'s dry run asks Dispatch nothing`);
+      ).rejects.toThrow(`dispatch ${tool}'s dry run runs no command`);
     }
     expect(asked).toEqual([]);
   });
@@ -12066,7 +12447,8 @@ describe("executeDispatchTool", () => {
 
   // INFRA-1522 R14: an upload under a name the issue already holds would write that document's
   // next version, over the text it holds, so the command reads what the issue holds and refuses
-  // it before it sends the upload. --force is what asks for the version.
+  // it before it sends the upload. --force is what asks for the version. INFRA-4224: it reads the
+  // name after its check of the text, which passes this text.
   test("refuses an upload under a name the issue already holds, naming --force", async () => {
     const held = {
       id: "artifact-plan",
@@ -12087,6 +12469,8 @@ describe("executeDispatchTool", () => {
       if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
         return response([held]);
       }
+      const preflight = uploadPreflight(url, init);
+      if (preflight !== undefined) return preflight;
       throw new Error(`unexpected request: ${pathname}`);
     };
     const upload = (args: Record<string, unknown>) =>
@@ -12120,8 +12504,13 @@ describe("executeDispatchTool", () => {
     await expect(upload({ issue: "DSP-42", name: "plan-md", content: "# Plan\n" })).rejects.toThrow(
       "already holds plan.md"
     );
-    // Nothing was uploaded, and the round trip was never asked for: the name decided it.
-    expect(requests.every((request) => request.method === "GET")).toBe(true);
+    // Nothing was uploaded: each call checked the text, which passed, and then the name refused it.
+    expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
+      "POST /api/v1/markdown/round-trip",
+      "GET /api/v1/issues/DSP-42/artifacts",
+      "POST /api/v1/markdown/round-trip",
+      "GET /api/v1/issues/DSP-42/artifacts",
+    ]);
   });
 
   // INFRA-1334 R10: the command's held-name refusal answers a create that would write the held
@@ -12158,8 +12547,8 @@ describe("executeDispatchTool", () => {
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const { pathname } = new URL(String(url));
       if (pathname === "/api/v1/markdown/round-trip") {
-        // What the store holds for text that is whitespace alone: nothing at all (storedMarkdown,
-        // packages/envoy/internal/dispatch/api/markdown_round_trip.go).
+        // What the round trip answers for text that is whitespace alone: the empty markdown
+        // (markdownRoundTrip, packages/envoy/internal/dispatch/api/markdown_round_trip.go).
         return response({ markdown: "" });
       }
       if (pathname === "/api/v1/issues/DSP-42/artifacts") {
@@ -12205,8 +12594,9 @@ describe("executeDispatchTool", () => {
   // (goBlankPattern's comment names the pair). So this create writes the held document's next
   // version over the text it holds, and what answers it is the same held-name refusal
   // "refuses an upload under a name the issue already holds, naming --force" reads for
-  // `# Plan\n`. Read with `trim` the create was blank here, skipping both that refusal and the
-  // stored-text check, and the upload stored version 2 with no --force asked for.
+  // `# Plan\n`, after the stored-text check, which this stub's store passes. Read with `trim` the
+  // create was blank here, skipping both that refusal and the stored-text check, and the upload
+  // stored version 2 with no --force asked for.
   test("refuses a create under a name the issue holds whose content is U+FEFF alone", async () => {
     const content = "\uFEFF";
     const held = {
@@ -12225,6 +12615,8 @@ describe("executeDispatchTool", () => {
       if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
         return response([held]);
       }
+      const preflight = uploadPreflight(url, init);
+      if (preflight !== undefined) return preflight;
       throw new Error(`unexpected request: ${pathname}`);
     };
 
@@ -12250,8 +12642,11 @@ describe("executeDispatchTool", () => {
       "issue DSP-42 already holds plan.md (slug plan-md, kind doc) at version 1, which user alice wrote. " +
         ARTIFACT_NAME_EXISTS_RULE,
     ]);
-    // Nothing was uploaded, and the round trip was never asked for: the name decided it.
-    expect(requests.every((request) => request.method === "GET")).toBe(true);
+    // Nothing was uploaded: the text was checked, and then the name refused it.
+    expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
+      "POST /api/v1/markdown/round-trip",
+      "GET /api/v1/issues/DSP-42/artifacts",
+    ]);
   });
 
   test("writes the next version of a name the issue holds with --force", async () => {
@@ -12330,7 +12725,8 @@ describe("executeDispatchTool", () => {
     // notes.md is a Markdown name, which --path parses and renders the same way, so the refusal
     // sends nobody there: the one way out is the text printed above.
     expect(failure.problems[0]).not.toContain("--path");
-    expect(requests).toEqual(["/api/v1/issues/DSP-42/artifacts", "/api/v1/markdown/round-trip"]);
+    // The text was refused before the read of the held name, which the call never made.
+    expect(requests).toEqual(["/api/v1/markdown/round-trip"]);
   });
 
   // A name --path would store as bytes has a second way out, and the refusal names it.
@@ -12984,22 +13380,47 @@ describe("executeDispatchTool", () => {
     expect(failure instanceof Error ? failure.cause : undefined).toBeInstanceOf(Error);
   });
 
-  // A body Dispatch itself refused as too large is the one failure a repeat can never get
-  // through, so the refusal names what to do instead of saying to send the upload again
-  // (review round 3, finding 2). A name whose extension keeps the bytes has --path; a .md
-  // name has not, since --path parses and renders it the same way.
+  // A round trip Dispatch marks as its refusal of the text (TEXT_REFUSAL_HEADER, which Dispatch
+  // values `text`) is the call's refusal, in Dispatch's own words, whatever its status. The route
+  // marks so every refusal of the checks the upload makes of the text alone, at the status the
+  // upload answers it with, a 5xx for a failure of the seed on the text among them, and makes a
+  // new document's checks only for a request that asks for them, as the call does without
+  // --force. So the call refuses the text as its upload would be refused, under every name, asks
+  // nothing again, and uploads nothing.
   test.each([
-    ["notes.md", false],
-    ["Design notes", true],
-  ])("names the bound rather than a retry when Dispatch refuses the round trip's body (%s)", async (name, asBytes) => {
+    [
+      "notes.md",
+      413,
+      "CAP_EXCEEDED",
+      "document too large to store: this write's markdown makes more than 65536 elements",
+    ],
+    [
+      "Design notes",
+      413,
+      "CAP_EXCEEDED",
+      "document too large to store: this write's markdown makes more than 65536 elements",
+    ],
+    ["notes.md", 500, "INTERNAL", "internal server error"],
+    [
+      "notes.md",
+      400,
+      "NUL_CHARACTER",
+      "content holds a NUL character (U+0000) at character 11, which Dispatch cannot store",
+    ],
+  ])("refuses with Dispatch's own refusal when Dispatch marks the round trip's answer as a refusal of the text (%s, %i)", async (name, status, code, error) => {
     const posts: string[] = [];
+    let asked = 0;
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const { pathname } = new URL(String(url));
       if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
         return response([]);
       }
       if (pathname === "/api/v1/markdown/round-trip") {
-        return response({ error: "request body exceeds 6292480 bytes", code: "CAP_EXCEEDED" }, 413);
+        asked += 1;
+        return Response.json(
+          { error, code },
+          { status, headers: { [TEXT_REFUSAL_HEADER]: "text" } }
+        );
       }
       posts.push(pathname);
       return response({
@@ -13023,18 +13444,16 @@ describe("executeDispatchTool", () => {
       (caught: unknown) => caught
     );
 
-    expect(failure).toBeInstanceOf(Error);
-    const message = failure instanceof Error ? failure.message : String(failure);
-    expect(message).toContain("request body exceeds 6292480 bytes");
-    expect(message).toContain("sending the upload again does not change that");
-    expect(message).not.toContain("Send the upload again once that call is answered");
-    // The remedy is a step a writer can take: every text that reaches this refusal is past the
-    // megabyte one document holds, so "a document of its own" would be refused the same way.
-    expect(message).toContain(
-      "a markdown document is at most 1 MiB, so shorten it or split it across documents of at most that"
+    expect(failure).toEqual(
+      expect.objectContaining({
+        name: "DispatchServiceError",
+        code,
+        status,
+        message: error,
+        textRefusal: true,
+      })
     );
-    expect(message).not.toContain("write it to a document of its own");
-    expect(message.includes("Send it as a file with path (--path <file>)")).toBe(asBytes);
+    expect(asked).toBe(1);
     expect(posts).toEqual([]);
   });
 
@@ -13043,6 +13462,9 @@ describe("executeDispatchTool", () => {
   test.each([
     [401, "UNAUTHENTICATED", "the bearer token is not valid"],
     [500, "INTERNAL", "the document service is down"],
+    // The route's own refusal of a body past its bound, which no text within the document's
+    // bytes reaches, is no refusal of the text: it carries no mark.
+    [413, "CAP_EXCEEDED", "request body exceeds 6292480 bytes"],
   ])("refuses the upload when the round trip answers %i, naming what failed", async (status, code, error) => {
     const posts: string[] = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -13133,7 +13555,7 @@ describe("executeDispatchTool", () => {
     expect(posts).toEqual([]);
   });
 
-  test("uploads inline content the store would hold as it stands, and asks no round trip for a file", async () => {
+  test("uploads inline content the store would hold as it stands, checking the text before it reads the held name", async () => {
     const requests: string[] = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const { pathname } = new URL(String(url));
@@ -13160,8 +13582,8 @@ describe("executeDispatchTool", () => {
 
     expect(result.text).toContain("Uploaded notes.md as version 1");
     expect(requests).toEqual([
-      "/api/v1/issues/DSP-42/artifacts",
       "/api/v1/markdown/round-trip",
+      "/api/v1/issues/DSP-42/artifacts",
       "/api/v1/issues/DSP-42/artifacts",
     ]);
   });
@@ -20063,6 +20485,86 @@ test("a reference that is one document's slug and another's filename is the slug
   await expect(resolveIssueDocumentId(client, "DSP-42", "draft.md")).rejects.toThrow(
     '"draft.md" names 2 documents on this issue; use a slug: draft-md (draft.md), draft-md-2 (draft.md)'
   );
+});
+
+// The test `dispatch request-approval` makes over open decision blocks is the one another caller
+// that rests on a document makes too (the legion tool's register_gate on an ancestor's basis): it
+// reads the document `resolveIssueDocument` resolved, with its issue, names each open block, and
+// says the rest in that caller's own words. A document whose block has settled, its opener in the
+// version the request names reading `state="answered"`, passes.
+test("the open decision block test refuses another caller in that caller's own words", async () => {
+  const fetchFor =
+    (state: "open" | "answered") =>
+    async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          primary_artifact_id: "artifact-42",
+          artifacts: [
+            {
+              id: "artifact-42",
+              slug: "spec",
+              name: "spec.md",
+              primary: true,
+              approval: { state: "draft", latest_version: 4 },
+            },
+          ],
+        });
+      }
+      if (target.pathname === "/api/v1/artifacts/artifact-42/blocks") {
+        return response([{ id: "b-1", type: "ask", from: 0, to: 90 }]);
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/asks") {
+        return response([
+          {
+            id: "ask-b-1",
+            kind: "question",
+            block_id: "b-1",
+            block_artifact: { id: "artifact-42" },
+            state,
+            question: "Question of b-1?",
+          },
+        ]);
+      }
+      if (target.pathname === "/api/v1/artifacts/artifact-42/versions/4") {
+        return response({
+          number: 4,
+          markdown: `:::ask{#b-1 urgency="med" multiple="false" state="${state}"}\nQuestion of b-1?\n:::`,
+        });
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+  const clientWith = (state: "open" | "answered") =>
+    new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchFor(state) as typeof fetch
+    );
+  const words = {
+    call: "legion register_gate",
+    effect: "Answering one writes a version the registration does not name.",
+    remedy: "Register the version that carries the answer.",
+  };
+
+  const open = clientWith("open");
+  const resolved = await resolveIssueDocument(open, "DSP-42", "spec");
+  expect(resolved.issue?.key).toBe("DSP-42");
+  expect(resolved.artifact.id).toBe("artifact-42");
+  const refusal = await refuseOpenDecisionBlocks(open, resolved, words).then(
+    () => "",
+    (error: Error) => error.message
+  );
+  expect(refusal.split("\n")).toEqual([
+    "legion register_gate was not called: spec.md (version 4) has 1 open decision block. Answering one writes a version the registration does not name.",
+    '- "Question of b-1?" (block b-1, ask ask-b-1)',
+    "Register the version that carries the answer.",
+  ]);
+
+  const settled = clientWith("answered");
+  await expect(
+    refuseOpenDecisionBlocks(settled, await resolveIssueDocument(settled, "DSP-42", "spec"), words)
+  ).resolves.toBeUndefined();
 });
 
 const anchoredRow: TablePosition = {

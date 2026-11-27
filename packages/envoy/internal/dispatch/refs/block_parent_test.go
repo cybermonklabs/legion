@@ -132,7 +132,7 @@ func (d parentDocument) indexVersion(t *testing.T, number int, doc blockDoc, rec
 		t.Fatalf("begin the index of version %d: %v", number, err)
 	}
 	defer tx.Rollback(ctx)
-	_, won, write, err := IndexBlocks(ctx, tx, d.artifact, number, record.at, doc.markdown, doc.blocks, nil, nil)
+	_, won, write, err := IndexBlocks(ctx, tx, d.artifact, number, record.at, doc.markdown, doc.blocks, nil, nil, "")
 	if err != nil {
 		t.Fatalf("index version %d: %v", number, err)
 	}
@@ -399,6 +399,7 @@ func moverUnderRight() blockDoc {
 // block one version drops and the next restores joins the document a second time, on its new
 // row, and no block that stayed joins it twice.
 func TestABlockParentIsATupleAndItsColumnIsItsProjection(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := parentDatabase(t)
 	writer := model.Actor{Kind: "user", ID: "alice"}
@@ -485,7 +486,7 @@ func TestABlockParentIsATupleAndItsColumnIsItsProjection(t *testing.T) {
 			t.Fatalf("begin the pass that rolls back: %v", err)
 		}
 		defer tx.Rollback(ctx)
-		_, stood, write, err := IndexBlocks(ctx, tx, nested.artifact, 2, rolledBack.at, added.markdown, added.blocks, nil, nil)
+		_, stood, write, err := IndexBlocks(ctx, tx, nested.artifact, 2, rolledBack.at, added.markdown, added.blocks, nil, nil, "")
 		if err != nil {
 			t.Fatalf("index the version that rolls back: %v", err)
 		}
@@ -813,6 +814,7 @@ func blockNodesOf(t *testing.T, document parentDocument) int {
 // membership for any of them: the pass gives a node to the rows that name none, not to every
 // row of the document.
 func TestAPreStoreDocumentTakesItsNodesAtItsNextVersion(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := parentDatabase(t)
 	writer := model.Actor{Kind: "user", ID: "alice"}
@@ -891,6 +893,7 @@ func TestAPreStoreDocumentTakesItsNodesAtItsNextVersion(t *testing.T) {
 // those rows - and the second version indexes as the first did rather than being refused by
 // document_blocks_node for a node nobody may write.
 func TestABlockPastTheAddressBoundKeepsARowThatNamesNoNode(t *testing.T) {
+	t.Parallel()
 	database := parentDatabase(t)
 	writer := model.Actor{Kind: "user", ID: "alice"}
 	document := newParentDocument(t, database, "LONGKEY", strings.Repeat("l", MaxBlockNodeBytes))
@@ -940,6 +943,7 @@ func TestABlockPastTheAddressBoundKeepsARowThatNamesNoNode(t *testing.T) {
 // at the newer revision. A pass whose batch answered no error is committed as a caller commits
 // one, so a fence that refused nothing leaves its rows here to be named.
 func TestAPassTheFenceRefusesCommitsNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := parentDatabase(t)
 	writer := model.Actor{Kind: "user", ID: "alice"}

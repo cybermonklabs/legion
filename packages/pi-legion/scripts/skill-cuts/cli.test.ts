@@ -27,7 +27,7 @@ import {
 } from "../skill-scenarios/transcript";
 import { type ArmName, buildArm, snapshotTag } from "./arms";
 import { ListingMeasure } from "./build";
-import { capturePaths } from "./capture";
+import { capturePaths, promptDigest } from "./capture";
 import { type Case, pathHash } from "./cases";
 import { answerCall } from "./checkout";
 import {
@@ -882,7 +882,8 @@ function recordCaptures(
           case: c.id,
           arm: name,
           requestHeaders: responses ? {} : F2_HEADERS,
-          captureDigest: "0123456789abcdef",
+          // A capture's record keeps the system-prompt digest of the body it saved.
+          captureDigest: promptDigest(body),
           sessionDigest: c.sessionDigest,
           // A saved capture holds the harness-string rule's record, or it is refused.
           harness: { head: null, replaced: [] },
@@ -8084,6 +8085,109 @@ describe("behaviour continue-mixed", () => {
       pinDeployments = false;
     }
   }, 120_000);
+
+  // Catches: a continue-mixed over a saved stage one of whose arms holds runs while its saved
+  // capture is gone, or holds another body, sending that stage's continuations and then that arm's
+  // fresh runs on a new capture (or its continued runs on the other body): two requests in one
+  // arm's runs.
+  test("refuses, before any model call, a stage one of whose arms holds runs while its saved capture under --from is gone or holds a body of another digest than the stage's note, naming the case, the arm, the file and the digests; with the capture as saved it continues", async () => {
+    const s = savedScenario("continue-mixed-held", [{ id: "c04" }]);
+    const c04 = s.cases[0] as Case;
+    const continued = (arm: string) => {
+      const route = randomUUID();
+      return {
+        verdict: "fail",
+        userId: JSON.stringify({ session_id: randomUUID() }),
+        routingId: route,
+        deployments: [pinnedTo(route)],
+        reply: [read(`${arm}-r`), glob(`${arm}-g`)],
+      };
+    };
+    plantSaved(s, "c04", { "old 0": continued("old"), "new 0": continued("new") }, RUNNER);
+    // Each arm's note as the stage that saved them wrote it, from its saved capture.
+    const texts = { old: textDigest(s.old), new: textDigest(s.new) };
+    const notes = Object.fromEntries(
+      (["old", "new", "none"] as const).map((name) => {
+        const arm = buildArm(
+          c04,
+          name,
+          { old: s.old, new: s.new },
+          path.join(s.dir, "arms", "c04")
+        );
+        const files = capturePaths(armCaptureDir(s.out, arm, texts), "c04", name);
+        const record = JSON.parse(readFileSync(files.record, "utf8"));
+        const note = {
+          bodyFile: path.relative(s.out, files.body),
+          captureDigest: record.captureDigest,
+          sessionDigest: record.sessionDigest,
+        };
+        return [name, note];
+      })
+    );
+    const planted = result(s.out, "c04");
+    plantResult(s, "c04", {
+      stages: { screen: { ...planted.stages.screen, captures: notes } },
+    });
+    const body = path.join(s.out, notes.old?.bodyFile ?? "");
+    const digest = notes.old?.captureDigest;
+    const kept = readFileSync(body, "utf8");
+    const out = path.join(s.dir, "continued");
+    const args = behaviour("continue-mixed", { ...s, out }, "--from", s.out);
+    answer = continuationStandIn;
+    usage = { input: 10, output: 3 };
+    pinDeployments = true;
+    try {
+      rmSync(body);
+      let from = recorder.requests.length;
+      const gone = await cli(args);
+      expect({
+        code: gone.code,
+        stderr: gone.stderr,
+        requests: requestsSince(from).length,
+      }).toEqual({
+        code: 2,
+        stderr: expect.stringContaining(
+          `case c04's screen holds 10 runs of its old arm, made with the capture ${body} (digest ${digest}), which is not there`
+        ),
+        requests: 0,
+      });
+      expect(existsSync(caseResultFile(out, "c04"))).toBe(false);
+
+      const other = JSON.parse(kept);
+      other.system = [
+        ...other.system,
+        { type: "text", text: "A made-up block of another capture." },
+      ];
+      writeFileSync(body, JSON.stringify(other));
+      from = recorder.requests.length;
+      const differs = await cli(args);
+      expect({
+        code: differs.code,
+        stderr: differs.stderr,
+        requests: requestsSince(from).length,
+      }).toEqual({
+        code: 2,
+        stderr: expect.stringContaining(
+          `case c04's screen holds 10 runs of its old arm, made with the capture ${body} (digest ${digest}), and the capture there now is of digest ${promptDigest(other)}`
+        ),
+        requests: 0,
+      });
+      expect(existsSync(caseResultFile(out, "c04"))).toBe(false);
+
+      // Catches: the check refusing the capture the saved runs were made with.
+      writeFileSync(body, kept);
+      from = recorder.requests.length;
+      const ran = await cli(args);
+      expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(requestsSince(from).length).toBeGreaterThan(0);
+      const screen = result(out, "c04").stages.screen;
+      expect(
+        screen?.runs.filter((run) => run.continueMixed?.kind === "continued").map((run) => run.arm)
+      ).toEqual(["old", "new"]);
+    } finally {
+      pinDeployments = false;
+    }
+  }, 120_000);
 });
 
 // The provider's content policy (the architect, 2026-11-24): a case whose every replay the provider
@@ -8363,6 +8467,123 @@ describe("behaviour: a case the provider refuses on every replay", () => {
       `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, ${NO_LEGION_TOOL}, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 2 unscreened, 0 not run`
     );
   }, 60_000);
+});
+
+// A stage started again over the runs it saved (a screen stopped mid-case on a pod since replaced,
+// whose captures did not come along, say): its further runs of an arm replay the capture its saved
+// runs of that arm replayed, or none are made. A capture made again over saved runs sends the
+// arm's later runs with another request than its earlier ones, two requests in one arm's runs.
+describe("behaviour: a stage started again over saved runs takes only its saved captures", () => {
+  /** c03 and c04, each screened whole once (`beforeAll`). */
+  let base: Scenario;
+  /** c04's result and its screen as that screen wrote them. */
+  let saved: CaseResult;
+  let screen: NonNullable<CaseResult["stages"]["screen"]>;
+
+  beforeAll(async () => {
+    base = scenario("held-captures", LOSS_SKILL(), [{ id: "c03" }, { id: "c04" }]);
+    recordCaptures(base, ["old", "new", "none"]);
+    answer = behaviourStandIn;
+    usage = { input: 10, output: 3 };
+    const ran = await cli(behaviour("screen", base));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    saved = result(base.out, "c04");
+    const whole = saved.stages.screen;
+    if (whole === undefined) throw new Error("c04 has no screen");
+    screen = whole;
+  });
+
+  /** A copy of the screened --out at `name`, in which c03 has no result yet and c04's screen was
+   *  stopped once its old arm had its runs: running, its runs old's alone, its capture notes as the
+   *  screen wrote them. Gives the scenario of that --out, the old runs, the old arm's note and its
+   *  saved body file, and an Oh My Pi and a models.yml a capture would read (`standInContext`), so
+   *  that a command given them could make a capture. */
+  const stopped = (name: string) => {
+    const s = { ...base, out: path.join(base.dir, name) };
+    cpSync(base.out, s.out, { recursive: true });
+    rmSync(caseResultFile(s.out, "c03"));
+    const runs = screen.runs.filter((run) => run.arm === "old");
+    writeFileSync(
+      caseResultFile(s.out, "c04"),
+      JSON.stringify({ ...saved, stages: { screen: { ...screen, state: "running", runs } } })
+    );
+    const note = screen.captures.old;
+    if (note === undefined) throw new Error("c04's screen notes no capture of its old arm");
+    const bin = path.join(base.dir, `${name}-bin`);
+    mkdirSync(bin, { recursive: true });
+    const { omp, models } = standInContext(s, "c04", bin);
+    return { s, runs, note, body: path.join(s.out, note.bodyFile), omp, models };
+  };
+
+  // Catches: a screen started again over saved runs of an arm whose saved capture is gone making a
+  // new capture of it and sending that arm's later runs with it, with no word; and a refusal that
+  // comes only once the cases before it have sent their calls.
+  test("a screen whose old arm holds runs while its saved capture of that arm is gone is refused before any model call, even given --models, naming the case, the arm, the body file and the digest", async () => {
+    const { s, note, body, omp, models } = stopped("held-gone");
+    rmSync(body);
+    const from = recorder.requests.length;
+    const ran = await cli(behaviour("screen", s, "--models", models, "--omp", omp));
+    // c03, first in the file, has no call made either.
+    expect({ code: ran.code, stderr: ran.stderr, requests: requestsSince(from).length }).toEqual({
+      code: 2,
+      stderr: expect.stringContaining(
+        `case c04's screen holds 10 runs of its old arm, made with the capture ${body} (digest ${note.captureDigest}), which is not there`
+      ),
+      requests: 0,
+    });
+    expect(existsSync(caseResultFile(s.out, "c03"))).toBe(false);
+  }, 120_000);
+
+  // Catches: a saved capture file of an arm that holds runs replayed whatever body it now holds.
+  test("a screen whose old arm holds runs while its saved capture file holds a body of another digest than the stage's note is refused before any model call, naming both digests", async () => {
+    const { s, note, body } = stopped("held-other");
+    const other = JSON.parse(readFileSync(body, "utf8"));
+    other.system = [...other.system, { type: "text", text: "A made-up block of another capture." }];
+    writeFileSync(body, JSON.stringify(other));
+    expect(promptDigest(other)).not.toBe(note.captureDigest);
+    const from = recorder.requests.length;
+    const ran = await cli(behaviour("screen", s));
+    expect({ code: ran.code, stderr: ran.stderr, requests: requestsSince(from).length }).toEqual({
+      code: 2,
+      stderr: expect.stringContaining(
+        `case c04's screen holds 10 runs of its old arm, made with the capture ${body} (digest ${note.captureDigest}), and the capture there now is of digest ${promptDigest(other)}`
+      ),
+      requests: 0,
+    });
+  }, 120_000);
+
+  // Catches: the check refusing the saved capture its runs were made with.
+  test("a screen whose old arm holds runs and whose saved capture is the one its note names goes on, sending only the runs it lacks", async () => {
+    const { s, runs } = stopped("held-kept");
+    const from = recorder.requests.length;
+    const ran = await cli(behaviour("screen", s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    // c03 whole (its judge controls, 30 replays and 30 judgements), then c04's new and none runs.
+    expect(requestsSince(from)).toHaveLength(63 + 2 * 2 * SCREEN_RUNS);
+    const c04 = result(s.out, "c04").stages.screen;
+    expect(c04?.state).toBe("counted");
+    expect(c04?.runs.filter((run) => run.arm === "old")).toEqual(runs);
+    expect(c04?.runs.filter((run) => run.arm !== "old")).toHaveLength(2 * SCREEN_RUNS);
+    expect(c04?.captures).toEqual(screen.captures);
+  }, 120_000);
+
+  // Catches: the check refusing an arm the stage holds no run of, which is captured as before.
+  test("a screen whose new arm holds no run and has no saved capture goes to make that capture, as before: with no --models it says a capture needs one", async () => {
+    const { s } = stopped("held-none");
+    const c04 = s.cases.find((c) => c.id === "c04") as Case;
+    const arm = buildArm(c04, "new", { old: s.old, new: s.new }, path.join(s.dir, "arms", "c04"));
+    const dir = armCaptureDir(s.out, arm, { old: textDigest(s.old), new: textDigest(s.new) });
+    for (const file of Object.values(capturePaths(dir, "c04", "new"))) rmSync(file);
+    const from = recorder.requests.length;
+    const ran = await cli(behaviour("screen", s));
+    expect(ran.code).toBe(1);
+    expect(ran.stderr).toContain(
+      `case c04 has no capture of its new arm in ${dir}, and no --models is given to make one`
+    );
+    expect(ran.stderr).not.toContain("holds 10 runs");
+    // c03 is screened whole before it.
+    expect(requestsSince(from)).toHaveLength(63);
+  }, 120_000);
 });
 
 // The runner of each run (a tree whose runner is built on this one found a screen that skipped

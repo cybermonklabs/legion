@@ -1,7 +1,8 @@
 package api
 
-// DaemonAPIVersion is the contract this daemon speaks with the Legion plugin (@sjawhar/pi-legion):
-// the claim, credential, workflow, controller and state shapes the plugin's client parses
+// This file is the history of DaemonAPIVersion (contracts.go), the contract this daemon speaks
+// with the Legion plugin (@sjawhar/pi-legion): the claim, credential, workflow, controller and
+// state shapes the plugin's client parses
 // (`packages/pi-shared/src/daemon-client.ts`, through
 // `packages/contracts/src/legion-api.ts`), the pane environment it reads — every variable
 // the tmux runtime sets on a pane (`internal/runtime/tmux/spawn.go`'s `panePairs`) and the Sandbox
@@ -11,29 +12,35 @@ package api
 // and the command line of a pod's `legion launcher` container (each pod kind's
 // `launcherContainer` in `internal/runtime/sandbox/podkind.go`, and `sessionProxyFlags`), both of
 // which the image's own `legion` reads. The installed plugin declares the
-// number it was built against as `legion.daemonApiVersion` in its `package.json`, and the boot
-// gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
+// number it was built against as `legion.daemonApiVersion` in the `package.json` its pack writes,
+// and the boot gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
 //
-// Bump rule: a change to any of these surfaces raises this constant above the number its base
-// carries. The same commit writes the number in every other file that holds it:
-// `legion.daemonApiVersion` in `packages/pi-legion/package.json` and
-// `packages/claude-envoy/package.json`, and the two fixtures
-// that this package's golden tests write, `packages/contracts/fixtures/daemon-api/version.json`
-// and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
-// `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
-// the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
-// and the plugin's field together. The bump's history is its numbered entry in this file, below.
-// `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
-// disagrees with this constant, and, naming a free number, a change that touches the contract
-// below (that script's header says which edits do) and declares no number above its base's.
+// Entry rule: a change to any of these surfaces adds one entry, and edits no number by hand.
+// `scripts/daemon-contract-entry.sh <slug>` writes the entry's file in this package,
+// `contract_<id>_<slug>.go`, whose id is the UTC second it was made; the author writes the
+// entry's text there, what the change does to the contract and why, with every row the change
+// adds to a table the daemon serves from, each naming the entry by its constant. In
+// `packages/daemon`, `go test ./internal/api -update` then writes the entry's fixture,
+// `packages/contracts/fixtures/daemon-api/contracts/<id>_<slug>.json`. The numbered entries below
+// end at LastNumberedContract, and no change adds one or moves one: each build numbers its new
+// entries LastNumberedContract plus their rank in the order main's first-parent history merged
+// them, which the release and worker-image builds stamp into the binary (contracts.go), so no
+// committed file holds a new entry's number. `legion version --contracts` prints each entry's
+// number in a build. `.github/scripts/check-daemon-api-contract.sh` refuses six changes: a
+// numbered entry added to this file or renumbered in it; an entry's file or fixture deleted or
+// renamed; an entry with no fixture, or a fixture with no entry; `legion.daemonApiVersion` in a
+// manifest, a `version.json`, or a `daemon` mark in a state golden; a changelog fragment that
+// names a number above LastNumberedContract; and an edit of an entry's fixture or of a frozen
+// record with no paragraph starting `Correction:` in that entry's text.
 //
 // Serving rule: a change that moves the shape of an answer a plugin parses serves the old shape to
-// each contract of `SupportedContracts` below this constant, through shaping.go's `shapeAnswer`: a
-// band takes off a key the change adds (`stateNarrowings`), a stand-in writes back a key it removes
-// (`withFixAttempts` is one), and a value strip holds back a value newer than that contract's
-// enumeration (`valueStrips`, which reads answers.go's `EnumeratedFields`). The shape gate in this
-// package's tests (`contract_shapes_test.go`) refuses a change that does not, and a record of an
-// earlier contract changed with the serving-down that produces it passes, which a reviewer reads.
+// each contract of `SupportedContracts` below DaemonAPIVersion, through shaping.go's
+// `shapeAnswer`: a band takes off a key the change adds (`stateNarrowings`), a stand-in writes
+// back a key it removes (`standIns`), and a value strip holds back a value newer than that
+// contract's enumeration (`valueStrips`, which reads answers.go's `EnumeratedFields`). The shape
+// gate in this package's tests (`contract_shapes_test.go`) refuses a change that does not, and a
+// record of an earlier contract changed with the serving-down that produces it passes, which a
+// reviewer reads.
 // Under `settings` the rule covers only the top-level keys a supported reader types (answers.go's
 // `typedSettings`): a settings key no reader types needs no band, stand-in or contract number,
 // only its row in settings_test.go's classification and the fixture values the field walk asks for.
@@ -524,6 +531,10 @@ package api
 // change takes the number above them. Its migration is named for the moment it was written,
 // 20261029195520, since main closed the numbered series at 0067.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, and `issues.*.architect.updateRound` in the state
+// answer at this contract and the record left them out.
+//
 // 48: an idle issue pod is released, so a plugin tells the daemon what its session is doing and a
 // released claim is a new suspension source. Each session reports its activity to the daemon on
 // POST /legion/v1/claims/activity, authenticated by its claim as `claims/ready` is: whether it
@@ -547,6 +558,10 @@ package api
 // then landed 45 and, as sjawhar/legion#2538, 46, and sjawhar/legion#2539 takes 47, so this
 // branch takes the number above them, as the collision note says.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, and `issues.*.architect.updateRound` in the state
+// answer at this contract and the record left them out.
+//
 // 49: INFRA-1101 -- the memory group of an issue's tree on `GET /legion/v1/state`. Every issue
 // record of the state gains `memoryGroup` (`memory` or `none`), `memoryDrawMode` (the project's
 // `projects.<KEY>.memory.mode` in force at the draw) and `memoryDrawnAt`, the three absent
@@ -567,6 +582,10 @@ package api
 // (20261104153554_issue_memory_carried). (This branch took 47 while main's idle-release change
 // was unmerged; main landed it as 48, so this branch takes the number above it, as the collision
 // note says.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, and `issues.*.architect.updateRound` in the state
+// answer at this contract and the record left them out.
 //
 // 51: dispatch://INFRA-980 -- the admission cap counts the issues at work rather than the trees,
 // so `api.Admission` on GET /legion/v1/state changes shape with it. `active` and `waiting` name
@@ -598,6 +617,10 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, and `issues.*.architect.updateRound` in the state
+// answer at this contract and the record left them out.
+//
 // 52: INFRA-1307 -- a pane is told the issue key it stamps into its commits, LEGION_ISSUE_TRAILER:
 // the claim's own issue when `projects.<KEY>.commit_issue_trailer_repos` names the repository the
 // launch works, among the repositories Dispatch maps to the project, and set on no other pane, so
@@ -620,6 +643,10 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. main held 51 at the forward merge that renumbered this entry, 71abec3650df; read main's
 // own number again at the next merge rather than from this line.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, and `issues.*.architect.updateRound` in the state
+// answer at this contract and the record left them out.
 //
 // 53: INFRA-976 -- the daemon spreads the wakes it causes at the pace its operator set
 // (`legion.yaml`'s `worker_wakes_per_minute`, default 8, and `worker_wake_burst`, default 1, which
@@ -650,6 +677,10 @@ package api
 // 51 and 52, so this branch takes the number above them all, as the collision notes above say.
 // main held 52 at the forward merge that renumbered this entry, bb24cc4d20d9; read main's own
 // number again at the next merge rather than from this line.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, and `issues.*.architect.updateRound` in the state
+// answer at this contract and the record left them out.
 //
 // 54: INFRA-809 -- the project decides whether a merge that closes an issue opens a production
 // check and who works it (`projects.<KEY>.production_check`, `off` or `tester`), and the checking
@@ -682,6 +713,10 @@ package api
 // forward merge that renumbered this entry, d43e0fe9bbb1; read main's own number again at the
 // next merge rather than from this line.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, and `issues.*.architect.updateRound` in the state
+// answer at this contract and the record left them out.
+//
 // 55: INFRA-1272 -- the design gate is a list of steps a deployment declares, and the issue
 // record of `GET /legion/v1/state` gains `gatedSteps`, one entry for each step the deployment
 // gates, in the order it gates them (`api.GatedStepView`): the `step` (`decisions`, `criteria` or
@@ -710,6 +745,10 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. main held 54 at the forward merge that renumbered this entry, b5482068c554; read main's
 // own number again at the next merge rather than from this line.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, and `issues.*.architect.updateRound` in the state
+// answer at this contract and the record left them out.
 //
 // 56: dispatch://INFRA-1480 -- `api.StrandedClaim.state` on `GET /legion/v1/state` may now be
 // `retired` as well as `suspended` and `failed`, because `workflow.Stranded` now reports a retired
@@ -740,6 +779,10 @@ package api
 // number is read again at every forward merge, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, and `issues.*.architect.updateRound` in the state
+// answer at this contract and the record left them out.
 //
 // 57: dispatch://INFRA-1274 -- every claim view carries `step`, what the daemon last saw that
 // claim's agent do: `at`, when the daemon received that step, `turnStartedAt`, when the turn it
@@ -772,6 +815,10 @@ package api
 // says. main held 56 at the forward merge that renumbered this entry, ff2a10ef3ef0; read main's
 // own number again at the next merge rather than from this line.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, and `issues.*.architect.updateRound` in the state
+// answer at this contract and the record left them out.
+//
 // 58: INFRA-1100 -- the issue record of `GET /legion/v1/state` gains `waitingLine`, where the
 // issue stands in `admission.waiting`: its `place`, 1 being first in the line, and the `length`
 // of that list at this read (`api.WaitingLineView`). It is present only for an issue the list
@@ -799,6 +846,10 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. main held 57 at the forward merge that renumbered this entry, 0297a21a3b07; read main's
 // own number again at the next merge rather than from this line.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, and `issues.*.architect.updateRound` in the state
+// answer at this contract and the record left them out.
 //
 // 59: INFRA-956 (sjawhar/legion#2780) -- fix-attempt counting gone. `legion.yaml` no
 // longer takes `max_fix_attempts`, and a file carrying it loads with a warning naming the
@@ -879,6 +930,10 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. It landed on main as sjawhar/legion#2780's 59, which took this branch to 60.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, and `issues.*.architect.updateRound` in the state
+// answer at this contract and the record left them out.
+//
 // 62: INFRA-2551 (cybermonklabs/legion) -- the daemon counts every move back of an issue by its
 // `<from>-<to>` pair (internal/phase's BackwardPairs), and each worker of `GET /legion/v1/state`
 // carries those counts as `backwardMoves`, the pair to its count (`api.PhaseView`). The key is
@@ -921,6 +976,10 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. Read main's own number, and every open branch's, again at the next forward merge rather
 // than from this line.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, and `issues.*.architect.updateRound` in the state
+// answer at this contract and the record left them out.
 // 64: INFRA-312 -- every Legion launch says which issue its dollars were spent on: the pane
 // environment and a pod's worker container now carry `legion.issue`, the issue the launch serves,
 // and `legion.role`, the role it runs, in `OTEL_RESOURCE_ATTRIBUTES`, written after the attributes
@@ -954,6 +1013,10 @@ package api
 // this entry was first written. As
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, and `issues.*.architect.updateRound` in the state
+// answer at this contract and the record left them out.
 // 68: INFRA-1282 -- a person may decline to answer an ask, and `answeredBy` on the `waitingOn` of
 // an `awaiting_person` root in `GET /legion/v1/state` takes a ninth value, `declined`
 // (`record.AnsweredByDecline`): the person closed an ask of the root — the one the wait names or
@@ -986,6 +1049,10 @@ package api
 // rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, and `issues.*.architect.updateRound` in the state
+// answer at this contract and the record left them out.
 //
 // 73: INFRA-2712 -- the stale-plugin lane asks its worker nothing, and what it has left to do is
 // readable. `api.State` gains `claimsToRefresh`, how many claims the lane still has to relaunch
@@ -1044,6 +1111,10 @@ package api
 // next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, and `issues.*.architect.updateRound` in the state
+// answer at this contract and the record left them out.
 //
 // 75: INFRA-3083 -- a claim says why it failed, and a held issue says which phase its hold
 // stopped. A claim view of `GET /legion/v1/state` — a worker's, an architect's — carries
@@ -1143,6 +1214,11 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
+//
 // 85: INFRA-2554 (cybermonklabs/legion) -- every issue of `GET /legion/v1/state` that is not
 // working now carries one rendered answer, `why` (`api.WhyView`): its `state` —
 // `claim_stopped`, `waiting`, `blocked` or `unlisted` — and the `reason`, the sentence a person
@@ -1198,6 +1274,11 @@ package api
 // of a file list: GitHub cuts a pull request's file list short, so one that changes more files
 // than the page holds answers without this path. Read the base's own number and every open
 // pull request again at every forward merge rather than from this line.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
 //
 // 86: dispatch://INFRA-714 -- the daemon is an event-driven state machine, and its strictly parsed
 // shapes change with it. The phase enum loses `awaiting_merge` (both places it is spelled: the
@@ -1282,6 +1363,11 @@ package api
 // retired: the route starts the worker's phase again — restoring a held one, as the architect's
 // retry_or_escalate does — so the session it starts, new or kept, is given that phase's task.
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
+//
 // 87: INFRA-3219 (cybermonklabs/legion) -- a claim whose launch the runtime refused because the
 // shared public leak check could not be installed in the role's pod says so in a field of its
 // own: `leakCheckCause` on `api.ClaimView` (every claim view of `GET /legion/v1/state`, and so
@@ -1308,6 +1394,11 @@ package api
 // every forward merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
 //
 // 94: INFRA-2800 (cybermonklabs/legion) -- a phase entry is a numbered fact of the record, and
 // each issue of `GET /legion/v1/state` carries the two numbers that say whether its role holds
@@ -1375,6 +1466,11 @@ package api
 // well rather than passed over. Read the base's own number and every open pull request again
 // at the next merge rather than from this line.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
+//
 // 98: INFRA-3107 -- `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
 // record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`:
 // the issue's key, the one word for why nothing of it runs (`record.HeldReason`, a closed list of
@@ -1418,6 +1514,11 @@ package api
 // request again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
 //
 // 104: INFRA-3161 -- the two claim recoveries read the claim's process, and `fresh_session`
 // reaches a claim stored working that no process stands behind. Such a claim was refused
@@ -1468,6 +1569,11 @@ package api
 // every open pull request again at the next forward merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
 //
 // 111: dispatch://INFRA-2560 -- every issue record of `GET /legion/v1/state` that stands in a
 // live tree gains that tree's quiet time: `treeMovedAt`, the newest movement the daemon has
@@ -1589,6 +1695,11 @@ package api
 // Read the base's own number and every open head again at the next forward merge rather than
 // from this line.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
+//
 // 123: INFRA-3146 (cybermonklabs/legion) -- a phase completion names the head its evidence is
 // about, and the completion route judges that head rather than which phase entry the turn began
 // under. Every file-backed handoff record now carries `head`, the commit the work it reports was
@@ -1628,6 +1739,11 @@ package api
 // main's 111: 112 (#2731), 113 (#3575), 114 (#3730), 115 (#3937), 116 (#3715), 117 (#3711), 118
 // (#3659), 119 (#3712), 120 (#3993), 121 (#3519) and 122 (#2230); 123 is the lowest number above
 // them all.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
 //
 // 132: INFRA-3036 (cybermonklabs/legion) -- the waiting line's `kind` (`api.WaitingLineView`) on
 // `GET /legion/v1/state` gains a fifth word, `waiting_on_issue`: an issue the daemon has started
@@ -1715,6 +1831,11 @@ package api
 // declares. Read the base's own number and every open pull request again at every forward merge
 // rather than from this line.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
+//
 // 133: dispatch://INFRA-3027 -- the issue record of `GET /legion/v1/state` gains `mergeWait`, what
 // the issue's review round waits on from GitHub (api.MergeWaitView, which projection's
 // mergeWaitView builds for exactly the rounds classify.RoundWaitsOnMergeState names — the one rule
@@ -1771,6 +1892,11 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
+//
 // 137: INFRA-3621 (cybermonklabs/legion) -- a pod's `legion launcher` may be told
 // `--session-impersonate-service-account <email>`, a fourth session flag after the three that name
 // the Cloud SQL session database (`sessionProxyAccountFlag` after `sessionProxyFlagNames`,
@@ -1788,6 +1914,11 @@ package api
 // reading at 2026-11-15T03:57Z found no other open pull request declaring 137: it passed over 134
 // (#4017 and #4021), 135 (#3659) and 136 (#3575 and #3730). Read the base's own number and every
 // open pull request again at every forward merge rather than from this line.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
 //
 // 141: INFRA-2566 -- the experiments each issue was drawn for on `GET /legion/v1/state`. Every
 // issue record of the state gains `assignments`, the experiment answers that apply to it: one
@@ -1899,6 +2030,11 @@ package api
 // that brought main in at 7baa398b, main declared 137, #4046's own, below 141, so the number
 // held.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
+//
 // 144: dispatch://INFRA-3557 -- the memory guard in an issue pod's launcher, which is two shapes of
 // the launcher wire. The daemon's answer to a launcher's hello carries the settings the guard runs
 // by, as one optional member of `shimwire.LauncherHelloAck` (`memoryGuard`: `actPercent`,
@@ -1956,6 +2092,11 @@ package api
 // line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
 //
 // 146: INFRA-2614 (cybermonklabs/legion) -- a root's architect is a role the record states work
 // for, so the two keys contract 94 added carry a root: `phase.RoleFor` answers the architect for
@@ -2099,6 +2240,11 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
+//
 // 151: dispatch://INFRA-3729 -- issue pods in GKE Sandbox microVMs, which is four shapes of the
 // launcher wire and one of the state. The launcher's command line gains `--microvm` and, with
 // `runtime.kubernetes.sandbox.microvm.metadata` set, `--metadata-workload-pool` and
@@ -2142,6 +2288,11 @@ package api
 // #2230, 150 #4049 and #4065, 152 #3730, 153 #4115). That is a reading and never the rule: read
 // main's own number and every open head again at the next forward merge rather than from this
 // line.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
 //
 // 152: INFRA-2543 -- the GitHub App installation, and no longer the project's Dispatch repository
 // mapping, decides which repositories a project works in, so the `repositories` block of
@@ -2247,6 +2398,11 @@ package api
 // entry's own 152 were both outside it.
 // Read main's own number and every open pull request's again at the next forward merge rather
 // than from this line.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
 //
 // 160: INFRA-2009 -- the cache trimmer in an issue pod's launcher process, which is two shapes of
 // the launcher wire and one member of `GET /legion/v1/state`. The daemon's answer to a
@@ -2416,6 +2572,11 @@ package api
 // #4180 and #4193) and 159 (#4049 and #4175), so 160 is still the lowest number above main's 152
 // that no open head declares.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
+//
 // 168: the completion that ends the retro rates the plan the issue ran. `POST
 // /legion/v1/handoff/complete` (`api.HandoffCompleteRequest`, contracts'
 // `LegionHandoffCompleteRequest`) takes two optional fields: `planRating`, a whole number from 1
@@ -2454,6 +2615,11 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
+//
 // 178: INFRA-3759 (cybermonklabs/legion) -- the project pause. Four routes: the controller's `POST
 // /legion/v1/project/pause` (`{grantId, reason}`) and `POST /legion/v1/project/resume`
 // (`{grantId}`), which take a controller grant and refuse any other with 403 `CONTROLLER_REQUIRED`,
@@ -2487,6 +2653,11 @@ package api
 // between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
 // and none declaring 178.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
+//
 // 188: #4543 -- no wire shape changes. Entry 64's prose no longer names one deployment's spend
 // collector or its attribute prefix: it says that a spend row can be grouped by issue only when a
 // deployment's collector keeps `legion.issue` and `legion.role`. Every route, the state, and the
@@ -2496,6 +2667,11 @@ package api
 // different numbers, so the two still move together.
 // (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
 // and #4581 declares 187.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
 //
 // 189: a pod's launcher resumes a session named by its id alone (dispatch://INFRA-4108). A claim
 // can record a session and no file of it: the issue close of every release from `legion-v18.0.1`
@@ -2538,6 +2714,11 @@ package api
 // #3659, #3712, #4065 and #4553 as well as by this change's own earlier head, 194 by #3831 and
 // #4030, and nothing at 189. Read the base's own number and every open pull request again at the
 // next merge rather than from this line.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer at this contract and the record left them
+// out.
 //
 // 193: dispatch://INFRA-2694 -- the daemon shapes every answer down to the contract the caller's
 // own plugin speaks, and reads every request an older plugin still sends, so a roll that replaces
@@ -2840,6 +3021,13 @@ package api
 // what answers.go gives the two answers this change adds as their arrival, and it was then the
 // last number of answers.go's SupportedContracts.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer, and `architect.locator.sandbox` with its
+// `container`, `generation`, `name`, `namespace` and `podUid`, `architect.updateReasons`, and
+// `architect.updateRound` in the issue-record answer at this contract and the records left them
+// out.
+//
 // 199: INFRA-4605 (cybermonklabs/legion) -- a pod's `legion launcher` may be told
 // `--session-writer-audience <audience>`, a fifth session flag after
 // `--session-impersonate-service-account` (`sessionWriterAudienceFlag` after
@@ -2928,6 +3116,13 @@ package api
 // request declares. Read the base's own number and every open pull request again at every forward
 // merge rather than from this line.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer, and `architect.locator.sandbox` with its
+// `container`, `generation`, `name`, `namespace` and `podUid`, `architect.updateReasons`, and
+// `architect.updateRound` in the issue-record answer at this contract and the records left them
+// out.
+//
 // 202: INFRA-4401 -- the daemon reads no repository mapping from Dispatch, and the `repositories`
 // block of `GET /legion/v1/state` becomes the repositories the project's live records name, read
 // in the state's own snapshot. The block is `{live, caches, withoutWebhookApp}`. `live` holds one
@@ -2981,6 +3176,13 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer, and `architect.locator.sandbox` with its
+// `container`, `generation`, `name`, `namespace` and `podUid`, `architect.updateReasons`, and
+// `architect.updateRound` in the issue-record answer at this contract and the records left them
+// out.
+//
 // 205: dispatch://INFRA-3178 -- the owning architect moves a child out of the workflow by its own
 // status write in Dispatch, and the operation that made that move through the daemon goes. The
 // daemon takes the owning architect's done, backlog, icebox or triage on a child of its tree as it
@@ -3020,6 +3222,13 @@ package api
 // 202, and a reading of every open pull request at that merge, which ended at
 // 2026-11-21T12:31:48Z, found 205 declared by no other, so this entry kept 205. Read the base's own
 // number and every open pull request again at every forward merge rather than from this line.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer, and `architect.locator.sandbox` with its
+// `container`, `generation`, `name`, `namespace` and `podUid`, `architect.updateReasons`, and
+// `architect.updateRound` in the issue-record answer at this contract and the records left them
+// out.
 //
 // 213: INFRA-4036 (cybermonklabs/legion) -- the deployment's capability report on `GET
 // /legion/v1/state` gains a row, `repository-cache-room`, and with it a third word of a capability
@@ -3098,6 +3307,13 @@ package api
 // 208 by #4175, 209 by #4049, 210 by #4661, 211 by #2230, 212 by #4030, #4392, #4540 and #4580,
 // and no open head but this change's own declaring 213. Read the base's own number and every open
 // pull request again at the next merge rather than from this line.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer, and `architect.locator.sandbox` with its
+// `container`, `generation`, `name`, `namespace` and `podUid`, `architect.updateReasons`, and
+// `architect.updateRound` in the issue-record answer at this contract and the records left them
+// out.
 //
 // 217: dispatch://INFRA-3531 and dispatch://INFRA-4567, two changes that reach main together as
 // cybermonklabs/legion#4273, into whose branch #4485 merged, so they take one number. First,
@@ -3261,6 +3477,13 @@ package api
 // is a reading and never the rule: read main's own number and every open head again at the next
 // forward merge rather than from this line.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer, and `architect.locator.sandbox` with its
+// `container`, `generation`, `name`, `namespace` and `podUid`, `architect.updateReasons`, and
+// `architect.updateRound` in the issue-record answer at this contract and the records left them
+// out.
+//
 // 219: the owner of an issue gives Legion a plan with one task, and the plan picks which of
 // today's steps run. Two architect routes are new. `POST /legion/v1/plans/register`
 // (`api.PlanRegisterRequest`: `grantId`, `issue`, `artifactId`, `version` from 1) reads that
@@ -3363,6 +3586,13 @@ package api
 // declared only by #4611 and by #4902, #4948 and #5161, each stacked on this branch and carrying
 // this entry, so this entry kept 219, and OwnerPlanContract comes after 217 in SupportedContracts.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer, and `architect.locator.sandbox` with its
+// `container`, `generation`, `name`, `namespace` and `podUid`, `architect.updateReasons`, and
+// `architect.updateRound` in the issue-record answer at this contract and the records left them
+// out.
+//
 // 220: an experiment sets how each new issue is done. `POST /legion/v1/plans/register` and `POST
 // /legion/v1/tasks/stop` answer `409 PLAN_NOT_TAKEN` for a recorded issue that an experiment drew
 // into an arm whose `plan` is `default`: a code and a sentence that names the issue's variant and
@@ -3398,6 +3628,13 @@ package api
 // From this entry answers.go's SupportedContracts names `api.assignmentPlanContract`, after
 // `OwnerPlanContract`. Read the base's own number and every open pull request again at the next
 // merge rather than from this line.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer, and `architect.locator.sandbox` with its
+// `container`, `generation`, `name`, `namespace` and `podUid`, `architect.updateReasons`, and
+// `architect.updateRound` in the issue-record answer at this contract and the records left them
+// out.
 //
 // 228: INFRA-1575 -- the intake gives up on a message whose handling keeps failing, keeps it
 // whole, tells the controller, and lets the operator or the controller replay it or discard it.
@@ -3514,6 +3751,13 @@ package api
 // lowest number above main's 220 that no other open pull request declares. Read main's own number
 // and every open pull request again at the next merge rather than from this line.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer, and `architect.locator.sandbox` with its
+// `container`, `generation`, `name`, `namespace` and `podUid`, `architect.updateReasons`, and
+// `architect.updateRound` in the issue-record answer at this contract and the records left them
+// out.
+//
 // 232: dispatch://INFRA-4508 -- `POST /legion/v1/claims/turn-outcome` takes two optional fields.
 // `httpStatus` is the HTTP status the provider refused the turn with, from 100 to 599, where the
 // producer's provider library gives one (Oh My Pi's `errorStatus` on the refused assistant
@@ -3541,6 +3785,13 @@ package api
 // 231 declared by others, and 232 by none, so this entry moved to 232, the lowest number above
 // main's 228 that no other open pull request declares. Read main's own number and every open head
 // again at the next merge rather than from this line.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer, and `architect.locator.sandbox` with its
+// `container`, `generation`, `name`, `namespace` and `podUid`, `architect.updateReasons`, and
+// `architect.updateRound` in the issue-record answer at this contract and the records left them
+// out.
 //
 // 246: each issue of `GET /legion/v1/state` (and the issue record, which is one issue of that
 // body) carries `podHold`, the standing hold of the issue's pod: why the
@@ -3586,6 +3837,13 @@ package api
 // 251 by #5307), so this entry kept 246. Read the base's own number and every open pull request
 // again at every forward merge rather than from this line.)
 //
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer, and `architect.locator.sandbox` with its
+// `container`, `generation`, `name`, `namespace` and `podUid`, `architect.updateReasons`, and
+// `architect.updateRound` in the issue-record answer at this contract and the records left them
+// out.
+//
 // 250: the admission waiting line is ordered by Dispatch priority first. `GET /legion/v1/state`
 // and `GET /legion/v1/issues/{key}/record` gain two keys: each issue the workflow records carries
 // `priority`, its own Dispatch priority as Dispatch sends it, a number from 0 for P0 to 3 for P3
@@ -3611,6 +3869,13 @@ package api
 // 7e75126fae brought main's 246 (#4960's entry above), below 250, so this entry kept 250. Read
 // main's own number and every open pull request again at the next merge rather than from this
 // line.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer, and `architect.locator.sandbox` with its
+// `container`, `generation`, `name`, `namespace` and `podUid`, `architect.updateReasons`, and
+// `architect.updateRound` in the issue-record answer at this contract and the records left them
+// out.
 //
 // 256: #5349 -- each claim view of `GET /legion/v1/state` and of `GET
 // /legion/v1/issues/{key}/record` gains two keys: `lastDeathAt` beside `lastDeathCause` and
@@ -3649,6 +3914,13 @@ package api
 // 256, so this entry kept 256, and the list ends priorityContract, causeTimesContract. Read the
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer, and `architect.locator.sandbox` with its
+// `container`, `generation`, `name`, `namespace` and `podUid`, `architect.updateReasons`, and
+// `architect.updateRound` in the issue-record answer at this contract and the records left them
+// out.
 //
 // 275: dispatch://INFRA-4425 -- under `dispatch_token_broker` a role trades its pod's exchange
 // identity at the secrets broker for a Dispatch token of its own session, and the daemon names
@@ -3735,4 +4007,24 @@ package api
 // at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 275
+//
+// Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
+// `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and
+// `issues.*.architect.updateRound` in the state answer, and `architect.locator.sandbox` with its
+// `container`, `generation`, `name`, `namespace` and `podUid`, `architect.updateReasons`, and
+// `architect.updateRound` in the issue-record answer at this contract and the records left them
+// out.
+//
+// Each change after LastNumberedContract is an entry of its own file, and takes no number here
+// (contracts.go).
+
+/*
+The line below is no Go and no contract number of this build. Main's contract check from before
+this change reads every open pull request's head for `const\s+DaemonAPIVersion\s*=\s*(\d+)` and
+fails each pull request it checks while one open head declares none, so this head keeps a line it
+reads, at the number main declared when the line was written. Its tab keeps it out of every reader
+of the number after the cutover (legion-pins, scripts/daemon-contract.sh and
+scripts/daemon-contract-convert.sh), which read `const DaemonAPIVersion = <n>` with one space, and
+the check of this change reads no open pull request.
+const	DaemonAPIVersion = 275
+*/

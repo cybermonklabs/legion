@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -10,11 +9,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
-	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // personNodeTitleRunes is how much of a row's text the page shows: its first line, cut here so
-// the answer carries a title and not a whole comment.
+// the answer carries a title and not a whole comment, by refs.FirstLineWithin, which moves the cut
+// back before a reference that crosses it, except where text.HeadRefs says the cut by length
+// stands.
 const personNodeTitleRunes = 240
 
 // personNode is one thing on a person's page: a node they are tied to, which of the two ties it
@@ -168,7 +168,7 @@ var personNodesQuery = personNodesTied + `, items as (
 //
 // It is a named read of the graph and no traversal: the route takes the person and a page, and
 // takes no kind, no filter and no edge to walk, so no caller chooses what the store is asked.
-// The whole route belongs to people - routeScopes gives it model.ScopePerson, and gateRouteScopes
+// The whole route belongs to people - its declaration states model.ScopePerson, and gateRouteScopes
 // refuses a credential the deployment configured with 403 OAUTH_SCOPE_REQUIRED before this
 // handler runs - and every row it answers passes the visibility predicate of its own kind.
 //
@@ -246,8 +246,7 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		first, _, _ := strings.Cut(body, "\n")
-		row.Title = text.HeadRunes(first, personNodeTitleRunes)
+		row.Title = refs.FirstLineWithin(body, s.deps.ServerURL, personNodeTitleRunes)
 		row.CreatedAt = row.CreatedAt.UTC()
 		if editedAt != nil {
 			edited := editedAt.UTC()

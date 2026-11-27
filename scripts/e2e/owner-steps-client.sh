@@ -6,10 +6,10 @@
 # `legion` tool makes through createLegionDaemonClient (packages/pi-shared/src/daemon-client.ts)
 # under bun, one run of scripts/e2e/owner-steps-client.ts per call:
 #   - older-client-tree: the driver builds the plugin of the release before itself: the newest
-#     commit of main's first-parent line whose DaemonAPIVersion is below this checkout's (origin/main
-#     in a clone that holds its history; a shallow clone, as CI's checkout is, fetches main from
-#     origin), taken with `git archive` into the run's own directory and given its own
-#     `bun install --frozen-lockfile`;
+#     commit of main's first-parent line whose daemon API contract, as scripts/daemon-contract.sh
+#     prints it for that commit, is below this checkout's, walked on refs/remotes/origin/main as
+#     this script fetched it (below), taken with `git archive` into the run's own directory and
+#     given its own `bun install --frozen-lockfile`;
 #   - control-client-plan-version-absent, client-register-plan: planRegister with the architect's
 #     grant (mintClaimGrant) answers 200 with the plan; the same call naming a version Dispatch does
 #     not hold fails the same check;
@@ -36,6 +36,18 @@
 #   LEGION_TEST_PG_DSN=… bash scripts/e2e/owner-steps-client.sh
 # OWNER_STEPS_CLIENT_EVIDENCE_DIR keeps the run's evidence as OWNER_STEPS_EVIDENCE_DIR does for
 # owner-steps.sh. The run around the driver is lib/live-daemon-proof.sh's.
+#
+# The driver's daemon is the one daemon of an e2e driver built with the merge order
+# (scripts/daemon-contract-order.sh --stamp HEAD, which build_daemon_driver writes into the
+# binary), since it alone meets a plugin of another commit, and an unstamped build numbers its
+# entries by id rather than in the order main gives them. The order is main's with this
+# checkout's own entries after it: the order main takes if this checkout merges next. The script
+# reads the history of HEAD and of main, which a shallow clone, as CI's checkout is, lacks, so
+# this script first fetches both without blobs, main into refs/remotes/origin/main, where the
+# driver's walk for the release before reads it too. A clone that holds HEAD's history fetches
+# main alone, since HEAD may be a commit origin has never seen. The order names the entries
+# committed at HEAD, and the daemon refuses an order that does not name exactly the entries it
+# was built with, so an entry file this checkout has not committed fails the run.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -54,6 +66,20 @@ for tool in git tar; do
   }
 done
 export LEGION_E2E_REPO_ROOT="$root"
+fetch=(git -C "$root" fetch --quiet --no-tags --filter=blob:none)
+if [ "$(git -C "$root" rev-parse --is-shallow-repository)" = true ]; then
+  fetch+=(--unshallow origin "$(git -C "$root" rev-parse HEAD)" refs/heads/main:refs/remotes/origin/main)
+else
+  fetch+=(origin refs/heads/main:refs/remotes/origin/main)
+fi
+"${fetch[@]}" || {
+  echo "FAIL prerequisites: ${fetch[*]} failed; the driver's merge order and its release before read the history of HEAD and of main" >&2
+  exit 1
+}
+stamp=$(cd "$root" && bash scripts/daemon-contract-order.sh --stamp HEAD) || {
+  echo "FAIL prerequisites: scripts/daemon-contract-order.sh --stamp HEAD failed, so the driver has no merge order to carry" >&2
+  exit 1
+}
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
-live_daemon_proof 'owner steps client' owner-steps-client TestOwnerStepsClientLive "${OWNER_STEPS_CLIENT_EVIDENCE_DIR:-}"
+live_daemon_proof 'owner steps client' owner-steps-client TestOwnerStepsClientLive "${OWNER_STEPS_CLIENT_EVIDENCE_DIR:-}" '' '' "$stamp"
