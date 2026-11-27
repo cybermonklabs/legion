@@ -9,24 +9,27 @@ import (
 )
 
 // One close_read and one close_wait_publish row wait for an issue at a time, and each reads the
-// record when it runs. Their writers ask whether a row of the kind still waits (OutboxWaiting):
-// false where none is, true for a row no lane holds, and false for a row a lane runs now under a
-// live lease, since the close read applies its fact while its own row is leased and that fact can
-// owe the next read. A row whose lane died mid-run, whose lease lapsed, waits again: the lane runs
-// it again from the start. Another issue's row and another kind's row answer false.
+// record when it runs. Their writers ask for the row of the kind that still waits (OutboxWaiting):
+// none where there is none, the row itself where no lane holds it, and none for a row a lane runs
+// now under a live lease, since the close read applies its fact while its own row is leased and
+// that fact can owe the next read. A row whose lane died mid-run, whose lease lapsed, waits again:
+// the lane runs it again from the start. Another issue's row and another kind's row answer none.
+// The row answered is the waiting row itself, with its id and its next_at, which is what a caller
+// that makes the read it asks for due (ExpediteOutbox) names.
 func TestOutboxWaitingCountsOnlyARowNoLiveLeaseHolds(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
-	waiting := func(issue string, kind OutboxKind) bool {
+	waiting := func(issue string, kind OutboxKind) (OutboxRow, bool) {
 		t.Helper()
+		var row OutboxRow
 		var got bool
 		inTx(t, st, func(tx pgx.Tx) {
 			var err error
-			got, err = records.OutboxWaiting(ctx, tx, issue, kind)
+			row, got, err = records.OutboxWaiting(ctx, tx, issue, kind)
 			must(t, err)
 		})
-		return got
+		return row, got
 	}
 	lease := func(until string) {
 		t.Helper()
@@ -39,12 +42,13 @@ func TestOutboxWaitingCountsOnlyARowNoLiveLeaseHolds(t *testing.T) {
 			}
 		})
 	}
-	if waiting("ACME-1", OutboxKindCloseRead) {
+	if _, got := waiting("ACME-1", OutboxKindCloseRead); got {
 		t.Fatal("a close_read row of ACME-1 waits with the outbox empty")
 	}
 
+	due := time.Now().UTC().Truncate(time.Microsecond)
 	inTx(t, st, func(tx pgx.Tx) {
-		row, err := NewOutboxRow("ACME-1", CloseRead{Generation: 1}, time.Now())
+		row, err := NewOutboxRow("ACME-1", CloseRead{Generation: 1}, due)
 		must(t, err)
 		must(t, records.Enqueue(ctx, tx, row))
 	})
@@ -57,17 +61,21 @@ func TestOutboxWaitingCountsOnlyARowNoLiveLeaseHolds(t *testing.T) {
 		{"ACME-1", OutboxKindCloseWaitPublish, false},
 		{"ACME-2", OutboxKindCloseRead, false},
 	} {
-		if got := waiting(tc.issue, tc.kind); got != tc.want {
+		if _, got := waiting(tc.issue, tc.kind); got != tc.want {
 			t.Errorf("a %s row of %s with one close_read of ACME-1 queued and unleased waits = %t, want %t", tc.kind, tc.issue, got, tc.want)
 		}
 	}
+	if row, _ := waiting("ACME-1", OutboxKindCloseRead); row.ID == 0 || row.Issue != "ACME-1" ||
+		row.Kind != OutboxKindCloseRead || !row.NextAt.Equal(due) {
+		t.Errorf("the waiting row answered = %+v, want the close_read row of ACME-1 queued for %s, with its id", row, due)
+	}
 
 	lease("5 minutes")
-	if waiting("ACME-1", OutboxKindCloseRead) {
+	if _, got := waiting("ACME-1", OutboxKindCloseRead); got {
 		t.Error("the close_read row of ACME-1 a lane runs now under a live lease waits, want it not waiting: the fact its run applies could never queue the next read")
 	}
 	lease("-5 minutes")
-	if !waiting("ACME-1", OutboxKindCloseRead) {
+	if _, got := waiting("ACME-1", OutboxKindCloseRead); !got {
 		t.Error("the close_read row of ACME-1 whose lease lapsed does not wait, want it waiting: its lane runs it again from the start")
 	}
 }
