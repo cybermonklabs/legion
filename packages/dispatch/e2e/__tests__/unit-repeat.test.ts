@@ -820,10 +820,14 @@ function asSubreaper(): string[] {
  *  reads no process outside the driver's own tree.
  *
  *  `count` kills each process it finds that has not ended as soon as it has read it, so no process
- *  it has seen can start or adopt another (the kernel gives orphans to no reaper that is exiting),
- *  and the children of a process that ends go to the driver: each walk reads the driver's list
- *  again at its end, until that read finds no process the walk has not listed. So once a walk
- *  finds no process the walks before it had not seen, it has seen every process below the driver.
+ *  it has seen can start another, and the children of a process that ends go to the driver: each
+ *  walk reads the driver's list again at its end, until that read finds no process the walk has
+ *  not listed. A process that SIGKILL stands for can still adopt orphans until it begins to exit
+ *  (the kernel skips only a reaper that is exiting). So `count` ends only on a walk that finds no
+ *  process the walks before it had not seen, and that began once each process it saw alive had
+ *  begun to exit or was gone; until then it walks again, every 10 ms once nothing new turns up,
+ *  for 1 s at the most. That is its one wait, and only a tree that holds such a process waits.
+ *  Such a walk has seen every process below the driver.
  *
  *  `shdpnd` reads a status whole, with one buffered `mapfile`, which never seeks back. A `read` per
  *  line seeks back after each line, and the kernel writes a status anew at each seek, so where a
@@ -842,16 +846,17 @@ function asSubreaper(): string[] {
  *  under gVisor, or cannot be read, or its own children list is missing; `seen`, where that list
  *  does not show the pid the driver started, as `$1`; and `count`, where a process that has not
  *  ended has a status with no `ShdPnd:` line, which is unknown and not gone, where a status, a
- *  stat or a children list cannot be read while its process's directory is there, or where the
- *  tree still changed after 10 walks. `PROC_ROOT` (default `/proc`) and `WALK_ROOT` (default the
- *  driver's own pid) are for the row that reads a stub process tree. Each redirection of a read
- *  goes after its `2>`, since bash applies them in order and reports a file it cannot open before
- *  a later `2>` applies. */
+ *  stat or a children list cannot be read while its process's directory is there, where the tree
+ *  still changed after 10 walks, or where a process it saw alive had not begun to exit after 1 s.
+ *  `PROC_ROOT` (default `/proc`) and `WALK_ROOT` (default the driver's own pid) are for the row
+ *  that reads a stub process tree. Each redirection of a read goes after its `2>`, since bash
+ *  applies them in order and reports a file it cannot open before a later `2>` applies. */
 const leftBehind = `
 proc=\${PROC_ROOT:-/proc}
 root=\${WALK_ROOT:-$$}
-err=$(mktemp) || { echo "left behind: unknown: no scratch file for read errors"; exit 2; }
-trap 'rm -f "$err"' EXIT
+scratch=$(mktemp -d) && mkfifo "$scratch/never" || { echo "left behind: unknown: no scratch directory"; exit 2; }
+err=$scratch/err
+trap 'rm -rf "$scratch"' EXIT
 shdpnd() {
   local line status=()
   shd=""
@@ -939,18 +944,34 @@ judge() {
   esac
 }
 count() {
-  local p t line verdict walks=0 counted=" " fresh argv lines=() unknown=() unread=() unreadable=() changing=no
+  local p t line verdict walks=0 waits=0 never counted=" " fresh argv lines=() alive=() dying=()
+  local unknown=() unread=() unreadable=() changing=no
   left=()
+  exec {never}<>"$scratch/never"
   while :; do
+    # Which processes seen alive can still adopt, read before the walk, so that the walk that
+    # ends the count begins once none can.
+    dying=()
+    for p in "\${alive[@]}"; do
+      kill -0 "$p" 2>/dev/null || continue
+      ended "$p"
+      (($? == 1)) && dying+=("$p")
+    done
     walk
     for t in "\${hidden[@]}"; do case " \${unreadable[*]} " in *" $t "*) ;; *) unreadable+=("$t") ;; esac; done
     fresh=()
     for p in "\${tree[@]}"; do case $counted in *" $p "*) ;; *) fresh+=("$p"); counted+="$p " ;; esac; done
-    ((\${#fresh[@]})) || break
+    if ((\${#fresh[@]} == 0)); then
+      ((\${#dying[@]})) && ((++waits <= 100)) || break
+      read -t 0.01 -u "$never"
+      continue
+    fi
     ((++walks > 10)) && { changing=yes; break; }
     for p in "\${fresh[@]}"; do
       judge "$p"
-      case $verdict in ended | killed) continue ;; esac
+      [ "$verdict" = ended ] && continue
+      alive+=("$p")
+      [ "$verdict" = killed ] && continue
       argv=(); line=""
       mapfile -d '' -t argv 2>/dev/null <"$proc/$p/cmdline"
       ((\${#argv[@]})) && printf -v line '%s ' "\${argv[@]}"
@@ -959,11 +980,13 @@ count() {
       case $verdict in left) left+=("$p") ;; unknown) unknown+=("$p") ;; unread) unread+=("$p") ;; esac
     done
   done
+  exec {never}<&-
   for line in "\${lines[@]}"; do echo "$line"; done
   ((\${#unknown[@]})) && echo "left behind: unknown: no ShdPnd: line in the status of \${unknown[*]}"
   ((\${#unreadable[@]})) && echo "left behind: unknown: could not read \${unreadable[*]}"
   [ "$changing" = no ] || echo "left behind: unknown: the tree under $root still changed after 10 walks"
-  ((\${#unknown[@]} + \${#unreadable[@]})) || [ "$changing" = yes ] || echo "left behind: \${#left[@]}"
+  ((\${#dying[@]})) && echo "left behind: unknown: \${dying[*]} had not begun to exit 1 s after SIGKILL"
+  ((\${#unknown[@]} + \${#unreadable[@]} + \${#dying[@]})) || [ "$changing" = yes ] || echo "left behind: \${#left[@]}"
 }
 `;
 
@@ -1757,27 +1780,36 @@ driverRow(
     // neither, so a process the leg left reads as nothing left. Here the driver is a subreaper,
     // as in `stoppedLeg`, and each of 20 rounds starts ten subshells that each start a `sleep 30`
     // and end by themselves within 5 ms, while `count` reads the tree. `count` kills each
-    // process it lists, so a sleep that still runs after it, with no SIGKILL pending and not
-    // exiting, is one it missed. On a development box on 2026-11-27 main's one walk missed a
-    // sleep in 146 of 300 such rounds, and this driver in none of 600.
+    // process it lists. Once the subshells are reaped, each sleep is a child of the driver, so a
+    // sleep in the driver's own list that still runs, with no SIGKILL pending and not exiting, is
+    // one `count` missed. The check reads a sleep's status first: SIGKILL stands in it from the
+    // kill until the process is gone, so a status that reads nothing is a sleep that went. An
+    // earlier check read the stat first, and so could name a sleep that ended between its two
+    // reads; CI run 45937283483 named one sleep that way, and did not keep whether `count` had
+    // listed it, which a miss now says. On a development box on 2026-11-27 main's one walk missed
+    // a sleep in 146 of 300 such rounds, and this driver in none of 600.
     const directory = scratch();
     const check = `
+capable || exit 2
 mkfifo "$NEVER" || exit 2
 for ((r = 0; r < 20; r++)); do
-  : >"$PIDS"
   for j in 1 2 3 4 5 6 7 8 9 10; do
-    (sleep 30 & echo "$!" >>"$PIDS"; read -t "0.00$((RANDOM % 5))$((RANDOM % 10))" -u 9; exit 0) 9<>"$NEVER" &
+    (sleep 30 & read -t "0.00$((RANDOM % 5))$((RANDOM % 10))" -u 9; exit 0) 9<>"$NEVER" &
   done
-  count >/dev/null
+  count >"$COUNTED"
   wait
-  while read -r p; do
+  c=""; read -r c 2>/dev/null <"/proc/$$/task/$$/children"
+  for p in $c; do
+    shdpnd "$p" && [ -n "$shd" ] || continue
+    ((0x$shd & 0x100)) && continue
     stat=""; read -r stat 2>/dev/null <"/proc/$p/stat" || continue
     f=(\${stat##*) })
     [ "\${f[0]}" = Z ] && continue
     ((f[6] & 4)) && continue
-    shdpnd "$p"; [ -n "$shd" ] && ((0x$shd & 0x100)) && continue
-    echo "missed: $p"; kill -KILL "$p"
-  done <"$PIDS"
+    listed=no
+    while IFS= read -r line; do case $line in "left: $p "*) listed=yes ;; esac; done <"$COUNTED"
+    echo "missed: $p, which count listed: $listed"; kill -KILL "$p"
+  done
 done
 echo "rounds: $r"
 `;
@@ -1787,11 +1819,37 @@ echo "rounds: $r"
       env: {
         PATH: process.env.PATH ?? "",
         NEVER: join(directory, "never"),
-        PIDS: join(directory, "pids"),
+        COUNTED: join(directory, "counted"),
       },
       from: import.meta.url,
     });
     expect(stdout).toBe("rounds: 20\n");
+  },
+  rowLimit("short")
+);
+
+driverRow(
+  "a process that has not begun to exit 1 s after its SIGKILL is not counted",
+  async () => {
+    // The lie: a process that SIGKILL stands for can still adopt orphans until it begins to
+    // exit, so a count that ends while one has not begun could miss a child it adopts. Here a
+    // stand-in `kill` sends no SIGKILL, so the sleep `count` kills never begins to exit, and
+    // `count` waits its 1 s and says so.
+    const script = `${leftBehind}sleep 30 & s=$!
+kill() { [ "$1" = -KILL ] && return 0; builtin kill "$@"; }
+count
+unset -f kill
+kill -KILL "$s"
+`;
+    const { stdout } = await runBounded({
+      argv: [...asSubreaper(), "bash", "-c", script],
+      bound: "short",
+      env: { PATH: process.env.PATH ?? "" },
+      from: import.meta.url,
+    });
+    expect(stdout).toMatch(
+      /^left: (\d+) sleep 30 \nleft behind: unknown: \1 had not begun to exit 1 s after SIGKILL\n$/
+    );
   },
   rowLimit("short")
 );
