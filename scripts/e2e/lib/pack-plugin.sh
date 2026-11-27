@@ -72,7 +72,9 @@ extensions/*.ts) entry=${entry#extensions/} && entry=${entry%.ts} ;;
 esac
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/$me.XXXXXXXX")
-trap 'rm -rf "$work"' EXIT
+# A tree the EXIT trap cannot remove (a copied directory with no owner write, say) is left in the
+# temp directory and does not change the run's status: the pack's own status is the answer.
+trap 'rm -rf "$work" || true' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM

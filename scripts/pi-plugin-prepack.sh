@@ -10,9 +10,11 @@
 #   scripts/pi-plugin-prepack.sh --stage-skills <package name> <dest dir>
 #
 # The contract with whoever packs: the release workflow, the worker image and the e2e pack step
-# rewrite `omp.extensions` to the packed bundle, ["dist/<entry>.js"], in the tree they pack, which
-# no one else reads: the release's and the image's build trees are discarded, and the e2e pack step
-# packs a copy of the package (scripts/e2e/lib/pack-plugin.sh). Packing with the source manifest,
+# rewrite `omp.extensions` to the packed bundle, ["dist/<entry>.js"], in the tree they pack: the
+# release's and the image's build trees are discarded, and the e2e pack step packs a copy of the
+# package (scripts/e2e/lib/pack-plugin.sh). The daemon's TestTheRealPluginsOnTheRealOhMyPi
+# (packages/daemon/internal/daemon/promptreferences_omp_test.go) still rewrites the checkout's
+# manifest in place and puts it back. Packing with the source manifest,
 # ["extensions/<entry>.ts"], would publish a package whose extension file is absent from the tarball
 # (`files` ships dist/ only), so the script refuses any other list, naming the one it found and the
 # one it requires.

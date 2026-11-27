@@ -100,8 +100,7 @@ describe("the dispatch CLI the package ships", () => {
     for (const metafile of metafiles) expect(notices).toContain(`"${metafile}"`);
   });
 
-  // One pack for both rows below: each `bun pm pack` runs the prepack's two bundles, which take
-  // about two minutes. The tarball and the tree it unpacks to are the same for both.
+  // One pack for the three rows below; they share its tarball and the tree it unpacks to.
   describe("the packed tarball", () => {
     // Packed the way the release packs (scripts/e2e/lib/pack-plugin.sh), so this is the tarball an
     // installed plugin unpacks. The pack builds in a copy of its own, so it leaves no dist/ here.

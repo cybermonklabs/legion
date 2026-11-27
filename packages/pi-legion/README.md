@@ -59,9 +59,11 @@ write from every path the pack ships (each `files` entry, the manifest and the r
 licence files), so the tarball's modes do not depend on the packer's umask. It refuses to pack
 with the committed manifest, whose `omp.extensions` names `extensions/legion.ts`; the release
 workflow's `pi_legion_build` job (`.github/workflows/release.yaml`), the worker image and the e2e
-pack step rewrite it to `["dist/legion.js"]` before `bun pm pack`, each in a tree no one else reads:
-the build job's and the image's trees are discarded, and the e2e pack step packs a copy of this
-package (`scripts/e2e/lib/pack-plugin.sh`), so the checkout's manifest is never rewritten. Nothing
+pack step rewrite it to `["dist/legion.js"]` before `bun pm pack`, each in a tree of its own: the
+build job's and the image's trees are discarded, and the e2e pack step packs a copy of this package
+(`scripts/e2e/lib/pack-plugin.sh`), so it never writes the checkout. One packer still rewrites the
+checkout's manifest in place and puts it back: the daemon's `TestTheRealPluginsOnTheRealOhMyPi`
+(`packages/daemon/internal/daemon/promptreferences_omp_test.go`). Nothing
 commits a version — the committed manifest's `.version` stays where it last was, and the
 `pi-legion-v` tag the release makes records the release. The same three steps write the daemon API
 contract the plugin was built against into

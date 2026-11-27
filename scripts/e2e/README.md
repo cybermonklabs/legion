@@ -6665,18 +6665,19 @@ The package builds there as it does in place: the prepack copies the repository'
 
 1. make the run's tree, with the package copied (this script's own need: the checkout is shared, where the release's build job tree is discarded);
 
-2. rewrite the copy's `omp.extensions` to `["dist/<entry>.js"]` with `jq`, where `extensions/<entry>.ts` is the committed manifest's one entry (`.github/workflows/release.yaml`'s `pi_envoy_build` and `pi_legion_build` "Point extensions at the packed bundle", and the `jq '.omp.extensions = …'` line of `packages/daemon/docker/worker.Dockerfile`'s plugin `RUN` for that package); for `pi-legion`, `legion.daemonApiVersion` too, the tree's contract (`scripts/daemon-contract.sh`);
+2. rewrite the copy's `omp.extensions` to `["dist/<entry>.js"]` with `jq`, where `extensions/<entry>.ts` is the committed manifest's one entry (`.github/workflows/release.yaml`'s `pi_envoy_build` and `pi_legion_build` "Point extensions at the packed bundle", and the `jq '.omp.extensions = …'` line of `packages/daemon/docker/worker.Dockerfile`'s plugin `RUN` for that package); for `pi-legion`, `legion.daemonApiVersion` too, the tree's contract (`scripts/daemon-contract.sh`; `pi_legion_build`'s "Set release version", and the same `jq` line of `worker.Dockerfile`);
 
 3. `bun pm pack --destination <out dir>` in the copy, whose `prepack` builds `dist/` (the release's "Pack extension" step, `scripts/pi-plugin-prepack.sh`);
    the bundle inlines `package.json`, so it is built while the manifest names the packed bundle, as the release builds it.
 
 Each step cites its source by what it runs, never by line number: the lines move with every edit above them.
-The release's version bump (its "Set release version" step) is not a step: the tarball carries the checkout's own version.
+Of the release's "Set release version" step, only pi-legion's contract is written here: the version bump is not, and the tarball carries the checkout's own version.
 
 The tarball holds the bytes an in-place pack of the same tree held, but for one kind of line: above each module it inlines, `bun build` writes a `//` comment naming the module's path relative to the directory it builds in, and the run's tree resolves `node_modules` and the other workspace packages through links to the checkout's real paths, so those comments name the same files by a longer path.
 No code, manifest, notice, skill or mode differs.
 Runs in one checkout never wait on each other.
 The run's tree goes with its temp directory on every way out: an error, `SIGHUP`/`SIGINT`/`SIGTERM` (each routed through `exit`), and a reader of its stderr that has gone (the script ignores SIGPIPE, so bash's `Terminated` notice for an interrupted pack cannot kill it before its `EXIT` trap runs).
+A tree the trap cannot remove (a copied directory with no owner write, say) stays in the temp directory, and the run's status is still the pack's own.
 
 ## lib/install-plugin-profile.sh
 
