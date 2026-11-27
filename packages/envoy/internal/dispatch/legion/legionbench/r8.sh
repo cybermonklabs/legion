@@ -3,13 +3,16 @@
 # a Postgres 18 of its own, then `main`'s tip and then this head, one after the other. For each
 # build it builds the server stamped with its commit, migrates a database of its own by booting the
 # server once, loads INFRA's history at ten times the run volume (legionbench load -ten-times),
-# starts the daemon stand-in with 1,000 cards of the loaded issues, boots the server on the loaded
-# database, and drives one `legion` view (legionbench drive): this head's delivery-live-probe.ts for
-# both builds, issue events through the API at 0.26 a second for 10 minutes. At this head the drive
-# first waits for the Legion facts consumer to read INFRA whole, then judges each facts change's
-# push and the board's body, and takes the board's facts read, whose plan and median time
-# TestFarmBoardFactsRead measures. Last, legionbench compare holds this head's median recompute to
-# twice main's. With R8_PROFILE=1 each arm's server also records a CPU profile of the drive's
+# starts the daemon stand-in with 1,000 cards of the loaded issues and a NATS server with JetStream
+# of the arm's own, boots the server on the loaded database and that NATS, and drives one `legion`
+# view (legionbench drive): this head's delivery-live-probe.ts for both builds, issue events through
+# the API at 0.26 a second for 10 minutes. The server needs NATS for the stand-in's cards: its
+# Legion state intake, which starts only where the server has NATS, reads the stand-in whole as it
+# starts, and no other path reads a daemon. The drive first waits for that read and, at this head,
+# for the Legion facts consumer to read INFRA whole, for 20 minutes at the most; then it judges each
+# facts change's push and the board's body, and takes the board's facts read, whose plan and median
+# time TestFarmBoardFactsRead measures. Last, legionbench compare holds this head's median recompute
+# to twice main's. With R8_PROFILE=1 each arm's server also records a CPU profile of the drive's
 # window, which shows where its recomputes spend their time. r8.yaml runs it on the build farm.
 #
 # Every measurement prints a RESULT line and every miss a FAIL line; the script exits 1 when any
@@ -50,6 +53,10 @@ server_port=58111
 standin_port=13370
 # The port of the profiler of the server that runs, on 127.0.0.1, with R8_PROFILE=1.
 pprof_port=58112
+# The client port and the monitoring port of the arm's NATS server, on 127.0.0.1. One arm's NATS
+# runs at a time, each on a store of its own (start_nats).
+nats_port=58113
+nats_monitor_port=58114
 # The agent token of both servers, which the probe reads from $work/token: drawn for this run.
 token=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
 if [ -z "${PGBIN:-}" ]; then
@@ -119,12 +126,19 @@ admin_url="postgres://postgres@127.0.0.1:$port/postgres?sslmode=disable"
 psql "$admin_url" -Atc 'select version()'
 pg_log=$work/pglog/postgres.json
 
-# The tools, built from the checkout this script is in: the loader, stand-in and drive, and the
-# test binary of the facts read's measurement.
+# The tools, built from the checkout this script is in: the loader, stand-in and drive, the test
+# binary of the facts read's measurement, and the NATS server of each arm at the release go.mod
+# requires of github.com/nats-io/nats-server/v2, the server the Go tests run in process.
 cd "$source_dir/packages/envoy"
 go build -o "$work/bin/legionbench" ./internal/dispatch/legion/legionbench/cmd
 go test -c -tags farm -o "$work/bin/legionbench.test" ./internal/dispatch/legion/legionbench
-mark "built legionbench"
+nats_version=$(awk '$1 == "github.com/nats-io/nats-server/v2" { print $2; exit }' go.mod)
+if [ -z "$nats_version" ]; then
+  echo "FAIL r8 packages/envoy/go.mod requires no github.com/nats-io/nats-server/v2, so no NATS server is built"
+  exit 1
+fi
+GOBIN="$work/bin" go install "github.com/nats-io/nats-server/v2@$nats_version"
+mark "built legionbench and nats-server $("$work/bin/nats-server" --version)"
 
 # The two trees. The probe is this head's (main's refuses a legion view), with its dependencies.
 tree_of() {
@@ -148,14 +162,21 @@ head_tree=$(tree_of "$R8_HEAD" head)
 mark "installed the probe's dependencies at $R8_HEAD"
 
 # start_server boots arm's server on database url with its output in log, and waits for /healthz.
+# With a fourth argument, the URL of the arm's NATS server (start_nats), the server runs on it, as
+# the boot the drive measures does; without one it runs with NATS off, as the boot that only
+# migrates the database does, since no daemon is read before the load writes INFRA's setting.
 server_pid=""
 start_server() {
-  local bin=$1 url=$2 log=$3 home=$work/home
+  local bin=$1 url=$2 log=$3 nats=${4:-} home=$work/home
+  local nats_env=(DISPATCH_NATS_DISABLED=1)
+  if [ -n "$nats" ]; then
+    nats_env=(NATS_URLS="$nats")
+  fi
   mkdir -p "$home"
   (cd "$home" && exec env -i PATH="$PATH" HOME="$home" XDG_CONFIG_HOME="$home" XDG_DATA_HOME="$home" \
     DATABASE_URL="$url" DISPATCH_AGENT_TOKEN="$token" DISPATCH_IDENTITY=header:X-Dispatch-User \
     DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT="$server_port" \
-    DISPATCH_WEB_DIST="$work/web" DISPATCH_NATS_DISABLED=1 "${pprof_env[@]}" "$bin" >>"$log" 2>&1) &
+    DISPATCH_WEB_DIST="$work/web" "${nats_env[@]}" "${pprof_env[@]}" "$bin" >>"$log" 2>&1) &
   server_pid=$!
   pids+=("$server_pid")
   local started=$SECONDS
@@ -175,11 +196,47 @@ start_server() {
   mark "server $server_pid serving after $((SECONDS - started)) s, logging to $log"
 }
 
+# start_nats starts arm name's NATS server with JetStream on 127.0.0.1, its store in a directory
+# of the arm's own ($work/nats-<name>), so the stream and the durables the head's server binds are
+# its own and none of main's, and waits for its monitoring port's /healthz, which answers once
+# JetStream is ready. Its output goes to $work/nats-<name>.log.
+nats_pid=""
+start_nats() {
+  local name=$1 log=$work/nats-$1.log
+  "$work/bin/nats-server" -js -a 127.0.0.1 -p "$nats_port" -m "$nats_monitor_port" -sd "$work/nats-$name" >"$log" 2>&1 &
+  nats_pid=$!
+  pids+=("$nats_pid")
+  local started=$SECONDS
+  until curl -fsS "http://127.0.0.1:$nats_monitor_port/healthz" >/dev/null 2>&1; do
+    if ! kill -0 "$nats_pid" 2>/dev/null || [ $((SECONDS - started)) -gt 60 ]; then
+      echo "FAIL r8 arm=$name the NATS server did not serve JetStream within 60 s; the end of $log:"
+      tail -n 40 "$log"
+      return 1
+    fi
+    sleep 1
+  done
+  mark "nats-server $nats_pid serving JetStream on nats://127.0.0.1:$nats_port after $((SECONDS - started)) s, its store $work/nats-$name, logging to $log"
+}
+
 # stop_pid stops a process with SIGTERM and waits for it.
 stop_pid() {
   local pid=$1
   kill -TERM "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
+}
+
+# stop_arm stops the arm's server, then its stand-in and its NATS server, each that runs, and
+# forgets them, so the next arm binds their ports. arm calls it on every exit of arm_steps, an early
+# `return 1` included.
+standin_pid=""
+stop_arm() {
+  local pid
+  for pid in "$server_pid" "$standin_pid" "$nats_pid"; do
+    if [ -n "$pid" ]; then
+      stop_pid "$pid"
+    fi
+  done
+  server_pid="" standin_pid="" nats_pid=""
 }
 
 # profile_window profiles the CPU of arm name's server over the drive's window into
@@ -195,10 +252,21 @@ profile_window() {
   curl -fsS -o "$work/out/$name.cpu.pprof" "http://127.0.0.1:$pprof_port/debug/pprof/profile?seconds=$profile_seconds"
 }
 
-# arm runs one build's arm: build, migrate, load, stand-in, serve, drive, and at this head the facts
-# read's measurement. It runs where its caller tests it (`arm … || status=1`), which turns errexit off
-# inside it, so every step that must stop the arm says so (`|| return 1`).
+# arm runs one build's arm (arm_steps), then stops every process the arm started (stop_arm),
+# whichever step the arm ended at, and answers the steps' exit status.
 arm() {
+  local rc=0
+  arm_steps "$@" || rc=$?
+  stop_arm
+  mark "arm $1 exits $rc"
+  return "$rc"
+}
+
+# arm_steps are one build's arm: build, migrate, load, stand-in, NATS, serve, drive, and at this
+# head the facts read's measurement. It runs where its caller tests it (`arm_steps … || rc=$?`),
+# which turns errexit off inside it, so every step that must stop the arm says so (`|| return 1`),
+# and leaves the processes it started running for arm to stop.
+arm_steps() {
   local name=$1 commit=$2 tree=$3 facts=$4
   local bin=$work/bin/server-$name db=r8_$name
   local url="postgres://postgres@127.0.0.1:$port/$db?sslmode=disable"
@@ -210,12 +278,13 @@ arm() {
   psql "$admin_url" -Atc "create database $db" || return 1
   start_server "$bin" "$url" "$work/server-$name-migrate.log" || return 1
   stop_pid "$server_pid"
+  server_pid=""
   mark "migrated $db by $name's server"
   "$work/bin/legionbench" load -database "$url" -state-url "http://127.0.0.1:$standin_port" -ten-times \
     -scale "${R8_SCALE:-1}" -seed "${R8_SEED:-5577}" -now "$now" || return 1
   psql "$url" -Atc "select 'RESULT r8 arm=$name size database=' || pg_size_pretty(pg_database_size(current_database()))"
   "$work/bin/legionbench" standin -database "$url" -listen "127.0.0.1:$standin_port" >"$work/standin-$name.log" 2>&1 &
-  local standin_pid=$!
+  standin_pid=$!
   pids+=("$standin_pid")
   local waited=0
   until grep -q '^STANDIN serving' "$work/standin-$name.log"; do
@@ -228,7 +297,8 @@ arm() {
     waited=$((waited + 1))
   done
   sed 's/^/RESULT r8 arm='"$name"' /' "$work/standin-$name.log"
-  start_server "$bin" "$url" "$work/server-$name.log" || return 1
+  start_nats "$name" || return 1
+  start_server "$bin" "$url" "$work/server-$name.log" "nats://127.0.0.1:$nats_port" || return 1
   local facts_flags=()
   if [ "$facts" = 1 ]; then
     facts_flags=(-facts -pg-log "$pg_log")
@@ -260,9 +330,6 @@ arm() {
     LEGIONBENCH_DATABASE_URL="$url" LEGIONBENCH_FACTS_READ="$work/out/facts-read.json" \
       "$work/bin/legionbench.test" -test.run '^TestFarmBoardFactsRead$' -test.v -test.count=1 || rc=1
   fi
-  stop_pid "$server_pid"
-  stop_pid "$standin_pid"
-  mark "arm $name exits $rc"
   return "$rc"
 }
 

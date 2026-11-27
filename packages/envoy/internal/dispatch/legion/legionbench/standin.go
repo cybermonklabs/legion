@@ -13,15 +13,25 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The daemon stand-in: INFRA's Legion daemon as the server's sampler reads it, GET
-// /legion/v1/state (legion.StatePath), answering a state that puts DefaultCards of the loaded
+// The daemon stand-in: INFRA's Legion daemon as the server's Legion state intake reads it whole,
+// GET /legion/v1/state (legion.StatePath), answering a state that puts DefaultCards of the loaded
 // INFRA issues on the Legion board. The answer is legion.State encoded as JSON, the members of the
-// daemon's own document the sampler decodes (legion/state.go): each issue's key, phase, tree,
-// slot and claims, and the admission block. The sampler decodes the document loosely, so a
+// daemon's own document the whole read decodes (legion/state.go): each issue's key, phase, tree,
+// slot and claims, the admission block, the settings and the daemon block. The read decodes the
+// document loosely and asks for the route's observed view (`?view=observed`), which carries only
+// those members, so the stand-in answers the same document whatever the query says, and a
 // document of these members alone is read as the daemon's is.
 //
+// The intake judges a whole read good only where the state is the setting's project's and could
+// be a starting point for state events (legion's fetchWhole): the daemon block names the project,
+// a daemon.stateSeq above 0 and a daemon.stateId, and the settings carry a dispatch_url. A read
+// that misses one is a failed read: the board's header names the failure, and the drive's
+// catch-up, which waits for a good read (cmd/wait.go), fails at its bound. The stand-in publishes
+// no state event, so the good read the intake makes as it starts is the one read of the stand-in
+// a server makes, and its observations stand for the whole drive.
+//
 // The cards are the open issues the loaded observations hold a working phase for, newest first,
-// each answered with the phase, the slot and the claims those observations hold, so the sampler's
+// each answered with the phase, the slot and the claims those observations hold, so the server's
 // first read of the stand-in moves none of them. That read writes `null` for every observed issue
 // the state does not carry (legion.State.Observations), and from then on legion_current holds the
 // cards' issues alone. Every admitted issue without a slot stands in the admission block's waiting
@@ -40,9 +50,21 @@ var standInPhases = []string{legion.PhaseAdmitted, legion.PhasePlanning, legion.
 // observations give (copyObservations' number mod 8).
 const standInSlots = 8
 
+// The stand-in's daemon block and settings: what makes a whole read of it a good one (the comment
+// above). standInStateSeq is 1, the boot event a daemon that runs a workflow commits first, and
+// standInStateID one fixed store, so every arm's server takes the same starting point.
+// standInDispatchURL is the Dispatch the daemon would publish its state events to: a name under
+// .invalid (RFC 2606), since the stand-in publishes none and the read only checks one is named.
+const (
+	standInStateSeq    = 1
+	standInStateID     = "5577b3c1-7e2a-4d0f-9b6e-1c8a2f4d5577"
+	standInDispatchURL = "http://dispatch.invalid"
+)
+
 // StandInState is the state the stand-in answers for project: up to cards open issues whose newest
 // observed phase is a working one, newest first, each with the slot and the claims its newest
-// observations hold, and the admission block over them (the comment above says what each holds).
+// observations hold, the admission block over them, and the daemon block and settings of a daemon
+// of project that runs a workflow (the comments above say what each holds).
 func StandInState(ctx context.Context, pool *store.Pool, project string, cards int) (legion.State, error) {
 	current, err := legion.ReadCurrent(ctx, pool, project)
 	if err != nil {
@@ -84,7 +106,12 @@ func StandInState(ctx context.Context, pool *store.Pool, project string, cards i
 		return legion.State{}, fmt.Errorf("read the open issues the observations name: %w", err)
 	}
 
-	state := legion.State{Issues: map[string]legion.Issue{}, Admission: &legion.Admission{Cap: new(standInSlots)}}
+	state := legion.State{
+		Issues:    map[string]legion.Issue{},
+		Admission: &legion.Admission{Cap: new(standInSlots)},
+		Settings:  map[string]json.RawMessage{"dispatch_url": json.RawMessage(strconv.Quote(standInDispatchURL))},
+		Daemon:    &legion.Daemon{Project: project, StateSeq: new(int64(standInStateSeq)), StateID: standInStateID},
+	}
 	trees := map[string]bool{}
 	var waiting []candidate
 	for _, one := range open {
@@ -145,8 +172,8 @@ func mapsKeys(fields map[string]map[string]json.RawMessage) []string {
 	return keys
 }
 
-// StandIn is the stand-in's handler: GET /legion/v1/state answers state's JSON, as the daemon's
-// route does, with no credential asked; every other request is 404.
+// StandIn is the stand-in's handler: GET /legion/v1/state, whatever its query, answers state's
+// JSON, as the daemon's route does, with no credential asked; every other request is 404.
 func StandIn(state legion.State) (http.Handler, error) {
 	body, err := json.Marshal(state)
 	if err != nil {

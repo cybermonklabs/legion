@@ -21,6 +21,11 @@
 #             p99 hold is 100 ms or less or the drain took the lock fewer than 40 times, since the
 #             measurement then cannot see the hold it bounds.
 #
+# R7's servers run with NATS off (DISPATCH_NATS_DISABLED=1): what R7 measures, the facts consumer's
+# whole read and the delivery intake's writes, which the test makes through Postgres, reads no
+# daemon and takes nothing from the bus, and without NATS the server starts no Legion state intake,
+# so nothing reads INFRA's daemon.
+#
 # r7.yaml runs it on the build farm. Every measurement prints a RESULT line and every miss a FAIL
 # line; the script exits 1 when any arm failed.
 #
@@ -114,8 +119,9 @@ wait "$server_pid" || true
 server_pid=""
 mark "migrated by the server"
 
-# The load. The daemon's address is under .invalid, which no name server answers (RFC 2606): the
-# sampler's read of it fails each minute and adds no observation to the loaded history.
+# The load. The daemon's address is under .invalid, which no name server answers (RFC 2606), and
+# nothing reads it: with NATS off the server starts no Legion state intake, the one reader of a
+# daemon, so the loaded observations are all the history holds.
 "$work/bin/legionbench" load -database "$url" -state-url "http://legion-daemon.invalid:13370" -ten-times -first-read \
   -scale "${R7_SCALE:-1}" -seed "${R7_SEED:-5577}" -now "$now"
 psql "$url" -Atc "select 'RESULT r7 size database=' || pg_size_pretty(pg_database_size(current_database()))"

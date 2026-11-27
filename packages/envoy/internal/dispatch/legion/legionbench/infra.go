@@ -25,8 +25,8 @@ import (
 // `Legion <role> · <KEY>`, which is what makes it that role's phase work
 // (legion.RoleSessionWorks), or now and then by a helper session whose title Legion does not
 // read; a child's first event is its filing by its root's architect. Each worked issue carries the
-// handoffs of the stretches it finished, and an issue of the last observedDays the sampler's
-// phase, slot and claim observations.
+// handoffs of the stretches it finished, and an issue of the last observedDays the phase, slot and
+// claim observations Dispatch recorded of its daemon's state (legion_observations).
 
 // roles are the Legion roles in the order an issue's life passes through them.
 var roles = []string{"architect", "planner", "implementer", "tester", "reviewer", "merger"}
@@ -34,8 +34,8 @@ var roles = []string{"architect", "planner", "implementer", "tester", "reviewer"
 // roleCount is how many roles there are; an issue's stretches are an array of one more.
 const roleCount = 6
 
-// rolePhases is the phase the sampler records as each role's stretch begins, and handoffPhases the
-// handoff each role writes as its stretch ends ("" for none).
+// rolePhases is the phase the daemon reports, and legion_observations records, as each role's
+// stretch begins, and handoffPhases the handoff each role writes as its stretch ends ("" for none).
 var (
 	rolePhases    = []string{legion.PhaseAdmitted, legion.PhasePlanning, legion.PhaseImplementing, legion.PhaseTesting, legion.PhaseReviewing, legion.PhaseMerging}
 	handoffPhases = []string{"", "plan", "implement", "test", "review", ""}
@@ -537,10 +537,10 @@ func copyHandoffs(ctx context.Context, pool *store.Pool, history infraHistory) e
 	return copyRows(ctx, pool, "handoffs", []string{"issue_key", "phase", "version", "body", "author", "created_at"}, pgx.CopyFromRows(rows))
 }
 
-// copyObservations writes what the sampler saw of each observed issue: the phase as each stretch
-// begins (and done at its close), the slot the issue holds from its implementer's stretch to its
-// close, so it waits for one while admitted, and each role's claim, working through its stretch
-// and idle once it ends.
+// copyObservations writes what Dispatch recorded of each observed issue's daemon state
+// (legion_observations): the phase as each stretch begins (and done at its close), the slot the
+// issue holds from its implementer's stretch to its close, so it waits for one while admitted, and
+// each role's claim, working through its stretch and idle once it ends.
 func copyObservations(ctx context.Context, pool *store.Pool, history infraHistory) error {
 	var rows [][]any
 	observe := func(issue, field, value string, at time.Time) {

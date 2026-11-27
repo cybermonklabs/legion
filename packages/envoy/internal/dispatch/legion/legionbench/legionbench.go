@@ -12,8 +12,8 @@
 //     actor that carries its title, the Legion worker sessions titled `Legion <role> · <KEY>`; the
 //     handoffs of each worked issue; and the daemon's phase, slot and claim observations of the
 //     issues of the last 120 days (infra.go);
-//   - INFRA's legion_settings row, naming Spec.StateURL, the daemon the server's sampler reads
-//     (StandIn serves it);
+//   - INFRA's legion_settings row, naming Spec.StateURL, the daemon the server's Legion state
+//     intake reads whole (StandIn serves it);
 //   - INFRA's delivery history: 5,402 pull requests over three repositories, a fifth of them
 //     rework, and over the last 200 days 20 deploy runs a day of 8 jobs and 60 pull-request runs
 //     a day of 40 jobs, ten times as many runs under TenTimes (delivery.go).
@@ -61,7 +61,7 @@ const (
 	deployRuns     = 20
 	checkRuns      = 60
 	checkJobs      = 40
-	// observedDays is how far back the daemon's sampler saw INFRA's issues: the issues opened in
+	// observedDays is how far back Dispatch recorded INFRA's daemon state: the issues opened in
 	// the last 120 days carry observations and the older ones the event log alone, so the
 	// project's first observation falls inside the history, as it does for a project whose
 	// daemon Dispatch began to read partway through.
@@ -89,7 +89,8 @@ type Spec struct {
 	// day (R8's load).
 	TenTimes bool
 	// StateURL is the daemon address INFRA's legion_settings row names: the stand-in's
-	// (StandIn), which the server's sampler reads once a minute. Required.
+	// (StandIn), which the server's Legion state intake reads whole as it starts, where the
+	// server has NATS. Required.
 	StateURL string
 	// FirstRead holds the load to what R7's Job measures: a database whose issue_facts holds no
 	// row and whose issue_facts_computed records no build, so the server that boots on it makes

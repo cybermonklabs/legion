@@ -14,11 +14,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The wait before the drive appends (R8's "Before step 4"): the server has read the stand-in once
-// and recorded the read, and, where the server runs the Legion facts consumer (this head), the
-// consumer has read the project whole under the running build (issue_facts_computed names it),
-// its cursors stand at the heads of its three feeds, and the outbox holds nothing to drain. It is
-// evals/evalbench's `measure wait` of #3976, narrowed to the facts consumer.
+// The wait before the drive appends (R8's "Before step 4"): the server's Legion state intake has
+// read the stand-in whole once and recorded the read (legion_reads), and, where the server runs
+// the Legion facts consumer (this head), the consumer has read the project whole under the running
+// build (issue_facts_computed names it), its cursors stand at the heads of its three feeds, and the
+// outbox holds nothing to drain. It is evals/evalbench's `measure wait` of #3976, narrowed to the
+// facts consumer.
 
 // pollEvery is how often the wait reads the consumer's state. The consumer is a woken loop: an
 // event, an observation or a drained change wakes its next pass as soon as the running one ends,
@@ -72,8 +73,11 @@ func serverBuild(ctx context.Context, url string) (string, error) {
 	return health.Commit, nil
 }
 
-// waitConsumers polls until the server has caught up (caughtUp) on two polls in a row, and fails
-// once timeout has passed. facts says whether the server runs the facts consumer.
+// waitConsumers polls until the server has caught up (caughtUp) on two polls in a row. Once
+// timeout has passed, the first poll that finds something still owed fails the wait with what is
+// owed and the bound (`<what is still owed> after <timeout>`), so a server that will not catch up
+// ends the arm rather than holding the Job to its deadline. facts says whether the server runs
+// the facts consumer.
 func waitConsumers(ctx context.Context, r *report, pool *store.Pool, project, build string, facts bool, timeout time.Duration) error {
 	started := time.Now()
 	var seen []heads
@@ -96,9 +100,9 @@ func waitConsumers(ctx context.Context, r *report, pool *store.Pool, project, bu
 		held = len(missing) == 0
 		if !held {
 			fmt.Printf("WAIT still owed: %s\n", strings.Join(missing, "; "))
-		}
-		if time.Since(started) > timeout {
-			return fmt.Errorf("after %s the server had not caught up: %s", timeout, strings.Join(missing, "; "))
+			if time.Since(started) > timeout {
+				return fmt.Errorf("%s after %s", strings.Join(missing, "; "), timeout)
+			}
 		}
 		seen = append(seen, state.heads)
 		select {

@@ -4,7 +4,7 @@
 //	legionbench load    -database <url> -state-url <stand-in> [-seed 5577] [-scale 1] [-ten-times] [-now <RFC 3339>] [-first-read]
 //	legionbench standin -database <url> -listen 127.0.0.1:13370 [-cards 1000]
 //	legionbench drive   -arm main|head -url <server> -token-file <file> -database <url> -probe-dir <packages/dispatch> \
-//	                    -server-log <file> -out <dir> [-facts -pg-log <file>] [-rate 0.26] [-duration 10m]
+//	                    -server-log <file> -out <dir> [-facts -pg-log <file>] [-rate 0.26] [-duration 10m] [-wait-timeout 20m]
 //	legionbench compare -main <main's summary> -head <head's summary>
 //
 // load writes INFRA's history (package legionbench) into a database the server has migrated and
@@ -15,8 +15,9 @@
 // load to R7's: no issue_facts row and no build in issue_facts_computed, so the server that boots
 // on it reads INFRA's facts whole.
 //
-// standin serves INFRA's Legion daemon to the server's sampler (legionbench.StandIn) with -cards
-// cards of the loaded issues, until it is stopped. It prints one STANDIN line once it serves.
+// standin serves INFRA's Legion daemon to the server's Legion state intake, which reads it whole as
+// it starts (legionbench.StandIn), with -cards cards of the loaded issues, until it is stopped. It
+// prints one STANDIN line once it serves.
 //
 // drive is one arm of R8 against a running server (drive.go); compare judges the two arms' median
 // recompute times against R8's bound (compare.go).

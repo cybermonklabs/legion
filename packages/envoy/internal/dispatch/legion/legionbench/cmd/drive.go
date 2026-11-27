@@ -33,9 +33,12 @@ import (
 // One arm of R8 (spec Design, "How R8 is measured", steps 3 to 5) against a server booted on a
 // database legionbench loaded at ten times the run volume, with the stand-in as INFRA's daemon:
 //
-//  1. It waits for the server to catch up (waitConsumers): a good read of the stand-in and, where
-//     the server runs the Legion facts consumer (-facts, this head), INFRA read whole under the
-//     running build, the consumer's cursors at the feeds' heads and the outbox drained.
+//  1. It waits for the server to catch up (waitConsumers): a good whole read of the stand-in and,
+//     where the server runs the Legion facts consumer (-facts, this head), INFRA read whole under
+//     the running build, the consumer's cursors at the feeds' heads and the outbox drained. It
+//     waits for -wait-timeout (20 minutes) at the most: past it, it prints `FAIL r8 arm=<arm>
+//     catchup: <what is still owed> after <bound>` and exits 1 with no event appended, so r8.sh
+//     goes on to the next arm and to its verdict.
 //  2. It opens one `legion` view of the project with this head's delivery-live-probe.ts, which
 //     writes a line for each frame Dispatch sends, with the time it arrived, and waits for its
 //     snapshot.
@@ -126,7 +129,7 @@ func drive(args []string) error {
 	flags.Float64Var(&o.rate, "rate", 0.26, "issue events a second")
 	flags.DurationVar(&o.duration, "duration", 10*time.Minute, "how long the events are appended for")
 	flags.DurationVar(&o.grace, "grace", 5*time.Second, "how long after the last event the probe keeps listening")
-	flags.DurationVar(&o.waitTimeout, "wait-timeout", time.Hour, "how long the server may take to catch up")
+	flags.DurationVar(&o.waitTimeout, "wait-timeout", 20*time.Minute, "how long the server may take to catch up before the arm fails: 20m, where the catch-ups of R8's Jobs on 2026-11-27 took 20 s to 50 s, so a catch-up still owed after 20 minutes is one that will not come")
 	flags.Uint64Var(&o.seed, "seed", 5577, "the seed of the order the events visit the cards in")
 	if err := flags.Parse(args); err != nil {
 		return err

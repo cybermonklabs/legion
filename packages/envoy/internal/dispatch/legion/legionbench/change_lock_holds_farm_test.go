@@ -646,9 +646,9 @@ type farmServer struct {
 	once    sync.Once
 }
 
-// startFarmServer starts the server built at this head with the environment the bench's servers
-// run under: no NATS, no GitHub App, the header identity and an agent token, its output in a log
-// under the work directory.
+// startFarmServer starts the server built at this head with R7's environment (r7.sh says why):
+// NATS off, so the server starts no Legion state intake and reads no daemon, no GitHub App, the
+// header identity and an agent token, its output in a log under the work directory.
 func startFarmServer(o farmOptions) (*farmServer, error) {
 	home := filepath.Join(o.work, "home-"+o.arm)
 	web := filepath.Join(o.work, "web")

@@ -75,7 +75,9 @@ spec:
       containers:
       - name: r8
         # The worker image of release 23.16.4, the multi-architecture index digest: Go 1.27.3, Bun,
-        # PostgreSQL 18, psql, git and gcloud.
+        # PostgreSQL 18, psql, git and gcloud. r8.sh builds the NATS server each arm's server runs
+        # on with go install, at the release packages/envoy/go.mod requires, so the run takes none
+        # from the image.
         image: ghcr.io/cybermonklabs/legion-worker@sha256:c040f32384bcac221423e42e6848ab6bacd50a9657313fc0bcb401fa6ca0cf21
         env:
         - {name: HOME, value: /scratch/home}
@@ -116,7 +118,7 @@ spec:
           echo "MARK failures:"; grep '^FAIL' /scratch/out.txt || echo "MARK none"
           echo "MARK end $(date -u +%FT%TZ) rc=$rc"
           # The record: the log, the arms' summaries, the probe's frames, the facts read, the CPU
-          # profiles (PROFILE=1), and the drives' and the servers' logs.
+          # profiles (PROFILE=1), and the drives', the servers' and the NATS servers' logs.
           tar -C /scratch -czf /scratch/record.tgz out.txt work/out $(cd /scratch && ls work/*.log 2>/dev/null) || true
           gcloud storage cp /scratch/record.tgz "gs://$BUCKET/out/builds/infra-5577/$RUN/r8-record.tgz" || echo "MARK the record did not reach the bucket"
           # The verdict: a pass is r8.sh exiting 0 with no FAIL line. The run is over once it is
