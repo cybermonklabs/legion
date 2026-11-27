@@ -142,11 +142,12 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // prompt's turn is. A refusal whose status cannot clear (classifyProviderError) fails the claim at
 // once with CauseProviderError, and one the producer classed as OpenAI's cyber-policy refusal
 // (RequestTurnOutcome.Code) with CauseCyberPolicy whatever its status, so the workflow holds the
-// issue for its architect, and the plugin's reminders end: their record check drops every
-// reminder of a failed claim. A refusal that can
-// clear, or whose report carries no status, fails nothing, and the reminders keep their pace; it
-// counts in the claim's one run of provider-error turns (ProviderErrorRun) beside refused prompts,
-// so the run is handed to Deps.ProviderErrorRunReached once when it reaches providerErrorRunTold.
+// issue for its architect, and the plugin's reminders end: the daemon answers their owed check
+// that a failed claim owes nothing (api's claimOwed), which drops every reminder. A refusal that
+// can clear, or whose report carries no status, fails nothing, and the reminders keep their pace;
+// it counts in the claim's one run of provider-error turns (ProviderErrorRun) beside refused
+// prompts, so the run is handed to Deps.ProviderErrorRunReached once when it reaches
+// providerErrorRunTold.
 //
 // A clean report ends that run whether or not it is marked unprompted (providerErrorRunOver), as
 // a clean prompt result does: the provider answered that turn either way. A turn the plugin reads

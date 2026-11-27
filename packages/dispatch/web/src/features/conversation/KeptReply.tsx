@@ -87,7 +87,8 @@ export function GoneReply({
   /** How the post's author is named: `live`, as everywhere, draws `AgentName`, whose session
    *  form reads the live agent registry and starts the agents poll; `cache` names the author from
    *  the registry the cache already holds (`CachedAuthor`) and starts no read, for a host that
-   *  sends no agents read when it draws (dispatch://INFRA-5702/spec#b-r-reads). */
+   *  sends no agents read when it draws (dispatch://INFRA-5702/spec#b-r-reads). With `words`, the
+   *  author is always named by `AgentName`, whatever this says. */
   readonly agentNames?: AgentNames;
   readonly deleted?: boolean;
   readonly parentKind: ReplyTarget["parentKind"];

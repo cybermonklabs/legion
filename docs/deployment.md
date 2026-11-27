@@ -1218,6 +1218,12 @@ then `jj -R <clone> --ignore-working-copy config set --repo git.abandon-unreacha
 A directory there without `.jj` is removed and cloned again; one without `.git` is not a store.
 Boot rewrites every store's credential helper to `legion git-credential`.
 
+When Dispatch moves an admitted issue onto another repository, the daemon corrects its record
+([An issue's repository](kubernetes.md#operator-configuration)) and replaces nothing here, because
+a pane runs in no pod: each pane goes on in the workspace of the repository the issue left until
+its next launch, which provisions the new repository's workspace, as above. Whatever that pane
+never pushed stays in the old workspace directory.
+
 ## Moving a project onto tmux
 
 A tmux daemon can take over the store of a daemon that ran the project under `runtime: kubernetes`,

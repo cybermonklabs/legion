@@ -18,6 +18,7 @@ import (
 // the same log before the lane has run in some runs, so it fails only when the lane runs first
 // (CI's daemon-go job 136734654090 at 5e6f1091; 4 of 10 runs in the pod).
 func TestABootOverALiveTreePublishesItsBootEventWithNoErrorLine(t *testing.T) {
+	// Not parallel: it waits a fixed 30 s of real time for the boot event's outbox row to go (the deadline below), a span the load of tests running beside it could use up.
 	var logged syncBuffer
 	_, d, _ := bootOverALiveTree(t, "acme/widgets", &workflowTokenRecorder{}, repositoriesGitHub(t), slog.New(slog.NewJSONHandler(&logged, nil)))
 	// A pool, as the daemon opens its store: the DSN a test is given may carry pgxpool's keys
