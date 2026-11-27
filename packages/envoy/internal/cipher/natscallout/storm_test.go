@@ -5,7 +5,6 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,7 +20,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipherclient"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -95,11 +93,10 @@ func reconnectingSession(t *testing.T, url string, s *session, giveUpOnRefusal b
 //
 // Five hundred is the size the auth service verification's check c-callout-available names, and
 // more than the service's decision slots, so the reconnects that reach it together queue for a
-// slot. Under the race detector it is two hundred (raceEnabled): the clients and the hub run in the
-// test's own process, and at five hundred under -race on a loaded machine the first connects
-// failed before anything under test had started. envoy-go's plain step runs the five hundred. The
-// first connects are made twenty at a time for the same reason: they set the storm up and are not
-// the storm.
+// slot. Under the race detector it is two hundred (raceEnabled): the clients run in the test's own
+// process, and at five hundred under -race on a loaded machine the first connects failed before
+// anything under test had started. envoy-go's plain step runs the five hundred. The first connects
+// are made twenty at a time for the same reason: they set the storm up and are not the storm.
 //
 // The nonces are exact where the server's log is not: the server takes one answer per request, so
 // an admission it does not take leaves no client connected on that nonce. And every client signs
@@ -111,9 +108,19 @@ func reconnectingSession(t *testing.T, url string, s *session, giveUpOnRefusal b
 // what became of each: a request the server gave up on although the service's answer to it reached
 // the server, an answer the server refused, a connection it admitted and then lost, and an
 // admission the service decided whose answer never reached the server. A decision, or its wait for
-// a slot, past the service's budget fails the row too (backLog, slowest), and a hold-up in the
-// delivery of requests to the service fails
+// a slot, past the service's budget fails the row too (back's log and its slowest decision), and a
+// hold-up in the delivery of requests to the service fails
 // TestAStormPastTheWaitingBoundIsAnsweredInsideTheHubsTimeout.
+//
+// The hub and the returning service each run in a process of their own (StartCalloutHubProcess,
+// startStormService), as they do in production. With them in this process, the row's verdict
+// depended on how one process scheduled its goroutines: one Go scheduler served the hub's reading
+// of the service's answers, the service's decisions and the five hundred clients, and under load
+// the hub gave up on answers that had already reached it, and the service waited past its budget
+// for a decision slot. With sixteen busy loops on the test's two CPUs, 7 of 10 runs failed that way
+// with the three in one process, and 10 of 10 passed with each in a process of its own on those
+// same two CPUs. The clients, and the first service that admits their first connects, stay here:
+// they set the storm up.
 func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	connections := 500
 	if raceEnabled {
@@ -121,7 +128,7 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	}
 	keys := testnats.NewCalloutKeys(t)
 	recordUser, recordSeed := newHubRecordUser(t)
-	server, url := testnats.StartWithCalloutServer(t, keys, recordUser)
+	server, url := testnats.StartCalloutHubProcess(t, stormHubHelper, keys, recordUser)
 	sessions := make([]*session, connections)
 	for index := range sessions {
 		sessions[index] = newSession(t, fmt.Sprintf("ses_storm_%03d", index), 15*time.Minute)
@@ -165,12 +172,12 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	require.EqualValues(t, connections, decided.Load(), "every first connection was decided")
 
 	// The service is off the bus until every client has been refused once since the restart, and
-	// every client must still be there when it returns. back keeps the nonce of every request it
-	// decides, and its reporter, which logs every request it drops, refuses or cannot answer,
-	// writes to backLog. backUp is taken once back's subscription has reached the server
-	// (startService), so the server sends back every request on a nonce signed after it. back starts
-	// once the server's record is read again after the restart, so the record holds every request
-	// back is sent.
+	// every client must still be there when it returns. back, the returning service, keeps the nonce
+	// and the time of every request it decides, and its reporter's log, which logs every request it
+	// drops, refuses or cannot answer (startStormService). backUp is taken once back's subscription
+	// has reached the server, so the server sends back every request on a nonce signed after it.
+	// back starts once the server's record is read again after the restart, so the record holds
+	// every request back is sent.
 	record := recordHub(t, url, recordSeed, keys)
 	service.Close()
 	restarted := time.Now()
@@ -185,11 +192,7 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 		}
 		return refused, refused == connections
 	})
-	backDecided := newDecidedNonces()
-	backLog := &logtest.Buffer{}
-	backDeps := deps
-	backDeps.Log = slog.New(slog.NewTextHandler(backLog, nil))
-	back := startService(t, url, keys, backDeps, backDecided.wrap(timed))
+	back := startStormService(t, url, keys, sessions)
 	backUp := time.Now()
 	testwait.UntilPolling(t, 50*time.Millisecond, "every connection admitted again, or one closed for good", func() (int, bool) {
 		connected := 0
@@ -210,22 +213,25 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 		}
 	}
 	require.Zero(t, closed, "%d connections closed for good while the service was away", closed)
-	require.GreaterOrEqual(t, decided.Load(), int64(2*connections), "each reconnect was decided afresh")
-	require.Less(t, time.Duration(slowest.Load()), decideBudget,
-		"the slowest of %d decisions took %s, at or past the %s budget", decided.Load(), time.Duration(slowest.Load()), decideBudget)
 
 	// Every client is connected, so every request the server sent back has been answered or given
-	// up on. The record is read once back has closed, and back's Close writes its reporter's last
+	// up on. The record is read once back has stopped, and back's stop writes its reporter's last
 	// line.
-	verdicts := record.read(t, server, connectionName, back.Close)
-	require.Empty(t, backLog.String(), "back dropped, refused or could not answer requests the server sent it")
-	unheld, held := backDecided.unheld(clients)
+	verdicts := record.read(t, server, connectionName, func() { back.process.Stop(t) })
+	backed := back.decisions(t)
+	decisions := decided.Load() + backed.introspected
+	slowestDecision := max(time.Duration(slowest.Load()), backed.slowest)
+	require.GreaterOrEqual(t, decisions, int64(2*connections), "each reconnect was decided afresh")
+	require.Less(t, slowestDecision, decideBudget,
+		"the slowest of %d decisions took %s, at or past the %s budget", decisions, slowestDecision, decideBudget)
+	require.Empty(t, backed.log, "back dropped, refused or could not answer requests the server sent it")
+	unheld, held := backed.decided.unheld(clients)
 	require.Equal(t, connections, held, "only %d of %d clients are connected on a request back decided: the nonces do not show the connections", held, connections)
 	gaveUp, lost := verdicts.gaveUpOn(unheld)
 	t.Logf("reconnects=%d decided=%d slowest-decision=%s; back's admissions the server gave up on and whose answer reached it, by its record: %d",
-		reconnected.Load(), decided.Load(), time.Duration(slowest.Load()), len(gaveUp))
+		reconnected.Load(), decisions, slowestDecision, len(gaveUp))
 	require.Empty(t, unheld, "back admitted %d requests that no client is connected on; the server gave up on %v although back's answer to each reached it, and of the others the record says %v", len(unheld), gaveUp, lost)
-	undecided := backDecided.undecidedSince(clients, backUp)
+	undecided := backed.decided.undecidedSince(clients, backUp)
 	require.Empty(t, undecided, "back did not decide %d requests the server sent it after it subscribed: it dropped them without answering, refusing or counting them", len(undecided))
 
 	t.Run("control: admissions the server stopped waiting for", func(t *testing.T) {

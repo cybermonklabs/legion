@@ -153,7 +153,7 @@ type hubVerdicts struct {
 // requests and the events on its one queue of internal messages, which one goroutine sends in order
 // (server/events.go:713-751, internalSendLoop :499-673), so once that event has arrived every
 // request and every refusal the server queued before it has arrived too.
-func (r *hubRecord) read(t *testing.T, server *testnats.Server, answerer string, closeAnswerer func()) hubVerdicts {
+func (r *hubRecord) read(t *testing.T, server monitoredHub, answerer string, closeAnswerer func()) hubVerdicts {
 	t.Helper()
 	require.Positive(t, connectionsNamed(t, server, answerer),
 		"the server lists no connection named %q, so the wait for its close would see nothing", answerer)
@@ -210,8 +210,12 @@ func (r *hubRecord) read(t *testing.T, server *testnats.Server, answerer string,
 	return verdicts
 }
 
+// monitoredHub is a hub whose connections its monitoring endpoint lists: a testnats.Server in this
+// process, or a testnats.HubProcess in a process of its own.
+type monitoredHub interface{ MonitorURL() string }
+
 // connectionsNamed is how many open connections server lists under name (its /connz).
-func connectionsNamed(t *testing.T, server *testnats.Server, name string) int {
+func connectionsNamed(t *testing.T, server monitoredHub, name string) int {
 	t.Helper()
 	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.MonitorURL()+"/connz?limit=100000", nil)
 	require.NoError(t, err)
