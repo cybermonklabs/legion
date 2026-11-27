@@ -421,7 +421,7 @@ func TestATargetNobodyHoldsAnswersAProjectScopedTokenAsItAnswersAPerson(t *testi
 	makePrivate(t, rig.database, "HIDE")
 
 	const unknownUUID = "5d4a3b2c-1e0f-4a9b-8c7d-6e5f4a3b2c1d"
-	const refusal = `{"code":"PROJECT_SCOPE","error":"this request's credential may write project BRK; this write resolves to no project of that credential's"}`
+	const refusal = `{"code":"PROJECT_SCOPE","error":"this request's credential names project BRK, and this write resolves to no project"}`
 	for name, request := range map[string]struct {
 		method string
 		path   string
