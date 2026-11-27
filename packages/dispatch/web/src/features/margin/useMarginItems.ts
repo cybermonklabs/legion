@@ -202,7 +202,10 @@ export function anchoredThreadComments(
 
 /** Selects matching comment threads without dropping their replies. The query cache keeps
  *  the full comment list, as it does when today's margin filters a single block. */
-function commentsOnBlocks(comments: Comment[], blockIds: ReadonlySet<string>): Comment[] {
+function commentsOnBlocks<Row extends CommentWithTrees>(
+  comments: readonly Row[],
+  blockIds: ReadonlySet<string>
+): Row[] {
   const byId = new Map(comments.map((comment) => [comment.id, comment]));
   return comments.filter((comment) => {
     const anchor = rootOf(byId, comment).anchor;
@@ -396,7 +399,7 @@ export function useMarginItems(
   // shell hands the margin its Details drawer, which `freshness` is read from too.
   const commentsShown = freshness === undefined || documentUp;
   const selectComments = useCallback(
-    (records: Comment[]) =>
+    (records: CommentWithTrees[]): CommentWithTrees[] =>
       blockFilterIds === undefined ? records : commentsOnBlocks(records, blockFilterIds),
     [blockFilterIds]
   );
