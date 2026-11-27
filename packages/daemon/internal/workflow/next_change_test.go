@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -756,9 +757,11 @@ func TestANextChangeNeverStartsWhileOneIsOpen(t *testing.T) {
 	// The guard itself, which no routing stands in front of: StartNextChange called with an issue
 	// whose change is open starts nothing and raises no generation.
 	open := rig.issue(waitRoot)
-	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
-		return rig.engine.StartNextChange(t.Context(), tx, open, nil, ChangeInPlace(open))
-	})
+	if err := store.Transact(t.Context(), rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return rig.engine.StartNextChange(ctx, tx, open, nil, ChangeInPlace(open))
+	}); err != nil {
+		t.Fatalf("StartNextChange over an open change: %v", err)
+	}
 	if got := rig.issue(waitRoot); got.Generation != open.Generation || got.NextChange != open.NextChange || got.NextChanges != open.NextChanges {
 		t.Fatalf("after StartNextChange over an open change %s stands at generation %d, change %d of %d; want %d, %d of %d",
 			waitRoot, got.Generation, got.NextChange, got.NextChanges, open.Generation, open.NextChange, open.NextChanges)
