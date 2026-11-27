@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from audited_scripts import command_for
+from audited_scripts import Unreadable, reading_of
 from go_build_tags import constraint_names, decode_stream, go_files, go_skips_dir, is_tag, platforms
 from workflow_paths import PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
 
@@ -2746,34 +2746,40 @@ TAG_RUN_FLAGS = (re.compile(r"(?<![\w-])-tags\b"), re.compile(r"(?<![\w-])-run\b
 
 
 def step_go_lines(document: dict, job: dict, step: dict) -> list:
-    """The lines of `go test` a step runs, as this rule reads them: its run:'s own lines, or, for
-    a run: that is one line naming a script AUDITED_SCRIPTS reads with an argument list that entry
-    lists, the lines of that entry's reading (audited_scripts.command_for). So a step that hands
-    its go tests to a script (envoy-infra-go's natslive step runs
-    packages/envoy/infra/scripts/natslive.sh) is read as the commands a person read out of that
-    script and pinned by its SHA-256, which is the one reading go-test-step-expansion.py makes
-    too; read from such a run: alone the step runs no go test at all, and neither side of this
-    rule could see it. No script is read here: what a script runs depends on its control flow,
-    which a line-by-line reading cannot see (go-test-step-expansion.py's header says so)."""
+    """The `go test` lines a step runs, as this rule reads them: the comment-free lines of its
+    run: that start a `go test`, or, for a run: that is an AUDITED_SCRIPTS script, those lines of
+    audited_scripts.reading_of's reading of it. reading_of is the one function that says whether a run:
+    is such a script and what it runs, and go-test-step-expansion.py's audited_step calls it for
+    the same step, so the two read it alike (go-test-step-expansion.test.sh holds them to that over
+    every step of this head). So a step that hands its go tests to a script (envoy-infra-go's
+    natslive step runs packages/envoy/infra/scripts/natslive.sh) is read as the commands a person
+    read out of it, whose SHA-256 the expansion harness checks. No script is read here: what a
+    script runs depends on its control flow, which a line-by-line reading cannot see. Raises
+    audited_scripts.Unreadable for a run: that names such a script in a form no entry reads."""
     run = str(step.get("run", ""))
-    reading = command_for(step_workdir(document, job, step), run)
-    return script_lines(run if reading is None else reading)
+    reading = reading_of(step_workdir(document, job, step), run)
+    return [line for line in script_lines(run if reading is None else reading.script) if TAG_RUN_TEST.search(line)]
 
 
-def tag_run_steps(documents: dict) -> list:
+def tag_run_steps(documents: dict) -> tuple[list, list]:
     """Every run: step of ci.yaml and the workflows it calls that runs `go test` with both -tags
-    and -run, as (the workflow file, the job, the step). Read with script_lines, so a comment is
-    no trigger, and both flags must be on the go test line itself, as every such step of ci.yaml
-    writes them; a step whose run: names an audited script is read through that script's entry
-    (step_go_lines)."""
-    found = []
+    and -run, as (the workflow file, the job, the step); and every run: step whose go test lines
+    cannot be read, because it names an audited script in a form no entry reads, as (the file, the
+    job, the step, why). Read with step_go_lines, so a comment is no trigger, both flags must be on
+    the go test line itself, as every such step of ci.yaml writes them, and a step that is an
+    audited script is read through that script's entry."""
+    found, unreadable = [], []
     for path, document in documents.items():
         for name, job in (document.get("jobs") or {}).items():
             for step in (job or {}).get("steps") or []:
-                if any(TAG_RUN_TEST.search(line) and all(flag.search(line) for flag in TAG_RUN_FLAGS)
-                       for line in step_go_lines(document, job or {}, step)):
+                try:
+                    lines = step_go_lines(document, job or {}, step)
+                except Unreadable as why:
+                    unreadable.append((path, name, step, str(why)))
+                    continue
+                if any(all(flag.search(line) for flag in TAG_RUN_FLAGS) for line in lines):
                     found.append((path, name, step))
-    return found
+    return found, unreadable
 
 
 def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, gate_files: dict,
@@ -2789,10 +2795,12 @@ def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, gate
     so is a stale entry - one naming a filter the changes job does not have, a job its own
     workflow does
     not have, a step that job does not have, or a step that runs no `go test` with a -run on it.
-    What a step runs is its run:, or, for a run: that is one line naming a script
-    AUDITED_SCRIPTS reads, that entry's reading of the script (step_go_lines); both sides of the
-    rule read it that way, and both look for the -run on a `go test` line, never elsewhere in the
-    text. The tagged job
+    What a step runs is its go test lines (step_go_lines): its run:'s own, or, for a run: that is
+    an AUDITED_SCRIPTS script, those of the entry's reading, which audited_scripts.reading_of gives,
+    the function go-test-step-expansion.py reads the same step through. Both sides of the rule read
+    a step that way and look for the -run on a `go test` line, never elsewhere in the text. A step
+    that names an audited script in a form no entry reads is a failure by name on either side,
+    since the rule cannot tell what it runs; it is never read as if it named no script. The tagged job
     and its step are looked for in the file the entry's `workflow` names; the job that runs the
     untagged tests is looked for in every document of the set, since it may hold its steps in a
     called file of its own. Returns the
@@ -2827,8 +2835,15 @@ def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, gate
             continue
         # The go test lines the step runs, read as tag_run_steps reads them: the -run must be on a
         # go test line, so a --dry-run in a script's own echo, or a -run in its header, is none.
-        ran = step_go_lines(documents.get(entry.workflow) or {}, job, steps[0])
-        if not any(TAG_RUN_TEST.search(line) and TAG_RUN_FLAGS[1].search(line) for line in ran):
+        try:
+            ran = step_go_lines(documents.get(entry.workflow) or {}, job, steps[0])
+        except Unreadable as why:
+            problems.append(error(".github/scripts/ci_job_reads.py", f"TAG_RUNS names {where}, whose run: {why}; this rule "
+                                                                      f"reads what a step runs only in those forms, so it cannot tell "
+                                                                      f"whether that step passes -run: run the script as its entry reads "
+                                                                      f"it, or read the new form into .github/scripts/audited_scripts.py"))
+            continue
+        if not any(TAG_RUN_FLAGS[1].search(line) for line in ran):
             problems.append(error(".github/scripts/ci_job_reads.py", f"TAG_RUNS names {where}, which passes no "
                                                                       f"-run, so it runs the package's untagged tests itself; drop the entry"))
             continue
@@ -2856,8 +2871,15 @@ def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, gate
     # The other side of the rule: an entry holds the step it names, and this holds every step no
     # entry names - a step added without one, or an entry deleted while its step stayed. A step
     # whose entry is itself stale is named all the same, so it keeps the refusal above rather
-    # than drawing a second, confusing one.
-    for path, name, step in tag_run_steps(documents):
+    # than drawing a second, confusing one; so does a step the rule cannot read.
+    found, unreadable = tag_run_steps(documents)
+    for path, name, step, why in unreadable:
+        if any((entry.workflow, entry.job) == (path, name) and step_matches(step, entry.step) for entry in data.TAG_RUNS):
+            continue
+        problems.append(error(path, f"{name} step \"{step_label(step)}\" {why}; TAG_RUNS reads what a step runs only in "
+                                    f"those forms, so it cannot tell whether this step runs only what its tag adds: run the "
+                                    f"script as its entry reads it, or read the new form into .github/scripts/audited_scripts.py"))
+    for path, name, step in found:
         if any((entry.workflow, entry.job) == (path, name) and step_matches(step, entry.step) for entry in data.TAG_RUNS):
             continue
         problems.append(error(path, f"{name} step \"{step_label(step)}\" runs only what its tag adds "

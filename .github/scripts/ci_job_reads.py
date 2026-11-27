@@ -1587,8 +1587,8 @@ UNIT_TEST_TIMEOUT = "20m"
 # (the verification's check c8). It runs them in envoy-go-skips, with the job's env, no -tags and
 # no -race, the build the unit legs run cmd/cipher and internal/cipher/api in, so a second run in
 # a leg asked nothing the count does not: the legs skip them by name, and the count is their one
-# run (O15 of dispatch://INFRA-1408, which
-# go-test-step-expansion.py's duplicate verdict reads; its BACKEND_COUNT_TESTS is this list).
+# run (O15 of dispatch://INFRA-1408, which go-test-step-expansion.py's duplicate verdict reads;
+# .github/scripts/audited_scripts.py's BACKEND_COUNT_TESTS is this list).
 BACKEND_COUNT_AGENT_SECRETS = "cmd/cipher"
 BACKEND_COUNT_BROKER_API = f"{DATABASE_SKIPS_TREE}/api"
 BACKEND_COUNT_TESTS = {

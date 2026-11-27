@@ -1,21 +1,27 @@
-"""The scripts a step of ci.yaml's router runs as its whole run: line, each read by a person.
+"""The scripts the steps of ci.yaml's router run, each read by a person, and the one function that
+says whether a step's run: is such a script and what it then runs.
 
 A script's control flow is what decides what it runs, which a line-by-line reading cannot see, so
-neither tool that needs to know what a step runs reads such a script itself. Each entry here is a
-person's reading of one script - the go test commands it runs for each argument list a step passes
-it - pinned by the script's SHA-256, and both readers take that reading from here:
-go-test-step-expansion.py, which holds every pair a step runs to the rule that it runs once, and
-refuses a script whose text has moved past its digest; and ci_filter_coverage.py's TAG_RUNS rule,
-which reads a step's go test lines for -tags and -run (command_for). So the two read such a step
-the same way, from one reading, and a change to a script that its entry does not follow fails
-the expansion tool's digest check, in go-test-step-expansion.test.sh, which the test job runs.
+no tool that needs to know what a step runs reads such a script itself. Each entry here is a
+person's reading of one script - the go test it runs for each argument list a step passes it, on
+its own line or after `xargs` - pinned by the script's SHA-256. Whether a step's run: is one of
+those forms, and which reading it then gets, is answered once, by reading_of, and both tools that
+read what a step runs call it: go-test-step-expansion.py's audited_step, which holds every pair a
+step runs to the rule that it runs once and refuses a script whose text has moved past its digest,
+and ci_filter_coverage.py's step_go_lines, which check-ci-filters.sh's TAG_RUNS rule reads a step's
+go test lines through. A run: that names an audited script in a form no entry reads raises
+Unreadable, which each of them turns into a refusal naming the step, never a reading of the run:
+as if it named no script. go-test-step-expansion.test.sh holds the two to the same reading of every
+step of this head, and checks each digest; the test job runs it.
 
 It imports nothing of this repository, so each reader can import it without the other.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
+
 
 @dataclass(frozen=True)
 class AuditedScript:
@@ -79,8 +85,9 @@ UNIT_SKIP = ("'^(TestABatchCutOffInFlightKeepsItsOrder|TestABucketWaitWhoseLooku
              "TestTheWebFixtureFindsItsFilesFromAnyDirectory|"
              "TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$'")
 
-# Each script a step of ci.yaml's router runs as its whole run: line, read by a person, with the
-# one `go test` it runs for each argument list a step passes it.
+# Each script a step of ci.yaml's router runs, read by a person, with the one `go test` it runs for
+# each argument list a step passes it: on the step's own line (commands), or after a legs step's
+# `xargs <path>` (xargs). reading_of says which of them a step's run: is.
 AUDITED_SCRIPTS = {
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1` over its packages, then counts the skips in its report. With no package argument it
@@ -170,23 +177,72 @@ def spellings(path: str, workdir: str) -> set[str]:
     return {f"./{relative}"} | ({relative} if "/" in relative else set())
 
 
-def command_for(workdir: str, script: str) -> str | None:
-    """The reading of what a run: in workdir runs, where that run: is one line naming an
-    AUDITED_SCRIPTS script with an argument list its entry reads: the entry's `go test` text for
-    those arguments. None where the run: names no such script, which is every other step, and
-    None too where it names one in a form no entry reads - a second line, an operator, another
-    argument list - so that a caller reads such a step from its run: text rather than from an
-    entry that does not describe it. go-test-step-expansion.py's audited_step refuses that case
-    by name, and it is the reader that holds every pair a step runs; a caller that only looks for
-    `go test` lines leaves it to that one.
-    """
-    alone = script.strip(" \t\n")
-    if "\n" in alone:
+# A legs step's run: that hands its leg's packages to an audited script: `set -o pipefail`, then
+# the lister piped to `xargs [-r] <the script's path> <an argument list>`. `-r` runs nothing on
+# empty input (a refused leg), and changes nothing the command runs when it runs.
+XARGS_AUDITED = re.compile(
+    r"^set -o pipefail\n(?P<lister>[^\n|]+?) \| xargs (?P<empty>-r )?(?P<spelled>\S+) (?P<arguments>[^\n]+)$")
+
+
+class Unreadable(Exception):
+    """A run: that names an AUDITED_SCRIPTS script in a form no entry reads. Its text says which
+    script and which forms an entry reads; a caller puts the step's name in front of it."""
+
+
+@dataclass(frozen=True)
+class Reading:
+    """What a run: that is an audited script runs: the script, its entry, and the entry's reading
+    of the run: (`script`), the shell text a reader reads in the entry's module."""
+
+    path: str
+    entry: AuditedScript
+    script: str
+
+
+def reading_of(workdir: str, script: str) -> Reading | None:
+    """Whether a run: in workdir is an AUDITED_SCRIPTS script, and what it runs if so. None where
+    the run's text holds no such script's file name. A Reading where it is one of the two forms an
+    entry reads: a run: that is the script's path as spelled from workdir (spellings), alone or
+    followed by an argument list the entry's `commands` lists, from any directory, since the script
+    moves into its module itself; or a legs step's `set -o pipefail` and lister piped to
+    `xargs [-r] <path> <an argument list the entry's xargs lists>`, run from the entry's module,
+    since the lister runs in the step's own directory and the packages it prints must name the same
+    directories there. Unreadable for any other text that holds the file name - an operator, another
+    command, a `$(…)`, a comment, another line, an argument list the entry does not list: the test
+    is on the raw text, before any shell reading, so no quoting or substitution hides the script
+    from it, and no such run: is read as if it named none."""
+    named = [path for path in AUDITED_SCRIPTS if path.rsplit("/", 1)[-1] in script]
+    if not named:
         return None
-    spelled, _, arguments = alone.partition(" ")
-    for path, entry in AUDITED_SCRIPTS.items():
-        if workdir == entry.module and spelled in spellings(path, workdir):
-            return entry.commands.get(arguments)
-    return None
+    # Only the shell's own blanks and the line's end: Python's strip() also takes Unicode spaces,
+    # which bash reads as part of the name.
+    alone = script.strip(" \t\n")
+    piped = XARGS_AUDITED.match(alone)
+    if piped:
+        spelled, arguments = piped.group("spelled"), piped.group("arguments")
+        matches = [path for path in named if spelled in spellings(path, workdir)]
+        readable = (len(named) == 1 and len(matches) == 1 and workdir == AUDITED_SCRIPTS[matches[0]].module
+                    and arguments in AUDITED_SCRIPTS[matches[0]].xargs)
+    else:
+        # The path is the text up to the first space, and the arguments the text after it, compared
+        # with each listed argument list as written: one space between words, nothing else.
+        spelled, _, arguments = alone.partition(" ")
+        # The literal spelling, compared with no path normalization: `path/` and `path/.` resolve to
+        # the file in Python and name nothing the shell can run.
+        matches = [path for path in named if spelled in spellings(path, workdir)]
+        readable = (len(named) == 1 and len(matches) == 1 and not any(c.isspace() for c in spelled)
+                    and arguments in AUDITED_SCRIPTS[matches[0]].commands)
+    if not readable:
+        raise Unreadable(f"names {', '.join(named)} in a form no AUDITED_SCRIPTS entry reads: an "
+                         "entry reads a run: that is that one path, alone or followed by an argument "
+                         "list the entry lists, or a legs step's `set -o pipefail` and lister piped to "
+                         "`xargs <path> <an argument list its xargs lists>`, run from the entry's module")
+    path = matches[0]
+    entry = AUDITED_SCRIPTS[path]
+    if piped:
+        return Reading(path=path, entry=entry,
+                       script=f"set -o pipefail\n{piped.group('lister')} | xargs {piped.group('empty') or ''}"
+                              f"{entry.xargs[arguments]}")
+    return Reading(path=path, entry=entry, script=entry.commands[arguments])
 
 

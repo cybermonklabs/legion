@@ -134,7 +134,8 @@ How it reads a step:
     alone, so a `go test` inside that script is not seen: a step that runs a script from the
     repository root and holds no `go test` of its own is skipped, which is how envoy-go's
     "Count the store-form rows on each backend" (backend-count.sh) was read as running nothing
-    until its entry below, and its five tests' second run was in neither verdict;
+    until its entry in .github/scripts/audited_scripts.py, and its five tests' second run was in
+    neither verdict;
   * a `Benchmark…` name a listing prints is left out of both verdicts: no step passes `-bench`,
     so `go test` builds those functions and runs none of them, and reading every one of them as
     compiled and unrun would say that over and over and name no hole anyone can close.
@@ -158,8 +159,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from audited_scripts import (AUDITED_SCRIPTS, BACKEND_COUNT_TESTS, UNIT_SKIP,  # noqa: F401  (this module's readers and its harness name them here)
-                            AuditedScript, spellings)
+from audited_scripts import AUDITED_SCRIPTS, Unreadable, reading_of
 from ci_filter_coverage import called_workflows, script_lines, step_workdir
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -576,70 +576,29 @@ def matrix_rows(label: str, body: dict) -> list[dict]:
     return [dict(zip(keys, values)) for values in itertools.product(*(matrix[key] for key in keys))]
 
 
-
-
-# A legs step's run: that hands its leg's packages to an audited script: `set -o pipefail`, then
-# the lister piped to `xargs [-r] <the script's path> <an argument list>`. `-r` runs nothing on
-# empty input (a refused leg), and changes nothing the command runs when it runs.
-XARGS_AUDITED = re.compile(
-    r"^set -o pipefail\n(?P<lister>[^\n|]+?) \| xargs (?P<empty>-r )?(?P<spelled>\S+) (?P<arguments>[^\n]+)$")
-
-
 def audited_step(workflow: str, job: str, name: str, workdir: str, script: str, row: str = "") -> Step | None:
-    """The step a run: that is the path of an AUDITED_SCRIPTS script makes, alone or followed by
-    an argument list its entry reads, read as that entry's command for those arguments in its
-    module; or, for a legs step that pipes its lister into `xargs <path> <arguments>` from that
-    module, the lister piped into the go test the entry's `xargs` gives for those arguments (which
-    read_block's xargs branch then reads, with the packages the lister prints); or None where the
-    run's text holds no such script's file name. A run whose text holds one anywhere else - an
-    operator, another command, a `$(…)`, a comment, another line, an argument list the entry does
-    not read - is refused rather than read or skipped: the test is on the raw text, before any
-    shell reading, so no quoting or substitution hides the script from it. So is a script whose
-    text no longer has its entry's SHA-256. `row` is the matrix row the run: is, kept on the
-    step."""
+    """The step a run: that is an AUDITED_SCRIPTS script makes: audited_scripts.reading_of's
+    reading of it, in its entry's module - the one reading of such a step, which check-ci-filters.sh's
+    TAG_RUNS rule takes too - or None where the run's text holds no such script's file name. A
+    run: that names one in a form no entry reads (reading_of's Unreadable) is refused by step, as is a
+    script whose text no longer has its entry's SHA-256. For a legs step the reading is the lister
+    piped into the entry's go test, which read_block's xargs branch then reads, with the packages
+    the lister prints. `row` is the matrix row the run: is, kept on the step."""
     label = f"{workflow}'s {job} / {name}" + (f" ({row})" if row else "")
-    named = [path for path in AUDITED_SCRIPTS if Path(path).name in script]
-    if not named:
+    try:
+        reading = reading_of(workdir, script)
+    except Unreadable as unreadable:
+        raise Refused(f"{label}: {unreadable}") from None
+    if reading is None:
         return None
-    # Only the shell's own blanks and the line's end: Python's strip() also takes Unicode spaces,
-    # which bash reads as part of the name.
-    alone = script.strip(" \t\n")
-    piped = XARGS_AUDITED.match(alone)
-    if piped:
-        # The lister runs in the step's own directory, which must be the module the script moves
-        # into, so the packages it prints name the same directories there.
-        spelled, arguments = piped.group("spelled"), piped.group("arguments")
-        matches = [path for path in named if spelled in spellings(path, workdir)]
-        readable = (len(named) == 1 and len(matches) == 1 and workdir == AUDITED_SCRIPTS[matches[0]].module
-                    and arguments in AUDITED_SCRIPTS[matches[0]].xargs)
-    else:
-        # The path is the text up to the first space, and the arguments the text after it, compared
-        # with each listed argument list as written: one space between words, nothing else.
-        spelled, _, arguments = alone.partition(" ")
-        # The literal spelling, compared with no path normalization: `path/` and `path/.` resolve to
-        # the file in Python and name nothing the shell can run.
-        matches = [path for path in named if spelled in spellings(path, workdir)]
-        readable = (len(named) == 1 and len(matches) == 1 and not any(c.isspace() for c in spelled)
-                    and arguments in AUDITED_SCRIPTS[matches[0]].commands)
-    if not readable:
-        raise Refused(f"{label}: names {', '.join(named)} in a form no AUDITED_SCRIPTS entry "
-                      "reads: an entry reads a run: that is that one path, alone or followed by "
-                      "an argument list the entry lists, or a legs step's `set -o pipefail` and "
-                      "lister piped to `xargs <path> <an argument list its xargs lists>`, run from "
-                      "the entry's module")
-    path = matches[0]
-    entry = AUDITED_SCRIPTS[path]
-    digest = hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
-    if digest != entry.sha256:
-        raise Refused(f"{label}: {path} has SHA-256 {digest}, and its AUDITED_SCRIPTS entry was "
-                      f"read from {entry.sha256}; read the script again and update the entry's "
+    digest = hashlib.sha256((ROOT / reading.path).read_bytes()).hexdigest()
+    if digest != reading.entry.sha256:
+        raise Refused(f"{label}: {reading.path} has SHA-256 {digest}, and its entry in "
+                      f".github/scripts/audited_scripts.py's AUDITED_SCRIPTS was read from "
+                      f"{reading.entry.sha256}; read the script again and update the entry's "
                       "commands and digest")
-    if piped:
-        return Step(workflow=workflow, job=job, name=name, workdir=entry.module, row=row,
-                    script=f"set -o pipefail\n{piped.group('lister')} | xargs {piped.group('empty') or ''}"
-                           f"{entry.xargs[arguments]}")
-    return Step(workflow=workflow, job=job, name=name, workdir=entry.module, row=row,
-                script=entry.commands[arguments])
+    return Step(workflow=workflow, job=job, name=name, workdir=reading.entry.module, row=row,
+                script=reading.script)
 
 
 def commands_of(step: Step) -> list[GoTest]:
