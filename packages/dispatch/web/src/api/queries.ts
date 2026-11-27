@@ -23,6 +23,7 @@ import type {
   EvalListResponse,
   InboxRow,
   IssueDetails,
+  LegionIssueResponse,
   MyRepliesResponse,
   ProjectTimelineResponse,
   ReferenceTarget,
@@ -146,6 +147,16 @@ export const issueStepsQuery = (key: string) =>
   queryOptions({
     queryKey: ["issue", key, "steps"],
     queryFn: () => api.listSteps(key),
+  });
+
+/** Each version of each phase handoff of one issue, without its body
+ *  (`GET /api/v1/issues/{key}/handoffs`): the Conversation's handoff cards and Dashboard's phase
+ *  track read the one key, which a handoff's event refreshes (`api/event-refresh.ts`). A card
+ *  reads a handoff's body when expanded. */
+export const handoffsQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["handoffs", key],
+    queryFn: () => api.listHandoffs(key),
   });
 
 /** The live blocks of one document (`GET /api/v1/artifacts/{id}/blocks`): the document's own
@@ -500,6 +511,9 @@ interface DeliveryLiveBodies {
   readonly evals: EvalListResponse;
   readonly items: EvalItemsResponse;
   readonly "project-timeline": ProjectTimelineResponse;
+  /** One issue's Legion state, `GET /api/v1/issues/{key}/legion`'s body: not a delivery view,
+   *  but served by the same hub, so `api/legion-issue.ts` subscribes it through `subscribeLive`. */
+  readonly legion_issue: LegionIssueResponse;
 }
 
 /** The live view's answer, which is the body of the GET route its kind mirrors. Only the views
@@ -515,6 +529,9 @@ function subscribeLive<K extends keyof DeliveryLiveBodies>(
     DeliveryLiveBodies[K]
   >;
 }
+
+/** `api/legion-issue.ts` builds its live query of an issue's Legion state from these two. */
+export { LIVE, subscribeLive };
 
 /** One run of a project's deploy source with every job it ran and its record (deploy row and
  *  failures), read by GET from the repository its timeline row names (dispatch://INFRA-2918,
