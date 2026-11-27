@@ -860,18 +860,6 @@ const heldContract = 98
 // contract are values of the refusal body's `code`, which no reader enumerates.
 const processReadContract = 104
 
-// claimStartContract is the daemon contract at which the operator's and the controller's claim
-// routes name a start that waits for its issue's admission slot, answer a start refused after a
-// fresh session's forget with 200, and answer a retry or a resume once its start is under way
-// (version.go's 266, dispatch://INFRA-5649). It moved no key path of any answer. It changed what
-// two answers mean, and a caller below it is served each as before (answersAsBefore): no
-// `phaseNotRestarted` for a start that waits for a slot (waitNamed), and the refusal itself, as
-// the error it was, for a start refused after the forget (refusedAfterTheForget), because its
-// `legion` tool description reads an empty answer as a start that ran. The earlier answer of a
-// start under way is served to every caller: its shape is the one it was, and holding it back
-// would keep the caller waiting past its own timeout.
-const claimStartContract = 266
-
 // quietTimeContract is the daemon contract that added each issue's measure of its tree's quiet
 // time to the state (contract 111 in version.go): `treeMovedAt`, the newest movement the daemon
 // has seen anywhere in that tree, and `quietHours`, how long it has been still. A plugin below
