@@ -1,0 +1,21 @@
+---
+type: requirement
+id: a-claim-survives-a-restart
+kind: behavior
+text:
+  - Legion keeps the claim of an issue after the daemon starts again.
+---
+type: check
+id: a-restart-keeps-the-claim
+serves: a-claim-survives-a-restart
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/acme/daemon TestARestart_LosesNoClaim
+  job: go-checks
+claim: The daemon reads the claim of an issue after it starts again.
+procedure_text:
+  - The program TestARestart_LosesNoClaim claims one issue, starts the daemon again and reads the claims.
+failing_example:
+  - A daemon that keeps its claims in memory only.

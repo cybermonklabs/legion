@@ -53,19 +53,21 @@ jobs:
     runs-on: ubuntu-24.04
     # The budget added up part by part, and where its ceiling came from: .github/ci-budgets.md,
     # "The pi-legion job's ceiling", which adds the job up as it was when it also ran the
-    # typecheck and the pack that pi-legion-build runs now, so its 396 s is a floor this job,
-    # without them, stays under. Its two terms, in the shape ci-budgets.md's Budgets note asks
-    # for: 396 s, the slowest run that section adds up since main's #5096 runs the test files in
-    # parallel, which is above its 374 s measured maximum, plus its slowest retried step alone -
-    # install-jj's two `ci_tools_fetch` calls and its `mise install` of the jj release,
-    # 3416 + 450 = 3866 s, above setup-bun's 3416 s, the ci-ok report's 2460 s and the workspace
-    # install's 1050 s. 396 + 3866 = 4262 s -> 72 min. It carried 78 from 804 + 3866 until #5096
-    # took the test step from 708 s to 300, 61 from 600 + 3012 until round 35 read the section's
-    # own sum against it, and 64 from 804 + 3012 until main's #4214 gave each `ci_tools_fetch` a
-    # fourth ladder.
-    timeout-minutes: 72
+    # typecheck and the pack that pi-legion-build runs now, so its 596 s is a floor this job,
+    # without them, stays under. Its key is the larger sum of .github/ci-budgets.md#the-budgets-note.
+    # The first: 596 s, the slowest run that section adds up since main's #5461 put a child
+    # owner's whole run in the test step, which is above its 374 s measured maximum, plus its
+    # slowest retried step alone - install-jj's two `ci_tools_fetch` calls and its `mise install`
+    # of the jj release, 3416 + 450 = 3866 s, above setup-bun's 3416 s, the ci-ok report's 2460 s
+    # and the workspace install's 1050 s. 596 + 3866 = 4462 s -> 75 min. The second, the 17 s
+    # before install-jj (the set-up and the checkout, 15 s, and setup-bun, 2) plus install-jj's
+    # 65 minutes, is 3917 s, under it. It carried 72 from 396 + 3866 until main's #5461 took the
+    # test step from 300 s to 500, 78 from 804 + 3866 until #5096 took it from 708 s to 300, 61
+    # from 600 + 3012 until round 35 read the section's own sum against it, and 64 from
+    # 804 + 3012 until main's #4214 gave each `ci_tools_fetch` a fourth ladder.
+    timeout-minutes: 75
     env:
-      JOB_TIMEOUT_MINUTES: 72 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 75 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
     # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.
     services:

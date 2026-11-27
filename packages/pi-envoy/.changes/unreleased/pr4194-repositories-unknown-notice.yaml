@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+  A registration an edge listener refuses 503 `repositories_unknown` no longer shows "Envoy
+  inbound unavailable", the pane note `envoy: inbound messages are unavailable` and the warning
+  that the session receives nothing. The edge could not read the repositories of the session's
+  projects, so it withholds the messages of the session's GitHub topics. If it already held the
+  session's registration, it kept that registration and the session's consumer, so the session
+  receives its other messages; if it held none, the session receives nothing until a registration
+  is accepted. The card is now "Envoy GitHub topics withheld", and it says both cases. The pane
+  note is `envoy: GitHub messages are withheld (<why>); other messages still arrive if the
+  listener already held this session's registration, and none arrive until a registration is
+  accepted if it held none; registering again every heartbeat`, and the warning says that the
+  listener follows none of the session's GitHub topics now, with the same two cases. The accepted
+  registration after it shows the card "Envoy GitHub topics followed again", and the pane note
+  and the info line say that the listener follows the session's GitHub topics again, where both
+  said that inbound messages are back. A refusal or a lost relay subject after a told
+  `repositories_unknown` is told once more, as a session that receives nothing.
+time: 2026-11-22T17:16:22Z
+custom:
+    Issue: pr4194

@@ -1,0 +1,29 @@
+kind: Fixed
+body: |-
+  An edge listener's 503 `repositories_unknown` is no longer told as "Envoy inbound
+  unavailable" with the words that the session has no durable consumer and receives none. The
+  edge refuses that registration because it could not read the repositories of the session's
+  projects, and it withholds the messages of the session's GitHub topics. Where it already held
+  the session's registration, it keeps that registration and the session's consumer; where it
+  held none, it creates none. The client cannot tell which. `inboundUnavailable` sorts each
+  failure once into a kind (`InboundOutageKind`, new), and its `tell` and `restored` now take the
+  outage as `{ kind, why }` (`InboundOutage`, new): a 503 whose reason (`EnvoyApiError.reason`) is
+  `repositories_unknown` is the kind `github_withheld`. `inboundUnavailableNoticeText(outage)`
+  and `inboundRestoredNoticeText(kind)` word each notice by its kind. For `repositories_unknown`
+  the notice is "Envoy GitHub topics withheld": the listener follows none of the session's GitHub
+  topics now
+  and withholds their messages, and it refused this registration. If it already held the
+  session's registration, it kept that registration and the session's consumer, so the session
+  receives the messages of every other topic the listener follows for it. If it held none, the
+  session receives nothing until a registration is accepted. The session registers again at
+  every heartbeat. The accepted registration after it is told as "Envoy GitHub topics followed
+  again": the listener follows the session's GitHub topics again, and a GitHub message it
+  withheld meanwhile may be missing. It does not say that the session receives
+  again. Each host picks the words of its own one-line texts by the kind, from a `Record` of
+  every kind. A failure that lets less reach the
+  session than the told one is told once more: a refusal or a lost relay subject after a told
+  `repositories_unknown`, as after a told bus-outage 503, and a `repositories_unknown` after a
+  told bus-outage 503. The bus-outage 503 and every other refusal keep their texts.
+time: 2026-11-22T17:16:22Z
+custom:
+    Issue: pr4194

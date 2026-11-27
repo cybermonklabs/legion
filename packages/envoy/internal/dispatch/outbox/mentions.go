@@ -1252,13 +1252,14 @@ type fallbackEvent struct {
 }
 
 // fallbackRecord is what a fallback pass came to for one row: settled, and published when it
-// published the copy; failed when its decision or publish failed, which counts an attempt on the
-// row and backs it off, logged at the dead-letter threshold (failedAttempt). A record neither
-// settled nor failed releases the row's claim for a later pass, counting no attempt, and delay is
-// how long the row waits before it is due again: mentionPendingDelay while its mention is still
-// being sent, retry.BaseDelay while NATS is unreachable, and none at all when the publisher hold's
-// deadline fenced the send or the process is stopping, where whatever pass runs next takes the row
-// at once.
+// published the copy. A copy NATS refused for good (bus.ErrRefused) is settled unpublished: no
+// pass could ever send it, and no host has it. failed is a decision or a publish that failed,
+// which counts an attempt on the row and backs it off, logged at the dead-letter threshold
+// (failedAttempt). A record neither settled nor failed releases the row's claim for a later pass,
+// counting no attempt, and delay is how long the row waits before it is due again:
+// mentionPendingDelay while its mention is still being sent, retry.BaseDelay while NATS is
+// unreachable, and none at all when the publisher hold's deadline fenced the send or the process
+// is stopping, where whatever pass runs next takes the row at once.
 type fallbackRecord struct {
 	held      fallbackCopy
 	settled   bool
@@ -1329,7 +1330,9 @@ type fallbackRecord struct {
 // owes a send the row's session may take (copyHolder; the row waits as for a
 // pending attempt until then), carrying the dedupe key of the failed attempt's send
 // (mentionDeliveries.fallbackKeys for a session, targetFallbackKeys for a target), and the row is
-// marked published. A row whose
+// marked published. A copy NATS refuses the same way however often it is sent (bus.ErrRefused) is
+// logged and counted once, and its row is settled unpublished with no attempt counted, since no
+// pass could send it. A row whose
 // destination is a role topic is not published there - the stream captures no role subject - but
 // resolved and forwarded to the role's holder, as a batch's role route is (fallbackRoleForward,
 // roleForward.send): a role no live holder can take has its copy kept on the role's kept lane for
@@ -1533,8 +1536,12 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 		verdict := judgeSend(ctx, deps, err, item.out.forward, "fallback copy",
 			"comment_id", item.held.commentID, "destination", item.held.destination)
 		switch verdict.outcome {
-		case sendReached, sendRefused:
-			// A refused copy settles as a sent one: nothing a later send does would be taken.
+		case sendReached:
+		case sendRefused:
+			// Refused the same way however often it is sent, so the row is settled with nothing
+			// published and no pass sends it again.
+			records = append(records, fallbackRecord{held: item.held, settled: true})
+			continue
 		case sendReleased:
 			// The record writes the release while the publisher hold is still this process's on
 			// the database's clock, and leaves it to whoever holds it otherwise

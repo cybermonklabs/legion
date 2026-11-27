@@ -7,7 +7,7 @@ in the workflow file, or, for a value the proof job's matrix carries, in the com
 
 ## The proof step's own limit
 
-`Run the proof` runs `bash "scripts/e2e/$SCRIPT"`, and seventeen of the twenty-three hosted scripts
+`Run the proof` runs `bash "scripts/e2e/$SCRIPT"`, and twenty-one of the twenty-eight hosted scripts
 source `scripts/e2e/lib/live-daemon-proof.sh`, whose `live_daemon_proof` installs nats-server with
 `go install` through `.github/scripts/ci-retry.sh` at the 180 s module bound,
 5 x 180 + 150 = 1050 s; `scripts/e2e/dispatch-session-settings.sh` retries the same install the
@@ -27,15 +27,17 @@ Each row's measured figure is the one its `timeout_minutes` starts from (the com
 `.github/e2e-scripts.json`), derived per row below:
 
 - Sourcing `lib/live-daemon-proof.sh`, and calling `live_daemon_proof` once: behind-entry-fence.sh,
-  child-adoption.sh, conflict-merger.sh, conflict-no-takeover.sh, experiment.sh,
-  handoff-records.sh, merge-wait-readable.sh, owner-steps.sh, parent-waits.sh, plan-ratings.sh,
-  register-gate-basis.sh, review-range.sh, step-records.sh and sub-architect.sh at 25 minutes,
+  child-adoption.sh, claim-compaction.sh, conflict-merger.sh, conflict-no-takeover.sh,
+  experiment.sh, handoff-records.sh, late-completion.sh, merge-wait-readable.sh, owner-steps.sh,
+  parent-waits.sh, plan-ratings.sh, provider-error-retry.sh, register-gate-basis.sh,
+  review-range.sh, role-prompt-rule.sh, step-records.sh and sub-architect.sh at 25 minutes,
   1500 + 1050 = 2550 s -> 43 min,
   owner-steps-client.sh and look-names-its-check.sh at 30 minutes, 1800 + 1050 = 2850 s -> 48 min,
   and phase-entry-converge.sh at 20 minutes, 1200 + 1050 = 2250 s -> 38 min.
-- Sourcing neither file, directly or through `lib/rig.sh`, through `lib/codex-host.sh`, through
-  `lib/model-endpoint.sh` or through the libraries those source: dispatch-claimant-delivery.sh
-  and dispatch-broker.sh, 1500 s -> 26 min; nats-callout-sessions.sh, 2100 s -> 36 min; and
+- Sourcing neither file, directly or through `lib/rig.sh`, through `lib/transcript.sh`, through
+  `lib/run-verdict.sh`, through `lib/codex-host.sh`, through `lib/model-endpoint.sh` or through the
+  libraries those source: dispatch-claimant-delivery.sh and dispatch-broker.sh, 1500 s -> 26 min;
+  refusal-fallback-omp.sh, 1800 s -> 31 min; nats-callout-sessions.sh, 2100 s -> 36 min; and
   stage1-skeleton.sh and verification-results.sh, 1200 s -> 21 min.
 - shared-clone-kind.sh, whose scripts/e2e/lib/kind-sandbox.sh retries its three downloads at the
   60 s a release asset or archive gets (the Retries note of .github/ci-budgets.md), kind v0.33.0
@@ -49,6 +51,8 @@ Each row's measured figure is the one its `timeout_minutes` starts from (the com
 
 The Go module download before the proof has retry arithmetic of 1050 s.
 It is shorter than the slowest retried step in rows that select `jj`, `bun` or `apt`.
+install-omp's fetch of the release archive, which a row whose `omp` is true runs after install-jj,
+is 5 x 60 + 150 = 450 s, shorter still, so it sizes no row.
 shared-clone-kind.sh's job limit is derived in this file's section "The Kind row's job limit".
 Every row's job limit stays above its step's: `.github/scripts/select-e2e-proofs.sh` refuses one
 that does not, so the pairs are read from `.github/e2e-scripts.json` and not copied here.
@@ -67,7 +71,17 @@ look-names-its-check.sh row, added with its measured 30 minutes alone and no
 1800 + 3866 = 5666 s -> 95 min over 48 (dispatch://INFRA-1545, round 68). Main's #4592's
 parent-waits.sh and register-gate-basis.sh rows, added with their measured 25 minutes alone and
 no `run_timeout_minutes`, each with its `jj` true, now carry 1500 + 3866 = 5366 s -> 90 min over
-43 (dispatch://INFRA-1545, round 71).
+43 (dispatch://INFRA-1545, round 71). Main's #5360 moved role-prompt-rule.sh, late-completion.sh,
+claim-compaction.sh, provider-error-retry.sh and refusal-fallback-omp.sh from the `elsewhere` list
+to `hosted`, each with its `omp` true, its measured figure alone and no `run_timeout_minutes`.
+The first four, at 25 minutes with their `jj` and `bun` true, now carry 1500 + 3866 = 5366 s ->
+90 min over 43. The second sum of .github/ci-budgets.md#the-budgets-note, the steps before
+install-jj (the checkout, setup-bun and the workspace install) plus install-jj's 65 minutes,
+3900 s, would be the larger only if those steps took more than 1466 s, and no hosted run of these
+rows has measured them yet. refusal-fallback-omp.sh, at 30 minutes with its `jj` false and its
+`bun` true, now carries setup-bun's 1800 + 3416 = 5216 s -> 87 min over 31; its second sum, the
+checkout plus setup-bun's 57 minutes, 3420 s, would be the larger only if the checkout took more
+than 1796 s (dispatch://INFRA-1545).
 
 `.github/scripts/check-download-retry.sh` reads no script outside `.github/scripts/` and no number
 out of an expression (A CEILING WRITTEN AS AN EXPRESSION, under its rule 8), so it prices neither

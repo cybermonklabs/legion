@@ -2,14 +2,11 @@ kind: Fixed
 body: |-
   A publish that a clustered stream refuses because an earlier publish under the same message id is
   still in process no longer pages as a failed publish, since that earlier publish stores the one
-  copy. A delivery exception refused that way, as several listeners raising one exception for the
-  same stored message under one `Nats-Msg-Id` can be, is now logged at WARN as `listener exception
-  publish in process`, not at ERROR as `listener exception publish failed`. A webhook delivery
-  refused that way, as a delivery that arrives again while its first attempt is being stored can
-  be, is now logged `<source> publish in process` (`github`, `slack` or `ghostwispr`), not
-  `<source> publish failed`, and is still answered `503`; a redelivery is answered `200` with the
-  stored copy. The listener's publish-failure alarm counts neither new line. Every other failure
-  to publish a delivery exception or a webhook delivery still logs the line the alarm counts.
+  copy. A webhook delivery refused that way, as a delivery that arrives again while its first
+  attempt is being stored can be, is now logged `<source> publish in process` (`github`, `slack` or
+  `ghostwispr`), not `<source> publish failed`, and is still answered `503`; a redelivery is
+  answered `200` with the stored copy. The listener's publish-failure alarm does not count the new
+  line. Every other failure to publish a webhook delivery still logs the line the alarm counts.
 time: 2026-11-21T22:59:27Z
 custom:
     Issue: pr4919
