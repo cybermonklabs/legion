@@ -13,7 +13,7 @@ import { lensPlaceOf, rowPathIn } from "./lens-reads";
  * One chip of a lens line: a lens, a check or a constraint, by its words; or a node a fact line
  * names (`LensLines.tsx`'s `FactWords`), by the words the line names it by. Where the tree read
  * gives the target's id, the words are the link to its row on this issue's page (`?node=`), drawn
- * as `NodeRow.tsx`'s `Chip` draws its link, in the view that draws the row (R7): in the open
+ * as `NodeRow.tsx`'s `Chip` draws its link, in the view that draws the row: in the open
  * outline where it draws it - Graph, which draws every row, and Conversation, but for a target
  * only Graph draws (`LensChip.graphOnly`), as an issue constraint is in Conversation, or one no
  * page read so far holds - and in Graph from anywhere else: from Conversation for such a target,
@@ -39,8 +39,8 @@ import { lensPlaceOf, rowPathIn } from "./lens-reads";
  * The author's words are drawn through the framework's plain-text projection (`usePlainHeadline`,
  * the reading list's `lens-chip`), from their reading where they keep a mark (`chip.reading`), so
  * an address in code reads as written: each reference in them reads as its target's name, by the
- * name the page published for it and else by a read of its own, and never as a raw address
- * (R22), and a role in them by the issue the page is on. The space the words keep at either end,
+ * name the page published for it and else by a read of its own, never as a raw address, and a
+ * role in them by the issue the page is on. The space the words keep at either end,
  * which the projection trims, stays (`spacedWords`). Nothing is drawn until the projection has
  * answered: a chip draws no address. The page's word is drawn as it is, and so are words that
  * hold nothing to read.

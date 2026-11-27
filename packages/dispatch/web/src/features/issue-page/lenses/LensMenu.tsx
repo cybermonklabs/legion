@@ -41,7 +41,7 @@ import {
 
 /**
  * What each row needs to offer the Lens act: the issue the page is on, the outline the
- * address opens - Conversation or Graph, the two places the act is drawn (R4) - where the
+ * address opens - Conversation or Graph, the two places the act is drawn - where the
  * reader stands now, which a pick's answer reads as it lands, and what has been invoked on each
  * node of the issue, read once for every row. `TreeRows.tsx` provides it (`useLensAct`); a route
  * that names no issue, and an address that opens no outline - a filter or any other view -

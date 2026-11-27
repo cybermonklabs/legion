@@ -114,8 +114,9 @@ import { assertPageFits } from "./unclipped";
  * What each row reads, and in which outline:
  *
  * - Row 1 reads in Conversation and again in Graph (`readLensRowsIn`), each line while the focus
- *   is on another row: (2) and (1), the two lenses under statement 1 after its other children,
- *   each with its tag, alice, its time and its verdict; (10) the threat model's tag of 129
+ *   is on another row: (2) and (1), the two lenses under statement 1, among its conversation nodes
+ *   and before its check and its plan task, each with its tag, alice, its time and its verdict;
+ *   (10) the threat model's tag of 129
  *   characters under statement 4, with the page fitting its width; (3) the Triggered by and
  *   Triggered chips, and `f` and Enter on each, which focus the other row in the same view with
  *   no new load; (4) the finding; (5) the risks' lines and check 1's chip, which focuses check 1;
@@ -164,9 +165,9 @@ import { assertPageFits } from "./unclipped";
  * the tree", proves that the link statement 2's words draw keeps the focus, and the row its Lens
  * act, through the read of the tree a comment's event makes, and that a lens is invoked from
  * there, and fails on `the link in statement 2's words does not keep the focus through a read of
- * the tree again` where it does not. Part T carries `RowText.tsx`'s keeping of the words a read
- * hands again in new objects (decision 385), which T's `RowText.test.tsx` proves; at T's tip the
- * row passes with `RowText.tsx` taken back to before that change too, so it is no control of it.
+ * the tree again` where it does not. The page's row renderer (`RowText.tsx`) keeps the words a
+ * read hands again in new objects, which `RowText.test.tsx` proves; on this base the row passes
+ * with `RowText.tsx` taken back to before that change too, so it is no control of it.
  *
  * At a base that serves the tree read and holds none of the lens rows, each of rows 1 to 4 fails
  * on an assertion of its own, at the end of a 30 s poll and not at its deadline. Rows 1, 2 and 4
@@ -581,8 +582,10 @@ async function readLensRowsIn(
 
 /**
  * Row 1's (2), the first reading of what the lens rows draw: statement 1's row is drawn, and the
- * pre-mortem's row stands under it, by the tree's own levels. Then (1): after statement 1's other
- * children, the trade-off analysis, then the pre-mortem, each tagged by its kind's words,
+ * pre-mortem's row stands under it, by the tree's own levels. Then (1): under statement 1, among
+ * its conversation nodes and before its ranked children (its check and its plan task), the
+ * trade-off analysis, then the pre-mortem, as the tree read orders a node's conversation nodes
+ * first by `made_at`, then by id, before its ranked children; each tagged by its kind's words,
  * capitalised and whole, with the focus on another row; each by alice, with its time and its
  * verdict, or the words that say it has none.
  */
@@ -607,15 +610,27 @@ async function expectLensesUnderStatementOne(
   const tradeOff = await drawnIn(page, view, ids.tradeOff, "the trade-off analysis");
   const preMortem = await drawnIn(page, view, ids.preMortem, "the pre-mortem");
   const rows = await drawnRows(page);
+  const children = childrenOf(rows, statementOne);
+  // The ranked children the view draws: its check, and its plan task where the view's read holds
+  // one, which Conversation's names no kind of (`CONVERSATION_KINDS`).
+  const ranked = (row: DrawnRow) => row.type === "check" || row.type === "plan_task";
+  const lastLens = Math.max(
+    ...[tradeOff, preMortem].map((id) => children.findIndex((row) => row.id === id))
+  );
   expect(
-    childrenOf(rows, statementOne)
-      .slice(-2)
-      .map((row) => row.id),
+    {
+      checkDrawn: children.some((row) => row.type === "check"),
+      lenses: children.filter((row) => row.type === "lens").map((row) => row.id),
+      rankedBeforeALens: children
+        .slice(0, lastLens)
+        .filter(ranked)
+        .map((row) => row.id),
+    },
     inView(
       view,
-      "under statement 1, after its other children, the trade-off analysis and then the pre-mortem"
+      "under statement 1, among its conversation nodes and before its ranked children, the trade-off analysis and then the pre-mortem"
     )
-  ).toEqual([tradeOff, preMortem]);
+  ).toEqual({ checkDrawn: true, lenses: [tradeOff, preMortem], rankedBeforeALens: [] });
   // The focus goes to statement 1, so each lens's tag is read on a row that has none.
   await focusRow(page, statementOne);
   for (const lens of [
