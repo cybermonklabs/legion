@@ -289,7 +289,7 @@ step, which tests those five — so the filter covers the whole module's closure
 and what the Stage 1 proof, ci-job-daemon-go.yaml's "Stage 1 live proof" step, builds and sources. The
 packages they compile, the Dispatch server `packages/daemon/internal/testbuild/testbuild.go#buildEnvoy` builds
 for `packages/daemon/internal/daemon/outbox_scratch_dispatch_test.go#startScratchDispatchOn`, and what their
-tests read outside the daemon: the contracts fixtures `packages/daemon/internal/api/state_golden_test.go#goldenPath`,
+tests read outside the daemon: the contracts fixtures `packages/daemon/internal/apifixture/apifixture.go#Path`,
 `packages/daemon/internal/api/state_golden_test.go#golden`,
 `packages/daemon/internal/intake/intake_test.go#TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer` and `packages/daemon/internal/intake/intake_test.go#TestAWorkflowRunEnvelopeIsNoFact`
 read, the agents `packages/daemon/internal/prompts/roles_test.go#TestEveryTaskAgentARolePromptDispatchesIsShipped`
@@ -624,10 +624,11 @@ own, whose patterns .github/ci-gates/dispatch-references.py keeps by hand. ci.ya
 dispatch-browser-pr job runs its pull-request lane on a pull request, the two
 projects a change is held to; its dispatch-browser job runs the full lane, every
 project and the two-process job, in the merge group, on a dispatched run and on a
-pull request carrying `full-ci` or `lane:dispatch_browser`, which is the lane the
-nightly (.github/workflows/dispatch-browser-nightly.yaml) calls. So a worker can put
-the whole suite on a pull request with the label, and the group is where a change to
-that file meets it before main anyway. The nightly itself is not in this list:
+pull request carrying `lane:dispatch_browser` or `full-ci`, which is the lane the
+nightly (.github/workflows/dispatch-browser-nightly.yaml) calls. So a worker who needs the
+whole suite's result before the merge can put it on a pull request with
+`lane:dispatch_browser`, and the group is where a change to that file meets it before main
+anyway. The nightly itself is not in this list:
 no step of this suite reads it, which rule 9's second direction refuses, since
 four shard machines and the merge job would start over a change no row sees. It
 is a read of the ci_filters gate instead, so a change to it re-runs this check,
@@ -1056,14 +1057,6 @@ file its steps live in.
 ## envoy_client: The Envoy client's job (envoy-client)
 
 The Envoy client's job (envoy-client).
-
-## envoy_client: The test that no text states the old rule reads
-
-`packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts#no text states the old rule` reads
-every text file git lists under these roots (OLD_RULE_ROOTS) and every AGENTS.md,
-the root's and the nested ones among them, so a text there that states the
-replaced rule must start this job. The recordings under packages/dispatch/e2e
-start it too, though the row leaves them out: this filter takes no `!` pattern.
 
 ## envoy_go_race: The shared race job: the closure of `go test -race`
 
@@ -1835,8 +1828,10 @@ a job's time from its first leg's start to its last leg's end; the numbers below
 - A build, vet, format, typecheck or lint check runs on a pull request whatever its job's time,
   so a change that does not build or is not formatted fails while its author still has it.
 - Every other test is a slow suite: the merge queue runs it, and a pull request runs it only
-  under the label `full-ci`, or `lane:<output>` for that one job. A slow suite is held back
-  through its job's `changes` output
+  under its `lane:<output>` label, for a need the pull request names
+  (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request says what
+  `full-ci`, every slow suite, is for). A slow suite is held back through its job's `changes`
+  output
   (.github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request). No job runs in part:
   a job that held a slow suite beside steps a pull request runs is split in two, the slow half
   keeping the job's id and output and the other half a job of its own, so each runs all its
@@ -1868,6 +1863,21 @@ queue, where the failure takes the entry out and the queue rebuilds the groups b
 build, vet, format, typecheck and lint failure, and every failure of a fast test, still comes
 back on the pull request.
 
+Why a slow suite runs in the queue and not on every pull request its paths select, measured on
+2026-11-27 (dispatch://INFRA-3862) over the merge groups of 2026-11-25 and 2026-11-26 (1,085 runs;
+289 pull requests merged) and 420 pull-request runs whose paths verdicts ci-ok logged: a merged
+pull request had 10.98 pull-request runs and 3.75 merge-group runs, rebuilds included. So every
+slow suite cost fewer runner-minutes in the queue, counting the queue runs a failure threw away,
+than it would on the pull request: per merged pull request, envoy-go 80 in the queue against 265,
+envoy-go-race 82 against 119, dispatch-browser 101 against 567. A pull-request run that ran one
+of envoy's five unit suites reached its ci-ok in 33 minutes at the median (54 at the 90th
+percentile), a run of the fast jobs alone in 11 (22), and envoy-go's paths select 86% of
+pull-request runs. On a model of the queue's slot-hours, moving those five suites out of it would
+have raised its ceiling by about 4% once their flaky tests are fixed (17 of the 27 queue failures
+they caused in those two days were of a pull request that later merged with no new commit), at
+that cost in runner-minutes and verdict time, and without the queue's run of them on the combined
+tree.
+
 ## How a slow suite is held back on a pull request
 
 A slow suite (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue)
@@ -1882,8 +1892,9 @@ reopen or ready-for-review, not when it is added: this workflow takes no `labele
 trigger, which would start a run that joins this workflow's concurrency group and cancels the
 pull request's run in progress. Take the label off once the run it was added for passes,
 since every later push would run the slow suites again, unless a `ci_check` of the issue
-names one of them: without the label that job's own check run (`test`) concludes `skipped`,
-no job of the file it calls starts, and the run the check names (`test / test`) is absent.
+names one of them: then that job's own `lane:<output>`, never `full-ci`, stays on, since without
+it that job's own check run (`test`) concludes `skipped`, no job of the file it calls starts, and
+the run the check names (`test / test`) is absent.
 
 ## A citation names a symbol, never a line
 
@@ -1976,9 +1987,14 @@ that output on where its paths matched: `daemon_go_tests`, `dispatch_browser`,
 `envoy_go_checks`, `envoy_go_claim_model`, `envoy_go_race`, `envoy_go_race_api`,
 `envoy_go_race_docs`, `envoy_infra_go`, `envoy_smoke`, `pi_legion` and `test`. It is for a pull
 request that needs one slow suite's result at its head - a test that only that suite runs, or a
-`ci_check` naming that job - without running the others. Each term names its own label, so the
-label that turns a job on is written beside it and nowhere else, and the paths term stays: a
-lane label never runs a suite its filter did not select.
+`ci_check` naming that job - without running the others; the pull request's body names that
+need. Each term names its own label, so the label that turns a job on is written beside it and
+nowhere else, and the paths term stays: a lane label never runs a suite its filter did not
+select. No such need asks for `full-ci`: keep it for a change to the Dispatch store's migrations
+before its approval, or for a person who asks for it. Between 19:40 and 21:35Z on 2026-11-26 the
+slow suites took 13,072 of the 24,967 pull-request runner-minutes, 9,981 of them under `full-ci`,
+and on Legion's branches 819 of 9,384 went to a suite a `ci_check` of the issue named
+(dispatch://INFRA-3862).
 
 A label that names no such output - a misspelling, a job id such as `lane:envoy-go` where the
 output is `lane:envoy_go`, or an output that is not held back - turns on nothing and fails
@@ -2040,12 +2056,13 @@ a dispatch of a branch the step runs and this is its verdicts, which no label te
 
 A job a pull request held back did not run at this head, and ci-ok passes over its skip, so
 ci-ok.sh names it once more after its verdict, pass or fail, on a line of its own:
-`not run at this head: <job> (selected by paths, held back on a pull request without full-ci or lane:<output>; runs in the merge queue)`,
-where `<output>` is the job's own `changes` output, so the line names the label that would run
-it. The same lines go to the ci-ok job's summary, apart from the jobs that ran and passed, so a
-green ci-ok on a pull request without the label is not read as those jobs passing. No job runs
-in part, so a job that ran and passed ran all its steps. A run that held nothing back writes no
-summary.
+`not run at this head: <job> (selected by paths, held back on a pull request; the merge queue runs it before the change lands, and lane:<output> runs it here only for a need the pull request names)`,
+where `<output>` is the job's own `changes` output, so the line names the one label that runs it
+on a pull request and never `full-ci`
+(.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request). The same lines
+go to the ci-ok job's summary, apart from the jobs that ran and passed, so a green ci-ok on a
+pull request without the label is not read as those jobs passing. No job runs in part, so a job
+that ran and passed ran all its steps. A run that held nothing back writes no summary.
 
 ## What the filter step diffs on a dispatched run
 
@@ -2571,7 +2588,8 @@ So it joins the router in fewer places than the eight
 .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs names for a
 new job: an EXCLUDED file in .github/ci-gates, dispatch-references.py, where a gate would be,
 which holds its filter's patterns by hand, an output in `changes` for that filter, its `needs:
-changes` and an `if:` on that output with the re-run term, and its name in CI_OK_EXEMPT. It has
+changes` and an `if:` on that output with the re-run term and the full-lane term below, and its
+name in CI_OK_EXEMPT. It has
 no CI_OK_SELECTED_BY or
 CI_OK_PULL_REQUEST_ONLY entry, no report step and no place in the ci-ok job's `needs:`,
 each of which check-ci-filters.sh refuses for a job CI_OK_EXEMPT names. Its steps are
@@ -2592,6 +2610,23 @@ back on a pull request, and the merge queue's full lane runs the same rows whate
 The `dispatch_references` filter selects it;
 .github/ci-notes/ci.md#dispatch_references-the-reference-rows-preview-dispatch-references-the-eleven-spec-files
 says why that filter is narrower than what the job reads.
+
+Not beside the full lane: the `if:` also holds `needs.changes.outputs.dispatch_browser != 'true'`,
+so the preview runs only on a pull request whose own run does not run the dispatch-browser job.
+A pull request labelled `full-ci` or `lane:dispatch_browser` runs that job on the full lane,
+whose `chromium` project holds every row of the `references` lane, and ci-ok needs it, so there
+the preview ran each of its rows a second time in the same run and reported the full lane's
+own failures again under a check that gates nothing. Measured over every pull-request run of
+ci.yaml created on 2026-11-26: the preview ran in 495 attempts for 7,213 runner-minutes, 346 of
+those attempts (5,170 runner-minutes) beside the full lane. It failed 275 jobs that day, 179
+shard legs and 96 merge jobs, and 267 of them were in such attempts; in each of the eleven
+attempts read row by row, one per pull request, every row the preview failed also failed on the
+full lane's `chromium` project. The other 8 were the only browser reading of those rows, on
+#3513 and #5677, and neither was a flake: each failed on every attempt at its head. The term
+reads the output rather than the labels,
+so the preview still runs where a label is set but the dispatch_browser filter did not select
+the full lane. check-ci-filters.sh reads such a term as gating on no filter (its rule 3), so the
+preview's filter stays EXCLUDED and the called file's jobs stay read under the gated callers.
 
 No timeout-minutes: GitHub's keywords for a job that calls a reusable workflow leave it out.
 Each job of dispatch-browser.yaml carries its own limit.

@@ -27,6 +27,7 @@ const (
 	idRoutesName        = "idRoutes"
 	routeScopesName     = "routeScopes"
 	readScopeRoutesName = "readScopeRoutes"
+	approveRoutesName   = "approveScopeRoutes"
 	routeShapesName     = "routeShapes"
 	readClassesName     = "readClasses"
 
@@ -57,7 +58,7 @@ type oldRoute struct {
 	testHook                                           bool
 
 	writeClass, id, scopes, shape, read fact
-	readScope                           bool
+	readScope, approveOnly              bool
 
 	// packages are the import names the route's expressions qualify an identifier with.
 	packages map[string]bool
@@ -231,22 +232,35 @@ func readOldLayout(src tree) ([]*oldRoute, map[string]string, error) {
 		}
 	}
 
-	// readScopeRoutes is the pre-#4557 spelling of the read: a list of the routes a read-only
-	// token may call, which is now the map above. A branch that holds neither states no read.
-	list := packageLiteral(parsed[tableFile], readScopeRoutesName)
-	if list == nil {
-		return routes, imports, nil
+	// The two facts the old layout wrote as a list of keys rather than as a map entry. Each is
+	// read where it is, and a branch that holds neither says nothing of that fact:
+	//   - readScopeRoutes is the pre-#4557 spelling of the read, a list of the routes a read-only
+	//     token may call, which is now the map above.
+	//   - approveScopeRoutes (#5239) is every route an approve-only token may call, which is the
+	//     ApproveOnly field. A branch made before #5239 has no such list and no such route.
+	lists := []struct {
+		name string
+		into func(*oldRoute) *bool
+	}{
+		{readScopeRoutesName, func(route *oldRoute) *bool { return &route.readScope }},
+		{approveRoutesName, func(route *oldRoute) *bool { return &route.approveOnly }},
 	}
-	for _, element := range list.Elts {
-		key, err := stringValue(element)
-		if err != nil {
-			return nil, nil, fmt.Errorf("%s: %w", readScopeRoutesName, err)
+	for _, side := range lists {
+		list := packageLiteral(parsed[tableFile], side.name)
+		if list == nil {
+			continue
 		}
-		route, held := byKey[key]
-		if !held {
-			return nil, nil, fmt.Errorf("%s names %q, which no row of routes() is", readScopeRoutesName, key)
+		for _, element := range list.Elts {
+			key, err := stringValue(element)
+			if err != nil {
+				return nil, nil, fmt.Errorf("%s: %w", side.name, err)
+			}
+			route, held := byKey[key]
+			if !held {
+				return nil, nil, fmt.Errorf("%s names %q, which no row of routes() is", side.name, key)
+			}
+			*side.into(route) = true
 		}
-		route.readScope = true
 	}
 	return routes, imports, nil
 }
@@ -740,6 +754,9 @@ func renderRoute(route *oldRoute, imports map[string]string) ([]byte, error) {
 		// A branch made before #4557, whose read is a name in readScopeRoutes and not an entry:
 		// the route it named is a read that writes nothing, which is what the list meant.
 		field(nil, "Read", "readEntry{Writes: readWritesNothing}")
+	}
+	if route.approveOnly {
+		field(nil, "ApproveOnly", "true")
 	}
 	if route.shape.value != "" {
 		value, err := typedLiteral("routeShape", route.shape.value)
