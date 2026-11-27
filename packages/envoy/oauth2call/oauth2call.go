@@ -121,16 +121,20 @@ func UnmarshalData(data []byte, into any) error { return redact.UnmarshalData(da
 // net/http's operation, the request named shown or, where shown is "", by the URL it asked as
 // redact.Unanswered names it, and the failure by its transport text, a TLS record or certificate
 // failure's fixed words, or its class, never net/http's or x509's text of what the answering party
-// sent. shown is a caller's own words for the call, never a name of its URL another rule made. It
-// unwraps to err, so errors.Is and errors.As still find the failure.
+// sent. Where the URL holds user information or an "@" past its host, its host and its port print
+// as redact.URLWithCredentials in the transport text, or the failure as fixed words where its host
+// is not ASCII or the dialer refused its address. shown is a caller's own words for the call, never
+// a name of its URL another rule made. It unwraps to err, so errors.Is and errors.As still find the
+// failure.
 func Unanswered(err error, request *http.Request, shown string) error {
 	return redact.Unanswered(err, request, shown)
 }
 
 // AskedURL is redact.AskedURL: u, the URL a request asked, as Unanswered names it (its scheme,
-// host and path, never its user information, query or fragment, and redact.NotPrinted where the
-// URL rule refuses what remains), for a line about a request that got an answer, so the URL has
-// one name wherever it prints.
+// host and path, never its query or fragment; its authority as redact.URLWithCredentials where it
+// holds user information or u holds an "@" past its host; and redact.NotPrinted where the URL rule
+// refuses what remains), for a line about a request that got an answer, so the URL has one name
+// wherever it prints.
 func AskedURL(u *url.URL) string { return redact.AskedURL(u) }
 
 // StatusLine is redact.StatusLine: an answer's status line as a message may print it, the code and

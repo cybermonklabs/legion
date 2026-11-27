@@ -14,11 +14,12 @@ import (
 // TestALivenessLineNamesTheLookupWithNoCredentialTheEnvoyURLCarries: envoy_url may carry the
 // listener's credential as its user information (config's endpointURL refuses a query but not
 // that), and the lookup joined onto it holds it. Each line a probe logs names the lookup as the URL
-// rule names a URL a request asked (oauth2call.AskedURL: scheme, host and path), never as joined,
-// so none prints a run of the URL's user, password or token: the listener unreachable, a 404 the
-// probe could not read to its end, a holder that is only unresponsive, a role with no live holder,
-// a refusal, and an answer the probe cannot read. The twin shows the lookup as joined holds every
-// marker. Captures controller.asked-url/<case>.
+// rule names a URL a request asked (oauth2call.AskedURL: scheme, host and path, the authority of a
+// URL with user information as the mark of a URL with credentials), never as joined, so none prints
+// a run of the URL's user, password or token: the listener unreachable, a 404 the probe could not
+// read to its end, a holder that is only unresponsive, a role with no live holder, a refusal, and an
+// answer the probe cannot read. The twin shows the lookup as joined holds every marker. Captures
+// controller.asked-url/<case>.
 func TestALivenessLineNamesTheLookupWithNoCredentialTheEnvoyURLCarries(t *testing.T) {
 	const (
 		user     = "not-a-secret-user"
@@ -56,8 +57,7 @@ func TestALivenessLineNamesTheLookupWithNoCredentialTheEnvoyURLCarries(t *testin
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var log bytes.Buffer
-			host := c.host(t)
-			if got := newTestProber(envoyURL(host), "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != c.want {
+			if got := newTestProber(envoyURL(c.host(t)), "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != c.want {
 				t.Errorf("Probe = %q, want %q; it logged %s", got, c.want, log.String())
 			}
 			logged := log.String()
@@ -65,7 +65,7 @@ func TestALivenessLineNamesTheLookupWithNoCredentialTheEnvoyURLCarries(t *testin
 				t.Fatal("the probe logged nothing; want the line that names the lookup")
 			}
 			oauth2calltest.RequireNoPiece(t, "controller.asked-url/"+c.name, logged, user, password, oauth2calltest.Token)
-			if want := "url=http://" + host + "/envoy/v1/roles/"; !strings.Contains(logged, want) {
+			if want := `url="http://[a URL with credentials]/envoy/v1/roles/`; !strings.Contains(logged, want) {
 				t.Errorf("the probe logged %s; want the lookup named %q…", logged, want)
 			}
 		})

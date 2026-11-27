@@ -2759,8 +2759,8 @@ func TestStateNamesTheDaemonWithoutLEGIONDAEMONURLsUserinfo(t *testing.T) {
 // A LEGION_DAEMON_URL whose password holds a "/" parses as a host with a port that is the
 // password's head, which url.Parse's error quotes (`invalid port ":<head>"`): `legion state` refuses
 // it in plain words (errDaemonURL), and `legion claims list`, an operator command, names an
-// unreachable daemon through oauth2call.Unanswered, by the scheme, host and path the call asked,
-// holding no part of a made-up token written as the user.
+// unreachable daemon through oauth2call.Unanswered, by its scheme, the mark of a URL with
+// credentials and the path the call asked, holding no part of a made-up token written as the user.
 func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T) {
 	t.Run("an address that does not parse", func(t *testing.T) {
 		const head = "madeUpStateHead0123"
@@ -2784,13 +2784,13 @@ func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T
 		t.Setenv("LEGION_DAEMON_URL", "http://"+token+"@127.0.0.1:1")
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"legion", "claims", "list", "--operator-token-file", bearer}, &out, &errb)
-		if code != 1 || !strings.Contains(errb.String(), `legion claims list: Get "http://127.0.0.1:1/legion/v1/operator/claims": `) || strings.Contains(errb.String(), token[:10]) {
-			t.Fatalf("legion claims list = %d, stderr %q; want 1, the daemon named by the URL the call asked, and no part of the token", code, errb.String())
+		if code != 1 || !strings.Contains(errb.String(), "http://[a URL with credentials]/legion/v1/") || strings.Contains(errb.String(), token[:10]) {
+			t.Fatalf("legion claims list = %d, stderr %q; want 1, the daemon named by the mark, and no part of the token", code, errb.String())
 		}
 	})
 	t.Run("a password holding an @", func(t *testing.T) {
 		// The password's tail after its unencoded "@" is read as the host, which the resolver's
-		// error names: no part of the password may print. The password is made up.
+		// error names: the host is written as the mark. The password is made up.
 		const head, tail = "madeUpHead0123", "madeUpTail0123.invalid"
 		t.Chdir(t.TempDir())
 		bearer := filepath.Join(t.TempDir(), "operator-token")
@@ -2801,15 +2801,14 @@ func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T
 		t.Setenv("LEGION_DAEMON_URL", "http://"+userinfo+tail)
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"legion", "claims", "list", "--operator-token-file", bearer}, &out, &errb)
-		if code != 1 || !strings.HasPrefix(errb.String(), "legion claims list: Get ") ||
+		if code != 1 || !strings.Contains(errb.String(), "http://[a URL with credentials]/legion/v1/") ||
 			strings.Contains(errb.String(), head[:10]) || strings.Contains(errb.String(), tail[:10]) {
-			t.Fatalf("legion claims list = %d, stderr %q; want 1, the failed call named, and no part of the password", code, errb.String())
+			t.Fatalf("legion claims list = %d, stderr %q; want 1, the daemon named by the mark, and no part of the password", code, errb.String())
 		}
 	})
 	t.Run("a password holding an @ and a tail that is not ASCII", func(t *testing.T) {
 		// The client dials the tail's ASCII form (`xn--…`, its ASCII letters kept, lower-cased),
-		// which the resolver's error names: no part of the password may print, in either form. The
-		// password is made up.
+		// which the resolver's error names: the error is not printed. The password is made up.
 		const tail = "sswmadeuptail0123\u00f6rd.invalid"
 		t.Chdir(t.TempDir())
 		bearer := filepath.Join(t.TempDir(), "operator-token")
@@ -2820,9 +2819,9 @@ func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T
 		t.Setenv("LEGION_DAEMON_URL", "http://"+userinfo+tail)
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"legion", "claims", "list", "--operator-token-file", bearer}, &out, &errb)
-		if lower := strings.ToLower(errb.String()); code != 1 || !strings.HasPrefix(errb.String(), "legion claims list: Get ") ||
+		if lower := strings.ToLower(errb.String()); code != 1 || !strings.Contains(errb.String(), "(the request failed; its error is not printed") ||
 			strings.Contains(lower, "madeuptail") || strings.Contains(lower, "xn--") {
-			t.Fatalf("legion claims list = %d, stderr %q; want 1, the failed call named, and no part of the password", code, errb.String())
+			t.Fatalf("legion claims list = %d, stderr %q; want 1, the error not printed, and no part of the password", code, errb.String())
 		}
 	})
 	// A daemon that answers its claims with a body that does not decode (a proxy's page, a daemon of
