@@ -10,7 +10,13 @@ import { queryRetry } from "../../api/query-client";
 import type { Actor, Agent } from "../../api/types";
 import { liveDotBg, offlineDotBorder, unknownDotBorder } from "../../theme/classes";
 import { useAgents } from "../conversation/useAgents";
-import { AgentName, AskResolutionLine, askResolutionParts, useAgentText } from "./AgentName";
+import {
+  AgentName,
+  AskResolutionLine,
+  askResolutionParts,
+  noBreakBeforeMiddleDot,
+  useAgentText,
+} from "./AgentName";
 import {
   AGENT_REGISTRY_POLL_MS,
   type AgentRegistry,
@@ -418,6 +424,65 @@ test("the static variant shows the name and state with no link", async () => {
     expect(agentNode(view.container, LISTED_ID).textContent).toBe("Planner");
     expect(screen.getByRole("img", { name: "Running" })).toBeDefined();
     expect(screen.queryByRole("link")).toBeNull();
+  } finally {
+    view.unmount();
+    agents.mockRestore();
+  }
+});
+
+// dispatch://INFRA-3221 (the architect's decision of comment 2b0fd08c): a Legion session's title
+// parts its words with a "·" of its own ("Legion planner · INFRA-455"). Every form of the name
+// draws a no-break space before that dot, so no line of a name that wraps starts with it; what a
+// reader is read keeps the title as it is: the live link's `aria-label` and tooltip, and
+// `useAgentText().label`. A title with no "·" is drawn as it is.
+test("a title's middle dot is drawn after a no-break space in every form, and read as the title is", async () => {
+  const dotted = "Legion planner · INFRA-455";
+  const drawn = "Legion planner\u00a0· INFRA-455";
+  const plain = "Legion planner for INFRA-455";
+  const stamped = (id: string, title: string): Actor => ({
+    id,
+    kind: "session",
+    origin: { session_title: title },
+  });
+  const agents = spyOn(api, "listAgents").mockResolvedValue([listed(LISTED_ID, dotted)]);
+  function Label(): ReactNode {
+    return <p data-testid="label">{useAgentText().label(stamped("link-session", dotted))}</p>;
+  }
+  const { view } = renderWith(
+    <>
+      <AgentName actor={stamped("link-session", dotted)} />
+      <AgentName actor={stamped("static-session", dotted)} kind="static" />
+      <AgentName
+        actor={{ id: LISTED_ID, kind: "session" }}
+        control={(name) => (
+          <button aria-expanded={false} type="button">
+            {name}
+          </button>
+        )}
+        kind="control"
+      />
+      <AgentName actor={stamped("plain-session", plain)} />
+      <Label />
+    </>
+  );
+  try {
+    // The control form names the registry's title once the registry answers.
+    const live = await screen.findByRole("link", {
+      name: `Open live conversation with ${dotted}`,
+    });
+    expect(live.getAttribute("title")).toBe(`Open live conversation with ${dotted}`);
+    const host = within(agentNode(view.container, LISTED_ID)).getByRole("button");
+    expect(host.textContent).toBe(drawn);
+    const link = agentNode(view.container, "link-session").querySelector("a");
+    expect(link?.textContent).toBe(drawn);
+    expect(link?.getAttribute("aria-label")).toBeNull();
+    expect(agentNode(view.container, "static-session").textContent).toBe(drawn);
+    expect(agentNode(view.container, "plain-session").textContent).toBe(plain);
+    expect(screen.getByTestId("label").textContent).toBe(dotted);
+    // Each run of whitespace before a "·" is one no-break space; what follows the dot stays.
+    expect(noBreakBeforeMiddleDot("Legion planner  ·  INFRA-455 · host·2")).toBe(
+      "Legion planner\u00a0·  INFRA-455\u00a0· host·2"
+    );
   } finally {
     view.unmount();
     agents.mockRestore();

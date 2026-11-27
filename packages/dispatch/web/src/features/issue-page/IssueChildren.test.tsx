@@ -83,7 +83,8 @@ test("a child held by a session is named as the page names an author, with no li
   });
   const facts = screen.getByText("Claimed by").closest("[data-child-facts]");
   const holder = facts?.querySelector("[data-child-holder]");
-  expect(holder?.textContent).toContain("Legion implementer · CORE-2");
+  // `AgentName` draws a no-break space before a title's "·", so no line starts with the dot.
+  expect(holder?.textContent).toContain("Legion implementer\u00a0· CORE-2");
   expect(facts?.textContent).not.toContain("session:");
   expect(facts?.textContent).not.toContain("0f8e2c4a");
   expect(facts?.querySelectorAll("a")).toHaveLength(0);

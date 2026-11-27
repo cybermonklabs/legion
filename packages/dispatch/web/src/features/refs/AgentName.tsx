@@ -302,6 +302,12 @@ export function AgentName(props: AgentNameProps): ReactNode {
   );
 }
 
+/** A name as `AgentName` draws it: a no-break space in place of each run of whitespace before a
+ *  "·", so no line of the name starts with the dot a title parts its words with. */
+export function noBreakBeforeMiddleDot(text: string): string {
+  return text.replace(/\s+(?=·)/g, "\u00a0");
+}
+
 function SessionAgentName({
   className,
   inline,
@@ -322,9 +328,13 @@ function SessionAgentName({
   // never by its short id, an address that names nobody. `data-agent-name` keeps the full id.
   const { name, unnamed } = drawnSessionName(subject, registry, page);
   // The page's word for an agent nothing names is the page's own, so inside `NoTooltips` it
-  // carries that mark and stands outside the mark of a name somebody was given.
+  // carries that mark and stands outside the mark of a name somebody was given. The name drawn
+  // keeps each "·" of a title on the line of the word before it; the aria-label and the tooltip
+  // below keep the title as it is.
   const fallbackMark = unnamed ? page?.pageChrome : undefined;
-  const shownName = fallbackMark === undefined ? name : <span {...fallbackMark}>{name}</span>;
+  const drawnName = noBreakBeforeMiddleDot(name);
+  const shownName =
+    fallbackMark === undefined ? drawnName : <span {...fallbackMark}>{drawnName}</span>;
   const state = registry.state(sessionId);
   const linkClass = tooltips ? LINK_CLASS : PAGE_LINK_CLASS;
   const to = generatePath(AGENT_LIVE_PATH, { sessionId: encodeURIComponent(sessionId) });

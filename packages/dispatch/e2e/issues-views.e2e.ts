@@ -51,6 +51,7 @@ import {
 } from "./issues-views-shared";
 import { waitForIssueFacts, writeRoleEvent } from "./legion-facts-seed";
 import { pushLegionObservation } from "./legion-seed";
+import { settledValue } from "./settled";
 import { drawnControlNames, straysBetween, surfaceControls, topOf } from "./table-controls";
 import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser, signIn } from "./users";
@@ -2175,5 +2176,175 @@ test("one Escape closes a measure header's tooltip shown while a filter's panel 
   } finally {
     await context.close();
     await daemon.close();
+  }
+});
+
+/** What a cell draws: its lines, each its characters from left to right, and its width in px. */
+interface CellLines {
+  lines: string[];
+  width: number;
+}
+
+/** The lines the Created by cell of each creator of `ids` draws, by the creator's session id,
+ *  read off the characters the cell draws as `chipLines` in `priorities.e2e.ts` reads a claim
+ *  chip's: two characters on one line when their tops lie within half a line of each other, each
+ *  line from left to right, spaces left out. A character counts only where its box's centre lies
+ *  inside the box of its nearest ancestor that clips it, so a line the cell's clamp cuts away is
+ *  no line of the cell. A creator whose cell the table does not draw now is left out. */
+function createdByLines(
+  table: Locator,
+  ids: readonly string[]
+): Promise<Record<string, CellLines>> {
+  return table.evaluate((element, creators) => {
+    const read: Record<string, CellLines> = {};
+    for (const id of creators) {
+      const name = element.querySelector(`tbody [data-agent-name="${id}"]`);
+      const cell = name?.closest("td");
+      if (name === null || cell === null || cell === undefined) continue;
+      const half = Number.parseFloat(getComputedStyle(name).lineHeight) / 2 || 8;
+      const drawn: { char: string; left: number; top: number }[] = [];
+      const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+        // The box that clips this text: its nearest ancestor, the cell at the farthest, whose
+        // overflow is not visible, such as the cell's `line-clamp-2`.
+        let clip: DOMRect | undefined;
+        for (let box = node.parentElement; box !== null; box = box.parentElement) {
+          const style = getComputedStyle(box);
+          if (style.overflowX !== "visible" || style.overflowY !== "visible") {
+            clip = box.getBoundingClientRect();
+            break;
+          }
+          if (box === cell) break;
+        }
+        let end = 0;
+        for (const char of node.textContent ?? "") {
+          const start = end;
+          end += char.length;
+          if (char.trim() === "") continue;
+          const range = document.createRange();
+          range.setStart(node, start);
+          range.setEnd(node, end);
+          const rect = range.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) continue;
+          const x = rect.left + rect.width / 2;
+          const y = rect.top + rect.height / 2;
+          const clipped =
+            clip !== undefined &&
+            (x < clip.left || x > clip.right || y < clip.top || y > clip.bottom);
+          if (!clipped) drawn.push({ char, left: rect.left, top: rect.top });
+        }
+      }
+      const lines: (typeof drawn)[] = [];
+      for (const one of [...drawn].sort((a, b) => a.top - b.top)) {
+        const line = lines[lines.length - 1];
+        if (line !== undefined && one.top - (line[0]?.top ?? one.top) <= half) line.push(one);
+        else lines.push([one]);
+      }
+      read[id] = {
+        lines: lines.map((line) =>
+          [...line]
+            .sort((a, b) => a.left - b.left)
+            .map((one) => one.char)
+            .join("")
+        ),
+        width: Math.round(cell.getBoundingClientRect().width),
+      };
+    }
+    return read;
+  }, ids);
+}
+
+// dispatch://INFRA-3221 (the architect's decision of comment 2b0fd08c): a Legion session's title
+// parts its words with a "·" of its own ("Legion planner · INFRA-455"), and the Issues tab draws
+// it in the Created by cell, at two lines at most. At 1440 by 900, 44 creators' titles each put
+// their first "·" one letter further along than the last, from inside the cell's first line to
+// past its end, so one of them ends that line just where only the " ·" overflows it; no line of
+// any cell starts with "·", read off the characters the cell draws inside its clamp. The sweep's
+// letters (s, t, r, i, c, l, y) are each narrower than a space and a "·" side by side in Arial,
+// Liberation Sans and DejaVu Sans, so no step jumps past that place. Some cell takes two lines,
+// the clamp cuts each at two, and the first line of some cell holds a "·" and of another holds
+// none, so the sweep crosses the first line's end.
+// SLOW(>=2s): 44 issues written by 44 sessions, and the table read a part at a time as it scrolls.
+test('no line of a Created by cell at 1440 starts with the "·" of its creator\'s title', async ({
+  browser,
+}) => {
+  await createProject({ key: PLAIN, name: "Plain" });
+  const sweep = "strictly".repeat(6);
+  const creators = Array.from({ length: 44 }, (_, at) => ({
+    id: `created-by-dot-${at + 1}`,
+    title: `Legion ${sweep.slice(0, at + 1)} · INFRA-455 · the layout rule's browser test`,
+  }));
+  // Each issue title a word of its own, since the server refuses a near copy of a title it holds.
+  for (let batch = 0; batch < creators.length; batch += 11) {
+    await Promise.all(
+      creators.slice(batch, batch + 11).map((creator, offset) =>
+        createIssue(
+          { project: PLAIN, title: `Created by a Legion session ${batch + offset + 1}` },
+          {
+            actor: { id: creator.id, kind: "session", origin: { session_title: creator.title } },
+            as: "agent",
+          }
+        )
+      )
+    );
+  }
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const soft = expect.configure({ soft: true });
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await page.goto(`/projects/${PLAIN}/issues?cols=key,title,author`);
+    await expect(page.getByRole("tab", { name: tabName("Open", creators.length) })).toBeVisible();
+    const table = issuesTable(page);
+    await expect(table.locator("tbody [data-agent-name]").first()).toBeVisible();
+    // The table draws only the rows near its box's view, so the cells are read a pass at a time,
+    // the box scrolled on by half its height between passes, until each creator's cell is read
+    // or the box can scroll no further.
+    const ids = creators.map((creator) => creator.id);
+    const scroller = page.getByTestId("issues-table-scroll");
+    const cells: Record<string, CellLines> = {};
+    for (let pass = 1; pass <= 20 && ids.some((id) => cells[id] === undefined); pass++) {
+      Object.assign(
+        cells,
+        await settledValue(`the Created by cells' lines, pass ${pass}`, () =>
+          createdByLines(table, ids)
+        )
+      );
+      const moved = await scroller.evaluate((box) => {
+        const before = box.scrollTop;
+        box.scrollTop += box.clientHeight / 2;
+        return box.scrollTop > before;
+      });
+      if (!moved) break;
+    }
+    const read = creators.map(({ id, title }) => ({
+      title,
+      ...(cells[id] ?? { lines: [], width: 0 }),
+    }));
+    const wide = `${[...new Set(read.map((one) => one.width))].join(", ")} px wide`;
+    const drawn = (one: (typeof read)[number]) => `${one.title}: ${one.lines.join(" | ")}`;
+    soft(
+      read.filter((one) => one.lines.length === 0).map((one) => one.title),
+      "each creator's Created by cell draws its name"
+    ).toEqual([]);
+    soft(
+      read.filter((one) => one.lines.length >= 2).length,
+      `a Created by cell ${wide} takes two lines`
+    ).toBeGreaterThan(0);
+    soft(
+      read.filter((one) => one.lines.length > 2).map(drawn),
+      `the clamp of each Created by cell ${wide} cuts it at two lines`
+    ).toEqual([]);
+    soft(
+      read.some((one) => one.lines[0]?.includes("·") === true) &&
+        read.some((one) => one.lines[0]?.includes("·") === false),
+      `the first line of one Created by cell ${wide} holds a "·" and of another holds none`
+    ).toBe(true);
+    soft(
+      read.filter((one) => one.lines.some((line) => line.startsWith("·"))).map(drawn),
+      `no line of a Created by cell ${wide} starts with "·"`
+    ).toEqual([]);
+  } finally {
+    await context.close();
   }
 });
