@@ -1233,7 +1233,11 @@ function handoffOf(id: string, at: string, over: Partial<HandoffSummary> = {}): 
 function stepsOf(...tasks: (readonly StepRecord[])[]): IssueSteps {
   return {
     issue: KEY,
-    tasks: tasks.map((records) => ({ steps: [...records], task: records[0]?.task ?? "default" })),
+    tasks: tasks.map((records) => ({
+      needs: null,
+      steps: [...records],
+      task: records[0]?.task ?? "default",
+    })),
   };
 }
 

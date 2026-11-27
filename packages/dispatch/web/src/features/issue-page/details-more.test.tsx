@@ -1802,7 +1802,7 @@ function handoffsReads(): Mock<typeof api.listHandoffs> {
 function stepsOf(...records: (Partial<StepRecord> & Pick<StepRecord, "id">)[]): IssueSteps {
   return {
     issue: KEY,
-    tasks: [{ steps: records.map((fields) => stepRecord(fields)), task: "default" }],
+    tasks: [{ needs: null, steps: records.map((fields) => stepRecord(fields)), task: "default" }],
   };
 }
 

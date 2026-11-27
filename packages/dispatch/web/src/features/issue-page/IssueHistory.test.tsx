@@ -3508,7 +3508,11 @@ function drawnAt(iso: string): string {
 function stepsOf(...tasks: (readonly StepRecord[])[]): IssueSteps {
   return {
     issue: KEY,
-    tasks: tasks.map((records) => ({ steps: [...records], task: records[0]?.task ?? "default" })),
+    tasks: tasks.map((records) => ({
+      needs: null,
+      steps: [...records],
+      task: records[0]?.task ?? "default",
+    })),
   };
 }
 
