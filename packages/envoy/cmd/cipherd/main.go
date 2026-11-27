@@ -41,6 +41,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 
+	"github.com/sjawhar/envoy/awsbody"
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/api"
@@ -377,8 +378,9 @@ func main() {
 		defer client.Close()
 		secretStore, credentials = secrets.NewGCP(client, cfg.SecretsKMSKey), "application-default"
 	default:
-		sm := secretsmanager.NewFromConfig(awsCfg)
-		secretStore, credentials = secrets.AWS{Client: sm, KMS: kms.NewFromConfig(awsCfg), KeyARN: cfg.SecretsKMSKey}, "aws-sdk"
+		sm := secretsmanager.NewFromConfig(awsCfg, func(o *secretsmanager.Options) { o.HTTPClient = awsbody.Client(o.HTTPClient) })
+		keys := kms.NewFromConfig(awsCfg, func(o *kms.Options) { o.HTTPClient = awsbody.Client(o.HTTPClient) })
+		secretStore, credentials = secrets.AWS{Client: sm, KMS: keys, KeyARN: cfg.SecretsKMSKey}, "aws-sdk"
 	}
 	slog.Info("secret store", "store", cfg.SecretsStore, "credentials", credentials)
 	// The one registry every metric this process serves is built on, and the one the metrics

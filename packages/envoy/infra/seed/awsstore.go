@@ -22,6 +22,7 @@ import (
 	smithyendpoints "github.com/aws/smithy-go/endpoints"
 	"github.com/aws/smithy-go/logging"
 
+	"github.com/sjawhar/envoy/awsbody"
 	"github.com/sjawhar/envoy/internal/bus"
 )
 
@@ -68,8 +69,8 @@ func OpenAWS(ctx context.Context, region, account string) (Store, error) {
 	if cfg.Region == "" {
 		return nil, refuse("no AWS region: pass --region, or name one in AWS_REGION or the profile")
 	}
-	client := secretsmanager.NewFromConfig(cfg)
-	identity := sts.NewFromConfig(cfg)
+	client := secretsmanager.NewFromConfig(cfg, func(o *secretsmanager.Options) { o.HTTPClient = awsbody.Client(o.HTTPClient) })
+	identity := sts.NewFromConfig(cfg, func(o *sts.Options) { o.HTTPClient = awsbody.Client(o.HTTPClient) })
 	if source := endpointSeed(ctx, client.Options(), identity.Options()); source != "" {
 		return nil, awsConfigSeed(source)
 	}

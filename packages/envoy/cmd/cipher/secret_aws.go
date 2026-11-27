@@ -32,6 +32,7 @@ import (
 	"github.com/aws/smithy-go/logging"
 	"github.com/aws/smithy-go/middleware"
 
+	"github.com/sjawhar/envoy/awsbody"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -102,7 +103,8 @@ var awsClients = func(ctx context.Context, region string) (secretsAPI, stsAPI, [
 	if provider, ok := cfg.Credentials.(aws.CredentialProviderSource); ok {
 		sources = provider.ProviderSources()
 	}
-	return secretsmanager.NewFromConfig(cfg), sts.NewFromConfig(cfg), sources, nil
+	return secretsmanager.NewFromConfig(cfg, func(o *secretsmanager.Options) { o.HTTPClient = awsbody.Client(o.HTTPClient) }),
+		sts.NewFromConfig(cfg, func(o *sts.Options) { o.HTTPClient = awsbody.Client(o.HTTPClient) }), sources, nil
 }
 
 // webIdentityToken is the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names, as the AWS

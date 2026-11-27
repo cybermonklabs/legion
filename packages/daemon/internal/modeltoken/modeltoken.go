@@ -30,6 +30,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
 	"github.com/aws/smithy-go"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
+	"github.com/sjawhar/envoy/awsbody"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 )
@@ -115,7 +116,9 @@ func signIn(ctx context.Context, cfg Config, client *http.Client, answer string)
 	if cfg.Endpoint != "" {
 		awsConfig.BaseEndpoint = aws.String(cfg.Endpoint)
 	}
-	cognito := cognitoidentityprovider.NewFromConfig(awsConfig)
+	cognito := cognitoidentityprovider.NewFromConfig(awsConfig, func(o *cognitoidentityprovider.Options) {
+		o.HTTPClient = awsbody.Client(o.HTTPClient)
+	})
 	started, err := cognito.InitiateAuth(ctx, &cognitoidentityprovider.InitiateAuthInput{
 		AuthFlow:       types.AuthFlowTypeCustomAuth,
 		ClientId:       aws.String(cfg.ClientID),
