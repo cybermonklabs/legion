@@ -1,18 +1,29 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook } from "@testing-library/react";
+import { act, render, renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../../api/client";
+import { issueAskThreadsQuery, whoAmIQuery } from "../../../api/queries";
 import type { Artifact } from "../../../api/types";
 import { parseNodeReference } from "../../refs/routes";
-import type { DocumentAdmissions } from "../document-admission";
+import {
+  DocumentAdmissionProvider,
+  type DocumentAdmissions,
+  type ReportAdmission,
+  useReportAdmission,
+} from "../document-admission";
 import { documentOfNode } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
+import { OutlineWriterProvider } from "../outline-writer";
 import type { NodeType } from "../page-words";
+import { TreeRows } from "../TreeRows";
 import { blockNodeId } from "../tree-drafts";
+import type { DrawnRow } from "../tree-fold";
 import { treeAnswer } from "../tree-read/tree-fixtures";
 import { outlineQuery, viewKey } from "../tree-read/tree-read";
+import { issueMessagesQuery } from "../useIssueTree";
 import { nodeEditable } from "../useNodeEditing";
 import {
   type RoomFacts,
@@ -373,6 +384,93 @@ test("the room facts are read from Conversation's read or a view where Graph's i
     expect(hook.result.current?.converted).toBe(true);
     hook.unmount();
   } finally {
+    client.clear();
+  }
+});
+
+/** How the page's row editor reports what an artifact's room admitted the page to, handed out
+ *  for a case to answer as the room. */
+function AdmissionProbe({ held }: { held: { report?: ReportAdmission } }): ReactNode {
+  held.report = useReportAdmission();
+  return null;
+}
+
+// The outline's rows (`TreeRows.tsx`) carry the typing cue (`data-editable`) wherever Enter puts a
+// caret (`takesCaret`). A criterion written into the issue is no block of a document: with no
+// tree read of the issue held there is no room, and its row carries no cue, while a statement's
+// row does. Once the tree read is held the criterion's row carries it too, since Enter edits it in
+// the tree artifact; while that artifact's room has admitted the page read-only it carries none,
+// and the statement's row, whose document's room answered nothing, keeps its cue.
+test("a criterion's row in the outline carries the typing cue where the room is read, and none where the tree artifact was admitted read-only or no room is read", () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
+  client.setQueryData(issueMessagesQuery(KEY).queryKey, []);
+  client.setQueryData(["agents"], []);
+  const rows: DrawnRow[] = [STATEMENT, CRITERION].map((one) => ({
+    kind: "node",
+    level: 1,
+    node: one,
+    trail: [],
+  }));
+  const admission: { report?: ReportAdmission } = {};
+  const drawn = createElement(
+    DocumentAdmissionProvider,
+    null,
+    createElement(AdmissionProbe, { held: admission }),
+    createElement(TreeRows, {
+      artifacts: ARTIFACTS,
+      context: new Set<string>(),
+      focused: undefined,
+      isClosed: false,
+      onFocus: () => {},
+      onPage: () => {},
+      onToggle: () => {},
+      points: new Map(),
+      rows,
+      tabStop: undefined,
+      threads: new Map(),
+      unplaced: undefined,
+    })
+  );
+  // The writer of the issue, which names the issue whose room the rows read (`useRoomFacts`).
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(
+      QueryClientProvider,
+      { client },
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(OutlineWriterProvider, { children, issueKey: KEY })
+      )
+    );
+  const view = render(drawn, { wrapper });
+  const cued = () =>
+    [...view.container.querySelectorAll<HTMLElement>("[data-node-row][data-editable]")].map(
+      (row) => row.dataset.nodeId
+    );
+  try {
+    expect(cued(), "the rows with no tree read held").toEqual([STATEMENT.id]);
+
+    act(() => {
+      client.setQueryData(outlineQuery(KEY, "graph").queryKey, HELD);
+    });
+    expect(cued(), "the rows once the tree read is held").toEqual([STATEMENT.id, CRITERION.id]);
+
+    act(() => admission.report?.(TREE, true));
+    expect(cued(), "the rows while the tree artifact is admitted read-only").toEqual([
+      STATEMENT.id,
+    ]);
+
+    act(() => admission.report?.(TREE, false));
+    expect(cued(), "the rows once the tree artifact is admitted to write").toEqual([
+      STATEMENT.id,
+      CRITERION.id,
+    ]);
+  } finally {
+    view.unmount();
     client.clear();
   }
 });
