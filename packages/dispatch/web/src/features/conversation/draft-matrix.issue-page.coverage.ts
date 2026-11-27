@@ -12,6 +12,7 @@ const REASONS = {
   3: "3. `activatedTabs` only ever gains a tab: the Conversation is drawn the first time its tab is active and stays drawn, so this conditional starts the mount and never ends one.",
   4: "4. `state`, which `IssueDetail` hands the Conversation, is the reader's read mark and pins for the issue (`stateForIssue`), which only the unread boundary, the read mark's dwell and each card's pin read, so it moves no composer's address and draws or ends no composer.",
   5: "5. An address under `/issues/` that parses as no issue draws the not-found page in place of `IssueDetail` (`route === undefined`), so no composer is drawn there, and going there from an issue is leaving the issue, the issue-left row.",
+  6: "6. The spread hands the Conversation `focusItemId` alone, the handoff a handoff's page address names (`conversationHandoffId`), which picks the card the tab opens and brings into view as the prop `focusItemId={conversationFocusItemId}` beside it does, and which is no address prop: it moves no composer's address and draws or ends no composer.",
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
@@ -59,6 +60,10 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("IssueDetail | ConversationTab | address prop | state={state.data}", {
     reason: REASONS[4],
   }),
+  ...answers(
+    "IssueDetail | ConversationTab | address prop | <ConversationTab {...(conversationHandoffId === undefined ? {} : { focusItemId: conversationHandoffId })}>",
+    { reason: REASONS[6] }
+  ),
   ...answers(
     "IssuePage | IssueDetail | key | <IssueDetail key={route.key}>",
     cells("docked composer · issue left, then back"),
