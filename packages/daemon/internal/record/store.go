@@ -4164,10 +4164,15 @@ func (s *Postgres) OutboxQueued(ctx context.Context, tx pgx.Tx, issue string, ki
 // close read applies its fact while its own row is leased, and that fact can owe the next read.
 // The earliest waiting row is the one answered, so a caller that makes the read it asks for due
 // (ExpediteOutbox) moves the row that runs first.
+//
+// The row answered is held until tx ends (for update): a writer that finds it waiting queues none
+// and relies on it running after the writer's change commits, so a lane's claim of it (ClaimRow)
+// waits for that commit. Unheld, a claim could commit between this read and the writer's commit,
+// and the row would run on the record before the change and finish, leaving the change no row.
 func (s *Postgres) OutboxWaiting(ctx context.Context, tx pgx.Tx, issue string, kind OutboxKind) (OutboxRow, bool, error) {
 	row, err := scanOutbox(tx.QueryRow(ctx, `select `+outboxColumns+` from outbox
 		where issue = $1 and kind = $2 and not coalesce(lease_token <> '' and lease_until > now(), false)
-		order by next_at, id limit 1`, issue, string(kind)))
+		order by next_at, id limit 1 for update`, issue, string(kind)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OutboxRow{}, false, nil
 	}
