@@ -419,7 +419,7 @@ func runDecisionsStep(ctx context.Context, name string, convert bool, args []str
 		writeDecisionIssue(stdout, name, issue, *dryRun)
 	}
 	for _, left := range pass.Left {
-		fmt.Fprintf(stdout, "%s: issue=%s left: %v\n", name, left.Issue, left.Err)
+		fmt.Fprintf(stdout, "%s: issue=%s left: %v\n", name, left.Issue, left.Reason)
 	}
 	for _, failure := range pass.Failed {
 		fmt.Fprintf(stdout, "%s: issue=%s failed: %v\n", name, failure.Issue, failure.Err)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -15,25 +16,13 @@ import (
 // another case - with exit 2 and a line naming it, before any phase runs; and a run over a project
 // that owes nothing, dry or not, prints one `issues=0` line and exits 0. Without both, each of
 // those runs exits 0 and prints nothing, and an operator cannot tell a typo from nothing owed.
-//
-// A run that leaves an issue because a document of it owes its block index says so: issue LEFT-1's
-// spec and decisions document each hold a version no block index has read yet (the trigger
-// document_block_versions_owe marks each owed), so convert-decisions, dry or not, leaves the issue
-// with nothing written, prints a line naming it, prints no `issues=0`, and exits 1, since the issue
-// is still owed.
 func TestTheDecisionsStepCommandsRefuseAnUnknownProjectAndSayWhenNothingWasOwed(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('OWED', 'Owes nothing', 'alice')`); err != nil {
 		t.Fatalf("seed the project: %v", err)
 	}
-	env := envGetter(map[string]string{"DATABASE_URL": database.Pool.Config().ConnString()})
-	run := func(args ...string) (int, string, string) {
-		t.Helper()
-		var stdout, stderr bytes.Buffer
-		code := runSubcommand(ctx, args, env, &stdout, &stderr)
-		return code, stdout.String(), stderr.String()
-	}
+	run := decisionsStepCommand(t, database)
 	for _, command := range []string{"restore-answered-asks", "convert-decisions"} {
 		for _, project := range []string{"NOPE", "owed"} {
 			code, stdout, stderr := run(command, "--project", project)
@@ -55,7 +44,18 @@ func TestTheDecisionsStepCommandsRefuseAnUnknownProjectAndSayWhenNothingWasOwed(
 			}
 		}
 	}
+}
 
+// A run of `envoy-dispatch convert-decisions` that leaves an issue because a document of it owes
+// its block index says so: issue LEFT-1's spec and decisions document each hold a version no block
+// index has read yet (the trigger document_block_versions_owe marks each owed), so the command,
+// dry or not, prints a line naming LEFT-1 as left, prints no `issues=0`, and exits 1, since the
+// issue is still owed. That the pass writes nothing of such an issue is
+// TestAPassLeavesAnIssueADocumentOfWhichOwesItsBlockIndexForALaterPass's (docs).
+func TestConvertDecisionsNamesAnIssueItLeavesForItsBlockIndexAndExitsOne(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	run := decisionsStepCommand(t, database)
 	for _, statement := range []string{
 		`insert into projects (key, name, default_assignee) values ('LEFT', 'Owes a block index', 'alice')`,
 		`insert into issues (key, project_key, number, title, created_by, rank)
@@ -87,6 +87,18 @@ func TestTheDecisionsStepCommandsRefuseAnUnknownProjectAndSayWhenNothingWasOwed(
 			t.Errorf("%v over a project whose issue owes its block index exited %d and printed %q (stderr %q); want exit 1, a line saying it left LEFT-1, and no issues=0",
 				args, code, stdout, stderr)
 		}
+	}
+}
+
+// decisionsStepCommand runs an envoy-dispatch subcommand over database, answering its exit code,
+// what it printed to stdout and what it wrote to stderr.
+func decisionsStepCommand(t *testing.T, database *store.Store) func(args ...string) (int, string, string) {
+	env := envGetter(map[string]string{"DATABASE_URL": database.Pool.Config().ConnString()})
+	return func(args ...string) (int, string, string) {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		code := runSubcommand(context.Background(), args, env, &stdout, &stderr)
+		return code, stdout.String(), stderr.String()
 	}
 }
 

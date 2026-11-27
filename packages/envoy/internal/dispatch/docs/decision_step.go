@@ -74,7 +74,7 @@ import (
 // where it read zero it is read again only when something can have made it non-zero: another build
 // live, a phase of the step run, a block index owed, or an event of a write that can
 // (decisionStepOwedMoved). The events of every other write, which a fleet appends all the time, a
-// version of a document that holds no restore work among them, leave the count standing.
+// version of any document but an issue's spec among them, leave the count standing.
 //
 // The runner takes a session advisory lock of its own (decisionStepLock) for phases 1 and 2, so
 // two processes do not run them both at once. A booting process waits for it only while phase 1
@@ -402,10 +402,10 @@ func (s *DecisionStep) Tick(ctx context.Context) error {
 	if restoring, err := conn.takeRestoreLock(ctx, false); err != nil || !restoring {
 		return err
 	}
-	if _, failures, err := s.RestoreAndConvert(ctx, "", true, false); err != nil {
+	if pass, err := s.RestoreAndConvert(ctx, "", true, false); err != nil {
 		s.logger.Error("dispatch: decisions step restore and conversion; the next tick tries again", "error", err)
 	} else {
-		for _, failure := range failures {
+		for _, failure := range pass.Failed {
 			s.logger.Error("dispatch: decisions step restore and conversion of an issue; the next tick tries again",
 				"issue", failure.Issue, "error", failure.Err)
 		}
@@ -498,26 +498,34 @@ func (s *DecisionStep) probe(ctx context.Context) (decisionStepWork, error) {
 // decisionStepOwedMovers is the type list of the events whose writes can make a count of nothing
 // owed (countDecisionStepOwed) read something owed, written out as caughtUpTypes is: a document
 // stored (artifact.created), which the release before stores under a decisions document's slug; a
-// version of a document that can hold the restore's work (artifact.version, which
-// decisionStepOwedMoved reads the document of), which can leave an answered ask's block out of its
-// spec; an answer (ask.answered), which can answer an ask whose block its spec no longer holds; and
-// a project stored or changed (project.created, project.updated), whose list of gated steps can
-// hold `decisions`. No other write moves the count up from zero: a rename keeps the document's
-// slug, a resolution, a reopening, a removal and a retirement only take from it, and the step's own
-// phases count again (recount).
+// version of an issue's spec (artifact.version, which decisionStepOwedMoved reads the document
+// of), which can leave an answered ask's block out of it; an answer (ask.answered), which can
+// answer an ask whose block its spec no longer holds; and a project stored or changed
+// (project.created, project.updated), whose list of gated steps can hold `decisions`. No other
+// write moves the count up from zero: a rename keeps the document's slug, a resolution, a
+// reopening, a removal and a retirement only take from it, and the step's own phases count again
+// (recount).
 // kept for one release: decisions-step
 const decisionStepOwedMovers = `('artifact.created', 'artifact.version', 'ask.answered', 'project.created', 'project.updated')`
 
 // decisionStepOwedMoved is whether the event log holds an event above $1 that can move the count:
 // one of decisionStepOwedMovers, and of those an artifact.version only where the document it names
-// (its payload's artifact_id, ArtifactVersionEventPayload) can hold the restore's work, as an
-// issue's spec or its decisions document (decisions_documents()) can. Every settled edit, upload
-// and doc-edit of any document appends an artifact.version, so a version of any other document
-// leaves the count standing. It reads the events through their primary key from $1 on, so it reads
-// the events appended since and stops at the first that can move the count, and the document of
-// each version among them by its key. Each document is looked for by a scalar subquery,
-// `(select … limit 1) is not null`, rather than by EXISTS, which Postgres can plan as a hashed
-// subplan over every document, read once and kept beside the events (caughtUpRead's reason).
+// (its payload's artifact_id, ArtifactVersionEventPayload) is an issue's spec. The read runs only
+// where the last count stood at zero (recountOwed), so decisions_documents() listed no document
+// then, and no version lists one: a document enters that list only as its row is stored, under
+// its artifact.created, a mover of its own. No write changes a stored document's slug, issue or
+// kind or undoes its retirement, and the repair that gives a stored document the role it lacks
+// gives the one its slug names (api's documentRole), which leaves a decisions-md document listed
+// as it was, by its slug. So the version of a decisions document a count of zero can meet follows
+// that document's artifact.created, which moves the count already, and the one document whose
+// version can move a zero count is an issue's spec, which can leave an answered ask's block out
+// of it. Every settled edit, upload and doc-edit of any document appends an artifact.version, so a
+// version of any other document leaves the count standing. It reads the events through their
+// primary key from $1 on, so it reads the events appended since and stops at the first that can
+// move the count, and the document of each version among them by its key. The document is looked
+// for by a scalar subquery, `(select … limit 1) is not null`, rather than by EXISTS, which
+// Postgres can plan as a hashed subplan over every document, read once and kept beside the events
+// (caughtUpRead's reason).
 // kept for one release: decisions-step
 var decisionStepOwedMoved = `
 	select (select e.id from events e
@@ -526,10 +534,6 @@ var decisionStepOwedMoved = `
 	               or (select 1 from artifacts a
 	                   where a.id = ` + store.CastableUUID(`e.payload->>'artifact_id'`) + `
 	                     and a.issue_key is not null and a.is_primary
-	                   limit 1) is not null
-	               -- kept for one release: decisions-documents-fn
-	               or (select 1 from decisions_documents() d
-	                   where d.id = ` + store.CastableUUID(`e.payload->>'artifact_id'`) + `
 	                   limit 1) is not null)
 	        order by e.id limit 1) is not null`
 

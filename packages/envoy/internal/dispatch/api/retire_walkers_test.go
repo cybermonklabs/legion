@@ -50,7 +50,8 @@ func TestAnIssueWhoseDecisionsDocumentTheStepRetiredClosesAndReopensWithItsOpenA
 	}
 	step := docs.NewDecisionStep(database, "", nil)
 	step.UseDocuments(documents)
-	done, failed, err := step.RestoreAndConvert(context.Background(), "CORE", true, false)
+	pass, err := step.RestoreAndConvert(context.Background(), "CORE", true, false)
+	done, failed := pass.Done, pass.Failed
 	if err != nil || len(failed) > 0 || len(done) != len(issues) {
 		t.Fatalf("the decisions step answered %+v, %+v, %v, want each of the %d issues converted", done, failed, err, len(issues))
 	}

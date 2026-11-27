@@ -425,7 +425,9 @@ func (s *server) loadAskAnchorArtifact(
 // scanAskRead decodes one askReadColumns row; its state, answer and resolution are its node's
 // (asks.NodeAnswer.ApplyTo), an open ask gets WaitingOn from waitingOnExpression, WaitingOnPerson
 // comes from askedOfPersonExpression, the three steps that end at the project's default assignee,
-// and the newest reply is returned separately (nil when the thread is empty).
+// and the newest reply is returned separately (nil when the thread is empty). A stored value that
+// does not decode - a column of the row, the answer its node holds, or the newest reply's author -
+// answers a docs.UndecodableAskError naming the ask, as docs.ScanAsk answers one for the row.
 func scanAskRead(row pgx.Row, extra ...any) (model.Ask, *model.AskLastReply, error) {
 	var replyAuthor []byte
 	var repliedAt *time.Time
@@ -438,7 +440,7 @@ func scanAskRead(row pgx.Row, extra ...any) (model.Ask, *model.AskLastReply, err
 	}
 	node, err := asks.ReadNodeAnswer(nodeAnswer)
 	if err != nil {
-		return model.Ask{}, nil, fmt.Errorf("read ask %s: %w", ask.ID, err)
+		return model.Ask{}, nil, &docs.UndecodableAskError{AskID: ask.ID, Value: "node's answer", Err: err}
 	}
 	node.ApplyTo(&ask)
 	if ask.State == "open" {
@@ -452,7 +454,7 @@ func scanAskRead(row pgx.Row, extra ...any) (model.Ask, *model.AskLastReply, err
 	}
 	var reply model.AskLastReply
 	if err := json.Unmarshal(replyAuthor, &reply.Author); err != nil {
-		return model.Ask{}, nil, fmt.Errorf("decode ask last reply author: %w", err)
+		return model.Ask{}, nil, &docs.UndecodableAskError{AskID: ask.ID, Value: "newest reply's author", Err: err}
 	}
 	reply.CreatedAt = timestampValue(*repliedAt)
 	return ask, &reply, nil

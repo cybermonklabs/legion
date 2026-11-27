@@ -496,7 +496,8 @@ func TestAPassOfTheThirdPhaseStopsWhereAProcessOfAnotherBuildGoesLiveDuringIt(t 
 	step := NewDecisionStep(database, catchUpCommit, slog.New(joining))
 	step.UseDocuments(first.service)
 
-	done, failed, err := step.RestoreAndConvert(ctx, "DOC", true, false)
+	pass, err := step.RestoreAndConvert(ctx, "DOC", true, false)
+	done, failed := pass.Done, pass.Failed
 	if !joining.joined {
 		t.Fatalf("the pass answered %v having touched %+v, and never logged DOC-1 converted, so no process of another build joined it", err, done)
 	}
@@ -520,7 +521,8 @@ func TestAPassOfTheThirdPhaseStopsWhereAProcessOfAnotherBuildGoesLiveDuringIt(t 
 	if _, err := database.Pool.Exec(ctx, `delete from server_processes where commit = 'the-release-before'`); err != nil {
 		t.Fatalf("take the release before out of the fleet: %v", err)
 	}
-	done, failed, err = step.RestoreAndConvert(ctx, "DOC", true, false)
+	pass, err = step.RestoreAndConvert(ctx, "DOC", true, false)
+	done, failed = pass.Done, pass.Failed
 	if err != nil || len(failed) != 0 || len(done) != 1 || done[0].Issue != "DOC-2" || done[0].Decisions != 1 || !done[0].Retired {
 		t.Fatalf("the pass on a fleet of one build again answered %v, touched %+v and failed %+v, want DOC-2's section a decision and its document retired",
 			err, done, failed)

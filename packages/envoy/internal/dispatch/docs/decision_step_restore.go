@@ -30,48 +30,50 @@ type DecisionIssueFailure struct {
 	Err   error
 }
 
-// DecisionPass is what a pass of the third phase did (thirdPhase): each issue it touched (Done);
-// each it left with nothing written because a document of it owes its block index (Left,
-// errBlockIndexOwed), which a later pass takes once the block-index reconciliation has indexed
-// that document; and each whose transaction failed (Failed).
+// DecisionIssueLeft is an issue the third phase left for a later pass with nothing of it written:
+// a document of it owes its block index (Reason, errBlockIndexOwed), and the pass after the
+// block-index reconciliation has indexed that document takes it. It is no failure, and no
+// section count: DecisionIssue.Left counts the sections a pass that converted an issue left.
+//
+// kept for one release: decisions-step
+type DecisionIssueLeft struct {
+	Issue  string
+	Reason error
+}
+
+// DecisionPass is what a pass of the third phase did (RestoreAndConvert): each issue it touched
+// (Done); each it left with nothing written because a document of it owes its block index (Left),
+// which a later pass takes once the block-index reconciliation has indexed that document; and
+// each whose transaction failed (Failed).
 //
 // kept for one release: decisions-step
 type DecisionPass struct {
 	Done   []DecisionIssue
-	Left   []DecisionIssueFailure
+	Left   []DecisionIssueLeft
 	Failed []DecisionIssueFailure
 }
 
 // RestoreAndConvert is the decisions step's third phase over the issues of project, or of every
-// project for "" (thirdPhase), as a tick runs it: it answers each issue it touched and each issue
-// that failed. An issue it left for its block index is in neither: thirdPhase logs it, and a later
-// tick takes it.
-//
-// kept for one release: decisions-step
-func (s *DecisionStep) RestoreAndConvert(ctx context.Context, project string, convert, dryRun bool) ([]DecisionIssue, []DecisionIssueFailure, error) {
-	pass, err := s.thirdPhase(ctx, project, convert, dryRun)
-	return pass.Done, pass.Failed, err
-}
-
-// thirdPhase is the decisions step's third phase over the issues of project, or of every project
-// for "", on a fleet of this one build: ErrAnotherBuildLive otherwise, with nothing done.
+// project for "", on a fleet of this one build: ErrAnotherBuildLive otherwise, with nothing done.
+// A tick (Tick) and a command run by hand (RunByHand) each run it under phase 3's lock.
 // Where convert, it first rewrites each list of gated steps that holds `decisions` without it, a
 // list of `decisions` alone becoming `[spec]` (F6; no design_gates row is deleted), and then, for
 // each issue that holds a decisions document (decisions_documents()) or an answered ask the
 // restore owes its spec (graphcensus.ReadRestoreWork), oldest issue first, restores those asks and
 // converts the document's sections, in one transaction for each issue (restoreIssueDecisions).
 // Without convert it restores the asks alone, for each issue the restore owes. dryRun does all of
-// it and rolls each transaction back. It answers each issue it touched, each issue it left, with
-// nothing written, because a document of it owes its block index (errBlockIndexOwed), for a later
-// pass, and each issue that failed, whose transaction rolled back and which the next pass tries
-// again; its error is one that stops the whole phase. A process of another build that goes live
-// during the pass stops it at the next issue's transaction, which reads the fleet again
-// (restoreIssue): it answers the issues it touched and left before that one with
-// ErrAnotherBuildLive, and converts nothing more until a later pass finds the fleet one build. It
-// writes through the document service the step was given (UseDocuments).
+// it and rolls each transaction back. It answers what the pass did (DecisionPass): each issue it
+// touched, each issue it left, with nothing written, because a document of it owes its block
+// index (errBlockIndexOwed), for a later pass, and each issue that failed, whose transaction
+// rolled back and which the next pass tries again; its error is one that stops the whole phase. A
+// process of another build that goes live during the pass stops it at the next issue's
+// transaction, which reads the fleet again (restoreIssue): it answers the issues it touched and
+// left before that one with ErrAnotherBuildLive, and converts nothing more until a later pass
+// finds the fleet one build. It writes through the document service the step was given
+// (UseDocuments).
 //
 // kept for one release: decisions-step
-func (s *DecisionStep) thirdPhase(ctx context.Context, project string, convert, dryRun bool) (DecisionPass, error) {
+func (s *DecisionStep) RestoreAndConvert(ctx context.Context, project string, convert, dryRun bool) (DecisionPass, error) {
 	var pass DecisionPass
 	if s.documents == nil {
 		return pass, errors.New("docs: the decisions step's third phase has no document service to write through")
@@ -139,7 +141,7 @@ func (s *DecisionStep) thirdPhase(ctx context.Context, project string, convert, 
 		}
 		if errors.Is(err, errBlockIndexOwed) {
 			s.logger.Info("dispatch: decisions step left an issue for a later pass", "issue", issue, "reason", err, "dry_run", dryRun)
-			pass.Left = append(pass.Left, DecisionIssueFailure{Issue: issue, Err: err})
+			pass.Left = append(pass.Left, DecisionIssueLeft{Issue: issue, Reason: err})
 			continue
 		}
 		if err != nil {
@@ -245,7 +247,7 @@ var ErrDryRunOwesBackfill = errors.New("docs: the decisions step's first phase o
 // `convert-decisions`): it waits for the step's lock, so no process's tick runs the first two
 // phases beside it, runs phase 1 where a row stands unmarked and phase 2 once, then releases that
 // lock and waits for phase 3's (takeRestoreLock), so no tick runs phase 3 beside it and no booting
-// process waits behind it, and runs phase 3 over the issues of project (thirdPhase),
+// process waits behind it, and runs phase 3 over the issues of project (RestoreAndConvert),
 // whatever DISPATCH_TEST_HOLD_DECISIONS_STEP says, since that setting holds a server's boot and
 // tick alone. Phase 3 still waits for a fleet of the step's own build (ErrAnotherBuildLive). It
 // answers what phase 3 did (DecisionPass), the issues it left for their block index among it, so
@@ -291,5 +293,5 @@ func (s *DecisionStep) RunByHand(ctx context.Context, project string, convert, d
 	if _, err := conn.takeRestoreLock(ctx, true); err != nil {
 		return DecisionPass{}, err
 	}
-	return s.thirdPhase(ctx, project, convert, dryRun)
+	return s.RestoreAndConvert(ctx, project, convert, dryRun)
 }

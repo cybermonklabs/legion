@@ -283,7 +283,8 @@ func conversionPath(t *testing.T) (*docsWriterRig, docsWriter) {
 				write: func() error {
 					step := NewDecisionStep(r.database, "", nil)
 					step.UseDocuments(r.service)
-					done, failed, err := step.RestoreAndConvert(ctx, project, true, false)
+					pass, err := step.RestoreAndConvert(ctx, project, true, false)
+					done, failed := pass.Done, pass.Failed
 					if err != nil || len(failed) > 0 {
 						return fmt.Errorf("the third phase answered %v with failures %+v", err, failed)
 					}

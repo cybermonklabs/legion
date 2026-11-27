@@ -219,7 +219,8 @@ func (issue *restoreIssue) run(convert bool) DecisionIssue {
 	t.Helper()
 	step := NewDecisionStep(issue.database, "", nil)
 	step.UseDocuments(issue.service)
-	done, failed, err := step.RestoreAndConvert(context.Background(), "DOC", convert, false)
+	pass, err := step.RestoreAndConvert(context.Background(), "DOC", convert, false)
+	done, failed := pass.Done, pass.Failed
 	if err != nil || len(failed) > 0 {
 		t.Fatalf("the third phase answered %v with failures %+v", err, failed)
 	}

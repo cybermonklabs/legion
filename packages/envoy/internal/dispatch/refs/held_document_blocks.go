@@ -99,17 +99,22 @@ func heldBlockParentDifferences(
 // A reading's authored_by (PlanDecisionNodes) and an ask block copy's copied_from (docs'
 // claimCopies) are no link: no block_refs row projects either, so no pair of a version writes
 // them and the reconcile of the links retracts neither. A copy's copied_from is retracted where
-// its block goes instead, by the pass that states the block gone (heldCopiedFrom).
+// its block goes instead, by the pass that states the block gone (heldCopiedFrom), or, where the
+// version's write deferred that pass, by a settlement's claim if one reads the block's row first.
 type heldLink struct{ kind, toKind, toID string }
 
 // heldCopiedFrom is, for each of ids, blocks of the document refKey names that a version no longer
 // holds, the asks its node states it was copied from now (graphstore.TupleCopiedFrom, read the way
 // the store reads a current relation, graphstore.CurrentTupleRead), by block id, in far-end order.
 // A block whose node states none, or that is no node of the store, is absent. The index pass reads
-// it for the blocks it states gone (planBlockNodes), so the write that drops a copy - an agent's
-// edit, an upload, a settlement's version - ends the relation in the same write and under the same
-// event: no later write reads that block's row, which the drop deletes, to end it then. One probe a
-// block, through graph_tuples_current, whose predicate the kind written into the text proves.
+// it for the blocks it states gone (planBlockNodes), so a version indexed in its own write - an
+// agent's edit, an upload, a settlement's version - ends the relation of a copy it drops in that
+// write and under the same event: no later write reads that block's row, which the drop deletes,
+// to end it then. A version whose write defers its block index (docs' indexDeferredVersion, which
+// runs PlanDecisionNodes and no index pass) leaves the row and the relation standing, and the
+// first settlement to read the row, whose claim retracts the relation (docs' claimCopies), or the
+// block-index reconciliation's index pass ends it. One probe a block, through
+// graph_tuples_current, whose predicate the kind written into the text proves.
 func heldCopiedFrom(ctx context.Context, q Queryer, refKey string, ids []string) (map[string][]string, error) {
 	if len(ids) == 0 {
 		return nil, nil

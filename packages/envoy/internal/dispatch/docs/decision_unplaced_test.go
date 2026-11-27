@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -704,11 +705,11 @@ func TestARestoreAloneLeavesASectionAboutAnAskTheSpecHoldsWithItsLinksForTheConv
 //   - its notes, a third document, which hold the answered ask q-notes, and whose block index holds
 //     no row of that block yet, as a version whose index its write deferred leaves it.
 //
-// A pass touches no issue and fails none, the decisions document stands at its one version, and
-// neither the spec nor the document that owes its index gains one. Once the block-index
-// reconciliation has indexed that document, the next pass writes the section as a reading into the
-// ask's block - q-store restored into the spec, or q-notes where the notes hold it - shapes it by
-// r1, and retires the decisions document.
+// A pass touches no issue and fails none, and answers DOC-1 left for its block index; the
+// decisions document stands at its one version, and neither the spec nor the document that owes
+// its index gains one. Once the block-index reconciliation has indexed that document, the next
+// pass writes the section as a reading into the ask's block - q-store restored into the spec, or
+// q-notes where the notes hold it - shapes it by r1, and retires the decisions document.
 func TestAPassLeavesAnIssueADocumentOfWhichOwesItsBlockIndexForALaterPass(t *testing.T) {
 	const title = "The corpus lives in the database"
 	const words = "The person ruled it in"
@@ -764,10 +765,13 @@ func TestAPassLeavesAnIssueADocumentOfWhichOwesItsBlockIndexForALaterPass(t *tes
 			step := NewDecisionStep(issue.database, "", nil)
 			step.UseDocuments(issue.service)
 
-			done, failed, err := step.RestoreAndConvert(ctx, "DOC", true, false)
-			if err != nil || len(done) != 0 || len(failed) != 0 {
+			pass, err := step.RestoreAndConvert(ctx, "DOC", true, false)
+			if err != nil || len(pass.Done) != 0 || len(pass.Failed) != 0 {
 				t.Fatalf("the pass over an issue a document of which owes its block index answered %v, touched %+v and failed %+v, want the issue left alone",
-					err, done, failed)
+					err, pass.Done, pass.Failed)
+			}
+			if len(pass.Left) != 1 || pass.Left[0].Issue != "DOC-1" || !errors.Is(pass.Left[0].Reason, errBlockIndexOwed) {
+				t.Fatalf("the pass left %+v, want DOC-1 alone, left because a document of it owes its block index (%v)", pass.Left, errBlockIndexOwed)
 			}
 			if readRetired(t, issue.database, decisions) || specVersions(t, issue.database, decisions) != 1 ||
 				specVersions(t, issue.database, issue.spec) != specBefore || specVersions(t, issue.database, owing) != owingBefore {

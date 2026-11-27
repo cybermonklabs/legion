@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/decisionread"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -141,12 +142,12 @@ func artifactMissing(err error) bool {
 // row that names the spec and a block it no longer holds - one a reopen restored with no block to
 // write, which a later settlement retracts - is no question of it. An ask a stored value of which
 // does not decode - one its node holds, or its row's author, options, anchor, answer, resolution
-// or approval, or its newest reply's author - is left out and logged, as decisionEntries leaves out
-// its entry, and the read goes on (R4); only a failure of the query or of its rows fails the read,
-// a column pgx cannot scan among them, which ends the rows. reader is the answer's own, and each
-// row registers its texts with it once the slice has stopped growing: a shaping registers a
-// pointer into the row, and an append that moved the backing array would leave the reader filling
-// trees into memory the answer no longer holds.
+// or approval, or its newest reply's author (docs.UndecodableAskError) - is left out and logged
+// with its id, as decisionEntries leaves out its entry, and the read goes on (R4); a failure of
+// the query or of the scan, a column pgx cannot scan among them, fails the read. reader is the
+// answer's own, and each row registers its texts with it once the slice has stopped growing: a
+// shaping registers a pointer into the row, and an append that moved the backing array would
+// leave the reader filling trees into memory the answer no longer holds.
 func (s *server) specOpenQuestions(
 	ctx context.Context, who model.Actor, key, specID string, reader *displayTreeReader,
 ) ([]issueAskRow, error) {
@@ -164,9 +165,10 @@ func (s *server) specOpenQuestions(
 	questions := []issueAskRow{}
 	for rows.Next() {
 		ask, reply, err := scanAskRead(rows)
-		if err != nil && rows.Err() == nil {
-			slog.Warn("dispatch: a decision whose stored value does not parse is left out of the read",
-				"issue", key, "err", err)
+		if errors.Is(err, docs.ErrUndecodableAsk) {
+			undecodable, _ := errors.AsType[*docs.UndecodableAskError](err)
+			slog.Warn("dispatch: an ask whose stored value does not decode is left out of the issue's open questions",
+				"ask", undecodable.AskID, "issue", key, "err", err)
 			continue
 		}
 		if err != nil {
@@ -213,8 +215,8 @@ type keepDecisionInput struct {
 // 409 DECISION_CHANGED with nothing written: a Keep over text nobody read is the one thing Keep
 // exists to prevent, as `409 ASK_EDITED` holds an answer to the wording it was given on. Any other
 // block - one that is neither, a heading of a retired decisions document, or a decision marked
-// replaced, which is no longer the design - is 404 TARGET_NOT_FOUND. The route takes the `person`
-// or `approve` scope (its route file's OAuthScopes): a Keep is a person's.
+// replaced, which is no longer the design - is 404 TARGET_NOT_FOUND. The route needs both the
+// `person` and the `approve` scope (its route file's OAuthScopes): a Keep is a person's.
 func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
