@@ -2495,13 +2495,26 @@ test("a comment the Spec view's address keeps is drawn whole with the focus on i
         message: "the comment's row is not drawn again without the focus after ArrowUp",
       })
       .toBe(false);
+    // A row that cuts its words measures them after it is drawn, and draws "more" only then: the
+    // words are read once two reads a poll apart agree, so a cut that lands a frame after the
+    // focused look goes is read, not the words as they stood for that frame.
     await settledScrollTop(page);
-    await expect(
-      rowMore(comment),
-      "the comment's row cuts its words behind more once the focus has left it"
-    ).toHaveCount(0);
+    const unfocused = await settledValue("the comment's words after the focus left them", () =>
+      comment.evaluate((row) => {
+        const words = row.querySelector("[data-node-words]");
+        return {
+          clipped: words === null ? 0 : words.scrollHeight - words.clientHeight,
+          height: Math.round(words?.getBoundingClientRect().height ?? 0),
+          more: row.querySelectorAll("[data-node-more]").length,
+        };
+      })
+    );
     expect(
-      await rowWords(comment).evaluate((words) => words.scrollHeight - words.clientHeight),
+      unfocused.more,
+      "the comment's row cuts its words behind more once the focus has left it"
+    ).toBe(0);
+    expect(
+      unfocused.clipped,
       "the comment's words are clipped once the focus has left its row"
     ).toBeLessThanOrEqual(1);
   });
@@ -2801,6 +2814,332 @@ test("a press past a footnote's reference that ends a Spec statement puts the ca
       }, note),
       "a press past the footnote's reference that ends the statement's words puts the caret before it"
     ).toBe(true);
+  });
+});
+
+/** One inline kind a statement's editor holds, as a statement of the row below writes it, and how
+ *  the Spec view's drawn words show it: by an element (`selector`) or by the text its author wrote
+ *  (`text`). A kind the view draws as a link takes no caret where it is pressed: the link opens. */
+interface InlineKind {
+  readonly kind: string;
+  readonly link: boolean;
+  readonly selector?: string;
+  readonly text?: string;
+  readonly written: string;
+}
+
+/** Where a press of the row below lands, for one kind: the word before it, the kind itself, the
+ *  word after it, past the end of the line it ends, and past the end of the words it ends. */
+type PressPlace = "before" | "inside" | "after" | "line end" | "words end";
+
+// Decision 552: every inline kind a statement's editor holds otherwise than the Spec view draws it,
+// pressed at every place a press can stand, at 1440 and 390 px, with the caret the editor places
+// read against the place pressed. Each kind is one statement of three lines:
+// `prior<n> K later<n> …`, a hard break, `… ends with<n> K`, a hard break, `… the words end with<n>
+// K`. So K stands inside a line, ends a line and ends the words. A press on `prior<n>` or on
+// `later<n>` puts the caret in that word. A press inside K puts it at K's start, before an atom.
+// Past the end of the line K ends, it goes before the hard break, after K. Past the end of the
+// words, it goes after K, where the block ends. The caret's place is read from the editor as the
+// text its editable runs hold before it and the elements the caret cannot enter before it, and
+// compared with the same reading of the place a cell names. A kind the view draws as a link - a
+// reference, a mention, a picture's caption - opens it where pressed, so its press inside reads
+// that the caret did not move into the words. A hard break holds no box to press, and it can end
+// no words, so its cells are the line it ends and the word after it. Every cell is read, and the
+// row fails once, naming each cell whose caret is not at its place.
+// SLOW(>=2s): a seeded issue of sixty statements and six more, a second issue to cite, a load of
+// the Spec view and about sixty presses at two widths, each read once the page has stopped moving.
+test("a press on each inline kind of a Spec statement, at each place, puts the caret where it was pressed", async ({
+  browser,
+}) => {
+  test.setTimeout(600_000);
+  const seed = async () => {
+    const seeded = await seedTallSpec();
+    const cited = await createIssue({
+      force: true,
+      project: PROJECT,
+      title: "The issue a statement cites by its key, drawn by its key and its title",
+    });
+    const kinds: readonly InlineKind[] = [
+      {
+        kind: "reference",
+        link: true,
+        selector: "a[data-row-reference]:not([data-row-chip])",
+        written: `dispatch://${cited.key}`,
+      },
+      {
+        kind: "mention",
+        link: true,
+        selector: "a[data-row-reference][data-row-chip]",
+        written: `dispatch://${seeded.key}/spec#b-${requirementBlockId(1)}`,
+      },
+      {
+        kind: "picture",
+        link: true,
+        selector: "[data-dispatch-picture]",
+        written: `![shot.png](dispatch://${seeded.key}/artifact/shot-png@v1)`,
+      },
+      { kind: "inline HTML", link: false, selector: '[data-type="html"]', written: "<name>" },
+      { kind: "footnote reference", link: false, text: "[^k5]", written: "[^k5]" },
+    ];
+    const blocks = kinds.map((one, index) =>
+      statementBlock(
+        `r-kind-${index + 1}`,
+        `prior${index + 1} ${one.written} later${index + 1} words of the first line\\\n` +
+          `the second line ends with${index + 1} ${one.written}\\\n` +
+          `the words end with${index + 1} ${one.written}`
+      )
+    );
+    blocks.push(
+      statementBlock("r-kind-6", "prior6 the first line ends here\\\nlater6 the second line")
+    );
+    await editArtifact(seeded.specArtifactId, {
+      ops: [
+        {
+          after: `block:${requirementBlockId(3)}`,
+          markdown: `${blocks.join("\n\n")}\n\n[^k5]: The note the statements cite.`,
+          op: "insert",
+        },
+      ],
+    });
+    return { ...seeded, kinds };
+  };
+  await phase(browser, seed, async (page, seeded) => {
+    const body = await openSpecStatement(page, seeded, "r-kind-1").then(() =>
+      issuePage(page).locator("[data-spec-body]")
+    );
+    const failures: string[] = [];
+    const statementOf = (index: number) =>
+      body.locator(
+        `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, `r-kind-${index}`)}"]`
+      );
+    /** Brings `row` to the screen's middle and waits until the page stops moving. */
+    const toMiddle = async (row: Locator) => {
+      await row.evaluate((element) => element.scrollIntoView({ block: "center" }));
+      await settledScrollTop(page);
+    };
+    /** The boxes of occurrence `nth` of `kind` in `row`'s drawn words, in document order. */
+    const kindBoxes = (row: Locator, kind: InlineKind, nth: number) =>
+      row.locator("[data-node-words]").evaluate(
+        (words, { nth, selector, text }) => {
+          const rects = (list: DOMRectList) =>
+            [...list].map(({ bottom, left, right, top }) => ({ bottom, left, right, top }));
+          if (selector !== undefined) {
+            const found = [...words.querySelectorAll(selector)][nth];
+            return found === undefined ? [] : rects(found.getClientRects());
+          }
+          const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT);
+          let seen = 0;
+          for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+            const data = node.textContent ?? "";
+            for (
+              let at = data.indexOf(text ?? "");
+              at >= 0;
+              at = data.indexOf(text ?? "", at + 1)
+            ) {
+              if (seen++ !== nth) continue;
+              const range = document.createRange();
+              range.setStart(node, at);
+              range.setEnd(node, at + (text ?? "").length);
+              return rects(range.getClientRects());
+            }
+          }
+          return [];
+        },
+        { nth, selector: kind.selector, text: kind.text }
+      );
+    /** Where the caret stands in block `blockId` of `row`'s editor: the text its editable runs
+     *  hold before it, and how many elements the caret cannot enter stand before it. With
+     *  `place`, the same reading of that place: `{ before: n }` before the block's `n`th hard
+     *  break, or "end", the block's end. None where the caret is not in that block. */
+    const caretPlace = (row: Locator, blockId: string, place?: { before: number } | "end") =>
+      row.evaluate(
+        (element, { block, target }) => {
+          const editor = element.querySelector<HTMLElement>(
+            "[data-editor-box] [contenteditable='true']"
+          );
+          const caret = window.getSelection();
+          const drawn = editor?.querySelector<HTMLElement>(`[data-block-id="${block}"]`) ?? null;
+          if (drawn === null || caret?.anchorNode == null || !drawn.contains(caret.anchorNode)) {
+            return null;
+          }
+          const paragraph = drawn.querySelector("p") ?? drawn;
+          const point = document.createRange();
+          if (target === undefined) point.setStart(caret.anchorNode, caret.anchorOffset);
+          else if (target === "end") point.setStart(paragraph, paragraph.childNodes.length);
+          else {
+            const breaks = [...paragraph.querySelectorAll("br:not(.ProseMirror-trailingBreak)")];
+            const broken = breaks[target.before];
+            if (broken === undefined) return null;
+            point.setStartBefore(broken);
+          }
+          let text = "";
+          let atoms = 0;
+          const walker = document.createTreeWalker(
+            paragraph,
+            NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT
+          );
+          for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+            if (point.comparePoint(node, 0) >= 0) break;
+            if (node instanceof Text) {
+              if (node.parentElement?.isContentEditable === true) {
+                const within = point.startContainer === node;
+                text += within ? node.data.slice(0, point.startOffset) : node.data;
+                if (within) break;
+              }
+            } else if (
+              node instanceof HTMLElement &&
+              node.parentElement?.isContentEditable === true &&
+              !node.isContentEditable &&
+              !node.classList.contains("ProseMirror-separator")
+            ) {
+              atoms += 1;
+            }
+          }
+          return { atoms, text };
+        },
+        { block: blockId, target: place }
+      );
+    /** Leaves the editor or the page a press opened, and brings the Spec view back. */
+    const recover = async (row: Locator, address: string) => {
+      if (page.url() !== address) {
+        await page.goBack();
+        await expect(row, "Back does not bring the Spec view back").toBeVisible();
+      }
+      if ((await page.locator("[role='dialog']").count()) > 0) await page.keyboard.press("Escape");
+      if ((await row.locator("[data-editor-box]").count()) > 0) {
+        await page.keyboard.press("Escape");
+        await expect(row.locator("[data-editor-box]"), "Escape leaves the editor open").toHaveCount(
+          0
+        );
+      }
+    };
+    for (const width of [DESKTOP.width, 390]) {
+      await page.setViewportSize({ height: DESKTOP.height, width });
+      const address = page.url();
+      const presses: { index: number; kind: InlineKind | undefined; place: PressPlace }[] = [];
+      for (const [at, kind] of seeded.kinds.entries()) {
+        for (const place of ["before", "inside", "after", "line end", "words end"] as const) {
+          presses.push({ index: at + 1, kind, place });
+        }
+      }
+      presses.push({ index: 6, kind: undefined, place: "line end" });
+      presses.push({ index: 6, kind: undefined, place: "after" });
+      for (const { index, kind, place } of presses) {
+        const cell = `${width} px, ${kind?.kind ?? "hard break"}, ${place}`;
+        const row = statementOf(index);
+        await toMiddle(row);
+        const words = row.locator("[data-node-words]");
+        let point: { x: number; y: number } | undefined;
+        if (place === "before" || place === "after") {
+          const word = `${place === "before" ? "prior" : "later"}${index}`;
+          point = await words.evaluate(
+            (drawn, { into, wanted }) => {
+              const walker = document.createTreeWalker(drawn, NodeFilter.SHOW_TEXT);
+              for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+                const at = (node.textContent ?? "").indexOf(wanted);
+                if (at < 0) continue;
+                const range = document.createRange();
+                // The third character of the word, or the first where the word starts the line a
+                // hard break opens, which reads that the press goes after the break.
+                range.setStart(node, at + into);
+                range.setEnd(node, at + into + 1);
+                const box = range.getBoundingClientRect();
+                return { x: Math.round(box.left + 1), y: Math.round((box.top + box.bottom) / 2) };
+              }
+              return undefined;
+            },
+            { into: kind === undefined && place === "after" ? 0 : 2, wanted: word }
+          );
+        } else if (kind === undefined) {
+          // The end of the line the hard break ends: past the last word before it.
+          point = await words.evaluate((drawn) => {
+            const broken = drawn.querySelector("br");
+            const range = document.createRange();
+            if (broken === null || broken.previousSibling === null) return undefined;
+            range.selectNode(broken.previousSibling);
+            const box = [...range.getClientRects()].at(-1);
+            const right = drawn.getBoundingClientRect().right - 2;
+            return box === undefined
+              ? undefined
+              : {
+                  x: Math.round(Math.min(box.right + 20, right)),
+                  y: Math.round((box.top + box.bottom) / 2),
+                };
+          });
+        } else {
+          const nth = place === "inside" ? 0 : place === "line end" ? 1 : 2;
+          const boxes = await kindBoxes(row, kind, nth);
+          // The boxes the real view draws, for the unit table of `pressed-words.test.ts`.
+          console.log(`E2E-BOXES ${cell} ${JSON.stringify(boxes)}`);
+          const box = place === "inside" ? boxes[0] : boxes.at(-1);
+          if (box !== undefined) {
+            const right = await words.evaluate((drawn) => drawn.getBoundingClientRect().right - 2);
+            point =
+              place === "inside"
+                ? {
+                    x: Math.round((box.left + box.right) / 2),
+                    y: Math.round((box.top + box.bottom) / 2),
+                  }
+                : {
+                    x: Math.round(Math.min(box.right + 20, right)),
+                    y: Math.round((box.top + box.bottom) / 2),
+                  };
+          }
+        }
+        if (point === undefined) {
+          failures.push(`${cell}: the statement draws nothing to press there`);
+          continue;
+        }
+        await page.mouse.click(point.x, point.y);
+        if (place === "inside" && kind?.link === true) {
+          // A link opens where it is pressed, and the caret does not go into the words.
+          await settledScrollTop(page);
+          if (await caretInRowBlock(page, `r-kind-${index}`)) {
+            failures.push(`${cell}: the press put the caret in the words, not the link's press`);
+          }
+          await recover(row, address);
+          continue;
+        }
+        const placed = await expect
+          .poll(() => caretInRowBlock(page, `r-kind-${index}`), { timeout: 10_000 })
+          .toBe(true)
+          .then(
+            () => true,
+            () => false
+          );
+        if (!placed) {
+          failures.push(`${cell}: the press at (${point.x}, ${point.y}) put no caret in the words`);
+          await recover(row, address);
+          continue;
+        }
+        if (place === "before" || place === "after") {
+          const word = `${place === "before" ? "prior" : "later"}${index}`;
+          const caretWord = await wordAtCaret(page, "selection");
+          if (caretWord !== word)
+            failures.push(`${cell}: the caret is in "${caretWord}", not "${word}"`);
+        } else {
+          const caret = await caretPlace(row, `r-kind-${index}`);
+          const wanted =
+            place === "inside"
+              ? { atoms: 0, text: `prior${index} ` }
+              : await caretPlace(
+                  row,
+                  `r-kind-${index}`,
+                  place === "words end" ? "end" : { before: kind === undefined ? 0 : 1 }
+                );
+          if (JSON.stringify(caret) !== JSON.stringify(wanted)) {
+            failures.push(
+              `${cell}: the caret stands after ${JSON.stringify(caret)}, not after ${JSON.stringify(wanted)}`
+            );
+          }
+        }
+        await recover(row, address);
+      }
+    }
+    expect(
+      failures,
+      `cells whose caret is not where the press was:\n${failures.join("\n")}`
+    ).toEqual([]);
   });
 });
 
