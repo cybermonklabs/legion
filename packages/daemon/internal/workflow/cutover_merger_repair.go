@@ -50,7 +50,8 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 // tree runs (record.RunningRoots), since a lingering tree's claims wait for its re-admission and
 // a queued root's members for its promotion, each of which starts every mid-phase member (admit's
 // startMidPhaseMembers); its phase is not finished (PhaseFinished), since a merged pull request's
-// merge closes the issue and leaves the merger nothing to do; and the owner's claim at the issue's
+// merge takes the issue out of merging — into `verifying`, where its close waits for its checks,
+// or into `done` where nothing holds that close — and leaves the merger nothing to do; and the owner's claim at the issue's
 // generation stands suspended. Of those owners it selects each merger the old build left so, by
 // all of these:
 //   - the issue stands in merging, whose owner is the merger. The migration put every

@@ -309,10 +309,12 @@ export interface LegionDaemonClient {
   readonly signOff: (
     input: z.input<typeof LegionSignOffRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
-  /** A phase worker's or the owning architect's `report_defect` (the defect-calls entry): a defect
-   * in the merged change of an issue, at the head it was seen at. It moves no phase. The answer is
-   * the defect's id, whether the daemon recorded it, found it the same as one it holds or joined it
-   * to one, and the generation of the change that will carry it. */
+  /** `report_defect` (the defect-calls entry): a defect of the change of an issue, found once its
+   * task's last step passed, at the head it was seen at. The implementer reports in retro, the
+   * merger in merging and in verifying until its completion lands, and the owning architect from
+   * retro on. It moves no phase. The answer is the defect's id, whether the daemon recorded it,
+   * found it the same as one it holds or joined it to one, and the generation of the change that
+   * will carry it. */
   readonly reportDefect: (
     input: z.input<typeof LegionDefectReportRequest>
   ) => Promise<z.output<typeof LegionDefectReportResponse>>;
@@ -460,17 +462,32 @@ function isNetworkOrTimeoutError(error: unknown): boolean {
  * session, claude-envoy's Legion claim) sends its `claims/ready` through it, at boot and after each
  * role regain. It makes `READY_RETRY_ATTEMPTS` attempts, and waits between them 1 s, or what the
  * answer's `Retry-After` asks for where that is longer, but never longer than
- * `READY_RETRY_AFTER_MAX_MS`: a proxy that asks for longer is asked again at that bound. `sleep` is
- * the wait, a test's own. */
+ * `READY_RETRY_AFTER_MAX_MS`: a proxy that asks for longer is asked again at that bound. Each
+ * failed attempt is said on `log`, the host's own writer.
+ *
+ * `signal` aborts when the host stops (R24 of dispatch://INFRA-3589). From then on nothing is
+ * said and no attempt is made: a wait for the next attempt ends at once, and the call throws the
+ * last attempt's error. `sleep` is the wait, a test's own, which ends at once when the signal it
+ * is given aborts. */
 export async function callReadyWithRetry(
   label: string,
   call: () => Promise<void>,
-  sleep: (ms: number) => Promise<void> = (ms) => {
+  host: { readonly log: (line: string) => void; readonly signal?: AbortSignal | undefined },
+  sleep: (ms: number, signal: AbortSignal | undefined) => Promise<void> = (ms, signal) => {
     const waited = Promise.withResolvers<void>();
-    setTimeout(waited.resolve, ms);
-    return waited.promise;
+    const timer = setTimeout(waited.resolve, ms);
+    const stop = (): void => {
+      clearTimeout(timer);
+      waited.resolve();
+    };
+    if (signal?.aborted === true) stop();
+    else signal?.addEventListener("abort", stop, { once: true });
+    return waited.promise.finally(() => signal?.removeEventListener("abort", stop));
   }
 ): Promise<void> {
+  const { log, signal } = host;
+  // Read afresh at each use: the abort comes while an attempt or a wait is pending.
+  const stopped = (): boolean => signal?.aborted === true;
   for (let attempt = 1; ; attempt++) {
     try {
       await call();
@@ -480,17 +497,18 @@ export async function callReadyWithRetry(
         error instanceof LegionDaemonApiError
           ? outage(error.status)
           : isNetworkOrTimeoutError(error);
-      if (!retryable) throw error;
+      if (!retryable || stopped()) throw error;
       if (attempt === READY_RETRY_ATTEMPTS) {
-        console.error(`[legion] ${label} failed after ${attempt} attempts: ${messageFor(error)}`);
+        log(`${label} failed after ${attempt} attempts: ${messageFor(error)}`);
         throw error;
       }
       const asked = error instanceof LegionDaemonApiError ? error.retryAfterMs : 0;
       const wait = Math.min(Math.max(READY_RETRY_DELAY_MS, asked), READY_RETRY_AFTER_MAX_MS);
-      console.error(
-        `[legion] ${label} failed (attempt ${attempt}/${READY_RETRY_ATTEMPTS}), retrying in ${wait / 1_000} s: ${messageFor(error)}`
+      log(
+        `${label} failed (attempt ${attempt}/${READY_RETRY_ATTEMPTS}), retrying in ${wait / 1_000} s: ${messageFor(error)}`
       );
-      await sleep(wait);
+      await sleep(wait, signal);
+      if (stopped()) throw error;
     }
   }
 }

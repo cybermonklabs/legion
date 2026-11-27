@@ -66,13 +66,14 @@ test("every color literal in the file carries a swatch-name annotation", () => {
 });
 
 describe("every annotated styles.css color literal matches its named palette swatch exactly", () => {
-  test.each(
-    annotations.map((annotation) => [annotation.swatchName, annotation] as const)
-  )("%s", (swatchName, { actual }) => {
-    const swatch = swatchByName.get(swatchName);
-    if (swatch === undefined) {
-      throw new Error(`styles.css names swatch "${swatchName}", which palette.ts doesn't export`);
+  test.each(annotations.map((annotation) => [annotation.swatchName, annotation] as const))(
+    "%s",
+    (swatchName, { actual }) => {
+      const swatch = swatchByName.get(swatchName);
+      if (swatch === undefined) {
+        throw new Error(`styles.css names swatch "${swatchName}", which palette.ts doesn't export`);
+      }
+      expect(actual).toEqual(oklchToSrgb8(swatch.oklch));
     }
-    expect(actual).toEqual(oklchToSrgb8(swatch.oklch));
-  });
+  );
 });

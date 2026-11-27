@@ -257,17 +257,24 @@ export async function accept(issue: Tracked, example: Example): Promise<void> {
   await api.patchIssue(issue.key, { status: "retro" }, DAEMON);
 }
 
-/** The merge closes the issue: the daemon writes done. The production check the project's
- *  `production_check` opens — the tester's, unless the setting is `off` — follows on the pull
- *  request, which the example's GitHub does not show, and the example records no result of it on
- *  the issue. Each look that finds the deploy missing names its own next look with `wake_at`, and
- *  nothing else wakes the check. */
-export async function closeAtMerge(issue: Tracked): Promise<void> {
+/** The merge closes nothing by itself: it puts the issue in `verifying`, where its close waits for
+ *  the checks of its goal, and the daemon writes that phase's status, `testing`. */
+export async function enterVerifying(issue: Tracked): Promise<void> {
+  const api = await dispatchApi();
+  await api.patchIssue(issue.key, { status: "testing" }, DAEMON);
+}
+
+/** The checks of the issue's goal pass, so the daemon closes the issue: it writes done. They
+ *  include the production check the project's `production_check` opens — the tester's, unless the
+ *  setting is `off` — which runs on the pull request, which the example's GitHub does not show.
+ *  The example records no result of any check on the issue. Each look that finds the deploy
+ *  missing names its own next look with `wake_at`, and nothing else wakes the check. */
+export async function closeOnChecks(issue: Tracked): Promise<void> {
   const api = await dispatchApi();
   await api.patchIssue(issue.key, { status: "done" }, DAEMON);
 }
 
-/** The whole journey, handover to the merge that closes the issue, with no stop between the moves. */
+/** The whole journey, handover to the close once the checks pass, with no stop between the moves. */
 export async function finish(issue: Tracked, example: Example): Promise<void> {
   await handOver(issue);
   await admit(issue);
@@ -277,7 +284,8 @@ export async function finish(issue: Tracked, example: Example): Promise<void> {
   await linkPullRequest(issue, example);
   for (const status of PHASE_STATUSES) await setStatus(issue, status);
   await accept(issue, example);
-  await closeAtMerge(issue);
+  await enterVerifying(issue);
+  await closeOnChecks(issue);
 }
 
 const REPORT_SPEC =

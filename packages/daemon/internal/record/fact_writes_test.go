@@ -151,11 +151,13 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 		{name: "control: a clear of a generation that holds nothing", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.ClearGeneration(ctx, tx, key, at))
 		}},
+		// The clear saves the merged row's merge as the issue's snapshot before it deletes the row
+		// (clearPullRequests), and the snapshot's writer names the issue.
 		{name: "a next change's clear of its merged pull request", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutPullRequest(ctx, tx, merged))
 		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.ClearChangeGeneration(ctx, tx, key, at))
-		}, marks: true},
+		}, marks: true, issue: true},
 		{name: "a next change's clear of its phase rows", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutPhase(ctx, tx, phaseRow))
 		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {

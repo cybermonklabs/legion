@@ -24,7 +24,7 @@ func TestTheSeededHistoryAnswersFactsForEveryIssueLegionWorked(t *testing.T) {
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 
 	started := time.Now()
-	fixture := Seed(t, database.Pool, Spec{Project: "LEGION", Now: now, AwaitingChildren: true})
+	fixture := Seed(t, database.Pool, Spec{Project: "LEGION", Now: now, AwaitingChildren: true, Verifying: true})
 	seeded := time.Since(started)
 
 	population, err := metrics.ReadProject(t.Context(), database.Pool, fixture.Project, now)

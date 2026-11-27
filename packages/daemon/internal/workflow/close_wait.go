@@ -596,10 +596,11 @@ func (e *Engine) judgeClose(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 	return e.judgeCloseNoting(ctx, tx, issue, nil)
 }
 
-// judgeCloseNoting is judgeClose for an event that close-wait.md names once, in the version it
+// judgeCloseNoting is judgeClose for an event that close-wait.md names once, in a version it
 // writes: withdrawn, the defects a withdrawal ended (defectWithdrawal), which the stored wait it
-// writes holds as its Withdrawn. A later write leaves them out, since waitOf starts every wait
-// afresh.
+// writes holds as its Withdrawn beside every withdrawal the wait already held (heldWithdrawals).
+// The wait keeps a withdrawal until a version of the document holding it is uploaded, whatever
+// writes the wait first; the row that uploads it takes it out (daemon's closeWaitPublish).
 func (e *Engine) judgeCloseNoting(ctx context.Context, tx pgx.Tx, issue record.Issue, withdrawn []record.WaitWithdrawal) error {
 	if issue.Phase != phase.Verifying {
 		return nil
@@ -624,7 +625,7 @@ func (e *Engine) storeWait(ctx context.Context, tx pgx.Tx, issue record.Issue, v
 		return err
 	}
 	stored := e.waitOf(issue, view, old, now)
-	stored.Withdrawn = withdrawn
+	stored.Withdrawn = heldWithdrawals(old, withdrawn)
 	if err := e.tellAtOnce(ctx, tx, issue, old, stored, view.wait); err != nil {
 		return err
 	}
@@ -755,7 +756,7 @@ func (e *Engine) closeOnChecks(ctx context.Context, tx pgx.Tx, issue record.Issu
 		return err
 	}
 	stored := e.waitOf(issue, view, old, now)
-	stored.Withdrawn = withdrawn
+	stored.Withdrawn = heldWithdrawals(old, withdrawn)
 	stored.Closed = &now
 	if err := putStoredWait(&issue, stored); err != nil {
 		return err
@@ -785,6 +786,17 @@ func (e *Engine) closeOnChecks(ctx context.Context, tx pgx.Tx, issue record.Issu
 		return err
 	}
 	return e.leave(ctx, tx, issue, "done")
+}
+
+// heldWithdrawals is what a stored wait written over old holds of withdrawals: each one old holds,
+// which no uploaded version of close-wait.md has said yet, then withdrawn, the ones the write
+// adds. waitOf builds every other item of the wait afresh, so this is what keeps a withdrawal from
+// being replaced before the row that writes close-wait.md renders it.
+func heldWithdrawals(old record.StoredWait, withdrawn []record.WaitWithdrawal) []record.WaitWithdrawal {
+	if len(old.Withdrawn) == 0 && len(withdrawn) == 0 {
+		return nil
+	}
+	return append(slices.Clone(old.Withdrawn), withdrawn...)
 }
 
 // closeLingeringMember writes the close of issue, a member of a lingering tree, on row, the table's

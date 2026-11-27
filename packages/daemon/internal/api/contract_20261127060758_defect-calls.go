@@ -18,14 +18,18 @@ package api
 // accepting too, `403 DEFECT_CALLER_NOT_ALLOWED`, `400 DEFECT_TEXT_REQUIRED`,
 // `400 DEFECT_TEXT_TOO_LONG` and `400 DEFECT_TEXT_DECISION_BLOCK` (the defect held to Dispatch's
 // bounds of a message, as a backward move's reason is), `400 DEFECT_HEAD_REQUIRED`,
-// `409 DEFECT_ISSUE_CLOSED` and `409 TREE_LINGERING`, and records nothing.
+// `400 DEFECT_CHECK_INVALID` (a `check` that is no block id: letters, digits, `_` and `-`, at most
+// 128), `409 DEFECT_ISSUE_CLOSED` and `409 TREE_LINGERING`, and records nothing.
 // `POST /legion/v1/defects/withdraw` (`api.DefectWithdrawRequest`: `grantId`, `issue`, `defect`,
 // the id, and `reason`) ends a reported defect for the owning architect, by the rule of sign_off,
 // and answers `api.DefectWithdrawResponse`: `defect` and `state`, `withdrawn`. It refuses
 // `403 DEFECT_WITHDRAW_NOT_OWNER`, `404 DEFECT_NOT_FOUND`, `409 DEFECT_IS_A_CHECK` (a failed
 // check's or a production check's reason, which only a new approved version of the Verification
-// document changes), `409 DEFECT_IN_MERGED_CHANGE` and `400 DEFECT_REASON_REQUIRED`, and changes
-// nothing. Each refusal's shape is the one every refusal has. Both answers arrive whole with their
+// document changes), `409 DEFECT_IN_MERGED_CHANGE`, `400 DEFECT_REASON_REQUIRED`,
+// `400 DEFECT_REASON_TOO_LONG` and `400 DEFECT_REASON_DECISION_BLOCK` (the reason held to the
+// bounds the defect's text is), and changes nothing. A withdrawal is said once in close-wait.md:
+// the stored wait keeps it until a version holding it is uploaded. Each refusal's shape is the one
+// every refusal has. Both answers arrive whole with their
 // routes, so no contract below this entry records either, and no answer older than this entry
 // moves. A next change that carries a defect is not part of this entry: the report records the
 // defect and starts nothing.

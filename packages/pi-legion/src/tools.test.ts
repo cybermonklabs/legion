@@ -1617,7 +1617,7 @@ const countingTool = (
     session: () => active,
   });
 
-// report_defect records a defect of the merged change and moves no phase: the role goes on with
+// report_defect records a defect of the change, found once its task's last step passed, and moves no phase: the role goes on with
 // its step. The implementer in retro, the merger in merging and the owning architect report
 // through the one phase op, and no report that succeeded tells the session its phase closed.
 test("report_defect does not close the phase", async () => {
@@ -1696,7 +1696,9 @@ test("withdraw_defect posts the defect's id and its reason with a fresh grant, a
         "/legion/v1/defects/withdraw",
         403,
         "DEFECT_WITHDRAW_NOT_OWNER",
-        sentence
+        sentence,
+        true,
+        0
       ),
     },
   });
@@ -1736,11 +1738,7 @@ test("report_defect and withdraw_defect refuse each field they require by name, 
   const { defect, head } = DEFECT_REPORT;
   const { reason } = withdrawal;
   const refusals: ReadonlyArray<readonly [LegionToolSession, Record<string, unknown>, string]> = [
-    [
-      claimSession("merger"),
-      { op: "report_defect", defect, head },
-      "report_defect requires issue",
-    ],
+    [claimSession("merger"), { op: "report_defect", defect, head }, "report_defect requires issue"],
     [
       claimSession("merger"),
       { op: "report_defect", issue: "LEGION-208", head },
@@ -2238,8 +2236,9 @@ test("a tester with no record on a held issue posts @-, and the daemon's answer 
   });
 });
 
-/** LEGION-208 closed by its merge, with its production check open on its second look: `role` is
- * the role the check records as the one that works it, and `last` false says a look follows. */
+/** LEGION-208, which an earlier release closed at its merge, with its production check open on its
+ * second look: `role` is the role the check records as the one that works it, and `last` false says
+ * a look follows. */
 const openCheck = {
   repo: "acme/widgets",
   pullRequest: 1239,
@@ -2260,7 +2259,7 @@ const openCheck = {
 /** The time a pending report names for its next look. */
 const NEXT_LOOK = "2026-09-29T09:00:00Z";
 
-test("a report on its closed issue's production check carries a verdict and no commit, and a pending its next look", async () => {
+test("a report on its issue's production check carries a verdict and no commit, and a pending its next look", async () => {
   const completed: string[] = [];
   const { calls, daemon } = recordingDaemon({
     state: {

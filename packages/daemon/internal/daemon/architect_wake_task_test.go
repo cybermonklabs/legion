@@ -62,14 +62,14 @@ func (r *mainPathRig) wakeByRoleMessage(report string) string {
 
 // queueReleaseResume queues the resume a cancelled idle release writes for the architect's claim:
 // the row the daemon's own builder makes (outbox.releaseResume) from the root's record as the
-// cancel reads it (store.IssueRun), inserted with the statement store.CancelIssueRelease uses. No
-// release is marked and none is cancelled: the row is written alone, outside the cancel's
-// transaction. It returns that row as the outbox holds it.
+// cancel reads it (store.IssueRun), for a role whose wake the cancel did not drop, inserted with
+// the statement store.CancelIssueRelease uses. No release is marked and none is cancelled: the row
+// is written alone, outside the cancel's transaction. It returns that row as the outbox holds it.
 func (r *mainPathRig) queueReleaseResume() entryStartRow {
 	r.t.Helper()
 	root := r.issue()
 	row, err := r.runner.releaseResume(r.key, r.key)(claim.RoleArchitect,
-		store.IssueRun{Tree: root.Tree, Generation: root.Generation, TreeGeneration: root.TreeGeneration})
+		store.IssueRun{Tree: root.Tree, Generation: root.Generation, TreeGeneration: root.TreeGeneration}, store.DroppedWake{})
 	if err != nil {
 		r.t.Fatalf("build the release's resume: %v", err)
 	}

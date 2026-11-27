@@ -207,12 +207,13 @@ func (e *Engine) ownsBySignOff(ctx context.Context, tx pgx.Tx, architect claim.T
 }
 
 // waitNamesDefects writes issue's open reported defects, and withdrawn, the defects a withdrawal
-// just ended, into the stored wait that close-wait.md renders, and queues its write. In verifying
-// that is the close's judgement (judgeCloseNoting), which reads the defects with every other
-// term. Before the merge, in retro or merging or held from either, it replaces the stored wait's
-// defects alone, keeping whatever an earlier entry into verifying left: nothing else of the close
-// is read before the merge. Elsewhere it writes nothing, unless the issue holds a stored wait
-// already, which then stops naming a withdrawn defect.
+// just ended, into the stored wait that close-wait.md renders, and queues its write. The wait keeps
+// each withdrawal it already holds beside them (heldWithdrawals), since no version of the document
+// has said it yet. In verifying that is the close's judgement (judgeCloseNoting), which reads the
+// defects with every other term. Before the merge, in retro or merging or held from either, it
+// replaces the stored wait's defects alone, keeping whatever an earlier entry into verifying left:
+// nothing else of the close is read before the merge. Elsewhere it writes nothing, unless the
+// issue holds a stored wait already, which then stops naming a withdrawn defect.
 func (e *Engine) waitNamesDefects(ctx context.Context, tx pgx.Tx, issue record.Issue, withdrawn []record.WaitWithdrawal) error {
 	if issue.Phase == phase.Verifying {
 		return e.judgeCloseNoting(ctx, tx, issue, withdrawn)
@@ -234,7 +235,7 @@ func (e *Engine) waitNamesDefects(ctx context.Context, tx pgx.Tx, issue record.I
 			stored.Defects = append(stored.Defects, waitReason(defect))
 		}
 	}
-	stored.Withdrawn = withdrawn
+	stored.Withdrawn = heldWithdrawals(stored, withdrawn)
 	if err := putStoredWait(&issue, stored); err != nil {
 		return err
 	}

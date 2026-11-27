@@ -454,6 +454,7 @@ func TestAdoptWorkingCopyAsksTheRecordedProcess(t *testing.T) {
 // recorded process only, within the runtime's budget, and answers what the shim answered. A shim's
 // refusal comes back as that refusal, and a stale locator asks nothing.
 func TestStartAtBranchAsksTheRecordedProcess(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	conn := fake.NewConn()
 	g.conns.Register(workerToken, conn)

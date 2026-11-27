@@ -228,7 +228,7 @@ const DEFECT_REPORT = {
   head: "3f2a9c41d0b7e6a85c1f4d2e9b0a7c6d5e4f3a2b",
 }
 
-// report_defect records a defect of the merged change and moves no phase: the role goes on with
+// report_defect records a defect of the change, found once its task's last step passed, and moves no phase: the role goes on with
 // its step, so a report that succeeded closes no phase and answers no update, for the implementer
 // in retro and the merger in merging alike.
 test("report_defect does not close the phase", async () => {

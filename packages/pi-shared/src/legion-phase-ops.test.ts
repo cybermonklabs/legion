@@ -1312,12 +1312,18 @@ test("report_defect mints a grant, posts the defect, its head and its check, and
   const recorded = { defect: "41", state: "recorded", nextChange: 4 };
   const stub = (async (input, init) => {
     const route = new URL(input.toString()).pathname;
-    posted.push({ route, body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined });
+    posted.push({
+      route,
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+    });
     if (route === "/legion/v1/grants") return Response.json(daemonFixture("grant.json"));
     return Response.json(recorded);
   }) as typeof fetch;
   const runtimeFor = (claim: ClaimCapability): PhaseOpRuntime => ({
-    daemon: createLegionDaemonClient("http://daemon.test", { pluginContract: CONTRACT, fetch: stub }),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: stub,
+    }),
     claim,
     build: BUILD,
     handoffReport: async () => {
@@ -1329,15 +1335,20 @@ test("report_defect mints a grant, posts the defect, its head and its check, and
   });
   const grant = {
     route: "/legion/v1/grants",
-    body: { sessionId: "ses_implementer", secret: "U2VjcmV0", tree: "LEGION-208", issue: "LEGION-208" },
+    body: {
+      sessionId: "ses_implementer",
+      secret: "U2VjcmV0",
+      tree: "LEGION-208",
+      issue: "LEGION-208",
+    },
   };
 
   // The implementer in retro, the merger in merging and the owning architect report alike.
   for (const role of ["implementer", "merger", "architect"] as const) {
     posted.length = 0;
-    await expect(executePhaseOp(runtimeFor({ ...implementer, role }), DEFECT_REPORT)).resolves.toEqual(
-      recorded
-    );
+    await expect(
+      executePhaseOp(runtimeFor({ ...implementer, role }), DEFECT_REPORT)
+    ).resolves.toEqual(recorded);
     expect(posted).toEqual([
       grant,
       {

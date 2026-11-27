@@ -62,7 +62,7 @@ func TestASendBackThatWaitedOnChildrenIsCounted(t *testing.T) {
 
 // TestAReviewStillRunningAtTheFirstObservationIsOneRound: review rounds are "entries into
 // `reviewing`, or into status `needs_review` before observations" (the spec's metric 3). The issue
-// below entered `needs_review` before the sampler's first read, and that read found it still in
+// below entered `needs_review` before Dispatch's first read of it, and that read found it still in
 // review: one entry, the status's, and the observed stretch that carries the same review on is no
 // second one.
 func TestAReviewStillRunningAtTheFirstObservationIsOneRound(t *testing.T) {
@@ -74,7 +74,7 @@ func TestAReviewStillRunningAtTheFirstObservationIsOneRound(t *testing.T) {
 		observeString(legion.FieldPhase, hour(4), "accepting")
 	row := windowOf(fixture(hour(-24), hour(24), issue), ScopeAll).fact(t, "INFRA-1")
 	if rounds := row.ReviewRounds; rounds != 1 {
-		t.Fatalf("the issue has %d review rounds, want the one its needs_review opened at hour 2, which the sampler saw go on from hour 3", rounds)
+		t.Fatalf("the issue has %d review rounds, want the one its needs_review opened at hour 2, which Dispatch observed go on from hour 3", rounds)
 	}
 }
 
@@ -154,7 +154,7 @@ func TestAMoveOutOfEachSendBackPhaseToImplementingIsASendBack(t *testing.T) {
 // TestASendBackWhereTheEventLogMeetsTheObservationsIsCounted: a send-back is read off the status
 // history before the issue's first observation and off the observed timeline from it on
 // (sentBackOnce), and the move can fall between the two. The issue below is in `testing` by its
-// status at hour 1, and the sampler's first read finds it implementing at hour 2, with no
+// status at hour 1, and Dispatch's first read of it finds it implementing at hour 2, with no
 // `in_progress` before that read in its status history: the move from the event log's last phase
 // into the first observed one is the send-back, and the status half has none to count.
 func TestASendBackWhereTheEventLogMeetsTheObservationsIsCounted(t *testing.T) {
@@ -173,7 +173,7 @@ func TestASendBackWhereTheEventLogMeetsTheObservationsIsCounted(t *testing.T) {
 	}
 }
 
-// TestBeforeObservationsReviewRoundsAreEntriesIntoNeedsReview: an issue the sampler never saw
+// TestBeforeObservationsReviewRoundsAreEntriesIntoNeedsReview: an issue Dispatch never observed
 // counts its review rounds from the status the workflow set, and its send-back from the same
 // statuses: the move out of `needs_review` into `in_progress` at hour 3 is the reviewer asking
 // for changes, which no timeline drawn from first events alone can hold.
