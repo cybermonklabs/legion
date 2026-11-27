@@ -8,8 +8,8 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import type * as headsModule from "./heads-world";
 import { HEADS_SCENARIOS, headsCases } from "./heads-scenarios";
+import type * as headsModule from "./heads-world";
 import { RIG_WORLD } from "./rig-world";
 import { TestHandoff } from "./score";
 import { fileRowLimit } from "./test-limit";
@@ -350,7 +350,10 @@ test("ci-check-fail-other-head: each head's page carries what k2's job at that h
   const log = RIG_WORLD.ciJobs["ci-check-fail"].log ?? "";
   const listed = (/`widgets --help` lists \d+: ([^.]+)\./.exec(log)?.[1] ?? "").split(", ");
   const missing = /The page leaves out (\w+)\./.exec(log)?.[1] ?? "";
-  expect({ listed, missing }).toEqual({ listed: ["add", "export", "list", "remove"], missing: "export" });
+  expect({ listed, missing }).toEqual({
+    listed: ["add", "export", "list", "remove"],
+    missing: "export",
+  });
   const jobs = Object.values(RIG_WORLD.ciJobs);
   for (const scenario of ["reviewer-own-head", "architect-pass-and-fail"]) {
     const { calls, fixture } = await world("ci-check-fail-other-head", scenario);

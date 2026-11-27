@@ -65,7 +65,8 @@ export const K1_RUN = "grep -cE 'widgets --help. to list every command' docs/usa
  * reports: the job passes at #702's head, whose page names all four commands
  * (USAGE_PAGE_COMPLETE), and fails at #703's with that log, so #703 adds the page that leaves out
  * export (USAGE_PAGE_LISTED), and the log describes the page at the head it is served at. */
-export const USAGE_PAGE = "# Usage\n\nRun `widgets --help` to list every command of the widgets CLI.\n";
+export const USAGE_PAGE =
+  "# Usage\n\nRun `widgets --help` to list every command of the widgets CLI.\n";
 export const USAGE_PAGE_LISTED =
   "# Usage\n\nRun `widgets --help` to list every command of the widgets CLI: `add`, `list` and `remove`.\n";
 export const USAGE_PAGE_COMPLETE =
