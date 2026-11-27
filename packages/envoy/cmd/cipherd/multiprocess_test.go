@@ -1039,6 +1039,8 @@ func TestTwoBrokers(t *testing.T) {
 		storetest.AwaitLockWaiters(t, watch, holder, 1)
 
 		signalled := solo.Process.Terminate(t)
+		// CONTROL ONLY: the test is held up 6 s after the signal before its observations.
+		time.Sleep(6 * time.Second)
 		began := drainBegan(t, solo.Process)
 
 		// Inside the drain, readiness fails. Polled because the signal handler flips the flag on

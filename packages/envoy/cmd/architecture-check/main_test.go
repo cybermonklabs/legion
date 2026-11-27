@@ -264,7 +264,8 @@ func runBinary(t *testing.T, binary, dir string, args ...string) result {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), testwait.Remaining(t, binarySpare))
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, args...)
+	// CONTROL ONLY: every run stalls 21 s before the binary starts.
+	cmd := exec.CommandContext(ctx, "sh", append([]string{"-c", `sleep 21; exec "$0" "$@"`, binary}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOMAXPROCS=1")
 	var stdout, stderr strings.Builder
