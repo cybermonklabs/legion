@@ -120,8 +120,13 @@ test("the PR drill-down names the issue, its resolved P0, and its source as text
   renderDrillDown([], inherited);
   try {
     const dialog = screen.getByRole("dialog", { name: "Details" });
-    expect(dialog, "PR drill-down issue and priority").toHaveTextContent("ACME-2 · P0 · from ACME-1");
-    expect(within(dialog).queryByRole("link", { name: "ACME-1" }), "PR drill-down priority source is text").toBeNull();
+    expect(dialog, "PR drill-down issue and priority").toHaveTextContent(
+      "ACME-2 · P0 · from ACME-1"
+    );
+    expect(
+      within(dialog).queryByRole("link", { name: "ACME-1" }),
+      "PR drill-down priority source is text"
+    ).toBeNull();
   } finally {
     cleanup();
   }

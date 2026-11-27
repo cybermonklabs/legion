@@ -106,8 +106,14 @@ test.each(["ask", "reply"] as const)(
     const row =
       kind === "ask"
         ? ask({ ...inherited, id: "inherited", issue_key: "ACME-2", priority: null })
-        : thread({ ...inherited, thread_id: "inherited", issue: { key: "ACME-2", title: "Child" } });
-    const p0 = group([control, row], "priority", { now, titles, viewer }).find(({ key }) => key === "P0");
+        : thread({
+            ...inherited,
+            thread_id: "inherited",
+            issue: { key: "ACME-2", title: "Child" },
+          });
+    const p0 = group([control, row], "priority", { now, titles, viewer }).find(
+      ({ key }) => key === "P0"
+    );
     expect(p0?.rows.map(rowKey), `Inbox P0 band including its inherited ${kind}`).toEqual([
       "own-p0",
       "inherited",

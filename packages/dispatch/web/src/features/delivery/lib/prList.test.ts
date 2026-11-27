@@ -45,9 +45,10 @@ test("the PR list sorts an inherited P0 with P0 and names its source", () => {
     }
     return compareIssueSort(left.issueSort, right.issueSort);
   });
-  expect(sorted.map(({ pr }) => pr.issue), "PR list's Issue sort order").toEqual([
-    "ACME-1", "ACME-2", "ACME-3",
-  ]);
+  expect(
+    sorted.map(({ pr }) => pr.issue),
+    "PR list's Issue sort order"
+  ).toEqual(["ACME-1", "ACME-2", "ACME-3"]);
   expect(sorted[1]?.issueLabel, "PR list's Issue cell for the inherited P0").toBe(
     "ACME-2 · P0 · from ACME-1"
   );

@@ -645,7 +645,13 @@ test.each([
     blocked_by: [],
     external_links: [],
     claim: null,
-    components: { mode: "inherit" as const, ids: [], unknown: [], reason: null, inherited_from: null },
+    components: {
+      mode: "inherit" as const,
+      ids: [],
+      unknown: [],
+      reason: null,
+      inherited_from: null,
+    },
     created_by: { id: "alice", kind: "user" as const },
     changed: [...change.changed],
   };
@@ -660,5 +666,7 @@ test.each([
     seq: 11,
     type: "issue.updated",
   };
-  expect(eventDescription(event), "issue activity line for the inherited-priority change").toEqual([line]);
+  expect(eventDescription(event), "issue activity line for the inherited-priority change").toEqual([
+    line,
+  ]);
 });

@@ -200,7 +200,11 @@ function renderControl({
   page = false,
   variant,
   seed = details,
-}: { page?: boolean; variant?: "header"; seed?: IssueDetails } = {}) {
+}: {
+  page?: boolean;
+  variant?: "header";
+  seed?: IssueDetails;
+} = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -231,16 +235,25 @@ test.each(["badge", "header"] as const)(
   "the %s priority control draws the resolved priority and writes the issue's own",
   async (variant) => {
     const options = variant === "header" ? { page: true, variant } : {};
-    const own = renderControl({ ...options, seed: { ...details, priority: 2, resolved_priority: 2 } });
+    const own = renderControl({
+      ...options,
+      seed: { ...details, priority: 2, resolved_priority: 2 },
+    });
     try {
       expect(screen.getByText("P2", { selector: "span" }), `${variant} own priority`).toBeVisible();
       expect(screen.queryByRole("link"), `${variant} own priority has no source`).toBeNull();
     } finally {
       own.unmount();
     }
-    const none = renderControl({ ...options, seed: { ...details, priority: null, resolved_priority: null } });
+    const none = renderControl({
+      ...options,
+      seed: { ...details, priority: null, resolved_priority: null },
+    });
     try {
-      expect(screen.getByText("Priority", { selector: "span" }), `${variant} unset priority`).toBeVisible();
+      expect(
+        screen.getByText("Priority", { selector: "span" }),
+        `${variant} unset priority`
+      ).toBeVisible();
       expect(select().value, `${variant} unset choice`).toBe("");
       expect(screen.queryByRole("link"), `${variant} unset priority has no source`).toBeNull();
     } finally {

@@ -2219,9 +2219,10 @@ test("the List's Priority column shows the inherited level and links its source"
   const cell = picker.closest("td");
   expect(cell, "List Priority cell for ACME-2").toHaveTextContent("P0 · from ACME-1");
   if (cell === null) throw new Error("List Priority cell missing");
-  expect(within(cell).getByRole("link", { name: "ACME-1" }), "List Priority source").toHaveAttribute(
-    "href", "/issues/ACME-1"
-  );
+  expect(
+    within(cell).getByRole("link", { name: "ACME-1" }),
+    "List Priority source"
+  ).toHaveAttribute("href", "/issues/ACME-1");
 });
 
 test("the List sorts an inherited P0 with its own P0s, above P2", async () => {

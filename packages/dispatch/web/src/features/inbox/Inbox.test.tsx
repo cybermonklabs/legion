@@ -2637,11 +2637,15 @@ test("the Inbox ask and Reply tags show P0 and give the source in their name and
   try {
     await threads.land([inheritedReply]);
     await screen.findByText("Root", { exact: true });
-    expect(headings(), "Inbox priority band for the own P0, inherited ask and Reply").toContain("P0 (3)");
+    expect(headings(), "Inbox priority band for the own P0, inherited ask and Reply").toContain(
+      "P0 (3)"
+    );
     for (const id of ["child", "reply:child-thread"]) {
       const tag = within(shortRow(id)).getByTitle("P0, from ACME-1");
       expect(tag, `Inbox ${id} priority tag text`).toHaveTextContent(/^P0$/);
-      expect(tag, `Inbox ${id} priority tag accessible name`).toHaveAccessibleName("P0, from ACME-1");
+      expect(tag, `Inbox ${id} priority tag accessible name`).toHaveAccessibleName(
+        "P0, from ACME-1"
+      );
     }
   } finally {
     unmount();
@@ -2695,11 +2699,15 @@ test("a resolved-priority issue event moves an Inbox ask to its new priority ban
       refreshQueries(queryClient, eventRefreshTargets(event, "alice"));
     });
     await waitFor(() =>
-      expect(headings(), "Inbox priority band after the resolved-priority event").toContain("P1 (1)")
+      expect(headings(), "Inbox priority band after the resolved-priority event").toContain(
+        "P1 (1)"
+      )
     );
     expect(before, "Inbox priority band before the event").toContain("P0 (1)");
     expect(headings(), "Inbox's former priority band after the event").not.toContain("P0 (1)");
-    expect(shortRow("child"), "Inbox ask after its issue's priority change").toHaveTextContent("Child question");
+    expect(shortRow("child"), "Inbox ask after its issue's priority change").toHaveTextContent(
+      "Child question"
+    );
     expect(getInbox, "Inbox read prompted by the event").toHaveBeenCalled();
   } finally {
     unmount();

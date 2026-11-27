@@ -198,7 +198,9 @@ test("the issue preview card shows the inherited P0 and links its source", async
       screen.getByRole("link", { name: "second" }).focus();
     });
     const card = screen.getByRole("tooltip");
-    await waitFor(() => expect(card, "issue preview loaded its issue").toHaveTextContent("Second target"));
+    await waitFor(() =>
+      expect(card, "issue preview loaded its issue").toHaveTextContent("Second target")
+    );
     expect(card, "issue preview priority").toHaveTextContent("P0 · from ACME-1");
     expect(
       card.querySelector('a[href="/issues/ACME-1"]'),

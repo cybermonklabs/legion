@@ -23,7 +23,13 @@ import { ApiError, api, NetworkError } from "../../api/client";
 import { eventRefreshTargets } from "../../api/event-refresh";
 import { boardMoveMutationKey } from "../../api/queries";
 import { refreshQueries } from "../../api/query-refresh";
-import type { DispatchEvent, Issue, IssueSummary, StatusChangeAnswer, UserState } from "../../api/types";
+import type {
+  DispatchEvent,
+  Issue,
+  IssueSummary,
+  StatusChangeAnswer,
+  UserState,
+} from "../../api/types";
 import {
   answerStatusChanges,
   fixtureAnswer,
@@ -574,7 +580,11 @@ test("picking P1 on an inherited P0 board card gives it its own P1 before the an
     const before = card.textContent;
     await user.selectOptions(priorityPicker(), "1");
     await waitFor(() =>
-      expect(patchIssue, "board pick PATCH").toHaveBeenCalledWith("CORE-1", { priority: 1 }, keyedAttempt)
+      expect(patchIssue, "board pick PATCH").toHaveBeenCalledWith(
+        "CORE-1",
+        { priority: 1 },
+        keyedAttempt
+      )
     );
     expect(
       within(priorityCard()).queryByText("P1", { selector: "span" }),
@@ -601,7 +611,11 @@ test("clearing an own P2 on the board keeps P2 pending until the answer says it 
     await screen.findByRole("article", { name: "CORE-1 Plan the work" });
     await user.selectOptions(priorityPicker(), "");
     await waitFor(() =>
-      expect(patchIssue, "board clear PATCH").toHaveBeenCalledWith("CORE-1", { priority: null }, keyedAttempt)
+      expect(patchIssue, "board clear PATCH").toHaveBeenCalledWith(
+        "CORE-1",
+        { priority: null },
+        keyedAttempt
+      )
     );
     expect(
       within(priorityCard()).queryByText("P2", { selector: "span" })?.textContent,
@@ -619,7 +633,10 @@ test("clearing an own P2 on the board keeps P2 pending until the answer says it 
     const p0 = screen.getByRole("region", { name: "P0 lane" });
     const inherited = await within(p0).findByRole("article", { name: "CORE-1 Plan the work" });
     expect(inherited, "board badge after the clear answers").toHaveTextContent("P0 · from ACME-1");
-    expect(priorityPicker().closest('[aria-busy="true"]'), "board picker is no longer pending").toBeNull();
+    expect(
+      priorityPicker().closest('[aria-busy="true"]'),
+      "board picker is no longer pending"
+    ).toBeNull();
   } finally {
     cleanup();
     patchIssue.mockRestore();
@@ -629,7 +646,13 @@ test("clearing an own P2 on the board keeps P2 pending until the answer says it 
 test("a resolved-priority event moves the board card to P1 with its source and sends no write", async () => {
   const patchIssue = answerIssuePatches();
   const list = [priorityChild];
-  const { cleanup, listIssues, queryClient } = renderBoard({}, undefined, list, "/projects/CORE", true);
+  const { cleanup, listIssues, queryClient } = renderBoard(
+    {},
+    undefined,
+    list,
+    "/projects/CORE",
+    true
+  );
   try {
     await screen.findByRole("article", { name: "CORE-1 Plan the work" });
     const laneSelector = 'section[aria-label$=" lane"]';
@@ -688,15 +711,26 @@ test("a refused board priority pick restores the inherited P0 and offers Retry",
     await screen.findByRole("article", { name: "CORE-1 Plan the work" });
     await user.selectOptions(priorityPicker(), "1");
     await waitFor(() =>
-      expect(patchIssue, "refused board pick PATCH").toHaveBeenCalledWith("CORE-1", { priority: 1 }, keyedAttempt)
+      expect(patchIssue, "refused board pick PATCH").toHaveBeenCalledWith(
+        "CORE-1",
+        { priority: 1 },
+        keyedAttempt
+      )
     );
     await act(async () => {
       save.reject(new ApiError(403, { code: "FORBIDDEN", error: "write refused" }));
     });
     const alert = await within(priorityCard()).findByRole("alert");
-    expect(alert, "board priority refusal line").toHaveTextContent("Could not update the priority of CORE-1.");
-    expect(within(alert).getByRole("button", { name: "Retry" }), "board priority refusal Retry").toBeEnabled();
-    expect(priorityCard(), "board badge restored after refusal").toHaveTextContent("P0 · from ACME-1");
+    expect(alert, "board priority refusal line").toHaveTextContent(
+      "Could not update the priority of CORE-1."
+    );
+    expect(
+      within(alert).getByRole("button", { name: "Retry" }),
+      "board priority refusal Retry"
+    ).toBeEnabled();
+    expect(priorityCard(), "board badge restored after refusal").toHaveTextContent(
+      "P0 · from ACME-1"
+    );
   } finally {
     cleanup();
     patchIssue.mockRestore();

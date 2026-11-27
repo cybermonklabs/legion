@@ -364,9 +364,10 @@ test("the Details Priority row shows the inherited P0 and links to its source", 
   try {
     const row = await waitFor(() => detailsRow(PROPERTY_LABELS.priority));
     expect(row, "Details Priority row").toHaveTextContent("P0 · from ACME-1");
-    expect(within(row).getByRole("link", { name: "ACME-1" }), "Details Priority source").toHaveAttribute(
-      "href", "/issues/ACME-1"
-    );
+    expect(
+      within(row).getByRole("link", { name: "ACME-1" }),
+      "Details Priority source"
+    ).toHaveAttribute("href", "/issues/ACME-1");
   } finally {
     unmount();
     api.restore();

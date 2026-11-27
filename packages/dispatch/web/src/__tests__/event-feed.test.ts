@@ -639,21 +639,22 @@ const rules: Record<string, Rule> = {
         "steps",
       ],
     },
-  "a resolved_priority-only issue event refreshes its detail, Inbox ask rows and Inbox thread rows": {
-    event: event(
-      "issue.updated",
-      issue({
-        ancestors: ["CORE-0", "CORE-00"],
-        changed: ["resolved_priority"],
-        priority: null,
-        resolved_priority: 0,
-        priority_from: "CORE-0",
-      }),
-      { notify: false }
-    ),
-    refreshes: ["detail", "inbox", "inboxThreads"],
-    spares: ["unrelatedDetail", "otherProjectList"],
-  },
+  "a resolved_priority-only issue event refreshes its detail, Inbox ask rows and Inbox thread rows":
+    {
+      event: event(
+        "issue.updated",
+        issue({
+          ancestors: ["CORE-0", "CORE-00"],
+          changed: ["resolved_priority"],
+          priority: null,
+          resolved_priority: 0,
+          priority_from: "CORE-0",
+        }),
+        { notify: false }
+      ),
+      refreshes: ["detail", "inbox", "inboxThreads"],
+      spares: ["unrelatedDetail", "otherProjectList"],
+    },
   "a priority_from-only issue event refreshes the Inbox rows that name the new source": {
     event: event(
       "issue.updated",
