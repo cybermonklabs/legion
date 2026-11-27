@@ -1353,9 +1353,9 @@ test("the same move with a place the held read holds sends no next-page read", a
     await act(async () => {
       await writes().move(PAGED, "outdent");
     });
-    await waitFor(() => expect(reads.cursors, `the reads after ${after}`).toEqual(expected));
+    await waitFor(() => expect(reads.cursors, `the reads after ${after}`).toEqual([...expected]));
     await waitInAct(50);
-    expect(reads.cursors, `a read more after ${after}`).toEqual(expected);
+    expect(reads.cursors, `a read more after ${after}`).toEqual([...expected]);
     view.unmount();
   }
 });
