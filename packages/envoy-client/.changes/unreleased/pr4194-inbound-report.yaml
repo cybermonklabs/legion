@@ -1,0 +1,30 @@
+kind: Fixed
+body: |-
+  The inbound outage report, `inboundUnavailable`, tells a session that it receives nothing only
+  when that is so, and tells it when it receives again. `registerWithRelay` now reports a
+  registration with no relay subject apart from a refusal (`InboundUnavailable.noRelay`). Until
+  the session's first accepted registration, such an outage is held: it is told once only when
+  `INBOUND_FIRST_OPEN_BOUND_MS` (two minutes) has passed since the first one, so a relay that
+  opens on a later try at the pod's start tells nothing. The first registration of that hold goes
+  at once to the new `held` option, with why the relay subject could not be opened (the
+  `relayMissing` that `registerWithRelay` takes, which it passes on as `noRelay`'s second
+  argument), so a host can log it while the notice waits. A
+  refusal with a reason is told at once, as before (the bus-outage 503 is held, as
+  `pr4194-unrecorded-registration.yaml` says), and so is a lost relay subject after the first
+  accepted registration. The first registration accepted after a told outage calls the
+  `restored` option once, which is now a field of the options object and takes the outage that
+  was told (`InboundOutage`: its `kind` and its `why`); `inboundRestoredNoticeText(kind)` words
+  it, so after a bus-outage 503 the notice says that the listener recorded the registration. Once
+  the new `stopping` option answers true, the
+  report tells the session nothing and calls no `held`, since a stopping session closes its own
+  relay and its record is deleted next. `inboundUnavailable` takes
+  `{ now, firstOpenBoundMs, restored, held, stopping }` as its second argument.
+  `registerWithRelay` takes a new `stopping` option too: once it answers true, it sends nothing
+  again, drops no topic and tells nothing, also after an edge listener's project 403 (the
+  refusal goes to the outage report, which tells nothing once its own `stopping` answers true).
+  On the listener's relay socket, a refusal of the session's own relay subject is told at once
+  through the socket's outage hook; only a first socket open that has not succeeded within its
+  bound reaches the hold.
+time: 2026-11-17T03:00:15Z
+custom:
+    Issue: pr4194

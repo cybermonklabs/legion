@@ -48,15 +48,6 @@ export function scrubbedLogger<T extends object>(logger: T): T {
   return scrubbingMethods(logger, LOG_METHODS);
 }
 
-/** The process's console, scrubbing every text and error it is handed; Bun's console writes past
- *  any stream wrapper, so the extension's own console prints go through this. */
-export const scrubbedConsole: Pick<Console, "warn" | "error" | "log" | "info"> = {
-  warn: (...args: unknown[]) => console.warn(...args.map(scrubbedArgument)),
-  error: (...args: unknown[]) => console.error(...args.map(scrubbedArgument)),
-  log: (...args: unknown[]) => console.log(...args.map(scrubbedArgument)),
-  info: (...args: unknown[]) => console.info(...args.map(scrubbedArgument)),
-};
-
 /** One scrubbing view per host context, so a context the extension keeps is one object. */
 const VIEWS = new WeakMap<object, object>();
 

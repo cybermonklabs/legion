@@ -31,7 +31,9 @@ const redeliveryPace = time.Second
 // the first sweep that finds the client connected, not here: the client connects in the background
 // (serverBus), and a bus that is down at boot must not stop the boot. A sweep before then is
 // skipped and logged as failed. Its App client and its own backoff obey the GitHub rate limits
-// every process shares, in the database's github_rate_limits.
+// every process shares, in the database's github_rate_limits. The client counts no call for the
+// rate reading: every call the sweep makes is the App's JWT's, which GitHub charges to no
+// installation.
 func webhookSweeper(natsClient *bus.Client, database *store.Store, app *auth.AppConfig, apiBase string, replicas int) (*redeliver.Sweeper, error) {
 	if natsClient == nil {
 		return nil, nil
