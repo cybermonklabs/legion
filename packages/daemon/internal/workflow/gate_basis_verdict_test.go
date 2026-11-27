@@ -20,6 +20,7 @@ import (
 // actor. A read of a closed request that carries no read of its close is no read the seed makes,
 // and an error.
 func TestTheVerdictAsksTheAncestorsLeaveWhereNothingElseDecides(t *testing.T) {
+	t.Parallel()
 	gate := record.PendOnBasis(record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 4}, *pendingBasis(), "ask-100")
 	nobody := dispatch.Approval{IssueKey: basisAncestor, State: "approved", LatestVersion: 4, Version: new(4), At: basisApprovedAt.Add(24 * time.Hour), Seq: 60}
 	done, unlabelled := intake.AncestorRead{Status: record.DoneStatus, HandedOver: true}, intake.AncestorRead{Status: "in_progress"}

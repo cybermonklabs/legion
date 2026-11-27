@@ -309,6 +309,7 @@ func stateIssue() record.Issue {
 // message carries the store's one id (record.StatePublication.StateID), the id GET
 // /legion/v1/state serves as `daemon.stateId`.
 func TestStateEventsArePublishedOnTheProjectsStateSubjectInSequence(t *testing.T) {
+	t.Parallel()
 	r := newStateRig(t)
 	topic := notify.StateTopic("legion")
 	if topic != "notifications.legion.legion.state" {
@@ -472,6 +473,7 @@ func TestStateEventsArePublishedOnTheProjectsStateSubjectInSequence(t *testing.T
 // goes out as consecutive messages, split between its events, each under the bound and with no
 // gap between them.
 func TestTheStateEventsOfOneTransactionArePublishedAsOneMessage(t *testing.T) {
+	t.Parallel()
 	t.Run("a slot released and granted again and a phase moved", func(t *testing.T) {
 		r := newStateRig(t)
 		issue := stateIssue()
@@ -774,6 +776,7 @@ func decodedJSON(t *testing.T, raw json.RawMessage) any {
 // own handlers: a slot a tick grants, a rank a Dispatch event moves and a blocker link a Dispatch
 // event adds. Each change publishes one admission event, whose block is not the one before it.
 func TestTheAdmissionEventCarriesTheBlockTheStateServes(t *testing.T) {
+	t.Parallel()
 	const run, first, second, blocker = "LEGION-100", "LEGION-101", "LEGION-102", "LEGION-199"
 	for _, tc := range []struct {
 		name   string

@@ -36,8 +36,8 @@ import (
 // A repository cache is the third kind of Sandbox the runtime makes, beside the issue pods and the
 // controller's (podKind) and the image probe: one per repository of the cache set
 // (Options.CacheRepositories), holding a bare clone on a volume of its own and serving it to the
-// issue pods' fetch containers (internal/repocache). It is no claim: nothing registers on the
-// worker stream for it, no claim.Token names it, and `legion state` lists it under the
+// issue pods' workspace-init containers (internal/repocache). It is no claim: nothing registers on
+// the worker stream for it, no claim.Token names it, and `legion state` lists it under the
 // repositories. Every place that lists the project's Sandboxes tells a cache apart by its marker
 // label (labelCache) before anything else, as each does the probe.
 
