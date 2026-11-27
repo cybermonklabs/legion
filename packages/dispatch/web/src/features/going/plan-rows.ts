@@ -111,6 +111,7 @@ const FIELD_WORDS: Readonly<Record<string, string>> = {
   status: PROPERTY_LABELS.status,
   title: PROPERTY_LABELS.title,
   urgency: "Urgency",
+  url: "URL",
 };
 
 /** A field as the row names it: "Priority", "Labels", "Blocked by". */
@@ -1105,20 +1106,32 @@ export interface RowOutcome {
  *  answered (R6): nothing restores a deleted post (going_undo.go `goingDeletedNotUndone`). */
 const DELETED_NOT_UNDONE = "Deleted, not undone";
 
+/** What a record of a deploy says once it ran, and once its run's Undo answered (R6): no route
+ *  removes a deploy's record (going_undo.go `goingRecordedNotUndone`). */
+const RECORDED_NOT_UNDONE = "Recorded, not undone";
+
+/** What a change of `tool` that Dispatch does not undo says once it ran and once its run's Undo
+ *  answered, where that is not a message's "Sent, not undone" (going_undo.go
+ *  `goingNotUndoneWords`): a delete of a post, and a record of a deploy; undefined for any other
+ *  tool. */
+function keptWords(tool: string): string | undefined {
+  if (postToolOf(tool)?.deletes === true) return DELETED_NOT_UNDONE;
+  return tool === "dispatch_deploy" ? RECORDED_NOT_UNDONE : undefined;
+}
+
 /**
  * What a row that no longer waits says (design v2, state 7; R4, R6, R7): a message row its
  * result, "Sent", "Queued: …" or "Refused: ‹the reason›"; a delete of a post that ran, "Deleted,
- * not undone"; a failed row its reason in words; a row skipped because a change it needs did not
- * run, "Not run: it needs the change above"; an unticked row, "Not run: you left it unticked". Any
- * other row that waits its turn, runs or ran says nothing past its mark. Undefined where it says
- * nothing.
+ * not undone", and a record of a deploy that ran, "Recorded, not undone"; a failed row its reason
+ * in words; a row skipped because a change it needs did not run, "Not run: it needs the change
+ * above"; an unticked row, "Not run: you left it unticked". Any other row that waits its turn,
+ * runs or ran says nothing past its mark. Undefined where it says nothing.
  */
 export function rowOutcome(row: GoingPlanRow): RowOutcome | undefined {
   const delivery = rowKind(row) === "message" ? deliveryResult(row) : undefined;
   if (delivery !== undefined) return { failed: row.state === "failed", text: delivery };
-  if (row.state === "done" && postToolOf(row.tool)?.deletes === true) {
-    return { failed: false, text: DELETED_NOT_UNDONE };
-  }
+  const kept = row.state === "done" ? keptWords(row.tool) : undefined;
+  if (kept !== undefined) return { failed: false, text: kept };
   switch (row.state) {
     case "failed": {
       const reason = rowResultMessage(row);
@@ -1150,11 +1163,10 @@ export function keptValue(
 
 /** What became of a row's change once its run was undone (design v2, state 7; R6), where no field
  *  of it was kept as another writer left it: "Reverted", "Sent, not undone" for a message,
- *  "Deleted, not undone" for a delete of a post, or why it could not be reverted. */
+ *  "Deleted, not undone" for a delete of a post, "Recorded, not undone" for a record of a deploy,
+ *  or why it could not be reverted. */
 export function undoWords(line: GoingUndoLine): string {
-  if (line.undo === "not_undone") {
-    return postToolOf(line.tool)?.deletes === true ? DELETED_NOT_UNDONE : "Sent, not undone";
-  }
+  if (line.undo === "not_undone") return keptWords(line.tool) ?? "Sent, not undone";
   return line.outcome.ok ? "Reverted" : `Not reverted: ${line.outcome.message}`;
 }
 
@@ -1190,6 +1202,12 @@ const WAIT_REASONS: Readonly<Record<string, string>> = {
   result: "it records a check result in your name",
   review: "it gives a review in your name",
   setting: "it changes a setting of Dispatch",
+};
+
+/** What a row of a tool records in the person's name where that is no check result, which the
+ *  words of its class `result` name (`WAIT_REASONS`): a deploy's record. */
+const RECORD_WAITS: Readonly<Record<string, string>> = {
+  dispatch_deploy: "it records a deploy in your name",
 };
 
 /** Why Auto-review never runs a row of a class it does not let through (going_modes.go
@@ -1230,7 +1248,9 @@ export function reviewWords(plan: GoingPlanAnswer, row: GoingPlanRow): string | 
       return undefined;
   }
   const reasons = (row.waits ?? [])
-    .map((reason) => WAIT_REASONS[reason])
+    .map(
+      (reason) => (reason === "result" ? RECORD_WAITS[row.tool] : undefined) ?? WAIT_REASONS[reason]
+    )
     .filter((reason): reason is string => reason !== undefined);
   if (reasons.length > 0) return `Waits for you: ${reasons.join("; ")}`;
   if (AUTO_REVIEW_CLASSES[row.class] !== true) {

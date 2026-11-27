@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 )
@@ -77,6 +78,7 @@ var goingRuleBreaks = map[string]struct {
 	"dispatch_review":           {map[string]any{"issue": "DSP-1", "version": 2, "verdict": "changes_requested"}, ""},
 	"dispatch_result": {map[string]any{"retract": "01234567-0000-4000-8000-000000000001", "reason": "Recorded at the wrong commit.", "issue": "DSP-1"},
 		"retract takes reason alone, and this call also carries issue. Retract the result, then record a new one with a call of its own."},
+	"dispatch_deploy": {map[string]any{"repo": "widgets", "program": "worker", "commit": strings.Repeat("a", 40)}, "repo must be owner/repo"},
 	"dispatch_artifact": {map[string]any{"issue": "DSP-1", "name": "rows.jsonl", "content": "{}"},
 		`a document holds Markdown, which rewrites other text (a JSONL file's lines come back joined into one paragraph), and "rows.jsonl" is not a Markdown name. ` +
 			"Upload the file under the same name with path (--path <file>), which stores a file whose path does not end in .md or .markdown as its bytes, unchanged; " +
@@ -230,6 +232,26 @@ func TestEachPortedRuleRefusesThePartACallBreaks(t *testing.T) {
 		{"a blank reply", "dispatch_reply_comment_delivery", map[string]any{"comment": "c", "attempt": 1, "body": " "}, "body is blank."},
 		{"an error answering a block", "dispatch_reply_comment_delivery", map[string]any{"comment": "c", "attempt": 1, "error": "Busy.", "reply_to_block": "b"},
 			"reply_to_block names the block a body answers, and an error has none."},
+		{"a deploy of a program in capitals", "dispatch_deploy", map[string]any{"repo": "acme/widgets", "program": "Worker", "commit": strings.Repeat("a", 40)},
+			"program must be 1 to 64 lowercase letters, digits or hyphens"},
+		{"a deploy of a short commit", "dispatch_deploy", map[string]any{"repo": "acme/widgets", "program": "worker", "commit": "abc1234"},
+			"commit must be 40 lowercase hexadecimal characters"},
+		{"a deploy at a time with no zone", "dispatch_deploy",
+			map[string]any{"repo": "acme/widgets", "program": "worker", "commit": strings.Repeat("a", 40), "deployed_at": "2026-11-20T10:00:00"},
+			"deployed_at must be RFC3339"},
+		{"a deploy in a month no year has", "dispatch_deploy",
+			map[string]any{"repo": "acme/widgets", "program": "worker", "commit": strings.Repeat("a", 40), "deployed_at": "2026-13-01T10:00:00Z"},
+			"deployed_at must be RFC3339"},
+		{"a deploy on a day its month has not", "dispatch_deploy",
+			map[string]any{"repo": "acme/widgets", "program": "worker", "commit": strings.Repeat("a", 40), "deployed_at": "2026-02-30T10:00:00Z"},
+			"deployed_at must be a valid calendar date"},
+		{"a deploy an hour ahead", "dispatch_deploy",
+			map[string]any{"repo": "acme/widgets", "program": "worker", "commit": strings.Repeat("a", 40), "deployed_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)},
+			"deployed_at must not be more than five minutes in the future"},
+		{"a deploy at a past time in an offset, with its URL", "dispatch_deploy",
+			map[string]any{"repo": "acme/widgets", "program": "worker", "commit": strings.Repeat("a", 40), "deployed_at": "2026-02-28T23:30:00.25+01:00",
+				"url": "https://widgets.example.com"},
+			""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := goingToolRules[tc.tool](tc.call, ruleOf[tc.tool]); got != tc.refusal {

@@ -1005,6 +1005,63 @@ test("a delete of a post that ran, and its Undo line, read Deleted, not undone",
   ).toBe("Undone · 1 change reverted");
 });
 
+/** A record of a deploy of acme/widgets' worker at a commit of d's, with `args`, as the plan reads
+ *  it beside the program's current deploy, at a commit of c's with no URL
+ *  (going_observe.go `deployRecorded`). */
+function deploy(number: number, args: Record<string, unknown> = {}): GoingPlanRow {
+  return row(number, {
+    arguments: { commit: "d".repeat(40), program: "worker", repo: "acme/widgets", ...args },
+    class: "result",
+    fields: ["commit", "url"],
+    now: { commit: "c".repeat(40), url: "" },
+    tool: "dispatch_deploy",
+    waits: ["result"],
+  });
+}
+
+// The architect's ruling on dispatch_deploy: a record of a deploy is a row of the plan that names
+// the repository and the program, and shows the commit and, where the call names one, the URL it
+// records beside the program's current deploy; it waits in Auto-review as the person's own record,
+// and once it ran, and in its Undo line, it reads "Recorded, not undone", as R6 names a message
+// "Sent, not undone": no route removes a deploy's record.
+test("a record of a deploy shows what it records, and reads Recorded, not undone once it ran and in its Undo line", () => {
+  const reads = (planned: GoingPlanRow) => [
+    rowLabel(planned),
+    ...rowChanges(planned, undefined, new Map()).map(
+      (change) =>
+        `${fieldWords(change.field)}: ${valueWords(change.field, change.now)} → ${valueWords(change.field, change.next)}`
+    ),
+  ];
+  const linked = deploy(0, { url: "https://worker.example.com" });
+  expect([reads(linked), reads(deploy(1))]).toEqual([
+    [
+      "Record the deploy of worker in acme/widgets",
+      `Commit: ${"c".repeat(40)} → ${"d".repeat(40)}`,
+      "URL: None → https://worker.example.com",
+    ],
+    [
+      "Record the deploy of worker in acme/widgets",
+      `Commit: ${"c".repeat(40)} → ${"d".repeat(40)}`,
+    ],
+  ]);
+  expect(reviewWords({ ...plan, mode: "auto_review" }, linked)).toBe(
+    "Waits for you: it records a deploy in your name"
+  );
+  expect(rowOutcome({ ...linked, state: "done" })).toEqual({
+    failed: false,
+    text: "Recorded, not undone",
+  });
+  expect(rowOutcome({ ...linked, state: "running" })).toBeUndefined();
+  expect(undoWords(undoLine({ tool: "dispatch_deploy", undo: "not_undone" }))).toBe(
+    "Recorded, not undone"
+  );
+  // A message stays sent, not undone, once it ran and in its Undo line.
+  expect(rowOutcome({ ...message(2), state: "done" })).toBeUndefined();
+  expect(undoWords(undoLine({ tool: "dispatch_message", undo: "not_undone" }))).toBe(
+    "Sent, not undone"
+  );
+});
+
 test("Undo's answer names a kept value as data, and a message sent, not undone", () => {
   expect(
     keptValue({

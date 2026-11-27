@@ -6,8 +6,10 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -1563,6 +1565,111 @@ func TestADeleteOfAPostIsNotUndone(t *testing.T) {
 			never(t, run, "after Undo")
 		})
 	}
+}
+
+// TestADeployRecordWaitsAndIsNotUndone (the architect's ruling on dispatch_deploy, R5, R6, R12): a
+// run's record of a deploy is a row of its plan that waits for the person in Auto-review, as a
+// check result does, and reads the commit and the URL it records beside the program's current
+// deploy, with nothing sent. Once approved it lands POST /api/v1/deploys with the call's body, the
+// command's own print flag (json) left out, and the record is the program's current deploy. Undo
+// names it "recorded, not undone", sends nothing, and the run counts it in no count.
+func TestADeployRecordWaitsAndIsNotUndone(t *testing.T) {
+	t.Parallel()
+	rig := newGoingPlanRig(t)
+	current, recorded := strings.Repeat("c", 40), strings.Repeat("d", 40)
+	rig.fixture(t, "alice", http.MethodPost, "/api/v1/deploys", map[string]any{"repo": "acme/arch", "program": "worker", "commit": current})
+	body := map[string]any{"repo": "acme/arch", "program": "worker", "commit": recorded, "url": "https://worker.example.com"}
+	call := maps.Clone(body)
+	call["json"] = true
+	const words = "record the worker's deploy"
+	rig.loop.script.set(words, func(n int) agenttest.Reply {
+		switch n {
+		case 1:
+			return proposing(goingChange("dispatch_deploy", call))
+		case 2:
+			return toolCall(toolReviewPlanName, map[string]any{"asked": []int{0}})
+		}
+		return answered("The worker's deploy is recorded.")
+	})
+	var mu sync.Mutex
+	var sent [][]byte
+	rig.hooks.set(t, http.MethodPost, "/api/v1/deploys", func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+		read, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read the deploy's body: %v", err)
+		}
+		mu.Lock()
+		sent = append(sent, read)
+		mu.Unlock()
+		r.Body = io.NopCloser(bytes.NewReader(read))
+		inner.ServeHTTP(w, r)
+	})
+	sends := func() [][]byte {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(sent)
+	}
+	currentCommit := func() string {
+		return rig.textOf(t, `select commit_sha from deploys where repo = 'acme/arch' and program = 'worker' order by id desc limit 1`)
+	}
+	never := func(run, when string) {
+		t.Helper()
+		got := decodeBody[goingRun](t, dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/going/runs/"+run, nil, "alice"))
+		if got.Undoable || goingUndoCountsOf(got) != (goingUndoCounts{}) {
+			t.Fatalf("%s the run reads undoable %v, counts %+v; want it never undoable and in no count", when, got.Undoable, goingUndoCountsOf(got))
+		}
+	}
+
+	run := rig.begin(t, goingLoopRun{login: "alice", words: words, mode: goingModeAutoReview})
+	plan := rig.waiting(t, run)
+	if len(plan.Rows) != 1 {
+		t.Fatalf("the plan holds %d rows, want the deploy's", len(plan.Rows))
+	}
+	row := plan.Rows[0]
+	if row.Tool != "dispatch_deploy" || row.State != "waiting" || row.Class != string(goingClassResult) || !slices.Equal(row.Waits, []string{string(goingClassResult)}) {
+		t.Fatalf("the row of %s is %s, of class %s, waiting for %v; want the deploy's row waiting for the person as a %s", row.Tool, row.State, row.Class, row.Waits, goingClassResult)
+	}
+	if want := `{"commit":"` + current + `","url":""}`; !slices.Equal(row.Fields, []string{"commit", "url"}) || !goingJSONEqual(row.Now, json.RawMessage(want)) {
+		t.Fatalf("the row shows the fields %v now %s, want commit and url now %s, the program's current deploy", row.Fields, row.Now, want)
+	}
+	if bodies, commit := sends(), currentCommit(); len(bodies) != 0 || commit != current {
+		t.Fatalf("before the approval the bar sent %d deploys and the current one is %s, want none sent and %s current", len(bodies), commit, current)
+	}
+
+	rig.answer(t, run, "approve", map[string]any{"plan": 1})
+	if record := rig.ended(t, run, time.Minute); record.state != "done" {
+		t.Fatalf("after the person's approval the run ended %s with %q, want done; its calls were told %q", record.state, record.reason, rig.toolResults(t, run))
+	}
+	want, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bodies := sends(); len(bodies) != 1 || !goingJSONEqual(bodies[0], want) {
+		t.Fatalf("the approved row sent %d deploys (%q), want one whose body is %s", len(bodies), bodies, want)
+	}
+	if landed := rig.count(t, `
+		select count(*) from going_landings where run_id = $1::uuid and phase = 'do' and method = 'POST' and path = '/api/v1/deploys'`, run); landed != 1 {
+		t.Fatalf("the run landed %d records of a deploy, want one", landed)
+	}
+	if commit := currentCommit(); commit != recorded {
+		t.Fatalf("after the approval the current deploy is %s, want the recorded %s", commit, recorded)
+	}
+	if plan := rig.plan(t, run); plan.Rows[0].State != "done" {
+		t.Fatalf("after the approval the deploy's row is %s, want done", plan.Rows[0].State)
+	}
+	never(run, "before Undo")
+
+	line := rig.undone(t, run, "dispatch_deploy")[0]
+	if line.Undo != goingUndoNotUndone || line.Outcome != (goingWriteOutcome{OK: true, Status: http.StatusOK, Message: goingRecordedNotUndone}) {
+		t.Fatalf("Undo answered %+v, want %q", line, goingRecordedNotUndone)
+	}
+	if landed := rig.count(t, `select count(*) from going_landings where run_id = $1::uuid and phase = 'undo'`, run); landed != 0 {
+		t.Fatalf("Undo landed %d requests, want none", landed)
+	}
+	if bodies, commit := sends(), currentCommit(); len(bodies) != 1 || commit != recorded {
+		t.Fatalf("after Undo the bar has sent %d deploys and the current one is %s, want the one approved and %s current", len(bodies), commit, recorded)
+	}
+	never(run, "after Undo")
 }
 
 // goingTakesTheCallingSession reports whether every row of the write tool name fills a

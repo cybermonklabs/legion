@@ -108,7 +108,7 @@ function KeptField({ field }: { readonly field: UndoField }): ReactNode {
  * What became of one change once its run was undone, in the person's words (design v2, state 7;
  * R6): each field kept as another writer left it, named with its value now; else "Reverted",
  * "Sent, not undone" for a message, "Deleted, not undone" for a delete of a comment or an issue
- * message, or why it was not reverted.
+ * message, "Recorded, not undone" for a record of a deploy, or why it was not reverted.
  */
 export function UndoResult({ line }: { readonly line: GoingUndoLine }): ReactNode {
   const kept = (line.fields ?? []).filter((field) => !field.ok && field.message !== "");

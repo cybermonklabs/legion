@@ -1670,6 +1670,13 @@ func goingTranslateResultRecord(_ context.Context, _ goingReader, call goingCall
 		"failed", "skipped", "excluded", "screenshots")}, nil
 }
 
+// goingTranslateDeploy sends the deploy's own fields, each under the name its route reads it by.
+// json, which has the `dispatch` command print the route's whole answer, is the command's own and
+// no member of the route's body: the row shows what the route answered.
+func goingTranslateDeploy(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
+	return goingCall{path: call.path, body: goingPick(call.arguments, "repo", "program", "commit", "deployed_at", "url")}, nil
+}
+
 // goingTranslateUpload uploads the call's own content as a document of the issue or the project,
 // as the JSON form of the route takes it (goingUnsendable refused a call naming a file to read it
 // from, or no content, before the translation). `force` is no field of the route's: every upload

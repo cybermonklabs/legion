@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  The command bar offers `dispatch_deploy`, the record of the build a program runs, as a row of a
+  run's plan, and `going.UnofferedTools` no longer leaves it out. The row is named by the
+  repository and the program, shows the commit and the URL it records beside the program's
+  current deploy as `GET /api/v1/deploys` reads it, and waits for the person in Ask and in
+  Auto-review, as a check result does. Once approved it sends `POST /api/v1/deploys` with the
+  deploy's own fields, without the command line's `json`. No route removes a deploy's record, so
+  Undo names it "recorded, not undone" and sends nothing.

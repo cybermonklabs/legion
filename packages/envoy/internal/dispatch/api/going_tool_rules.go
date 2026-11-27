@@ -26,7 +26,9 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -136,6 +138,14 @@ var (
 	goingSourceName  = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 )
 
+// goingDeployRepo is a repository as dispatch_deploy takes one (DEPLOY_REPO), owner/repo; and
+// goingDeployTime a time as it takes one (DEPLOY_TIME), RFC 3339 with seconds, any fraction of
+// them and Z or an offset, its date's year, month and day captured.
+var (
+	goingDeployRepo = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+	goingDeployTime = regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$`)
+)
+
 // goingIfBroken is the refusal of a rule whose spec words none of its own: rule where the call
 // broke it (kept false), "" where it kept it.
 func goingIfBroken(kept bool, rule string) string {
@@ -178,6 +188,7 @@ var goingToolRules = map[string]goingToolRule{
 		return goingIfBroken(call["verdict"] != "changes_requested" || strings.TrimSpace(reason) != "", rule)
 	},
 	"dispatch_result":   goingResultProblem,
+	"dispatch_deploy":   goingDeployProblem,
 	"dispatch_artifact": goingArtifactProblem,
 	"dispatch_architecture_sync": func(call goingRuleCall, rule string) string {
 		repo, named := call.text("repo")
@@ -453,6 +464,46 @@ func goingResultProblem(call goingRuleCall, _ string) string {
 	missing := slices.DeleteFunc(slices.Clone(goingResultFields[:goingResultRequired]), call.has)
 	if len(missing) > 0 {
 		return fmt.Sprintf("recording a result needs %s. %s", strings.Join(missing, ", "), goingResultRetractRule)
+	}
+	return ""
+}
+
+// goingDeployProblem is dispatch_deploy's rule (`deployProblem`), the refusal of the first part a
+// call breaks: repo is owner/repo, program 1 to 64 lowercase letters, digits or hyphens
+// (deployProgram), commit 40 lowercase hexadecimal characters (resultCommitSHA), and deployed_at,
+// where the call names it, an RFC 3339 time on a date the calendar holds, at most five minutes
+// ahead of now, as the route refuses one (createDeploy).
+func goingDeployProblem(call goingRuleCall, _ string) string {
+	if repo, named := call.text("repo"); !named || !goingDeployRepo.MatchString(repo) {
+		return "repo must be owner/repo"
+	}
+	if program, named := call.text("program"); !named || !deployProgram.MatchString(program) {
+		return "program must be 1 to 64 lowercase letters, digits or hyphens"
+	}
+	if commit, named := call.text("commit"); !named || !resultCommitSHA.MatchString(commit) {
+		return "commit must be 40 lowercase hexadecimal characters"
+	}
+	if !call.has("deployed_at") {
+		return ""
+	}
+	at, named := call.text("deployed_at")
+	parts := goingDeployTime.FindStringSubmatch(at)
+	if !named || parts == nil {
+		return "deployed_at must be RFC3339"
+	}
+	// A month or a day no month has is no time at all, as the spec's Date.parse reads it; a day
+	// past its own month's end reads there as a day of the next month, which is no calendar date.
+	month, _ := strconv.Atoi(parts[2])
+	day, _ := strconv.Atoi(parts[3])
+	if month < 1 || month > 12 || day < 1 || day > 31 {
+		return "deployed_at must be RFC3339"
+	}
+	deployed, err := time.Parse(time.RFC3339Nano, at)
+	if err != nil {
+		return "deployed_at must be a valid calendar date"
+	}
+	if deployed.After(time.Now().Add(5 * time.Minute)) {
+		return "deployed_at must not be more than five minutes in the future"
 	}
 	return ""
 }

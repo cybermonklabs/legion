@@ -645,7 +645,7 @@ func (items goingSchemaItemsOf) value(s *goingSchemaSeed, tool string) goingSche
 			return fmt.Sprintf("acme/widgets#%d", s.next())
 		case "repo":
 			switch tool {
-			case "dispatch_issue", "dispatch_issue_update", "dispatch_architecture_sync", "dispatch_set_default_repository":
+			case "dispatch_issue", "dispatch_issue_update", "dispatch_architecture_sync", "dispatch_set_default_repository", "dispatch_deploy":
 				return "acme/arch"
 			case "dispatch_save_architecture_source", "dispatch_remove_architecture_source":
 				return "wide"
@@ -715,6 +715,12 @@ func (items goingSchemaItemsOf) value(s *goingSchemaSeed, tool string) goingSche
 			return goingSchemaText("implementer", length)
 		case "commit":
 			return headCommit
+		case "program":
+			return "worker"
+		case "deployed_at":
+			return now.Format(time.RFC3339)
+		case "url":
+			return "https://worker.example.com"
 		case "screenshots[]":
 			return items.image
 		case "retract":

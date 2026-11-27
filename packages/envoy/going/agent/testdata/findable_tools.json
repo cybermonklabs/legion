@@ -656,6 +656,44 @@
     }
   },
   {
+    "name": "dispatch_deploy",
+    "description": "Record a deployed program's build. Dispatch records the credential's writer; the body cannot choose one. A repeat of the current commit changes nothing, including its time. An older time at another commit is DEPLOY_NOT_NEWEST and names the current build. The repository must hold the commit. A project-scoped credential cannot write a deployment-wide fact. --dry-run checks the arguments and sends nothing; --json prints the complete wire answer.",
+    "arguments": {
+      "properties": {
+        "commit": {
+          "description": "The deployed build, 40 lowercase hexadecimal characters.",
+          "type": "string"
+        },
+        "deployed_at": {
+          "description": "The deployment time in RFC3339. Omit it for the server's clock; a time over five minutes ahead is refused.",
+          "type": "string"
+        },
+        "json": {
+          "description": "Print the complete wire answer as JSON.",
+          "type": "boolean"
+        },
+        "program": {
+          "description": "The deployed program, 1 to 64 lowercase letters, digits or hyphens.",
+          "type": "string"
+        },
+        "repo": {
+          "description": "The deployed repository, owner/repo.",
+          "type": "string"
+        },
+        "url": {
+          "description": "The deployment's URL, if it has one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo",
+        "program",
+        "commit"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "name": "dispatch_deploys",
     "description": "Read the current deploy of each program in a repository, in program order, with its commit, deployment time, source and URL. --json prints the complete wire answer, including the writer and a known workflow attempt or null for an unknown attempt.",
     "arguments": {

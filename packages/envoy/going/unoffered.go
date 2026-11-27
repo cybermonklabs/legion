@@ -12,6 +12,5 @@ package going
 // tool spec or prompt the model is given says it.
 var UnofferedTools = map[string]string{
 	"dispatch_api":            "sends generic requests by path; the command bar uses the tool for each route instead",
-	"dispatch_deploy":         "records which build a program runs in production, a fact a deploy reports with `dispatch deploy`; the loop that proposes operations on Dispatch's graph never proposes it",
 	"dispatch_project_update": "turns a project's proven-sessions check on or off, which only the project's roll-out issue does; the loop that proposes operations on Dispatch's graph never proposes it",
 }

@@ -268,6 +268,54 @@ func (o goingObserver) made(_ context.Context, prepared goingPrepared, answer []
 	return goingObservation{target: made, fields: fields, issue: issue, value: map[string]any{"id": made}}, nil
 }
 
+// goingDeployFields are the fields a record of a deploy writes, as its row shows them: the
+// commit and the URL of the program's current deploy. Its label names the repository and the
+// program, which pick that deploy and which the record does not change.
+var goingDeployFields = []string{"commit", "url"}
+
+// goingDeployValue is a program's deploy as the row of a record of one reads it.
+type goingDeployValue struct {
+	Commit string `json:"commit"`
+	URL    string `json:"url"`
+}
+
+// deployRecorded reads, before a record of a deploy, the program's current deploy as the read of
+// its repository's deploys answers it (dispatch_deploys), no value for a program with none, so the
+// row shows the commit and the URL the record takes the place of, and holds its approval to them;
+// and after it the deploy the record's route answered, the one it recorded, or the current one a
+// repeat of its commit left as it was.
+func (o goingObserver) deployRecorded(ctx context.Context, prepared goingPrepared, answer []byte, _ int, _ goingObservation) (goingObservation, error) {
+	observed := goingObservation{fields: slices.Clone(goingDeployFields)}
+	if answer != nil {
+		var recorded struct {
+			Deploy goingDeployValue `json:"deploy"`
+		}
+		if err := json.Unmarshal(answer, &recorded); err != nil {
+			return observed, fmt.Errorf("read the deploy's answer: %w", err)
+		}
+		observed.value = recorded.Deploy
+		return observed, nil
+	}
+	var current struct {
+		Deploys []struct {
+			Program string `json:"program"`
+			Commit  string `json:"commit"`
+			URL     string `json:"url"`
+		} `json:"deploys"`
+	}
+	query := url.Values{"repo": {goingText(prepared.arguments, "repo")}}
+	if err := o.read.get(ctx, "/api/v1/deploys?"+query.Encode(), &current); err != nil {
+		return observed, err
+	}
+	program := goingText(prepared.arguments, "program")
+	for _, deploy := range current.Deploys {
+		if deploy.Program == program {
+			observed.value = goingDeployValue{Commit: deploy.Commit, URL: deploy.URL}
+		}
+	}
+	return observed, nil
+}
+
 // issueUpdated reads the issue's fields the update writes before it, and after it what the
 // update's route answered it found and left.
 func (o goingObserver) issueUpdated(ctx context.Context, prepared goingPrepared, answer []byte, _ int, before goingObservation) (goingObservation, error) {

@@ -31,8 +31,8 @@ const (
 
 // goingClassesThatWait are the classes whose rows wait for the person in both modes: what the
 // person settles in their own name (an approval or a review, an answer to an ask, a kept decision,
-// a check result), a change of a setting of Dispatch, and what reaches a person or a session when
-// it is sent (a message, a broadcast).
+// a check result, a deploy's record), a change of a setting of Dispatch, and what reaches a person
+// or a session when it is sent (a message, a broadcast).
 var goingClassesThatWait = map[goingWriteClass]bool{
 	goingClassReview: true, goingClassAskAnswer: true, goingClassDecision: true, goingClassResult: true,
 	goingClassSetting: true, goingClassMessage: true, goingClassBroadcast: true,

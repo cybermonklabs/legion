@@ -128,7 +128,8 @@ const (
 	// goingUndoNotUndone is a write that stays as it is, named "sent, not undone": one that
 	// reached a person or a session at once (a message, a broadcast, an answer, a review), or one
 	// Dispatch serves no reverse of and whose value before no read keeps. A delete of a comment or
-	// an issue message is named "deleted, not undone": nothing restores a deleted post. Each table
+	// an issue message is named "deleted, not undone": nothing restores a deleted post. A record
+	// of a deploy is named "recorded, not undone": no route removes a deploy's record. Each table
 	// entry of this kind says which, beside it.
 	goingUndoNotUndone goingUndoKind = "not_undone"
 )
@@ -712,6 +713,19 @@ var goingWriteTools = map[string]goingWriteTool{
 		}},
 		Undo: goingUndoNotUndone, Class: goingClassResult, Event: "handoff.recorded", Proposed: true,
 	},
+	// A deploy's record is the build a program runs, which the program's production checks read
+	// their results against from then on, so it is the person's own word, as a check result is,
+	// and waits for them in every mode. No route removes a deploy's record, so it stays, named
+	// recorded, not undone (goingNotUndoneWords). Its row shows the commit and the URL it records
+	// beside the program's current deploy (goingObserver.deployRecorded).
+	"dispatch_deploy": {
+		Routes: []goingToolRoute{{
+			Method: http.MethodPost, Pattern: "/api/v1/deploys", Path: map[string]string{},
+			Translate: goingTranslateDeploy,
+		}},
+		Observe: goingObserver.deployRecorded, Undo: goingUndoNotUndone,
+		Class: goingClassResult, Event: "deploy.recorded",
+	},
 	// The person's own state of one issue. Its route replaces the stored list of the issue's
 	// pinned and dismissed items whole, so the translation reads that state first and sends the
 	// list with the call's items added, under the next seq of the row it read
@@ -1007,8 +1021,6 @@ const (
 	// an option of dispatch_issue_update is written out as one update row for each issue the
 	// option reaches (expandStatusOptions), each with its own landing and its own Undo.
 	goingExcludedStatusChange = "a status change with an option: the bar reaches its outcome through one update row for each issue it reaches"
-	// dispatch_deploy's route (going.UnofferedTools says why the bar offers no tool of it).
-	goingExcludedDeployRecord = "a deploy's record of the build a program runs in production, which a deploy reports with `dispatch deploy`"
 )
 
 // goingExcludedRoutes is every route a person's credential may call that no tool calls, by
@@ -1061,7 +1073,6 @@ var goingExcludedRoutes = map[string]string{
 	"POST /api/v1/issues/{key}/status-change":                       goingExcludedStatusChange,
 	"PUT /api/v1/projects/{key}/proven-sessions":                    goingExcludedProvenSessions,
 	"DELETE /api/v1/projects/{key}/proven-sessions":                 goingExcludedProvenSessions,
-	"POST /api/v1/deploys":                                          goingExcludedDeployRecord,
 	"POST /api/v1/live/_test/disconnect":                            goingExcludedTestHook,
 	"POST /api/v1/live/_test/rotate":                                goingExcludedTestHook,
 	"POST /api/v1/artifacts/_test/quiesce":                          goingExcludedTestHook,

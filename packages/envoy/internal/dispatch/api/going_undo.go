@@ -15,9 +15,9 @@ package api
 //     back, a follow unfollowed, a resolved thread reopened and a reopened one resolved again, an
 //     opened ask retracted, and a suggestion of the run that is still open rejected;
 //   - close_created closes the issue the call created, with no message and no comment;
-//   - not_undone names the call "sent, not undone": a message, a broadcast, a review; and a delete
+//   - not_undone names the call "sent, not undone": a message, a broadcast, a review; a delete
 //     of a comment or an issue message "deleted, not undone", since nothing restores a deleted
-//     post.
+//     post; and a record of a deploy "recorded, not undone", since no route removes one.
 //
 // What a call found and left is read off what its route recorded beside its landing, in the
 // transaction of the change (goingRecordAnswer), never off a read made since, so a run whose
@@ -63,11 +63,19 @@ const goingSentNotUndone = "sent, not undone"
 // nothing restores (goingNotUndoneWords).
 const goingDeletedNotUndone = "deleted, not undone"
 
+// goingRecordedNotUndone is what an undo says of a record of a deploy, which no route removes
+// (goingNotUndoneWords).
+const goingRecordedNotUndone = "recorded, not undone"
+
 // goingNotUndoneWords is what an undo says of a call of tool, whose undo is not_undone: a delete
-// of a post is deleted, not undone, and every other write sent, not undone.
+// of a post is deleted, not undone, a record of a deploy recorded, not undone, and every other
+// write sent, not undone.
 func goingNotUndoneWords(tool string) string {
-	if tool == "dispatch_delete_comment" || tool == "dispatch_delete_message" {
+	switch tool {
+	case "dispatch_delete_comment", "dispatch_delete_message":
 		return goingDeletedNotUndone
+	case "dispatch_deploy":
+		return goingRecordedNotUndone
 	}
 	return goingSentNotUndone
 }
@@ -428,14 +436,15 @@ func (u goingUndoer) undo(ctx context.Context, write goingLandedWrite) goingUndo
 // two never differ. A call that names no row of the run's plan, or whose tool the table no longer
 // holds, is refused, 409 GOING_UNDO_UNKNOWN. A call whose tool states no undo, or of which only
 // the requests it sends before its own landed - a close's reason, a message - is named sent, not
-// undone (a delete of a post deleted, not undone, goingNotUndoneWords): no undo takes a message
-// back or restores a deleted post, and nothing else of the change stands. A call whose route
-// recorded nothing that says what it found and left is refused, 409 GOING_UNDO_AFTER_UNREAD, and
-// one whose route found a value the row's read did not see, 409 GOING_UNDO_BEFORE_UNREAD: nothing
-// is put back. A call its record says changed nothing is undone by nothing (kind), and a kind this
-// server has no way to run for the tool is refused, 501 GOING_UNDO_UNSERVED. Every other call goes
-// on to its tool's undo. Each refusal here leaves the call's change standing (goingStanding); a
-// call named sent, not undone, and one that changed nothing, Undo tries nothing of (goingNotTried).
+// undone (a delete of a post deleted, not undone, and a record of a deploy recorded, not undone,
+// goingNotUndoneWords): no undo takes a message back, restores a deleted post or removes a
+// deploy's record, and nothing else of the change stands. A call whose route recorded nothing
+// that says what it found and left is refused, 409 GOING_UNDO_AFTER_UNREAD, and one whose route
+// found a value the row's read did not see, 409 GOING_UNDO_BEFORE_UNREAD: nothing is put back. A
+// call its record says changed nothing is undone by nothing (kind), and a kind this server has no
+// way to run for the tool is refused, 501 GOING_UNDO_UNSERVED. Every other call goes on to its
+// tool's undo. Each refusal here leaves the call's change standing (goingStanding); a call named
+// sent, not undone, and one that changed nothing, Undo tries nothing of (goingNotTried).
 func (u goingUndoer) plan(ctx context.Context, write goingLandedWrite) goingUndoPlan {
 	line := goingUndoLine{Plan: write.plan, Row: write.row, Tool: write.tool, Undo: goingUndoNotUndone, Item: u.landedItem(write)}
 	tool, held := goingWriteTools[write.tool]
