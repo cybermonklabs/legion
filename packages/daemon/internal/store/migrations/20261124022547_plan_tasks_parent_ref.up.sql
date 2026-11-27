@@ -1,0 +1,25 @@
+-- 20261124022547_plan_tasks_parent_ref.up.sql — the block each task of a plan stands directly
+-- under, as its owner gave it (record's plan.go).
+--
+-- plan_tasks.parent_ref is record.PlanTask.ParentRef: the `parent` attribute of the task's block,
+-- whole, as the version that wrote the task gave it (plan.Task.ParentRef), and '' for a block that
+-- names none. A later version is compared with it (workflow's heldPlan): one that moves a running
+-- task under another block, or adds or removes its parent, is refused, naming the task
+-- (plan.RunningChange). A pin of the same block (`@v<N>`) names no other block, so it is no change.
+--
+-- It back-fills nothing. Every row the upgrade finds takes the default, ''. No release before this
+-- one stored a parent, so each such task reads as a block that names none, and a later version
+-- whose block names none compares equal to it.
+--
+-- The way back of 20261117034837_issue_plans drops plan_tasks, this column with it, so its block
+-- deletes this migration's version row too: its roll forward then runs this file again, which adds
+-- the column again to the table it creates.
+--
+-- A rollback onto the release before this one leaves the column standing, and has no way back of
+-- its own. That release names each column of plan_tasks in every statement it runs (its record's
+-- PutPlan, CarryPlan and planTaskColumns), so it boots with the column in place and reads none of
+-- it. Each task it adds takes the default, and each task it keeps keeps the parent stored for it.
+-- A drop would cost more than it gives: after the roll forward each stored parent would read '',
+-- so a running task whose block names a parent would be refused at its next version, as a parent
+-- added, until its owner stopped it.
+alter table plan_tasks add column parent_ref text not null default '';

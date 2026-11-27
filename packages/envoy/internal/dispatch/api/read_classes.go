@@ -55,12 +55,12 @@ const (
 	asOfAnswers
 	// asOfNoHistory is a row that holds no history: it answers the present only, refuses every
 	// as_of 400 AS_OF_NOT_SERVED (asOfGate), and refuses a read-only token that carries a cut
-	// 403 AS_OF_TOKEN_NOT_SERVED (refuseReadOnlyToken).
+	// 403 AS_OF_TOKEN_NOT_SERVED (refuseLimitedToken).
 	asOfNoHistory
 	// asOfCaller is GET /api/v1/whoami alone (asOfCallerRow): it describes the caller now, the
 	// cut its token carries included, and refuses as_of as a row that holds no history does.
-	// readClassRefusals refuses it on every other row. The read-only gate lets a token that
-	// carries a cut reach such a row (refuseReadOnlyToken), and the as_of gate runs the row with
+	// readClassRefusals refuses it on every other row. The limited-token gate lets a token that
+	// carries a cut reach such a row (refuseLimitedToken), and the as_of gate runs the row with
 	// no cut on its reads (asOfGate), so the row would answer that token with the present.
 	asOfCaller
 )
@@ -150,7 +150,7 @@ func asOfAbsentDescription(name string) string {
 }
 
 // asOfCallerDescription is what GET /api/v1/whoami (asOfCaller) says of as_of and of a read-only
-// token that carries a cut (asOfGate, refuseReadOnlyToken).
+// token that carries a cut (asOfGate, refuseLimitedToken).
 const asOfCallerDescription = "This route describes the caller now and keeps no history. " +
 	"It refuses as_of with 400 " + contracts.DispatchAsOfNotServed + ", except from a read-only token that carries a cut, whose as_of Dispatch does not read. " +
 	"It answers a read-only token that carries a cut, and its cut member names that cut. " +
@@ -159,13 +159,13 @@ const asOfCallerDescription = "This route describes the caller now and keeps no 
 
 // asOfNoHistoryDescription is what a read (readWritesNothing) that holds no history
 // (asOfNoHistory) says of as_of and of a read-only token that carries a cut (asOfGate,
-// refuseReadOnlyToken).
+// refuseLimitedToken).
 const asOfNoHistoryDescription = "This route keeps no history and answers the present only. " +
 	"It refuses as_of with 400 " + contracts.DispatchAsOfNotServed + ", and a read-only token that carries a cut with 403 " +
 	contracts.DispatchAsOfTokenNotServed + "."
 
 // asOfNoHistoryWriteDescription is what a GET that writes (readWritesState), which holds no
-// history (asOfNoHistory), says of as_of and of a read-only token (asOfGate, refuseReadOnlyToken).
+// history (asOfNoHistory), says of as_of and of a read-only token (asOfGate, refuseLimitedToken).
 const asOfNoHistoryWriteDescription = "This route keeps no history and answers the present only. " +
 	"It refuses as_of with 400 " + contracts.DispatchAsOfNotServed + ". " +
 	"As a GET that writes, it refuses every read-only token with 403 " + contracts.DispatchReadOnlyToken + ", a token that carries a cut too."
@@ -229,7 +229,7 @@ const asOfThreadPageAtACut = "At a cut, from as_of or from a token, order is 400
 // class carries, and the as_of kinds, with what each says in a GET route's description
 // (asOfDescription). Which class and which kind a route has is the route's own declaration
 // (routeDecl.Read, one file per route), which routes() answers as apiRoute.Read and the read-only
-// gate and the as_of gate read (refuseReadOnlyToken, asOfGate). The routes of the plan's table
+// gate and the as_of gate read (refuseLimitedToken, asOfGate). The routes of the plan's table
 // "Routes and their kinds" (INFRA-4620) answer as_of (asOfAnswers), GET /api/v1/whoami describes
 // the caller now (asOfCaller), and every other GET route holds no history (asOfNoHistory); each
 // route of kind answers also says what it answers at a cut (AtACut). register refuses to mount a

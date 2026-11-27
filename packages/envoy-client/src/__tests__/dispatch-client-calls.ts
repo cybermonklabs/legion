@@ -27,7 +27,8 @@ const inline = { name: "notes.md", content: "# Notes", actor };
  *  with it, so its read at a cut goes through the same request function. */
 const AT = { asOf: "2026-11-10T12:00:00Z" };
 
-/** One call of each method, with arguments of the shapes it takes; what it answers is not read. */
+/** One call of each method, with arguments of the shapes it takes; what it answers is not read,
+ *  except by the census, which reads each write's answer and not a read's. */
 export const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> = {
   issue: (client) => client.issue({ project: "DSP", title: "A title", actor }),
   resolveIssue: (client) => client.resolveIssue("owner/repo#1", AT),
@@ -37,6 +38,13 @@ export const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unk
   listIssueArtifacts: (client) => client.listIssueArtifacts("DSP-1", AT),
   markdownRoundTrip: (client) => client.markdownRoundTrip("# Notes\n", false),
   fileRoundTrip: (client) => client.fileRoundTrip(new TextEncoder().encode("# Notes\n"), false),
+  recordSpecCheckResult: (client) =>
+    client.recordSpecCheckResult("DSP", {
+      commit: "1".repeat(40),
+      check: "Typecheck",
+      verdict: "pass",
+    }),
+  specCheckResults: (client) => client.specCheckResults("DSP", "1".repeat(40)),
   projectArtifact: (client) => client.projectArtifact("DSP", inline),
   getProjectArtifact: (client) => client.getProjectArtifact("DSP", "notes", AT),
   agentArtifact: (client) => client.agentArtifact("session-1", file),

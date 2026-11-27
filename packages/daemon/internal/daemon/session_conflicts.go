@@ -62,8 +62,8 @@ import (
 // connection, and asking again at each observation until then, and recorded no longer, logged at
 // Error, where the broker refuses the revocation for good, while the process renews it until it
 // stops (revokeUnheld); and the daemon publishes nothing to its Envoy role, whatever the claim's
-// state, or, for the daemon's own controller under `controller: daemon`, to the controller topic,
-// and sends that process no task and no compaction (holdRecorded, ensureEnrolled, outbox.publish,
+// state, the controller's role under `controller: daemon` among them, and sends that process no
+// task and no compaction (holdRecorded, ensureEnrolled, outbox.publish,
 // sendPending, compactStart). The process runs on under the session until it is stopped, and the
 // Envoy listener does not yet withhold the role its session claimed: the daemon could free the
 // role, but the process claims a free role again at its next heartbeat. So a message another

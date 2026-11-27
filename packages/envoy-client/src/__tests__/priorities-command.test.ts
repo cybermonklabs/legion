@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import type { IssueAdvance, Priorities } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { keyedLayer } from "../../test/keyed-layer";
 import { runDispatchCli } from "../dispatch-cli";
 import { commandFlags, fieldFlag } from "../dispatch-command";
 import { resetAdviceMemory } from "../dispatch-execute";
@@ -199,9 +200,10 @@ function issueBody() {
   };
 }
 
+// Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
 const server = Bun.serve({
   port: 0,
-  async fetch(request) {
+  fetch: keyedLayer(async (request: Request) => {
     const { pathname, search, searchParams } = new URL(request.url);
     // Every read command reads whoami first (`whoami-stand-in.ts`); it is not recorded.
     if (asksWhoami(pathname)) return Response.json(WHOAMI_NO_CUT);
@@ -243,7 +245,7 @@ const server = Bun.serve({
       return Response.json({ node: { kind: "issue", id: "DSP-1" }, edges: [], members: [] });
     }
     return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
-  },
+  }),
 });
 
 afterAll(() => server.stop(true));

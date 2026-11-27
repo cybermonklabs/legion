@@ -134,6 +134,7 @@ func (h *harness) dropRecord(pull fakePull) {
 // reads, unmarshals and hashes of records nothing had changed, inside a five-minute bound that
 // already holds about 178 seconds of GitHub's own time. It is k6.
 func TestASecondPassOverUnchangedHeadsWritesNothing(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	pulls := unchangingHeads(h, 5)
@@ -190,6 +191,7 @@ func TestASecondPassOverUnchangedHeadsWritesNothing(t *testing.T) {
 // would be worse than no fingerprint at all: the head would keep the record of a pass before
 // the checks it is waiting on ended, which is the very failure this pass exists to mend.
 func TestAHeadGitHubHasMoreForIsWrittenThroughTheFingerprint(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -243,6 +245,7 @@ func TestAHeadGitHubHasMoreForIsWrittenThroughTheFingerprint(t *testing.T) {
 // fingerprint kept, the next answer would fingerprint the same for ever and the run the record
 // lacks would never reach it.
 func TestAFailedWriteDropsTheHeadsFingerprint(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -291,6 +294,7 @@ func TestAFailedWriteDropsTheHeadsFingerprint(t *testing.T) {
 // long as GitHub's answer about it does not change -- which, for a head whose checks have all
 // finished, is for ever.
 func TestAHeadWhoseRecordHasGoneIsWrittenAgain(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -330,6 +334,7 @@ func TestAHeadWhoseRecordHasGoneIsWrittenAgain(t *testing.T) {
 // rather than passed over on the strength of what a pass read before it closed, and the
 // fingerprints the Reconciler holds follow the open pull requests there are.
 func TestACycleThatNoLongerListsAHeadForgetsItsFingerprint(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	pulls := unchangingHeads(h, 2)
@@ -371,11 +376,13 @@ func TestACycleThatNoLongerListsAHeadForgetsItsFingerprint(t *testing.T) {
 // the cut pass did read are still in the cycle's own set, so the cycle keeps what it holds of
 // them and the pass after it writes nothing for any of the heads.
 func TestACutPassKeepsTheFingerprintsOfTheHeadsItRead(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	// Twenty-five open pull requests are two pages of a query: twenty and five.
 	pulls := unchangingHeads(h, 25)
 	h.reconciler.PassTimeout = 2 * time.Second
+	h.boundEndsAtTheStall()
 	// GitHub never answers the second page within what the pass has left, so the pass's own
 	// bound ends it there, after the twenty heads of the first page.
 	h.github.stallQuery(gitHubRepository, 1, time.Minute)
@@ -486,6 +493,7 @@ func sameValue(one, other any) bool {
 // pass exists to mend. It is read from the answer GitHub really gave, as the mapping test is
 // (testdata/graphql-page.json).
 func TestTheFingerprintIsOfTheObservationsTheAnswerMapsTo(t *testing.T) {
+	t.Parallel()
 	head := capturedHead(t)
 	if head.fingerprint == 0 {
 		t.Fatal("the head a query answered whole carries no fingerprint, so every pass would write it again")
@@ -574,6 +582,7 @@ func TestTheFingerprintIsOfTheObservationsTheAnswerMapsTo(t *testing.T) {
 // link or its time is not. A new time, link or description of a recorded status is news, since
 // the record keeps each of them. It is read from the answer with statuses in testdata.
 func TestTheFingerprintTakesEveryFieldOfARecordedStatusAndNoPendingOne(t *testing.T) {
+	t.Parallel()
 	head := headOf(statusPagePull(t), false, nil)
 	for _, change := range []struct {
 		what  string

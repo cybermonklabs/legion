@@ -6,7 +6,7 @@
 // the route's handler, before the row's scopes and the sign-in check and before its
 // Idempotency-Key is read. A token that carries a cut is answered as of its cut on the routes of
 // kind answers and named by GET /api/v1/whoami, and every other read and GET /ws/live answer it 403
-// AS_OF_TOKEN_NOT_SERVED (refuseReadOnlyToken, as_of_token_test.go). register refuses a table
+// AS_OF_TOKEN_NOT_SERVED (refuseLimitedToken, as_of_token_test.go). register refuses a table
 // whose GET routes are not all classed, and a personal token the gate resolves before the route
 // keeps the answer it had before the gate.
 //
@@ -87,7 +87,7 @@ func gateRefusalOf(response *httptest.ResponseRecorder) refusalAnswer {
 	return refusal
 }
 
-// notTheGatesRefusal says how response differs from the read-only gate's refusal coded code, and
+// notTheGatesRefusal says how response differs from the limited-token gate's refusal coded code, and
 // is empty when it is that refusal: 403 with that code and no WWW-Authenticate challenge, since no
 // scope makes the route the token's to call. READ_ONLY_TOKEN carries the one fixed message, and
 // AS_OF_TOKEN_NOT_SERVED names cut, the cut the token carries.
