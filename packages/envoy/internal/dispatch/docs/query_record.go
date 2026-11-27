@@ -910,14 +910,24 @@ func (tree IssueTree) Takes(query string) ([]int, bool) {
 // is the text_parent among the relations.
 var recordLeftOut = []string{refs.AttributeRank, graphstore.AttributeText}
 
+// recordTakes reports whether the record of query writes node, a node the query's view takes
+// (Takes): every one but a result, which the verification's view answers under its check and no
+// record writes. A result is evidence recorded against a check, not part of what a person approved
+// (the root's R28), so recording, changing or retracting one leaves the verification digest where
+// it stands.
+func recordTakes(query string, node TreeNode) bool {
+	return query != graphstore.QueryVerification || node.Type == checkType
+}
+
 // QueryRecord is the record of query over the walk: for each node the
-// query takes, in the walk's order, seven fields - the node's address, its type, its parent's
-// address, its rank, its values, its body text, and the relations out of it - each written as its
-// byte length, one space, then its bytes, so no text inside a field can imitate a boundary. The
-// values field holds, for each value in its attribute's name order (recordLeftOut aside), the
-// attribute's name and the value, each a field; the relations field holds, for each relation by
-// its kind and then its far end, the kind and the far end's address, each a field. The values and
-// the relations are read at the walk's cut, as the server sees the store.
+// query takes, in the walk's order, but the results its view answers (recordTakes), seven fields -
+// the node's address, its type, its parent's address, its rank, its values, its body text, and the
+// relations out of it - each written as its byte length, one space, then its bytes, so no text
+// inside a field can imitate a boundary. The values field holds, for each value in its attribute's
+// name order (recordLeftOut aside), the attribute's name and the value, each a field; the relations
+// field holds, for each relation by its kind and then its far end, the kind and the far end's
+// address, each a field. The values and the relations are read at the walk's cut, as the server
+// sees the store.
 func (tree IssueTree) QueryRecord(ctx context.Context, q Queryer, query string) (QueryRecord, error) {
 	indices, defined := tree.Takes(query)
 	if !defined {
@@ -930,6 +940,9 @@ func (tree IssueTree) QueryRecord(ctx context.Context, q Queryer, query string) 
 		targets = make([]refs.Target, 0, len(indices))
 	}
 	for _, index := range indices {
+		if !recordTakes(query, tree.Nodes[index]) {
+			continue
+		}
 		taken = append(taken, tree.Nodes[index])
 		targets = append(targets, tree.Nodes[index].target())
 	}
@@ -979,28 +992,4 @@ func writeRecordField(record *bytes.Buffer, field string) {
 	record.WriteString(strconv.Itoa(len(field)))
 	record.WriteByte(' ')
 	record.WriteString(field)
-}
-
-// recordNodeFields is how many fields a record writes of each node it takes (QueryRecord): its
-// address, its type, its parent's address, its rank, its values, its text and its relations.
-const recordNodeFields = 7
-
-// nextRecordEntry is the entry of the first node record holds, the bytes of a query's record from
-// a node's first field on (QueryRecord): that node's recordNodeFields fields, each its byte length,
-// one space and its bytes (writeRecordField); and the record after it. ok is false where record
-// does not open with a whole entry.
-func nextRecordEntry(record []byte) (entry, rest []byte, ok bool) {
-	rest = record
-	for range recordNodeFields {
-		space := bytes.IndexByte(rest, ' ')
-		if space < 1 {
-			return nil, nil, false
-		}
-		length, err := strconv.Atoi(string(rest[:space]))
-		if err != nil || length < 0 || length > len(rest)-space-1 {
-			return nil, nil, false
-		}
-		rest = rest[space+1+length:]
-	}
-	return record[:len(record)-len(rest)], rest, true
 }

@@ -69,7 +69,7 @@ func uploadVersion(t *testing.T, database *store.Store, service *Service, spec, 
 	if err != nil {
 		t.Fatalf("write the node of the upload's version of %s: %v", spec, err)
 	}
-	if err := CarryUploadedApproval(joined, tx, service.events, spec, version.Number, stored, nil, RecordCarry{}, service.serverURL); err != nil {
+	if err := CarryUploadedApproval(joined, tx, service.events, spec, version.Number, stored, nil, service.serverURL); err != nil {
 		t.Fatalf("carry the approval of %s to the upload's version: %v", spec, err)
 	}
 	if err := causeInWritePhase(joined, tx, graphstore.Joined(stated, node), graphstore.NoEvent); err != nil {
@@ -199,6 +199,20 @@ func renderStepDeferred(t *testing.T, rig *renderRig, service *Service) {
 		*carried.Reason != restoredReason(1, 1) || carried.ContentSHA256 == nil || *carried.ContentSHA256 != *row.digest {
 		t.Errorf("the approval of %s at version 1, taken before its pass, reads stale after a pass whose render equals its stored bytes: the newest review is %+v (%v), want a carry to version 1 reading %q and pinning the record's %s",
 			refKey, carried, err, restoredReason(1, 1), *row.digest)
+	}
+	var count int
+	var current bool
+	var digest string
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*), coalesce(bool_and((payload->>'approval_current')::boolean), false),
+		       coalesce(min(payload->>'content_sha256'), '')
+		from events where type = 'artifact.digest' and payload->>'artifact_id' = $1 and payload->>'version' = '1'`,
+		spec).Scan(&count, &current, &digest); err != nil {
+		t.Fatalf("read artifact.digest for %s@v1: %v", refKey, err)
+	}
+	if count != 1 || !current || digest != *row.digest {
+		t.Errorf("no artifact.digest for %s@v1 after its first pass with approval_current true and digest %s: got %d events, current %t, digest %q",
+			refKey, *row.digest, count, current, digest)
 	}
 	stated := rig.readRenderCensus(t)
 	if stated.Deferred != baseline.Deferred || stated.Differences != baseline.Differences {

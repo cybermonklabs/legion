@@ -1777,16 +1777,22 @@ func (s *Service) retrySettleLocked(room string, state *roomState, generation ui
 
 // ArtifactVersionEventPayload is the one shape an `artifact.version` event is built from,
 // wherever it is appended, and it takes what the write moved in the reference graph, so no
-// producer can stay silent about the batched backlink counts it changed.
+// producer can stay silent about the batched backlink counts it changed, and what it knows of the
+// digest an approval of the version covers (VersionDigest): content_sha256 and digest_owed, which
+// a document's version carries and a file's or an image's, digest none, does not.
 func ArtifactVersionEventPayload(
 	artifactID, name string,
 	version model.Version,
 	diff *string,
 	changes model.ReferenceChanges,
+	digest VersionDigest,
 ) map[string]any {
 	payload := map[string]any{"artifact_id": artifactID, "name": name, "version": version}
 	if diff != nil {
 		payload["diff"] = *diff
+	}
+	if digest.ContentSHA256 != "" {
+		payload["content_sha256"], payload["digest_owed"] = digest.ContentSHA256, digest.Owed
 	}
 	model.NameReferenceChanges(payload, changes)
 	return payload

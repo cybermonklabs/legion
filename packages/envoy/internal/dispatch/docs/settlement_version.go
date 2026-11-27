@@ -284,7 +284,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 			IssueKey: st.owner.IssueKey,
 			Type:     "artifact.version",
 			Actor:    st.credit.versionActor(),
-			Payload:  ArtifactVersionEventPayload(room, st.owner.Name, result.version, nil, result.changes),
+			Payload:  ArtifactVersionEventPayload(room, st.owner.Name, result.version, nil, result.changes, result.digest),
 		}
 		if st.owner.IssueKey == nil {
 			versionEvent.ArtifactID = &room
@@ -675,8 +675,8 @@ func (st *settlement) blockVersions(ctx context.Context, fragments []roomFragmen
 // - the one just written, or its latest - so each block records its own document's version and the
 // pass clears the mark the version trigger set on each version it writes (refs.IndexBlocks'
 // fence); then carries each version's approval once that pass has stated it, its writes before the
-// versions' artifact.version events (R14), a restore's behind a row of the approval's digest
-// (carryRestored).
+// versions' artifact.version events (R14), on a document that is no converted query document
+// (textCarries).
 //
 // If a fragment did not read back (refused), the room's index would label live blocks with a
 // version that does not hold them. Leave the index owed instead. The new version rows keep the
@@ -758,20 +758,15 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 		index.facts = make(map[string]graphstore.Uncaused, len(writes))
 	}
 	// Each version's approval carry runs once the room's pass has stated it, its writes before the
-	// artifact.version events below (R14): the review it inserts pins the digest of the version's
-	// stored markdown while the version's record digest is owed, and the fill after the commit
-	// repins it to the record (fillOwedDigests); a carry to a version that restores the approved
-	// text writes behind a row of the approval's digest the write phase holds to the version's
-	// record (carryRestored). Each version's move ran in its write, before the pass, so an open
-	// request names the version by now. A closed issue's version carries nothing. The record case
-	// weighs each version by the facts of the room's whole pass (roomPassRecord): a block written
-	// into one document's fragment can move another document's query.
+	// artifact.version events below (R14), on a document that is no converted query document, whose
+	// approval stands by its record's digest alone (textCarries, R14's hash gate). Each version's
+	// move ran in its write, before the pass, so an open request names the version by now. A closed
+	// issue's version carries nothing.
 	if !st.issueClosed {
-		record := roomPassRecord(index)
 		for _, write := range writes {
 			document, version, fragment := write.fragment.document, write.result.version, write.fragment
 			if err := s.carryApproval(ctx, tx, document, version,
-				renderedTree{tree: fragment.tree, markdown: fragment.markdown, offsets: fragment.offsets}, decisionStepCases{}, record, eventSink(ctx)); err != nil {
+				renderedTree{tree: fragment.tree, markdown: fragment.markdown, offsets: fragment.offsets}, decisionStepCases{}, eventSink(ctx)); err != nil {
 				return nil, err
 			}
 		}
@@ -847,7 +842,7 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 			IssueKey: st.owner.IssueKey,
 			Type:     "artifact.version",
 			Actor:    write.actor,
-			Payload:  ArtifactVersionEventPayload(document, write.fragment.latest.name, write.result.version, nil, moved),
+			Payload:  ArtifactVersionEventPayload(document, write.fragment.latest.name, write.result.version, nil, moved, write.result.digest),
 		}
 		if st.owner.IssueKey == nil {
 			planned[position].ArtifactID = &document

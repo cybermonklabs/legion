@@ -9,7 +9,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -169,14 +171,10 @@ func TestTheTickSettlesDecisionsQueryDebtsWithoutWork(t *testing.T) {
 	}
 }
 
-// TestADrainedUnchangedVersionRestoresRefsFormsOwed: when the query-mark drain writes a version of
-// a room's query document (here Verification, after a recorded result) whose bytes match the
-// version before it and whose block index stood at that version, restoreReindexQueue puts
-// refs_forms_owed back as it stood before the version's insert:
-//   - where no row of refs_forms_owed stood before the result, none stands after its drain, and
-//     one ReconcileRefsForms pass counts no document and leaves nothing owed;
-//   - where a row of refs_forms_owed stood before the result (a real debt left by an older build's
-//     write), the drain keeps that row standing.
+// TestADrainedUnchangedVersionRestoresRefsFormsOwed: the query-mark drain writes a version
+// whose bytes match the preceding version when a check's placement changes without moving its
+// text. If the block index stood at the preceding version, restoreReindexQueue restores
+// refs_forms_owed to its prior state and preserves independent Decisions debt.
 func TestADrainedUnchangedVersionRestoresRefsFormsOwed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -199,12 +197,16 @@ func TestADrainedUnchangedVersionRestoresRefsFormsOwed(t *testing.T) {
 		t.Fatalf("after initial forms drain refs_decisions_forms_seed_owed holds %v, want empty", owed)
 	}
 
-	// 1. A recorded result and its drain write an unchanged version of Verification and leave no
-	//    row in refs_forms_owed; a forms drain pass then counts no document.
-	recordResult(t, database, service, room)
+	// 1. A check's placement changes the record without changing the document's bytes. The drain
+	//    writes the version but leaves no forms debt.
+	restateCheck := func(placement string) {
+		leaveCheckPlacementOwed(t, database, room, placement)
+		service.DrainOwedQueries(ctx, room.issue)
+	}
+	restateCheck(refs.PlacementStored)
 	after := savedVersion(t, database, room.verification)
 	if after != before+1 {
-		t.Fatalf("the result's drain left Verification at version %d, want %d", after, before+1)
+		t.Fatalf("the check placement's drain left Verification at version %d, want %d", after, before+1)
 	}
 	if owed := formsOwedRows(t, database); len(owed) > 0 {
 		t.Errorf("the result's drain left refs_forms_owed holding %v for %s, want none", owed, room.issue)
@@ -220,15 +222,14 @@ func TestADrainedUnchangedVersionRestoresRefsFormsOwed(t *testing.T) {
 		t.Errorf("ReconcileRefsForms after the result's drain returned %#v, want Documents=0 and OwedTexts=0", formsTick)
 	}
 
-	// 2. A refs_forms_owed row that already stood before the result (as an older build's write
-	//    leaves it) still stands after the result's drain.
+	// 2. A pre-existing forms debt (as an older build's write leaves it) still stands after the drain.
 	if _, err := database.Pool.Exec(ctx, `
 		insert into refs_forms_owed (kind, id) values ('artifact', $1::uuid)
 		on conflict (kind, id) do update set enqueued_at = now()
 	`, room.verification); err != nil {
 		t.Fatalf("plant a standing refs_forms_owed row for %s: %v", room.verification, err)
 	}
-	recordResult(t, database, service, room)
+	restateCheck(refs.PlacementAuthored)
 	if next := savedVersion(t, database, room.verification); next != after+1 {
 		t.Fatalf("the second result's drain left Verification at version %d, want %d", next, after+1)
 	}
@@ -248,7 +249,7 @@ func TestADrainedUnchangedVersionRestoresRefsFormsOwed(t *testing.T) {
 	if live.IsZero() || seed.IsZero() {
 		t.Fatalf("the standing Decisions debt was not planted: live %v, seed %v", live, seed)
 	}
-	recordResult(t, database, service, room)
+	restateCheck(refs.PlacementStored)
 	if next := savedVersion(t, database, room.verification); next != after+2 {
 		t.Fatalf("the third result's drain left Verification at version %d, want %d", next, after+2)
 	}
@@ -257,5 +258,36 @@ func TestADrainedUnchangedVersionRestoresRefsFormsOwed(t *testing.T) {
 	}
 	if got := decisionsFormsSeedOwedRows(t, database)[row]; !got.Equal(seed) {
 		t.Errorf("the drain changed standing seed Decisions debt from %v to %v", seed, got)
+	}
+}
+
+// leaveCheckPlacementOwed changes c1's placement value, a fact in its approval record but not in
+// its markdown. The tuple and the mark commit together, as on the node route. The drain must write
+// a new version with unchanged markdown; no result node can trigger that version anymore.
+func leaveCheckPlacementOwed(t *testing.T, database *store.Store, room issueRoom, placement string) {
+	t.Helper()
+	ctx := context.Background()
+	address := refKeyOf(t, database, room.tree) + "#c1"
+	err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{{
+			FromKind: refs.BlockNodeKind, FromID: address, Kind: refs.AttributePlacement, ToKind: graphstore.KindValue, ToID: placement,
+			At: time.Now().UTC(), Who: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent, Asserted: true,
+		}}); err != nil {
+			return err
+		}
+		var marked bool
+		if err := store.RunWrite(ctx, tx, func(batch *store.WriteBatch) error {
+			QueueQueryMark(batch, room.issue, graphstore.NoEvent, &marked)
+			return nil
+		}); err != nil {
+			return err
+		}
+		if !marked {
+			t.Errorf("%s took no query mark after changing %s's placement", room.issue, address)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("change %s's placement to %s: %v", address, placement, err)
 	}
 }

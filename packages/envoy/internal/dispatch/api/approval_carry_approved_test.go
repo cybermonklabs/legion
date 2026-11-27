@@ -66,6 +66,7 @@ func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesToTheVersionWit
 	} {
 		t.Run(tc.attribute, func(t *testing.T) {
 			handler, database, documents := settlingCarryDocuments(t, pastTheRun)
+			holdIssuesUnconverted(t, database)
 			issue := createInteractionIssue(t, handler, "TEST", "Approved "+tc.attribute+" other than the row's", "Context\n\n"+regionAsk)
 			asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 			answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)

@@ -65,6 +65,7 @@ type API interface {
 	JoinWrite(ctx context.Context, artifactID string) error
 	NamedVersion(ctx context.Context, artifactID, summary string, actor model.Actor) (VersionResult, error)
 	DrainOwedQueries(ctx context.Context, issueKey string) []model.Event
+	FillReviewedDigests(ctx context.Context, tx pgx.Tx, documents []model.AskApprovalDocument) error
 	MoveBlockText(ctx context.Context, artifactID string, move pmdoc.NodeTextMove, actor model.Actor) (bool, error)
 	DeleteBlocksText(ctx context.Context, taken map[string][]string, actor model.Actor) ([]string, error)
 	PlanDeleteBlocksText(ctx context.Context, taken map[string][]string) error
@@ -83,12 +84,14 @@ type API interface {
 // Blocks is what the version's block index stated in the node and tuple store. The index runs
 // before the event that records the version exists, and no tuple may be updated afterwards, so
 // the facts travel here and the caller appends them under that event, in the same transaction
-// (graphstore.Caused).
+// (graphstore.Caused). Digest is what the version's artifact.version says of the digest an
+// approval of it covers (VersionDigest, ArtifactVersionEventPayload).
 type VersionResult struct {
 	Version model.Version
 	Wrote   bool
 	Changes model.ReferenceChanges
 	Blocks  graphstore.Uncaused
+	Digest  VersionDigest
 }
 
 // EditOutcome is what one batch of document edit operations did. Changed compares the document's

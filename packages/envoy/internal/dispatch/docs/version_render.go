@@ -3,6 +3,8 @@ package docs
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -1189,7 +1192,7 @@ func (l *Ledger) readCovered(ctx context.Context, tx pgx.Tx, versions []statedVe
 // transaction whose passes stated no version of a stored document runs no statement.
 func (l *Ledger) readStatedDocuments(ctx context.Context) error {
 	var deferred []statedVersion
-	if l.owesDigests() && len(l.restores) == 0 {
+	if l.owesDigests() {
 		for _, artifactID := range slices.Sorted(maps.Keys(l.latest)) {
 			version := statedVersion{artifactID: artifactID, number: l.latest[artifactID].Number}
 			if !slices.Contains(l.stated, version) {
@@ -1285,65 +1288,32 @@ func (l *Ledger) queueStatedRenders(b *store.WriteBatch) error {
 // writeStatedRenders writes, in the ledger's transaction, the version_renders row of each version
 // a pass of it stated (recordStatedVersions) that renders from the tree (readCovered, read before
 // the write phase's first batch, readStatedDocuments), where the transaction records each digest
-// in itself: a background pass's (queueWrites) and a restore's (writeRestored). A version a query's
-// record covers takes the digest of that record, and the time and the seq of the cut it was read
-// at, one cut for the whole transaction, read once its write phase has run (refs.HeadCut), so the
-// record and the render as of the row's time hold every tuple the passes appended under their
-// events; one no query record covers takes the cut in SQL and no digest (queueVersionRenderCut). It
-// runs after the write phase's batch and before the commit (runQueue): the record is built in Go
-// from the store as that batch leaves it (IssueTree.QueryRecord), which no statement of the batch
-// can read. Where no stated version renders from the tree, it runs no statement, and each version
-// answers its stored bytes.
+// in itself: a background pass's (queueWrites). A version a query's record covers takes the digest
+// of that record, and the time and the seq of the cut it was read at, one cut for the whole
+// transaction, read once its write phase has run (refs.HeadCut), so the record and the render as
+// of the row's time hold every tuple the passes appended under their events; one no query record
+// covers takes the cut in SQL and no digest (queueVersionRenderCut). It runs after the write
+// phase's batch and before the commit (runQueue): the record is built in Go from the store as that
+// batch leaves it (IssueTree.QueryRecord), which no statement of the batch can read. Where no
+// stated version renders from the tree, it runs no statement, and each version answers its stored
+// bytes.
 //
 // It notes each version whose row takes its time from this transaction (firstStatedOn), for the
-// carry of R14 its caller runs once the rows stand (carryFirstStated), and marks tree_mismatch on
-// the row of each version a pass of it found its tree does not render as (recordTreeMismatch,
-// queueTreeMismatch), which takes no time, no seq and no digest.
-//
-// A version a restore carry pins (carryRestored) holds its row already: the digest the approval it
-// carries pinned, which the insert trigger of the carry's review took from it. Its record is read
-// here as every other one is, by the fill's own walk (cutRecords), and never from that row or from
-// artifact_version_text_sha256, both of which answer the pin in this transaction. Where every pin is
-// its version's record's digest, the pinned rows take the cut's time and seq and keep their digest
-// (queuePinnedRenderCut), and every other row is written as above. Where one is not - or the fill
-// states no row of a pinned version at all - it writes no row and answers each restore carry it
-// missed, in the order the carries ran, for the write phase to drop (writeRestored). The stated
-// versions stay recorded, so the fill of the round after a drop states the same versions again.
-func (l *Ledger) writeStatedRenders(ctx context.Context) ([]*restoredCarry, error) {
-	pins := map[statedVersion]*restoredCarry{}
-	for _, restore := range l.restores {
-		if !restore.dropped {
-			pins[restore.version] = restore
-		}
-	}
+// carry of R14 and the version's artifact.digest its caller runs once the rows stand
+// (carryFirstStated), and marks tree_mismatch on the row of each version a pass of it found its
+// tree does not render as (recordTreeMismatch, queueTreeMismatch), which takes no time, no seq and
+// no digest.
+func (l *Ledger) writeStatedRenders(ctx context.Context) error {
 	tx := l.phaseTx()
 	renders, unrecorded, err := l.statedRenders(ctx, tx)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	held := map[statedVersion]bool{}
-	for _, render := range renders {
-		if restore, pinned := pins[render.version]; pinned {
-			held[render.version] = render.record.Digest == restore.pin
-		}
+	if len(renders)+len(unrecorded)+len(l.mismatched) == 0 {
+		return nil
 	}
-	var missed []*restoredCarry
-	for _, restore := range l.restores {
-		if pins[restore.version] == restore && !held[restore.version] {
-			missed = append(missed, restore)
-		}
-	}
-	if len(missed) > 0 || len(renders)+len(unrecorded)+len(l.mismatched) == 0 {
-		return missed, nil
-	}
-	return nil, store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		for _, render := range renders {
-			if _, pinned := pins[render.version]; pinned {
-				if err := queuePinnedRenderCut(b, render.version, render.record); err != nil {
-					return err
-				}
-				continue
-			}
 			queued, err := queueVersionRender(b, render.version.artifactID, render.version.number, render.record)
 			if err != nil {
 				return err
@@ -1429,173 +1399,79 @@ func (l *Ledger) statedRenders(ctx context.Context, tx pgx.Tx) ([]statedRender, 
 	return renders, unrecorded, nil
 }
 
-// pinVersionRender is the step that writes the version_renders row of version, which a restore
-// carry pins (carryRestored), before the carry's review is inserted: the digest pin, the approval's
-// it carries, which artifact_version_text_sha256 then answers for the version and the review's
-// insert trigger pins (migration 20261105084017), with the transaction's start, at, and seq 0 for
-// the time and the seq of a cut no record has been read at yet, which the fill sets
-// (queuePinnedRenderCut) before anything reads the row as a version's record.
-func pinVersionRender(version statedVersion, pin string, at time.Time) WriteStep {
-	return execStep("pin the version_renders row of version "+fmt.Sprint(version.number), `
-		insert into version_renders (artifact_id, number, record_sha256, at, read_seq) values ($1, $2, $3, $4, 0)`,
-		version.artifactID, version.number, pin, at)
-}
-
-// errPinnedRenderGone refuses the fill of a pinned version whose row is not there to take its cut.
-var errPinnedRenderGone = errors.New("docs: the version_renders row a restore carry pinned is not there")
-
-// queuePinnedRenderCut queues on b the time and the seq of record's cut on the version_renders row
-// version holds with the digest a restore carry pinned (pinVersionRender), which the fill found to
-// be record's digest (writeStatedRenders): the row then holds what QueueVersionRender would have
-// written, and its digest stays the one the carried review pinned.
-func queuePinnedRenderCut(b *store.WriteBatch, version statedVersion, record QueryRecord) error {
-	if record.Cut.Dated || record.Cut.At.IsZero() {
-		return errVersionRenderCut
-	}
-	b.Queue("date the pinned version_renders row of version "+fmt.Sprint(version.number), `
-		update version_renders set at = $3, read_seq = $4
-		where artifact_id = $1 and number = $2 and record_sha256 = $5`,
-		version.artifactID, version.number, record.Cut.At, record.Cut.ReadSeq, record.Digest).Exec(func(tag pgconn.CommandTag) error {
-		if tag.RowsAffected() != 1 {
-			return fmt.Errorf("date version %d of %s: %w", version.number, version.artifactID, errPinnedRenderGone)
-		}
-		return nil
-	})
-	return nil
-}
-
-// rendersInTransaction reports whether version number of artifactID takes, in tx, a version_renders
-// row that holds its record's digest: a pass of tx stated it (recordStatedVersions) and a query's
-// record covers it (readCovered), read here, in tx's read phase, by the same predicate the write
-// phase's read takes before its first batch, so the restore's pin and the row agree. A version tx
-// queued is not stored yet in either read.
-func rendersInTransaction(ctx context.Context, tx pgx.Tx, artifactID string, number int) (bool, error) {
-	ledger := queueFor(ctx, tx)
-	version := statedVersion{artifactID: artifactID, number: number}
-	if ledger == nil || !slices.Contains(ledger.stated, version) {
-		return false, nil
-	}
-	covered, err := ledger.readCovered(ctx, tx, []statedVersion{version})
-	if err != nil {
-		return false, err
-	}
-	return covered[version].query != "", nil
-}
-
-// recordPinStatement is the record's digest the review $1, an approval of version $3 of the
-// document $2 that pinned the digest $4, stands on: the digest the fill repinned the review to
-// where it is a carry whose own row of artifact_review_carries holds one (fillOwedDigests), and
-// else $4, where it is the digest the version_renders row of the approved version records; null
-// where the review pinned the digest of the approved version's stored markdown alone - a review
-// taken before the cutover, before the pass that stated its version or before the fill of its
-// digest (R14) - which no record digests to.
-const recordPinStatement = `
-	select coalesce(
-		(select c.record_sha256 from artifact_review_carries c where c.review_id = $1::uuid),
-		(select r.record_sha256 from version_renders r where r.artifact_id = $2::uuid and r.number = $3 and r.record_sha256 = $4))`
-
-// recordPin is the record's digest newest, an approval, stands on (recordPinStatement), nil where
-// it stands on no record's digest. newest read off the ledger, a review this transaction queued,
-// names no row of artifact_review_carries yet.
-func recordPin(ctx context.Context, tx pgx.Tx, artifactID string, newest model.ArtifactReview) (*string, error) {
-	var review *string
-	if newest.ID != "" {
-		review = &newest.ID
-	}
-	var pin *string
-	if err := tx.QueryRow(ctx, recordPinStatement, review, artifactID, newest.Version, newest.ContentSHA256).Scan(&pin); err != nil {
-		return nil, fmt.Errorf("read the record digest the approval of version %d of %s stands on: %w", newest.Version, artifactID, err)
-	}
-	return pin, nil
-}
-
-// carryRestored runs carry, the carry of newest - the document's newest review, an approval of
-// version A - to version number of artifactID, whose text is A's stored text byte for byte
-// (restoresApprovedText). A restore carries only because the version is what the person approved,
-// so where the version takes its version_renders row with its record's digest in tx
-// (rendersInTransaction) and newest stands on a record's digest (recordPin), the version's record's
-// digest must be that one, which is known before the write phase. The carry's writes then keep
-// their place in the queue - the review and its artifact.approved before the version's
-// artifact.version, the order the Legion daemon reads a restore by - after a step that writes the
-// version's row with that pinned digest (pinVersionRender), so the review's insert trigger pins it
-// too. The write phase takes a savepoint before the version's insert, reads the version's record
-// by the fill's own walk once the queue has run, and drops the carry where its digest is not the
-// pin, writing the version, what it states and its row again with no carry (writeRestored): the
-// restore is then no exact one in the model, whatever its text. These are the windows the owner
-// approved as root R29's second exception (R14). A version that takes no such row in tx, a review
-// that stands on no record's digest, and a version this transaction queued no insert of, carry as
-// any other carry does, in their place.
-func carryRestored(ctx context.Context, tx pgx.Tx, artifactID string, number int, newest model.ArtifactReview, carry func() error) error {
-	ledger := queueFor(ctx, tx)
-	if ledger == nil {
-		return carry()
-	}
-	pending, queued := ledger.latest[artifactID]
-	if !queued || pending.Number != number {
-		return carry()
-	}
-	rendered, err := rendersInTransaction(ctx, tx, artifactID, number)
-	if err != nil {
-		return err
-	}
-	if !rendered {
-		return carry()
-	}
-	pin, err := recordPin(ctx, tx, artifactID, newest)
-	if err != nil {
-		return err
-	}
-	if pin == nil {
-		return carry()
-	}
-	at, err := ledger.Now(ctx)
-	if err != nil {
-		return err
-	}
-	restore := &restoredCarry{version: statedVersion{artifactID: artifactID, number: number}, pin: *pin, from: pending.queued}
-	ledger.restores = append(ledger.restores, restore)
-	ledger.restoring = restore
-	defer func() { ledger.restoring = nil }()
-	if err := write(ctx, tx, pinVersionRender(restore.version, restore.pin, at)); err != nil {
-		return err
-	}
-	return carry()
-}
-
 // The fill of a record digest a write left owed (R15). A version write keeps main's window: its
 // batch inserts the version's version_renders row with the cut it takes in SQL and, where a query's
 // record covers the version, its digest owed (queueStatedRenders), so a review its batch inserts -
-// the carried review of R14's order - pins the digest of the version's stored markdown, which
-// artifact_version_text_sha256 answers until the fill. Right after the COMMIT, and before the
-// server publishes the write's events, the fill reads each owed version's record at its row's cut
-// and records its digest (fillOwedDigests), in a transaction of its own whose window is its reads,
-// then one batch and its COMMIT. The drain of an issue's query marks runs the fill of the issue
-// first (drainQueryMark), and the block-index tick repairs a fill a request lost
-// (fillLostDigests).
+// the conversion's carry, the one carry such a write still holds (R14) - pins the digest of the
+// version's stored markdown, which artifact_version_text_sha256 answers until the fill. Right after
+// the COMMIT, and before the server publishes the write's events, the fill reads each owed
+// version's record at its row's cut and records its digest (fillOwedDigests), in a transaction of
+// its own whose window is its reads, then one batch and its COMMIT, and appends one artifact.digest
+// for each version it filled: R14's hash gate, by which Dispatch alone says whether an approval
+// stands at that version (ApprovalStand.Approves) and writes no carried review for it. The drain of
+// an issue's query marks runs the fill of the issue first (drainQueryMark), the block-index tick
+// repairs a fill a request lost (fillLostDigests), and a person's review of a version whose digest
+// is owed fills it in the review's own transaction first (FillReviewedDigests), so the review pins
+// the record's digest.
 
-// owedDigestsStatement is each version of a document of the issue $1 whose record digest is owed
-// (version_renders.digest_owed), by document and number: its document and number, the cut its row
-// records, the query of its document's node, whose record covers it, its stored markdown, and the
-// record digest the version before it holds, the one a record carry to it stood on (recordUnmoved:
-// it carries only where that row holds the approval's pin, and nothing writes a filled digest
-// again).
-var owedDigestsStatement = `
-	select r.artifact_id::text, r.number, r.at, r.read_seq, n.attributes->>'` + graphstore.AttributeQuery + `', coalesce(v.markdown, ''),
-	       (select p.record_sha256 from version_renders p where p.artifact_id = r.artifact_id and p.number = r.number - 1)
+// DigestFillActor is the system actor of every artifact.digest: the fill's, the first pass's and
+// the drain's record of a version's digest.
+var DigestFillActor = model.Actor{Kind: "system", ID: "digest-fill"}
+
+// VersionDigest is what an artifact.version says of the digest an approval of its version covers
+// (R14's hash gate, ArtifactVersionEventPayload): ContentSHA256, the digest
+// artifact_version_text_sha256 answers for the version once its write commits, and Owed, whether a
+// query's record covers the version and its digest is not known yet. Such a version answers the
+// digest of its stored markdown until the fill after its write's COMMIT, or the first pass that
+// states it, records its record's digest and appends its artifact.digest (queueDigestEvent); a gate
+// holds the version unapproved until that event. The zero value omits both fields on versions of
+// documents that have no query record.
+type VersionDigest struct {
+	ContentSHA256 string
+	Owed          bool
+}
+
+// WrittenVersionDigest is the VersionDigest of a version a write stores as markdown, of a document
+// whose versions take owner (ReadVersionOwner): a version of a query node's document, which this
+// build's version write makes a query version (graphstore.VersionFacts), owes its record's digest.
+// Only those versions announce the hash gate.
+func WrittenVersionDigest(markdown string, owner graphstore.VersionOwner) VersionDigest {
+	if !owner.Query {
+		return VersionDigest{}
+	}
+	sum := sha256.Sum256([]byte(markdown))
+	return VersionDigest{ContentSHA256: hex.EncodeToString(sum[:]), Owed: true}
+}
+
+// owedDigestSelect reads, of each version whose record digest is owed (version_renders.digest_owed)
+// of a document whose node is a query node, the document's issue and name, its id and the number,
+// the cut its row records and the query of its document's node, whose record covers it.
+const owedDigestSelect = `
+	select a.issue_key, r.artifact_id::text, a.name, r.number, r.at, r.read_seq, n.attributes->>'` + graphstore.AttributeQuery + `'
 	from artifacts a
 	join version_renders r on r.artifact_id = a.id and r.digest_owed
-	join graph_nodes n on n.kind = '` + graphstore.KindArtifact + `' and n.id = a.ref_key and n.supertag = '` + graphstore.SupertagQuery + `'
-	join artifact_versions v on v.artifact_id = r.artifact_id and v.number = r.number
+	join graph_nodes n on n.kind = '` + graphstore.KindArtifact + `' and n.id = a.ref_key and n.supertag = '` + graphstore.SupertagQuery + `'`
+
+// owedDigestsStatement is owedDigestSelect of every document of the issue $1, by document and
+// number.
+const owedDigestsStatement = owedDigestSelect + `
 	where a.issue_key = $1
 	order by r.artifact_id, r.number`
 
+// owedReviewedDigestsStatement is owedDigestSelect of the versions a review names, each document
+// of $1 at the version of $2 beside it, by document and number.
+const owedReviewedDigestsStatement = owedDigestSelect + `
+	join unnest($1::uuid[], $2::int[]) as named (artifact_id, number) on named.artifact_id = r.artifact_id and named.number = r.number
+	where a.issue_key is not null
+	order by r.artifact_id, r.number`
+
 // owedCarriesStatement is each carried review of version $2 of the document $1 whose row of
-// artifact_review_carries holds no record digest yet, with its reason: the carry the version's own
-// write queued in its batch (R14), which pinned the digest of the version's stored markdown. It
-// orders no rows: the fill repins the reviews it answers as one set (queueFilledDigest,
-// `review_id = any(...)`), so no review of them comes before another.
+// artifact_review_carries holds no record digest yet: the conversion's carry, which its batch
+// inserted pinned to the digest of the version's stored markdown (R14). It orders no rows: the fill
+// repins the reviews it answers as one set (queueFilledDigest, `review_id = any(...)`), so no review
+// of them comes before another.
 const owedCarriesStatement = `
-	select c.review_id::text, coalesce(r.reason, '')
+	select c.review_id::text
 	from artifact_reviews r
 	join artifact_review_carries c on c.review_id = r.id
 	where r.artifact_id = $1 and r.version = $2 and c.record_sha256 is null`
@@ -1610,61 +1486,33 @@ const lostDigestsStatement = `
 	where r.digest_owed and a.issue_key is not null
 	limit $1`
 
-// owedDigest is one version whose record digest is owed, as owedDigestsStatement reads it, with
-// the record the fill read at its row's cut and the carried reviews of its write's batch the fill
-// repins; stood is the record digest of the version before it.
+// owedDigest is one version whose record digest is owed, as owedDigestSelect reads it, with the
+// record the fill read at its row's cut and the carried reviews of its write's batch the fill
+// repins.
 type owedDigest struct {
-	version  statedVersion
-	cut      refs.TreeCut
-	query    string
-	markdown string
-	stood    *string
-	record   QueryRecord
-	carries  []string
+	issue, name string
+	version     statedVersion
+	cut         refs.TreeCut
+	query       string
+	record      QueryRecord
+	carries     []string
+	// Nonzero only when the fill read a standing approval for this document's newest version.
+	approvedVersion int
 }
 
-// owedCarry is one carried review owedCarriesStatement reads: its id and its reason.
-type owedCarry struct{ review, reason string }
-
-// repinnedCarries is the id of each of carries, the carried reviews of version's write's batch,
-// that the fill repins to version's record digest: every one but a record carry (IsRecordCarry)
-// whose version digests otherwise than the version before it, the digest its approval stood on
-// (recordUnmoved). Each such carry is logged as an error naming the document, the version and the
-// two digests, and stays unpinned, so every gate reads its approval stale. The write's rule decided
-// that carry in its read phase and must never be wrong; this is the backstop that holds it to its
-// claim.
-func repinnedCarries(version owedDigest, carries []owedCarry) []string {
-	repinned := make([]string, 0, len(carries))
-	for _, carry := range carries {
-		if IsRecordCarry(carry.reason) && (version.stood == nil || *version.stood != version.record.Digest) {
-			stood := ""
-			if version.stood != nil {
-				stood = *version.stood
-			}
-			slog.Error("dispatch: a record carry's version does not digest to the record its approval stood on, so its carried review stays unpinned and the approval reads stale",
-				"artifact", version.version.artifactID, "version", version.version.number, "review", carry.review,
-				"digest", version.record.Digest, "approved_digest", stood)
-			continue
-		}
-		repinned = append(repinned, carry.review)
-	}
-	return repinned
-}
-
-// readOwedDigests reads, through tx, each version of a document of the issue issueKey whose record
-// digest is owed (owedDigestsStatement).
-func readOwedDigests(ctx context.Context, tx pgx.Tx, issueKey string) ([]owedDigest, error) {
-	rows, err := tx.Query(ctx, owedDigestsStatement, issueKey)
+// readOwedDigests reads, through tx, each version statement (owedDigestSelect) answers for args.
+func readOwedDigests(ctx context.Context, tx pgx.Tx, statement string, args ...any) ([]owedDigest, error) {
+	rows, err := tx.Query(ctx, statement, args...)
 	if err != nil {
-		return nil, fmt.Errorf("read the record digests %s owes: %w", issueKey, err)
+		return nil, fmt.Errorf("read the record digests owed: %w", err)
 	}
 	owed, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (owedDigest, error) {
 		var version owedDigest
-		err := row.Scan(&version.version.artifactID, &version.version.number, &version.cut.At, &version.cut.ReadSeq, &version.query, &version.markdown, &version.stood)
+		err := row.Scan(&version.issue, &version.version.artifactID, &version.name, &version.version.number, &version.cut.At, &version.cut.ReadSeq, &version.query)
 		return version, err
 	})
 	if err != nil {
-		return nil, fmt.Errorf("read the record digests %s owes: %w", issueKey, err)
+		return nil, fmt.Errorf("read the record digests owed: %w", err)
 	}
 	return owed, nil
 }
@@ -1672,25 +1520,14 @@ func readOwedDigests(ctx context.Context, tx pgx.Tx, issueKey string) ([]owedDig
 // fillOwedDigests fills, in a transaction of its own, the record digest of each version of a
 // document of the issue issueKey whose digest is owed, and answers the events it appended. It
 // takes the issue's owner lock (store.LockOwner), which every writer of a version of the issue's
-// documents takes, and reads each owed version (readOwedDigests), its query's record at the cut its
-// row records (cutRecords), and the carried reviews of its write's batch (owedCarriesStatement),
-// none of which gives the transaction an id. Its one batch then records each record's digest on
-// its version's row, clearing digest_owed, and repins each such carried review to it on its own row
-// of artifact_review_carries, with no event and no second review row (R14): the review's
-// content_sha256 cannot move, since the update trigger of artifact_reviews refuses it. A record
-// carry (IsRecordCarry) is repinned only where the record's digest is the one its approval stood
-// on, the version before it's (owedDigest.stood); where it is not, the write's rule was wrong
-// (recordUnmoved), and the carry stays unpinned (repinnedCarries), so every gate reads the
-// approval stale - its content_sha256 is the stored markdown's digest, and the version's is the
-// record's. That is a backstop that must never fire. A person's
-// approval of such a version given between the write's COMMIT and the fill is no carry: the fill
-// carries it at that version (carryApprovalBeforeFill), after the rows, so the carried review's
-// insert trigger pins the record's digest, and that carry appends its artifact.approved after the
-// version's artifact.version, because the approval itself came after it. The COMMIT follows the
-// batch, so the fill's window is main's batched shape. An issue that owes no digest runs nothing
-// past its reads. Each lock wait of the transaction lasts at most wait, where wait is not zero
-// (boundLockWaits), set before the owner lock: a write's caller bounds its fill (fillOwed,
-// DrainOwedQueries), and the tick's repair (fillLostDigests) does not.
+// documents takes, reads each owed version (readOwedDigests) and fills them (fillDigests): none of
+// its reads gives the transaction an id, and its one batch records each record's digest on its
+// version's row, clearing digest_owed, repins the conversion's carry of such a version to it, and
+// appends each version's artifact.digest. The COMMIT follows the batch, so the fill's window is
+// main's batched shape. An issue that owes no digest runs nothing past its reads. Each lock wait of
+// the transaction lasts at most wait, where wait is not zero (boundLockWaits), set before the
+// owner lock: a write's caller bounds its fill (fillOwed, DrainOwedQueries), and the tick's repair
+// (fillLostDigests) does not.
 func (s *Service) fillOwedDigests(ctx context.Context, issueKey string, wait time.Duration) ([]model.Event, error) {
 	if hold := s.fillHold.Load(); hold != nil {
 		(*hold)(issueKey)
@@ -1706,46 +1543,13 @@ func (s *Service) fillOwedDigests(ctx context.Context, issueKey string, wait tim
 	if err := store.LockOwner(ctx, tx, store.IssueOwner(issueKey)); err != nil {
 		return nil, err
 	}
-	owed, err := readOwedDigests(ctx, tx, issueKey)
+	owed, err := readOwedDigests(ctx, tx, owedDigestsStatement, issueKey)
 	if err != nil || len(owed) == 0 {
 		return nil, err
 	}
-	if err := refs.TurnJITOff(ctx, tx); err != nil {
-		return nil, err
-	}
-	for index := range owed {
-		version := &owed[index]
-		records := cutRecords{cut: version.cut}
-		if version.record, err = records.record(ctx, tx, queryOf{issue: issueKey, query: version.query}); err != nil {
-			return nil, err
-		}
-		rows, err := tx.Query(ctx, owedCarriesStatement, version.version.artifactID, version.version.number)
-		if err != nil {
-			return nil, fmt.Errorf("read the carried reviews of version %d of %s: %w", version.version.number, version.version.artifactID, err)
-		}
-		carries, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (owedCarry, error) {
-			var carry owedCarry
-			err := row.Scan(&carry.review, &carry.reason)
-			return carry, err
-		})
-		if err != nil {
-			return nil, fmt.Errorf("read the carried reviews of version %d of %s: %w", version.version.number, version.version.artifactID, err)
-		}
-		version.carries = repinnedCarries(*version, carries)
-	}
 	ctx, ledger := queueWrites(ctx, tx)
-	if err := write(ctx, tx, func(b *store.WriteBatch) error {
-		for _, version := range owed {
-			queueFilledDigest(b, version)
-		}
-		return nil
-	}); err != nil {
+	if err := s.fillDigests(ctx, tx, owed, true); err != nil {
 		return nil, err
-	}
-	for _, version := range owed {
-		if err := s.carryApprovalBeforeFill(ctx, tx, version); err != nil {
-			return nil, err
-		}
 	}
 	if err := ledger.runQueue(ctx, nil); err != nil {
 		return nil, err
@@ -1754,6 +1558,166 @@ func (s *Service) fillOwedDigests(ctx context.Context, issueKey string, wait tim
 		return nil, fmt.Errorf("commit the fill of the record digests %s owes: %w", issueKey, err)
 	}
 	return ledger.events, nil
+}
+
+// FillReviewedDigests fills, in tx, the record digest each of documents owes at the version it
+// names, before the review that names them is queued in tx (api's queueApprovalReviews): a person's
+// review, or a plan review's, of a version whose digest its write left owed - given between that
+// write's COMMIT and its fill - then pins the record's digest at its insert, as one given after the
+// fill does, and no fill carries anything to it afterwards (R14's hash gate). The caller holds the
+// documents' issue's owner lock, which the fill takes too. Its reads run where it is called, tx's
+// read phase, and its writes - each version's digest, the repin of the conversion's carry, and the
+// version's artifact.digest - are queued on the ledger of the transaction ctx joined, before the
+// review's, whose Commit publishes the events. A version that owes nothing reads nothing past the
+// one statement that finds none.
+func (s *Service) FillReviewedDigests(ctx context.Context, tx pgx.Tx, documents []model.AskApprovalDocument) error {
+	ids, numbers := make([]string, 0, len(documents)), make([]int, 0, len(documents))
+	for _, document := range documents {
+		ids, numbers = append(ids, document.ArtifactID), append(numbers, document.Version)
+	}
+	owed, err := readOwedDigests(ctx, tx, owedReviewedDigestsStatement, ids, numbers)
+	if err != nil || len(owed) == 0 {
+		return err
+	}
+	// A review can already be answering the request. Leave its transition to the review route.
+	return s.fillDigests(ctx, tx, owed, false)
+}
+
+// fillDigests reads, through tx, each of owed's query record at the cut its row records
+// (cutRecords) and the carried reviews of its write's batch (owedCarriesStatement), and queues in
+// tx's write phase (write) each version's fill (queueFilledDigest) and its artifact.digest
+// (queueDigestEvent). The review's content_sha256 cannot move, since the update trigger of
+// artifact_reviews refuses it, so a carry is repinned on its own row of artifact_review_carries,
+// with no second review row and no artifact.approved. When closeRequests is true, a newest
+// version whose approval stands also retracts each open request for an earlier version in the
+// same batch (closeSatisfiedApprovalRequests), with no review or artifact.approved.
+func (s *Service) fillDigests(ctx context.Context, tx pgx.Tx, owed []owedDigest, closeRequests bool) error {
+	if err := refs.TurnJITOff(ctx, tx); err != nil {
+		return err
+	}
+	for index := range owed {
+		version := &owed[index]
+		records := cutRecords{cut: version.cut}
+		var err error
+		if version.record, err = records.record(ctx, tx, queryOf{issue: version.issue, query: version.query}); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, owedCarriesStatement, version.version.artifactID, version.version.number)
+		if err != nil {
+			return fmt.Errorf("read the carried reviews of version %d of %s: %w", version.version.number, version.version.artifactID, err)
+		}
+		if version.carries, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+			return fmt.Errorf("read the carried reviews of version %d of %s: %w", version.version.number, version.version.artifactID, err)
+		}
+	}
+	for index, version := range owed {
+		if err := write(ctx, tx, func(b *store.WriteBatch) error {
+			queueFilledDigest(b, version)
+			return nil
+		}); err != nil {
+			return err
+		}
+		artifactID, number := version.version.artifactID, version.version.number
+		payload, latest, err := readDigestVerdict(ctx, tx, artifactID, version.name, number, version.record.Digest, version.carries)
+		if err != nil {
+			return err
+		}
+		if err := s.appendDigestEvent(ctx, tx, version.issue, payload); err != nil {
+			return err
+		}
+		if closeRequests && latest && payload.ApprovalCurrent && payload.ApprovedVersion != nil {
+			owed[index].approvedVersion = *payload.ApprovedVersion
+		}
+	}
+	for _, version := range owed {
+		if version.approvedVersion > 0 && version.approvedVersion < version.version.number {
+			if err := s.closeSatisfiedApprovalRequests(ctx, tx, version, owed); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// closeSatisfiedApprovalRequests retracts requests superseded by the standing approval. The
+// issue's owner lock protects the open rows, and the fill batches their resolutions with the
+// digests. Version can already have been moved by the write; RequestedVersion records the
+// version actually handed to the reviewer.
+func (s *Service) closeSatisfiedApprovalRequests(ctx context.Context, tx pgx.Tx, version owedDigest, filled []owedDigest) error {
+	id, number := version.version.artifactID, version.version.number
+	rows, err := tx.Query(ctx, `
+		select `+AskColumns+` from asks a
+		where a.issue_key = $1 and a.kind = 'approval' and a.state = 'open'
+		  and `+ApprovalDocumentsJSONPath+` ? $2
+		order by a.id
+	`, version.issue, id)
+	if err != nil {
+		return fmt.Errorf("read approval requests superseded by version %d of %s: %w", number, id, err)
+	}
+	requests, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.Ask, error) { return ScanAsk(row) })
+	if err != nil {
+		return err
+	}
+	ledger := queueFor(ctx, tx)
+	for _, ask := range requests {
+		if _, resolved := ledger.settledAsks[ask.ID]; resolved {
+			continue
+		}
+		document := ask.Approval.Document(id)
+		if document == nil || document.RequestedVersion >= number || document.Version > number {
+			continue
+		}
+		allStand, err := otherApprovalDocumentsStand(ctx, tx, ask.Approval.Documents, id, filled)
+		if err != nil {
+			return err
+		}
+		if !allStand {
+			continue
+		}
+		reason := fmt.Sprintf("No longer needed: %s version %d matches the standing approval of version %d.", version.name, number, version.approvedVersion)
+		var held graphstore.Uncaused
+		resolved, err := WriteAskResolution(ctx, tx, ask, "retracted", reason, DigestFillActor, &held)
+		if err != nil {
+			return err
+		}
+		event := model.Event{
+			IssueKey: ask.IssueKey, ArtifactID: ask.ArtifactID, Type: "ask.resolved", Actor: DigestFillActor,
+			Payload: model.NewAskEventPayload(resolved, model.ReferenceChanges{}),
+		}
+		if err := write(ctx, tx, func(b *store.WriteBatch) error {
+			if err := s.events.QueueAppendWithLogins(b, event, events.ThreadLoginsOf(ask.ID), eventSink(ctx)); err != nil {
+				return err
+			}
+			graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+			graphstore.QueueHeads(b, graphstore.HeldHeads(held))
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// A shared request is no longer needed only if its other documents stand too. Use the verdict
+// of this batch for a document it filled, rather than the markdown digest still in the store.
+func otherApprovalDocumentsStand(ctx context.Context, tx pgx.Tx, documents []model.AskApprovalDocument, known string, filled []owedDigest) (bool, error) {
+	for _, document := range documents {
+		if document.ArtifactID == known {
+			continue
+		}
+		if index := slices.IndexFunc(filled, func(version owedDigest) bool {
+			return version.version.artifactID == document.ArtifactID && version.version.number == document.Version
+		}); index >= 0 {
+			if filled[index].approvedVersion == 0 {
+				return false, nil
+			}
+			continue
+		}
+		if stands, err := NamedDocumentsApproved(ctx, tx, []model.AskApprovalDocument{document}, "", false); err != nil || !stands {
+			return stands, err
+		}
+	}
+	return true, nil
 }
 
 // queueFilledDigest queues on b the fill of version's record digest: the digest on its
@@ -1772,88 +1736,59 @@ func queueFilledDigest(b *store.WriteBatch, version owedDigest) {
 	}
 }
 
-// carryApprovalBeforeFill carries, in the fill's transaction, the newest review of version's
-// document to version, whose record digest the fill just read (owedDigest.record), in two cases.
-// An approval of that same version that no carry wrote - a person's own, or a plan review's, given
-// between the version's COMMIT and the fill, which pinned the digest of the version's stored
-// markdown - carries through carryNewestApproval, on that function's own conditions, as R14's pass
-// carries an approval of a deferred version, and the carry's reason names the version itself
-// (restoredReason); a carry the version's own write queued is repinned instead
-// (queueFilledDigest). An approval of an earlier version carries where the version's record is the
-// one it stands on (earlierCarryOpen, carryUnmovedEarlier).
-func (s *Service) carryApprovalBeforeFill(ctx context.Context, tx pgx.Tx, version owedDigest) error {
-	id, number := version.version.artifactID, version.version.number
-	newest, err := NewestReview(ctx, tx, id)
-	if err != nil || newest == nil || newest.State != "approved" {
+// queueDigestEvent queues in tx's write phase (write) the artifact.digest of version number of
+// the document artifactID, named name, of the issue issueKey, whose query's record digests to
+// digest (R14's hash gate), in DigestFillActor's name: whether the document's newest review stands
+// as an approval at that digest (approval_current, ApprovalStand.Approves, with the digest as the
+// current one), and that review's version and the digest it stands on where it is an approval.
+// repinned names the carried reviews this transaction repins to digest (queueFilledDigest), whose
+// pin is digest from then on; a review this transaction queued (Ledger.PendingReview) - the first
+// pass's carry to the version itself (carryFirstStated) - is the newest, pinned to digest by its
+// insert. Its reads run where it is called, tx's read phase.
+func (s *Service) queueDigestEvent(ctx context.Context, tx pgx.Tx, issueKey, artifactID, name string, number int, digest string, repinned []string) error {
+	payload, _, err := readDigestVerdict(ctx, tx, artifactID, name, number, digest, repinned)
+	if err != nil {
 		return err
 	}
-	if newest.Version < number {
-		if open, err := earlierCarryOpen(ctx, tx, id, number); err != nil || !open {
-			return err
+	return s.appendDigestEvent(ctx, tx, issueKey, payload)
+}
+
+// readDigestVerdict evaluates approval at number's filled digest and identifies the newest version.
+func readDigestVerdict(ctx context.Context, tx pgx.Tx, artifactID, name string, number int, digest string, repinned []string) (model.ArtifactDigestEventPayload, bool, error) {
+	payload := model.ArtifactDigestEventPayload{ArtifactID: artifactID, Name: name, Version: number, ContentSHA256: digest}
+	review, stand, err := newestReviewStand(ctx, tx, artifactID)
+	if err != nil {
+		return payload, false, err
+	}
+	if pending, queued := queueFor(ctx, tx).PendingReview(artifactID); queued {
+		review, stand.Query, stand.Pin = &pending, true, &digest
+	} else if review != nil && slices.Contains(repinned, review.ID) {
+		stand.Pin = &digest
+	}
+	if review != nil && review.State == "approved" {
+		if review.Version == number {
+			stand.DifferentDefinition = false
+		} else if stand.Query && number != stand.Latest {
+			approved, target, err := readVersionDefinitions(ctx, tx, artifactID, review.Version, number)
+			if err != nil {
+				return payload, false, err
+			}
+			stand.DifferentDefinition = (approved == nil) != (target == nil) ||
+				(approved != nil && target != nil && *approved != *target)
 		}
-		return s.carryUnmovedEarlier(ctx, tx, id, number, *newest, version.record.Digest, func() (string, error) { return version.markdown, nil })
+		stand.Current = &digest
+		payload.ApprovalCurrent = stand.Approves(review.Version, number)
+		approved := review.Version
+		payload.ApprovedVersion, payload.ApprovedSHA256 = &approved, cmp.Or(stand.Pin, review.ContentSHA256)
 	}
-	if newest.Version != number || newest.CarriedFromVersion != nil {
-		return nil
-	}
-	tree, err := pmdoc.ParseRendering(version.markdown)
-	if err != nil {
-		return skipUnreadableVersion(id, number, err)
-	}
-	return carryNewestApproval(ctx, tx, s.events, id, number, version.markdown, tree, *newest, s.serverURL, decisionStepCases{}, eventSink(ctx))
+	return payload, stand.Latest == number, nil
 }
 
-// earlierCarryOpen reports whether an approval of an earlier version may carry to version number of
-// the document id (carryUnmovedEarlier): no carry of this transaction wrote one to the document
-// already (refuseSecondCarry's rule), and the version is its document's latest, on an open issue -
-// a closed issue's settlement writes its versions with no carry (versionWrite.closedIssue). Its
-// caller reads it before it reads the version's markdown, which a version it refuses never needs.
-func earlierCarryOpen(ctx context.Context, tx pgx.Tx, id string, number int) (bool, error) {
-	if _, carried := queueFor(ctx, tx).PendingReview(id); carried {
-		return false, nil
-	}
-	var open bool
-	var latest int
-	if err := tx.QueryRow(ctx, `
-		select coalesce((select i.closed_at is null from issues i where i.key = a.issue_key), false),
-		       coalesce((select max(v.number) from artifact_versions v where v.artifact_id = a.id), 0)
-		from artifacts a where a.id = $1::uuid`, id).Scan(&open, &latest); err != nil {
-		return false, fmt.Errorf("read whether version %d of %s is its latest on an open issue: %w", number, id, err)
-	}
-	return open && latest == number, nil
-}
-
-// carryUnmovedEarlier carries newest, the document's newest review and an approval of a version
-// before number, to version number of the document id, only where digest - the version's record
-// digest, which the fill read at the version's cut or the first pass of a deferred version recorded
-// on its row - is the digest newest stands on (knownRecord, recordUnmoved), which it reads before
-// it reads the version's text through text: R14 carries every version whose record digest is the
-// approved one, and no version whose record moved, whatever its text. This is a version whose own
-// write's rule passed over it, unable to vouch for its record in its read phase: a mark of the
-// issue's queries stood, or the version before it still owed its digest (recordUnmoved's P1 and
-// P2), or the write hands its rule no facts (versionWriteRecord: the node route's move, the
-// decisions step), or its pass was deferred (R15), so no pass of its write stated it. Its caller
-// runs it only where earlierCarryOpen answers true, and once the digest holds it carries through
-// carryNewestApprovalNaming on that function's own conditions: the restore, carryVerdict's cases
-// and the record case, in that order, each reason naming the version the person approved
-// (approvalOrigin). Its artifact.approved follows the version's artifact.version, which the
-// version's write appended before its COMMIT, as the fill's carry of an approval given before the
-// fill does.
-func (s *Service) carryUnmovedEarlier(ctx context.Context, tx pgx.Tx, id string, number int, newest model.ArtifactReview, digest string, text func() (string, error)) error {
-	record := knownRecord(digest)
-	unmoved, err := recordUnmoved(ctx, tx, id, number, newest, record)
-	if err != nil || !unmoved {
-		return err
-	}
-	markdown, err := text()
-	if err != nil {
-		return err
-	}
-	tree, err := pmdoc.ParseRendering(markdown)
-	if err != nil {
-		return skipUnreadableVersion(id, number, err)
-	}
-	return carryNewestApprovalNaming(ctx, tx, s.events, id, number, markdown, tree, newest, s.serverURL, decisionStepCases{}, "", record, eventSink(ctx))
+func (s *Service) appendDigestEvent(ctx context.Context, tx pgx.Tx, issueKey string, payload model.ArtifactDigestEventPayload) error {
+	event := model.Event{IssueKey: &issueKey, Type: model.ArtifactDigestEventType, Actor: DigestFillActor, Payload: payload}
+	return write(ctx, tx, func(b *store.WriteBatch) error {
+		return s.events.QueueAppend(b, event, eventSink(ctx))
+	})
 }
 
 // HoldFills sets hold to run at the start of every fill of the record digests a write left owed
@@ -1941,9 +1876,10 @@ func (s *Service) fillLostDigests(ctx context.Context) error {
 // census counts the row in a class of its own and refuses while it does. Each tick of the
 // reconciliation begins with the repair of the rows already marked (repairTreeMismatches), which
 // restates such a version from its stored bytes, or closes its mark where a later version's pass
-// has moved its document's blocks past it. A pass that gives a version's row its time first runs
-// the carry of R14 to it once the row stands (carryFirstStated), so an approval of a deferred or
-// a repaired version, taken before the pass, stands on that version's record.
+// has moved its document's blocks past it. A pass that gives a version's row its time and its
+// record's digest first runs the carry of R14 to it once the row stands, and appends the version's
+// artifact.digest (carryFirstStated), so an approval of a deferred or a repaired version, taken
+// before the pass, stands on that version's record.
 
 // recordTreeMismatch records on the ledger that runs tx's write phase that the pass of tx that
 // stated versions stated a tree that does not render as each version's stored markdown: each one
@@ -1979,74 +1915,50 @@ func queueTreeMismatch(b *store.WriteBatch, version statedVersion) {
 
 // carryFirstStated runs, in tx, the carry of R14 to each of versions, the versions whose
 // version_renders row a pass of tx gave its time and its record's digest first
-// (Ledger.firstStated), once those rows stand: the insert trigger of artifact_reviews pins the
-// digest artifact_version_text_sha256 answers at the insert, which is the record's from the row
-// on. Where the document's newest review is an approval of that same version - a person's or a
-// plan review's, or a carry the version's own write made to it - it carries through
-// carryNewestApproval, on that function's own conditions: every ask block of the version agrees
-// with its node, and then the render as of the row's time (RenderVersion) is compared with the
-// stored markdown the approval approved, the version's own (restoresApprovedText), so a render
-// equal to it carries with the restore's reason (restoredReason), naming the version the person
-// approved (approvalOrigin), and one that differs carries only by carryVerdict's cases. Where it
-// is an approval of an earlier version, the version's own write passed over its record, which no
-// pass of that write stated (R15), and the first pass carries it where the record digest it
-// recorded is the one that approval stands on (carryUnmovedEarlier), reading the version's render
-// only once the digest and earlierCarryOpen leave a carry possible. Its writes go on a write phase
-// of their own in tx (queueWrites), and it answers the events they appended, for its caller to
-// publish once tx has committed.
+// (Ledger.firstStated), once those rows stand, and appends each one's artifact.digest
+// (queueDigestEvent, R14's hash gate). The insert trigger of artifact_reviews pins the digest
+// artifact_version_text_sha256 answers at the insert, which is the record's from the row on. Where
+// the document's newest review is an approval of that same version - a person's or a plan
+// review's, given while its row held no time and so pinned the digest of its stored markdown - it
+// carries through carryNewestApproval, on that function's own conditions: every ask block of the
+// version agrees with its node, and then the render as of the row's time (RenderVersion) is
+// compared with the stored markdown the approval approved, the version's own
+// (restoresApprovedText), so a render equal to it carries with the restore's reason
+// (restoredReason), naming the version the person approved (approvalOrigin), and one that differs
+// carries only by carryVerdict's cases. That carry moves one version's approval from the digest of
+// its stored markdown onto its record's digest, at the same version, as the conversion's carry
+// moves a standing approval onto the record at the converted version; it never carries an approval
+// from one version to another. A version whose row holds no record's digest, of a document no
+// query's record covers, takes neither. Its writes go on a write phase of their own in tx
+// (queueWrites), and it answers the events they appended, for its caller to publish once tx has
+// committed.
 func (s *Service) carryFirstStated(ctx context.Context, tx pgx.Tx, versions []firstStatedVersion) ([]model.Event, error) {
 	if len(versions) == 0 {
 		return nil, nil
 	}
 	ctx, ledger := queueWrites(ctx, tx)
 	for _, stated := range versions {
+		if stated.digest == "" {
+			continue
+		}
 		id, number := stated.version.artifactID, stated.version.number
 		newest, err := NewestReview(ctx, tx, id)
 		if err != nil {
 			return nil, err
 		}
-		if newest == nil || newest.State != "approved" || newest.Version > number {
-			continue
-		}
-		if err := refuseSecondCarry(ctx, tx, id); err != nil {
-			return nil, err
-		}
-		if newest.Version < number {
-			// The digest the pass recorded on the version's row, its record's at the pass's cut,
-			// is what an approval of an earlier version carries by here. A version no query's
-			// record covers holds none: the restore and carryVerdict's cases alone carry an
-			// approval to it, and its own write already weighed them (carryApproval), so the pass
-			// carries nothing to it.
-			if stated.digest == "" {
-				continue
-			}
-			open, err := earlierCarryOpen(ctx, tx, id, number)
-			if err != nil {
+		if newest != nil && newest.State == "approved" && newest.Version == number {
+			if err := s.carryStatedApproval(ctx, tx, id, number, *newest); err != nil {
 				return nil, err
 			}
-			if !open {
-				continue
-			}
-			if err := s.carryUnmovedEarlier(ctx, tx, id, number, *newest, stated.digest, func() (string, error) {
-				rendered, err := RenderVersion(ctx, tx, model.ServerReader, id, number)
-				return rendered.Markdown, err
-			}); err != nil {
-				return nil, err
-			}
-			continue
 		}
-		rendered, err := RenderVersion(ctx, tx, model.ServerReader, id, number)
+		document, err := reviewedArtifact(ctx, tx, id)
 		if err != nil {
 			return nil, err
 		}
-		tree, err := pmdoc.ParseRendering(rendered.Markdown)
-		if err != nil {
-			if err := skipUnreadableVersion(id, number, err); err != nil {
-				return nil, err
-			}
+		if document.IssueKey == nil {
 			continue
 		}
-		if err := carryNewestApproval(ctx, tx, s.events, id, number, rendered.Markdown, tree, *newest, s.serverURL, decisionStepCases{}, eventSink(ctx)); err != nil {
+		if err := s.queueDigestEvent(ctx, tx, *document.IssueKey, id, document.Name, number, stated.digest, nil); err != nil {
 			return nil, err
 		}
 	}
@@ -2054,6 +1966,24 @@ func (s *Service) carryFirstStated(ctx context.Context, tx pgx.Tx, versions []fi
 		return nil, err
 	}
 	return ledger.events, nil
+}
+
+// carryStatedApproval is carryFirstStated's carry of newest, an approval of version number of the
+// document id itself, to that version once its row holds its record's digest, weighed against the
+// version's render as of the row's time.
+func (s *Service) carryStatedApproval(ctx context.Context, tx pgx.Tx, id string, number int, newest model.ArtifactReview) error {
+	if err := refuseSecondCarry(ctx, tx, id); err != nil {
+		return err
+	}
+	rendered, err := RenderVersion(ctx, tx, model.ServerReader, id, number)
+	if err != nil {
+		return err
+	}
+	tree, err := pmdoc.ParseRendering(rendered.Markdown)
+	if err != nil {
+		return skipUnreadableVersion(id, number, err)
+	}
+	return carryNewestApproval(ctx, tx, s.events, id, number, rendered.Markdown, tree, newest, s.serverURL, decisionStepCases{}, eventSink(ctx))
 }
 
 // commitPass ends the transaction tx of a reconciliation's pass (indexOwedDocument, indexOwedRoom,

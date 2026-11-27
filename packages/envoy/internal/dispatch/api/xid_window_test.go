@@ -406,21 +406,13 @@ func xidWindowUploadReplace(t *testing.T, f *xidFixture) {
 	})
 }
 
-// An upload of the text a person approved carries his approval to the version it writes
-// (docs.CarryUploadedApproval). Everything that carry is decided on - the document's newest
-// review, the approved version's text, its decision blocks' rows and the open approval request -
-// is read in the route's read phase, and what it writes - the request's answer, when one is open,
-// and the review - is queued with the route's own writes. The restore checks the record before its
-// COMMIT (R14): its window is root R29's second exception the owner approved, 18 statements, the
-// batch up to the version's insert, the savepoint the write phase takes before it, the batch from
-// it on with the version's version_renders row pinned to the approval's digest, the read of the
-// spec query's record at one cut, the update giving the pinned row its cut, the savepoint's
-// release, the settlement credit's batch and the COMMIT (restoreWindowStatements). The spec's
-// revision token stands in a requirement (revisionRequirementSpec), so the upload that bumps it
-// moves the spec's record and stales the approval: R14 covers the approval by the Spec query's
-// record, which a bump of the token in a paragraph does not move, so the record carry would carry
-// the approval to that upload's version, and the measured upload, whose text is not that carried
-// version's, would carry it by the record again and take no restore's window.
+// An upload of the text a person approved, on a converted issue, writes no carry (R14's hash gate):
+// its version commits in main's batched window, storetest.XidBatchedWindow, the write phase's one
+// batch and its COMMIT, as every other write of a converted query document does, and owes its
+// record's digest to the fill after the COMMIT. The spec's revision token stands in a requirement
+// (revisionRequirementSpec), so the upload that bumps it moves the spec's record and stales the
+// approval, and the measured restore gives the approval its digest back: it stands again by that
+// digest, with no carried review beside alice's own.
 func TestXidWindowUploadRestoringTheApprovedText(t *testing.T) {
 	// Not parallel: the xid rig measures only in a test that runs alone in the process.
 	spec, _ := xidSpec(1)
@@ -438,48 +430,18 @@ func TestXidWindowUploadRestoringTheApprovedText(t *testing.T) {
 	requireNoCarry(t, f.handler, f.specID, 1, "stale")
 	// The restore names the token of the version it replaces, read before the measured request.
 	base := uploadBase(t, f.handler, f.specID)
-	report := f.measure(t, http.StatusCreated, storetest.XidWindowOf(18,
-		"the write phase's batch up to the restored version's insert, the savepoint the write phase takes before that insert, "+
-			"the batch from the insert on - the version's version_renders row pinned to the approval's digest, the carried review and its artifact.approved before the version's artifact.version - "+
-			"the read of the spec query's record at one cut once the batch has run - the cut, the reads of the issue's conversation, the read of the items' rows, the one read of the tree, the one read of the issues above the issue and of whether it is a view, and the read of the values and relations of the one node the spec query takes, its requirement rv - "+
-			"the update giving the pinned version_renders row the cut (R14, R15), the release of the savepoint where the record is the approval's digest, "+
-			"the batch of the settlement credit's statements, and the COMMIT ending them"), func(h http.Handler) *httptest.ResponseRecorder {
+	f.measureBatched(t, http.StatusCreated, func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPost, "/api/v1/issues/"+f.issueKey+"/artifacts", map[string]any{
 			"name": "spec.md", "content": approved, "actor": sessionActor(), "precondition": base,
 		})
 	})
-	requireRestoreWindowStatements(t, report)
-	// The measured request is the restore only while it carries the approval: a window measured
-	// over a route that carried nothing would report a window this write path never ran in.
+	// The measured request is the restore only while it wrote the approved text again, which the
+	// version's digest, once its fill has run, shows by standing where alice approved it.
 	waitForArtifactVersion(t, f.handler, f.specID, approval.Version+2)
-	requireReviewCarriedWith(t, f.handler, f.specID, approval.Version+2, approval.Version, restoreSentence(approval.Version), nil)
-}
-
-// restoreWindowStatements are the statements that tell the restore's window from every other
-// write's (R14): the savepoint the write phase takes before the restored version's insert, the
-// update giving the version_renders row pinned to the approval's digest its cut once the record
-// has been read, and the savepoint's release. The pin itself goes in the batch from the insert on,
-// which the rig shows by its first statement.
-var restoreWindowStatements = []string{"savepoint ", "update version_renders set at", "release savepoint"}
-
-// requireRestoreWindowStatements fails t unless one window of report holds each of
-// restoreWindowStatements, in that order: a restore that checked no record before its COMMIT ran
-// outside the window the owner approved for it.
-func requireRestoreWindowStatements(t *testing.T, report *storetest.XidReport) {
-	t.Helper()
-	for _, window := range report.Windows {
-		next := 0
-		for _, statement := range window.Statements {
-			if next < len(restoreWindowStatements) && strings.Contains(normalizedStatement(statement.SQL), restoreWindowStatements[next]) {
-				next++
-			}
-		}
-		if next == len(restoreWindowStatements) {
-			t.Logf("the restore's window holds %d statements: %s", len(window.Statements), window.Summary())
-			return
-		}
+	requireNoCarry(t, f.handler, f.specID, 1, "approved")
+	if got := readApproval(t, f.handler, f.specID).Approval; got == nil || got.Version == nil || *got.Version != approval.Version {
+		t.Fatalf("the approval after the restore reads %#v, want alice's own approval of version %d standing by its digest", got, approval.Version)
 	}
-	t.Errorf("no window of the restore holds, in order, %q: the restore did not pin the version's row and check its record before its COMMIT", restoreWindowStatements)
 }
 
 // A named version of a document changed since its last version captures and renders the live

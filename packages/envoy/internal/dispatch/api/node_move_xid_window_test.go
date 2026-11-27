@@ -3,7 +3,6 @@
 package api
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -60,10 +59,8 @@ const (
 )
 
 // nodeRouteDecision is the decision and the reading it closes with that the fixture's spec holds
-// after its requirement, written as the reading tests' spec writes them (readingSpec). The
-// reading is the whole change a delete makes that the approval carry's reading case carries an
-// approval across (docs.readingCase): a person's approval of the spec stands at the version the
-// delete writes.
+// after its requirement. Its reading contributes to the Decisions record, but not the spec's
+// approval record, so deleting it leaves the existing spec approval standing.
 const nodeRouteDecision = "::::decision{#xd1}\n" + readingDecisionOne + "\n\n:::reading{#xr1}\n" + readingOfOne + "\n:::\n::::\n"
 
 // nodeRouteStatements is the statements of window's transaction, each lowered and with its
@@ -120,68 +117,44 @@ type nodeRouteWrite struct {
 
 // nodeRouteStep is one row of the node routes' test: the request it measures (operation and name
 // tell it in the log), the phases of the transactions the request commits, in commit order, and
-// whether the write carries a person's approval to the version it writes. ready reads what the
-// request names and answers the request, before any measurement starts.
+// whether the write starts with an approval. ready reads what the request names and answers the
+// request before any measurement starts.
 type nodeRouteStep struct {
 	name, operation string
 	phases          []string
-	carries         bool
+	underApproval   bool
 	ready           func(t *testing.T) nodeRouteWrite
 }
 
-// digestWords is a record digest as a failure names it: the digest, or "none" where none is held.
-func digestWords(digest *string) string {
-	if digest == nil {
-		return "none"
-	}
-	return *digest
-}
-
-// requireCarriedReview fails t unless the spec holds, one version after approved, the review the
-// delete carried alice's approval with: approved, in her name byte for byte, with the reading
-// case's reason; a row of artifact_review_carries that names approved's version as its source and,
-// once the fill has run, the record digest it repinned that row to - the digest the version's own
-// version_renders row holds, which owes none. A window that merely held the carry's statement
-// would show the approval invoked; this shows it carried, and the fill's repin of it.
-func requireCarriedReview(t *testing.T, f *xidFixture, approved model.ArtifactReview) {
+// requireDeleteKeptApproval reads the hash gate's verdict after the delete: the person reviewed
+// the earlier version, and the new version has the same digest but no synthetic review.
+func requireDeleteKeptApproval(t *testing.T, f *xidFixture, approved model.ArtifactReview) {
 	t.Helper()
-	var approval, carried *servedReview
-	reviews := documentReviews(t, f.handler, f.specID)
-	for index := range reviews {
-		switch review := &reviews[index]; {
-		case review.State != "approved":
-		case review.Version == approved.Version && approval == nil:
-			approval = review
-		case review.Version > approved.Version && carried == nil:
-			carried = review
+	requireNoCarry(t, f.handler, f.specID, 1, "approved")
+	version := approved.Version + 1
+	read := artifactDigestApproval(t, f.handler, f.specID).Approval
+	if read == nil || read.Version == nil || *read.Version != approved.Version || read.LatestVersion != version ||
+		read.DigestOwed == nil || *read.DigestOwed || read.CurrentSHA256 == nil || approved.ContentSHA256 == nil ||
+		*read.CurrentSHA256 != *approved.ContentSHA256 {
+		t.Fatalf("after the delete the spec answers %+v, want approval of version %d standing at version %d with its original digest and none owed",
+			read, approved.Version, version)
+	}
+	digests := 0
+	for _, event := range loggedEvents(t, f.database, "artifact.digest", f.specID) {
+		if event.payload["version"] != float64(version) {
+			continue
+		}
+		digests++
+		if event.payload["approval_current"] != true || event.payload["content_sha256"] != *approved.ContentSHA256 {
+			t.Errorf("version %d digest payload = %v, want approval_current true and the approval's digest", version, event.payload)
 		}
 	}
-	if approval == nil || carried == nil {
-		t.Fatalf("the spec holds %d reviews, want alice's approval of version %d and the review the delete carried it with", len(reviews), approved.Version)
+	if digests != 1 {
+		t.Errorf("version %d holds %d artifact.digest events, want one", version, digests)
 	}
-	if carried.Version != approved.Version+1 {
-		t.Errorf("the carried review names version %d, want %d, the one version the delete wrote", carried.Version, approved.Version+1)
+	if events := loggedEvents(t, f.database, "artifact.approved", f.specID); len(events) != 1 {
+		t.Errorf("the delete left %d approval events, want the person's event alone", len(events))
 	}
-	if carried.Reason == nil || *carried.Reason != readingCarrySentence(approved.Version) {
-		t.Errorf("the carried review's reason is %v, want %q", carried.Reason, readingCarrySentence(approved.Version))
-	}
-	if string(carried.Actor) != string(approval.Actor) {
-		t.Errorf("the carried review's actor is %s, want the approval's %s", carried.Actor, approval.Actor)
-	}
-	if from, held := carriedFromRow(t, f.database, carried.ID); !held || from != approved.Version {
-		t.Errorf("the carried review holds %s, want the artifact_review_carries row naming version %d", carriedFromRowWords(from, held), approved.Version)
-	}
-	var pinned *string
-	if err := f.database.Pool.QueryRow(context.Background(),
-		`select record_sha256 from artifact_review_carries where review_id = $1::uuid`, carried.ID).Scan(&pinned); err != nil {
-		t.Fatalf("read the record digest the carried review %s was repinned to: %v", carried.ID, err)
-	}
-	row := versionFillRowOf(t, f.database, f.specID, carried.Version)
-	if row.owed || row.digest == nil || pinned == nil || *pinned != *row.digest {
-		t.Errorf("the carried review of version %d is pinned to the record digest %s, want the %s its version_renders row holds, which owes none (owed %t)",
-			carried.Version, digestWords(pinned), digestWords(row.digest), row.owed)
-	}
-	t.Logf("the delete carried alice's approval of version %d to version %d, review %s, and the fill repinned it to the record digest of that version", approved.Version, carried.Version, carried.ID)
 }
 
 // TestXidWindowsOfTheNodeRoutesTheDrainAndTheFill measures, on the large spec of the xid fixture
@@ -199,12 +172,10 @@ func requireCarriedReview(t *testing.T, f *xidFixture, approved model.ArtifactRe
 //     changes the spec query's record and writes the spec's version in the same transaction, a
 //     version of the document whose text lost a block, which its fill and the drain follow. Its
 //     transactions: node-delete, fill, drain, and no review carried, since no approval stands.
-//   - DELETE, a delete that carries an approval: alice approves the spec, and the reading is taken
-//     out of the decision, which changes the decisions query's record and writes the spec's
-//     version, whose only change from the approved one is the reading, so the approval carries
-//     (docs.readingCase). Its transactions: node-delete, whose batch records the carried review,
-//     then fill, which repins that review to the record digest, then drain; the review itself is
-//     read back (requireCarriedReview).
+//   - DELETE under an approval: alice approves the spec, and the reading is taken out of the
+//     decision, which changes the Decisions record but not the spec's approval digest. The
+//     measured phases remain node-delete, fill, and drain, none of which writes a carry or
+//     repins one. The digest event and the artifact read keep Alice's original review current.
 //
 // Each request's committed transactions are told apart by their statements (nodeRoutePhaseOf),
 // each named with its operation, its phase and its window, and each held to
@@ -272,7 +243,7 @@ func TestXidWindowsOfTheNodeRoutesTheDrainAndTheFill(t *testing.T) {
 		{name: "flat move", operation: patchOperation, phases: moveFlow, ready: moveUnder(graphstore.KindLens + "/" + lens.ID)},
 		{name: "move that writes a version", operation: patchOperation, phases: versionFlow, ready: moveUnder(criterion)},
 		{name: "delete that writes a version", operation: deleteOperation, phases: deleteFlow, ready: remove(requirement)},
-		{name: "delete that carries an approval", operation: deleteOperation, phases: deleteFlow, carries: true, ready: approvedThenRemove(reading)},
+		{name: "delete under an approval", operation: deleteOperation, phases: deleteFlow, underApproval: true, ready: approvedThenRemove(reading)},
 	}
 	for _, step := range steps {
 		t.Run(step.name, func(t *testing.T) {
@@ -283,7 +254,7 @@ func TestXidWindowsOfTheNodeRoutesTheDrainAndTheFill(t *testing.T) {
 			awaitQuietDatabase(t, f.database, false)
 			report := f.measure(t, http.StatusOK, storetest.XidBatchedWindow, write.request)
 			var phases []string
-			for index, window := range report.Windows {
+			for _, window := range report.Windows {
 				sql := nodeRouteStatements(window)
 				phase := nodeRoutePhaseOf(sql)
 				phases = append(phases, phase)
@@ -291,15 +262,9 @@ func TestXidWindowsOfTheNodeRoutesTheDrainAndTheFill(t *testing.T) {
 				for _, broken := range window.Violations() {
 					t.Errorf("%s, %s: phase %s: xid window violation: %s", step.operation, step.name, phase, broken)
 				}
-				// The carry is recorded in the batch of the write's own transaction, the first, and
-				// repinned in the fill's: no other window of the request may hold either statement.
-				if want := step.carries && index == 0; strings.Contains(sql, sqlRecordsCarry) != want {
-					t.Errorf("%s, %s: phase %s: the window records a carried review: %t, want %t",
-						step.operation, step.name, phase, !want, want)
-				}
-				if want := step.carries && phase == phaseFill; strings.Contains(sql, sqlRepinsCarry) != want {
-					t.Errorf("%s, %s: phase %s: the window repins a carried review: %t, want %t",
-						step.operation, step.name, phase, !want, want)
+				if strings.Contains(sql, sqlRecordsCarry) || strings.Contains(sql, sqlRepinsCarry) {
+					t.Errorf("%s, %s: phase %s recorded or repinned a carried review on a converted query document",
+						step.operation, step.name, phase)
 				}
 			}
 			if !slices.Equal(phases, step.phases) {
@@ -309,8 +274,8 @@ func TestXidWindowsOfTheNodeRoutesTheDrainAndTheFill(t *testing.T) {
 			if write.after != nil {
 				write.after(t)
 			}
-			if step.carries {
-				requireCarriedReview(t, f, approved)
+			if step.underApproval {
+				requireDeleteKeptApproval(t, f, approved)
 			}
 		})
 	}

@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 
@@ -749,7 +748,7 @@ func (r *docsWriterRig) queryDrain(serverURL string) docsWriter {
 			settleVerification(t, ctx, r.database, r.service, serverURL, room)
 			stated := savedVersion(t, r.database, room.verification)
 			requireStatedRow(t, r.database, room.issue, graphstore.QueryVerification, room.verification, stated)
-			leaveResultOwed(t, r.database, room)
+			leaveCheckPlacementOwed(t, r.database, room, refs.PlacementStored)
 			versions := r.versionCount(t, room.verification)
 			return docsRun{document: room.verification, issue: room.issue, tree: room.tree, write: func() error {
 				if _, found, err := r.service.drainMark(ctx, room.issue, requestDrain, 0); err != nil || !found {
@@ -795,47 +794,6 @@ func settleVerification(t *testing.T, ctx context.Context, database *store.Store
 		t.Fatalf("a peer's copy of %s's room: %v", room.issue, err)
 	}
 	settleLandedWrite(t, ctx, database, service, room, stored)
-}
-
-// leaveResultOwed records a result of the check c1 of room's Verification document as the results
-// route states one (graphstore.ResultFacts), with the mark of the room issue's queries in the same
-// transaction (QueueQueryMark), and drains nothing: the mark stands for the drain under test, whose
-// version of the Verification document the moved record owes. recordResult is this function
-// followed by the drain (DrainOwedQueries).
-func leaveResultOwed(t *testing.T, database *store.Store, room issueRoom) {
-	t.Helper()
-	ctx := context.Background()
-	treeRef := refKeyOf(t, database, room.tree)
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		var at time.Time
-		if err := tx.QueryRow(ctx, `select clock_timestamp()`).Scan(&at); err != nil {
-			return err
-		}
-		nodes, tuples, ok := graphstore.ResultFacts(graphstore.Result{
-			ID: uuid.NewString(), Project: "DOC", Check: treeRef + "#c1",
-			Verdict: "pass", Surface: "cli", Run: "go test ./...", Observed: "The first check holds.",
-			Recorder: model.Actor{Kind: "user", ID: "alice"}, At: at, Event: graphstore.NoEvent,
-		})
-		if !ok {
-			return fmt.Errorf("the result of %s#c1 is past the store's bound", treeRef)
-		}
-		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
-			return err
-		}
-		var marked bool
-		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-			QueueQueryMark(b, room.issue, graphstore.NoEvent, &marked)
-			return nil
-		}); err != nil {
-			return err
-		}
-		if !marked {
-			return fmt.Errorf("%s took no mark of its queries owed", room.issue)
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("record a result of %s#c1: %v", treeRef, err)
-	}
 }
 
 // ownerStep is the owner lock of the rig's documents and their comments, issue CORE-1's, which

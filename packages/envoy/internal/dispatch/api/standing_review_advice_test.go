@@ -60,12 +60,14 @@ func askAnchoredStandingReview(t *testing.T, handler http.Handler, issueKey stri
 // settle nothing for an hour, and the change goes into the live document as an upload's does
 // (replaceDocumentText), so version 1 stays the newest the table holds until a write snapshots
 // the document. It answers the handler, the issue's key, its spec's id and a writer that puts
-// markdown into the live document the same way. The live edit adds a requirement: R14's record
-// carry carries the spec's approval across a change of its paragraph, which the Spec query does
-// not take, so the version a snapshot of that change writes would read approved.
-func approveThenEditLive(t *testing.T, project string) (http.Handler, string, string, func(markdown string)) {
+// markdown into the live document the same way. The live edit changes the record as well as the
+// text, whether approval is by query digest or by the legacy version number.
+func approveThenEditLive(t *testing.T, project string, unconverted bool) (http.Handler, string, string, func(markdown string)) {
 	t.Helper()
 	handler, database, documents := settlingCarryDocuments(t, pastTheRun)
+	if unconverted {
+		holdIssuesUnconverted(t, database)
+	}
 	issue := createInteractionIssue(t, handler, project, "Edited live", restoreSpec)
 	reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", standingReviewReason)
 	editLive := func(markdown string) {
@@ -231,7 +233,7 @@ func TestAskAdviceNamesACarriedReviewAndTheVersionItsReasonGives(t *testing.T) {
 // the text this very write moved past.
 func TestAskAdviceNamesNoReviewOfTheVersionAnAnchorsSnapshotSupersedes(t *testing.T) {
 	t.Parallel()
-	handler, issueKey, _, _ := approveThenEditLive(t, "STANDSNAP")
+	handler, issueKey, _, _ := approveThenEditLive(t, "STANDSNAP", false)
 
 	version, review := askAnchoredStandingReview(t, handler, issueKey)
 	if version != 2 {
@@ -242,28 +244,11 @@ func TestAskAdviceNamesNoReviewOfTheVersionAnAnchorsSnapshotSupersedes(t *testin
 	}
 }
 
-// The live text put back to the text alice approved, the next anchored question's snapshot
-// writes version 3, which holds version 1's text byte for byte, so the restore carries her
-// approval to it in the same transaction (docs.carryApproval). The advice names that carry:
-// alice's approval, pinned to version 3 and naming version 1. The advice reads the stored reviews
-// in the read phase and takes the carry the write phase kept once Commit has returned
-// (docs.Ledger.WrittenReview), and the carry's time is its row's.
-//
-// The same restore over a record that moved since the approval is no restore of what alice
-// approved, whatever its text. A requirement uploaded beside the spec, in the issue's
-// Verification document, is a node of the spec's record - the spec query takes requirements
-// wherever the issue's tree holds them - so the upload's write appends version 4 of the spec,
-// which holds version 3's text over the moved record (R14: each accepted write of the issue's room
-// appends a version of each query whose answer changed), and the record the carry to version 3
-// pinned is no longer the spec's. The live text changed and put back again, the next anchored
-// question's snapshot writes version 6, version 3's text byte for byte: the write phase pins its
-// carry to that digest behind a savepoint, finds the version's record another digest, and drops
-// the carry. The advice names no review: the newest one is the carry to version 3, and the spec is
-// at version 6. Read in the read phase, it would name the carry to version 6 that the write phase
-// dropped.
+// On an unconverted document the anchor's snapshot of the approved text writes the restore
+// carry. The advice names the review the write phase actually recorded.
 func TestAskAdviceNamesTheApprovalAnAnchorsSnapshotCarries(t *testing.T) {
 	t.Parallel()
-	handler, issueKey, artifactID, editLive := approveThenEditLive(t, "STANDBACK")
+	handler, issueKey, artifactID, editLive := approveThenEditLive(t, "STANDLEG", true)
 	if version, _ := askAnchoredStandingReview(t, handler, issueKey); version != 2 {
 		t.Fatalf("the first anchor is pinned to version %d, want 2, the version its snapshot of the live edit writes", version)
 	}
@@ -296,6 +281,26 @@ func TestAskAdviceNamesTheApprovalAnAnchorsSnapshotCarries(t *testing.T) {
 	if review.At.IsZero() || !review.At.Equal(stored[0].CreatedAt) {
 		t.Fatalf("standing review at = %s, want the stored carry's own time %s", review.At, stored[0].CreatedAt)
 	}
+}
+
+// An anchored snapshot also restores a converted spec's original approval by digest. The advice,
+// which names reviews of the exact version it pins, cannot report a new review. Restoring the
+// same markdown after a requirement in another document changes the record leaves it stale.
+func TestAConvertedAnchorSnapshotRestoresStandingApprovalWithoutCarrying(t *testing.T) {
+	t.Parallel()
+	handler, issueKey, artifactID, editLive := approveThenEditLive(t, "STANDBACK", false)
+	if version, _ := askAnchoredStandingReview(t, handler, issueKey); version != 2 {
+		t.Fatalf("the first anchor is pinned to version %d, want 2", version)
+	}
+	editLive(restoreSpec)
+	version, review := askAnchoredStandingReview(t, handler, issueKey)
+	if version != 3 || review != nil {
+		t.Fatalf("the restored anchor pins version %d with review %#v, want version 3 and no carry", version, review)
+	}
+	requireNoCarry(t, handler, artifactID, 1, "approved")
+	if approval := readApproval(t, handler, artifactID).Approval; approval.Version == nil || *approval.Version != 1 || approval.LatestVersion != 3 {
+		t.Fatalf("the restored spec reads approval %+v, want the version 1 review standing at version 3", approval)
+	}
 
 	uploadDocument(t, handler, "/api/v1/issues/"+issueKey, "verification.md", requirementMarkdown("r1", "Each handshake is logged."))
 	waitForArtifactVersion(t, handler, artifactID, 4)
@@ -312,15 +317,9 @@ func TestAskAdviceNamesTheApprovalAnAnchorsSnapshotCarries(t *testing.T) {
 		t.Fatalf("the fourth anchor is pinned to version %d, want 6, the version its snapshot of the restored text writes", version)
 	}
 	if review != nil {
-		t.Fatalf("standing review = %#v, want none: version 6 restores the text of version 3 over another record, so no carry reaches it", review)
+		t.Fatalf("standing review = %#v, want none: version 6 restores the old text over another record", review)
 	}
-	listed = dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/reviews", nil, "alice")
-	if listed.Code != http.StatusOK {
-		t.Fatalf("list reviews: status=%d body=%s", listed.Code, listed.Body.String())
-	}
-	if stored = decodeBody[[]model.ArtifactReview](t, listed); len(stored) != 2 || stored[0].Version != 3 {
-		t.Fatalf("reviews = %#v, want alice's approval and its carry to version 3 alone", stored)
-	}
+	requireNoCarry(t, handler, artifactID, 1, "stale")
 }
 
 // The cases that name no review. Each writes a question on an issue and reads the advice back,

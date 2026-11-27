@@ -121,6 +121,11 @@ func newDeferralDocument(t *testing.T, path deferralPath, above bool) *deferralD
 // that version itself. It answers the version's number.
 func (d *deferralDocument) wrote(t *testing.T, what string, write func()) int {
 	t.Helper()
+	return d.wroteBeforePass(t, what, write, nil)
+}
+
+func (d *deferralDocument) wroteBeforePass(t *testing.T, what string, write func(), beforePass func(int)) int {
+	t.Helper()
 	before := latestVersion(t, d.database, d.spec).Number
 	write()
 	version := latestVersion(t, d.database, d.spec).Number
@@ -140,6 +145,9 @@ func (d *deferralDocument) wrote(t *testing.T, what string, write func()) int {
 	}
 	requireOwedNamed(t, d.handler, d.issueKey, d.spec, version, what)
 	requireUnstatedVersion(t, d.database, d.spec, version)
+	if beforePass != nil {
+		beforePass(version)
+	}
 	reconcileUntilNothingOwed(t, d.handler, d.deps, d.issueKey)
 	requireIndexedAt(t, d.database, d.spec, version)
 	return version
@@ -270,25 +278,15 @@ func (d *deferralDocument) anchoredWrites(t *testing.T) {
 	})
 }
 
-// carriedPin has alice approve the spec's latest version, an edit stale that approval and a browser
-// take the edit back out, so the anchored comment's pin writes the approved text again and carries
-// her approval to it: the version is deferred, so no pass of the pin's transaction records its
-// version_renders row, and the review the carry writes pins the sha256 of the version's stored
-// markdown. The edit adds a requirement, a node the spec query takes, so in an issue room it moves
-// the spec's record and the approval reads stale: a paragraph moves nothing that query takes, and
-// R14's record carry would carry the approval to the edit's version at its first pass. It fails t
-// unless the review the pin's carry wrote - the first review of the version by the order their
-// events committed - holds that digest. The reconciliation that states the version afterwards
-// carries again where its text is the approved text (R14: the newest review is an approval of
-// that same version), and that second review pins the record's digest, whose own check is
-// TestTheTreeRendersAPostCutoverVersionFromItsTuples.
-func (d *deferralDocument) carriedPin(t *testing.T) {
+// pinRestoresApprovedText checks the pin before reconciliation can state its deferred version.
+// A converted spec writes no carried review; an unconverted spec keeps the legacy restore carry.
+func (d *deferralDocument) pinRestoresApprovedText(t *testing.T, converted bool) {
 	t.Helper()
 	approval := reviewDocument(t, d.handler, d.spec, "alice", "approved", "")
 	d.wrote(t, "the edit that stales the approval", func() {
 		d.edit(t, ":::requirement{#taken-back}\nA requirement the browser takes back out.\n:::", "")
 	})
-	pinned := d.wrote(t, "the anchored pin that restores the approved text", func() {
+	d.wroteBeforePass(t, "the anchored pin that restores the approved text", func() {
 		d.browserEdit(t, func(tree *pmdoc.Node) error {
 			tree.Children = tree.Children[:len(tree.Children)-1]
 			return nil
@@ -299,22 +297,29 @@ func (d *deferralDocument) carriedPin(t *testing.T) {
 		if answer.Code != http.StatusCreated {
 			t.Fatalf("the anchored comment restoring the approved text: status=%d body=%s", answer.Code, answer.Body.String())
 		}
+	}, func(pinned int) {
+		markdown := versionMarkdownAt(t, d.database, d.spec, pinned)
+		if approved := versionMarkdownAt(t, d.database, d.spec, approval.Version); markdown != approved {
+			t.Fatalf("the pin's version %d does not restore the text approved at version %d:\n%s", pinned, approval.Version, markdown)
+		}
+		if !converted {
+			requireReviewCarriedWith(t, d.handler, d.spec, pinned, approval.Version, restoreSentence(approval.Version), nil)
+			return
+		}
+		var reviews int
+		if err := d.database.Pool.QueryRow(context.Background(),
+			`select count(*) from artifact_reviews where artifact_id = $1 and version = $2`, d.spec, pinned).Scan(&reviews); err != nil {
+			t.Fatalf("count the reviews of version %d: %v", pinned, err)
+		}
+		if reviews != 0 {
+			t.Fatalf("the anchored pin of deferred version %d wrote %d carried reviews, want none", pinned, reviews)
+		}
+		given := reviewDocument(t, d.handler, d.spec, "alice", "approved", "")
+		want := contentHash(markdown)
+		if given.Version != pinned || given.ContentSHA256 == nil || *given.ContentSHA256 != want {
+			t.Errorf("approval before the pass pins %s at version %d, want version %d's markdown digest %s", valueOrNone(given.ContentSHA256), given.Version, pinned, want)
+		}
 	})
-	markdown := versionMarkdownAt(t, d.database, d.spec, pinned)
-	if approved := versionMarkdownAt(t, d.database, d.spec, approval.Version); markdown != approved {
-		t.Fatalf("the pin's version %d does not hold the text approved at version %d, so it carries nothing:\n%s", pinned, approval.Version, markdown)
-	}
-	want := contentHash(markdown)
-	var digest *string
-	if err := d.database.Pool.QueryRow(context.Background(), `
-		select content_sha256 from artifact_reviews where artifact_id = $1 and version = $2 and state = 'approved'
-		order by event_seq asc nulls last, created_at asc, id asc limit 1`,
-		d.spec, pinned).Scan(&digest); err != nil {
-		t.Fatalf("read the review the pin's carry wrote to version %d: %v", pinned, err)
-	}
-	if digest == nil || *digest != want {
-		t.Errorf("the review the pin's carry wrote to version %d pins the digest %s, want the sha256 of the version's stored markdown, %s", pinned, valueOrNone(digest), want)
-	}
 }
 
 // inlineWrites are the two writes of a version left unmarked, which index their blocks in their own
@@ -360,9 +365,10 @@ func (d *deferralDocument) inlineWrites(t *testing.T) {
 // summary and one with a summary, an anchored comment's and an anchored ask's pin, the accept of a
 // suggestion, the named-version route and the rebuild each leave the spec owed its block index, and
 // the reconciliation then indexes it; under the bound each indexes it in its own write. Above the
-// bound an anchored pin whose version restores the approved text carries the approval with the
-// digest of the version's stored markdown, and a settlement's version and the decisions step's each
-// index the spec in their own transaction, the step's moved_to resolving through its rows.
+// bound an anchored pin whose version restores the approved text writes no carried review, and an
+// approval of that version given before its pass pins the digest of the version's stored markdown,
+// and a settlement's version and the decisions step's each index the spec in their own
+// transaction, the step's moved_to resolving through its rows.
 func TestAnEditAboveTheBoundDefersItsIndex(t *testing.T) {
 	for _, path := range deferralPaths {
 		for _, above := range []bool{true, false} {
@@ -376,7 +382,7 @@ func TestAnEditAboveTheBoundDefersItsIndex(t *testing.T) {
 				if !above || t.Failed() {
 					return
 				}
-				d.carriedPin(t)
+				d.pinRestoresApprovedText(t, path.room)
 				d.inlineWrites(t)
 			})
 		}

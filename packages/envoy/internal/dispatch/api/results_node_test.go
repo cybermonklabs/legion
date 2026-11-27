@@ -787,12 +787,8 @@ func issueVersionCounts(t *testing.T, q queryer, issueKey string) map[string]int
 //     artifact.version;
 //   - prose alone written into the spec: the rendering moved, so the settlement writes one spec
 //     version, and the record did not, so its digest is the one the approval before it pinned (R14);
-//   - a result recorded on the check appends one Verification version, the bytes of the one before
-//     it, holding the record's new digest, its node caused by result.recorded, which the drain
-//     writes once the result has committed and before the route answers (docs.Service.DrainOwedQueries);
-//     its retraction appends another, caused by result.retracted; each is a query version that
-//     renders from the tree as its stored bytes, with no difference the census reads at it, and
-//     neither moves the spec.
+//   - recording and retracting a result move no check node, so the drain leaves the Verification
+//     version, its saved digest and its rendered bytes unchanged (R14).
 //
 // An issue that has not converted takes no version from a result recorded on its check, and the
 // drain of its queries answers nothing for it and writes nothing.
@@ -860,16 +856,13 @@ func TestEveryWriteThatMovesAQuerysRecordAppendsAVersionOfIt(t *testing.T) {
 	}
 	result := decodeBody[recordedResult](t, recorded).Result
 	withResult := newestQueryVersion(t, database, verification.id)
-	if withResult.number != checks.number+1 || withResult.markdown != checks.markdown {
-		t.Fatalf("a recorded result leaves the Verification document at version %d holding %q, want one version after %d holding its bytes, %q",
+	if withResult.number != checks.number || withResult.markdown != checks.markdown {
+		t.Fatalf("a recorded result leaves the Verification document at version %d holding %q, want unchanged version %d holding %q",
 			withResult.number, withResult.markdown, checks.number, checks.markdown)
 	}
-	resultDigest := requireRecordedDigest(t, database, "a recorded result", issue.Key, graphstore.QueryVerification, withResult)
-	if resultDigest == checksDigest {
-		t.Errorf("a recorded result leaves the Verification digest at %s", resultDigest)
+	if resultDigest := requireRecordedDigest(t, database, "a recorded result", issue.Key, graphstore.QueryVerification, withResult); resultDigest != checksDigest {
+		t.Errorf("a recorded result moved the Verification digest from %s to %s", checksDigest, resultDigest)
 	}
-	requireRevisedVersion(t, database, "the Verification document a result revised", verification.id, verification.refKey, withResult.number,
-		eventOf(t, database, "result.recorded", "payload->>'result_id'", result.ID))
 
 	retraction := dispatchRequest(t, handler, http.MethodPost, "/api/v1/results/"+result.ID+"/retract",
 		map[string]any{"reason": "The run measured the wrong build."}, "alice")
@@ -877,15 +870,13 @@ func TestEveryWriteThatMovesAQuerysRecordAppendsAVersionOfIt(t *testing.T) {
 		t.Fatalf("retract the result: status=%d body=%s", retraction.Code, retraction.Body.String())
 	}
 	retracted := newestQueryVersion(t, database, verification.id)
-	if retracted.number != withResult.number+1 || retracted.markdown != withResult.markdown {
-		t.Fatalf("a retraction leaves the Verification document at version %d holding %q, want one version after %d holding its bytes, %q",
-			retracted.number, retracted.markdown, withResult.number, withResult.markdown)
+	if retracted.number != checks.number || retracted.markdown != checks.markdown {
+		t.Fatalf("a retraction leaves the Verification document at version %d holding %q, want unchanged version %d holding %q",
+			retracted.number, retracted.markdown, checks.number, checks.markdown)
 	}
-	if digest := requireRecordedDigest(t, database, "a retraction", issue.Key, graphstore.QueryVerification, retracted); digest == resultDigest {
-		t.Errorf("a retraction leaves the Verification digest at %s", digest)
+	if digest := requireRecordedDigest(t, database, "a retraction", issue.Key, graphstore.QueryVerification, retracted); digest != checksDigest {
+		t.Errorf("a retraction moved the Verification digest from %s to %s", checksDigest, digest)
 	}
-	requireRevisedVersion(t, database, "the Verification document a retraction revised", verification.id, verification.refKey, retracted.number,
-		eventOf(t, database, "result.retracted", "payload->>'result_id'", result.ID))
 	if held := newestQueryVersion(t, database, spec.id); held.number != proseVersion.number {
 		t.Errorf("a result and its retraction gave the spec version %d, want it at %d", held.number, proseVersion.number)
 	}
@@ -1046,12 +1037,8 @@ func readRevisionSnapshot(t *testing.T, database *store.Store, issueKey string) 
 }
 
 // requireTheRevisionAlone fails unless what, a write read before and after, changed no criterion,
-// requirement or check node of the issue - each stands with every column, its parent, its rank
-// and every tuple out of it as before - and the only nodes the store gained are the node of
-// result, where result is not "", and the version node of each version the issue's documents
-// gained, each a version of the spec, the Verification document or the plan holding its
-// version_renders row, the Verification document gaining one. Each failure names the node and
-// what moved.
+// requirement or check node of the issue. The only allowed new node is the recorded result, and
+// no document gains a version because results are outside the approval record.
 func requireTheRevisionAlone(t *testing.T, what string, before, after revisionSnapshot, result string) {
 	t.Helper()
 	for _, address := range slices.Sorted(maps.Keys(after.authored)) {
@@ -1089,23 +1076,8 @@ func requireTheRevisionAlone(t *testing.T, what string, before, after revisionSn
 	if result != "" {
 		gained[graphstore.KindResult+":"+result] = true
 	}
-	revised := false
-	for _, id := range slices.Sorted(maps.Keys(after.versions)) {
-		if _, held := before.versions[id]; held {
-			continue
-		}
-		version := after.versions[id]
-		if !slices.Contains([]string{"spec", model.ArtifactSlugVerification, model.ArtifactSlugPlan}, version.slug) {
-			t.Errorf("%s: the issue's document %s gained the version %s, and it is no query document", what, version.slug, id)
-		}
-		if !version.rendered {
-			t.Errorf("%s: the version %s of the issue's %s holds no version_renders row, so the query revision did not write it", what, id, version.slug)
-		}
-		revised = revised || version.slug == model.ArtifactSlugVerification
-		gained[graphstore.KindVersion+":"+id] = true
-	}
-	if !revised {
-		t.Errorf("%s: the Verification document gained no version, so the query revision wrote nothing and nothing here holds it", what)
+	if !maps.Equal(before.versions, after.versions) {
+		t.Errorf("%s: the issue's versions changed from %v to %v, want none added by the drain", what, before.versions, after.versions)
 	}
 	for _, address := range slices.Sorted(maps.Keys(after.nodes)) {
 		if !before.nodes[address] && !gained[address] {
@@ -1129,13 +1101,8 @@ func requireTheRevisionAlone(t *testing.T, what string, before, after revisionSn
 // issue: on an issue born converted whose spec holds a criterion and two requirements under it and
 // whose Verification document holds one check serving the first, the test reads at the store,
 // around each write, each such node's graph_nodes row, its parent and its rank as the tree walks
-// them, and every tuple out of it, and requires each to stand as it stood. The only nodes the store
-// gains are the result's, at its record, and the version node of each version the drain of the
-// write's mark appended (docs.Service.DrainOwedQueries), each holding its version_renders row, the
-// Verification document taking one at each write. This is what keeps those versions outside the
-// spec-writer check (specWriterRevisions): a result is no requirement, criterion or check node,
-// and its tuple to its check is a relation out of the result. A failure names the node and the
-// column or the tuple that moved.
+// them, and every tuple out of it, and requires each to stand as it stood. Recording the result
+// adds its node; retracting it changes its evidence. Neither write moves a query's record.
 func TestARecordedResultAndItsRetractionChangeNoRequirementCriterionOrCheck(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	createReferenceAPIProject(t, handler, "CORE")

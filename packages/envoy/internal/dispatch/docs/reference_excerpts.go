@@ -1037,7 +1037,6 @@ func planAskPartIndex(ctx context.Context, tx pgx.Tx, r *refs.Reader, ask model.
 		if ledger.askParts == nil {
 			ledger.askParts = make(map[string]refs.ItemIndex)
 		}
-		noteEntryUndo(ledger, &ledger.askParts, ask.ID)
 		ledger.askParts[ask.ID] = indexing.Held()
 	}
 	return indexing, index, nil

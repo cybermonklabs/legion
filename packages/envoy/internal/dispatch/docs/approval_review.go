@@ -51,6 +51,7 @@ const ReviewStandJoin = `
 	left join lateral (
 		select t.issue_key is not null and n.id is not null as query,
 		       a.retired_at is not null as retired,
+		       a.ref_key,
 		       (select max(v.number) from artifact_versions v where v.artifact_id = a.id) as latest
 		from artifacts a
 		left join issue_trees t on t.issue_key = a.issue_key
@@ -61,22 +62,45 @@ const ReviewStandJoin = `
 
 // reviewPin selects, of the artifact_reviews row unaliased, the digest the review stands on, which
 // every gate compares with the digest of the current query (R14): the record's digest on its row
-// of artifact_review_carries where that row holds one (the fill's repin, fillOwedDigests), and
-// else its content_sha256 (R14: "Every read that compares a review with the current query's digest
-// reads that column where it holds a digest, and the review's content_sha256 elsewhere"). The one
-// exception is a carry the release before wrote: its reason opens CarriedReviewReasonPrefix and no
-// row of artifact_review_carries names its artifact.approved, since every carry this build writes
-// records its event on its row (reviewWrite.queueEvent) and the backfill's row of an older carry
-// names none. No fill repins such a carry, so it stands on the digest its own version answers
-// (artifact_version_text_sha256), the digest the fill repins every carry of a version's write to
-// but a record carry, which no release before this one writes. That is its content_sha256 unless
-// its version owed its record's digest when the carry was written and the fill has filled it since.
+// of artifact_review_carries where that row holds one (the fill's repin of the conversion's carry,
+// fillOwedDigests), and else its content_sha256 (R14: "Every read that compares a review with the
+// current query's digest reads that column where it holds a digest, and the review's
+// content_sha256 elsewhere"). A carry whose row holds no record's digest - a carry the release
+// before wrote, which names no row or one the backfill wrote, and a carry of this build before its
+// version's fill - stands on the digest its own version answers (artifact_version_text_sha256): a
+// version the release before wrote answers its stored markdown for good (madeQueryVersion), which
+// is the digest such a carry pinned, and a carry of this build pinned what its version answered at
+// the insert, which the fill moves onto its row (queueFilledDigest) as it moves the version's.
 const reviewPin = `coalesce(
 		(select c.record_sha256 from artifact_review_carries c where c.review_id = artifact_reviews.id),
-		case when starts_with(artifact_reviews.reason, '` + CarriedReviewReasonPrefix + `') and not exists (
-			select 1 from artifact_review_carries c where c.review_id = artifact_reviews.id and c.event_id is not null)
+		case when starts_with(artifact_reviews.reason, '` + CarriedReviewReasonPrefix + `')
 		then artifact_version_text_sha256(artifact_reviews.artifact_id, artifact_reviews.version) end,
 		artifact_reviews.content_sha256)`
+
+// sameStandingDefinition compares the reviewed and latest version nodes, never the mutable query
+// node. A missing definition cannot match a different, recorded definition.
+const sameStandingDefinition = `(
+	(select v.attributes->>'` + graphstore.AttributeDefinitionVersion + `'
+	 from graph_nodes v where v.kind = '` + graphstore.KindVersion + `'
+	   and v.id = stand.ref_key || '@v' || artifact_reviews.version::text)
+	is not distinct from
+	(select v.attributes->>'` + graphstore.AttributeDefinitionVersion + `'
+	 from graph_nodes v where v.kind = '` + graphstore.KindVersion + `'
+	   and v.id = stand.ref_key || '@v' || stand.latest::text))`
+
+// approvalCurrentSQL is, of the artifact_reviews row unaliased joined to stand (ReviewStandJoin),
+// whether the review is an approval that stands now, as a gate reads the document's newest review
+// beside its latest version (ApprovalStand.Approves). A query document needs the same definition
+// and the current digest. A markdown document needs the latest version number. Retired documents
+// stand under neither rule. It is the
+// approval_current a review's event carries (queueCompletion).
+const approvalCurrentSQL = `coalesce(artifact_reviews.state = 'approved' and not coalesce(stand.retired, false) and case
+		when coalesce(stand.query, false)
+		then ` + sameStandingDefinition + ` and case
+			when ` + reviewPin + ` is not null
+			then ` + reviewPin + ` = artifact_version_text_sha256(artifact_reviews.artifact_id, stand.latest)
+			else artifact_reviews.version = stand.latest end
+		else artifact_reviews.version = stand.latest end, false)`
 
 // ReviewStandColumns selects, after ReviewReadColumns of the artifact_reviews row unaliased joined
 // to stand (ReviewStandJoin), what a gate compares of the review (ScanReviewStand): whether its
@@ -88,30 +112,36 @@ const reviewPin = `coalesce(
 // at all.
 const ReviewStandColumns = `coalesce(stand.query, false), coalesce(stand.retired, false),
 	case when stand.query then ` + reviewPin + ` end,
-	case when stand.query and stand.latest is not null then artifact_version_text_sha256(artifact_reviews.artifact_id, stand.latest) end`
+	case when stand.query and stand.latest is not null then artifact_version_text_sha256(artifact_reviews.artifact_id, stand.latest) end,
+	coalesce(stand.latest, 0), case when stand.query then not ` + sameStandingDefinition + ` else false end`
 
 // ApprovalStand is what a gate compares of a document's newest review (R14, T14 of the issue-tree
 // plan): Query, whether the document is a query node of a converted issue, Retired, whether it is
 // retired, and for such a query document Pin, the digest the review stands on, and Current, the
 // digest of the current query (ReviewStandColumns).
 type ApprovalStand struct {
-	Query, Retired bool
-	Pin, Current   *string
+	Query, Retired      bool
+	Pin, Current        *string
+	Latest              int
+	DifferentDefinition bool
 }
 
 // Approves reports whether an approval of version, read beside the document's version latest,
-// stands. For a query document of a converted issue the digest decides and no version number does:
-// the approval stands while the document is not retired and the review's pin is the current query's
-// digest, so a version whose record did not move - a paragraph moved before a requirement - leaves
-// it standing, and a historical review authorizes no later version whose digest differs. A review
+// stands. A retired document never stands. For a query document of a converted issue the
+// definition and digest decide: a version whose record and definition did not move leaves the
+// approval standing, and a historical review authorizes no later version whose definition or
+// digest differs. A review
 // of such a document that holds no digest yet - written before migration 20261105084017 and not
 // filled - stands on its version alone, as every review did before. Every other document keeps the
 // rule it always had: the approval stands at the version it names alone.
 func (stand ApprovalStand) Approves(version, latest int) bool {
+	if stand.Retired || stand.DifferentDefinition {
+		return false
+	}
 	if !stand.Query || stand.Pin == nil {
 		return version == latest
 	}
-	return !stand.Retired && stand.Current != nil && *stand.Pin == *stand.Current
+	return stand.Current != nil && *stand.Pin == *stand.Current
 }
 
 // ScanReview decodes one ReviewColumns row.
@@ -129,7 +159,7 @@ func ScanReviewWithCarry(row pgx.Row) (model.ArtifactReview, error) {
 // ScanReviewWithCarry reads it, and what a gate compares of it.
 func ScanReviewStand(row pgx.Row) (model.ArtifactReview, ApprovalStand, error) {
 	var stand ApprovalStand
-	review, err := scanReview(row, true, &stand.Query, &stand.Retired, &stand.Pin, &stand.Current)
+	review, err := scanReview(row, true, &stand.Query, &stand.Retired, &stand.Pin, &stand.Current, &stand.Latest, &stand.DifferentDefinition)
 	return review, stand, err
 }
 
@@ -168,8 +198,8 @@ func scanReview(row pgx.Row, withCarry bool, extra ...any) (model.ArtifactReview
 // Every caller already holds the owner's lock before it queues this, and its statements go on one
 // write phase's batch: the row is inserted before the event is appended and its sequence written
 // after. The review's id is chosen here, so the statement that writes that sequence names the row,
-// and takes the sequence from the event the statements before it appended (reviewEventID, which
-// for a review that is no carry is store.LatestEventID): nothing is read back in Go between them.
+// and takes the sequence from the event the statements before it appended (store.LatestEventID):
+// nothing is read back in Go between them.
 // The update that writes the sequence runs the foreign-key checks again, since Postgres re-checks
 // a row its own transaction inserted, and so asks for the same FOR KEY SHARE locks the insert
 // took: the transaction already holds them, so the request never waits. Migration 0120's trigger,
@@ -180,27 +210,31 @@ func scanReview(row pgx.Row, withCarry bool, extra ...any) (model.ArtifactReview
 // its event as the batch leaves them, and the caller, which owns the transaction, publishes the
 // event after its commit.
 func QueueReview(b *store.WriteBatch, broker *events.Broker, artifact model.Artifact, version int, state, kind string, actor model.Actor, reason *string, askID *string, written func(model.ArtifactReview, model.Event)) error {
-	review, err := newReviewWrite(artifact, version, state, kind, actor, reason, askID, nil)
+	return queueReviewOf(b, broker, artifact, version, state, kind, actor, reason, askID, nil, written)
+}
+
+// queueReviewOf is QueueReview for a review that carriedFrom names the source of: the version a
+// carry carries an approval from (writeCarriedReview), whose row of artifact_review_carries is
+// written right after the event's append, and nil for a review that is no carry.
+func queueReviewOf(b *store.WriteBatch, broker *events.Broker, artifact model.Artifact, version int, state, kind string, actor model.Actor, reason *string, askID *string, carriedFrom *int, written func(model.ArtifactReview, model.Event)) error {
+	review, err := newReviewWrite(artifact, version, state, kind, actor, reason, askID, carriedFrom)
 	if err != nil {
 		return err
 	}
 	review.queueRow(b)
-	if err := review.queueEvent(b, broker, nil); err != nil {
+	if err := review.queueEvent(b, broker); err != nil {
 		return err
 	}
 	review.queueCompletion(b, written)
 	return nil
 }
 
-// reviewWrite is one review as its writer queues it on a write phase's batch, in three parts:
-// its row (queueRow), its event with, for a carry, the row that records the carry's source and
-// that event (queueEvent), and the two statements that complete each from the other - the
-// event's payload with the row's digest and the row's event_seq with the event's seq
-// (queueCompletion). QueueReview queues the three back to back. A carry queues its event in its
-// place and the other two at the end of the write phase's batch (writeCarriedReview), after its
-// version's artifact.version and version_renders row, as R14 orders them. The review's id is
-// chosen here, so each statement names the row; review and event are what the statements left,
-// read by their callbacks.
+// reviewWrite is one review as its writer queues it on a write phase's batch, back to back, in
+// three parts: its row (queueRow), its event with, for a carry, the row that records the carry's
+// source (queueEvent), and the two statements that complete each from the other - the event's
+// payload with the row's digest and whether the review stands, and the row's event_seq with the
+// event's seq (queueCompletion). The review's id is chosen here, so each statement names the row;
+// review and event are what the statements left, read by their callbacks.
 type reviewWrite struct {
 	id          string
 	artifact    model.Artifact
@@ -255,14 +289,10 @@ func (w *reviewWrite) queueRow(b *store.WriteBatch) {
 	})
 }
 
-// queueEvent queues the review's event, and appended, where it is given, receives it as its append
-// leaves it, before its payload is completed (queueCompletion). For a carry it then records the
-// carry's source and the event's own id on the review's row of artifact_review_carries, in the
-// statement right after the append, which names that event as store.LatestEventID: the
-// statements that complete the review and the event come after the version's artifact.version
-// (writeCarriedReview), where store.LatestEventID names that event instead, so they name this one
-// by the id the row recorded (reviewEventID).
-func (w *reviewWrite) queueEvent(b *store.WriteBatch, broker *events.Broker, appended func(model.Event)) error {
+// queueEvent queues the review's event. For a carry it then records the carry's source on the
+// review's row of artifact_review_carries, which a reader of the review takes its
+// carried_from_version from (ReviewReadColumns).
+func (w *reviewWrite) queueEvent(b *store.WriteBatch, broker *events.Broker) error {
 	if err := broker.QueueAppend(b, documentAskEvent(
 		artifactOwner{IssueKey: w.artifact.IssueKey}, w.artifact.ID, w.eventType, w.actor,
 		model.ArtifactReviewEventPayload{
@@ -274,63 +304,62 @@ func (w *reviewWrite) queueEvent(b *store.WriteBatch, broker *events.Broker, app
 			Reason:             w.reason,
 			AskID:              w.askID,
 			CarriedFromVersion: w.carriedFrom,
-			// content_sha256 and content_sha256_source are not set here: the insert's trigger
-			// derives them, and the completion writes them into this payload.
+			// content_sha256, content_sha256_source and approval_current are not set here: the
+			// insert's trigger derives the first two, and the completion writes all three into
+			// this payload.
 		},
 	), func(event model.Event) {
 		w.event = event
-		if appended != nil {
-			appended(event)
-		}
 	}); err != nil {
 		return fmt.Errorf("append %s: %w", w.eventType, err)
 	}
 	if w.carriedFrom != nil {
-		b.Queue("record the carried review's source and its event", `
-			insert into artifact_review_carries (review_id, carried_from_version, event_id) values ($1, $2, `+store.LatestEventID+`)
+		b.Queue("record the carried review's source", `
+			insert into artifact_review_carries (review_id, carried_from_version) values ($1, $2)
 		`, w.id, *w.carriedFrom)
 	}
 	return nil
 }
 
-// reviewEventID is the SQL expression of the id of the event of the review the statement's $1
-// names: the id its row of artifact_review_carries recorded where the review is a carry
-// (queueEvent), whose completion runs after its version's artifact.version, and else the event
-// the statements before it appended (store.LatestEventID), which a review that is no carry
-// completes right after its append (QueueReview). Each read is of one row by its primary key.
-const reviewEventID = `coalesce((select c.event_id from artifact_review_carries c where c.review_id = $1), ` + store.LatestEventID + `)`
+// reviewCompletionStatement writes, into the payload of the event the statements before it
+// appended (store.LatestEventID), the digest the review $1 pinned at its insert and that digest's
+// source, and whether the review stands as an approval of its document now (approvalCurrentSQL,
+// R14's hash gate), read off the row joined to what a gate compares of its document
+// (ReviewStandJoin), and returns the three.
+var reviewCompletionStatement = `
+	update events set payload = payload || jsonb_build_object(
+		'content_sha256', artifact_reviews.content_sha256,
+		'content_sha256_source', artifact_reviews.content_sha256_source,
+		'approval_current', ` + approvalCurrentSQL + `)
+	from artifact_reviews` + ReviewStandJoin + `
+	where artifact_reviews.id = $1 and events.id = ` + store.LatestEventID + `
+	returning artifact_reviews.content_sha256, artifact_reviews.content_sha256_source, ` + approvalCurrentSQL
 
 // queueCompletion queues the two statements that complete the review and its event, each naming
-// the event by its own id (reviewEventID), and written receives both as the batch leaves them.
-// The digest of the bytes the review approves is the row's, which the insert's trigger wrote
-// (migration 20261105084017), and the event's payload must carry the same two values. Nothing of
-// the batch is read in Go before the event is appended - the write phase sends every statement
-// back to back - so the payload takes them in SQL, from the row the batch inserted, as the row's
-// event_seq takes the event's sequence. A carry needs it that way: it pins a version its own
-// batch writes, so no read before the batch could know the digest at all.
+// the event the statements before them appended (store.LatestEventID), and written receives both
+// as the batch leaves them. The digest of the bytes the review approves is the row's, which the
+// insert's trigger wrote (migration 20261105084017), and the event's payload must carry the same
+// two values, with whether the review stands now (reviewCompletionStatement). Nothing of the batch
+// is read in Go before the event is appended - the write phase sends every statement back to back
+// - so the payload takes them in SQL, from the row the batch inserted, as the row's event_seq takes
+// the event's sequence.
 func (w *reviewWrite) queueCompletion(b *store.WriteBatch, written func(model.ArtifactReview, model.Event)) {
-	b.Queue("record the approved bytes' digest on "+w.eventType, `
-		update events set payload = payload || jsonb_build_object(
-			'content_sha256', review.content_sha256,
-			'content_sha256_source', review.content_sha256_source)
-		from artifact_reviews review
-		where review.id = $1 and events.id = `+reviewEventID+`
-		returning review.content_sha256, review.content_sha256_source
-	`, w.id).QueryRow(func(row pgx.Row) error {
+	b.Queue("record the approved bytes' digest on "+w.eventType, reviewCompletionStatement, w.id).QueryRow(func(row pgx.Row) error {
 		var digest, source *string
-		if err := row.Scan(&digest, &source); err != nil {
+		var current bool
+		if err := row.Scan(&digest, &source, &current); err != nil {
 			return fmt.Errorf("record the approved bytes' digest on %s: %w", w.eventType, err)
 		}
 		payload, ok := w.event.Payload.(model.ArtifactReviewEventPayload)
 		if !ok {
 			return fmt.Errorf("%s payload must be model.ArtifactReviewEventPayload", w.eventType)
 		}
-		payload.ContentSHA256, payload.ContentSHA256Source = digest, source
+		payload.ContentSHA256, payload.ContentSHA256Source, payload.ApprovalCurrent = digest, source, &current
 		w.event.Payload = payload
 		return nil
 	})
 	b.Queue("record the sequence of "+w.eventType, `
-		update artifact_reviews set event_seq = (select seq from events where id = `+reviewEventID+`)
+		update artifact_reviews set event_seq = (select seq from events where id = `+store.LatestEventID+`)
 		where id = $1
 	`, w.id).Exec(func(pgconn.CommandTag) error {
 		seq := int64(w.event.Seq)

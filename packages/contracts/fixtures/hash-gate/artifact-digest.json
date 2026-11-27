@@ -1,0 +1,12 @@
+{
+  "type": "artifact.digest",
+  "payload": {
+    "artifact_id": "00000000-0000-4000-8000-000000000001",
+    "name": "spec.md",
+    "version": 2,
+    "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "approval_current": true,
+    "approved_version": 1,
+    "approved_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}

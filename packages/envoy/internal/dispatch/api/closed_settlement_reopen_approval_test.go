@@ -599,14 +599,14 @@ func TestAReopenWithNoClosedVersionMovesAndCarriesNothing(t *testing.T) {
 // reopen: the reopen runs the carry only while the newest review approves a version before the
 // latest one (docs.Service.FollowClosedIssueVersions). alice approves the spec at version N, her
 // browser's edit on the open issue makes version N+1, and her undo makes version N+2 with
-// version N's text. The spec's record holds neither edit, so R14 carries her approval to each
-// version, at its write or at the fill of its digest (docs' carryUnmovedEarlier), and the read
-// waits for the fill. The issue closes and reopens through PATCH: the spec still reads approved at
+// version N's text. The issue has not converted, so the undo carries the markdown approval.
+// After closing and reopening through PATCH the spec still reads approved at
 // version N+2 with the reviews it had, and the reopen appends no artifact.approved, only its own
 // issue.updated.
 func TestAReopenWritesNoSecondReviewForAnApprovalAlreadyCarriedToTheLatestVersion(t *testing.T) {
 	t.Parallel()
 	handler, database, documentService := newClosedSettlementHandler(t)
+	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "TEST", "An approval carried before the close", "Context\n")
 	spec := issue.PrimaryArtifactID
 	awaitSettled(t, database, spec)
@@ -682,6 +682,7 @@ const reopenDecisionSpec = "Context\n\n" +
 func TestAnApprovalGivenBetweenTheReopenAndItsSettlementStaysApproved(t *testing.T) {
 	t.Parallel()
 	handler, database, documentService := settlingCarryDocuments(t, time.Hour)
+	holdIssuesUnconverted(t, database)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "An approval between the reopen and its settlement", reopenDecisionSpec)
 	spec := issue.PrimaryArtifactID
@@ -848,6 +849,7 @@ const respellDecisionSpec = "Context\n\n- first\n\n- second\n\n- third\n\n" +
 func TestAReopenCarriesAnApprovalOfAClosedVersionAnotherRendererVersionStored(t *testing.T) {
 	t.Parallel()
 	handler, database, documents := settlingCarryDocuments(t, time.Hour)
+	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "TEST", "A reopen carry over another renderer version's text", respellDecisionSpec)
 	c := reopenCarryCase{handler: handler, database: database, documents: documents, issue: issue.Key, spec: issue.PrimaryArtifactID}
 	c.settle(t, "the spec")

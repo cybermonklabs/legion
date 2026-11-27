@@ -95,20 +95,18 @@ var documentRouteXidWindows = []routeXidWindowCase{
 		name: "the spec edit under an open approval request", route: "POST /api/v1/artifacts/{id}/edits under an open approval request (editArtifact, docs' writeVersionTx, MoveApprovalAsk)",
 		ready: readyEditUnderApprovalRequest, window: storetest.XidBatchedWindow,
 	},
-	// A version that restores the approved text under an open request moves the request and
-	// then answers it in the approver's name (docs' writeCarriedReview, answerApprovalAsk): the
-	// answer's reads - the transaction's time, its parts' plan - run in the read phase beside the
-	// move's, and its update, parts, ask.answered and stamp, with the carried review and its
-	// artifact.approved, join the version's batch, from the version's insert on behind the
-	// savepoint the write phase takes for the restore's carry (docs' writeRestored), and the read of
-	// the version's record before the COMMIT holds the pin to the record's digest (specRestoreWindow).
+	// A version that restores the approved text under an open request moves the request, and
+	// writes no carry (R14's hash gate): the move's reads - the transaction's time, its parts' plan -
+	// run in the read phase, its update, parts, ask.edited and stamp join the version's batch, and
+	// the version owes its record's digest to the fill after the COMMIT, so the window is main's
+	// batched shape, as the other rows of a version under an open request.
 	{
-		name: "the spec edit restoring the approved text under an open approval request", route: "POST /api/v1/artifacts/{id}/edits restoring the approved text (docs' carryApproval, writeCarriedReview, answerApprovalAsk)",
-		ready: readyEditRestoringTheApprovedText, window: specRestoreWindow,
+		name: "the spec edit restoring the approved text under an open approval request", route: "POST /api/v1/artifacts/{id}/edits restoring the approved text (docs' carryApproval, textCarries)",
+		ready: readyEditRestoringTheApprovedText, window: storetest.XidBatchedWindow,
 	},
 	{
-		name: "the spec upload restoring the approved text under an open approval request", route: "POST /api/v1/issues/{key}/artifacts restoring the approved text (docs.CarryUploadedApproval, writeCarriedReview, answerApprovalAsk)",
-		ready: readyUploadRestoringTheApprovedText, window: specRestoreWindow,
+		name: "the spec upload restoring the approved text under an open approval request", route: "POST /api/v1/issues/{key}/artifacts restoring the approved text (docs.CarryUploadedApproval, textCarries)",
+		ready: readyUploadRestoringTheApprovedText, window: storetest.XidBatchedWindow,
 	},
 	{
 		name: "the agent conversation upload route", route: "POST /api/v1/agents/{session_id}/artifacts (uploadAgentArtifact, storeArtifact)",
@@ -176,35 +174,6 @@ var documentRouteXidWindows = []routeXidWindowCase{
 		ready: readyDeepSpecRebuild, window: storetest.XidBatchedWindow,
 	},
 }
-
-// specRestoreFill names what a restore of the approved text reads before its COMMIT to hold the
-// approval's pin to the restored version's record (docs' writeStatedRenders, R14): the record of
-// the spec's query at one cut, by the walk of the issue's tree as the batch left the store, nine
-// statements - the cut (refs.HeadCut), the five reads of the issue's conversation (its items, the
-// asks the conversation test passes, their blocks, and the ask and its blocks as their loaders read
-// them), the read of the items' rows, the one read of the tree, every level of it
-// (refs.TreeSubtrees), and the one read of the issues above the issue and of whether the issue is
-// a view (docs' viewChainStatement) - and a tenth, the values and relations of the one block of the
-// fixture the spec query takes, its requirement rv (refs.TreeFactsOf, revisionRequirement). The
-// issue has no issue above it, so the walk reads no node placed under one (refs.TreePlacedAbove).
-const specRestoreFill = "the read of the spec query's record of the issue at one cut once the batch has run (R14): " +
-	"the cut, the five reads of the issue's conversation - its items, the asks the conversation test passes, their blocks, and the ask and its blocks as their loaders read them - " +
-	"the read of the items' rows, the one read of the tree, every level of it, the one read of the issues above the issue and of whether it is a view, " +
-	"and the read of the values and relations of the one node the spec query takes"
-
-// specRestoreWindow is the window of a version of the spec restoring the approved text under an
-// open approval request (docs' writeRestored), root R29's second exception the owner approved, 17
-// statements (R14, R15): the batch up to the version's insert, the savepoint taken before it, the
-// batch from it on - the version's version_renders row pinned to the approval's digest, the
-// carried review and its artifact.approved, the request's answer and the version's
-// artifact.version - the read of the record (specRestoreFill), the update giving the pinned row its
-// cut, the savepoint's release, the batch of the settlement credit's statements and the COMMIT.
-var specRestoreWindow = storetest.XidWindowOf(17,
-	"the write phase's batch up to the restored version's insert, the savepoint the write phase takes before that insert (writeRestored), "+
-		"the batch from the insert on - the version's version_renders row pinned to the approval's digest, the carried review, its artifact.approved and the request's answer before the version's artifact.version - "+
-		specRestoreFill+", the update giving the pinned version_renders row the cut (R15), "+
-		"the release of the savepoint where the record is the approval's digest (a rollback to it where it is not, which writes the version again with no carry), "+
-		"the batch of the settlement credit's statements, and the COMMIT ending them")
 
 // readyReviewAnsweringApprovalRequest drives POST /api/v1/artifacts/{id}/reviews on a spec with
 // an approval request open, so the person's review answers that request (closeAskTx) and
@@ -445,30 +414,32 @@ func revisionRequirementSpec(t *testing.T, spec string) string {
 	return strings.Replace(spec, token, ":::requirement{#rv}\n"+token+":::\n", 1)
 }
 
-// requireRequestAnsweredByTheCarry fails t unless the request is answered Approve in alice's name
-// at version 3, the version the measured write restored, and that version carries her approval
-// of version 1 against the request.
-func requireRequestAnsweredByTheCarry(t *testing.T, fixture itemRowFixture, askID string) {
+// requireRequestLeftOpenByTheRestore checks the fill's no-longer-needed resolution. The restored
+// version 3 stands on alice's approval of version 1, so the request for version 2 is retracted
+// without a second review or an artifact.approved event.
+func requireRequestLeftOpenByTheRestore(t *testing.T, fixture itemRowFixture, askID string) {
 	t.Helper()
 	waitForArtifactVersion(t, fixture.handler, fixture.artifactID, 3)
-	requireReviewCarriedWith(t, fixture.handler, fixture.artifactID, 3, 1, restoreSentence(1), &askID)
-	if answered := readBlockAsk(t, fixture.handler, askID); answered.State != "answered" || answered.Answer == nil ||
-		answered.Answer.User != "alice" || answered.Approval == nil || answered.Approval.Version != 3 {
-		t.Fatalf("the request after the restore = state %q answer %#v approval %#v, want Approve by alice at version 3",
-			answered.State, answered.Answer, answered.Approval)
+	requireNoCarry(t, fixture.handler, fixture.artifactID, 1, "approved")
+	closed := readBlockAsk(t, fixture.handler, askID)
+	wantReason := "No longer needed: spec.md version 3 matches the standing approval of version 1."
+	if closed.State != "resolved" || closed.Resolution == nil || closed.Resolution.Kind != "retracted" || closed.Resolution.Reason != wantReason {
+		t.Fatalf("the request after the restore = state %q resolution %#v, want retracted with reason %q", closed.State, closed.Resolution, wantReason)
+	}
+	if counts := askEventCounts(t, fixture.handler, fixture.issueKey, askID); counts["ask.resolved"] != 1 || counts["artifact.approved"] != 0 {
+		t.Errorf("the restore's request events are %v, want one ask.resolved and no synthetic artifact.approved", counts)
 	}
 }
 
 // readyEditRestoringTheApprovedText drives POST /api/v1/artifacts/{id}/edits undoing the agent's
 // edit under an open approval request: the version holds the approved text again, so the
-// document service's version write moves the request to it and then carries alice's approval,
-// which answers the request (docs' writeVersionTx, carryApproval, writeCarriedReview,
-// answerApprovalAsk).
+// document service's version write moves the request to it and carries nothing (docs'
+// writeVersionTx, carryApproval, textCarries).
 func readyEditRestoringTheApprovedText(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
 	fixture := revisionRequirement(t, base).issue(t, "Edit restoring the approved text")
 	request := approvedThenRequested(t, fixture)
-	return fixture.routeWrite(t, "the restoring version and the request its carry answers",
+	return fixture.routeWrite(t, "the restoring version, which moves the request and carries nothing",
 		func(handler http.Handler) *httptest.ResponseRecorder {
 			return sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+fixture.artifactID+"/edits", map[string]any{
 				"ops": []map[string]string{replaceOp("Revision token r1", "Revision token r0")}, "actor": sessionActor(),
@@ -478,14 +449,13 @@ func readyEditRestoringTheApprovedText(t *testing.T, base routeFixture) lockedIt
 			if answer.Code != http.StatusOK {
 				t.Fatalf("undo the edit under the open request: status=%d body=%s", answer.Code, answer.Body.String())
 			}
-			requireRequestAnsweredByTheCarry(t, fixture, request.ID)
+			requireRequestLeftOpenByTheRestore(t, fixture, request.ID)
 		})
 }
 
 // readyUploadRestoringTheApprovedText drives POST /api/v1/issues/{key}/artifacts uploading the
 // approved version's text under an open approval request: the upload moves the request to its
-// version and then carries alice's approval, which answers the request
-// (docs.CarryUploadedApproval, writeCarriedReview, answerApprovalAsk).
+// version and carries nothing (docs.CarryUploadedApproval, textCarries).
 func readyUploadRestoringTheApprovedText(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
 	fixture := revisionRequirement(t, base).issue(t, "Upload restoring the approved text")
@@ -493,7 +463,7 @@ func readyUploadRestoringTheApprovedText(t *testing.T, base routeFixture) locked
 	approved := versionMarkdown(t, fixture.handler, fixture.artifactID, 1)
 	// The upload replaces the spec, so it names the token of the version it replaces.
 	replaced := uploadBase(t, fixture.handler, fixture.artifactID)
-	return fixture.routeWrite(t, "the restoring version and the request its carry answers",
+	return fixture.routeWrite(t, "the restoring version, which moves the request and carries nothing",
 		func(handler http.Handler) *httptest.ResponseRecorder {
 			return sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+fixture.issueKey+"/artifacts", map[string]any{
 				"name": "spec.md", "content": approved, "actor": sessionActor(), "precondition": replaced,
@@ -503,7 +473,7 @@ func readyUploadRestoringTheApprovedText(t *testing.T, base routeFixture) locked
 			if answer.Code != http.StatusCreated {
 				t.Fatalf("upload the approved text under the open request: status=%d body=%s", answer.Code, answer.Body.String())
 			}
-			requireRequestAnsweredByTheCarry(t, fixture, request.ID)
+			requireRequestLeftOpenByTheRestore(t, fixture, request.ID)
 		})
 }
 

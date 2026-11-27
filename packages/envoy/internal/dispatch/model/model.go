@@ -1844,8 +1844,18 @@ type ArtifactApproval struct {
 	ContentSHA256       *string `json:"content_sha256,omitempty"`
 	ContentSHA256Source *string `json:"content_sha256_source,omitempty"`
 	CarriedFromVersion  *int    `json:"carried_from_version" required:"false"`
-	RequestedBy         *Actor  `json:"requested_by,omitempty"`
-	WaitingOn           string  `json:"waiting_on,omitempty"`
+	// CurrentSHA256 is the digest of the document's latest version, the value
+	// artifact_version_text_sha256 answers for it (Version.Digest), which an approval stands
+	// against (R14's hash gate), and DigestOwed whether that version's version_renders row still
+	// owes its record's digest, which the fill after its write's COMMIT records: while it does,
+	// CurrentSHA256 is the digest of the version's stored markdown, and the approval of a query
+	// document whose record moved reads stale until the fill. The artifact read answers both (GET
+	// /api/v1/artifacts/{id}); every other read of an approval, and a Dispatch before the hash
+	// gate, answers neither.
+	CurrentSHA256 *string `json:"current_sha256,omitempty"`
+	DigestOwed    *bool   `json:"digest_owed,omitempty"`
+	RequestedBy   *Actor  `json:"requested_by,omitempty"`
+	WaitingOn     string  `json:"waiting_on,omitempty"`
 	// Kind is the latest review's Kind, so a reader can say an approval is a plan review's
 	// rather than a person's; empty while no review stands.
 	Kind string `json:"kind,omitempty"`
@@ -1863,7 +1873,10 @@ type ArtifactApproval struct {
 // written on every payload of this build: the version a carry came from, and null for a
 // person's or a plan review's own act. Under the rolling-deploy rule (api/openapi.go's
 // openAPIOlderServersOmit), a payload the release before wrote holds none, so the schema
-// marks it optional (`required:"false"`).
+// marks it optional (`required:"false"`). ApprovalCurrent is whether the review stands as an
+// approval of its document once it is written, as a gate reads the document's newest review
+// beside its latest version (docs' ApprovalStand.Approves, R14's hash gate): false for a request
+// for changes; absent from a payload a Dispatch before the hash gate wrote.
 type ArtifactReviewEventPayload struct {
 	ArtifactID          string  `json:"artifact_id"`
 	Name                string  `json:"name"`
@@ -1875,6 +1888,29 @@ type ArtifactReviewEventPayload struct {
 	ContentSHA256       *string `json:"content_sha256,omitempty"`
 	ContentSHA256Source *string `json:"content_sha256_source,omitempty"`
 	CarriedFromVersion  *int    `json:"carried_from_version" required:"false"`
+	ApprovalCurrent     *bool   `json:"approval_current,omitempty"`
+}
+
+// ArtifactDigestEventType is the event Dispatch appends on a query document's issue once a
+// version's record digest stands (R14's hash gate): the fill of a digest a write left owed (docs'
+// fillOwedDigests), the first pass that states a deferred or repaired version, and the drain of
+// the issue's queries after the version it writes. It wakes nobody.
+const ArtifactDigestEventType = "artifact.digest"
+
+// ArtifactDigestEventPayload is the payload of artifact.digest: the version of the document,
+// ContentSHA256 the digest of its query's record (the one an approval of it covers, which
+// artifact_version_text_sha256 answers from then on), and ApprovalCurrent whether the document's
+// newest review stands as an approval at that digest (docs' ApprovalStand.Approves).
+// ApprovedVersion and ApprovedSHA256 are that review's version and the digest it stands on, where
+// the newest review is an approval, and absent otherwise.
+type ArtifactDigestEventPayload struct {
+	ArtifactID      string  `json:"artifact_id"`
+	Name            string  `json:"name"`
+	Version         int     `json:"version"`
+	ContentSHA256   string  `json:"content_sha256"`
+	ApprovalCurrent bool    `json:"approval_current"`
+	ApprovedVersion *int    `json:"approved_version,omitempty"`
+	ApprovedSHA256  *string `json:"approved_sha256,omitempty"`
 }
 
 // DocumentRetiredEventType is the event docs.RetireDocument appends, once, for the document it
@@ -2607,6 +2643,11 @@ type Version struct {
 	// query covers answers its markdown's. The version read and the artifact read's version list
 	// answer it; every other read of a version, and a file's or an image's version, answers none.
 	Digest *string `json:"digest,omitempty"`
+	// DigestOwed is whether the version's version_renders row still owes its record's digest
+	// (R15), read beside Digest by the artifact read alone, which answers it on the document's
+	// approval for its latest version (ArtifactApproval.DigestOwed); no version is answered with
+	// it.
+	DigestOwed *bool `json:"-"`
 	// Token is a file's or an image's version token (FileVersionToken): what an upload replacing
 	// that version names as its precondition's document token, and what `dispatch doc-read`
 	// prints for it. Every read of a version row states it (StateFileTokens). A document's version

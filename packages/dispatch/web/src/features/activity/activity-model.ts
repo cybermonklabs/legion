@@ -135,6 +135,8 @@ function describe(
       return `edited ${event.payload.name} v${event.payload.from_version} to v${event.payload.to_version}`;
     case "artifact.indexed":
       return `finished indexing ${documentCount(event.payload.artifact_ids.length)}`;
+    case "artifact.digest":
+      return `recorded digest for ${event.payload.name} v${event.payload.version}`;
     case "comment.created":
       if (event.payload.ask_id !== null) {
         return event.payload.ask_question === undefined
