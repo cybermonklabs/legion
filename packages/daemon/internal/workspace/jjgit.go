@@ -57,6 +57,7 @@ func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Durati
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	defer procgroup.ControlHold(&cmd.Stderr, ctx)() // CONTROL ONLY (r63 hold)
 	// The budget's end stops the command the way every other git and jj of this package is
 	// stopped: SIGTERM to the command's own process group, a grace for a git that handles it to
 	// remove the lock files it holds, then SIGKILL to the group, and procgroup.WaitDelay as the

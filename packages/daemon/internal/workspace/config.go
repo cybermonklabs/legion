@@ -339,6 +339,7 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	var stdout, stderr bytes.Buffer
 	child.Stdout = &stdout
 	child.Stderr = &stderr
+	defer procgroup.ControlHold(&child.Stderr, bounded)() // CONTROL ONLY (r63 hold)
 	err = child.Run()
 	if hook := exitedHook.Load(); hook != nil && child.ProcessState != nil {
 		(*hook)(command, child.ProcessState)
