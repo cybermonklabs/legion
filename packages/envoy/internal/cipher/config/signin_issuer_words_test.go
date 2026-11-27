@@ -8,19 +8,24 @@ import (
 )
 
 // TestABrokerSignInIssuerThatLoadRefusesPrintsNoneOfIt: a BROKER_SIGNIN_ISSUER with redacttest's
-// credentials in its user information and its query, refused as plain http to a host that is not
-// a loopback one (plain-http), as another scheme (other-scheme) or as a URL with no host
-// (no-host), is refused naming the setting, and the refusal holds no run of a credential. The
-// refusal quoted the issuer as written. The twin shows each issuer as written holds every
-// credential and is still refused naming BROKER_SIGNIN_ISSUER, so the row can see one printed.
-// Captures config.signin-issuer/<case>.
+// credentials in its path, refused as plain http to a host that is not a loopback one
+// (plain-http), as another scheme (other-scheme) or as a URL with no host (no-host), is refused
+// naming the setting and the form it must have, and the refusal holds no run of a credential. The
+// refusal quoted the issuer as written. The credentials are in the path because the issuer rule
+// (oidc.IssuerRefusal) refuses a user name, a password, an "@" past the host, a query and a
+// fragment first, in fixed words that name the setting alone: a path is where a credential that
+// reaches this refusal can stand, and each case checks the refusal is this one. The twin shows
+// each issuer as written holds every credential and is still refused naming BROKER_SIGNIN_ISSUER,
+// so the row can see one printed. Captures config.signin-issuer/<case>.
 func TestABrokerSignInIssuerThatLoadRefusesPrintsNoneOfIt(t *testing.T) {
-	const credentials = redacttest.User + ":" + redacttest.Password + "@"
-	const query = "?access" + "_token=" + redacttest.Token
+	const (
+		path = "/" + redacttest.User + "/" + redacttest.Password + "/" + redacttest.Token
+		form = "BROKER_SIGNIN_ISSUER must be an absolute https URL, or http to a loopback host"
+	)
 	cases := []struct{ name, issuer string }{
-		{"plain-http", "http://" + credentials + "accounts.example.com/" + query},
-		{"other-scheme", "ftp://" + credentials + "accounts.example.com/" + query},
-		{"no-host", "https://" + credentials + "/" + query},
+		{"plain-http", "http://accounts.example.com" + path},
+		{"other-scheme", "ftp://accounts.example.com" + path},
+		{"no-host", "https://" + path},
 	}
 	t.Run("twin", func(t *testing.T) {
 		for _, tc := range cases {
@@ -42,10 +47,10 @@ func TestABrokerSignInIssuerThatLoadRefusesPrintsNoneOfIt(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Load took BROKER_SIGNIN_ISSUER=%q; want it refused", tc.issuer)
 			}
-			if !strings.Contains(err.Error(), "BROKER_SIGNIN_ISSUER") {
-				t.Errorf("Load(BROKER_SIGNIN_ISSUER=%q) = %v; want a refusal naming the setting", tc.issuer, err)
-			}
 			redacttest.RequireNoPiece(t, "config.signin-issuer/"+tc.name, err.Error(), redacttest.User, redacttest.Password, redacttest.Token)
+			if !strings.HasPrefix(err.Error(), form) {
+				t.Errorf("Load(BROKER_SIGNIN_ISSUER=%q) = %v; want the refusal of the form it must have, %q", tc.issuer, err, form)
+			}
 		})
 	}
 }
