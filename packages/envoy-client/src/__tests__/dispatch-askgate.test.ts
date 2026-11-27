@@ -852,13 +852,25 @@ describe("AskGate at the dispatch entry, across processes", () => {
     const script = join(stateDir, "post.sh");
     writeFileSync(script, "dispatch message --issue DSP-1 --body 'from a script'\n");
     const argv = '"message", "--issue", "DSP-1", "--body", "hi"';
+    // node and python3 by the paths they run from, read in this process's environment, as the bun
+    // form names `process.execPath`. A version manager's shim (mise's) picks its tool from HOME and
+    // its own variables, which each child's environment replaces: where the machine has no tool of
+    // its own to fall back to, the shim starts nothing and the form prints the shim's error, not
+    // the refusal. Measured: on a machine whose node is mise's shim the `node -e` form failed so.
+    const interpreter = (command: string[]): string => {
+      const found = Bun.spawnSync(command);
+      expect({ command, exitCode: found.exitCode }).toEqual({ command, exitCode: 0 });
+      return found.stdout.toString().trim();
+    };
+    const node = interpreter(["node", "-p", "process.execPath"]);
+    const python3 = interpreter(["python3", "-c", "import sys; print(sys.executable)"]);
     const forms: Array<[string, string[]]> = [
       ["xargs", ["bash", "-c", "printf '%s\\n' message --issue DSP-1 --body hi | xargs dispatch"]],
-      ["python3 -c", ["python3", "-c", `import subprocess; subprocess.run(["dispatch", ${argv}])`]],
+      ["python3 -c", [python3, "-c", `import subprocess; subprocess.run(["dispatch", ${argv}])`]],
       [
         "node -e",
         [
-          "node",
+          node,
           "-e",
           `require("node:child_process").spawnSync("dispatch", [${argv}], { stdio: "inherit" })`,
         ],
