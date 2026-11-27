@@ -692,8 +692,10 @@ export function AskCard({
         }
         onKeyDown={(event) => {
           // Escape in the reason an approval's Request changes asks for lets go of that pick,
-          // and sends nothing: the Inbox's own Escape then puts the focus back on the row,
-          // which is why this neither stops the key nor calls `preventDefault`. The box
+          // and sends nothing: the Inbox's own Escape then moves the focus one level out - to the
+          // row beside the column, and to the view's scroller in the reading view below 1280 px
+          // (`useInboxKeymap`'s `inbox.leave-reading`) - which is why this neither stops the key
+          // nor calls `preventDefault`. The box
           // stays, with what was typed in it, so nothing under the reader's focus unmounts. The
           // Escape that ends an input method's composition cancels what the reader was
           // composing and keeps the pick: Safari sends it with `isComposing` false and keyCode

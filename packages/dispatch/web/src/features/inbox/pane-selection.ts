@@ -536,10 +536,20 @@ export function usePaneSelection({
         ? began.target
         : targetNow(acted);
     if (target === undefined) return;
+    const shownRow = onShownRow();
+    // An action that began nothing - the reader's answer, which the list keeps where they saw it
+    // until Dispatch records it (`recordAnswered`) - holds no record of where the reader stood as
+    // they acted. In the reading view below the column's width the row the view reads is that
+    // record: while it is a row answered, the reader is still where they answered, and is handed
+    // on from it as from a dismiss, to the next row or to the empty message. While it is another
+    // row, they have moved on - to the row the answer hands on to as well, perhaps with the caret
+    // in its answer box - and the landing leaves them where they are.
+    const read = began === undefined && shownRow && !columns ? selectedNow.current : undefined;
+    if (read !== undefined && !acted.has(read)) return;
     const handOff: HandOff = {
       acted,
       focused: began?.focused ?? null,
-      selected: began?.selected,
+      selected: began?.selected ?? read,
       target,
     };
     if (!stillThere(handOff)) return;
@@ -551,7 +561,6 @@ export function usePaneSelection({
     // snooze of the last rows with the Later band open, or a dismiss whose rows go at the next
     // commit - keeps the selection, which leaves with it as the settling effect hands it on. In
     // the reading view the row selected is the one the view reads next.
-    const shownRow = onShownRow();
     if (shownRow && target !== null) {
       // Its own landing shows the row once the rows acted on have gone (`selectedByHandOff`).
       if (target !== selectedNow.current) selectedByHandOff.current = target;

@@ -263,10 +263,11 @@ export function useInboxKeymap({
   const shownQuestion = useRef<string | undefined>(undefined);
   /** The element in the column that holds the focus, and the question the column showed as it
    *  took it: what the column's own hand-off reads once a commit has taken that element away
-   *  (below `paneScroller`). Noted by the document's `focusin` below, and forgotten wherever the
-   *  focus lands outside a column still drawn, wherever it leaves the column for nothing
-   *  (`forgetPaneReturn`), and at a step of the selection taken with the focus outside the column
-   *  (`move`), so a reader who left the column is owed no hand-off. */
+   *  (below `paneScroller`). Noted by the document's `focusin` below, and by a step of the
+   *  selection taken from the reading view's scroller (`move`). Forgotten wherever the focus
+   *  lands outside a column still drawn, wherever it leaves the column for nothing
+   *  (`forgetPaneReturn`), and at every other step of the selection (`move`), so a reader who
+   *  left the column is owed no hand-off. */
   const paneFocus = useRef<{ element: Element; question: string | undefined } | null>(null);
   // The column shows another question, so the record is spent: the row it names belongs to a
   // question the reader has been carried off, whichever route carried them. Read after every
@@ -365,15 +366,22 @@ export function useInboxKeymap({
    *  swaps `ApprovalBody` for `CardBody`, which unmounts the focused scroller and drops the
    *  focus to `document.body` - where neither of Escape's branches holds and the key would do
    *  nothing. The reader then stands exactly where a click and then `j` leaves them today. A
-   *  reading view below 1280 px has no row in sight to come back to, and its Escape goes to the
-   *  list rather than to a row, so the step alone is taken. From anywhere else the column's
-   *  noted focus is forgotten: a control the column's own code took away under the focus, with
-   *  no render of the Inbox's to read that loss, leaves the note on it, and the step's commit
-   *  would hand the focus to the next question's stop (below `paneScroller`), which no loss of
-   *  this key took. */
+   *  reading view below 1280 px has no row in sight to come back to, and a step there to an
+   *  item of another kind - a thread to an approval request, an approval to a question - swaps
+   *  the view's body and unmounts its focused scroller the same way. So a step from that
+   *  scroller notes it, with the item the view reads, and the column's hand-off (below
+   *  `paneScroller`) gives the next item's scroller the focus, with no scroll, in the commit
+   *  that draws it, where the step dropped the focus to the body. From anywhere else the
+   *  column's noted focus is forgotten: a control the column's own code took away under the
+   *  focus, with no render of the Inbox's to read that loss, leaves the note on it, and the
+   *  step's commit would hand the focus to the next question's stop, which no loss of this key
+   *  took. */
   const move = (delta: 1 | -1) => {
+    const active = document.activeElement;
     if (mode === "columns" && focusInPane()) {
       paneSelection.selectedRow()?.focus();
+    } else if (mode === "reading" && active !== null && active === paneScroller()) {
+      paneFocus.current = { element: active, question: paneSelection.id };
     } else {
       paneFocus.current = null;
     }
@@ -446,8 +454,9 @@ export function useInboxKeymap({
   // body alone, so an engine that names a removed element focused until its focus fixup is read
   // the same way. Below 1280 px the reading view is that column: an act on the row it reads
   // that takes the row away opens the next one in the view, and the focus goes to the view's
-  // scroller. The reader's own snooze, dismiss or answer that lands hands the focus on to the
-  // next item after this (R8, `pane-selection.ts`), on the passive lane, so that item has it
+  // scroller, as it does after a step of `j` or `k` from that scroller to an item of another
+  // kind (`move`). The reader's own snooze, dismiss or answer that lands hands the focus on to
+  // the next item after this (R8, `pane-selection.ts`), on the passive lane, so that item has it
   // last.
   useLayoutEffect(() => {
     const noted = paneFocus.current;
@@ -881,14 +890,20 @@ export function useInboxKeymap({
     },
     {
       // Below 1280 px the reading view stands in the list's place, so one level out of it is
-      // the list, at the row the reader left (`pane-selection.ts`). In the answer box, a text
-      // input or the document's editor Escape is that field's own, and leaving the whole view
-      // from there would be a bigger move than the reader pressed for; a menu's trigger in the
+      // the list, at the row the reader left (`pane-selection.ts`); a menu's trigger in the
       // view's head - Snooze, priority - takes no typed text, so Escape there is the way back to
-      // the row. Inside the question's card - an option, a button - one level out is the view
-      // itself, its scroller, where the next Escape is the list: the options the reader picked
-      // are the card's own state, and closing the view would drop them. Registered ahead of
-      // `clear-selection`, so the marks the bulk bar holds outlast it.
+      // the row. Inside the question's card - an option, a button, its answer box - one level
+      // out is the view itself, its scroller, where the next Escape is the list: the options
+      // picked and the words typed are the card's own state, and closing the view would drop
+      // them. The answer box (`data-ask-answer`) leaves Escape to the page, but for the one that
+      // shuts its picker (`MentionField`), and the card's own Escape there only lets go of a
+      // Request changes pick (`AskCard`): without this, the box Enter puts the caret in (R18)
+      // would have no way out by key. Every other text field keeps the key: a thread's reply box
+      // and a comment's edit take it themselves (`MentionComposer`), a menu's text box is its
+      // panel's (`AnchoredPanel`), a dialog's field - Request changes' reason, Decline's note - is
+      // its dialog's (`useDialog`), and leaving the whole view from another field would be a
+      // bigger move than the reader pressed for. Registered ahead of `clear-selection`, so the
+      // marks the bulk bar holds outlast it.
       action: "inbox.leave-reading",
       run: () => {
         if (outsideAskCard()) {
@@ -897,11 +912,15 @@ export function useInboxKeymap({
         }
         paneScroller()?.focus();
       },
-      when: () =>
-        mode === "reading" &&
-        !(document.activeElement !== null && takesText(document.activeElement)) &&
-        document.activeElement?.matches(BULK_PICKER_SELECTOR) !== true &&
-        (outsideAskCard() || paneScroller() !== null),
+      when: () => {
+        const active = document.activeElement;
+        return (
+          mode === "reading" &&
+          active?.matches(BULK_PICKER_SELECTOR) !== true &&
+          (active === null || !takesText(active) || active.matches("[data-ask-answer]")) &&
+          (outsideAskCard() || paneScroller() !== null)
+        );
+      },
     },
     {
       // The column is the other half of the page, and `l` is the step into it: the scroller

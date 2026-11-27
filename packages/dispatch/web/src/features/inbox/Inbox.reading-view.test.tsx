@@ -126,8 +126,7 @@ test("below 1280 px the browser's Back and Escape leave the reading view for the
     expect(shortRow("ask-a")).toHaveFocus();
 
     // The keyboard's pick: Enter on the focused row opens it with the caret in the question's
-    // answer box (R18), where Escape is the box's own; from the view's scroller Escape is the
-    // list again.
+    // answer box (R18); from the view's scroller Escape is the list again.
     shortRow("ask-b").focus();
     await user.keyboard("{Enter}");
     const view = await screen.findByTestId("inbox-reading-view");
@@ -339,7 +338,7 @@ test("below 1280 px with a row open and a row marked, Clear selection on the bar
   }
 });
 
-test("below 1280 px Escape in the reading view's answer box is the box's, and leaves the view only from outside a text field", async () => {
+test("below 1280 px Escape in the reading view's answer box steps out to the view's scroller with the words typed kept, and leaves the view from there", async () => {
   const user = userEvent.setup();
   const rows = [
     inboxIssue("ask-a", "CORE-1", "Which approach?"),
@@ -359,15 +358,15 @@ test("below 1280 px Escape in the reading view's answer box is the box's, and le
     await user.click(box);
     await user.keyboard("Ship it");
 
-    // In the box Escape is the box's own: the view, the question, the words typed and the focus
-    // all stay. Without the text-field guard the view's Escape would take the focus out of the
-    // box to the view's scroller, the step out of the question card.
+    // In the box Escape is one level out, as on an option: the view, the question and the words
+    // typed all stay, and the focus goes to the view's scroller, the step out of the question
+    // card.
     await user.keyboard("{Escape}");
     expect(address()).toBe("/?item=ask-a");
     expect(screen.getByTestId("inbox-reading-view")).toBe(view);
     expect(within(view).getByTestId("ask-ask-a")).toBeTruthy();
     expect(box).toHaveValue("Ship it");
-    expect(box).toHaveFocus();
+    expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus();
 
     // From outside a text field it is the way back to the list, at the row the view showed.
     act(() => {
@@ -599,6 +598,59 @@ test("below 1280 px Enter on a focused row opens it with the caret in its answer
     const view = await screen.findByTestId("inbox-reading-view");
     // One press: the caret is in the question's answer box once the view has drawn it (R18).
     await waitFor(() => expect(view.querySelector("[data-ask-answer]")).toHaveFocus());
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// Enter on a short row puts the caret in the question's answer box (R18), and Escape there is one
+// level out, as on an option: the view's scroller, with the view, the question and whatever the
+// box holds kept. The next Escape, from the scroller, is the list at the row.
+test("below 1280 px Escape in the answer box Enter opened puts the focus on the view's scroller, empty or holding a draft, and the next Escape is the list at the row", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox();
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-b"]));
+    shortRow("ask-b").focus();
+    await user.keyboard("{Enter}");
+    const view = await screen.findByTestId("inbox-reading-view");
+    const box = await waitFor(() => {
+      const field = view.querySelector<HTMLElement>("[data-ask-answer]");
+      expect(field).toHaveFocus();
+      return field as HTMLElement;
+    });
+
+    // With the box empty.
+    await user.keyboard("{Escape}");
+    expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus();
+    expect(screen.getByTestId("inbox-reading-view")).toBe(view);
+    expect(address()).toBe("/?item=ask-b");
+
+    // Holding a draft: Enter from the scroller is the box again, and Escape keeps what it holds.
+    await user.keyboard("{Enter}");
+    expect(box).toHaveFocus();
+    await user.keyboard("A half answer");
+    await user.keyboard("{Escape}");
+    expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus();
+    expect(screen.getByTestId("inbox-reading-view")).toBe(view);
+    expect(within(view).getByTestId("ask-ask-b")).toBeTruthy();
+    expect(box).toHaveValue("A half answer");
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument());
+    expect(address()).toBe("/");
+    expect(shortRow("ask-b")).toHaveFocus();
   } finally {
     unmount();
     getAsk.mockRestore();
@@ -1424,6 +1476,94 @@ test("below 1280 px a dismiss of the last row in the reading view brings the lis
     getIssue.mockRestore();
     listComments.mockRestore();
     listMyReplies.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// R8 for the reader's own answer: the last row answered in the reading view brings the list back
+// with the focus on its empty message, as a dismiss of it does (above). An answer begins no
+// hand-off - the list keeps its row where the reader saw it until Dispatch records the answer
+// (`recordAnswered`) - so its landing reads the row the view shows as the row answered
+// (`landHandOff`).
+test("below 1280 px an answer to the last row, sent from the reading view with Ctrl+Enter, brings the list back, its empty message holding the focus", async () => {
+  const user = userEvent.setup();
+  const only = inboxIssue("ask-a", "CORE-1", "Who owns the last rollout?");
+  let served: InboxRow[] = [only];
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const getAsk = mockAskReads([only]);
+  const getIssue = mockIssueReads();
+  const answerAsk = spyOn(api, "answerAsk").mockImplementation(async () => {
+    served = [];
+    return {
+      ...only,
+      answer: { at: "2026-09-11T03:00:00Z", selected: [], text: "Dana.", user: "alice" },
+      state: "answered",
+    };
+  });
+  const { unmount } = renderInbox();
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a"]));
+    shortRow("ask-a").focus();
+    await user.keyboard("{Enter}");
+    const view = await screen.findByTestId("inbox-reading-view");
+    await waitFor(() => expect(view.querySelector("[data-ask-answer]")).toHaveFocus());
+    await user.keyboard("Dana.");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+
+    await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument());
+    expect(address()).toBe("/");
+    await waitFor(() => expect(document.querySelector("[data-inbox-empty]")).toHaveFocus());
+    // The Inbox's keys still work from there.
+    await user.keyboard("f");
+    expect(screen.getByRole("searchbox", { name: "Search asks" })).toHaveFocus();
+  } finally {
+    unmount();
+    answerAsk.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// In the reading view `j` and `k` read the next row with the focus kept on the view's scroller,
+// where Space scrolls and Enter reaches the answer box. A thread and a question draw their bodies
+// in panes of their own (`ReadingPane`'s `ThreadPane`), so a step from one to the other takes
+// away the scroller that held the focus, and the next row's scroller takes it (`move`).
+test("below 1280 px j and k from a thread to a question and back keep the focus on the reading view's scroller", async () => {
+  const user = userEvent.setup();
+  const asks = [inboxIssue("ask-a", "CORE-2", "Which format?")];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(asks);
+  const getAsk = mockAskReads(asks);
+  const listMyReplies = threadsRead([replyRow("c1")]);
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox();
+  const reads = () =>
+    screen.getByTestId("inbox-reading-view").getAttribute("data-inbox-reading-row");
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "ask-a"]));
+    await user.click(shortRow("reply:c1").querySelector("time") as HTMLElement);
+    await waitFor(() => expect(reads()).toBe("reply:c1"));
+    const threadScroller = screen.getByTestId("inbox-pane-scroller");
+    await waitFor(() => expect(threadScroller).toHaveFocus());
+
+    await user.keyboard("j");
+    await waitFor(() => expect(reads()).toBe("ask-a"));
+    expect(threadScroller.isConnected).toBe(false);
+    await waitFor(() => expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus());
+
+    await user.keyboard("k");
+    await waitFor(() => expect(reads()).toBe("reply:c1"));
+    await waitFor(() => expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus());
+  } finally {
+    unmount();
+    getIssue.mockRestore();
+    listComments.mockRestore();
+    listMyReplies.mockRestore();
+    getAsk.mockRestore();
     getInbox.mockRestore();
   }
 });
