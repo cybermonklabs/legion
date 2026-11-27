@@ -12,6 +12,8 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import charterFrame from "./askgate-system.md" with { type: "text" };
+import ruleFrame from "./rule-check-system.md" with { type: "text" };
 
 // AskGate on the real Oh My Pi: the loader resolves the gate's string-literal imports of the host's
 // own modules (pi-ai, the session context, the settings, the fallback chains) only inside the
@@ -32,12 +34,19 @@ afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
 });
 
+/** The opening line of a frame file, as a provider request's JSON body writes it. The two checks'
+ *  frames differ in it, and it is read from the file, so a reworded frame still matches. */
+function openingInJson(frame: string): string {
+  const opening = frame.trimStart().split("\n")[0] ?? "";
+  if (opening === "") throw new Error("a frame file opens with no line");
+  return JSON.stringify(opening).slice(1, -1);
+}
 /** The system prompt of a request the charter check sends: its own frame heads it. */
 const isGateRequest = (request: Request): boolean =>
-  JSON.stringify(request.body.system ?? "").includes("You are AskGate.");
+  JSON.stringify(request.body.system ?? "").includes(openingInJson(charterFrame));
 /** The rules check's own frame, which a `dispatch ask` brings beside the charter call. */
 const isRuleRequest = (request: Request): boolean =>
-  JSON.stringify(request.body.system ?? "").includes("You are AskGate's rule check.");
+  JSON.stringify(request.body.system ?? "").includes(openingInJson(ruleFrame));
 
 /** The scripted bash call: a `dispatch ask` by the stand-in's literal path, which the gate reads. */
 const ask = (dispatch: string) =>
