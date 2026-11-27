@@ -4503,6 +4503,7 @@ function plantedTextsJob(plant: "none" | "empty" | "short" | "long" | "other-fil
 work=$SKILL_SCENARIOS_WORK
 printf '%s\n' "$*" >>"$work/rig-calls"
 case $1 in
+label-tree) mkdir -p "$work/label-trees/$2/tree" ;;
 batch-scored)
   mkdir -p "$work/runs/$2-$SKILL_SCENARIOS_FORWARD_WORLD-$4-1"
   echo '{"outcome":"scored"}' >"$work/runs/$2-$SKILL_SCENARIOS_FORWARD_WORLD-$4-1/row.json"
@@ -4585,7 +4586,7 @@ esac
     path.join(bin, "bun"),
     String.raw`#!/bin/sh
 case "$1 $2" in
-"install --frozen-lockfile") exit 0 ;;
+"install --frozen-lockfile") printf 'install %s\n' "$PWD" >>"$SKILL_SCENARIOS_WORK/rig-calls" ;;
 *) echo "the planted bun has no answer to $*" >&2; exit 9 ;;
 esac
 `,
@@ -4606,7 +4607,7 @@ esac
       calls: existsSync(calls) ? readFileSync(calls, "utf8") : "",
     };
   };
-  return { repo: realpathSync(repo), head, run };
+  return { repo: realpathSync(repo), head, work, run };
 }
 
 // A world whose world.json names `daemon: label` runs its agent as a real pane of the label's whole
@@ -5116,6 +5117,35 @@ describe("a control cell", () => {
     });
     expect(run.stdout).not.toContain("UNKNOWN: controls/patches/forward-only-texts.patch");
     expect(run.calls).toContain("batch-scored");
+  });
+
+  // Catches: a control label's tree profiled with no packages installed. A control tree is a new
+  // worktree with no node_modules, and the profile packs the label's plugins through the tree's own
+  // node_modules, so its pi-envoy install fails before any run. The installs are in the same log
+  // as the rig's calls, so their order is read with it.
+  test("a forward control label installs its tree's packages, then profiles that tree", () => {
+    const job = plantedTextsJob("none");
+    const run = job.run(["forward-only", "ctl-main-texts", "--world", "retro-defect"], {
+      SKILL_SCENARIOS_MODEL: "standin",
+    });
+    const tree = path.join(job.work, "label-trees/ctl-main-texts/tree");
+    const controls = path.join(job.repo, "packages/pi-legion/scripts/skill-scenarios/controls");
+    expect({
+      code: run.code,
+      calls: run.calls
+        .split("\n")
+        .filter((call) => /^(label-tree|unpatch-holds|install|profile|batch-scored) /.test(call)),
+    }).toEqual({
+      code: 0,
+      calls: [
+        `install ${job.repo}`,
+        `label-tree ctl-main-texts ${job.head} ${controls}/forward-only-main-texts.txt`,
+        `unpatch-holds ctl-main-texts ${controls}/patches/forward-only-texts.patch`,
+        `install ${tree}`,
+        `profile ctl-main-texts ${tree}`,
+        "batch-scored forward-only 5 ctl-main-texts",
+      ],
+    });
   });
 
   // Catches: a cell short of its count, after the limit of launches, decided as if it were whole.
