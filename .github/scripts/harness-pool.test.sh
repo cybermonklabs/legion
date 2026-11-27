@@ -2,20 +2,30 @@
 # Tests for `harness-pool.sh`: harnesses started by one step run beside each other, never more at
 # once than the slots and in the order queued, each in its own session with the starting step's
 # environment and working directory and SIGINT at its default; starts at the same moment take
-# entries of their own; a harness's CPU seconds are its own; a harness started with --minutes sees
-# its deadline and is stopped at its bound; and the wait is the verdict on every one of them, a
-# failure, a harness that signals its own process group, a recorder that was killed (before or
-# after its harness started, or replaced by another process of its pid), and a wait stopped by an
-# INT or a TERM included, and on none started.
+# entries of their own; a harness's CPU seconds are its own, and unknown rather than 0 when they
+# cannot be read; a harness started with --minutes sees its deadline and is stopped at its bound;
+# each line of a harness's log is stamped with the time it was written, a last line without a
+# newline included, the record says whether it covers the whole log, and nothing the record does
+# reaches a harness's verdict, its CPU seconds, its slot or the wait's; and the wait is the
+# verdict on every one of them, a failure, a harness that signals its own process group, a
+# recorder that was killed (before or after its harness started, or replaced by another process
+# of its pid), and a wait stopped by an INT or a TERM included, and on none started.
 #
 # Every case drives the script CI runs, in a pool directory of its own. The harnesses are small
 # bash commands that wait on marker files the case writes, and each wait for a file gives up after
-# 20 s and fails its case by name rather than hanging. Three checks lean on a clock, each in the
-# direction where a slow machine can only let a broken pool pass, never fail a working one: the
-# slot case gives a pool that ignored the slot 1 s to start a harness it must not; the bound case
+# 20 s and fails its case by name rather than hanging. Ten checks lean on a clock. Nine lean in
+# the direction where a slow machine can only let a broken pool pass, never fail a working one:
+# the slot case gives a pool that ignored the slot 1 s to start a harness it must not, and the
+# drain case gives a wait that did not wait for a status 1 s to judge without it; the bound case
 # shortens a minute to one second through HARNESS_POOL_SECONDS_PER_MINUTE and requires that a
-# harness which would sleep 300 s is stopped; and the CPU case requires a loop of a million
-# iterations to cost more than 0.3 s of CPU and a sleep to cost less.
+# harness which would sleep 300 s is stopped; the CPU case requires a loop of a million
+# iterations to cost more than 0.3 s of CPU and a sleep to cost less, and the stamper's CPU case
+# requires a harness that sleeps beside a stamper that ran that loop to cost less, CPU seconds
+# that a busy machine does not add to; and the three line-time gaps require a second's sleep
+# between two lines to show as half a second or more between their stamps, which a record
+# written at the harness's end could not show at all. The tenth leans the other way: a last line
+# without a newline, printed three seconds before its harness ends, must carry a time a second or
+# more before that end, which a stamper that read it more than two seconds late would not give.
 #
 # Run from anywhere: .github/scripts/harness-pool.test.sh
 # CI runs it in ci.yaml's test job.
@@ -194,6 +204,187 @@ check "the start says what it queued and nothing of the harness" "$(is "$start_o
 run_wait
 check "the wait prints the harness's standard output" "$(contains "$out" '^said-by-the-harness$')"
 check "and its standard error" "$(contains "$out" '^on-stderr$')"
+
+echo "case: each line of a harness's log is stamped with the time it was written, and the record is whole"
+fresh lines
+# A second between the lines: a record that gave them all one time, as a log read only at the
+# harness's end would, fails the two gap checks. A slow machine lengthens the gaps.
+"$pool" start three-lines bash -c 'echo first; sleep 1; echo second; sleep 1; echo third'
+run_wait
+check "it passes" "$(is "$status" 0)"
+lines="$HARNESS_POOL_DIR/000.lines"
+check "there is one record per line" "$(is "$(wc -l < "$lines")" 3)"
+check "each record carries the line's own text, in order" "$(is "$(cut -f2- < "$lines" | paste -sd' ')" 'first second third')"
+gap_one=$(awk -F'\t' 'NR == 1 { a = $1 } NR == 2 { printf "%.3f", $1 - a }' "$lines")
+gap_two=$(awk -F'\t' 'NR == 2 { a = $1 } NR == 3 { printf "%.3f", $1 - a }' "$lines")
+check "the second line's time is a sleep after the first's" "$(is "$(awk -v g="$gap_one" 'BEGIN { print (g >= 0.5) ? "yes" : "no: " g }')" yes)"
+check "and the third's a sleep after the second's" "$(is "$(awk -v g="$gap_two" 'BEGIN { print (g >= 0.5) ? "yes" : "no: " g }')" yes)"
+first_time=$(awk -F'\t' 'NR == 1 { printf "%.6f", $1 }' "$lines")
+check "the first line's time is after the harness's own start" "$(is "$(awk -v t="$first_time" -v s="$(< "$HARNESS_POOL_DIR/000.started")" 'BEGIN { print (t >= s) ? "yes" : "no: " t " before " s }')" yes)"
+check "the stamper counted the log's own bytes" "$(is "$(< "$HARNESS_POOL_DIR/000.lines.end")" "$(stat -c %s "$HARNESS_POOL_DIR/000.log")")"
+check "and the recorder wrote that size beside the count, which is how a reader knows the record is whole" "$(is "$(< "$HARNESS_POOL_DIR/000.logbytes")" "$(< "$HARNESS_POOL_DIR/000.lines.end")")"
+
+echo "case: the drain catches a last line the harness left without a newline"
+fresh drain
+"$pool" start unterminated bash -c "printf 'ended\nwith no newline'"
+run_wait
+check "it passes" "$(is "$status" 0)"
+check "the last line is stamped too" "$(contains "$(cut -f2- < "$HARNESS_POOL_DIR/000.lines")" '^with no newline$')"
+check "and the count still answers the log's size" "$(is "$(< "$HARNESS_POOL_DIR/000.lines.end")" "$(stat -c %s "$HARNESS_POOL_DIR/000.log")")"
+
+echo "case: a Python harness's lines are stamped when it printed them, not when it ended"
+fresh python-lines
+# Without PYTHONUNBUFFERED a Python program writing to a file holds its lines until it ends, and
+# both would carry that one time. The pool exports it to every harness for this reason. The start
+# runs without it, so that a value the machine running this test already exports cannot stand in
+# for the pool's own.
+env -u PYTHONUNBUFFERED "$pool" start printer python3 -c $'import time\nprint("printed first")\ntime.sleep(1)\nprint("printed second")'
+run_wait
+check "it passes" "$(is "$status" 0)"
+check "both lines are stamped" "$(is "$(wc -l < "$HARNESS_POOL_DIR/000.lines")" 2)"
+python_gap=$(awk -F'\t' 'NR == 1 { a = $1 } NR == 2 { printf "%.3f", $1 - a }' "$HARNESS_POOL_DIR/000.lines")
+check "the second line's time is a sleep after the first's" "$(is "$(awk -v g="$python_gap" 'BEGIN { print (g >= 0.5) ? "yes" : "no: " g }')" yes)"
+
+echo "case: a stamper that cannot run changes no verdict, and leaves a record that says it is incomplete"
+fresh stamper-fails
+printf '#!/usr/bin/env bash\nexit 3\n' > "$m/stamper-that-fails"
+chmod +x "$m/stamper-that-fails"
+HARNESS_POOL_LINE_TIMES="$m/stamper-that-fails" "$pool" start unstamped bash -c 'echo said all the same; exit 0'
+run_wait
+check "the harness passes as ever" "$(is "$status" 0)"
+check "its log is printed as ever" "$(contains "$out" '^said all the same$')"
+check "and the wait judges it" "$(contains "$out" '^harness-pool: 1 harnesses, 0 failed$')"
+check "the entry has its status" "$(is "$(< "$HARNESS_POOL_DIR/000.exit")" 0)"
+check "and no count of stamped bytes, so a reader calls the record incomplete rather than whole" "$(is "$([[ -e $HARNESS_POOL_DIR/000.lines.end ]] && echo whole || echo incomplete)" incomplete)"
+
+echo "case: a last line without a newline carries the time it was read, not the harness's end"
+fresh unterminated-time
+# The harness prints that line and then waits: a stamper that stamped it when it drained would
+# give it the harness's end rather than its own moment.
+"$pool" start prints-then-waits bash -c "printf 'ended\nwith no newline'; sleep 3"
+run_wait
+check "it passes" "$(is "$status" 0)"
+last_time=$(awk -F'\t' 'END { printf "%.6f", $1 }' "$HARNESS_POOL_DIR/000.lines")
+read -r last_wall _ < "$HARNESS_POOL_DIR/000.seconds"
+ended_at=$(awk -v s="$(< "$HARNESS_POOL_DIR/000.started")" -v w="$last_wall" 'BEGIN { printf "%.6f", s + w }')
+check "its time is a second or more before the harness ended" "$(is "$(awk -v l="$last_time" -v e="$ended_at" 'BEGIN { print (e - l >= 1) ? "yes" : "no: " (e - l) }')" yes)"
+
+echo "case: a log rewritten behind the stamper leaves no whole record"
+fresh rewritten
+# The harness truncates its own log and writes a line of the same length over it: the two byte
+# counts would agree, so the record would read as the log and hold something else. The stamper
+# compares what it stamped with the log itself before it writes its count.
+"$pool" start rewriter bash -c "echo 'PASS: old'; sleep 0.5; : > '$HARNESS_POOL_DIR/000.log'; printf 'PASS: new\n' > '$HARNESS_POOL_DIR/000.log'"
+run_wait
+check "the harness passes" "$(is "$status" 0)"
+check "and the record says it is no whole one" "$(is "$([[ -e $HARNESS_POOL_DIR/000.lines.end ]] && echo whole || echo incomplete)" incomplete)"
+
+echo "case: a harness whose log grows after it ended leaves a record that says it is a part"
+fresh late-writer
+# A process the harness left behind writes to the log after the stamper read it to the end: the
+# size the recorder wrote is then not the log's, and the wait drops it, so a reader calls the
+# record a part rather than the whole log.
+"$pool" start leaves-a-writer bash -c "(sleep 1; echo 'written after the harness ended'; touch '$m/late-written') & echo 'PASS: first'"
+check "the harness ended" "$(appears "$HARNESS_POOL_DIR/000.exit")"
+check "and the process it left behind wrote to its log" "$(appears "$m/late-written")"
+run_wait
+check "the wait passes" "$(is "$status" 0)"
+check "what the stamper read is kept" "$(is "$([[ -e $HARNESS_POOL_DIR/000.lines.end ]] && echo kept || echo none)" kept)"
+check "and the log's size is dropped, so a reader calls the record a part" "$(is "$([[ -e $HARNESS_POOL_DIR/000.logbytes ]] && echo whole || echo "a part")" "a part")"
+
+echo "case: a stamper that is not reading when the harness would start is ended, and stamps nothing"
+fresh slow-stamper
+# A stamper this late would stamp every line the harness had already written with the time of its
+# own first read - one wrong time for many lines, which reads as a true one.
+printf '#!/usr/bin/env bash\nsleep 30\nexec "%s" "$@"\n' "$script_dir/harness_line_times.py" > "$m/slow-stamper"
+chmod +x "$m/slow-stamper"
+HARNESS_POOL_LINE_TIMES="$m/slow-stamper" "$pool" start late bash -c 'echo said all the same'
+run_wait
+check "the harness passes as ever" "$(is "$status" 0)"
+check "its log is printed as ever" "$(contains "$out" '^said all the same$')"
+check "nothing was stamped" "$(is "$([[ -e $HARNESS_POOL_DIR/000.lines ]] && echo stamped || echo none)" none)"
+check "and the record says it is no whole one" "$(is "$([[ -e $HARNESS_POOL_DIR/000.lines.end ]] && echo whole || echo incomplete)" incomplete)"
+
+echo "case: a record file the recorder cannot write changes no verdict"
+fresh record-write-fails
+"$pool" start held-then-passes bash -c "touch '$m/held-started'; until [[ -e '$m/release' ]]; do sleep 0.05; done; echo said all the same"
+check "the harness started" "$(appears "$m/held-started")"
+# A link to a path that cannot exist where the recorder will write the stop file: the recorder's
+# write of it fails, and the stamper, which looks for that file, finds none. Every write the
+# record needs is made so that a failure to write it cannot end the recorder, which would leave
+# the harness with no status and fail the wait over a harness that passed. The stamper, never
+# asked to stop, is killed when the drain's 30 s are out.
+ln -s "$m/absent/stop" "$HARNESS_POOL_DIR/000.lines.stop"
+touch "$m/release"
+run_wait
+check "the harness still passes" "$(is "$status" 0)"
+check "with its own status" "$(is "$(cat "$HARNESS_POOL_DIR/000.exit" 2> /dev/null || echo none)" 0)"
+check "and its log" "$(contains "$out" '^said all the same$')"
+check "the stop file was not written, so the stamper left no count of what it read" "$(is "$([[ -e $HARNESS_POOL_DIR/000.lines.end ]] && echo whole || echo incomplete)" incomplete)"
+
+echo "case: a stamper's own seconds are never the harness's"
+fresh stamper-cpu
+# A stamper that burns CPU and ends before the harness does: the harness waits for its end and
+# then sleeps half a second, by which time the recorder has reaped the stamper, so a `times` read
+# by the recorder itself would count the stamper's seconds. The recorder runs the harness in a
+# subshell and reads `times` there, and a subshell starts with no children's seconds, so the
+# harness's CPU is its own whatever the recorder started beside it. The loop is the CPU case's
+# million iterations, which that case requires to cost more than 0.3 s.
+# shellcheck disable=SC2016 # the stamper, not this shell, expands these
+printf '#!/usr/bin/env bash\n: > "$2"\ni=0\nwhile ((i < 1000000)); do i=$((i + 1)); done\ntouch %q\n' "$m/stamper-ended" > "$m/burning-stamper"
+chmod +x "$m/burning-stamper"
+HARNESS_POOL_LINE_TIMES="$m/burning-stamper" "$pool" start idle-harness bash -c "tries=0; until [[ -e '$m/stamper-ended' ]]; do ((tries++ < 200)) || exit 1; sleep 0.1; done; sleep 0.5"
+run_wait
+check "it passes, having waited for the stamper's end" "$(is "$status" 0)"
+stamper_cpu=$(sed -n 's/^::group::idle-harness: exit 0, [0-9.]* s, \([0-9.]*\) s of CPU, .*/\1/p' <<< "$out")
+check "the sleeping harness used next to no CPU" "$(is "$(awk -v c="${stamper_cpu:-9}" 'BEGIN { print (c < 0.3) ? "yes" : "no: " c }')" yes)"
+
+echo "case: a CPU that cannot be read is written as unknown, never as none"
+fresh cpu-unknown
+export GITHUB_STEP_SUMMARY="$m/summary"
+"$pool" start uncounted bash -c "touch '$m/uncounted-started'; until [[ -e '$m/release' ]]; do sleep 0.05; done"
+check "the harness started" "$(appears "$m/uncounted-started")"
+# A link to a path that cannot exist where the recorder will write the harness's `times`: that
+# write fails, and the harness's CPU is then not known. A 0.0 in its place would be a wrong
+# number that reads as a true one.
+ln -s "$m/absent/times" "$HARNESS_POOL_DIR/000.times"
+touch "$m/release"
+run_wait
+check "the harness still passes" "$(is "$status" 0)"
+check "the wait gives its CPU as unknown" "$(contains "$out" '^::group::uncounted: exit 0, [0-9.]* s, ? s of CPU, after [0-9.]* s waiting for a slot$')"
+check "and so does the step summary" "$(contains "$(cat "$m/summary")" '^| uncounted | [0-9.]* | ? | [0-9.]* | pass |$')"
+unset GITHUB_STEP_SUMMARY
+
+echo "case: a stamper that does not stop keeps no harness out of the slot its harness had"
+fresh drain-slot
+export HARNESS_POOL_SLOTS=1
+# A stamper that reads nothing and never ends: the recorder asks it to stop once its harness has
+# ended, and kills it only 30 s later. The harness's slot is free from the harness's end all the
+# same, so the next harness runs while that recorder waits; the wait still waits for the first's
+# status, which the recorder writes after the drain. The case kills the stamper itself once it
+# has seen all that, so as not to spend the 30 s.
+# shellcheck disable=SC2016 # the stamper, not this shell, expands these
+printf '#!/usr/bin/env bash\necho "$$" > %q\n: > "$2"\nwhile :; do sleep 0.1; done\n' "$m/stamper.pid" > "$m/hung-stamper"
+chmod +x "$m/hung-stamper"
+HARNESS_POOL_LINE_TIMES="$m/hung-stamper" "$pool" start undrained bash -c 'echo said and ended'
+"$pool" start next bash -c "if [[ -e '$HARNESS_POOL_DIR/000.exit' ]]; then touch '$m/after-status'; fi; touch '$m/next-started'"
+check "the next harness starts while the first's recorder still drains its stamper" "$(appears "$m/next-started")"
+status_now=0
+out_now=$(timeout 60 "$pool" wait --now 2>&1) || status_now=$?
+check "a wait stopped then names the first as ended, its status not yet written" "$(contains "$out_now" '^::error title=undrained::ended after [0-9.]* s, but its recorder had not yet written its status when the wait was stopped; ')"
+"$pool" wait > "$m/wait.out" 2>&1 &
+waiter=$!
+# Long enough for a wait that did not wait for the first's status to have judged it.
+sleep 1
+check "a wait started while the first's recorder drains waits for its status" "$(is "$(kill -0 "$waiter" 2> /dev/null && echo waiting || echo ended)" waiting)"
+kill -KILL "$(< "$m/stamper.pid")" 2> /dev/null || true
+status=0
+wait "$waiter" || status=$?
+out=$(< "$m/wait.out")
+check "and once the drain is over it passes" "$(is "$status" 0)"
+check "judging the first by its own status" "$(contains "$out" '^::group::undrained: exit 0, ')"
+check "the next harness had started before that status was written" "$(is "$([[ -e $m/after-status ]] && echo after || echo before)" before)"
+export HARNESS_POOL_SLOTS=2
 
 echo "case: a failing harness fails the wait, which names it, and the others still report"
 fresh failure
@@ -379,11 +570,15 @@ status=0
 out=$(timeout 60 "$pool" wait --allow-none 2>&1) || status=$?
 check "over none it exits 0" "$(is "$status" 0)"
 check "and says it judged nothing" "$(contains "$out" "^harness-pool: no harness was queued under $HARNESS_POOL_DIR, and --allow-none: nothing to judge\$")"
+# What the uploaded record says of a job that queued no harness: 0 judged, which a reader tells
+# from a record that was lost.
+check "and writes that it judged none" "$(is "$(cat "$HARNESS_POOL_DIR/judged" 2> /dev/null || echo none written)" 0)"
 "$pool" start fails bash -c 'exit 5'
 status=0
 out=$(timeout 60 "$pool" wait --allow-none 2>&1) || status=$?
 check "over a failing harness it still fails" "$(is "$status" 1)"
 check "naming it" "$(contains "$out" '^::error title=fails::exited 5 after ')"
+check "and writes how many harnesses it judged" "$(is "$(cat "$HARNESS_POOL_DIR/judged" 2> /dev/null || echo none written)" 1)"
 status=0
 out=$(timeout 60 "$pool" wait --none 2>&1) || status=$?
 check "a wait refuses any other argument" "$(is "$status" 2)"
@@ -438,7 +633,14 @@ out=$(cat "$m/wait.out")
 # A job cancelled before its wait step began: --now judges at once.
 status_now=0
 out_now=$(timeout 60 "$pool" wait --now 2>&1) || status_now=$?
+# What the cancel leaves of the running harness's record, read before it is released: every
+# record is flushed as it is read, so the line it printed before it hung is already stamped,
+# while the entry has no count of stamped bytes, which is how a reader knows it is a part.
+hung_stamped=$(cut -f2- < "$HARNESS_POOL_DIR/001.lines")
+hung_record=$([[ -e $HARNESS_POOL_DIR/001.lines.end ]] && echo whole || echo a part)
 touch "$m/release-hung"
+check "the cancelled wait leaves what the running harness had printed, stamped" "$(contains "$hung_stamped" '^before the hang$')"
+check "and leaves that record as a part, not as a whole one" "$(is "$hung_record" "a part")"
 check "--now fails at once" "$(is "$status_now" 1)"
 check "and says the job was cancelled" "$(contains "$out_now" '^harness-pool: the job was cancelled; judging the 3 harnesses queued as they are now$')"
 check "naming the harness still running" "$(contains "$out_now" '^::error title=hung::was still running after [0-9.]* s when the wait was stopped; ')"

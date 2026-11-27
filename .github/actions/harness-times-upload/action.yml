@@ -1,0 +1,48 @@
+name: Upload the harness case times
+description: >-
+  The step after the harness pool's wait step of every job of ci.yaml's run that queues shell
+  harnesses through .github/scripts/harness-pool.sh: it uploads the pool's record of when each
+  line of each harness's log was written, the files `$RUNNER_TEMP/harness-pool/<entry>.lines`,
+  `.lines.end`, `.logbytes`, `.name`, `.started`, `.seconds`, `.exit` and `.bound`, with the
+  `judged` file every wait writes (the number of harnesses it judged, 0 for none, which is how a
+  reader tells a job that queued none from one whose record was lost), as the
+  artifact `harness-times-<the job's check run id>`, the id the jobs API and the job's URL give,
+  so a reader fetches one job's record by that id (docs/testing.md, "When each shell harness ran
+  its cases"). Call it with `if: always()`, so a failed, timed-out or cancelled job's record is
+  kept too: a cancel is the run whose times a reader most wants.
+  The harnesses' own logs are left out: the record carries every line's text beside its time,
+  and the wait step prints each log into the job's own log as before.
+  A job that kept no file only warns (if-no-files-found: warn), because a job whose every harness
+  step was skipped by its `if:` queues nothing and is rightly green: whether a record is complete
+  is the reader's verdict (.github/scripts/harness_case_times.py prints UNKNOWN and exits
+  non-zero), never a harness's or a job's, which is the rule the pool itself keeps - nothing the
+  pool records may change what a test run decides.
+  For the same rule each calling step sets `continue-on-error: true`: an upload that fails is a
+  red mark on its own step, and the job, and the ci-ok report after it that reads the job's
+  status, keep the harnesses' verdict. The reader's UNKNOWN for a job with no artifact covers
+  the record such an upload lost.
+
+inputs:
+  check-run-id:
+    description: "`job.check_run_id` of the calling job, which names the artifact."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Upload the harness case times
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: harness-times-${{ inputs.check-run-id }}
+        path: |
+          ${{ runner.temp }}/harness-pool/*.lines
+          ${{ runner.temp }}/harness-pool/*.lines.end
+          ${{ runner.temp }}/harness-pool/*.logbytes
+          ${{ runner.temp }}/harness-pool/*.name
+          ${{ runner.temp }}/harness-pool/*.started
+          ${{ runner.temp }}/harness-pool/*.seconds
+          ${{ runner.temp }}/harness-pool/*.exit
+          ${{ runner.temp }}/harness-pool/*.bound
+          ${{ runner.temp }}/harness-pool/judged
+        if-no-files-found: warn

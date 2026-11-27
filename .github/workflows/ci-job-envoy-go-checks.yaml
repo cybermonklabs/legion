@@ -15,8 +15,9 @@ name: CI job envoy-go-checks
 #
 # The harnesses run through .github/scripts/harness-pool.sh: each harness step queues its harness
 # and returns, the harnesses run beside each other, and the step "Wait for the script harnesses
-# and judge them" before the ci-ok report is their verdict, with each harness's log, exit status
-# and wall and CPU seconds in its log and the job summary
+# and judge them" before the record upload and the ci-ok report is their verdict, with each
+# harness's log, exit status and wall and CPU seconds in its log and the job summary, and the
+# time of each of its lines in the artifact the upload keeps
 # (.github/ci-notes/ci.md#the-harness-pool).
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
@@ -208,6 +209,21 @@ jobs:
       - name: Name the script harnesses a cancelled job left
         if: cancelled() && steps.harness-wait.outcome == 'skipped'
         run: .github/scripts/harness-pool.sh wait --allow-none --now
+      # When each of those harnesses ran each of its cases: the pool stamps every line of every
+      # harness's log with the time it was written, and this keeps that record for 90 days, the
+      # repository's default (.github/actions/harness-times-upload, docs/testing.md). GitHub
+      # stamps a job's log by the line and the wait above prints each harness's log at the end,
+      # so the job's own log says only when the wait printed it. `always()`, so a cancelled or
+      # timed-out job keeps what was stamped before it ended. `continue-on-error`, since nothing the
+      # pool records may change what a test run decides: a failed upload is a red mark on this step
+      # alone, the job and its ci-ok report keep the harnesses' verdict, and the reader reports the
+      # lost record as UNKNOWN.
+      - name: Upload the harness case times
+        if: always()
+        continue-on-error: true
+        uses: ./.github/actions/harness-times-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

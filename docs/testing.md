@@ -1310,6 +1310,52 @@ A job that carries `.github/scripts/disk_watch.py` through its steps prints the 
 `tool-fallback` and `tool-fallback-arm` carry it from before their first faulted install to after their last, and `envoy-smoke` carries it around its live-tests step alone.
 It says nothing about the run that was lost: the series goes to the log, and that run has none (dispatch://INFRA-2605).
 
+## When each shell harness ran its cases
+
+A job's shell harnesses run beside each other through `.github/scripts/harness-pool.sh`, each into a log of its own, and the job's step "Wait for the script harnesses and judge them" prints every log when the last harness has ended.
+GitHub stamps a job's log by the line, so each line of a pooled harness carries the time the wait printed it, and the time the harness wrote it, which is the only one that says how long a case took, is in no log GitHub keeps.
+
+So the pool stamps the lines itself.
+Beside each harness it starts `.github/scripts/harness_line_times.py` on that harness's log, which writes one record per line to `<entry>.lines`, `<epoch seconds with microseconds>` and a tab and the line's own bytes.
+A line's time is when the stamper read it, which is after the line was written and normally within one poll of it, 50 ms; the sleep between polls is a least time, not a most, so a loaded runner can make that later.
+A last line the harness left without a newline carries the time its bytes were last read, since nothing says when such a line ended.
+The harness starts only once the stamper is reading, and a stamper that is not reading two seconds after its harness's slot is granted is killed, so that no line is stamped with the time of a late first read: that entry then has no record, which the reader reports as UNKNOWN.
+When the harness ends, the recorder first gives up the harness's slot (`<entry>.ended`), so the next harness queued never waits on the record, and then asks the stamper to stop.
+The stamper reads the log to its end, checks what it stamped against the log's own bytes, and writes the bytes it read to `<entry>.lines.end`; the recorder writes the log's size to `<entry>.logbytes`, and the entry's exit status is written last of all, which is what the wait waits for.
+A reader takes the record as whole only when those two numbers agree, and the wait drops `<entry>.logbytes` where a harness's log has grown since — a process the harness left behind — so that record reads as a part rather than as a whole one.
+
+The job uploads those files, with each entry's `.name`, `.started`, `.seconds`, `.exit` and `.bound` and the wait's `judged` (how many harnesses it judged, which tells a job that queued none from one whose record was lost), as the artifact `harness-times-<job id>` with `.github/actions/harness-times-upload` (`if: always()`, so a failed, timed-out or cancelled job keeps what was stamped).
+The harnesses' own logs are not uploaded: `.lines` carries every line's text beside its time, and the wait step still prints each log into the job's log.
+The artifact is kept for 90 days, this repository's default: the two artifacts of run 45965019783, made on 2026-11-27, carry `expires_at` 2027-02-25.
+They are small — 185 KB for the test job's 55 harnesses and 74 KB for envoy-go-checks' 26, as GitHub stores them.
+
+To read one run's cases, each with the time it started and ended:
+
+```sh
+.github/scripts/harness_case_times.py --run <run id>
+```
+
+It prints one JSON line per case — the job, the harness, the case's name, its status, its start, its end and its seconds — where a case is a `PASS:`/`FAIL:`, `ok`/`not ok`, `case: <name>` or `<name>: PASS` line of the harness's own output, a case ends at its line and starts at the previous case's line, and the first case of a harness starts when the harness did.
+A harness that printed no case line gets one row for the whole harness.
+A harness that exited non-zero always has a row of its own, `kind` `harness`, `status` `fail`, from its last case line to its end, and a passing harness whose end is past its last case line by more than a poll has a passing one.
+
+It prints an UNKNOWN row for a job that ran a pool wait step and has no artifact — an upload that failed included — and for a harness whose record is missing or does not cover its whole log — a stamper that was killed, or a harness still running when the job ended.
+It exits 1 when any row is UNKNOWN, and 3 when any row failed and nothing is UNKNOWN.
+An UNKNOWN row is printed rather than left out because a missing row reads as a case that never ran.
+
+Nothing in this record may change what a test decides.
+The stamper reads the log and never the harness, so the harness's output goes to the same file, with the same writer, as before the record existed; a stamper that cannot start, is killed or is cut off leaves an incomplete record and its own error output in the entry's recorder log, which the wait prints in the harness's group, and every file the recorder writes for the record is written so that a failure to write it cannot end the recorder.
+A harness's CPU seconds stay its own: the recorder runs it in a subshell of its own and reads `times` there, and a subshell starts with no children's seconds, so nothing else the recorder started can reach that number; where `times` cannot be written or read, the CPU is written `?`, never 0.
+The upload warns rather than fails when it finds no file (`if-no-files-found: warn`), since a job whose every harness step was skipped by its `if:` queues nothing and is rightly green.
+The upload step has `continue-on-error: true` in both jobs, so an upload that fails is a red mark on that step alone: the job, and the ci-ok report that reads its status, keep the harnesses' verdict, and the reader's UNKNOWN for a job with no artifact covers the lost record.
+
+The one thing the record changes for a harness is buffering: the pool exports `PYTHONUNBUFFERED=1` to it, so a Python harness, and a Python program a harness runs, writes each line when it prints it.
+Without it those lines reach the log when the program ends and carry that one time — a wrong time, which reads as a true one, where a missing record reads as missing.
+It changes no output and no status; it does change the order in which a Python program's standard output and error reach the log, which is now the order it wrote them.
+
+This repository's artifacts can be downloaded by anyone for those 90 days, and GitHub's log masking does not reach them: the record holds each harness's output as the harness wrote it.
+No pooled harness is given a secret today — each runs over fakes — and a harness that is ever given one must keep it out of its output, as every harness whose log the wait prints already must.
+
 ## A test asserts no count of work a broker may repeat
 
 A message broker that gives at-least-once delivery may hand one message to a handler twice. NATS

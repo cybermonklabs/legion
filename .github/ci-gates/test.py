@@ -15,6 +15,9 @@ GATE = gate("test", "test", runs=[
     # verdict on them, so a change to the pool must start this job whatever gate it hits.
     (".github/scripts/harness-pool.sh",
      f"{at('test', HARNESS_POOL_WAIT_STEP)}, and each harness step above it but three queues its harness through it"),
+    (".github/scripts/harness_line_times.py",
+     f"{at('test', HARNESS_POOL_WAIT_STEP)}: .github/scripts/harness-pool.sh starts it beside each harness it runs, on that harness's log"),
+    (".github/actions/harness-times-upload/**", at("test", "Upload the harness case times")),
     ("scripts/third-party-notices.test.ts", at("test", "Test third-party notices")),
     ("packages/dispatch/web/src/fonts/inter/**",
      "`scripts/third-party-notices.test.ts#lists the typeface the Dispatch web app ships, with the SIL Open Font License's text` "

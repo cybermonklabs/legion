@@ -2369,6 +2369,38 @@ env). In envoy-go-checks they are queued right after the Go cache restore and th
 (the cluster test's nats.yaml render runs that helm, and a pooled harness takes the PATH of the
 step that queued it), longest first.
 
+Each job that queues harnesses also keeps a record of when each line of each harness's log was
+written. GitHub stamps a job's log by the line, and a pooled harness's log reaches GitHub only
+when the wait prints it at the end, so the job's log says when the wait printed each line and
+nothing about when the harness wrote it: every shell row of the weekly test inventory had no
+seconds for that reason. The pool starts .github/scripts/harness_line_times.py beside each
+harness, on that harness's log, and it writes `<epoch seconds with microseconds>\t<the line's
+bytes>` per line to the entry's `.lines`. A line's time is after its write and normally within
+one poll of it, 50 ms; the sleep between polls is a least time, not a most, so a loaded runner
+can make it later. The harness starts only once that stamper is reading, and a stamper not
+reading two seconds after its harness's slot is granted is killed, so no line carries the time
+of a late first read. When the harness ends the recorder gives up its slot (`<entry>.ended`)
+before it drains the stamper, so a queued harness never waits on the record. The stamper then
+reads the log out, compares what it stamped with the log itself hash for hash, and writes the
+bytes it read; the recorder writes the log's own size beside it, and the wait drops that size
+where the log has grown since (a process the harness left behind), so a reader can tell a whole
+record from a part. The step "Upload the harness case
+times" (.github/actions/harness-times-upload, `if: always()`) keeps those files, with each
+entry's name, start, seconds, status and bound and the wait's count of what it judged, as the
+artifact `harness-times-<the job's check
+run id>` for 90 days, and .github/scripts/harness_case_times.py reads one run's cases out of
+them (docs/testing.md#when-each-shell-harness-ran-its-cases). The record decides nothing: the
+stamper reads the log and never the harness, every file the record needs is written so that a
+failure to write it cannot end the recorder, the harness runs in a subshell of its own whose
+`times` is the harness's CPU alone (`?` where that cannot be read, never 0), and a stamper that
+fails leaves an incomplete record, which the reader reports as UNKNOWN, and its error output in
+the entry's recorder log, which the wait prints in the harness's group. The upload step has
+`continue-on-error: true` in both jobs: an upload that fails is a red mark on that step, the job
+and its ci-ok report keep the harnesses' verdict, and the reader's UNKNOWN for a job with no
+artifact covers the lost record. The one thing the
+pool changes for a harness is PYTHONUNBUFFERED=1, so that a Python program's lines reach the log
+when it prints them rather than when it ends and carry their own times.
+
 ## Why the daemon's Go suite is a job of its own
 
 The Go daemon's own suite: the plain step, the race step and the Stage 1 proof, with the
