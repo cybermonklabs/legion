@@ -62,7 +62,11 @@ func slowCheckoutTools(t *testing.T, delay time.Duration) map[string]string {
 	tools := testTools(t)
 	wrapper := filepath.Join(t.TempDir(), "jj")
 	mark := "[ -z \"${" + standInMark + "-}\" ] || { " + testexec.MarkStart(`"$`+standInMark+`"`) + "; }\n"
-	script := "#!/bin/sh\n" + mark + "case \" $* \" in *' sparse reset '*) sleep " + strconv.FormatFloat(delay.Seconds(), 'f', -1, 64) + " ;; esac\nexec '" + tools["jj"] + "' \"$@\"\n"
+	// CONTROL ONLY: the first `jj workspace add` of a row (stallOnce) is held 1.5 s before its
+	// start mark, as a loaded machine holds a jj before its first line, and 4.5 s after it: 6 s in
+	// all, past the runner's 5 s budget.
+	hold := "case \" $* \" in *' workspace add '*) if [ ! -e '" + stallOnce + "' ]; then : >'" + stallOnce + "'; held=1; sleep 1.5; fi ;; esac\n"
+	script := "#!/bin/sh\n" + hold + mark + "case \" $* \" in *' sparse reset '*) sleep " + strconv.FormatFloat(delay.Seconds(), 'f', -1, 64) + " ;; *' workspace add '*) [ -z \"${held-}\" ] || sleep 4.5 ;; esac\nexec '" + tools["jj"] + "' \"$@\"\n"
 	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -247,6 +251,7 @@ func TestProvisionBoundsEachCommandByItsOwnBudget(t *testing.T) {
 // took the budget for any other reason fails the run, as it failed main's one run, and so does a
 // run whose checkout took less than the budget, which proves nothing.
 func TestProvisionChecksOutPastTheRunnersBudget(t *testing.T) {
+	stallOnce = filepath.Join(t.TempDir(), "stalled")
 	within := testwait.Bounded(t, time.Minute, checkoutRunMargin)
 	until := time.Now().Add(within)
 	for runs := 1; ; runs++ {
@@ -289,6 +294,7 @@ func TestProvisionChecksOutPastTheRunnersBudget(t *testing.T) {
 // command took the five seconds only because the machine started its jj late is not judged, as in
 // TestProvisionChecksOutPastTheRunnersBudget, and the case provisions again, within a minute.
 func TestProvisionFailsWhenTheCheckoutOutlivesItsBound(t *testing.T) {
+	stallOnce = filepath.Join(t.TempDir(), "stalled")
 	within := testwait.Bounded(t, time.Minute, checkoutRunMargin)
 	until := time.Now().Add(within)
 	for runs := 1; ; runs++ {
@@ -313,3 +319,7 @@ func TestProvisionFailsWhenTheCheckoutOutlivesItsBound(t *testing.T) {
 		return
 	}
 }
+
+// stallOnce is a file whose absence makes the jj of slowCheckoutTools hold its first `jj
+// workspace add` of a row, and whose presence lets later ones run at once (CONTROL ONLY).
+var stallOnce string
