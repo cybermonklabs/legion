@@ -7481,7 +7481,16 @@ async function expectRunDrawn(page: Page, run: SeededRun, what: string): Promise
     await expect(value, `${what}: the ${field} of run ${run.id}`).toHaveText(
       at === null ? CONTROL_LABELS.none : await drawnInstant(page, at)
     );
-    if (at !== null) await expect(value.locator("time")).toHaveAttribute("datetime", at);
+    // The server writes an instant in its own form (`…55.91Z` for the seed's `…55.910Z`), so the
+    // row compares the instant the element names, not its text.
+    if (at !== null) {
+      await expect
+        .poll(
+          async () => Date.parse((await value.locator("time").getAttribute("datetime")) ?? ""),
+          { message: `${what}: the ${field} of run ${run.id} names another instant` }
+        )
+        .toBe(Date.parse(at));
+    }
   }
 }
 
