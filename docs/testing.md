@@ -708,11 +708,12 @@ such a test would take the binary toward the step's limit.
 
 ## A test in a daemon package that states the rule runs beside the others
 
-Five packages of `packages/daemon` state in their `TestMain`'s file that every top-level test of
+Six packages of `packages/daemon` state in their `TestMain`'s file that every top-level test of
 the default build calls `t.Parallel()` as its first statement or says why not: `internal/daemon`,
-`internal/workflow`, `internal/store`, `internal/runtime/sandbox` and `cmd/legion`. Each
-`TestMain` sets how many run at once (`daemonTestParallelism`, `workflowTestParallelism` and
-`storeTestParallelism` 4, `sandboxTestParallelism` and `cmdTestParallelism` 8).
+`internal/workflow`, `internal/store`, `internal/runtime/sandbox`, `internal/workspace` and
+`cmd/legion`. Each `TestMain` sets how many run at once (`daemonTestParallelism`,
+`workflowTestParallelism` and `storeTestParallelism` 4, `sandboxTestParallelism`,
+`workspaceTestParallelism` and `cmdTestParallelism` 8).
 The live drivers behind `//go:build e2e` of `internal/daemon`, `internal/workflow`,
 `internal/store` and `cmd/legion`, which no unit run compiles, are not held to the rule, and the
 check below reads only the default build. Each test of `internal/daemon` already has a database of
@@ -732,9 +733,9 @@ one second in `TestAPodStartsItsRolesOneLoadAtATime`, or the rig's two-second bo
 `TestSuspendOfAPodWhoseLauncherNeverConnectedReturnsAtOnce`). A new test with neither the call nor
 the comment runs alone for no reason.
 
-So each of the five packages fails such a test by name: `TestEveryTestCallsParallelOrSaysWhyNot`,
-in its `main_test.go`, runs `packages/daemon/internal/testparallel`'s `Require` over the package's
-own test files, those go/build's default context selects (no `-tags`). It finds a test as go test
+So each of the six packages fails such a test by name: `TestEveryTestCallsParallelOrSaysWhyNot`,
+in the file that declares `TestMain`, runs `packages/daemon/internal/testparallel`'s `Require`
+over the package's own test files, those go/build's default context selects (no `-tags`). It finds a test as go test
 does, whatever name the file imported `testing` under. The reason goes on the comment's first
 line, after the colon: a `// Not parallel:` line with nothing after it is no reason, and neither
 is a comment that is not the body's first. A `t.Parallel()` after another statement, in a `defer`
@@ -748,13 +749,26 @@ the rule holds it the same way, with a test of its own that calls `Require` on i
 `internal/intake` states a looser one (above): a serial test whose reason is a call in its own body
 needs no comment there.
 
+## A test in `packages/daemon/internal/workspace` keeps its runner's state local
+
+The package's `TestMain` runs eight parallel tests at once (`workspaceTestParallelism`); an
+explicit `go test -parallel` overrides it. Tests that change the process environment, stderr or a
+package variable stay serial. The stalled-download row also runs alone because it changes
+`downloadWindow`; its sibling rows call `t.Parallel()`.
+
+Each recording runner supplies its own jj identity and tool wrappers to `NewRunnerIn`. The
+GitHub stand-in supplies its own certificate and proxy there too, without changing the process
+environment. Tests share one temporary home: jj stores repository and workspace configuration
+under their own random ids. A test that plants such configuration must use a fresh id. A seeded
+remote is copied from a template built once per default branch; the template itself is not changed.
+
 ## A daemon test writes a file it then executes with `internal/execfile`
 
 In a package of the daemon module whose tests run beside each other (`cmd/legion`,
-`internal/daemon`, `internal/intake`, `internal/runtime/sandbox`), a test writes a file it or its
-program then executes (a stand-in git, gh, jj or curl, a wrapper on a PATH) with
-`packages/daemon/internal/execfile` (`execfile.Write`, `execfile.Append`), never `os.WriteFile` or
-an `os.OpenFile` of its own. A child
+`internal/daemon`, `internal/intake`, `internal/runtime/sandbox`, `internal/workspace`), a test
+writes a file it or its program then executes (a stand-in git, gh, jj or curl, a wrapper on a PATH)
+with `packages/daemon/internal/execfile` (`execfile.Write`, `execfile.Append`), never `os.WriteFile`
+or an `os.OpenFile` of its own. A child
 another test forks while the file is open for writing holds the write descriptor until its own
 exec, and the kernel refuses to exec a file open for writing: `fork/exec …: text file busy`
 (ETXTBSY, Go issue 22315), which a serial run never meets. `execfile` holds `syscall.ForkLock` for
