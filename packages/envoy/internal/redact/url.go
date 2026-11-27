@@ -492,7 +492,8 @@ type Printable interface {
 // those from net's own, and net/http's timeout types are unexported, so there is no list to hold
 // them to. No caller builds the first. One builds the second: the Envoy client's callWindowError
 // (internal/dispatch/envoy), whose text is the error it holds and fixed words, and it holds only
-// Cause's reading of net/http's error, so its text adds no word of a peer's.
+// the rule's reading of net/http's error - Cause's of a call (transportCause) and StreamAnswer's
+// of a body read (roundTrip) - so its text adds no word of a peer's.
 func checked(err error) (string, bool) {
 	if text := err.Error(); clean(text) {
 		return text, true
