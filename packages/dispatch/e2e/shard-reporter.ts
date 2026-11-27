@@ -108,7 +108,7 @@ export function groupOf(test: TestCase): { holder: TestCase | Suite; kind: UnitK
  *  beside its blob report - it writes two lists there, one row a line (`rowId`, e2e/leg-rows.ts):
  *  `shard-N.selection.jsonl`, every row of the selection as `preprocess` reads it before any
  *  exclusion, and `shard-N.ran.jsonl`, the rows `onBegin` is handed, which is what Playwright
- *  schedules on this leg after every filter. The merge job's reading one holds the four legs'
+ *  schedules on this leg after every filter. The merge job's reading one holds the legs'
  *  lists against each other (e2e/tools/leg-rows.ts): a row of the selection that no leg ran, or
  *  that two ran, fails it by name. The second list is read from Playwright and not from this
  *  hook's own choice, so a fault in the choice cannot hide in both. */

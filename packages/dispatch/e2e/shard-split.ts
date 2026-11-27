@@ -32,11 +32,14 @@
  * request lane the layout file alone was 33 to 44% of the lane's row time, and its leg held 2.0
  * times the mean. Placed row by row, a file the table has no entry for is many small units of its
  * project's median, which the placement spreads over every leg in about equal counts, so its
- * error is shared by all four instead of landing on one. Placed by this module over those 28 runs'
- * own rows, with that same four-day-old table, the heaviest leg holds 1.03 times the mean (at most
- * 1.06), and with a table seven days old 1.04 (at most 1.06); with the table read on 2026-11-27,
- * on the 20 of those runs it was not read from, 1.02 (at most 1.03), where placing that same table
- * by file still leaves 1.05 (at most 1.08).
+ * error is shared by every leg instead of landing on one. Placed by this module over those 28
+ * runs' own rows, at the four legs those runs ran, with that same four-day-old table the heaviest
+ * leg holds 1.03 times the mean (at most 1.06), and with a table seven days old 1.04 (at most
+ * 1.06); with the table read on 2026-11-27, on the 20 of those runs it was not read from, 1.02
+ * (at most 1.03), where placing that same table by file still leaves 1.05 (at most 1.08). At the
+ * six legs the shard job runs, the same error is a larger share of a smaller leg: 1.10 (at most
+ * 1.115) under the four-day-old table, 1.04 (at most 1.05) under the seven-day-old one, and 1.04
+ * (at most 1.05) with the table of 2026-11-27.
  *
  * A row's weight is the seconds it took on main (`e2e/shard-weights.json`, which
  * `e2e/tools/shard-weights.ts` writes from main's merged reports): the row's own median where the
@@ -186,11 +189,12 @@ export function placeUnits(
   return { loads, placed };
 }
 
-/** How old the table may be before a leg warns: the browser step's 21-minute guard is
- *  666 s x 1.75 x 1.06, and 1.06 is the worst share of the mean the heaviest leg took under a
- *  table up to 7 days old, of the two read (.github/ci-notes/dispatch-browser.md, the browser
- *  step's budget). Past that no table was measured, and one that drifted to the count split's 1.21
- *  would leave a healthy p90 leg on the slowest runner seen near 1,410 s, past the guard. */
+/** How old the table may be before a leg warns: the browser step's 17-minute guard is
+ *  502 s x 1.75 x 1.115, and 1.115 is the worst share of the mean the heaviest of six legs took
+ *  under a table up to 7 days old, of the two read (.github/ci-notes/dispatch-browser.md, the
+ *  browser step's budget). Past that no table was measured, and one that drifted to the count
+ *  split's 1.21 would leave a healthy p90 leg on the slowest runner seen near 1,063 s, past the
+ *  guard. */
 export const tableDaysAtMost = 7;
 
 /** The share of a leg's rows that may be placed by an estimate before the leg warns: the reading

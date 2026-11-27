@@ -1,10 +1,10 @@
 /** The split of a sharded run by measured row time (`e2e/shard-split.ts`), as the placement
  *  itself and as `e2e/shard-reporter.ts` applies it to the real config and to a fixture config.
  *
- *  The second half is what the shard job rests on. Each of its four legs computes the placement
- *  on its own machine, and a leg that placed a row differently from the others would run it
- *  twice or leave it to nobody. So each selection is listed whole and then leg by leg through the
- *  reporter, all four legs, and two things are held: every row of the whole listing is on exactly
+ *  The second half is what the shard job rests on. Each of its legs computes the placement on its
+ *  own machine, and a leg that placed a row differently from the others would run it twice or
+ *  leave it to nobody. So each selection is listed whole and then leg by leg through the reporter,
+ *  at the leg count the shard job runs (`shardLegs`), and two things are held: every row of the whole listing is on exactly
  *  one leg (`legRowFaults`, e2e/leg-rows.ts, which names each row that is on none or on two), and
  *  each leg holds exactly the rows the placement of the whole listing gives it. The first catches
  *  a reporter that drops or doubles a row whichever leg it is placed on; the second is what tells
@@ -21,6 +21,7 @@
  */
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import {
   type ListedRow,
@@ -46,6 +47,86 @@ import { listing, projectArguments, retained } from "./playwright-listing";
 const weights = JSON.parse(
   readFileSync(new URL("../shard-weights.json", import.meta.url), "utf8")
 ) as ShardWeights;
+
+const browserWorkflowPath = fileURLToPath(
+  new URL("../../../../.github/workflows/dispatch-browser.yaml", import.meta.url)
+);
+const shardSuitePath = fileURLToPath(
+  new URL("../../../../.github/scripts/dispatch-browser-shard-suite.sh", import.meta.url)
+);
+
+/** The part of `.github/workflows/dispatch-browser.yaml` the leg count is read from: a part the
+ *  file lacks reads as undefined, which `shardLegs` names. */
+type BrowserWorkflow = {
+  jobs?: { shard?: { strategy?: { matrix?: Record<string, unknown> | null } } };
+} | null;
+
+/** How many legs the shard job runs, read from its matrix. That is the count only while the
+ *  matrix holds the one key `shard` listing 1 to N in order: an `include`, an `exclude` or a
+ *  second key changes how many legs GitHub starts without changing the list, and a list with a
+ *  hole leaves rows to a leg no job runs, since `--shard=N/M` numbers the legs 1 to M. Any other
+ *  matrix is refused here rather than proved. */
+function shardLegs(workflow: BrowserWorkflow): number {
+  const matrix = workflow?.jobs?.shard?.strategy?.matrix;
+  if (typeof matrix !== "object" || matrix === null) {
+    throw new Error(`no jobs.shard.strategy.matrix in ${browserWorkflowPath}`);
+  }
+  const keys = Object.keys(matrix);
+  if (keys.length !== 1 || keys[0] !== "shard") {
+    throw new Error(
+      `the shard job's matrix in ${browserWorkflowPath} holds ${keys.join(", ")}, not the one key shard`
+    );
+  }
+  const listed = matrix.shard;
+  if (
+    !Array.isArray(listed) ||
+    listed.length === 0 ||
+    listed.some((leg, index) => leg !== index + 1)
+  ) {
+    throw new Error(
+      `the shard matrix of ${browserWorkflowPath} is ${JSON.stringify(listed)}, not 1 to N`
+    );
+  }
+  return listed.length;
+}
+
+/** The `--shard` denominator the browser step's script passes Playwright: the second place the leg
+ *  count is written (.github/ci-notes/dispatch-browser.md, why the leg count stands in two
+ *  places), which must equal the matrix's. */
+function shardDenominator(script: string): number {
+  const found = /--shard=\$shard\/(\d+)/.exec(script);
+  if (!found) throw new Error(`no --shard=$shard/<legs> in ${shardSuitePath}`);
+  return Number(found[1]);
+}
+
+const browserWorkflow = Bun.YAML.parse(
+  readFileSync(browserWorkflowPath, "utf8")
+) as BrowserWorkflow;
+const legs = shardLegs(browserWorkflow);
+
+test("the leg count is the shard matrix's one list of 1 to N, and the script's --shard denominator is that count", () => {
+  expect(shardDenominator(readFileSync(shardSuitePath, "utf8"))).toBe(legs);
+  // The controls: each plants one fault in a parsed copy of the workflow or the script. An
+  // `include` or a second key changes how many legs GitHub starts without changing the list; a
+  // hole or an empty list numbers the legs other than `--shard` does; a denominator other than the
+  // matrix's leaves rows on legs no job runs, or none on some that do.
+  const planted = (change: (matrix: Record<string, unknown>) => void) => () => {
+    const copy = structuredClone(browserWorkflow);
+    const matrix = copy?.jobs?.shard?.strategy?.matrix;
+    if (typeof matrix !== "object" || matrix === null) throw new Error("no matrix to plant in");
+    change(matrix);
+    return shardLegs(copy);
+  };
+  expect(planted((matrix) => Object.assign(matrix, { include: [{ shard: legs + 1 }] }))).toThrow(
+    "not the one key shard"
+  );
+  expect(planted((matrix) => Object.assign(matrix, { browser: ["chromium", "webkit"] }))).toThrow(
+    "not the one key shard"
+  );
+  expect(planted((matrix) => Object.assign(matrix, { shard: [1, 3] }))).toThrow("not 1 to N");
+  expect(planted((matrix) => Object.assign(matrix, { shard: [] }))).toThrow("not 1 to N");
+  expect(shardDenominator(`--shard=$shard/${legs + 1} --workers 4`)).not.toBe(legs);
+});
 
 /** A table of three projects, one with a measured file and one measured row in it, for the
  *  placement's own rows. */
@@ -196,7 +277,6 @@ test("a project another names as a dependency or teardown is a setup project, an
   expect(dependencyProjects([{}, { dependencies: [] }])).toEqual(new Set());
 });
 
-const legs = 4;
 const rowKey = (row: ListedRow) => `${row.project} › ${row.file} › ${row.title}`;
 
 /** One selection of `config` listed whole and then each of its legs through the reporter, one
@@ -243,12 +323,12 @@ const selections = {
 
 for (const [name, listed] of Object.entries(selections)) {
   test(
-    `the four legs of ${name} hold each of its rows once, each leg the rows the placement gives it`,
+    `the ${legs} legs of ${name} hold each of its rows once, each leg the rows the placement gives it`,
     async () => {
       const { faults, perLeg, whole } = legsOf(await listed);
       expect(whole.length).toBeGreaterThan(0);
       // Every row on exactly one leg, the faults naming each row that is not.
-      expect(faults, `the four legs of ${name} against its whole listing`).toEqual([]);
+      expect(faults, `the ${legs} legs of ${name} against its whole listing`).toEqual([]);
       const units: Unit[] = whole.map((row) => ({
         key: unitKey("row", row.project, row.file, 0, [row.title]),
         rows: [
@@ -281,7 +361,7 @@ test(
       await listedLegs("e2e/__tests__/fixtures/shard-groups.config.ts", [])
     );
     expect(whole).toHaveLength(28);
-    expect(faults, "the four legs of the fixture against its whole listing").toEqual([]);
+    expect(faults, `the ${legs} legs of the fixture against its whole listing`).toEqual([]);
     const legsHolding = (project: string, part: string) =>
       perLeg.flatMap((rows, index) =>
         rows.some((row) => row.startsWith(`${project} › `) && row.includes(part)) ? [index + 1] : []

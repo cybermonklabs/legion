@@ -22,12 +22,13 @@
  *
  * When to run it: each sharded leg prints how many of its rows were placed by their project's
  * median because their file has no entry here (`e2e/shard-reporter.ts`). Read on 2026-11-27 over
- * the 28 full-lane merge-group runs of 2026-11-26, the row-by-row placement put the heaviest leg
- * at 1.03 times the mean under a table four days old and 1.04 under one seven days old (at most
- * 1.06 each), against 1.02 for a fresh one; placed by file, those same two tables gave 1.20 and
- * 1.22, since each lacked files that had landed since. The browser step's guard holds up to that
- * 1.06, so each leg warns when the table is more than 7 days old or a tenth of its rows are
- * estimated (`tableWarnings`, e2e/shard-split.ts): read it again then.
+ * the 28 full-lane merge-group runs of 2026-11-26, the row-by-row placement at the shard job's six
+ * legs put the heaviest leg at 1.10 times the mean under a table four days old (at most 1.115) and
+ * 1.04 under one seven days old (at most 1.05), against 1.04 for a fresh one; at four legs the
+ * same tables gave 1.03 and 1.04, and placed by file 1.20 and 1.22, since each lacked files that
+ * had landed since. The browser step's guard holds up to that 1.115, so each leg warns when the
+ * table is more than 7 days old or a tenth of its rows are estimated (`tableWarnings`,
+ * e2e/shard-split.ts): read it again then.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
