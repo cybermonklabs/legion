@@ -354,12 +354,12 @@ func storeReads(t *testing.T, ctx context.Context, pool *store.Pool, reference l
 	// tuples into a node the step before reached, read by that node's kind and id as CurrentIn's
 	// read into a node is: no index keys the far end with the near end after it, so every step
 	// walks this one.
-	beneath, err := NodesBeneath(ctx, recorder, subtreeKind, subtreeRoot)
+	beneath, err := nodesBeneath(ctx, recorder, subtreeKind, subtreeRoot)
 	if err != nil {
-		t.Fatalf("NodesBeneath: %v", err)
+		t.Fatalf("nodesBeneath: %v", err)
 	}
-	requireSameNodes(t, "NodesBeneath", beneath, reference.beneath)
-	record("NodesBeneath", false, 1, false)
+	requireSameNodes(t, "nodesBeneath", beneath, reference.beneath)
+	record("nodesBeneath", false, 1, false)
 	reads[len(reads)-1].wantOnlyIndex = "graph_tuples_as_of_in"
 
 	kinds := inboxKindsInTheStore(t, ctx, pool)
@@ -918,7 +918,7 @@ func writeOneLongValue(t *testing.T, ctx context.Context, pool *store.Pool) stri
 	return value
 }
 
-// The subtree NodesBeneath is read on, which writeSubtree states through Write. Its root, a lens,
+// The subtree nodesBeneath is read on, which writeSubtree states through Write. Its root, a lens,
 // holds a finding and a lens; the finding holds a lens, whose part_of names the finding by its
 // address kind as a lens invoked on a finding does, with a finding of its own, which holds a lens
 // whose part_of names that finding as a block, three levels further down; a gone lens under the
@@ -939,7 +939,7 @@ const (
 	subtreeUnderMoved    = "GRAPH-tree-under-moved"
 )
 
-// subtreeBeneath is what NodesBeneath answers of the subtree's root, each node as `<kind>/<id>`,
+// subtreeBeneath is what nodesBeneath answers of the subtree's root, each node as `<kind>/<id>`,
 // sorted: every node under it but the gone lens, which the walk goes on through, and the moved
 // lens with the lens under it, which stand under the root no more.
 func subtreeBeneath() []string {
@@ -1167,7 +1167,7 @@ func walkTheWholeLog(t *testing.T, ctx context.Context, pool *store.Pool) logRef
 	}
 	// The walk beneath the subtree's root answers what the subtree holds beneath it: a walk that
 	// stopped at the gone lens, kept the moved lens or looped at the cycle through the root would
-	// answer otherwise, and holding NodesBeneath to it would hold the read to that.
+	// answer otherwise, and holding nodesBeneath to it would hold the read to that.
 	if want := subtreeBeneath(); !slices.Equal(reference.beneath, want) {
 		t.Fatalf("the walk of the whole log answers the nodes beneath %s/%s as %v, and the subtree writeSubtree wrote holds %v beneath it",
 			subtreeKind, subtreeRoot, reference.beneath, want)
@@ -1278,7 +1278,7 @@ func requireSameTuples(t *testing.T, name string, answered []Tuple, want []int64
 	}
 }
 
-// nodesBeneathInTheLog is NodesBeneath's answer for the subtree's root as a walk in Go computes
+// nodesBeneathInTheLog is nodesBeneath's answer for the subtree's root as a walk in Go computes
 // it: the current part_of relations, each the newest part_of tuple of its relation where that one
 // asserts, walked breadth first from the root to every node they reach, each once, a node reached
 // through the tuples into it under its own kind and under its address kind (AddressKind); and of
@@ -1450,9 +1450,11 @@ var requiredGraphIndexes = []requiredGraphIndex{
 // stop the store's writers while it scans: `create index concurrently` in a migration of its own
 // that runs outside the runner's transaction (`-- pgmigrate:non-transactional`,
 // pgmigrate/nontransactional.go). graph_nodes_project is the read of one project's nodes by kind
-// (20261116015042 gave graph_nodes its project_key), and graph_nodes_proposed the read of the
+// (20261116015042 gave graph_nodes its project_key), graph_nodes_proposed the read of the
 // nodes at proposed under one issue (api/node_state.go, issueProposedQuery), which holds the few
-// rows at that state alone.
+// rows at that state alone, and graph_nodes_interaction_live the sweep's read of the runs past the
+// hour whose row is gone (api/going.go, goingRowlessRuns), which holds the interaction nodes of
+// the source going_requests not gone, about an hour of runs.
 var laterGraphNodesIndexes = []requiredGraphIndex{
 	{
 		name: "graph_nodes_project", table: "graph_nodes",
@@ -1461,6 +1463,11 @@ var laterGraphNodesIndexes = []requiredGraphIndex{
 	{
 		name: "graph_nodes_proposed", table: "graph_nodes",
 		keys: "kind, id", predicate: "state = 'proposed'",
+	},
+	{
+		name: "graph_nodes_interaction_live", table: "graph_nodes",
+		keys:      "made_at",
+		predicate: "kind = 'interaction' and state <> 'gone' and attributes->>'source' = 'going_requests'",
 	},
 }
 

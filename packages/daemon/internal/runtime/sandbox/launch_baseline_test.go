@@ -113,6 +113,7 @@ func systemPromptOf(t *testing.T, role claim.Role, start shimwire.LauncherStart)
 // over it — and the start command's Files are what its launcher writes before that process
 // starts, which is what a rewrite of the launch path must leave unchanged for such a deployment.
 func TestLaunchBaselineOfADeploymentWithNoExperiment(t *testing.T) {
+	t.Parallel()
 	r := baselineRuntime(t)
 	baseline := map[string]launchBaseline{}
 	for _, role := range baselineRoles() {

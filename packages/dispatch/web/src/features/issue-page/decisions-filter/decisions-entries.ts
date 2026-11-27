@@ -1,17 +1,16 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 
-import { artifactBlocksQuery } from "../../../api/queries";
+import { artifactBlocksQuery, issueAsksQuery } from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
-import { wordsOf } from "../../refs/tree-fragment";
-import { decisionChanges, decisionDocumentId } from "../decision-review";
+import { changeDocumentIds, decisionChanges } from "../decision-review";
 import type { DocumentBlocks, TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
-import { issueAsksQuery, issueCommentsQuery, treeDocumentIds } from "../useIssueTree";
+import { issueCommentsQuery, treeDocumentIds } from "../useIssueTree";
 import {
   askIdOf,
   type DecisionsEntry,
@@ -31,14 +30,14 @@ import {
  * The reads are the ones the page's tree is built from: the three reads the tree reads, under
  * the keys `useIssueTree.ts` reads them by, the asks by the tree's own definition of that read
  * (`issueAsksQuery`), and the blocks of each document the tree reads (`treeDocumentIds`) that a
- * decision's block stands in (`decisionDocumentId`), under the tree's own key for them
- * (`artifactBlocksQuery`), as the header's count reads them (`IssuePropertiesRow.tsx`), so the
- * view adds no request of its own. Each takes the tree's freshness too (`EVENT_FRESH`), whose own
- * doc gives the reason. The blocks are why a Change stands under the decision whose block holds
- * its anchor (`decision-review.ts`): the quote alone cannot say which, since two decisions can
- * hold the same words. Until the blocks answer, a Change stands under the first decision of its
- * document whose words hold its quote. A read that holds no decisions, or that has not answered
- * yet, gives no decision and no error: the view draws the questions alone.
+ * decision a Change can be asked of stands in (`changeDocumentIds`), under the tree's own key
+ * for them (`artifactBlocksQuery`), as the header's count reads them (`IssuePropertiesRow.tsx`),
+ * so the view adds no request of its own. Each takes the tree's freshness too (`EVENT_FRESH`),
+ * whose own doc gives the reason. The blocks are why a Change stands under the decision whose
+ * block holds its anchor (`decision-review.ts`): the quote alone cannot say which, since two
+ * decisions can hold the same words. Until the blocks answer, a Change stands under the first
+ * decision of its document whose words hold its quote. A read that holds no decisions, or that
+ * has not answered yet, gives no decision and no error: the view draws the questions alone.
  *
  * The view draws four parts. A decision another person made is no part of its own: it stands
  * under the reader's decisions, with that person's name on its row, so the model's `others` is
@@ -148,9 +147,7 @@ export function useDecisionsEntries({
   // key the tree reads them by, as the header's count reads them (`IssuePropertiesRow.tsx`). A
   // document no decision stands in is not read here. `combine` keeps one value for them,
   // replaced only when a document's own read changes, as the tree's does (`useIssueTree`).
-  const decided = new Set(
-    (decisions?.entries ?? []).map((entry) => decisionDocumentId(issue, entry))
-  );
+  const decided = changeDocumentIds(issue, decisions);
   const documentIds = treeDocumentIds(issue).filter((id) => decided.has(id));
   const documents = useQueries({
     combine: (answers): DocumentBlocks[] =>
@@ -207,9 +204,8 @@ export function useDecisionsEntries({
     [decisions, comments, issue, documents]
   );
   // How this issue addresses a node, which is the one rule the tree was built with, so a
-  // `shaped` tie resolves to the node it names (`tree-drafts.ts`). `nodeIdOf` names no block by
-  // a line, so the line rule it is handed is the reading's words, as G's tests hand it.
-  const nodeIdOf = useMemo(() => treeContext({ issue }, wordsOf).nodeIdOf, [issue]);
+  // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
+  const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
   // Each write-up of an answered question the tree holds, by its node's id, with the question it
   // restates: a `reading` node at its first placement in the reading order, which is where the
   // tree places it (`placements`), under an ask that holds an answer, the ask the decisions read

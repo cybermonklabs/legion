@@ -23,6 +23,7 @@ import (
 // between the same two statuses the other way, planning to implementing or reviewing to
 // accepting.
 func TestABackwardMoveThatKeepsItsStatusPostsItsReasonAsAMessage(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		from, to phase.Phase
 		want     string
@@ -80,9 +81,10 @@ func TestABackwardMoveThatKeepsItsStatusPostsItsReasonAsAMessage(t *testing.T) {
 // architect's close is (api's closeRoot): refused at the post, the reason would reach no issue and
 // the worker would never learn why. The bound is the post's, the move's sentence under the
 // outbox's marker, so a reason of as many blocks as Dispatch takes on its own is refused for the
-// block the marker adds; a decision block is refused however short the reason is, under a code of
+// block the marker adds; an ask block is refused however short the reason is, under a code of
 // its own. Each refusal moves, counts and queues nothing.
 func TestABackwardMoveWhosePostDispatchWouldRefuseIsRefused(t *testing.T) {
+	t.Parallel()
 	const decision = ":::ask{urgency=\"med\"}\nWhich table should the plan name?\n\n- users: the old one\n- accounts: the new one\n:::"
 	for _, tc := range []struct {
 		name, reason, code string
@@ -91,9 +93,9 @@ func TestABackwardMoveWhosePostDispatchWouldRefuseIsRefused(t *testing.T) {
 		{"a reason of as many blocks as Dispatch holds a body to",
 			strings.TrimSuffix(strings.Repeat("y\n\n", dispatchbody.ItemBlocks), "\n\n"), "BACKWARD_REASON_TOO_LONG",
 			[]string{"the reason makes a message Dispatch refuses", "the move was not applied", "shorter reason"}},
-		{"a reason holding a decision block",
+		{"a reason holding an ask block",
 			"The plan is wrong.\n\n" + decision, "BACKWARD_REASON_DECISION_BLOCK",
-			[]string{"the reason holds a decision block", "the move was not applied"}},
+			[]string{"the reason holds an ask block", "the move was not applied"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -121,6 +123,7 @@ func TestABackwardMoveWhosePostDispatchWouldRefuseIsRefused(t *testing.T) {
 // and the outbox's marker come with it, so the check reads the post and not the reason; a reason
 // one block shorter is taken.
 func TestABackwardReasonIsMeasuredAsItsPost(t *testing.T) {
+	t.Parallel()
 	reason := strings.TrimSuffix(strings.Repeat("y\n\n", dispatchbody.ItemBlocks), "\n\n")
 	if err := dispatchbody.Check(reason); err != nil {
 		t.Fatalf("the reason alone = %v, want Dispatch taking it", err)

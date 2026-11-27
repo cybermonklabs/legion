@@ -4,21 +4,23 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"weak"
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 // fragmentName is the fragment of a room's Yjs document that holds the document of a room that is
 // its own document, and, in an issue room, the nodes written into the issue rather than into a
-// document: the tree artifact's own fragment (D3 of dispatch://INFRA-1253's plan). A document
+// document: the tree artifact's own fragment (D3 of the issue-tree plan). A document
 // converted into an issue room holds a fragment of that room named by its own artifact id
 // (fragmentOf), so a read of a room names the fragments it reads (treeOfFragments).
-const fragmentName = "prosemirror"
+const fragmentName = model.ArtifactFragmentOwn
 const marksMapName = "marks"
 
 // outsideSchemaRepair ends every refusal of a tree a document holds outside the Proof schema: what
@@ -159,13 +161,16 @@ func parseInput(markdown string) (*pmdoc.Node, error) {
 	return parseReplacing(nil, markdown)
 }
 
-// parseFragmentInput parses text written into a document - an insert's, or an accepted
-// suggestion's - where a leading `---` is a rule rather than front matter, except that a closed
-// front-matter block is front matter where the text lands at the document's start
-// (pmdoc.ParseFragment). A block id the text repeats is refused, as parseInput refuses it. Its
-// tables' short rows are padded on budget, which the write's other markdown shares.
-func parseFragmentInput(markdown string, opensDocument bool, budget *pmdoc.WriteBudget) (*pmdoc.Node, error) {
-	return uploadedInput(pmdoc.ParseFragment(markdown, opensDocument, budget))
+// parseFragmentInput parses text written into live, the document as the write found it - an
+// insert's, a replace's `with`, or an accepted suggestion's - where a leading `---` is a rule
+// rather than front matter, except that a closed front-matter block is front matter where the
+// text lands at the document's start (pmdoc.ParseFragmentHolding). The text may hold an element
+// this build reads but cannot create yet where live holds one already, as an upload of the whole
+// document may, and is refused one live holds none of. A block id the text repeats is refused, as
+// parseInput refuses it. Its tables' short rows are padded on budget, which the write's other
+// markdown shares.
+func parseFragmentInput(markdown string, opensDocument bool, budget *pmdoc.WriteBudget, live *pmdoc.Node) (*pmdoc.Node, error) {
+	return uploadedInput(pmdoc.ParseFragmentHolding(markdown, opensDocument, budget, live))
 }
 
 // opensDocument reports whether text written at position lands where the document begins: before
@@ -198,16 +203,26 @@ func parseReplacing(live *pmdoc.Node, markdown string) (*pmdoc.Node, error) {
 // where the two render alike, which its caller compares markdown for.
 func parseWrittenReplacing(live *pmdoc.Node, markdown string) (*pmdoc.Node, pmdoc.WrittenReadBack, error) {
 	parsed, read, err := pmdoc.ParseWritten(markdown, live)
-	// The ask rule reads the parse's own refusal, before uploadedInput names it the caller's
-	// (ErrInvalidMarkdown), since that naming does not carry the refusal it wraps.
-	if ask := askRefusalInstead(markdown, err); ask != err {
-		return nil, pmdoc.WrittenReadBack{}, ask
-	}
-	tree, err := uploadedInput(parsed, err)
+	tree, err := writtenInput(markdown, parsed, err)
 	if err != nil {
 		return nil, pmdoc.WrittenReadBack{}, err
 	}
 	return tree, read, nil
+}
+
+// writtenInput is parsed, the tree pmdoc.ParseWritten or pmdoc.ParseWrittenAsReplacement made of
+// markdown, as a write takes it, or the write's refusal of parseErr, that parse's own: the ask
+// rule's where the parse refused a rendering that does not read back and the markdown holds an
+// ask that breaks its content rule (askRefusalInstead), and otherwise uploadedInput's.
+// parseWrittenReplacing serves every write, and ReplacementRendering the most permissive
+// replacement's answer.
+func writtenInput(markdown string, parsed *pmdoc.Node, parseErr error) (*pmdoc.Node, error) {
+	// The ask rule reads the parse's own refusal, before uploadedInput names it the caller's
+	// (ErrInvalidMarkdown), since that naming does not carry the refusal it wraps.
+	if ask := askRefusalInstead(markdown, parseErr); ask != parseErr {
+		return nil, ask
+	}
+	return uploadedInput(parsed, parseErr)
 }
 
 // askRefusalInstead is err, or the refusal of an ask written with its options and no question
@@ -387,13 +402,13 @@ type roomLayout []string
 
 // fragments is every fragment of the room's Yjs document the room's rendering reads, in order.
 func (l roomLayout) fragments() []string {
-	return append([]string{fragmentName}, l...)
+	return append(append(make([]string, 0, len(l)+1), fragmentName), l...)
 }
 
 // documents is the document each fragment of the room holds, beside fragments: room itself for
 // its own fragment, then each document the layout names.
 func (l roomLayout) documents(room string) []string {
-	return append([]string{room}, l...)
+	return append(append(make([]string, 0, len(l)+1), room), l...)
 }
 
 // blockDocuments is the document that holds each block of tree, a tree of room read over the
@@ -468,41 +483,43 @@ func renderFragment(part *pmdoc.Node) (string, []pmdoc.BlockOffset, error) {
 	return renderTreeWithOffsets(part)
 }
 
-// withoutSilentFragments is offsets, the block ranges of a rendering of an issue room's tree over
-// its fragments, without the blocks of each of parts, those fragments, that silent says renders as
-// no text (renderFragment): a document created empty, whose version holds no text, or the tree
-// artifact's own fragment before anything is written into the issue. Such a fragment holds the
-// empty paragraph an editor bound to it needs, which its own rendering gives no range, and which
-// the room's joined rendering, where other blocks stand beside it, would: a document that renders
-// as no text holds no block, in an issue room as in a room of its own. Every pass that indexes an
-// issue room takes its blocks through here (indexDocumentInRoom, indexOwedRoom,
-// settlement.commitRoomVersions), so no pass indexes a block another drops.
-func withoutSilentFragments(offsets []pmdoc.BlockOffset, parts []*pmdoc.Node, silent func(index int) bool) []pmdoc.BlockOffset {
-	var dropped map[string]struct{}
-	for index, part := range parts {
-		if part == nil || len(part.Children) == 0 || !silent(index) {
+// fragmentsText is the text an issue room's pass indexes (indexRoom) and the range of each of its
+// blocks in it: each fragment's own rendering (renderFragment), markdowns, laid end to end in the
+// room's order, with that fragment's block ranges, offsets, moved by the length of the renderings
+// before it. So a block's text value, its document_block_texts row, its text_sha256 and its excerpt
+// are its slice of its own fragment's rendering, the bytes its document's version stores, and not
+// its slice of the room's joined rendering, which differs at a fragment's edge: there a list after
+// the fragment before's list of the same kind takes the other marker, and a rule opening the
+// fragment is written `---` where the fragment's own rendering may write `***`. No block spans two
+// fragments, so the blocks still nest as in the joined rendering. A
+// fragment that renders as no text holds no block: a document created empty, whose version holds
+// no text, or the tree artifact's own fragment before anything is written into the issue, holds the
+// empty paragraph an editor bound to it needs, as a document that renders as no text holds no block
+// in a room of its own. Every pass that indexes an issue room takes its text through here
+// (indexDocumentInRoom, indexOwedRoom, settlement.commitRoomVersions), each from the renderings of
+// the fragments it already made, so no pass indexes a block another drops.
+func fragmentsText(markdowns []string, offsets [][]pmdoc.BlockOffset) (string, []pmdoc.BlockOffset) {
+	length, blocks := 0, 0
+	for index, markdown := range markdowns {
+		if markdown != "" {
+			length, blocks = length+len(markdown), blocks+len(offsets[index])
+		}
+	}
+	var text strings.Builder
+	text.Grow(length)
+	laid := make([]pmdoc.BlockOffset, 0, blocks)
+	for index, markdown := range markdowns {
+		if markdown == "" {
 			continue
 		}
-		if dropped == nil {
-			dropped = make(map[string]struct{})
-		}
-		pmdoc.Walk(part, func(node *pmdoc.Node) bool {
-			if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); id != "" {
-				dropped[id] = struct{}{}
-			}
-			return true
-		})
-	}
-	if len(dropped) == 0 {
-		return offsets
-	}
-	kept := make([]pmdoc.BlockOffset, 0, len(offsets))
-	for _, offset := range offsets {
-		if _, drop := dropped[offset.ID]; !drop {
-			kept = append(kept, offset)
+		start := text.Len()
+		text.WriteString(markdown)
+		for _, offset := range offsets[index] {
+			offset.From, offset.To = offset.From+start, offset.To+start
+			laid = append(laid, offset)
 		}
 	}
-	return kept
+	return text.String(), laid
 }
 
 // joinFragments is the one document the trees of a room's fragments render as, in order: a

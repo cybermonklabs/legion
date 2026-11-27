@@ -113,9 +113,9 @@ func TestTheNodeWritesAppendProbesEachNodeOfItsBatchOnce(t *testing.T) {
 			// write's two statements and the append.
 			queued := queuedBy(t, writer.write)
 			if len(queued) != 4 {
-				t.Fatalf("the writer queued %d statements, want the type read, the node write's two and the append", len(queued))
+				t.Fatalf("the writer queued %d statements, want the supertag check, the node write's two and the append", len(queued))
 			}
-			nodeWrite, appended := queued[1:3], queued[3]
+			nodeWrite, appended := queued[:3], queued[3]
 			explaintest.RequireEachRowProbedOnce(t, ctx, pool, keys, storeKeys, "the append", nodeWrite, appended)
 			mark := explaintest.Parameter(t, appended.SQL, appendMark)
 			sentinel := explaintest.Parameter(t, appended.SQL, appendSentinel)

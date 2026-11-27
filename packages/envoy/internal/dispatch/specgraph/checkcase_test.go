@@ -20,8 +20,9 @@ var (
 
 // The nodes of TestCheckState: the top statement T, the leaf L under it, and L's program check C,
 // which reads the code; and the checks that some rows add under L: P, a query of production, and
-// A, an agent of production; G, a query of the graph; Q, a program check of production, and its
-// like of the graph; and K, an agent of the code, and its like that is a query.
+// A, an agent of production; G, a query of the graph, and its like that is an agent; Q, a program
+// check of production, and its like of the graph; and K, an agent of the code, and its like that is
+// a query.
 var (
 	checkStateTop = Statement{ID: "messages-reach-sessions", Kind: KindBehavior,
 		Text: "Envoy delivers each message to the session that it is for."}
@@ -47,6 +48,11 @@ var (
 		Subject: SubjectGraph, Procedure: ProcedureQuery,
 		Claim:          "Each message record of the graph has a delivery record.",
 		ProcedureText:  "The query reads each message record of the graph.\nIt returns each message record that has no delivery record.",
+		FailingExample: "A copy of the graph with one message record that has no delivery record."}
+	checkStateGraphAgent = Check{ID: "an-agent-finds-a-delivery-of-each-message", Serves: "a-stored-message-survives-a-restart",
+		Subject: SubjectGraph, Procedure: ProcedureAgent,
+		Claim:          "Each message record of the graph has a delivery record.",
+		ProcedureText:  "An agent reads each message record of the graph.\nIt names each message record that has no delivery record.",
 		FailingExample: "A copy of the graph with one message record that has no delivery record."}
 	checkStateProductionProgram = Check{ID: "a-production-restart-loses-no-message", Serves: "a-stored-message-survives-a-restart",
 		Subject: SubjectProduction, Procedure: ProcedureProgram,
@@ -82,7 +88,7 @@ var checkStateTie = []string{
 	"packages/envoy/go.sum",
 }
 
-// checkCase is one row's input to CheckStates: the spec files as nodes in files, the approved spec,
+// checkCase is one row's input to deriveChecks: the spec files as nodes in files, the approved spec,
 // and a history that rows add commits to. input completes it.
 type checkCase struct {
 	t *testing.T
@@ -151,9 +157,6 @@ func (s *checkCase) input() Input {
 		if c, ok := current.CheckByID(r.Check); ok && r.CheckDigest == "" {
 			r.CheckDigest = c.Digest()
 		}
-		if r.Leg == nil {
-			r.Leg = new("")
-		}
 		r.Seq = int64(i + 1)
 		if s.Now.IsZero() && r.At.Add(time.Hour).After(in.Now) {
 			in.Now = r.At.Add(time.Hour)
@@ -205,7 +208,7 @@ func (s *checkCase) approve(at time.Time, nodes ...specNode) {
 		id := specNodeID(n)
 		node, held := s.Approved.Nodes[id]
 		if !held {
-			node = ApprovedNode{ID: id, Removed: new(false), PartlyChecked: new(false)}
+			node = ApprovedNode{ID: id}
 		}
 		node.Versions = append(node.Versions, ApprovedVersion{Version: len(node.Versions) + 1, At: at, Block: block})
 		s.Approved.Nodes[id] = node
@@ -329,6 +332,19 @@ func (s *checkCase) codeResults(k Check, runCommit string) {
 		Result{Check: k.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, Commit: "c1", At: checkStateRun.Add(5 * time.Minute)})
 }
 
+// runsAgainAt adds, for each run of the case at a commit, the same run at commit an hour later: CI
+// runs a check's job again at a new commit, and a run of a check of the code counts only at its own
+// commit, while a failing example that the test caught counts there too while no file of the
+// check's tie changed.
+func (s *checkCase) runsAgainAt(commit string) {
+	for _, r := range slices.Clone(s.Results) {
+		if r.Kind == ResultRun && r.Commit != "" {
+			r.Commit, r.At = commit, r.At.Add(time.Hour)
+			s.Results = append(s.Results, r)
+		}
+	}
+}
+
 // specNodeID is the id of a statement or a check.
 func specNodeID(n specNode) string {
 	switch n := n.(type) {
@@ -353,7 +369,7 @@ func checkRun(commit string, outcome Outcome, at time.Time) Result {
 
 // legRun is a run of C's job at commit in one leg and attempt, recorded at at.
 func legRun(commit, leg string, attempt int, outcome Outcome, at time.Time) Result {
-	return Result{Check: checkStateCheck.ID, Kind: ResultRun, Outcome: outcome, Commit: commit, Job: "go-checks", Leg: new(leg), Attempt: attempt, At: at}
+	return Result{Check: checkStateCheck.ID, Kind: ResultRun, Outcome: outcome, Commit: commit, Job: "go-checks", Leg: leg, Attempt: attempt, At: at}
 }
 
 // caughtFault is a failing example of C on which its test failed, with the fault that the step

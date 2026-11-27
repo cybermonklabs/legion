@@ -31,6 +31,7 @@ import (
 // writes them while it serves and holds every period of the shared block-index lease, so no tick
 // of this build runs before it leaves.
 func TestACommentThePreviousReleaseWritesAfterTheBackfillReachesTheStore(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 

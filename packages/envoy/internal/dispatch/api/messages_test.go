@@ -13,8 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func createIssueMessage(t *testing.T, handler http.Handler, issueKey string, input map[string]any, login string) model.Message {
@@ -47,13 +49,25 @@ func TestCreateMessageAlwaysReturnsDeliveriesArray(t *testing.T) {
 }
 
 // newTargetedMessageHandler is the mux a targeted-delivery test drives, with the store behind
-// it: an ordinary test server pointed at that test's fake Envoy listener. An optional window
-// shortens the listener client's timeout, for a test that exercises a receipt timeout.
-func newTargetedMessageHandler(t *testing.T, envoyURL string, window ...time.Duration) (http.Handler, *store.Store) {
+// it: an ordinary test server pointed at that test's fake Envoy listener.
+func newTargetedMessageHandler(t *testing.T, envoyURL string) (http.Handler, *store.Store) {
+	t.Helper()
+	return newTargetedMessageHandlerOn(t, envoyURL, nil)
+}
+
+// newTargetedMessageHandlerOn is newTargetedMessageHandler on a server whose clock, which a
+// comment's mention lookups and every listener call's window run on, is clock (nil is the real
+// one): a test whose lookups must be answered however late the listener answers them passes
+// clocktest.Held(), and a test of a receipt timeout passes a fake and moves it to the end of each
+// window its stand-in holds (answerWhileCallsAreHeld). A held clock freezes every timer of the
+// server's, the listener take-over's backoff and the related-item check's allowance among them,
+// so a row on it that met a retryable failure would wait to the binary's deadline, where testwait
+// ends it by name; no row on it meets one today.
+func newTargetedMessageHandlerOn(t *testing.T, envoyURL string, clock *clocktest.Fake) (http.Handler, *store.Store) {
 	t.Helper()
 	options := testServerOptions{envoyURL: envoyURL}
-	if len(window) > 0 {
-		options.envoyTimeout = window[0]
+	if clock != nil {
+		options.clock = clock
 	}
 	handler, database, _ := newTestServer(t, options)
 	return handler, database
@@ -121,7 +135,7 @@ func TestCreateMessageReplyCarriesReplyBodyAndGetMessageReturnsChain(t *testing.
 		t.Fatalf("list events: status=%d body=%s", events.Code, events.Body.String())
 	}
 	if !strings.Contains(events.Body.String(), `"reply_body":"Ship the build tonight"`) {
-		t.Fatalf("message.created event missing reply_body preview: %s", events.Body.String())
+		t.Fatalf("message.answered event missing reply_body preview: %s", events.Body.String())
 	}
 
 	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/messages/"+root.ID, nil, "alice")
@@ -533,31 +547,40 @@ func TestTargetedMessagePrefixesUnavailableListenerErrors(t *testing.T) {
 	})
 
 	t.Run("timeout", func(t *testing.T) {
-		// An unanswered read is what a listener take-over gives, so the send asks again for the
-		// take-over window before it settles; every one of those reads is cancelled the same way.
-		// The listener client's window is a short one, so those reads cost a fraction of a second
-		// each rather than the client's five.
+		// An unanswered read is what a listener take-over gives, but the read's window ends on the
+		// server's clock CallWindow past its start, past the test server's take-over window
+		// (testTakeoverWindow), so the send makes one try and settles. The read is cancelled at
+		// the end of its window, which the test moves there once the stand-in holds the read.
 		cancelled := make(chan struct{})
 		var cancelledOnce sync.Once
+		var calls listenerCalls
 		listener := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			defer calls.took()()
+			defer calls.holding()()
 			<-r.Context().Done()
 			cancelledOnce.Do(func() { close(cancelled) })
 		}))
 		defer listener.Close()
-		handler, _ := newTargetedMessageHandler(t, listener.URL, 300*time.Millisecond)
+		clock := clocktest.New(time.Now())
+		calls.on(clock)
+		handler, _ := newTargetedMessageHandlerOn(t, listener.URL, clock)
 		issue := createInteractionIssue(t, handler, "TEST", "Timeout listener", "before")
-		message := createIssueMessage(t, handler, issue.Key, map[string]any{
-			"body": "Can you receive?", "target": "session:s1", "delivery": "steer",
-		}, "alice")
+		sent := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			sent <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
+				"body": "Can you receive?", "target": "session:s1", "delivery": "steer",
+			}, "alice")
+		}()
+		response := answerWhileCallsAreHeld(t, clock, &calls, sent)
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create message: status=%d body=%s", response.Code, response.Body.String())
+		}
+		message := decodeBody[model.Message](t, response)
 		if got := message.Deliveries; len(got) != 1 || got[0].State != "failed" ||
 			got[0].Error == nil || !strings.HasPrefix(*got[0].Error, "envoy listener: ") {
 			t.Fatalf("timeout delivery = %#v", got)
 		}
-		select {
-		case <-cancelled:
-		case <-time.After(time.Second):
-			t.Fatal("listener request was not cancelled after the Dispatch timeout")
-		}
+		testwait.Receive(t, "the cancel of the listener request once Dispatch's timeout ended it", cancelled)
 	})
 }
 
@@ -1565,11 +1588,7 @@ func TestStrandedMessageAttemptIsResumedRatherThanDeliveredTwice(t *testing.T) {
 		handler.ServeHTTP(recorder, request)
 		answered <- recorder
 	}()
-	select {
-	case <-held:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the send never reached the listener")
-	}
+	testwait.Receive(t, "the send's arrival at the listener that holds it", held)
 	select {
 	case recorder := <-answered:
 		t.Fatalf("the send should not have completed while its listener holds it: status=%d body=%s", recorder.Code, recorder.Body.String())
@@ -1615,12 +1634,7 @@ func TestStrandedMessageAttemptIsResumedRatherThanDeliveredTwice(t *testing.T) {
 	// The stalled sender is answered at last. Its claim is no longer the row's, so it records
 	// nothing and answers with the attempt as the retry settled it.
 	letGo()
-	var late *httptest.ResponseRecorder
-	select {
-	case late = <-answered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the stalled sender never answered")
-	}
+	late := testwait.Receive(t, "the stalled sender's answer once its listener let it go", answered)
 	if late.Code != http.StatusCreated {
 		t.Fatalf("the stalled sender: status=%d body=%s", late.Code, late.Body.String())
 	}
@@ -1656,12 +1670,17 @@ func TestStrandedMessageAttemptIsResumedRatherThanDeliveredTwice(t *testing.T) {
 // its own. While the key carried the attempt number, that retry was a key no dedupe layer had
 // ever seen and the agent was handed the same instruction twice. The key is now stable across
 // the attempts of one message in one mode, so the stream recognises the repeat, answers
-// duplicate, and the retry's row says so instead of claiming a delivery that never happened. A
-// missed receipt is tried again inside the listener take-over window (takeoverRetry) under the
-// same key, so the attempt is recorded failed only when every try of that window missed; this
-// listener misses every one until the message's own request has answered.
+// duplicate, and the retry's row says so instead of claiming a delivery that never happened. The
+// listener client's window and the take-over's tries run on the server's clock, a fake the test
+// moves through each held call's window (answerWhileCallsAreHeld), so the stand-in's lookups,
+// which it answers at once, are never cut by a window a loaded machine ran out. The first send's
+// window ends CallWindow past its start on that clock, past the test server's take-over window
+// (testTakeoverWindow), so the take-over makes no second try under the same key and the attempt
+// is recorded failed at once (TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce covers the
+// same-key tries).
 func TestSendThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing.T) {
 	t.Parallel()
+	var calls listenerCalls
 	var listenerState struct {
 		sync.Mutex
 		keys      []string
@@ -1671,6 +1690,7 @@ func TestSendThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing
 	listenerState.delivered = map[string]struct{}{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer calls.took()()
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			writeSessionRecord(t, w, sessions, "s1")
@@ -1696,9 +1716,12 @@ func TestSendThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing
 			listenerState.delivered[key] = struct{}{}
 			listenerState.Unlock()
 			if missing {
-				// Past the window the handler below gives the client, so Dispatch records the
-				// attempt failed while the agent already has the message.
-				time.Sleep(400 * time.Millisecond)
+				// Held past the window the client gives the call, which ends on the server's
+				// clock where the test moves it once the send is held here, so Dispatch records
+				// the attempt failed while the agent already has the message.
+				done := calls.holding()
+				<-r.Context().Done()
+				done()
 			}
 			if held {
 				_, _ = w.Write([]byte(`{"event_id":"target-envelope-2","recipient":"s1","duplicate":true}`))
@@ -1710,12 +1733,18 @@ func TestSendThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL, 150*time.Millisecond)
+	clock := clocktest.New(time.Now())
+	calls.on(clock)
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clock)
 	issue := createInteractionIssue(t, handler, "TEST", "A send that landed then timed out", "before")
 
-	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
-		"body": "The send landed; the answer did not.", "target": "session:s1", "delivery": "steer",
-	}, "alice")
+	sent := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		sent <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
+			"body": "The send landed; the answer did not.", "target": "session:s1", "delivery": "steer",
+		}, "alice")
+	}()
+	created := answerWhileCallsAreHeld(t, clock, &calls, sent)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create targeted message: status=%d body=%s", created.Code, created.Body.String())
 	}

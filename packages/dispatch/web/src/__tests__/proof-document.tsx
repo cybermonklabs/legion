@@ -5,13 +5,7 @@ import { http, type RequestHandler } from "msw";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { api } from "../api/client";
-import type {
-  Artifact,
-  ArtifactText,
-  DocumentRead,
-  IssueAskRow,
-  IssueDecisions,
-} from "../api/types";
+import type { Artifact, ArtifactText, DocumentRead, IssueAskRow } from "../api/types";
 import type { ComposerAnchor } from "../features/conversation/composer-model";
 import { type DocumentToolbar, ProofDocument } from "../features/doc/ProofDocument";
 import { DocumentRuntime } from "../features/doc/runtime";
@@ -45,23 +39,17 @@ export function createQueryClient(): QueryClient {
 }
 
 /**
- * The issue's decisions and the viewer's read mark on a document, answered with the API's empty
- * shape so the page renders its loaded-empty state rather than its error state. A test that
- * asserts one of these spies the `api` method that fetches it and never reaches these handlers.
+ * The viewer's read mark on a document, answered with the API's empty shape so the page renders
+ * its loaded-empty state rather than its error state. A test that asserts it spies the `api`
+ * method that fetches it and never reaches these handlers. The issue's decisions are the
+ * Decisions view of its tree, which the shell's own handler of that route answers with no node
+ * (`network.ts`).
  *
  * Built afresh on each call rather than held in a module constant: an msw `RequestHandler`
  * carries the state of its own run, and `answerRequests` registers the instance it is handed.
  */
-export function decisionsAndReadMarkHandlers(): RequestHandler[] {
+export function readMarkHandlers(): RequestHandler[] {
   return [
-    http.get("/api/v1/issues/:key/decisions", () =>
-      Response.json({
-        decisions: [],
-        document: null,
-        entries: [],
-        open_questions: [],
-      } satisfies IssueDecisions)
-    ),
     http.get("/api/v1/me/documents/:id/read", ({ params }) =>
       Response.json({
         artifact_id: String(params.id),
@@ -103,8 +91,8 @@ export function artifactRecordHandler(
 
 /**
  * The reads the document surface makes of its own record, blocks and read mark, and of the
- * issue's asks and decisions: the three handlers above, and the three this adds to them. An id
- * this module's artifact does not carry is answered as the API answers an artifact nobody has.
+ * issue's asks: the two handlers above, and the three this adds to them. An id this module's
+ * artifact does not carry is answered as the API answers an artifact nobody has.
  *
  * `asks` is read on each request, so a file that reassigns the rows it seeds between tests is
  * answered the rows it holds then. A caller that answers one of these routes itself passes its
@@ -120,7 +108,7 @@ export function documentSurfaceHandlers({
     artifactRecordHandler((id) => (id === artifact.id ? artifact : undefined)),
     http.get("/api/v1/artifacts/:id/blocks", () => Response.json([])),
     http.get("/api/v1/issues/:key/asks", () => Response.json(asks())),
-    ...decisionsAndReadMarkHandlers(),
+    ...readMarkHandlers(),
   ];
 }
 

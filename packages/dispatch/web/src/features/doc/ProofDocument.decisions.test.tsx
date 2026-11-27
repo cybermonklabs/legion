@@ -1,4 +1,4 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { act, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
@@ -13,8 +13,16 @@ import {
   documentSurfaceHandlers,
   renderProofDocument,
 } from "../../__tests__/proof-document";
+import { answerQuestionOf, NAMED_QUESTION } from "../../__tests__/question-answers";
 import { api } from "../../api/client";
 import type { Artifact, Ask, IssueAskRow } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 answerTextReadsWithTheSeededText();
 
@@ -330,7 +338,7 @@ test("a closed issue's current document shows a withdrawn block's record from it
 });
 
 test("a copy on a saved version that records no answer state finds its source as the live card does", async () => {
-  // The source is on the issue's plan; the issue's asks list carries it under the same block id.
+  // The live text identifies the source. An ask with the same block id is not enough.
   const source: Ask = {
     ...blockAsk,
     answer: {
@@ -344,10 +352,26 @@ test("a copy on a saved version that records no answer state finds its source as
     state: "answered",
   };
   const queryClient = createQueryClient();
-  queryClient.setQueryData(["asks", "CORE-1"], [source]);
-  issueAskRows = [{ ...source, last_reply: null }];
+  const decoy: Ask = {
+    ...blockAsk,
+    block_artifact: { id: "artifact-notes", primary: false, slug: "notes-md" },
+    id: "ask-decoy",
+  };
+  queryClient.setQueryData(["asks", "CORE-1"], [decoy, source]);
+  issueAskRows = [decoy, source].map((ask) => ({ ...ask, last_reply: null }));
+  queryClient.setQueryData(["artifact", "artifact-1", "text"], {
+    asks: [
+      {
+        block_id: "b-1",
+        copied_from: source.id,
+        copied_from_document: "dispatch://CORE-1/artifact/plan",
+        state: "answered",
+      },
+    ],
+    markdown: ':::ask{#b-1 urgency="high" multiple="false"}\nShould we ship?\n:::\n',
+  });
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  // A version this release wrote: the copy's opening line records no state and no source.
+  // An older saved version carries no state or source on its opening line.
   queryClient.setQueryData(["artifact", "artifact-1", "version", 1], {
     authors: [{ id: "alice", kind: "user" }],
     created_at: "2026-09-09T00:00:00Z",
@@ -394,6 +418,101 @@ test("a copy on a saved version that records no answer state finds its source as
   }
 });
 
+// A saved version of an answered ask. One this build writes keeps on the block's opening line its
+// state and who answered it when, and never the words or the options chosen (the server's
+// `keptAskState`), so the block reads its answer from the server's read of the ask, as the live
+// card does. One the release before wrote records the answer too, and is read as it was written.
+test.each([
+  {
+    answer: "Ship on Friday.",
+    attrs: { answered_at: "2026-11-16T09:00:00Z", answered_by: "bob", state: "answered" },
+    // The options are Ship and Hold, in that order: the row of the option chosen is the one marked.
+    chosen: ["true", "false"],
+    name: "one this build writes, from the ask",
+    opener:
+      ':::ask{#b-1 urgency="high" multiple="false" state="answered" answered_by="bob" answered_at="2026-11-16T09:00:00Z"}',
+  },
+  {
+    answer: "Hold for the review.",
+    attrs: {
+      answer: "Hold for the review.",
+      answered_at: "2026-11-16T09:00:00Z",
+      answered_by: "bob",
+      selected: ["Hold"],
+      state: "answered",
+    },
+    chosen: ["false", "true"],
+    name: "one the release before wrote, as it records it",
+    opener:
+      ':::ask{#b-1 urgency="high" multiple="false" state="answered" answered_by="bob" answered_at="2026-11-16T09:00:00Z" selected="[&#x22;Hold&#x22;]" answer="Hold for the review."}',
+  },
+])("a saved version of an answered ask draws who answered and the answer: $name", async ({
+  answer,
+  attrs,
+  chosen,
+  opener,
+}) => {
+  const answered: Ask = {
+    ...blockAsk,
+    answer: {
+      at: "2026-11-16T09:00:00Z",
+      selected: ["Ship"],
+      text: "Ship on Friday.",
+      user: "bob",
+    },
+    state: "answered",
+  };
+  const queryClient = createQueryClient();
+  queryClient.setQueryData(["asks", "CORE-1"], [answered]);
+  issueAskRows = [{ ...answered, last_reply: null }];
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  queryClient.setQueryData(["artifact", "artifact-1", "version", 1], {
+    authors: [{ id: "alice", kind: "user" }],
+    created_at: "2026-11-16T09:01:00Z",
+    markdown: `${opener}\nShould we ship?\n\n- Ship: Release it\n- Hold\n:::\n`,
+    markdown_tree: {
+      content: [{ content: [{ text: "The saved version", type: "text" }], type: "paragraph" }],
+      type: "doc",
+    },
+    named: false,
+    number: 1,
+    summary: null,
+  });
+  const { editors, rerender, sync, view } = renderProofDocument({ queryClient });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    rerender({ version: 1 });
+    await waitFor(() => expect(editors).toHaveLength(2));
+    const editor = editors[1];
+    if (editor === undefined) throw new Error("the version's editor is missing");
+    const nodeViews = editor.viewProps.nodeViews as Record<
+      string,
+      (node: ProseMirrorNode) => { dom: HTMLElement; destroy(): void }
+    >;
+    const construct = nodeViews.ask;
+    if (construct === undefined) throw new Error("the ask node view was not installed");
+    act(() => {
+      editor.root.append(construct(askNode({ ...attrs, urgency: "high" })).dom);
+    });
+    const section = editor.root.querySelector("section[data-dispatch-ask-block]");
+    if (section === null) throw new Error("the ask block shell was not mounted");
+    expect(section.closest('[data-testid="version-view"]')).not.toBeNull();
+    const block = within(section as HTMLElement);
+    expect(await block.findByText("Answered by bob")).toBeDefined();
+    expect(section.querySelector("[data-dispatch-ask-answer]")?.textContent).toBe(answer);
+    // A row's label draws later, through `MarkdownBody`; which row is marked is drawn at once.
+    expect(
+      [...section.querySelectorAll("[data-selected]")].map((row) =>
+        row.getAttribute("data-selected")
+      )
+    ).toEqual([...chosen]);
+  } finally {
+    view.unmount();
+  }
+});
+
 test("the open-decision link names its block as encodeBlockId writes it, in its href and in the hash it sets", async () => {
   const user = userEvent.setup();
   const decision: Ask = { ...blockAsk, block_id: "ship_it" };
@@ -418,6 +537,60 @@ test("the open-decision link names its block as encodeBlockId writes it, in its 
     window.history.replaceState(null, "", originalHash || "/");
     listIssueAsks.mockRestore();
     view.unmount();
+  }
+});
+
+// A link's words and its `title` hold no markup, so the open-decision link reads its question's
+// plain-text projection: the bold goes and the address reads as its target's name - the reading
+// list's `document-open-decision`. CORE-2's summary is in the cache before the document draws,
+// so the name is there at once. Drawn as the characters it is, the link would read
+// `**Ship** dispatch://CORE-2 now?`.
+test("the open-decision link reads its question's plain-text projection", async () => {
+  const question = "**Ship** dispatch://CORE-2 now?";
+  const decision: Ask = { ...blockAsk, question };
+  const queryClient = createQueryClient();
+  queryClient.setQueryData(["asks", "CORE-1"], [decision]);
+  queryClient.setQueryData(["issue-summary", "CORE-2"], {
+    documents: [],
+    key: "CORE-2",
+    project: "CORE",
+    status: "in_progress",
+    title: "Cut the release",
+  });
+  issueAskRows = [{ ...decision, last_reply: null }];
+  const { editors, sync, view } = renderProofDocument({ queryClient });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    const nav = await within(view.container).findByRole("navigation", { name: "Open decisions" });
+    const link = await within(nav).findByRole("link", { name: "Ship CORE-2 Cut the release now?" });
+    expect(link).toHaveAttribute("title", "Ship CORE-2 Cut the release now?");
+  } finally {
+    view.unmount();
+  }
+});
+
+// The open decision is an ask block of this document, so a `#id` in its question names a
+// question of this document, and the link's words read it as that question. Handed no record,
+// the link keeps `#q2`.
+test("a #id in the open decision's question names the question of its document", async () => {
+  const answers = answerQuestionOf("artifact", "artifact-1");
+  const decision: Ask = { ...blockAsk, question: "Decide #q2 now?" };
+  const queryClient = createQueryClient();
+  queryClient.setQueryData(["asks", "CORE-1"], [decision]);
+  issueAskRows = [{ ...decision, last_reply: null }];
+  const { editors, sync, view } = renderProofDocument({ queryClient });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    const nav = await within(view.container).findByRole("navigation", { name: "Open decisions" });
+    const link = await within(nav).findByRole("link", { name: `Decide ${NAMED_QUESTION} now?` });
+    expect(link).toHaveAttribute("title", `Decide ${NAMED_QUESTION} now?`);
+  } finally {
+    view.unmount();
+    answers.restore();
   }
 });
 

@@ -1,0 +1,3 @@
+jj git push --dry-run --ignore-working-copy --color=never --bookmark noauthor
+Error: Won't push commit df2c58b0b805 since it has no author and/or committer set
+Hint: Rejected commit: rqutqvwz df2c58b0 noauthor | no author

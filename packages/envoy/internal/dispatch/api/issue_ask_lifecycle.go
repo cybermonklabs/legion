@@ -173,6 +173,7 @@ func (s *server) recordWithdrawnAsksTx(ledger *docs.Ledger, issueKey string, pla
 		held := planned.held[index]
 		if err := ledger.Queue(func(b *store.WriteBatch) error {
 			graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+			graphstore.QueueHeads(b, graphstore.HeldHeads(held))
 			return nil
 		}); err != nil {
 			return nil, nil, err
@@ -351,8 +352,9 @@ func (s *server) recordRestoredAsksTx(ctx context.Context, ledger *docs.Ledger, 
 		// The restore took each ask's answer off, which removes its answer part: the index is
 		// queued after the row write that took it off (prepareRestoration), and the ask.opened
 		// names what that moved and stamps the part rows the index leaves with its own id, so a
-		// ?since= read lists them.
-		changes, err := s.queueAskParts(ctx, ledger, ask, nil, restore.at, model.ReferenceChanges{})
+		// ?since= read lists them. The restore holds the parts alone, so their step reconciles
+		// the question's references too (questionReconciled false).
+		changes, err := s.queueAskParts(ctx, ledger, ask, nil, restored.at, false, model.ReferenceChanges{})
 		if err != nil {
 			return nil, err
 		}
@@ -387,6 +389,7 @@ func (s *server) recordRestoredAsksTx(ctx context.Context, ledger *docs.Ledger, 
 		held := restore.leftHeld[index]
 		if err := ledger.Queue(func(b *store.WriteBatch) error {
 			graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+			graphstore.QueueHeads(b, graphstore.HeldHeads(held))
 			return nil
 		}); err != nil {
 			return nil, err
@@ -478,7 +481,14 @@ func (s *server) sweepIssueAskBlocksTx(ctx context.Context, tx pgx.Tx, issueKey 
 	if err != nil {
 		return nil, err
 	}
-	return s.deps.Docs.WriteIssueAskStates(ctx, issueKey, append(current, withdrawing...), actor, true)
+	marked, err := s.deps.Docs.WriteIssueAskStates(ctx, issueKey, append(current, withdrawing...), actor, true)
+	if err != nil {
+		return nil, err
+	}
+	// The blocks it hands back are the ones it marked resolved, which only a write while another
+	// build serves marks.
+	// kept for one release: roll-window-attributes
+	return marked, nil
 }
 
 // readIssueAsks reads the asks query selects (askRowColumns from askRowFrom), with their opening

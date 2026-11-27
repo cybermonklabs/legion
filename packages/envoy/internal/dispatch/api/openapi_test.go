@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/contracts/schemas/dispatch-openapi.json TestARefusalStatusAlsoAnswersThePlainErrorBody (the path built runtime-relative ../../../../.., then read: the committed document TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites compares the emitter's bytes with)
+
 import (
 	"bytes"
 	"encoding/json"
@@ -169,15 +171,19 @@ func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 			}
 		}
 	}
-	hooks := openAPIHookRoutes()
-	if len(hooks) != len(testHookRoutes) {
-		t.Fatalf("the table mounts %d test hooks with Deps.TestHooksEnabled, want the %d testHookRoutes names", len(hooks), len(testHookRoutes))
+	// The hooks are read as the rows a server with its test hooks mounts and one without does not,
+	// rather than off the declarations' TestHook, which is what the emitter marks by.
+	served := map[string]bool{}
+	for _, route := range (&server{}).routes() {
+		served[route.Method+" "+route.Pattern] = true
 	}
-	for _, name := range testHookRoutes {
-		if !hooks[name] {
-			t.Errorf("testHookRoutes names %s, and the table mounts no such test hook", name)
+	hooks := map[string]bool{}
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		if name := route.Method + " " + route.Pattern; !served[name] {
+			hooks[name] = true
 		}
 	}
+	requireRouteNames(t, "the test hooks the table mounts with Deps.TestHooksEnabled and not without", hooks, testHookRoutes)
 	for name := range hooks {
 		if !marked[name] {
 			t.Errorf("%s is a test hook and its operation carries no x-test-hook", name)
@@ -201,8 +207,8 @@ func TestARefusalStatusAlsoAnswersThePlainErrorBody(t *testing.T) {
 	paths, _ := tree.(map[string]any)["paths"].(map[string]any)
 	plain := openAPISchemaPrefix + "ErrorBody"
 	checked := 0
-	for name, shape := range routeShapes {
-		method, pattern, _ := strings.Cut(name, " ")
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		name, method, pattern, shape := route.Method+" "+route.Pattern, route.Method, route.Pattern, route.Shape
 		for _, refusal := range shape.Refusals {
 			status := fmt.Sprint(refusal.Status)
 			operation, _ := paths[pattern].(map[string]any)[strings.ToLower(method)].(map[string]any)

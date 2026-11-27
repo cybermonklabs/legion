@@ -67,8 +67,8 @@ type dispatchPair struct {
 
 // newPair opens the database and takes the NATS server the pair will share, and starts nothing:
 // a row that must seed durable state the processes read at boot (the delivery settings their
-// intakes wait for) or hold a lock their first pass will wait on does that between this and
-// start.
+// intakes' settings cache reads before the intakes bind) or hold a lock their first pass will wait
+// on does that between this and start.
 func newPair(t *testing.T) *dispatchPair {
 	t.Helper()
 	return newPairOn(t, storetest.Open(t))
@@ -215,11 +215,12 @@ func registerOtherBuild(t *testing.T, ctx context.Context, databaseURL, commit, 
 const earlierBuildStamp = "1149114911491149114911491149114911491149"
 
 // earlierBuildSchemaVersion and earlierBuildSchemaCreatable are the schema numbers a process of
-// the base release registers (its pmdoc/schema/blocks.json is version 4, and
-// creates nothing past it), which registerOtherBuild's row carries.
+// the base release registers (its pmdoc/schema/blocks.json is version 6, below this tree's 9, and
+// creates nothing past version 5), which registerOtherBuild's row carries, so the fleet guard
+// reads the real boundary, version 6 against this tree's 9.
 const (
-	earlierBuildSchemaVersion   = 4
-	earlierBuildSchemaCreatable = 4
+	earlierBuildSchemaVersion   = 6
+	earlierBuildSchemaCreatable = 5
 )
 
 // ───── the API a row drives ─────────────────────────────────────────────────
@@ -272,18 +273,32 @@ func (p *dispatchProcess) createIssueIn(t *testing.T, project, title, spec strin
 	return issue.Key, issue.PrimaryArtifactID
 }
 
-// documentText is the markdown GET /api/v1/artifacts/{id}/text answers: the document as this
-// process renders it now.
+// documentText is the markdown GET /api/v1/artifacts/{id}/text answers a reader of this build
+// (asReaderOfAsks): the document as this process renders it now.
 func (p *dispatchProcess) documentText(t *testing.T, artifactID string) string {
 	t.Helper()
-	answer := p.call(t, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", "", http.StatusOK)
+	path := "/api/v1/artifacts/" + artifactID + "/text"
+	answer := p.send(t, http.MethodGet, path, "", asReaderOfAsks(dispatchTestLogin))
+	if answer.status != http.StatusOK {
+		t.Fatalf("GET %s: status %d, want %d: %s", path, answer.status, http.StatusOK, answer.body)
+	}
 	var document struct {
 		Markdown string `json:"markdown"`
 	}
-	if err := json.Unmarshal(answer, &document); err != nil {
-		t.Fatalf("decode the document's text: %v: %s", err, answer)
+	if err := json.Unmarshal(answer.body, &document); err != nil {
+		t.Fatalf("decode the document's text: %v: %s", err, answer.body)
 	}
 	return document.Markdown
+}
+
+// asReaderOfAsks is login's header for a read of a text route as every reader of this build that
+// reads the asks member sends it: `Dispatch-Asks: 1` (api's asksHeader), which is served markdown
+// with none of an ask block's server-owned attributes. A request without it is served the form
+// kept for one release for the readers of the release before.
+func asReaderOfAsks(login string) http.Header {
+	header := asUser(login)
+	header.Set("Dispatch-Asks", "1")
+	return header
 }
 
 // ───── the notification stream ──────────────────────────────────────────────

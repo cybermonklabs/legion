@@ -5,13 +5,10 @@ body: |-
     round asks and waits for the same roles (one predicate), and it does not ask, wake or resume
     such a role: an ask queued before the suspension now ends without a publish. An operator's
     suspension still holds the round past its bound, and a role that the project pause stopped
-    stays the pause's while the pause still owes that role a launch. Where the round passed over a
-    role that the daemon suspended, it reads the issue workspace once through a role whose process
-    runs in the pod (the new shim frame `workspace-work`) before it replaces the pod, once every
-    role it asks has answered and no turn runs, and writes one message on the issue where the read
-    finds work that no branch or tag at origin holds, or fails; on a kept volume that the issue's
-    next pod mounts, that message says the work is still on the volume. A replacement the bound
-    lets through over a role the round asks that has not answered, or over a turn, makes no read.
+    stays the pause's while the pause still owes that role a launch. The shim gains the frame
+    `workspace-work`, which reads whether the issue workspace holds work that no branch or tag at
+    origin holds; an update round makes that read before every replacement, and what it does with
+    the read is #5285's (its own entry, pr5285-r7-round-keeps-unread-disk).
     A round whose pod has no role process in it is replaced by issue where nothing holds the pod,
     and a launch into such a pod reads the round's bound when it runs and replaces the pod first,
     so the role starts once. Before the round's bound, a pod is kept while a project's pause still

@@ -27,7 +27,7 @@ import {
 } from "./api";
 import { bodyOf } from "./bodies";
 import { documentEditor, needsYouCards, openSpecAndAwaitHeadingIds } from "./editor";
-import { askControls, hasReadingPane, inboxRow } from "./inbox-pane";
+import { askControls, inboxRow } from "./inbox-pane";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
 import { assertWhole } from "./unclipped";
@@ -38,18 +38,14 @@ function drawer(page: Page) {
 }
 
 /**
- * An approval request's own card, as the Inbox draws one at this width.
+ * An approval request's own card, as the Inbox draws one.
  *
- * Below `READING_PANE_WIDTH` that is the card in the question's row on the Inbox page. From
- * there the page shows an approval as the document under review in its reading column
- * (INFRA-575), which carries no card, and the drawer is the Inbox that still keeps one
- * (`pane={false}`): it opens over whatever page is showing, so this navigates to one.
+ * The Inbox page shows an approval as the document under review, in its reading column from
+ * `READING_PANE_WIDTH` (INFRA-575) and in place of the list below it (INFRA-5200), neither of
+ * which carries a card; the drawer is the Inbox that still keeps one (`pane={false}`) at every
+ * width: it opens over whatever page is showing, so this navigates to one.
  */
 async function approvalCard(page: Page, askId: string): Promise<Locator> {
-  if (!hasReadingPane(page)) {
-    await page.goto("/");
-    return page.getByTestId(`ask-${askId}`);
-  }
   await page.goto("/agents");
   await page.locator("body").focus();
   await page.keyboard.press("i");
@@ -62,12 +58,18 @@ const session = {
   as: "agent" as const,
 };
 
+/** A spec whose one requirement says "The plan.". An approval covers the record of the Spec query
+ *  - the spec's memo, criteria and requirements - and not its paragraphs (R14), so a row that
+ *  approves a spec and has an edit of "The plan." stale that approval writes it as this
+ *  requirement's body: as a paragraph, the edit would carry the approval to the new version. */
+const PLAN_SPEC = ":::requirement{#r-plan}\nThe plan.\n:::\n";
+
 // @pr: Create through answer to close: an approval requested, answered in the Inbox, made stale by an edit, and changes requested from the header.
 test("a spec's approval is a human review pinned to its version: requested by the agent, answered in the Inbox, stale after an edit, changes requested from the header @pr", async ({
   browser,
 }) => {
   await createProject({ key: "GATE", name: "Gate" });
-  const issue = await createIssue({ project: "GATE", spec: "The plan.", title: "Design gate" });
+  const issue = await createIssue({ project: "GATE", spec: PLAN_SPEC, title: "Design gate" });
   const artifactID = issue.primary_artifact_id;
 
   // The agent asks for approval; the Inbox shows the request and the two reviews it offers.
@@ -103,7 +105,7 @@ test("a spec's approval is a human review pinned to its version: requested by th
     await expect(page.getByRole("button", { name: "Approved v1" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Approve", exact: true })).toHaveCount(0);
 
-    // The agent edits the spec: the approval goes stale.
+    // The agent edits the words of the spec's requirement: the approval goes stale.
     await editArtifact(
       artifactID,
       { ops: [{ op: "replace", find: "The plan.", with: "The revised plan." }] },
@@ -205,27 +207,74 @@ test("a reason longer than the server takes shows the server's own refusal in th
   }
 });
 
+// The primary document's approval chip sits in the header's State group, with its two actions
+// beside it at a phone's width; a press of Approve there writes the review the server holds.
+test("Approve in today's issue header approves the primary document at a phone's width", async ({
+  browser,
+}) => {
+  await createProject({ key: "HEADAPPR", name: "Header approve" });
+  const issue = await createIssue({
+    project: "HEADAPPR",
+    spec: "The plan.",
+    title: "Approved from the header",
+  });
+  const artifactID = issue.primary_artifact_id;
+  await requestApproval(artifactID, {}, session);
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ height: 844, width: 390 });
+    await page.goto(`/issues/${issue.key}`);
+    const state = page.getByTestId("issue-state");
+    await expect(state.getByRole("button", { exact: true, name: "Request changes" })).toBeVisible();
+    await state.getByRole("button", { exact: true, name: "Approve" }).click();
+    await expect
+      .poll(async () => (await getArtifact(artifactID, { login: "alice" })).approval?.state)
+      .toBe("approved");
+    await expect(state.getByRole("button", { name: "Approved v1" })).toBeVisible();
+    await expect(state.getByRole("button", { exact: true, name: "Approve" })).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
 /** A document write's response as the restore tests read it: the advice beside its result. */
 interface AdvisedWrite {
   readonly advice?: WriteAdvice;
 }
 
-/** The decision block the restore tests hold open in a spec. */
+/** The decision block the restore tests hold open in the approved document. */
 const waveAsk =
   ':::ask{#wave urgency="med" multiple="false"}\nHow many regions take the first wave?\n\n- Two: The two with the fewest tenants.\n- Five: Half of them.\n:::\n';
 
+/** The name of the document of the issue, beside its spec, that the restore row whose subject is
+ *  the approved text approves: no query covers it, so an approval of it covers its stored text. */
+const NOTES_DOCUMENT = "design-notes.md";
+
 /**
- * Creates a spec holding `spec`, waits for each of its decision blocks to be an ask, has alice
- * approve version 1 from its header, then has the agent change "The plan." by accident. The edit
- * stales the approval and its advice says so. Returns the spec's issue.
+ * Creates an issue whose approved document holds `body` - the issue's spec, or, `on` "notes", one
+ * more document of the issue named `NOTES_DOCUMENT` - waits for each of that document's decision
+ * blocks to be an ask, has alice approve its version 1, then has the agent change "The plan." by
+ * accident. The edit stales the approval and its advice says so. Returns the issue's key, the
+ * approved document's id, and the address of the page whose header draws that document's chip.
  */
 async function approveThenChange(
-  spec: string,
-  blocks: number
-): Promise<{ key: string; id: string }> {
+  body: string,
+  blocks: number,
+  on: "spec" | "notes" = "spec"
+): Promise<{ key: string; id: string; page: string }> {
   await createProject({ key: "GATE", name: "Gate" });
-  const issue = await createIssue({ project: "GATE", spec, title: "Design gate" });
-  const id = issue.primary_artifact_id;
+  const issue = await createIssue(
+    on === "spec"
+      ? { project: "GATE", spec: body, title: "Design gate" }
+      : { project: "GATE", title: "Design gate" }
+  );
+  const notes =
+    on === "spec"
+      ? undefined
+      : (await createIssueArtifact(issue.key, { content: body, name: NOTES_DOCUMENT })).artifact;
+  const id = notes?.id ?? issue.primary_artifact_id;
   await expect
     .poll(async () => (await listIssueAsks(issue.key)).filter((ask) => ask.block_artifact).length)
     .toBe(blocks);
@@ -245,13 +294,15 @@ async function approveThenChange(
     state: "stale",
     version: 1,
   });
-  return { id, key: issue.key };
+  const page =
+    notes === undefined ? `/issues/${issue.key}` : `/issues/${issue.key}/artifacts/${notes.slug}`;
+  return { id, key: issue.key, page };
 }
 
 test("the agent's undo of an accidental edit to an approved spec makes that approval current at the undo's version, so no approval request is needed", async ({
   browser,
 }) => {
-  const issue = await approveThenChange("The plan.", 0);
+  const issue = await approveThenChange(PLAN_SPEC, 0);
 
   // The undo's text is version 1's again: version 3 carries alice's approval of version 1, and
   // the undo superseded no approval.
@@ -300,7 +351,7 @@ test("the agent's undo of an accidental edit to an approved spec makes that appr
 test("an undo one character away from the approved spec leaves its approval stale", async ({
   browser,
 }) => {
-  const issue = await approveThenChange("The plan.", 0);
+  const issue = await approveThenChange(PLAN_SPEC, 0);
 
   await editArtifact(
     issue.id,
@@ -327,14 +378,17 @@ test("an undo one character away from the approved spec leaves its approval stal
   }
 });
 
-// Today's rule for a version whose decision blocks changed is the answer carry: it carries an
-// approval only when every block it changed is the approver's own answer, given since. A version
-// holding the approved text around a block the agent reworded holds no answer of hers, so its
-// approval stays stale, as it did before restored text carried an approval.
+// A version carries an approval only where its text is the approved text exactly, or where every
+// change is one Dispatch carries an approval over: a reading, a server-owned attribute of an ask
+// block, or the decisions step's own write. A version holding the approved text around a block the
+// agent reworded is neither, so its approval stays stale. That is a rule of an approval of a
+// document's text, so the row approves a document of the issue that no query covers: a decision
+// block is no node of the Spec query, so in the spec the restored words would carry the approval
+// by its record's digest (R14).
 test("an undo that restores the approved text around a decision block the agent reworded leaves the approval stale", async ({
   browser,
 }) => {
-  const issue = await approveThenChange(`The plan.\n\n${waveAsk}`, 1);
+  const issue = await approveThenChange(`The plan.\n\n${waveAsk}`, 1, "notes");
 
   await editArtifact(
     issue.id,
@@ -374,7 +428,7 @@ test("an undo that restores the approved text around a decision block the agent 
         state: "stale",
         version: 1,
       });
-    await page.goto(`/issues/${issue.key}`);
+    await page.goto(issue.page);
     await expect(page.getByRole("button", { name: "Approved v1 · changed since" })).toBeVisible();
   } finally {
     await alice.close();
@@ -706,10 +760,10 @@ test("an approval ask's Inbox card shows a question carrying a long summary whol
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    // The question's own card is where the Inbox shows the question itself: the row's card
-    // below 1280 px, and the drawer's from there up, since the Inbox page's reading column
-    // shows an approval as the document under review rather than a card (INFRA-575) and its
-    // short row gives the question one line on purpose.
+    // The question's own card is where the Inbox shows the question itself: the drawer's, since
+    // the Inbox page's reading column and its reading view show an approval as the document
+    // under review rather than a card (INFRA-575, INFRA-5200) and its short row gives the
+    // question one line on purpose.
     const card = await approvalCard(page, requested.ask.id);
     await expect(card).toBeVisible();
     const question = card.locator("p", { hasText: ending });
@@ -719,7 +773,7 @@ test("an approval ask's Inbox card shows a question carrying a long summary whol
     // this bound is thousands of lines, past any height a person's window has, so the height
     // is the one the card itself reports rather than a number written here.
     const viewport = page.viewportSize();
-    if (viewport !== null && hasReadingPane(page)) {
+    if (viewport !== null) {
       const needed = await question.evaluate((element) => {
         let height = element.scrollHeight;
         for (let node: Element | null = element; node !== null; node = node.parentElement) {
@@ -920,19 +974,14 @@ test("an approval request for an unassigned issue's non-primary document remains
     // through the issue itself (the margin below).
     await page.goto("/");
     await expect(inboxRow(page, nonPrimary.ask.id)).toBeVisible();
-    // Actionable means the Inbox offers the review where this width draws it: the reading
-    // column's head over the document under review from 1280 px (INFRA-575), and the
-    // question's own card, which names itself an approval, below that.
+    // Actionable means the Inbox offers the review where it reads the request: the head over
+    // the document under review, in the reading column from 1280 px (INFRA-575) and in place of
+    // the list below it (INFRA-5200).
     const controls = await askControls(page, nonPrimary.ask.id);
-    if (hasReadingPane(page)) {
-      await expect(controls.getByRole("button", { exact: true, name: "Approve" })).toBeVisible();
-      await expect(
-        controls.getByRole("button", { exact: true, name: "Request changes" })
-      ).toBeVisible();
-    } else {
-      await expect(controls).toContainText("Approval requested");
-      await expect(controls.getByRole("radio")).toHaveCount(2);
-    }
+    await expect(controls.getByRole("button", { exact: true, name: "Approve" })).toBeVisible();
+    await expect(
+      controls.getByRole("button", { exact: true, name: "Request changes" })
+    ).toBeVisible();
     const inboxShot = testInfo.outputPath("approval-non-primary-inbox-1280.png");
     await page.screenshot({ path: inboxShot, fullPage: true });
     await testInfo.attach("non-primary approval in the project default's Inbox", {
@@ -1078,15 +1127,10 @@ test("an open approval ask's document link reaches the issue's Conversation, and
     // A project-level document's approval request links its own document the same way. A
     // document has no assignee, so its question reaches the default assignee of its project -
     // alice, who made GATE - and her own list is where the Inbox lists it. The link is the
-    // card's named version below 1280 px, and from there the short row's own owner link, the
-    // reading column having drawn the document itself in place of a card (INFRA-575); both
-    // carry the same address.
+    // short row's own owner link at every width, the reading pane drawing the document itself in
+    // place of a card (INFRA-575, INFRA-5200).
     await page.goto("/");
-    const inboxLink = hasReadingPane(page)
-      ? inboxRow(page, docApproval.ask.id).locator("[data-inbox-owner]")
-      : page
-          .getByTestId(`ask-${docApproval.ask.id}`)
-          .getByRole("link", { name: "runbook.md, version 1" });
+    const inboxLink = inboxRow(page, docApproval.ask.id).locator("[data-inbox-owner]");
     await expect(inboxLink).toHaveAttribute("href", docPath);
 
     await page.goto(`/projects/GATE/documents/${doc.artifact.slug}`);

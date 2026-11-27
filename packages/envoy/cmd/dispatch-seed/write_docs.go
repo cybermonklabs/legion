@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -45,7 +46,7 @@ func (r *seedRun) writeDocuments(ctx context.Context) error {
 // marked is whether artifacts carries the node columns (carriesNodeMarker), which is whether the
 // database is this release's or the one before it. On this release's, the document's row names its
 // node, its node hangs under its issue, and each version is the projection of a version node, as
-// this release's server writes them (dispatch://INFRA-1253). On the one before, each is written as
+// this release's server writes them (the issue-tree spec). On the one before, each is written as
 // that release's server writes it, a document's node and nothing of the tree, so the backfill this
 // release runs over the data set writes the rest, and the sizing reads what it will write.
 func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marked bool) error {
@@ -61,14 +62,19 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	// The document's node goes in before its row, in its project and part_of its issue where an
 	// issue owns it, and the row names it, as the server's upload writes them (api's
 	// storeArtifact); the seed records no event of a document, so what the node write states
-	// carries the sentinel.
+	// carries the sentinel. Every node and tuple the document's write states has its head rows
+	// written once, at the end (heads, below), once every row they read stands, on a database that
+	// holds the head projection (seedRun.noHeadRows).
 	refKey := graphstore.ArtifactRefKey(owner, projectKey, "", document.Slug)
 	node := graphstore.ArtifactNode(refKey, projectKey, "", seedAuthor, created)
 	var facts []graphstore.Tuple
 	if marked && issueKey != nil {
 		facts = append(facts, graphstore.ArtifactPartOf(refKey, *issueKey, seedAuthor, created))
 	}
-	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, facts); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, []graphstore.Node{node}, facts)
+		return nil
+	}); err != nil {
 		return fmt.Errorf("artifact node: %w", err)
 	}
 	columns := "id, issue_key, project_key, slug, name, kind, is_primary, created_by, created_at, last_seq"
@@ -93,7 +99,6 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	for number := 1; number <= document.Versions; number++ {
 		bytes, band := r.versionBytes(document, number)
 		r.bands[band]++
-		r.startDocument()
 		markdown := r.plan.documentMarkdown(index, number, r.random, bytes)
 		if number == document.Versions {
 			rendered, offsets, tableRow, err := renderVersion(markdown)
@@ -139,19 +144,25 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	// write phase of anyone's, so the plan's statements run at once, as a batch of their own
 	// (refs.IndexBlocks). The targets the plan moves are counted by nobody: the seed appends no
 	// event for a document write, which is what names them.
-	_, _, blockWrite, _, err := refs.IndexBlocks(ctx, tx, document.ID, refs.OneVersion(document.ID, document.Versions, versionAt), latest, blocks, located, nil, refs.TypedFacts{})
+	_, _, blockWrite, _, err := refs.IndexBlocks(ctx, tx, document.ID, refs.OneVersion(document.ID, document.Versions, versionAt), latest, blocks, located, nil, serverURL, refs.TypedFacts{})
 	if err != nil {
 		return fmt.Errorf("index blocks: %w", err)
 	}
 	// The seed records no event of a document's version, so what the index stated in the node
 	// and tuple store carries the sentinel, the cause of a write no event recorded.
-	if err := graphstore.Caused(ctx, tx, blockWrite, graphstore.NoEvent); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, blockWrite, graphstore.NoEvent)
+		return nil
+	}); err != nil {
 		return fmt.Errorf("record what the block index stated: %w", err)
 	}
 	// Each version's node, after the block nodes so the transaction's node rows stay in ascending
 	// (kind, id), as the server's version write orders them (docs.WriteVersionNode).
 	if len(versionNodes) > 0 {
-		if err := graphstore.Write(ctx, tx, versionNodes, versionFacts); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, versionNodes, versionFacts)
+			return nil
+		}); err != nil {
 			return fmt.Errorf("version nodes: %w", err)
 		}
 	}
@@ -165,7 +176,8 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	// The document's own references are reconciled after its blocks, as the server's own version
 	// write reconciles them (docs.indexRenderedVersion): the block mentions of a first indexing
 	// date from the document's refs row for their target, so they are written while the document
-	// holds no refs row yet, and take this version's time.
+	// holds no refs row yet, and take this version's time. Its blocks are indexed, so the
+	// reconciliation settles the document's row of the forms queue too.
 	replacement, err := refs.PlanReplace(ctx, tx, "artifact", document.ID, text.Refs(located), &versionAt)
 	if err != nil {
 		return fmt.Errorf("index references: %w", err)
@@ -177,8 +189,8 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	// on the data set would rewrite. They are queued after the reconciliation, whose rows the
 	// update reads (refs.QueueRecordExcerpts).
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		replacement.Queue(b)
-		refs.QueueRecordExcerpts(b, document.ID, document.Versions, refs.MentionExcerpts(latest, blocks, located))
+		replacement.SettlingForms().Queue(b)
+		refs.QueueRecordExcerpts(b, document.ID, document.Versions, refs.MentionExcerpts(latest, blocks, located, serverURL))
 		return nil
 	}); err != nil {
 		return fmt.Errorf("index references: %w", err)
@@ -196,8 +208,18 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 		if err != nil {
 			return fmt.Errorf("index references: %w", err)
 		}
-		if err := graphstore.Caused(ctx, tx, graphstore.Uncaused{Tuples: mentions}, graphstore.NoEvent); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueCaused(b, graphstore.Holding(mentions...), graphstore.NoEvent)
+			return nil
+		}); err != nil {
 			return fmt.Errorf("record what the references stated: %w", err)
+		}
+	}
+	if !r.noHeadRows {
+		heads := slices.Concat(graphstore.HeadsOf([]graphstore.Node{node}, facts), graphstore.HeldHeads(blockWrite),
+			graphstore.HeadsOf(versionNodes, versionFacts))
+		if err := graphstore.WriteHeads(ctx, tx, heads); err != nil {
+			return fmt.Errorf("write the head rows of the document: %w", err)
 		}
 	}
 	if document.Primary {
@@ -215,6 +237,10 @@ const versionStep = 36 * time.Hour
 // pair a version write stores and indexes together (docs' indexDocument). It also answers the
 // block id of the first table's first body row, which is what an anchor on a table row names.
 //
+// Every block the markdown leaves without an id is stamped b1, b2, … in document order, from a
+// counter of this render's own (pmdoc.ParseWithBlockIDs), so a version's ids are the same in every
+// run, a mention naming `#b-b2` names the same block each time, and renders at once share nothing.
+//
 // Only a block the renderer writes through its block path carries an offset, so a table is one
 // block and its rows and its cells are none, although pmdoc stamps an id on each of them
 // (EnsureBlockIDsCount). That is why a table-row anchor names a block id that `document_blocks`
@@ -223,7 +249,11 @@ const versionStep = 36 * time.Hour
 // It refuses a render whose shape is not the one the seed lays out, so a change in pmdoc that
 // moved a block shows up here rather than as a wrong anchor in the data set.
 func renderVersion(markdown string) (string, []model.ArtifactBlock, string, error) {
-	tree, err := pmdoc.Parse(markdown)
+	block := 0
+	tree, err := pmdoc.ParseWithBlockIDs(markdown, func() string {
+		block++
+		return fmt.Sprintf("b%d", block)
+	})
 	if err != nil {
 		return "", nil, "", fmt.Errorf("parse the generated markdown: %w", err)
 	}

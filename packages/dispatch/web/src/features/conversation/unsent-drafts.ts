@@ -16,12 +16,14 @@ import { type Shape, shape } from "../writes/tab-storage";
 import type { ComposerAnchor, ComposerKind, ComposerOwner, ReplyTarget } from "./composer-model";
 import {
   type HeldSend,
+  type KeptDraft,
   keptAnchor,
   keptAsk,
   keptDraft,
   keptKind,
   keptOwner,
   keptReplyTo,
+  restoredDraft,
 } from "./held-sends";
 import type { SentDraft, SentRequest } from "./send-request";
 
@@ -63,10 +65,9 @@ export interface AwayAddress {
   readonly replyTo: ReplyTarget | null;
 }
 
-/** What a held send's draft is kept as once the send is gone (`AwayDraft`): its text, its
- *  accepted mentions and a suggestion's replacement, and an ask's fields, for the address it went
- *  to - its owner, the reply it answered and a margin compose's words - in the kind it went out
- *  as. */
+/** What a held send's draft is kept as once the send is gone (`AwayDraft`): its text and a
+ *  suggestion's replacement, and an ask's fields, for the address it went to - its owner, the
+ *  reply it answered and a margin compose's words - in the kind it went out as. */
 export function awayDraftOf(held: HeldSend): AwayDraft {
   const { anchor, kind, owner, replyTo } = held.request;
   return { anchor, ask: held.draft.ask, draft: held.draft.draft, kind, owner, replyTo };
@@ -98,8 +99,8 @@ export function sameAnchor(a: ComposerAnchor | undefined, b: ComposerAnchor | un
  * named for, not to the field showing it. The Inbox's column draws one box per thread and a new
  * one for each row it moves to, and a thread card mounts its reply composer whenever it opens, so
  * what was typed for a thread waits under that thread's name, comes back when the reader returns
- * to it, and never shows in another thread's composer. A draft is kept whole, its accepted
- * mentions with it, since those are what a reply's mentions are sent from.
+ * to it, and never shows in another thread's composer. A draft is kept whole: who it addresses
+ * is in its text (R4), so nothing beside the words is kept with it.
  *
  * A composer whose host moves its address keeps a draft by the address too (`AwayDraft`): under
  * its send name, one per reply it was written for, so the reply typed for one message waits for
@@ -113,6 +114,9 @@ export interface UnsentDrafts {
   /** Whether a draft is kept under `name`, re-rendering whenever that changes: a thread card
    *  whose reply composer is off the page says it keeps the reply's draft. */
   useKept(name: string): boolean;
+  /** The draft kept under `name`, re-rendering whenever it changes and read once each time it
+   *  does: a host that draws a kept reply itself draws its words (`KeptReplyToDeleted`). */
+  useUnsent(name: string): SentDraft | undefined;
   /** Who is signed in now: another person's sign-in forgets every draft in both stores, the
    *  drafts kept by address with them, in the page and in the tab, since each is the person's who
    *  typed it (`DraftStore.signedIn`); the first sign-in takes up the drafts the tab kept for that
@@ -140,6 +144,10 @@ export interface UnsentDrafts {
   forgetAway(name: string, at: AwayAddress): void;
 }
 
+/** A draft kept by address as the tab holds it: its draft as the shape an older record may still
+ *  hold (`KeptDraft`). */
+type KeptAway = Omit<AwayDraft, "draft"> & { readonly draft: KeptDraft };
+
 /** A draft kept by address, as the tab keeps it for a reload (`AwayDraft`). */
 const keptAway = shape.record({
   anchor: shape.optional(keptAnchor),
@@ -149,12 +157,14 @@ const keptAway = shape.record({
   kind: shape.optional(keptKind),
   owner: keptOwner,
   replyTo: shape.nullable(keptReplyTo),
-}) satisfies Shape<AwayDraft>;
+}) satisfies Shape<KeptAway>;
 
 /** What a store holds under a name, read as JSON: undefined where it holds nothing, or text that
  *  does not parse. The tab can hold that text, or a draft an older release kept in another shape,
  *  so what is read here is trusted only once its shape is checked (`keptAway`, `keptDraft`), and
- *  what does not fit reads as no draft. */
+ *  what does not fit reads as no draft. A draft that fits is read back as a held send's is
+ *  (`restoredDraft`): one the build before this one kept holds its mentions in an array beside
+ *  a body that only draws them, and they come back as the mentions in the text that name them. */
 function parsed(kept: string): unknown {
   if (kept === "") return undefined;
   try {
@@ -167,13 +177,15 @@ function parsed(kept: string): unknown {
 /** The drafts kept by address under a name: those of its list that fit `keptAway`. */
 function parseAway(kept: string): readonly AwayDraft[] {
   const list = parsed(kept);
-  return Array.isArray(list) ? list.filter(keptAway) : [];
+  return Array.isArray(list)
+    ? list.filter(keptAway).map((away) => ({ ...away, draft: restoredDraft(away.draft) }))
+    : [];
 }
 
 /** The draft kept under a name, where it fits `keptDraft`. */
 function parseSent(kept: string): SentDraft | undefined {
   const draft = parsed(kept);
-  return keptDraft(draft) ? draft : undefined;
+  return keptDraft(draft) ? restoredDraft(draft) : undefined;
 }
 
 const drafts = new WeakMap<QueryClient, UnsentDrafts>();
@@ -188,9 +200,12 @@ export function unsentDraftsOf(client: QueryClient): UnsentDrafts {
   if (unsent === undefined) {
     const store = createDraftStore("unsent");
     const awayStore = createDraftStore("away");
-    function useKept(name: string): boolean {
+    function useUnsent(name: string): SentDraft | undefined {
       const [kept] = store.useDraft(name);
-      return useMemo(() => parseSent(kept) !== undefined, [kept]);
+      return useMemo(() => parseSent(kept), [kept]);
+    }
+    function useKept(name: string): boolean {
+      return useUnsent(name) !== undefined;
     }
     function useAway(name: string): readonly AwayDraft[] {
       const [kept] = awayStore.useDraft(name);
@@ -225,6 +240,7 @@ export function unsentDraftsOf(client: QueryClient): UnsentDrafts {
       },
       useAway,
       useKept,
+      useUnsent,
       write: (name, draft) => store.set(name, draft === undefined ? "" : JSON.stringify(draft)),
     };
     drafts.set(client, unsent);

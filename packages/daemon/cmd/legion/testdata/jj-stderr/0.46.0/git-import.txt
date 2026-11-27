@@ -1,0 +1,4 @@
+jj --color=never log --no-graph -r 'root()' -T commit_id
+Reset the working copy parent to the new Git HEAD.
+Done importing changes from the underlying Git repo.
+--- exit 0

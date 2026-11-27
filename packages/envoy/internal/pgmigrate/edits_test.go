@@ -49,6 +49,7 @@ func checkEdits(t *testing.T, base, head map[string]string, unchanged, declared 
 // comment-only edit, a rename and a deleted file are each refused alone, naming both identities
 // and the line to put first; the same edit or rename with that line is accepted.
 func TestCheckEditsRefusesAnEditOfAFileTheBaseHoldsThatDeclaresNothing(t *testing.T) {
+	t.Parallel()
 	const first, second = "create table first (id integer)", "create table second (id integer)"
 	base := map[string]string{"0001_first.up.sql": first, "0002_second.up.sql": second}
 	baseSecond := Identity{Name: "0002_second.up.sql", Checksum: sha256Hex(second)}
@@ -92,6 +93,7 @@ func TestCheckEditsRefusesAnEditOfAFileTheBaseHoldsThatDeclaresNothing(t *testin
 // same reason: a database that applied the base's edit holds that text. The control is the base's
 // own file.
 func TestCheckEditsHoldsTheFirstReplacesLineOfAChain(t *testing.T) {
+	t.Parallel()
 	const original, firstEdit = "create table second (id integer)", "create table second (id integer, note text)"
 	originalIdentity := Identity{Name: "0002_second.up.sql", Checksum: sha256Hex(original)}
 	baseText := firstEdit + "\n-- replaces: " + originalIdentity.String() + "\n"
@@ -138,6 +140,7 @@ func TestCheckEditsHoldsTheFirstReplacesLineOfAChain(t *testing.T) {
 // before it in their order (Migration.RecordedIdentity), so CheckEdits refuses them too, naming
 // the line. Each refusal gives the lines to begin with.
 func TestCheckEditsHoldsEveryReplacesLineOfTheBase(t *testing.T) {
+	t.Parallel()
 	const name = "0002_second.up.sql"
 	declares := func(lines ...Identity) string {
 		var text strings.Builder

@@ -175,6 +175,9 @@ type QuoteFinder struct {
 	prepared bool
 	err      error
 	text     flattenedText
+	// blocks is the range of each block of the document by its block id (blockRange), read
+	// whole at the first call that asks for one, nil before.
+	blocks map[string]Range
 }
 
 // NewQuoteFinder returns a finder over doc. It reads nothing of doc until its first Find.
@@ -222,24 +225,92 @@ func (e *QuoteBlockError) Unwrap() error { return ErrTargetNotFound }
 // block of that id, or whose block matches the quote nowhere, is a QuoteBlockError; an occurrence
 // past the block's matches is Find's miss, counting the block's matches.
 func (f *QuoteFinder) FindInBlock(quote, blockID string, occurrence *int) (Range, error) {
-	matches, err := f.matches(quote)
+	inside, _, held, err := f.matchesInBlock(quote, blockID)
 	if err != nil {
 		return Range{}, err
 	}
-	_, block, held := findBlock(f.doc, blockID)
 	if !held {
 		return Range{}, &QuoteBlockError{BlockID: blockID}
-	}
-	inside := matches[:0]
-	for _, match := range matches {
-		if match.From >= block.From && match.To <= block.To {
-			inside = append(inside, match)
-		}
 	}
 	if len(inside) == 0 {
 		return Range{}, &QuoteBlockError{BlockID: blockID, Held: true}
 	}
 	return f.choose(quote, inside, occurrence, nil)
+}
+
+// OccurrenceInBlock is the occurrence FindInBlock takes for a match of quote that starts at from
+// inside the block carrying blockID: the number of that block's matches of quote, as FindInBlock
+// filters them, that start before from. held is false where the document holds no block of that
+// id or from lies outside it, where no occurrence of the block places the match.
+func (f *QuoteFinder) OccurrenceInBlock(quote, blockID string, from int) (occurrence int, held bool, err error) {
+	inside, block, found, err := f.matchesInBlock(quote, blockID)
+	if err != nil {
+		return 0, false, err
+	}
+	if !found || from < block.From || from >= block.To {
+		return 0, false, nil
+	}
+	for _, match := range inside {
+		if match.From < from {
+			occurrence++
+		}
+	}
+	return occurrence, true, nil
+}
+
+// matchesInBlock is the matches of quote that lie inside the block carrying blockID, in document
+// order, with that block's range, and held false where the document holds no block of that id.
+func (f *QuoteFinder) matchesInBlock(quote, blockID string) (inside []quoteMatch, block Range, held bool, err error) {
+	matches, err := f.matches(quote)
+	if err != nil {
+		return nil, Range{}, false, err
+	}
+	if block, held = f.blockRange(blockID); !held {
+		return nil, Range{}, false, nil
+	}
+	inside = matches[:0]
+	for _, match := range matches {
+		if match.From >= block.From && match.To <= block.To {
+			inside = append(inside, match)
+		}
+	}
+	return inside, block, true, nil
+}
+
+// blockRange is the range of the block carrying blockID, as findBlock finds it: the first in
+// document order that carries it. The finder reads the range of every block in one walk at its
+// first call and keeps them, since its document does not change while it is in use, so a write
+// that places many anchors walks the tree once rather than once an anchor.
+func (f *QuoteFinder) blockRange(blockID string) (Range, bool) {
+	if f.blocks == nil {
+		f.blocks = map[string]Range{}
+		walk(f.doc, func(node *Node, _ []int, pos, end int) bool {
+			if node.Type == "doc" || isInlineNodeType(node.Type) {
+				return true
+			}
+			if id, ok := node.Attrs[BlockIDAttr].(string); ok {
+				if _, again := f.blocks[id]; !again {
+					f.blocks[id] = Range{From: pos, To: end}
+				}
+			}
+			return true
+		})
+	}
+	block, held := f.blocks[blockID]
+	return block, held
+}
+
+// FindPlain finds quote in the document's plain text exactly, as a reply's quote of a block names
+// it: the characters of the text runs joined, so markdown in the quote, a leading `#` and a run of
+// white space the text does not hold are the characters they are, and never Find's markdown,
+// heading or normalized match. Matches overlap (findAll), and occurrence counts them from 0 as
+// Find's does; a miss or an occurrence past the last match is *ErrQuoteNotFound, and several
+// matches with no occurrence *ErrTargetAmbiguous.
+func (f *QuoteFinder) FindPlain(quote string, occurrence *int) (Range, error) {
+	if err := f.prepare(); err != nil {
+		return Range{}, err
+	}
+	return f.choose(quote, exactQuoteMatches(f.text, quote), occurrence, nil)
 }
 
 // FindListItem answers a quote that opens with a list item's marker (ParseListItemQuote) by the
@@ -859,26 +930,69 @@ func nearestBlocks(doc *Node, quote string, limit int) []string {
 	return nearest
 }
 
-// headingQuoteMatches returns the text range of every heading whose rendered text equals
-// title, so a quote written with its ATX marker (`## Title`) selects headings only.
+// headingQuoteMatches is every match of title that is the whole rendered text of a heading, at any
+// level, so a quote written with its ATX marker (`## Title`) selects headings only, and a title
+// that is only part of a longer heading's text selects nothing there. Whitespace at a heading's
+// edges is not part of the text compared. A match is the title's text range inside the heading,
+// which an edit that renames the heading replaces. Each step of the matcher cascade is kept to
+// whole headings before the next is tried, so part of a longer heading that the title matches
+// exactly does not hide a heading the title matches with its whitespace normalized.
 func headingQuoteMatches(doc *Node, text flattenedText, title string) []quoteMatch {
-	if title == "" {
+	// A title of white space alone is no heading's text. Every match of any other title holds a
+	// character that is not white space, so wholeText's walks over the white space beside each
+	// match read each run of it at most twice in all.
+	if strings.TrimSpace(title) == "" {
 		return nil
 	}
-	candidates := quoteMatches(text, title)
-	var matches []quoteMatch
+	// Each heading's text lies between its opening and closing tokens. Headings never nest, so
+	// in document order these ranges are disjoint and ascending.
+	var headings []Range
 	walk(doc, func(node *Node, _ []int, pos, end int) bool {
-		if node.Type != "heading" {
-			return true
-		}
-		for _, match := range candidates {
-			if pos+1 <= match.From && match.To <= end-1 {
-				matches = append(matches, match)
-			}
+		if node.Type == "heading" {
+			headings = append(headings, Range{From: pos + 1, To: end - 1})
 		}
 		return true
 	})
-	return matches
+	if len(headings) == 0 {
+		return nil
+	}
+	wholeHeadings := func(candidates []quoteMatch) []quoteMatch {
+		var matches []quoteMatch
+		for _, match := range candidates {
+			// The only heading that can hold the match is the first one ending after it starts.
+			index := sort.Search(len(headings), func(index int) bool { return headings[index].To > match.From })
+			if index < len(headings) && wholeText(text, match, headings[index]) {
+				matches = append(matches, match)
+			}
+		}
+		return matches
+	}
+	for _, step := range []func(flattenedText, string) []quoteMatch{exactQuoteMatches, normalizedQuoteMatches, markdownQuoteMatches} {
+		if matches := wholeHeadings(step(text, title)); len(matches) > 0 {
+			return matches
+		}
+	}
+	return nil
+}
+
+// wholeText reports whether match lies inside block, the range of a textblock's text, and covers
+// all of the text there but whitespace at its edges.
+func wholeText(text flattenedText, match quoteMatch, block Range) bool {
+	if match.From < block.From || match.To > block.To {
+		return false
+	}
+	units := text.units16()
+	for index := match.textFrom - 1; index >= 0 && text.positions[index] >= block.From; index-- {
+		if !unicode.IsSpace(rune(units[index])) {
+			return false
+		}
+	}
+	for index := match.textTo; index < len(units) && text.positions[index] < block.To; index++ {
+		if !unicode.IsSpace(rune(units[index])) {
+			return false
+		}
+	}
+	return true
 }
 
 // TextContent is node's text, hard breaks as line feeds, as a read serves it: each U+0000 a browser

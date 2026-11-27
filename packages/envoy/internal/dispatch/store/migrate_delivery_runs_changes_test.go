@@ -13,6 +13,7 @@ const deliveryRunsChangesVersion = 102
 // before the migration reads jobs_complete true, since intake and the reconcile read jobs only for
 // a concluded run, and a run inserted after it reads false.
 func TestARunWrittenAfterTheMigrationStartsIncomplete(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, deliveryRunsChangesVersion-1)
 	insert := `

@@ -84,6 +84,7 @@ func seedAdmittedChild(t *testing.T, pool *pgxpool.Pool, key string) {
 // child whose tree's gate is still closed is left. A sibling that waits on nothing is released as
 // it always was.
 func TestAChildReleasedWhileABlockerIsUnfinishedStaysAdmitted(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: new(3)})
 	seedMirror(t, pool, "LEGION-300", "in_progress")
@@ -128,6 +129,7 @@ func TestAChildReleasedWhileABlockerIsUnfinishedStaysAdmitted(t *testing.T) {
 // (here the tree's) naming the issues it waited on and saying that the child's own architect owns
 // it while that architect holds its role.
 func TestAHeldChildStartsWhenItsLastBlockerCloses(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: new(3)})
 	seedAdmittedChild(t, pool, "LEGION-209")
@@ -166,6 +168,7 @@ func TestAHeldChildStartsWhenItsLastBlockerCloses(t *testing.T) {
 // child-status notice a blocker's close sends, its reason saying it reached the front of the
 // waiting line, since no issue it waited on closed.
 func TestAHeldChildWhoseLinksAreTakenOffStarts(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: new(3)})
 	seedAdmittedChild(t, pool, "LEGION-209")
@@ -215,7 +218,7 @@ func blockedNow(t *testing.T, pool *pgxpool.Pool) []record.BlockedIssue {
 		if err != nil {
 			return err
 		}
-		blocked = blockers.Blocked(blockers.Rows(mirrored), issues, nil, nil)
+		blocked = blockers.Blocked(blockers.Rows(mirrored), issues, nil, record.LineFacts{})
 		return nil
 	})
 	return blocked
@@ -229,6 +232,7 @@ func blockedNow(t *testing.T, pool *pgxpool.Pool) []record.BlockedIssue {
 // opening by the task that carries it, where the root's architect, whose view begins at this first
 // opening, is sent the opened message.
 func TestTheGateOpeningDoesNotStartAHeldChild(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2})
 	seedAdmittedChild(t, pool, "LEGION-209")
@@ -253,6 +257,7 @@ func TestTheGateOpeningDoesNotStartAHeldChild(t *testing.T) {
 // An unblocked child whose tree would not start it now is in no line either: the tree's gate is
 // what holds it, and the line reads that gate (record.Waiting's LineFirstPhase).
 func TestAnUnblockedChildWaitsForItsTreesGate(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2})
 	seedAdmittedChild(t, pool, "LEGION-209")
@@ -279,6 +284,7 @@ func TestAnUnblockedChildWaitsForItsTreesGate(t *testing.T) {
 // (blockers.waitsOf). This replaces an older test that said the root's first phase starts
 // whatever its links say, which held only because its stand-in pass never ran the release.
 func TestTheGateOpeningLeavesARootWaitingOnItsBlockerWithItsSlotGivenBack(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		takenBack bool
@@ -331,6 +337,7 @@ func TestTheGateOpeningLeavesARootWaitingOnItsBlockerWithItsSlotGivenBack(t *tes
 // a role on the notice would tell the architect that its own phase ended. noticeFor writes the
 // notice of a move out of admitted with no role.
 func TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 4, Status: "in_progress", Rank: "U",
@@ -369,6 +376,7 @@ func TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole(t *testing.T) {
 // slot its tree will never offer again, which the cap leaves an ordinary member doing because
 // it counts issues; left behind it would stand todo at admitted in a closed tree for good.
 func TestALingerHandsOverTheAdmittedChildThatStillWaits(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	until := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
@@ -413,6 +421,7 @@ func TestALingerHandsOverTheAdmittedChildThatStillWaits(t *testing.T) {
 // (blockers.Exempt), whatever re-admission later writes of its phase and generation, which keeps
 // the mark of a root whose own tree comes back — while a member that never started carries none.
 func TestTheRunMarkIsWrittenAsAPhaseStartsAndBelongsToThatRun(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 4, Status: "in_progress", Rank: "U",

@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The project of every node, which a read limited to a project depends on. Each object a project
@@ -162,18 +163,18 @@ var scopedRowsSQL = strings.NewReplacer(
 // role is the row's own or the query its node plays (graphstore.ArtifactQueryRoleSQL, which the
 // removal reads the role beside): a document of an issue born converted writes none in its row,
 // so its plan, its Verification document and its decisions query play theirs through a query
-// node, and no removal takes them. Only
-// such a row gives up an address a later row takes again, so only its node can stand for a row
-// before it, and only its node is read by its row's own create event (ownLiveStatement). Every
-// other document - an issue's spec, a plan or a verification document, an image, a file, a
-// project's document, a conversation's file - keeps its address for as long as the store holds it,
-// so a node at that address that is not gone can stand for no other row, and that is enough. Not all of
-// them record an artifact.created of their own either (issue.created records the spec and an issue
-// born converted's decisions query, and a conversation's upload appends no event), so reading them
-// by that event would name them gone for ever. A document a removal is made to take must be added
-// here, in the same change: api's
-// TestEveryDocumentARemovalCanTakeIsReadByItsCreateEvent writes every shape of row the store
-// holds and fails on a shape the removal takes that this reads by the node's state alone, or the reverse.
+// node, and no removal takes them. Only such a row gives up an address a later row takes again, so
+// only its node can stand for a row before it, and only its node is read by its row's own create
+// event (ownLiveStatement). Every other document - an issue's spec, a plan or a verification
+// document, an image, a file, a project's document, a conversation's file - keeps its address for
+// as long as the store holds it, so a node at that address that is not gone can stand for no other
+// row, and that is enough. Not all of them record an artifact.created of their own either
+// (issue.created records the spec and an issue born converted's decisions query, and a
+// conversation's upload appends no event), so reading them by that event would name them gone for
+// ever. A document a removal is made to take must be added here, in the same change: api's
+// TestEveryDocumentARemovalCanTakeIsReadByItsCreateEvent writes every shape of row the store holds
+// and fails on a shape the removal takes that this reads by the node's state alone, or the
+// reverse.
 func removableDocument(a string) string {
 	return `(` + a + `.issue_key is not null and not ` + a + `.is_primary and ` + a + `.role is null and ` + a + `.kind = 'doc'
 		and not exists (select 1 from graph_nodes query where query.kind = '` + graphstore.KindArtifact + `' and query.id = ` + a + `.ref_key
@@ -216,11 +217,11 @@ const (
 // for a comment and a block already (projections), so the project census reads them for these
 // alone. A kind added to objectKinds is read every way from that one list.
 var orphanKindList = func() string {
-	quoted := make([]string, len(objectKinds))
+	kinds := make([]string, len(objectKinds))
 	for index, kind := range objectKinds {
-		quoted[index] = "'" + kind.kind + "'"
+		kinds[index] = kind.kind
 	}
-	return strings.Join(quoted, ", ")
+	return store.QuoteLiterals(kinds)
 }()
 
 // ownLiveStatement is, for the node of a document row a removal can take away, whether the newest

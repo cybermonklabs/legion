@@ -38,18 +38,9 @@ func TestARunOfProductionOrTheGraphCountsForTheCodeThatRanIt(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			s := newCheckCase(t)
-			s.add(row.check)
-			s.tieLikeC(row.check.ID)
-			s.commit("c2", "c1", row.changed)
-			s.Subject = Point{Commit: "c2", Deploy: "d2", GraphTx: "tx1"}
-			run := Result{Check: row.check.ID, Kind: ResultRun, Outcome: OutcomePass, Job: row.check.Test.Job, TestCommit: row.runCommit, At: checkStateRun.Add(time.Hour)}
-			if row.check.Subject == SubjectGraph {
-				run.GraphTx = "tx1"
-			} else {
-				run.Deploy = "d2"
-			}
-			s.Results = append(s.Results, run, Result{Check: row.check.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, TestCommit: "c2",
-				At: checkStateRun.Add(65 * time.Minute), FaultAuthor: "author-b", TestAuthors: []string{"author-a"}})
+			s.programBase(row.check, row.changed)
+			s.Results = append(s.Results, programResult(row.check, ResultRun, OutcomePass, row.runCommit, time.Hour),
+				programResult(row.check, ResultFailingExample, OutcomeFail, "c2", 65*time.Minute))
 			want := row.want
 			want.ID = row.check.ID
 			deriveAlone(t, s, want, row.statements)
@@ -64,14 +55,15 @@ func TestARunOfProductionOrTheGraphCountsForTheCodeThatRanIt(t *testing.T) {
 // run of the job ended with no result that counts reads unknown, and legs whose newest results
 // disagree read unknown. Each row: Q at subject c2 under deploy d2, where c2 differs from c1 outside
 // the tie, or, in a row that carries, at c3, which differs from c2 outside the tie too, so that the
-// results of the test at c2 count there (R8); the runs of legs linux and arm of Q's job ended at c2;
-// the row's runs under d2 at the test of c2, and a failing example that the test at c2 caught; C
-// taken out. A leg that ended with no result at c2 counts wherever the results of c2 count.
+// results of the test at c2 count there (the test of c2 is the test of c3, deriveChecks step 4); the
+// runs of legs linux and arm of Q's job ended at c2; the row's runs under d2 at the test of c2, and a
+// failing example that the test at c2 caught; C taken out. A leg that ended with no result at c2
+// counts wherever the results of the test of c2 count.
 func TestEachLegOfAProgramCheckOfProductionKeepsItsResult(t *testing.T) {
 	t.Parallel()
 	q := checkStateProductionProgram
 	run := func(leg string, outcome Outcome, after time.Duration) Result {
-		return Result{Check: q.ID, Kind: ResultRun, Outcome: outcome, Deploy: "d2", Job: q.Test.Job, Leg: new(leg), TestCommit: "c2", At: checkStateRun.Add(after)}
+		return Result{Check: q.ID, Kind: ResultRun, Outcome: outcome, Deploy: "d2", Job: q.Test.Job, Leg: leg, TestCommit: "c2", At: checkStateRun.Add(after)}
 	}
 	for _, row := range []struct {
 		name       string
@@ -106,7 +98,7 @@ func TestEachLegOfAProgramCheckOfProductionKeepsItsResult(t *testing.T) {
 				s.commit("c3", "c2", "docs/x.md")
 				s.Subject.Commit = "c3"
 			}
-			s.JobRuns = []JobRun{{Job: q.Test.Job, Leg: new("linux"), Commit: "c2", Ended: new(true)}, {Job: q.Test.Job, Leg: new("arm"), Commit: "c2", Ended: new(true)}}
+			s.JobRuns = []JobRun{{Job: q.Test.Job, Leg: "linux", Commit: "c2", Ended: true}, {Job: q.Test.Job, Leg: "arm", Commit: "c2", Ended: true}}
 			s.Results = append(append(s.Results, row.runs...), Result{Check: q.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, TestCommit: "c2",
 				At: checkStateRun.Add(5 * time.Minute), FaultAuthor: "author-b", TestAuthors: []string{"author-a"}})
 			want := row.want
@@ -148,24 +140,65 @@ func (s *checkCase) productionProgram(changed, testCommit string) {
 	s.Results = append(s.Results, run, fault)
 }
 
-// programPass is the case of the program check q of production or of the graph, with C's tie: a
-// pass of its test at runCommit, under deploy d2 or at the transaction tx1, and a failing example
-// that its test at faultCommit caught; subject c2 under deploy d2 at tx1, where c2 differs from c1
-// outside the tie.
-func (s *checkCase) programPass(q Check, runCommit, faultCommit string) {
+// programBase is the base of programPass, passReadAnotherSubject and
+// TestARunOfProductionOrTheGraphCountsForTheCodeThatRanIt: the program check q of production or of
+// the graph, with C's tie, and subject c2 under deploy d2 at tx1, where c2 changes changed from c1.
+func (s *checkCase) programBase(q Check, changed string) {
 	s.t.Helper()
 	s.add(q)
 	s.tieLikeC(q.ID)
-	s.commit("c2", "c1", "docs/x.md")
+	s.commit("c2", "c1", changed)
 	s.Subject = Point{Commit: "c2", Deploy: "d2", GraphTx: "tx1"}
-	run := Result{Check: q.ID, Kind: ResultRun, Outcome: OutcomePass, Job: q.Test.Job, TestCommit: runCommit, At: checkStateRun.Add(time.Hour)}
-	if q.Subject == SubjectGraph {
-		run.GraphTx = "tx1"
-	} else {
-		run.Deploy = "d2"
+}
+
+// programPass is programBase, where c2 differs from c1 outside the tie, with a pass of q's test at
+// runCommit, under deploy d2 or at the transaction tx1, and a failing example that its test at
+// faultCommit caught.
+func (s *checkCase) programPass(q Check, runCommit, faultCommit string) {
+	s.t.Helper()
+	s.programBase(q, "docs/x.md")
+	s.Results = append(s.Results, programResult(q, ResultRun, OutcomePass, runCommit, time.Hour),
+		programResult(q, ResultFailingExample, OutcomeFail, faultCommit, 65*time.Minute))
+}
+
+// programResult is a result of the program check q of production or of the graph, of kind with
+// outcome, of its test at testCommit, recorded after after checkStateRun: a run under deploy d2 or
+// at the transaction tx1, reported by q's job, or a failing example of author-b's fault in
+// author-a's test, as programPass's results are.
+func programResult(q Check, kind ResultKind, outcome Outcome, testCommit string, after time.Duration) Result {
+	r := Result{Check: q.ID, Kind: kind, Outcome: outcome, TestCommit: testCommit, At: checkStateRun.Add(after)}
+	if kind == ResultFailingExample {
+		r.FaultAuthor, r.TestAuthors = "author-b", []string{"author-a"}
+		return r
 	}
-	s.Results = append(s.Results, run, Result{Check: q.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, TestCommit: faultCommit,
-		At: checkStateRun.Add(65 * time.Minute), FaultAuthor: "author-b", TestAuthors: []string{"author-a"}})
+	r.Job = q.Test.Job
+	return readAt(q, r, "d2", "tx1")
+}
+
+// readAt is the run r of q with what it read: the transaction graphTx for a check of the graph, the
+// deploy for a check of production.
+func readAt(q Check, r Result, deploy, graphTx string) Result {
+	if q.Subject == SubjectGraph {
+		r.GraphTx = graphTx
+	} else {
+		r.Deploy = deploy
+	}
+	return r
+}
+
+// passReadAnotherSubject is the change of a row of TestCheckState: programBase with one pass of q's
+// test at c1 that read the deploy d1 or the transaction tx2, so the test of the pass is the test at
+// c2 and what the pass read is not the subject; a run of q's job that ended at c2; and, with
+// refused, CI's refusal of q at c1.
+func passReadAnotherSubject(q Check, refused bool) func(c *checkCase) {
+	return func(c *checkCase) {
+		c.programBase(q, "docs/x.md")
+		c.Results = append(c.Results, readAt(q, programResult(q, ResultRun, OutcomePass, "c1", time.Hour), "d1", "tx2"))
+		c.JobRuns = []JobRun{{Job: q.Test.Job, Commit: "c2", Ended: true}}
+		if refused {
+			c.Uncited = map[string]map[string]string{"c1": {q.ID: "test-not-in-code"}}
+		}
+	}
 }
 
 // productionRun is a run of a production check under deploy, recorded at at.
@@ -205,5 +238,21 @@ func newestFaultMissedAtC1(p Check) func(c *checkCase) {
 			Result{Check: p.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, At: checkStateRun.Add(125 * time.Minute)},
 			Result{Check: p.ID, Kind: ResultFailingExample, Outcome: OutcomePass, TestCommit: "c1", At: checkStateRun.Add(130 * time.Minute)})
 		c.Uncited = map[string]map[string]string{"c1": {p.ID: "test-not-in-code"}}
+	}
+}
+
+// newestGraphRunFailsAtC1 is the change of a row of TestCheckState for g, a query or an agent of
+// the graph: subject c9 under deploy d2 at the transaction tx1; a pass of g at tx1, a failure there
+// an hour later that names test_commit c1, and a caught failing example; and CI's refusal of g at
+// c1.
+func newestGraphRunFailsAtC1(g Check) func(c *checkCase) {
+	return func(c *checkCase) {
+		c.add(g)
+		c.Subject = Point{Commit: "c9", Deploy: "d2", GraphTx: "tx1"}
+		c.Results = append(c.Results,
+			Result{Check: g.ID, Kind: ResultRun, Outcome: OutcomePass, GraphTx: "tx1", At: checkStateRun.Add(2 * time.Hour)},
+			Result{Check: g.ID, Kind: ResultRun, Outcome: OutcomeFail, GraphTx: "tx1", TestCommit: "c1", At: checkStateRun.Add(3 * time.Hour)},
+			Result{Check: g.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, At: checkStateRun.Add(125 * time.Minute)})
+		c.Uncited = map[string]map[string]string{"c1": {g.ID: "test-not-in-code"}}
 	}
 }

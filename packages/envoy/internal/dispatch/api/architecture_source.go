@@ -213,7 +213,7 @@ func (s *server) checkArchitectureSource(ctx context.Context, owner, name, branc
 // projected: its components (by the components foreign key's cascade), their dependency
 // edges (graph_edges loses their component arms with them) and the times recorded for them
 // (component_facts). Each of those components' nodes is stated gone, with its part_of and
-// depends_on retracted (dispatch://INFRA-1253 R9). Every other source's components stay, and
+// depends_on retracted (R9 of the issue-tree spec). Every other source's components stay, and
 // snapshots stay as history.
 func (s *server) deleteArchitectureSource(w http.ResponseWriter, r *http.Request) {
 	var input actorInput

@@ -14,15 +14,16 @@
  *  leaves a marker. DATABASE_URL and LEGION_TEST_PG_DSN name a database on a port nothing listens
  *  on, so a run that goes past its refusal reaches no database either.
  *
- *  A row skips where this host lacks a program its script requires before anything else, because
- *  that script then refuses for the program and never reaches BASELINE_SHA: CI's `dispatch-ui`
- *  job has no psql. */
+ *  No row skips, and none needs psql or any other program its script requires: every script
+ *  refuses an unset BASELINE_SHA before it asks for one. Each driver runs
+ *  `require_env … BASELINE_SHA` before `require_commands`, and `--selftest` calls
+ *  `baseline_require_sha_or_binary` before it requires anything, so the rows run on a host that
+ *  lacks them, CI's `dispatch-ui` job among them. */
 
 import { expect, test } from "bun:test";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 import { masked, rowLimit, runBounded } from "./bounded-subprocess";
@@ -36,8 +37,6 @@ const unreachableDatabase =
 interface Script {
   /** The script, relative to packages/dispatch, and its arguments. */
   readonly argv: readonly string[];
-  /** What the script requires on PATH before it reads anything else. */
-  readonly requires: readonly string[];
   /** Whether the row hands the script a base binary, as every driver's own default does. */
   readonly givesBinary: boolean;
 }
@@ -45,27 +44,22 @@ interface Script {
 const scripts: Record<string, Script> = {
   "lib-baseline.sh --selftest": {
     argv: ["e2e/acceptance/lib-baseline.sh", "--selftest"],
-    requires: ["env", "git", "openssl", "psql", "python3", "sleep", "tar"],
     givesBinary: false,
   },
   "restore-redirects.sh": {
     argv: ["e2e/acceptance/restore-redirects.sh"],
-    requires: ["cmp", "curl", "git", "jq", "psql", "sed", "sort", "tr"],
     givesBinary: true,
   },
   "decision-nodes.sh": {
     argv: ["e2e/acceptance/decision-nodes.sh"],
-    requires: ["cmp", "curl", "date", "diff", "jq", "psql", "sed", "sort", "tr"],
     givesBinary: true,
   },
   "answered-decisions.sh": {
     argv: ["e2e/acceptance/answered-decisions.sh"],
-    requires: ["cmp", "curl", "jq", "psql", "sed", "sort"],
     givesBinary: true,
   },
   "answer-attribute-removal.sh": {
     argv: ["e2e/acceptance/answer-attribute-removal.sh"],
-    requires: ["date", "grep", "jq", "psql", "sed", "tr"],
     givesBinary: true,
   },
 };
@@ -78,14 +72,7 @@ function leavesMarker(path: string, marker: string): void {
 }
 
 for (const [name, script] of Object.entries(scripts)) {
-  const missing = script.requires.filter((program) => hostTool(program) === null);
-  if (missing.length > 0) {
-    console.warn(
-      `Skipped the row of ${name} in ${import.meta.path}: this host does not have ` +
-        `${missing.join(", ")}, which the script requires before it reads BASELINE_SHA.`
-    );
-  }
-  test.skipIf(missing.length > 0)(
+  test(
     `${name} refuses a run that leaves BASELINE_SHA unset, naming it, and starts nothing`,
     async () => {
       const directory = fakes();

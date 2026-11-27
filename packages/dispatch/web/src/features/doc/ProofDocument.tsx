@@ -18,9 +18,16 @@ import {
   isDocumentSchemaError,
   isDocumentUnloadable,
 } from "../../api/client";
-import { artifactBlocksQuery } from "../../api/queries";
+import { artifactBlocksQuery, issueAsksQuery, issueViewOfQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
-import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
+import type {
+  Artifact,
+  Ask,
+  AskWithTrees,
+  AuthenticatedUser,
+  BlockSchema,
+  Version,
+} from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
 import { copyText } from "../../lib/clipboard";
@@ -50,6 +57,7 @@ import {
 import { useMargin } from "../margin/margin-context";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { blockFragment } from "../refs/block-reference";
+import { PlainText } from "../refs/plain-text";
 import { watchPicturePath } from "../refs/reference-target";
 import {
   buildDispatchReference,
@@ -68,6 +76,7 @@ import type { AnchoredBlockHost } from "./ask-block";
 import { ChangeView } from "./ChangeView";
 import type { ConnectionState, DocumentConnection } from "./connection";
 import { colorForLogin } from "./connection";
+import { DocumentRefPicker } from "./DocumentRefPicker";
 import { DocumentReferences, useReferenceClick } from "./document-references";
 import type { EditorHandle, EditorOptions } from "./editor";
 import { bindRemoteMarks } from "./editor";
@@ -86,9 +95,9 @@ import { quoteAnchor } from "./quote-anchor";
 import { refocusWhenSettled } from "./refocus-when-settled";
 import { carriesFragment, fragmentOf } from "./roots";
 import { DocumentRuntime } from "./runtime";
-import { compiledBlockSchema, compiledSchemaCreatable } from "./schema";
+import { compiledBlockSchema, compiledSchemaCreatable, editorBlockSchema } from "./schema";
 import { readLineText, useSpecMarks } from "./spec-marks";
-import { type AskBlockHost, liveAskOf, type ServedAsk, servedAskOf } from "./typed-block-drawing";
+import { type AskBlockHost, type ServedAsk, servedAskOfBlock } from "./typed-block-drawing";
 import { VersionView } from "./VersionView";
 
 /** The one block of `root` whose id starts with `prefix`, or undefined where none does or two
@@ -113,6 +122,27 @@ export const liveTextQueryOptions = (artifactId: string) =>
     queryFn: () => api.getArtifactText(artifactId),
   });
 
+/** An ask of the owner's read, with the server's reading of its question beside it, which the
+ *  open-decision link draws (`document-open-decision`). */
+type OwnerAsk = Ask & Pick<AskWithTrees, "question_tree">;
+
+/** The asks of the document `artifactId`'s owner, in every state: the issue's, under the key and
+ * with the read the issue page takes them from (`issueAsksQuery`), or, where `issueKey` is null,
+ * the document's own, as a project document's are. A rendered ask block reads who asked from
+ * these, and the server's read of its ask (`servedAskOfBlock`). The issue's read answers rows that
+ * carry more than an ask, so the options take either read's key and fetch and read both as asks,
+ * each with its question's reading. */
+export const ownerAsksQueryOptions = (artifactId: string, issueKey: string | null) => {
+  const { queryKey, queryFn } =
+    issueKey === null
+      ? {
+          queryKey: ["artifact", artifactId, "asks"],
+          queryFn: () => api.listArtifactAsks(artifactId),
+        }
+      : issueAsksQuery(issueKey);
+  return queryOptions<OwnerAsk[], Error, OwnerAsk[], string[]>({ queryKey, queryFn });
+};
+
 /** Why an admission left the live editor closed, from its own `/text` read: a tree outside the
  * Proof schema the page offers to repair from markdown, a stored history that cannot load the page
  * offers to rebuild, content this build of Dispatch cannot read yet, which the page reads again on
@@ -122,12 +152,18 @@ interface AdmissionBlock {
   readonly message: string;
 }
 
-function admissionBlock(error: unknown): AdmissionBlock {
+/** The block `error` leaves an admission in. A tree outside the Proof schema is offered a repair,
+ *  and a history that cannot load a rebuild, only where `writable`, on a document: the rebuild
+ *  route answers a document alone (`rebuildArtifact` in api/artifact_rebuild.go), and the repair's
+ *  upload under the artifact's name finds an issue's tree artifact by that name and is refused
+ *  `400 ARTIFACT_KIND_MISMATCH` (`storeArtifact` in api/artifacts.go). Elsewhere either fails the
+ *  load as any other failure does. */
+function admissionBlock(error: unknown, writable: boolean): AdmissionBlock {
   const message = error instanceof Error ? error.message : String(error);
-  if (isDocumentSchemaError(error)) {
+  if (writable && isDocumentSchemaError(error)) {
     return { kind: "repair", message };
   }
-  if (isDocumentUnloadable(error)) {
+  if (writable && isDocumentUnloadable(error)) {
     return { kind: "rebuild", message };
   }
   if (isDocumentNewerContent(error)) {
@@ -135,6 +171,12 @@ function admissionBlock(error: unknown): AdmissionBlock {
   }
   return { kind: "failed", message };
 }
+
+/** What an admission's read of the document's issue gives it: the schema its editor is made with,
+ * or, where that read failed, the block that fails the load. */
+type EditorSchemaRead =
+  | { readonly block?: undefined; readonly blockSchema: BlockSchema }
+  | { readonly block: AdmissionBlock; readonly blockSchema?: undefined };
 
 /** How long a socket the server refused as outside the Proof schema, or a read that found content
  * this build cannot read, waits before its admission reads `/text` again, by how many refusals in
@@ -174,7 +216,10 @@ export interface DocumentToolbar {
   connection: ConnectionState;
   pending: PendingState | undefined;
   isNamingVersion: boolean;
-  requestNamedVersion(): void;
+  /** Opens the dialog that names a version of the document. Absent where the named-version route
+   *  refuses the artifact (`createNamedVersion` in api/artifacts.go answers a document alone), as
+   *  an issue's tree artifact is: a host draws no control to name one there. */
+  requestNamedVersion?(): void;
   copyBlockLink(): Promise<boolean>;
   versions: Version[];
 }
@@ -328,7 +373,10 @@ export function ProofDocument({
   const queryClient = useQueryClient();
   // Where a `#id` in this document's text resolves: this document, whose question blocks
   // declare the asks it names (`refs.ScopeOf` of a document version is the document).
-  const textSource = useMemo(() => textSourceOf("artifact", artifact.id), [artifact.id]);
+  const textSource = useMemo(
+    () => textSourceOf("artifact", artifact.id, artifact.issue_key),
+    [artifact.id, artifact.issue_key]
+  );
   const followReference = useReferenceClick();
   // The address's fragment as the dashboard's own navigation leaves it: a click on a link to a
   // block of this document changes it in place, firing no event of the browser's own.
@@ -417,20 +465,25 @@ export function ProofDocument({
   const admissionHidesEditor =
     repairError !== undefined || rebuildError !== undefined || newerContent;
   const shownLoadError = admission?.kind === "failed" ? admission.message : loadError;
+  // An issue's tree artifact, whose room holds the issue's own nodes, reads and edits as a
+  // document does (`readsAsDocument` in api/artifacts.go), and every other route of a document
+  // refuses it `400 NOT_DOCUMENT`: its blocks, a named version and a rebuild; the repair's upload
+  // is refused it too (`admissionBlock`). So the editor of a tree sends none of those and offers no
+  // control that would.
+  const isDocument = artifact.kind === "doc";
+  // The live blocks the reference gutter counts.
   const blockReferencesQuery = useQuery({
     ...artifactBlocksQuery(artifact.id),
-    enabled: version === undefined,
+    enabled: version === undefined && isDocument,
   });
   const versionQuery = useQuery({
     enabled: version !== undefined,
     queryKey: ["artifact", artifact.id, "version", version],
     queryFn: () => api.getArtifactVersion(artifact.id, version ?? 0),
   });
-  const asksQuery = useQuery({
-    queryKey: owner.kind === "issue" ? ["asks", owner.key] : ["artifact", artifact.id, "asks"],
-    queryFn: () =>
-      owner.kind === "issue" ? api.listIssueAsks(owner.key) : api.listArtifactAsks(artifact.id),
-  });
+  const asksQuery = useQuery(
+    ownerAsksQueryOptions(artifact.id, owner.kind === "issue" ? owner.key : null)
+  );
   /** Every ask indexed from a typed block of this document, in every state — the rendered blocks
    * read who asked from these, and an answered block still names its asker. */
   const blockAsks = useMemo(
@@ -442,16 +495,9 @@ export function ProofDocument({
   );
   const blocksReadOnly = isClosed || schemaReadOnly;
   const [askBlockHosts, setAskBlockHosts] = useState<readonly AskBlockHost[]>([]);
-  // The server's read of the ask the block `blockId` shows: its row among the owner's asks, else
-  // what the live text answers for the block in its asks, which is the one read of a copy's
-  // source on a project document: the document's own asks hold no row of another document's.
+  // The server's read of the ask the block `blockId` shows (`servedAskOfBlock`).
   const servedAsk = (blockId: string): ServedAsk | undefined =>
-    servedAskOf(
-      asksQuery.data ?? [],
-      artifact.id,
-      blockId,
-      owner.kind === "issue" ? undefined : owner.project
-    ) ?? liveAskOf(liveTextQuery.data, blockId);
+    servedAskOfBlock(asksQuery.data ?? [], liveTextQuery.data, artifact.id, blockId);
   // The server's read of the ask each mounted block shows, by block id, read once per render for
   // the cards below and for the editor's refusal of a reading in an open ask, which reads the
   // answer states at each edit: a ref, so the editor made once reads the latest asks read.
@@ -546,7 +592,9 @@ export function ProofDocument({
   // The answer itself goes through the shared ask card; the document's own reads (text, blocks,
   // versions) refresh once it lands, since the server's ask node now holds the outcome the block
   // shows and the answer writes one version, which changes only the block's server-owned
-  // attributes, and a host that selected the question hears of its answer too.
+  // attributes when the answer is that version's whole change (the server's
+  // changesAskAttributesAlone: text a person was editing in the browser can settle into the same
+  // version), and a host that selected the question hears of its answer too.
   const blockAnswered = useCallback(
     (askId: string) => {
       void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
@@ -707,13 +755,14 @@ export function ProofDocument({
       pending,
       copyBlockLink,
       isNamingVersion: nameVersion.isPending,
-      requestNamedVersion,
+      requestNamedVersion: isDocument ? requestNamedVersion : undefined,
       versions,
     });
   }, [
     connection,
     pending,
     copyBlockLink,
+    isDocument,
     nameVersion.isPending,
     onToolbarChange,
     page,
@@ -884,7 +933,8 @@ export function ProofDocument({
     };
     // Each admission - this mount, a socket the server refused as outside the Proof schema, and a
     // blocked admission's re-admission - opens a connection only once its own fresh `/text` read
-    // succeeds, and that read alone decides: a browser editor normalizes a tree it cannot
+    // and its read of the document's issue (`schemaRead`) succeed. The text read alone decides
+    // whether the stored tree can be opened: a browser editor normalizes a tree it cannot
     // represent and writes the result back. A read that fails closes nothing already open, since
     // only an admission opens anything, so a later refetch that fails - an outage during an
     // artifact event's invalidation, say - leaves a connected editor and its unsent edits alone.
@@ -910,11 +960,31 @@ export function ProofDocument({
                 );
               }
             }
-            return admissionBlock(error);
+            return admissionBlock(error, isDocument);
           }
         );
-      void Promise.all([textRead, loadTransport()])
-        .then(([block, connect]) => {
+      // The schema the editor is made with. An issue that is a view on its ancestor's spec gets,
+      // for each editor of its documents, a schema that creates no requirement
+      // (`editorBlockSchema`); every other editor gets the compiled manifest. The admission waits
+      // for this read beside the text read, so no editor of a view is ever made with the full
+      // schema. The read sends nothing for an issue the page holds under no parent, which is no
+      // view (`issueViewOfQuery`), and a document that names no issue reads nothing. A failed
+      // read fails the load, as a failed text read does.
+      const issueKey = artifact.issue_key;
+      const schemaRead: Promise<EditorSchemaRead> =
+        issueKey === null
+          ? Promise.resolve({ blockSchema: compiledBlockSchema })
+          : queryClient.fetchQuery(issueViewOfQuery(issueKey)).then(
+              (viewOf): EditorSchemaRead => ({ blockSchema: editorBlockSchema(viewOf) }),
+              (error: unknown): EditorSchemaRead => ({
+                block: {
+                  kind: "failed",
+                  message: error instanceof Error ? error.message : String(error),
+                },
+              })
+            );
+      void Promise.all([textRead, schemaRead, loadTransport()])
+        .then(([block, schema, connect]) => {
           if (!mounted) {
             return;
           }
@@ -945,6 +1015,16 @@ export function ProofDocument({
             };
             return;
           }
+          // A failed read of the issue fails the load as a failed text read does. It does not
+          // wait for the next successful text read (`readmitRef`), as a blocked text read does:
+          // this admission's own text read succeeded, and its answer would admit the document
+          // again at once, and every admission after it the same, in a loop.
+          if (schema.block !== undefined) {
+            setConnection("failed");
+            setAdmission(schema.block);
+            return;
+          }
+          const { blockSchema } = schema;
           newerReads = 0;
           setAdmission(undefined);
           const connection = connect(artifact.id, {
@@ -1053,7 +1133,7 @@ export function ProofDocument({
                   color: colorForLogin(userRef.current.login),
                   name: userRef.current.login,
                 },
-                blockSchema: compiledBlockSchema,
+                blockSchema,
                 watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
                 // The block the pane's thread hangs under: the node view it names publishes the
                 // host slot this page portals the thread into. A document's own page anchors no
@@ -1101,12 +1181,14 @@ export function ProofDocument({
   }, [
     anchoredBlockId,
     artifact.id,
+    artifact.issue_key,
     createEditor,
     documentRef,
     focusInEditor,
     followBlockHash,
     fragmentName,
     fragmentReadError,
+    isDocument,
     loadTransport,
     page,
     pendingWaiter,
@@ -1250,26 +1332,43 @@ export function ProofDocument({
               ? "1 open decision"
               : `${openBlockAsks.length} open decisions`}
           </span>
-          <a
-            className={`block min-w-0 max-w-[90ch] ${tooltips ? "truncate" : "[overflow-wrap:anywhere]"} text-sm font-medium underline ${tooltips ? `${linkText} ${linkHoverText}` : pageInkText}`}
-            href={blockFragment(openDecision.block_id ?? "")}
-            onClick={(event) => {
-              event.preventDefault();
-              const blockID = openDecision.block_id;
-              if (blockID === undefined || blockID === null) {
-                return;
-              }
-              window.location.hash = blockFragment(blockID);
-              focusInEditor(() => editorRef.current?.focusBlock(blockID));
-            }}
-            title={tooltips ? openDecision.question : undefined}
+          {/* A link's words and its `title` hold no markup, so the question is read as its plain
+              words: the reading list's `document-open-decision` (`DISPATCH_READING_SURFACES`).
+              The question is an ask block of this document, so a `#id` in it names a question
+              of this document. */}
+          <PlainText
+            markdown={openDecision.question}
+            source={textSource}
+            surface="document-open-decision"
+            tree={openDecision.question_tree}
           >
-            {tooltips ? (
-              <TruncatedText>{openDecision.question}</TruncatedText>
-            ) : (
-              openDecision.question
+            {(question) => (
+              <a
+                className={`block min-w-0 max-w-[90ch] ${tooltips ? "truncate" : "[overflow-wrap:anywhere]"} text-sm font-medium underline ${tooltips ? `${linkText} ${linkHoverText}` : pageInkText}`}
+                href={blockFragment(openDecision.block_id ?? "")}
+                onClick={(event) => {
+                  event.preventDefault();
+                  const blockID = openDecision.block_id;
+                  if (blockID === undefined || blockID === null) {
+                    return;
+                  }
+                  window.location.hash = blockFragment(blockID);
+                  focusInEditor(() => editorRef.current?.focusBlock(blockID));
+                }}
+                // Until the engine has answered, the question as written, so the link is never
+                // left with no words: the reading list's `document-open-decision`.
+                title={tooltips ? (question ?? openDecision.question) : undefined}
+              >
+                {tooltips ? (
+                  // The same load state: the reading list's `document-open-decision`.
+                  <TruncatedText>{question ?? openDecision.question}</TruncatedText>
+                ) : (
+                  // The same, uncut: the reading list's `document-open-decision`.
+                  (question ?? openDecision.question)
+                )}
+              </a>
             )}
-          </a>
+          </PlainText>
           {openBlockAsks.length > 1 ? (
             <button
               aria-label="Next open decision"
@@ -1309,7 +1408,16 @@ export function ProofDocument({
         {anchoredThread === undefined || anchoredHost === undefined
           ? null
           : createPortal(anchoredThread.children, anchoredHost.slot, String(anchoredHost.key))}
+        {/* The editor paints the body itself and draws its references as decorations: why the
+            renderer has no mount here is the reading list's `document-body`
+            (`DISPATCH_READING_SURFACES`). */}
         <DocumentReferences editor={editorHandle} source={textSource} />
+        <DocumentRefPicker
+          editor={editorHandle}
+          enabled={editorAccess(page, isClosed, schemaReadOnly) === "edit"}
+          issueKey={owner.kind === "issue" ? owner.key : undefined}
+          project={owner.kind === "document" ? owner.project : undefined}
+        />
         {askBlockHosts.map((host) => {
           const blockId = String(host.node.attrs.blockId);
           return (
@@ -1385,6 +1493,7 @@ export function ProofDocument({
       ) : versionMarkdown === undefined ? (
         <p>Loading version…</p>
       ) : showDiff ? (
+        // The exact characters a change swaps: the reading list's `change-view-diff`.
         <ChangeView after={liveMarkdown} before={versionMarkdown} />
       ) : (
         <div data-testid="version-view">
@@ -1393,6 +1502,7 @@ export function ProofDocument({
             asks={blockAsks}
             createdAt={versions.find((item) => item.number === version)?.created_at}
             highlight={highlight}
+            issueKey={artifact.issue_key}
             owner={owner.kind === "document" ? owner : undefined}
             servedAsk={servedAsk}
             version={version}

@@ -16,8 +16,9 @@ var blockIDGenerator = struct {
 	mint func() string
 }{mint: newBlockID}
 
-// SetBlockIDGenerator replaces the block ID generator. Passing nil restores UUID v4 IDs
-// (newBlockID). Fixture generators and tests use this to make generated documents deterministic.
+// SetBlockIDGenerator replaces the block ID generator for the whole process. Passing nil restores
+// UUID v4 IDs (newBlockID). Tests use it to make the ids of a parse deterministic; a caller that
+// needs its own ids beside other parses passes its generator to ParseWithBlockIDs instead.
 func SetBlockIDGenerator(mint func() string) {
 	blockIDGenerator.Lock()
 	defer blockIDGenerator.Unlock()
@@ -160,15 +161,58 @@ func BlockIDRepairCount(tree *Node) (repairs int) {
 	return repairs
 }
 
-// EnsureBlockIDsCount gives every block in tree a unique blockId and reports how many missing
-// (storedBlockID) or duplicate IDs it replaced.
-func EnsureBlockIDsCount(tree *Node) (stamped int) {
+// SettlementBlockIDRepairCount reports how many block IDs EnsureSettlementBlockIDsCount would
+// mint: missing, duplicate, or holding a control character (ValidWrittenBlockID). Reads keep
+// BlockIDRepairCount / storedBlockID so historical versions with control-character ids still read.
+func SettlementBlockIDRepairCount(tree *Node) (repairs int) {
 	seen := make(map[string]struct{})
 	Walk(tree, func(node *Node) bool {
 		if node.Type == "doc" || isInlineNodeType(node.Type) {
 			return true
 		}
-		if id, ok := storedBlockID(node); ok {
+		id, _ := node.Attrs[BlockIDAttr].(string)
+		if ValidWrittenBlockID(id) {
+			if _, duplicate := seen[id]; !duplicate {
+				seen[id] = struct{}{}
+				return true
+			}
+		}
+		repairs++
+		return true
+	})
+	return repairs
+}
+
+// EnsureSettlementBlockIDsCount is EnsureBlockIDsCount for a room's settlement: in addition to
+// missing, U+0000 and duplicate ids, any block id holding a control character (ValidWrittenBlockID)
+// is replaced with a freshly minted id so a browser's CRDT update cannot store one in a settled
+// version.
+func EnsureSettlementBlockIDsCount(tree *Node) (stamped int) {
+	return ensureBlockIDsBy(tree, mintBlockID, ValidWrittenBlockID)
+}
+
+// EnsureBlockIDsCount gives every block in tree a unique blockId and reports how many missing
+// (storedBlockID) or duplicate IDs it replaced. The ids come from the package-level generator
+// (SetBlockIDGenerator); ParseWithBlockIDs stamps a parse from a generator its caller holds.
+func EnsureBlockIDsCount(tree *Node) (stamped int) {
+	return ensureBlockIDs(tree, mintBlockID)
+}
+
+// ensureBlockIDs is EnsureBlockIDsCount with mint minting every id it stamps.
+func ensureBlockIDs(tree *Node, mint func() string) (stamped int) {
+	return ensureBlockIDsBy(tree, mint, func(id string) bool {
+		return id != "" && strings.IndexByte(id, 0) < 0
+	})
+}
+
+// ensureBlockIDsBy is ensureBlockIDs keeping any unique id for which keep returns true.
+func ensureBlockIDsBy(tree *Node, mint func() string, keep func(string) bool) (stamped int) {
+	seen := make(map[string]struct{})
+	Walk(tree, func(node *Node) bool {
+		if node.Type == "doc" || isInlineNodeType(node.Type) {
+			return true
+		}
+		if id, _ := node.Attrs[BlockIDAttr].(string); keep(id) {
 			if _, duplicate := seen[id]; !duplicate {
 				seen[id] = struct{}{}
 				return true
@@ -179,7 +223,7 @@ func EnsureBlockIDsCount(tree *Node) (stamped int) {
 		}
 		var id string
 		for {
-			id = mintBlockID()
+			id = mint()
 			if _, duplicate := seen[id]; !duplicate && id != "" {
 				break
 			}

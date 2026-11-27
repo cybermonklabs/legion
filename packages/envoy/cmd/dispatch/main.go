@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -33,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	dispatchcipher "github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/dashboard"
@@ -47,6 +49,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
@@ -63,9 +66,12 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/principal"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/listenfd"
+	"github.com/sjawhar/envoy/natsurl"
+	"github.com/sjawhar/envoy/pgdsn"
 )
 
 const (
@@ -88,6 +94,14 @@ type bootConfig struct {
 	// AgentTokens is DISPATCH_AGENT_TOKEN parsed: every value the API accepts as the shared agent
 	// token, the first the current one.
 	AgentTokens *auth.SharedAgentTokens
+	// ProjectOwnerFallback is DISPATCH_PROJECT_OWNER_FALLBACK, a lowercase email: the full member
+	// the boot makes the owner of every project with no owner (store.EnsureProjectOwners); empty
+	// gives none, and the boot then refuses to serve while a project has no owner.
+	ProjectOwnerFallback string
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE=on: main runs R25's one-time fix at boot
+	// (api.RunParentStatusFixAtBoot), and the server it builds refuses a write that leaves a
+	// parent's status out of line with its children's. Unset or off is false.
+	ParentStatusRule bool
 	// NewIssueLabel and NewIssueSession are DISPATCH_NEW_ISSUE_LABEL and
 	// DISPATCH_NEW_ISSUE_SESSION: the label an issue the search bar files from a person's typed
 	// words carries, and the session that issue is routed to and its first message is sent to.
@@ -95,15 +109,17 @@ type bootConfig struct {
 	// conversation is started on it.
 	NewIssueLabel   string
 	NewIssueSession string
-	// SpecRoots is DISPATCH_SPEC_ROOTS: the issue keys of the roots of The Spec, separated by
-	// commas, which the API parses (api.DepsInput.SpecRoots). Empty names no root.
-	SpecRoots     string
-	EnvoyURL      string
-	GitHubAPIBase string
+	EnvoyURL        string
+	GitHubAPIBase   string
 	// ReviewerAppID is DISPATCH_REVIEWER_APP_ID, the id of the App whose `tester` and `architect`
 	// check runs are Legion's verdicts, as the text of the number GitHub's own objects carry it
 	// as. Empty means the CI reconcile pass records no verdict check at all.
-	ReviewerAppID  string
+	ReviewerAppID string
+	// VerdictAppID is DISPATCH_VERDICT_APP_ID, the id of the App that writes `legion-verdict`, as
+	// the text of the number GitHub's own objects carry it as. The CI reconcile pass leaves that
+	// App's check suites out of the record, as the listener does (ENVOY_VERDICT_APP_ID). Empty
+	// means the pass records every App's completed suite.
+	VerdictAppID   string
 	IdentityHeader string
 	// IAPAudience is DISPATCH_IAP_AUDIENCE under DISPATCH_IDENTITY=iap: the audience
 	// Identity-Aware Proxy signs each request's assertion for, which the assertion's aud must
@@ -196,12 +212,19 @@ type bootConfig struct {
 	// HoldDecisionsStep keeps the server from running any phase of the decisions step
 	// (docs.DecisionStep), at boot or on its tick, so a test driver's command entry point makes the
 	// first move; only DISPATCH_TEST_HOLD_DECISIONS_STEP=1, under the test hooks, sets it.
+	// kept for one release: decisions-step
 	HoldDecisionsStep bool
+	// HoldIssueRoomStep keeps the server from starting the issue room step
+	// (docs.IssueRoomStep), at boot or on its tick, so a test driver's own command
+	// (`envoy-dispatch convert-issues`), and not the boot, makes the first move; only
+	// DISPATCH_TEST_HOLD_ISSUE_ROOM_STEP=1, under the test hooks, sets it.
+	HoldIssueRoomStep bool
 	// HoldBlockIndex keeps the server from starting the block-index reconciliation
-	// (docs.Service.RunBlockIndexReconciliation), its tick and its pass, and holds back nothing
-	// else, so a test driver can let a build of an earlier rule of the block index reach a document
-	// this build's backfill marked first; only DISPATCH_TEST_HOLD_BLOCK_INDEX=1, under the test
-	// hooks, sets it.
+	// (docs.Service.RunBlockIndexReconciliation), its tick and its pass, and the reference forms
+	// drain (docs.Service.RunRefsFormsReconciliation), which indexes a document through the block
+	// index's own index (drainFormsDocument), and holds back nothing else, so a test driver can let
+	// a build of an earlier rule of the block index reach a document this build's backfill marked
+	// first; only DISPATCH_TEST_HOLD_BLOCK_INDEX=1, under the test hooks, sets it.
 	HoldBlockIndex bool
 	// HoldBootBackfill holds the passes of the boot's run of the graph store's backfill
 	// (runBootBackfill) once its horizon is recorded, until the process stops, and holds back
@@ -230,6 +253,16 @@ type bootConfig struct {
 	// by the broker client on each call, never here: a projected token rotates.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
+	// LegionStatusScope is DISPATCH_LEGION_STATUS_SCOPE=on. It turns on the refusal of three
+	// writes of a Legion issue from a credential that holds neither the person scope nor
+	// legion-status: a write of its status, the removal of its legion label, and a move that
+	// leaves it under no labelled issue, but for the status write of the architect of an issue
+	// above (api's legion_status_scope.go). Unset or off, it is false (api.Deps.LegionStatusScope).
+	LegionStatusScope bool
+	// ProofOrigins is DISPATCH_PROOF_ORIGINS read (proofOriginEntries): the origins Dispatch is
+	// reached at beside DISPATCH_SERVER_URL's, each written scheme://host, which a broker token's
+	// proof may name in its 'htu' (proofOrigins). Empty, unset, adds none.
+	ProofOrigins []string
 	// FileStoreBucket is DISPATCH_FILE_STORE_BUCKET: the bucket uploaded files are stored in,
 	// gs://<bucket> for Cloud Storage or an S3 bucket's name (files.Open). Empty keeps them in
 	// Postgres.
@@ -429,6 +462,14 @@ func main() {
 		slog.Error("dispatch: open database", "error", err)
 		os.Exit(1)
 	}
+	// Whether this boot creates the database from empty, read before the migrations make it: R26's
+	// step (graphcensus.RunTypedBlockSupertagsStep) restates the reads of a block's type on such a
+	// database with no fleet to wait for, since every block it will hold is written by this build.
+	migrated, err := store.Census(ctx, boot.DatabaseURL)
+	if err != nil {
+		slog.Error("dispatch: read whether the database is empty before its migrations", "error", err)
+		os.Exit(1)
+	}
 	if err := database.Migrate(ctx); err != nil {
 		slog.Error("dispatch: migrate database", "error", explainMigrateError(err))
 		os.Exit(1)
@@ -439,8 +480,9 @@ func main() {
 	// install is here, beside the migration run: a process serving on a schema that is not the
 	// store's would hold documents to types the deployment has moved on from, so a failure
 	// stops the boot as a failed migration does. The reinstall on each change is a loop of its
-	// own, started beside the other woken loops below.
-	if err := schemanodes.InstallFromStore(ctx, database.Pool); err != nil {
+	// own, started beside the other woken loops below. Each opens the pool's transactions, so
+	// each marks its context for the pool's nested-acquire guard (store.WithTransactionTracking).
+	if err := schemanodes.InstallFromStore(store.WithTransactionTracking(ctx), database.Pool); err != nil {
 		slog.Error("dispatch: install the block schema from the store", "error", err)
 		os.Exit(1)
 	}
@@ -461,37 +503,36 @@ func main() {
 	renames := refs.NewRenames(renamePairs)
 	attributor := delivery.NewAttributor(renames)
 
-	// document_search (migration 20261101182447) holds each document's latest search vector,
-	// 20261101182454's trigger keeps it in step from the deploy on, and this fills it for the
-	// documents stored before that. It runs here, in committed batches, rather than as migration
-	// 20261101182501: one transaction over artifact_versions measured 35.5 s on a
-	// production-shaped database, and 20261101182454's trigger makes every concurrent version
-	// write to a document the pass has already written wait that whole transaction out
-	// (20261101182501's comment holds the measurement).
-	//
-	// A failure stops the boot, unlike the count below: this release's search reads
-	// document_search alone, so a process that served with the table unfilled would answer a
-	// search with documents missing. The rolling deploy keeps that correct - the release
-	// before this one serves every request until this process has filled the table and begins
-	// serving.
-	if filled, err := database.FillDocumentSearch(ctx); err != nil {
-		slog.Error("dispatch: fill document_search for the documents stored before this release", "error", err)
+	// session_titles (migration 20261117100008) holds each session's newest stamped title,
+	// 20261117100015's trigger keeps it in step from the deploy on, and this fills it for the
+	// events stored before that, in committed batches rather than as a migration, whose one
+	// transaction would hold every concurrent write of a session it had already written waiting
+	// out the whole statement (20261117100016's comment). Production runs two replicas under
+	// `strategy: RollingUpdate`. This pod listens only after the fill, so the old pods serve while
+	// it migrates and fills. The old build reads titles from events, and the trigger stores the
+	// titles the old pods write. A failed fill exits this pod, stops the rollout and leaves the old
+	// pods serving: with the table unfilled, delivery.ResolveSessionTitles would name every earlier
+	// session by its id.
+	if filled, err := database.FillSessionTitles(ctx); err != nil {
+		slog.Error("dispatch: fill session_titles for the events stored before this release", "error", err)
 		os.Exit(1)
 	} else if filled > 0 {
-		slog.Info("dispatch: filled document_search for the documents stored before this release", "rows", filled)
+		slog.Info("dispatch: filled session_titles for the events stored before this release", "rows", filled)
 	}
 
 	// The decisions step's first phase (docs.DecisionStep): every asks and ask_followers row the
 	// release before wrote is stated on its ask's node and marked, in committed batches, before
-	// this process serves, as document_search is filled above. A reading's check of its ask takes
-	// the answer from the node, which reads an ask the backfill has not stated as open, so a
+	// this process serves. A reading's check of its ask takes the answer from the node, which
+	// reads an ask the backfill has not stated as open, so a
 	// failure stops the boot, and the release before keeps serving in a roll until this process
 	// can. The process waits here for the step's lock only while the first phase owes a row, so a
 	// process that holds the lock, stalled or not, keeps no boot waiting when nothing is owed. Its
 	// catch-up, its count of what the restore and the conversion owe, and its later passes run on
 	// its own tick once the server listens, below: the boot reads only what the first phase reads,
 	// so a table it does not need, held by another transaction, keeps no process from serving.
+	// kept for one release: decisions-step
 	decisionStep := docs.NewDecisionStep(database, buildCommit, nil)
+	// kept for one release: decisions-step
 	if !boot.HoldDecisionsStep {
 		if err := decisionStep.Boot(ctx); err != nil {
 			slog.Error("dispatch: the decisions step's backfill", "error", err)
@@ -572,26 +613,28 @@ func main() {
 		ServerURL:   serverURL,
 		BuildCommit: buildCommit,
 	})
-	// The restoration below schedules settlements, whose version writes carry approvals, before
-	// the API is built: the form gate is set first, so no carry passes it (api.FormGate).
-	formGate, err := api.FormGate(boot.SpecRoots, serverURL)
-	if err != nil {
-		slog.Error("dispatch: read the roots of The Spec", "error", err)
-		os.Exit(1)
-	}
-	documentService.SetFormGate(formGate)
 	publishRoomFigures(documentService)
 	// The decisions step's third phase writes the issues' documents through this service: the
 	// restore of the answered asks that left their specs and the conversion of the decisions
 	// documents, on the step's tick below.
+	// kept for one release: decisions-step
 	decisionStep.UseDocuments(documentService)
+	// R2's daemon-thread step (docs.DaemonThreadStep): it re-places under its issue each node a
+	// release before left under a message of a thread the Legion daemon's session began, once
+	// after this process listens and then on each tick of the block index below.
+	daemonThreadStep := docs.NewDaemonThreadStep(documentService, nil)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
+	// The asks a close or a reopen by a release older than the withdrawal left: at boot, then on an
+	// interval below. It appends events and takes no copy lock, so it runs after
+	// restoreDecidedWordings, which takes the copy lock (see below).
+	issueAskRepairDeps := api.Deps{Store: database, Docs: documentService, Events: broker}
+	repairIssueAsks(ctx, issueAskRepairDeps, issueAskRepairBootTimeout)
 	fillReviewContentHashes(ctx, database.Pool, reviewContentHashFillTimeout)
 	renameRepositories(ctx, database.Pool, renamePairs, renamesErr, repoRenamePassTimeout)
 
 	serviceTokens := serviceTokenVerifier(boot)
 	if serviceTokens != nil {
-		slog.Info("dispatch: verifying service-account tokens", "issuer", boot.OIDCIssuer, "audience", boot.OIDCAudience)
+		logServiceTokens(boot)
 		go serviceTokens.Run(ctx)
 	}
 
@@ -673,18 +716,6 @@ func main() {
 	if brokerTokens != nil {
 		slog.Info("dispatch: deciding access tokens the secrets broker issued", "broker", redact.URL(boot.AgentSecretsURL))
 	}
-	appCtx, err := routes.BuildAppContext(appContextOptions(boot, built))
-
-	if err != nil {
-		slog.Error("dispatch: build app context", "error", err)
-		os.Exit(1)
-	}
-	// The asks a close or a reopen by a release older than the withdrawal left: at boot, then on an
-	// interval below. The pass restores an approval request as a reopen does, so it runs on the
-	// API's own dependencies (appCtx.APIDeps), which the routes run on, and never on a set built
-	// here beside them that could leave a field out. It appends events and takes no copy lock, so
-	// it runs after restoreDecidedWordings, which takes the copy lock (see above).
-	repairIssueAsks(ctx, appCtx.APIDeps(), issueAskRepairBootTimeout)
 
 	// Two or more envoy-dispatch processes serve one Postgres and one NATS, so each background
 	// loop below either runs once overall or is deliberately per-process. The ones that must run
@@ -694,7 +725,7 @@ func main() {
 	// whose loops would each run everywhere, so it ends here.
 	//
 	// The loops come in these shapes, so that a database nobody writes costs them nothing except
-	// where GitHub gives them nothing to wake on, and the five timers of the last shape:
+	// where GitHub gives them nothing to wake on, and the seven timers of the last shape:
 	//   - woken loops, which run a pass at start and then only when a Postgres notification on the
 	//     shared listener below says their work may have changed, or when a due time their last
 	//     pass asked for comes round: the embedding queue (embedqueue.WakeChannel), the reference
@@ -717,10 +748,9 @@ func main() {
 	//     never arrived, a delivery that failed: the delivery reconcile and the architecture
 	//     import every 5 minutes, each starting after a random delay within one interval
 	//     (duty.RunJittered), and the webhook redelivery sweep every 2, sweeping at start
-	//     (redeliver.Sweeper.Run). While delivery settings are saved, a push of a source's branch
-	//     imports that source at once (delivery.PushImports, architecture.Importer.Pushed; the
-	//     delivery intake runs only then), so the architecture import's timer repairs a push that
-	//     never arrived, and is the only automatic import where no settings are saved. Each then
+	//     (redeliver.Sweeper.Run). A push of a source's branch imports that source at once
+	//     (delivery.PushImports, architecture.Importer.Pushed), so the architecture import's
+	//     timer repairs a push that never arrived. Each then
 	//     waits its interval less up to a tenth of it, drawn afresh every time
 	//     (duty.JitteredWithin), so no wait is longer than
 	//     the interval and two processes' ticks drift apart rather than staying in step. Under
@@ -730,15 +760,17 @@ func main() {
 	//     never refuses a lone process's tick. Two tickers started minutes apart almost never
 	//     meet inside a pass, so the lease alone would exclude nothing.
 	//   - timers that poll the database: the block-index reconciliation (every 30 s, 2 s while a
-	//     batch is full), the repair of closed and reopened issues' asks (api.RunIssueAskRepair,
-	//     every 10 minutes on a plain ticker, after the boot's own unleased pass), the prune of
-	//     the server process registry (processes.RunPrune, every minute, which joinRegistry starts
-	//     below), the keyed writes' maintenance sweep (api.RunMaintenanceSweep, every minute), the
-	//     document compaction sweep (docs.Service.RunCompactionSweep, every hour from a tick at
-	//     start, with or without NATS) and the display tree fill (texttreefill.Run, every hour
-	//     from a tick at start, whose first pass of a display parser version runs until every
-	//     stored text has a tree at it), each recording its passes in duty_passes like the timers
-	//     above; each tick sends its statements whether or not anything is owed.
+	//     batch is full), the reference forms drain (docs.Service.RunRefsFormsReconciliation, at
+	//     the same pace under a lease of its own), the repair of closed and reopened issues' asks
+	//     (api.RunIssueAskRepair, every 10 minutes on a plain ticker, after the boot's own
+	//     unleased pass), the prune of the server process registry (processes.RunPrune, every
+	//     minute, which joinRegistry starts below), the keyed writes' maintenance sweep
+	//     (api.RunMaintenanceSweep, every minute), the document compaction sweep
+	//     (docs.Service.RunCompactionSweep, every hour from a tick at start, with or without NATS)
+	//     and the display tree fill (texttreefill.Run, every hour from a tick at start, whose
+	//     first pass of a display parser version runs until every stored text has a tree at it),
+	//     each recording its passes in duty_passes like the timers above; each tick sends its
+	//     statements whether or not anything is owed.
 	//
 	// The shared listener is one pglisten.Hub per process, on one held connection of the store's
 	// listener pool, carrying every woken loop's channel and the document rooms' room-sync
@@ -810,6 +842,12 @@ func main() {
 	documentCompactionLeases := reserve("document compaction")
 	editNoticesLeases := reserve("edit notices")
 	blockIndexLeases := reserve("block index")
+	// The reference forms drain's, a caller of its own beside the block index's: the two passes
+	// run on their own goroutines under their own leases, so each can hold a connection while the
+	// other does. It drains all of its queues under the one lease, a pass of each one after the
+	// other (docs.Service.RunRefsFormsReconciliation), so it keeps the one connection it had
+	// before the added queues, and the pool's size stays what it was.
+	refsFormsLeases := reserve("refs forms")
 	issueAskRepairLeases := reserve("issue ask repair")
 	// The webhook redelivery sweep's and the CI reconcile pass's, reserved whether or not this
 	// configuration runs them, as every caller's here is: the count the pool is sized for is the
@@ -836,6 +874,10 @@ func main() {
 	// The Legion sampler (legion.RunSampler): a leased loop like the rest, reserved here so that
 	// this process's count is the same whether or not any project names a daemon.
 	legionSamplerLeases := reserve("Legion sampler")
+	// R25's one-time fix of parents' statuses at boot (api.RunParentStatusFixAtBoot, below): it
+	// takes its lease only with DISPATCH_PARENT_STATUS_RULE on, and is reserved here so that this
+	// process's count is the same with the setting off.
+	parentStatusFixLeases := reserve("parent status fix")
 	// The intakes' six callers - a consumer lease, a hold and the hold's renewal per durable -
 	// whether or not this configuration starts them (delivery.ReserveIntakeLeases).
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
@@ -861,12 +903,54 @@ func main() {
 		os.Exit(1)
 	}
 
+	// R25's one-time fix, with DISPATCH_PARENT_STATUS_RULE on (api.RunParentStatusFixAtBoot): one
+	// process unlinks each open issue from its done parent and moves each not-started ancestor of an
+	// issue in work to in_progress, under the lease parent-status-fix, and then records that it ran.
+	// A process that finds the lease held waits for that record. The fix runs here, before the
+	// outbox, every loop and the listen, so the server takes no write and no loop writes until it is
+	// over. With the setting off it reads and writes nothing. A stop during the wait is a clean stop,
+	// as one during the registry's admission wait below is; a step that fails ends the boot with no
+	// record, and the next boot plans again from what stands.
+	parentStatusRule, err := api.RunParentStatusFixAtBoot(store.WithTransactionTracking(ctx),
+		api.Deps{Store: database, Docs: documentService, Events: broker}, parentStatusFixLeases, boot.ParentStatusRule)
+	if err != nil {
+		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
+			slog.Info("dispatch: stopped while waiting for the parent status fix")
+			return
+		}
+		slog.Error("dispatch: run the parent status fix", "error", err)
+		os.Exit(1)
+	}
+	// Every project has an owner: a project the access migration left with none is given to
+	// DISPATCH_PROJECT_OWNER_FALLBACK's full member, recorded as an operator's grant is
+	// (giveOwnerlessProject), and while one still has none the boot refuses, naming each and both
+	// repairs. The grant appends events, so it runs after every step of the boot that takes the copy
+	// lock (restoreDecidedWordings above, the parent status fix just before it), and before the
+	// outbox, every loop and the listen, so the server serves no project without an owner.
+	if err := store.EnsureProjectOwners(store.WithTransactionTracking(ctx), database.Pool, boot.ProjectOwnerFallback, giveOwnerlessProject); err != nil {
+		slog.Error("dispatch: give every project an owner", "error", err)
+		os.Exit(1)
+	}
+	// The app context is built only now, so the rule the fix answered reaches the server
+	// (api.DepsInput through appContextOptions). Nothing above reads it.
+	built.ParentStatusRule = parentStatusRule
+	appCtx, err := routes.BuildAppContext(appContextOptions(boot, built))
+	if err != nil {
+		slog.Error("dispatch: build app context", "error", err)
+		os.Exit(1)
+	}
+
 	// The outbox runs only with NATS, so a process with NATS disabled never publishes
 	// (outboxPublisher stays nil, and /healthz reports outbox_publisher false). outboxStopped is
 	// closed once its Run has returned - its last batch recorded and its hold released - which
 	// shutdown waits for before it closes the pool; it stays nil with no outbox.
 	var outboxPublisher *outbox.Outbox
 	var outboxStopped chan struct{}
+	// The API server's writer of an issue message, which the outbox posts the message about the
+	// events a role did not take with (outbox.Deps.PostIssueMessage). The outbox starts before the
+	// API server is registered (routes.New, below), so it reads the writer from here once that has
+	// happened, and a post before it fails and is tried again on the post's own back-off.
+	var postSystemMessage atomic.Pointer[func(context.Context, model.Actor, model.SystemMessage) (string, error)]
 	outboxPublishFailures := met.NewCounter(
 		"envoy_dispatch_outbox_publish_failures_total",
 		"Destinations of an outbox publish attempt that were not reached, by reason: denied (the server refused the send under the connection's own publish permissions), refused (NATS refuses it however often it is retried), unanswered (NATS took the forward and the stream did not acknowledge the copy it stored, which is the whole of a forward's answer) or failed (every other failure)",
@@ -889,13 +973,20 @@ func main() {
 		// by the windows this deployment gave its listeners (roleHolderWindows).
 		holders := roles.NewBuckets(natsClient, boot.RoleHolderWindows)
 		outboxPublisher = outbox.New(outbox.Deps{
-			Store:            &store.Store{Pool: outboxPool},
-			Publisher:        natsClient,
-			Broker:           broker,
-			Listen:           database.Pool.Listener,
-			RoleClaims:       holders,
-			Sessions:         holders,
-			KeptLanes:        natsClient,
+			Store:      &store.Store{Pool: outboxPool},
+			Publisher:  natsClient,
+			Broker:     broker,
+			Listen:     database.Pool.Listener,
+			RoleClaims: holders,
+			Sessions:   holders,
+			KeptLanes:  natsClient,
+			PostIssueMessage: func(ctx context.Context, actor model.Actor, message model.SystemMessage) (string, error) {
+				post := postSystemMessage.Load()
+				if post == nil {
+					return "", errors.New("the API server is not registered yet")
+				}
+				return (*post)(ctx, actor, message)
+			},
 			PublishFailures:  outboxPublishFailures,
 			RoleForwardsHeld: outboxRoleForwardsHeld,
 			Metrics:          met,
@@ -905,24 +996,6 @@ func main() {
 			defer close(outboxStopped)
 			outboxPublisher.Run(ctx)
 		}()
-	}
-	// embedqueue.Run no-ops when its own Deps.Embedder is nil, so this always starts: the server's
-	// embedding queue keeps coverage itself, so a later deploy that gives meaning search a place
-	// to embed needs no other wiring change and no person-run step to cover existing content.
-	// It gets a rate-limited wrapper around the same client api.Deps holds unwrapped above
-	// (embedder, BuildAppContext's Embedder option): the queue is the only embedqueue caller, and
-	// pacing only its calls - never a live search request's own query embedding, which always
-	// goes straight through the unwrapped client - is what keeps saturating background work from
-	// taking live search down with it (LEGION-549 round 5; embed.RateLimitedEmbedder's own doc
-	// comment has the AIMD mechanism and the headroom this leaves). A nil embedder (meaning
-	// search off) stays nil rather than becoming a non-nil wrapper around nothing, which
-	// embedqueue.Run's own nil check depends on. The queue starts before this process registers
-	// below; it embeds and drops only while its embedder's identity is the active one, which every
-	// process decides from the live registry rows (embedqueue, active.go), so a process configured
-	// with another embedder than the fleet's leaves the vectors as they are.
-	var backgroundEmbedder embed.Embedder
-	if embedder != nil {
-		backgroundEmbedder = embed.NewRateLimitedEmbedder(embedder)
 	}
 
 	// This process's one shared LISTEN connection. Its name is what makes this process a member:
@@ -942,7 +1015,7 @@ func main() {
 		},
 	}
 	var embeddingsWake, settingsWake, gitHubReadsWake <-chan struct{}
-	if backgroundEmbedder != nil {
+	if embedder != nil {
 		embeddingsWake = listenerHub.Wake(embedqueue.WakeChannel)
 	}
 	excerptsWake := listenerHub.Wake(docs.ExcerptsOwedChannel)
@@ -964,7 +1037,23 @@ func main() {
 	textVersionsEventsWake := listenerHub.Wake(api.EventsChannel)
 	textVersionsReleasedWake := listenerHub.Wake(duty.HoldReleasedChannel)
 
-	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
+	// embedqueue.Run no-ops when its own Deps.Embedder is nil, so this always starts: the server's
+	// embedding queue keeps coverage itself, so a later deploy that gives meaning search a place
+	// to embed needs no other wiring change and no person-run step to cover existing content.
+	// It gets a rate-limited wrapper around the same client api.Deps holds unwrapped above
+	// (embedder, BuildAppContext's Embedder option): the queue is the only embedqueue caller, and
+	// pacing only its calls - never a live search request's own query embedding, which always
+	// goes straight through the unwrapped client - is what keeps saturating background work from
+	// taking live search down with it (LEGION-549 round 5; embed.RateLimitedEmbedder's own doc
+	// comment has the AIMD mechanism and the headroom this leaves). Deps.Paced makes the wrapper
+	// and keeps it as the queue's pace, so the pace's wait renews the queue's claim on the rows it
+	// waits to embed, and a canary that meets an outage backs the pace off. A nil embedder (meaning
+	// search off) stays nil rather than becoming a non-nil wrapper around nothing, which
+	// embedqueue.Run's own nil check depends on. The queue starts before this process registers
+	// below; it embeds and drops only while its embedder's identity is the active one, which every
+	// process decides from the live registry rows (embedqueue, active.go), so a process configured
+	// with another embedder than the fleet's leaves the vectors as they are.
+	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: embedder, Wake: embeddingsWake}.Paced())
 	// The block schema the store holds, read again each time a supertag write announces itself.
 	// A read that fails, and a value the install refuses, leaves the installed schema in place
 	// and is read again; a store a newer build migrated is installed at this build's own
@@ -984,13 +1073,13 @@ func main() {
 			}
 			documentService.CloseDocumentSockets()
 		},
-	}).Run(ctx)
+	}).Run(store.WithTransactionTracking(ctx))
 	// project_key (migration 20261109120000) is the project each embeddings row belongs to, the
 	// predicate every arm of a project-scoped meaning search reads (api/search.go). Both write
 	// functions set it from the deploy on, and this labels the rows stored before it, in
 	// committed batches of its own (20261109120100 holds the cursor it records its place in).
 	//
-	// In the background, where the document_search fill above blocks the boot: a label costs
+	// In the background, and not on the boot's path: a label costs
 	// about 253 bytes of heap and 4.9 KiB of growth in the vector index, and the pass is one to
 	// two hours on a deployment of a million rows (INFRA-988, store.EmbeddingProjectKeyBatch), so
 	// a boot that waited for it would outlast any rollout. What waiting would buy is nothing a
@@ -1000,8 +1089,8 @@ func main() {
 	// (api/search.go, meaningProjectScope), and every batch moves rows onto the faster predicate
 	// the pass exists for. A failure is logged and the process serves on, for the same reason.
 	//
-	// Here, among the loops, and not beside the document_search fill above, because it needs the
-	// lease pool, which is opened below that: one process of a roll fills and the other skips,
+	// Here, among the loops, because it needs the lease pool, which the boot opens before this:
+	// one process of a roll fills and the other skips,
 	// since two of them would each pay the same hours for one result. The process that skipped
 	// tries again every five minutes until the labelling is over, so a holder killed mid-pass
 	// costs the fill that wait rather than lasting until something next boots
@@ -1056,6 +1145,18 @@ func main() {
 	// is woken by the trigger that announces each notice given a due time, and waits for the
 	// earliest one.
 	go documentService.RunEditNotices(ctx, editNoticesLeases, editNoticesWake)
+	// Whether graph_edges still holds the four arms the graph-store spec moved, read from the
+	// database before this process serves, so the backlink counts read the arm set the view holds
+	// from the first request (refs.SetFourArmsDeleted), whichever process's step deleted them; read
+	// again about every minute for the life of the process (graphcensus.FollowViewArms), and set
+	// once more by this boot's own step below, which deletes them where it may.
+	armsGone, err := graphcensus.ViewArmsGone(ctx, database.Pool)
+	if err != nil {
+		slog.Error("dispatch: read whether graph_edges holds its four old arms", "error", err)
+		os.Exit(1)
+	}
+	refs.SetFourArmsDeleted(armsGone)
+	go graphcensus.FollowViewArms(ctx, database.Pool, slog.Default())
 	// Every boot runs the graph store's backfill once (graphcensus.Backfill), whatever it finds owed,
 	// off the boot's path. The boot records the backfill's horizon of the event log here, before it
 	// starts the block-index reconciliation below, so, where the record completes, that
@@ -1065,25 +1166,39 @@ func main() {
 	// run on a goroutine of their own, as the embedding fill's do, so no pod's readiness waits for
 	// them (startBootBackfill, runBootBackfill). Two processes that boot together each run it, which
 	// the backfill allows.
-	startBootBackfill(ctx, database, boot)
+	startBootBackfill(ctx, database, boot, migrated.Fresh)
 	// The block index: each document version no block-aware write indexed - every document at
 	// migration 0121, each version a build without the block index writes during a roll, and each
 	// rebuild-refs marks - and each comment, ask and issue message citing a block (`#b-`) that such
-	// a build indexed without the block grammar. DISPATCH_TEST_HOLD_BLOCK_INDEX, under the test
-	// hooks, holds it, its tick and its pass, and nothing else.
+	// a build indexed without the block grammar. Then the reference forms drain: each comment, ask,
+	// issue message and document a build that predates an issue's tab addresses and a document's
+	// dashboard URLs indexed without them (refs_forms_owed), and each one the release before
+	// settled that reads an issue's Decisions page as no more than its document
+	// (refs_decisions_forms_owed, and refs_decisions_forms_seed_owed for the text stored before
+	// it), each queue drained in turn by the one loop (docs.Service.RunRefsFormsReconciliation).
+	// The drain is a loop of its own under a lease of its own, on the block index's interval: a
+	// period a process of the previous release served under the block index's lease would
+	// otherwise drain none of it, and a document's row is settled only by this build's own index
+	// of the document. DISPATCH_TEST_HOLD_BLOCK_INDEX, under the test hooks, holds both loops -
+	// the block index, its tick and its pass, and the drain of every one of its queues, which
+	// indexes a document through the block index's own index (drainFormsDocument), so a hold of
+	// the block index alone would see a document it left owed indexed anyway - and nothing else.
+	// Each loop's lease is reserved above whether or not it starts.
 	if !boot.HoldBlockIndex {
-		go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases)
+		go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases, daemonThreadStep.Tick)
+		go documentService.RunRefsFormsReconciliation(ctx, refsFormsLeases)
 	}
 	// The decisions step's tick, for as long as the process runs: the backfill while a row the
 	// release before wrote stands unmarked, the catch-up of what a process of another build
 	// writes while one lives, and, once the fleet is this one build, the restore of the answered
 	// asks that left their specs and the conversion of every decisions document.
+	// kept for one release: decisions-step
 	if !boot.HoldDecisionsStep {
 		go decisionStep.Run(ctx)
 	}
 	// The asks a process older than the withdrawal leaves on an issue it closes or
 	// reopens during a roll are withdrawn or restored every interval after the boot's own pass.
-	go api.RunIssueAskRepair(ctx, appCtx.APIDeps(), issueAskRepairLeases)
+	go api.RunIssueAskRepair(ctx, issueAskRepairDeps, issueAskRepairLeases)
 
 	// Each of the four loops below that reads GitHub under a lease records its newest attempt in
 	// the record of GitHub reads (githubreads, store.GitHubReadAttempts) when its pass ends, and
@@ -1134,7 +1249,7 @@ func main() {
 	// ciInstance is filled in once this process is registered, below, and each pass records its
 	// counts in ci_reconcile_passes under the id it then holds.
 	ciInstance := &registeredInstance{}
-	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, ciReconcileInterval, ciInstance, renames)
+	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, boot.VerdictAppID, ciReconcileInterval, ciInstance, renames)
 	if err != nil {
 		slog.Error("dispatch: open the CI reconcile pass", "error", err)
 		os.Exit(1)
@@ -1143,6 +1258,9 @@ func main() {
 		slog.Info("dispatch: reconciling the CI records GitHub's webhook never delivered", "client_id", appCfg.ClientID, "interval", ciReconcileInterval)
 		if boot.ReviewerAppID == "" {
 			slog.Info("dispatch: the CI reconcile pass records no tester or architect check run: DISPATCH_REVIEWER_APP_ID is unset, so no App's verdict checks are trusted")
+		}
+		if boot.VerdictAppID == "" {
+			slog.Info("dispatch: the CI reconcile pass leaves no App's check suites out: DISPATCH_VERDICT_APP_ID is unset; give it the listener's ENVOY_VERDICT_APP_ID")
 		}
 		reconciler.GitHubReads = recordGitHubRead
 		// The period argument is what makes one process serve each period (duty_passes): the
@@ -1202,10 +1320,10 @@ func main() {
 		// given up at its stop budget and handed back. StartIntakes then closes both clients, waits for
 		// each pending hand-back's finalizer to release the hold through the pool, and returns. Each
 		// connects in the background as the publisher does, and its poll takes the durable's hold once
-		// it has. While delivery settings are saved (the intake runs only then), the intake hands each
-		// push of a branch to the architecture importer the ticker and the routes share, which imports
-		// the enabled sources on that repository and branch at once; a push it hands over once the
-		// importer's Close has begun starts nothing (architecture.Importer.Pushed).
+		// it has, whether or not delivery settings are saved. The intake hands each push of a branch
+		// to the architecture importer the ticker and the routes share, which imports the enabled
+		// sources on that repository and branch at once; a push it hands over once the importer's
+		// Close has begun starts nothing (architecture.Importer.Pushed).
 		connectIntake := func(name string) (*bus.Client, error) {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
 		}
@@ -1238,6 +1356,7 @@ func main() {
 	})
 
 	routesHandler, background := routes.New(appCtx)
+	postSystemMessage.Store(&background.PostSystemMessage)
 	// The keyword fill (textversions.Run) writes search_text_versions, the keyword table of each
 	// past version of the searchable text, from the event log. It is a held duty, not a loop woken
 	// per pass: one process holds its duty.Hold (search-text-versions-fill) for as long as it
@@ -1300,18 +1419,12 @@ func main() {
 	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
 	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a
 	// timer and not a woken loop because no commit announces either, and it starts here because
-	// it resumes those deliveries through the API server built just above. Before its first tick,
-	// on the same goroutine, the boot pass ends every answer run past its ends_at with no terminal
-	// frame stored, at any age, where each tick's sweep reads the last day alone
-	// (api.EndGoingRunsOverdueAtBoot); it takes no lease, so every process runs it once a boot.
+	// it resumes those deliveries through the API server built just above.
 	maintenanceInterval := api.MaintenanceSweepInterval
 	if boot.MaintenanceSweepInterval > 0 {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
-	go func() {
-		api.EndGoingRunsOverdueAtBoot(ctx, database.Pool)
-		api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries)
-	}()
+	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries)
 	// /healthz names each GitHub read this process runs, from the copy of the record kept above. A
 	// loop this process did not start, for want of NATS or of the App's private key, is a read it
 	// does not run.
@@ -1324,7 +1437,10 @@ func main() {
 			githubreads.CIReconcile:        reconciler != nil,
 		}}
 	}
-	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, decisionStep, issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
+	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer,
+		// kept for one release: decisions-step
+		decisionStep,
+		issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
 	// does either before serving, so a socket it cannot serve on or an address it cannot take ends
@@ -1379,6 +1495,13 @@ func main() {
 	// The CI reconcile loop started before this, so it has been reading the holder and finding
 	// nothing; from here each of its passes records its counts under this process's row.
 	ciInstance.set(registration.ID)
+	// The issue room step (docs.IssueRoomStep), once the registry has admitted this process, so it
+	// never runs in a process whose registration was refused: it converts the issues in flight into
+	// their rooms while every live process announces the issue room, on a tick of its own for as
+	// long as the process runs.
+	if !boot.HoldIssueRoomStep {
+		go docs.NewIssueRoomStep(documentService, database, nil).Run(ctx)
+	}
 	// The registry admitted this process, so it serves: the keyword fill starts (above).
 	close(serving)
 	// The importer's flights outlive the ticker's context, so they are closed inside the
@@ -1391,7 +1514,7 @@ func main() {
 		waitFill()
 	}
 	if err := serveUntilStopped(ctx, cancel, server, listener, documentService, database.Pool, waitBackground, waitIntakes,
-		deregisterAfterDrain(registration), registration.Lost(), outboxStopped); err != nil {
+		deregisterAfterDrain(registration), registration.Lost(), outboxStopped, daemonThreadStep.AfterListen); err != nil {
 		slog.Error("dispatch: serve", "error", err)
 		os.Exit(1)
 	}
@@ -1511,6 +1634,66 @@ func dispatchStreamOptions(boot bootConfig, env settingValues) []bus.ConnectOpti
 	}
 }
 
+// credentialURLRefusal is why raw, the value of the setting named setting, is refused as a URL
+// that can carry a credential, or nil: one with a user name or a password, an "@" after its host
+// (natsurl.UserinfoPastHost: where a credential holding a "/", "?" or "#" written as the user
+// lands), a query or a fragment, each named by the setting alone, as the daemon refuses them in
+// agent_secrets.url. what names the URL the setting holds, which has none of them. A value that
+// does not parse is nil here: the caller's shape check names it through redact.URL. Dispatch
+// builds every request to such a URL on it, and net/http masks a password but not a user name or
+// a query in the errors it returns, which reach Dispatch's log and, from the Envoy listener's
+// client, its API's answers.
+func credentialURLRefusal(setting, what, raw string) error {
+	parsed, err := url.Parse(raw)
+	switch {
+	case err != nil:
+		return nil
+	case parsed.User != nil:
+		return fmt.Errorf("%s cannot be read: it holds a user name or a password, which %s has none of", setting, what)
+	case natsurl.UserinfoPastHost(parsed):
+		return errors.New(setting + " cannot be read: " + natsurl.UserinfoPastHostReason)
+	case parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(raw, "#"):
+		return fmt.Errorf("%s cannot be read: it holds a query or a fragment, which %s has none of", setting, what)
+	}
+	return nil
+}
+
+// agentSecretsURLRefusal is why raw, DISPATCH_AGENT_SECRETS_URL's value, is no broker URL, or nil:
+// one credentialURLRefusal refuses, and one that is no absolute http(s) URL with no path, named
+// through redact.URL. Dispatch's introspection and its broker client build every request on it.
+func agentSecretsURLRefusal(raw string) error {
+	if err := credentialURLRefusal("DISPATCH_AGENT_SECRETS_URL", "the broker's URL", raw); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" {
+		return fmt.Errorf("DISPATCH_AGENT_SECRETS_URL=%q (expected an absolute http(s) URL with no path)", redact.URL(raw))
+	}
+	return nil
+}
+
+// gitHubAPIBaseRefusal is why raw, DISPATCH_GITHUB_API_BASE's value, is refused, or nil: one
+// credentialURLRefusal refuses, and one that is no absolute http(s) URL with a host, named through
+// redact.URL, as ENVOY_URL's shape refusal is. credentialURLRefusal reads only a value net/url
+// parses as a URL with an authority, so the shape check refuses what it cannot read: a value that
+// does not parse (an unencoded "%" or a space in its password), and one with no "//" after its
+// scheme (`ghuser:<token>@ghe.example/api/v3`, read as the scheme `ghuser` and an opaque rest). The
+// GitHub App client builds every request on the base and names the request's URL in its own
+// words on a failed call (githubapp's `<method> <target>: …`), password and all, which reaches
+// the 502 of the App installation route, a CI check's detail and the GitHub read record /healthz
+// serves. The server and redeliver-webhooks each read it. A base with a path (GitHub Enterprise's
+// `/api/v3`) loads.
+func gitHubAPIBaseRefusal(raw string) error {
+	if err := credentialURLRefusal("DISPATCH_GITHUB_API_BASE", "the GitHub API's base URL", raw); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("DISPATCH_GITHUB_API_BASE=%q (expected an absolute http(s) URL with a host)", redact.URL(raw))
+	}
+	return nil
+}
+
 // resolveBootConfig is the server's configuration from what the settings table read (env),
 // checked before anything connects. It holds the settings main hands on as values; three groups
 // reach their readers from env instead, through the table's lookup: the GitHub App credentials
@@ -1523,9 +1706,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	}
 	boot := bootConfig{
 		DatabaseURL:           strings.TrimSpace(env.get("DATABASE_URL")),
+		ProjectOwnerFallback:  strings.TrimSpace(env.get("DISPATCH_PROJECT_OWNER_FALLBACK")),
 		NewIssueLabel:         strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_LABEL")),
 		NewIssueSession:       strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_SESSION")),
-		SpecRoots:             strings.TrimSpace(env.get("DISPATCH_SPEC_ROOTS")),
 		GitHubAPIBase:         strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")),
 		SignInIssuer:          strings.TrimSpace(env.get("DISPATCH_SIGNIN_ISSUER")),
 		SignInClientID:        strings.TrimSpace(env.get("DISPATCH_SIGNIN_CLIENT_ID")),
@@ -1544,6 +1727,21 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	}
 	if boot.DatabaseURL == "" {
 		return bootConfig{}, errors.New("DATABASE_URL required")
+	}
+	// Before the dev sign-in fence parses it (loopbackDatabase), which would print part of a
+	// password a refused DSN leaves in its host or in pgx's quote of it.
+	if err := pgdsn.Refusal(store.DSNSetting, boot.DatabaseURL); err != nil {
+		return bootConfig{}, err
+	}
+	if boot.GitHubAPIBase != "" {
+		if err := gitHubAPIBaseRefusal(boot.GitHubAPIBase); err != nil {
+			return bootConfig{}, err
+		}
+	}
+	if fallback := boot.ProjectOwnerFallback; fallback != "" {
+		if err := principal.CheckPersonLogin(fallback); err != nil {
+			return bootConfig{}, fmt.Errorf("DISPATCH_PROJECT_OWNER_FALLBACK must be a lowercase email, the one a full member signed in with; got a value of %d characters", len(fallback))
+		}
 	}
 	if boot.EnvoyAccountTokenFile != "" && boot.EnvoyGoogleAudience != "" {
 		return bootConfig{}, errors.New("ENVOY_ACCOUNT_TOKEN_FILE and ENVOY_ACCOUNT_GOOGLE_AUDIENCE each name Dispatch's identity at the Envoy listener; set one of them")
@@ -1615,6 +1813,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err
 	}
+	if boot.VerdictAppID, err = verdictAppID(env); err != nil {
+		return bootConfig{}, err
+	}
 	for _, setting := range []struct {
 		name   string
 		target *bool
@@ -1622,7 +1823,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_ROSTER_UNCACHED", &boot.ListenerRosterUncached},
 		{"DISPATCH_TEST_EMBEDDER_OFF", &boot.EmbedderOff},
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
+		// kept for one release: decisions-step
 		{"DISPATCH_TEST_HOLD_DECISIONS_STEP", &boot.HoldDecisionsStep},
+		{"DISPATCH_TEST_HOLD_ISSUE_ROOM_STEP", &boot.HoldIssueRoomStep},
 		{"DISPATCH_TEST_HOLD_BLOCK_INDEX", &boot.HoldBlockIndex},
 		{"DISPATCH_TEST_HOLD_BOOT_BACKFILL", &boot.HoldBootBackfill},
 		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
@@ -1630,6 +1833,13 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
 		}
+	}
+	switch rule := env.get("DISPATCH_PARENT_STATUS_RULE"); rule {
+	case "", "off":
+	case "on":
+		boot.ParentStatusRule = true
+	default:
+		return bootConfig{}, fmt.Errorf("DISPATCH_PARENT_STATUS_RULE=%q (expected on, off or unset)", rule)
 	}
 	identityMode := strings.TrimSpace(env.get("DISPATCH_IDENTITY"))
 	if err := checkSignInSettings(boot, identityMode); err != nil {
@@ -1682,9 +1892,12 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if envoyURL == "" {
 		envoyURL = defaultEnvoyURL
 	}
+	if err := credentialURLRefusal("ENVOY_URL", "the Envoy listener's URL", envoyURL); err != nil {
+		return bootConfig{}, err
+	}
 	parsed, err := url.Parse(envoyURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return bootConfig{}, fmt.Errorf("ENVOY_URL=%q (expected an absolute http(s) URL)", envoyURL)
+		return bootConfig{}, fmt.Errorf("ENVOY_URL=%q (expected an absolute http(s) URL)", redact.URL(envoyURL))
 	}
 	boot.EnvoyURL = strings.TrimSuffix(envoyURL, "/")
 
@@ -1699,15 +1912,27 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 
 	agentSecretsURL := strings.TrimSuffix(strings.TrimSpace(env.get("DISPATCH_AGENT_SECRETS_URL")), "/")
 	if agentSecretsURL != "" {
-		parsed, err := url.Parse(agentSecretsURL)
-		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" {
-			return bootConfig{}, fmt.Errorf("DISPATCH_AGENT_SECRETS_URL=%q (expected an absolute http(s) URL with no path)", redact.URL(agentSecretsURL))
+		if err := agentSecretsURLRefusal(agentSecretsURL); err != nil {
+			return bootConfig{}, err
 		}
 		boot.AgentSecretsURL = agentSecretsURL
-		boot.AgentSecretsTokenFile = strings.TrimSpace(env.get("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"))
+		boot.AgentSecretsTokenFile = strings.TrimSpace(env.get(dispatchcipher.TokenFileSetting))
 		if boot.AgentSecretsTokenFile == "" {
-			return bootConfig{}, errors.New("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE is required when DISPATCH_AGENT_SECRETS_URL is set: Dispatch calls the broker with its own projected Kubernetes ServiceAccount token")
+			return bootConfig{}, errors.New(dispatchcipher.TokenFileSetting + " is required when DISPATCH_AGENT_SECRETS_URL is set: Dispatch calls the broker with its own projected Kubernetes ServiceAccount token")
 		}
+	}
+	// The value is strict, as DISPATCH_DEV_SIGNIN's is: a misspelt `on` must refuse the boot, not
+	// leave a deployment that meant to refuse these writes taking them.
+	switch value := env.get("DISPATCH_LEGION_STATUS_SCOPE"); value {
+	case "", "off":
+	case "on":
+		boot.LegionStatusScope = true
+	default:
+		return bootConfig{}, fmt.Errorf("DISPATCH_LEGION_STATUS_SCOPE=%q (expected on, off or unset)", value)
+	}
+	boot.ProofOrigins, err = proofOriginEntries(env.get("DISPATCH_PROOF_ORIGINS"))
+	if err != nil {
+		return bootConfig{}, err
 	}
 	boot.Embedder, err = resolveEmbedder(env)
 	if err != nil {
@@ -1767,7 +1992,7 @@ func devSignInFence(boot bootConfig, env settingValues) error {
 		}
 	}
 	if !routes.LoopbackURL(boot.EnvoyURL) {
-		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 delivers through this machine's Envoy listener only: ENVOY_URL=%q must name 127.0.0.1, [::1] or localhost", boot.EnvoyURL)
+		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 delivers through this machine's Envoy listener only: ENVOY_URL=%q must name 127.0.0.1, [::1] or localhost", redact.URL(boot.EnvoyURL))
 	}
 	return nil
 }
@@ -1797,18 +2022,20 @@ func devSignInLoadedFence(boot bootConfig, serverURL string, app *auth.AppConfig
 		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 refuses the App private key in %s, whatever DISPATCH_GITHUB_API_BASE names: that file is where the real App's key is kept, and with the flag any loopback client can have the App sign calls. Pass a throwaway App in the environment instead (DISPATCH_APP_CLIENT_ID and a generated DISPATCH_APP_PEM_B64, which take precedence over app.json), with DISPATCH_GITHUB_API_BASE naming a GitHub fake on a loopback host, as packages/dispatch/e2e/run-server.sh does", source.Path)
 	}
 	if !routes.LoopbackURL(boot.GitHubAPIBase) {
-		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 lets the App private key (DISPATCH_APP_PEM_B64) sign calls only to a loopback host: DISPATCH_GITHUB_API_BASE=%q (empty is https://api.github.com) must name 127.0.0.1, [::1] or localhost. Use a throwaway key: every App call hands a signed App JWT to whatever listens there", boot.GitHubAPIBase)
+		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 lets the App private key (DISPATCH_APP_PEM_B64) sign calls only to a loopback host: DISPATCH_GITHUB_API_BASE=%q (empty is https://api.github.com) must name 127.0.0.1, [::1] or localhost. Use a throwaway key: every App call hands a signed App JWT to whatever listens there", redact.URL(boot.GitHubAPIBase))
 	}
 	return nil
 }
 
 // loopbackDatabase refuses a DATABASE_URL with a host that is not this machine: the data a
 // dev-sign-in server serves to any local process must be a scratch database here. pgx parses
-// both the URL and the key=value forms, multi-host lists included, exactly as store.Open will.
+// both the URL and the key=value forms, multi-host lists included, exactly as store.Open will. A
+// DSN pgx cannot parse is named through pgdsn.ConnectError, never by pgx's text, which quotes it;
+// resolveBootConfig has refused one whose host would hold part of a password (pgdsn.Refusal).
 func loopbackDatabase(databaseURL string) error {
 	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
-		return fmt.Errorf("DATABASE_URL: %w", err)
+		return pgdsn.ConnectError(store.DSNSetting, databaseURL, err)
 	}
 	hosts := []string{config.Host}
 	for _, fallback := range config.Fallbacks {
@@ -2073,7 +2300,6 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.AgentTokens = boot.AgentTokens
 	built.NewIssueLabel = boot.NewIssueLabel
 	built.NewIssueSession = boot.NewIssueSession
-	built.SpecRoots = boot.SpecRoots
 	built.InsecureCookie = boot.InsecureCookie
 	built.EnvoyURL = boot.EnvoyURL
 	built.EnvoyToken = boot.EnvoyToken
@@ -2082,6 +2308,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.GitHubAPIBase = boot.GitHubAPIBase
 	built.AgentSecretsURL = boot.AgentSecretsURL
 	built.AgentSecretsTokenFile = boot.AgentSecretsTokenFile
+	built.LegionStatusScope = boot.LegionStatusScope
 	built.TestHooksEnabled = boot.TestHooksEnabled
 	built.RouteRosterTTL = boot.RouteRosterTTL
 	built.ListenerTakeoverWindow = boot.ListenerTakeoverWindow
@@ -2256,9 +2483,15 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 // it says only that the process answers, for a liveness or startup probe, which must not wait on
 // or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
 // so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
-func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, decisions *docs.DecisionStep, issuers issuers, reads *gitHubReads) http.Handler {
+func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer,
+	// kept for one release: decisions-step
+	decisions *docs.DecisionStep,
+	issuers issuers, reads *gitHubReads) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, decisions, issuers, reads))
+	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer,
+		// kept for one release: decisions-step
+		decisions,
+		issuers, reads))
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.Handle("GET /metrics", registry.Handler())
 	mux.Handle("/", handler)
@@ -2361,6 +2594,13 @@ func (g *gitHubReads) member() *gitHubReadsMember {
 	}
 }
 
+// logServiceTokens logs the issuer and audience boot verifies service-account tokens under, the
+// issuer through redact.URL: oidc.IssuerRefusal has refused a credential in its userinfo, past its
+// host, or in its query or fragment, and redact.URL prints none of a value that is no plain URL.
+func logServiceTokens(boot bootConfig) {
+	slog.Info("dispatch: verifying service-account tokens", "issuer", redact.URL(boot.OIDCIssuer), "audience", boot.OIDCAudience)
+}
+
 // serviceTokenVerifier is the verifier of the projected service-account tokens boot's
 // DISPATCH_OIDC_ISSUER issues to DISPATCH_OIDC_AUDIENCE, nil when boot configures none. It reads
 // nothing: the issuer is discovered in the background (oidc.LazyVerifier.Run, which main starts at
@@ -2373,17 +2613,23 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 }
 
 // brokerTokenVerifier decides callers presenting an access token the secrets broker issued, under
-// the RFC 9449 DPoP scheme. It is built from the settings Dispatch already has and needs none of
-// its own: the broker DISPATCH_AGENT_SECRETS_URL names, which the approval relays already call,
-// Dispatch's own projected ServiceAccount token from DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE,
-// which it already presents there, and DISPATCH_SERVER_URL as the origin a proof's 'htu' is
-// checked against. Spent proofs are recorded in Dispatch's own database (store.DPoPProofs), which
-// the maintenance pass sweeps.
+// the RFC 9449 DPoP scheme. It is built from the broker DISPATCH_AGENT_SECRETS_URL names, which
+// the approval relays already call, Dispatch's own projected ServiceAccount token from
+// DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, which it already presents there, and the origins a
+// proof's 'htu' may name (proofOrigins): DISPATCH_SERVER_URL's, and each one
+// DISPATCH_PROOF_ORIGINS adds, which is the one setting of its own, since a pod or a daemon calls
+// Dispatch at an in-cluster address and signs the URL it calls. Spent proofs are recorded in
+// Dispatch's own database (store.DPoPProofs), which the maintenance pass sweeps.
 //
-// It serves a read-only token (ciphertoken.Options.ServesReadOnly): the scope read alone, which
-// the broker mints from a read entry. Dispatch is the one service that asks for it, because its
-// route table holds the read list such a token may call (readScopeRoutes in internal/dispatch/api)
-// and every other route answers it 403 READ_ONLY_TOKEN before anything of the route runs.
+// It serves a read-only token (ciphertoken.Options.ServesReadOnly): one that holds read, which
+// the broker mints from a read entry or narrows when a trade asks for read. Dispatch is the one
+// service that asks for it, because its route table classes the GET rows such a token may call
+// (the read class its declaration states, internal/dispatch/api), and every other route answers it
+// 403 READ_ONLY_TOKEN before anything of the route runs. It serves an approve-only token too
+// (ciphertoken.Options.ServesApproveOnly): the scope approve alone, which the broker mints for a
+// person's approve grant and spends through its proxy, never released. The routes whose
+// declaration states ApproveOnly are the routes such a token may call, and every other route
+// answers it 403 APPROVE_ONLY_TOKEN before anything of the route runs.
 //
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
 // presentation is refused as any non-bearer Authorization header has always been
@@ -2394,17 +2640,61 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 	}
 	return ciphertoken.New(ciphertoken.Options{
 		BrokerURL: boot.AgentSecretsURL,
-		Account:   ciphertoken.NewAccountToken(boot.AgentSecretsTokenFile),
-		Origin:    strings.TrimSuffix(serverURL, "/"),
+		Account:   ciphertoken.NewAccountToken(dispatchcipher.TokenFileSetting, boot.AgentSecretsTokenFile),
+		Origins:   proofOrigins(serverURL, boot.ProofOrigins),
 		Replay:    store.NewDPoPProofs(database.Pool),
 		// Dispatch's own rule for which address a request came from, the one its access log and
 		// its other buckets read; the check itself has none, so this says whose proxy header is
 		// trusted here (auth.ForwardedAddress).
 		Address: auth.ForwardedAddress,
-		// The read list and its gate are Dispatch's own (internal/dispatch/api), so a read-only
-		// token reaches the routes that list names and no other.
-		ServesReadOnly: true,
+		// The read class, the approve list and their gates are Dispatch's own
+		// (internal/dispatch/api), so a read-only token reaches the reads of that class and an
+		// approve-only token the routes the approve list names, and no other route.
+		ServesReadOnly:    true,
+		ServesApproveOnly: true,
 	})
+}
+
+// proofOriginEntries reads DISPATCH_PROOF_ORIGINS: each comma-separated entry as the bare origin
+// it is, written scheme://host. A value of nothing but whitespace is unset. An entry that is not a
+// bare origin - empty, a scheme other than http or https, no host, a path, a query, a fragment or
+// user info - refuses the start, naming the entry by its position and by its value where
+// redact.URL prints it, as the DISPATCH_AGENT_SECRETS_URL refusal names its value.
+func proofOriginEntries(value string) ([]string, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	entries := strings.Split(value, ",")
+	origins := make([]string, 0, len(entries))
+	for i, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return nil, fmt.Errorf("DISPATCH_PROOF_ORIGINS entry %d of %d is empty", i+1, len(entries))
+		}
+		parsed, err := url.Parse(entry)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" ||
+			parsed.Path != "" || parsed.User != nil || strings.ContainsAny(entry, "?#") {
+			return nil, fmt.Errorf("DISPATCH_PROOF_ORIGINS entry %d of %d is %q (expected an origin: an absolute http(s) URL with no path, query, fragment or user)",
+				i+1, len(entries), redact.URL(entry))
+		}
+		origins = append(origins, parsed.Scheme+"://"+parsed.Host)
+	}
+	return origins, nil
+}
+
+// proofOrigins is every origin a broker token's proof may name in its 'htu': DISPATCH_SERVER_URL's
+// first, the one a proof naming none of them is checked against, then each origin added names. An
+// origin equal to one before it, compared without case as an origin's scheme and host are, is
+// taken once rather than refused: a deployment lists the public origin again beside the
+// in-cluster one.
+func proofOrigins(serverURL string, added []string) []string {
+	origins := append(make([]string, 0, 1+len(added)), strings.TrimSuffix(serverURL, "/"))
+	for _, origin := range added {
+		if !slices.ContainsFunc(origins, func(taken string) bool { return strings.EqualFold(taken, origin) }) {
+			origins = append(origins, origin)
+		}
+	}
+	return origins
 }
 
 // healthzHandler answers the readiness probe: 200 while this process can serve requests, which is
@@ -2486,7 +2776,10 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // has counted - the boot's pass counts nothing (docs.DecisionStep.Boot), and
 // DISPATCH_TEST_HOLD_DECISIONS_STEP holds the tick for as long as it is set - and it is read from
 // the step, so the probe adds no statement to the database. It never decides `ok`.
-func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, decisions *docs.DecisionStep, issuers issuers, reads *gitHubReads) http.HandlerFunc {
+func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer,
+	// kept for one release: decisions-step
+	decisions *docs.DecisionStep,
+	issuers issuers, reads *gitHubReads) http.HandlerFunc {
 	var reportedCommit *string
 	if commit != "" {
 		reportedCommit = &commit
@@ -2562,7 +2855,9 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 		}{
 			OK: ok, DB: databaseOK, NATS: natsOK, Files: filesOK, SignIn: signInOK, ServiceTokens: serviceTokensOK,
 			GitHub: reads.member(), Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,
-			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true, DecisionsStepOwed: decisions.OwedTotal(),
+			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true,
+			// kept for one release: decisions-step
+			DecisionsStepOwed: decisions.OwedTotal(),
 		})
 	}
 }
@@ -2591,8 +2886,11 @@ func bootBackfillHorizonBound(boot bootConfig) time.Duration {
 // logged which and ended. So the record, and the line a skip or a failure logs, come before
 // anything the boot does after this call, and nothing of the boot waits for the passes.
 // DISPATCH_TEST_HOLD_BOOT_BACKFILL, under the test hooks, holds the passes once the horizon is
-// recorded, until the process stops.
-func startBootBackfill(ctx context.Context, database *store.Store, boot bootConfig) {
+// recorded, until the process stops. Once the run has logged that it is done, the same goroutine
+// runs the step that deletes the four old arms of graph_edges (graphcensus.RunViewArmsStep) and then
+// R26's step (graphcensus.RunTypedBlockSupertagsStep), neither of which a run that logged no done
+// line ever reaches; fresh says this boot created the database from empty.
+func startBootBackfill(ctx context.Context, database *store.Store, boot bootConfig, fresh bool) {
 	var run graphcensus.BackfillRun
 	record := func(ctx context.Context) error {
 		var err error
@@ -2602,7 +2900,7 @@ func startBootBackfill(ctx context.Context, database *store.Store, boot bootConf
 	recorded, ended := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(ended)
-		_ = runBootBackfill(ctx, slog.Default(), record, func(ctx context.Context) error {
+		runBootBackfill(ctx, slog.Default(), record, func(ctx context.Context) error {
 			close(recorded)
 			if boot.HoldBootBackfill {
 				<-ctx.Done()
@@ -2610,6 +2908,17 @@ func startBootBackfill(ctx context.Context, database *store.Store, boot bootConf
 			}
 			_, err := run.Passes(ctx, io.Discard)
 			return err
+		}, func(ctx context.Context) {
+			gone, err := graphcensus.RunViewArmsStep(ctx, database, buildCommit, fresh, slog.Default())
+			if err != nil {
+				slog.Error(graphcensus.ViewArmsStepLine+" failed", "error", err)
+			}
+			if gone {
+				refs.SetFourArmsDeleted(true)
+			}
+			if err := graphcensus.RunTypedBlockSupertagsStep(ctx, database, buildCommit, fresh, slog.Default()); err != nil {
+				slog.Error("dispatch: the typed block supertags step failed", "error", err)
+			}
 		})
 	}()
 	select {
@@ -2620,7 +2929,7 @@ func startBootBackfill(ctx context.Context, database *store.Store, boot bootConf
 
 // runBootBackfill is the boot's run of the graph store's backfill: record, which records the run's
 // horizon of the event log (graphcensus.StartBackfill), then run, its passes
-// (graphcensus.BackfillRun.Passes). It logs what came of them and answers nil whatever that was, so
+// (graphcensus.BackfillRun.Passes). It logs what came of them and answers its caller nothing, so
 // the process serves on whatever the backfill answered:
 //   - a record that reached its bound (graphcensus.HorizonBoundError): the skip line, naming the
 //     oldest writer of the event log by its pid and its age (bootBackfillSkipped), and no run;
@@ -2631,28 +2940,35 @@ func startBootBackfill(ctx context.Context, database *store.Store, boot bootConf
 //     beside it as a finding;
 //   - any other error of the run, one beside such rows included: that error and no done line, so
 //     what waits for the backfill's end waits for the next boot's run.
-func runBootBackfill(ctx context.Context, logger *slog.Logger, record func(context.Context) error, run func(context.Context) error) error {
+//
+// afterDone, where it is not nil, runs right after each done line, on the same goroutine.
+func runBootBackfill(ctx context.Context, logger *slog.Logger, record func(context.Context) error, run func(context.Context) error, afterDone func(context.Context)) {
 	if err := record(ctx); err != nil {
 		var bound *graphcensus.HorizonBoundError
 		if errors.As(err, &bound) {
 			logger.Warn(bootBackfillSkippedLine, bootBackfillSkipped(bound.Pid, bound.Age)...)
-			return nil
+			return
 		}
 		logger.Error("dispatch: boot backfill failed to record its horizon of the event log", "error", err)
-		return nil
+		return
 	}
 	err := run(ctx)
 	if err == nil {
 		logger.Info(bootBackfillDoneLine)
-		return nil
+		if afterDone != nil {
+			afterDone(ctx)
+		}
+		return
 	}
 	if moved, only := graphcensus.OnlyProjectMoved(err); only {
 		logger.Warn(bootBackfillDoneLine, "project_moved", moved,
 			"finding", "rows whose node the store holds in another project, which no run of the backfill writes")
-		return nil
+		if afterDone != nil {
+			afterDone(ctx)
+		}
+		return
 	}
 	logger.Error("dispatch: boot backfill failed", "error", err)
-	return nil
 }
 
 // bootBackfillSkipped is the skip line's attributes (runBootBackfill): the oldest writer of the

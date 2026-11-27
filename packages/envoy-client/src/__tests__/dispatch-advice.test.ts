@@ -708,6 +708,46 @@ describe("the related-item check", () => {
     expect(result.details.advice).toEqual(advice({ suggestions }));
   });
 
+  test("dispatch_issue lists graph neighbours after the text results", async () => {
+    const result = await createIssue({
+      outcome: "found",
+      related: [issueItem("DSP-7", "Existing issue", "triage")],
+      neighbourhood: { outcome: "made" },
+      neighbours: [
+        {
+          key: "DSP-8",
+          status: "triage",
+          title: "Other work",
+          shares: ["dispatch://DSP/component/api", "dispatch://DSP-2"],
+          href: "/issues/DSP-8",
+        },
+      ],
+    });
+
+    expect(result.text).toBe(
+      [
+        createdLine,
+        "Related items:",
+        "- DSP-7 [triage] Existing issue → http://dispatch.test/issues/DSP-7",
+        "Graph neighbours (shared targets):",
+        "- DSP-8 [triage] Other work · shares dispatch://DSP/component/api, dispatch://DSP-2 → http://dispatch.test/issues/DSP-8",
+      ].join("\n")
+    );
+  });
+
+  test.each([
+    [{ outcome: "none" }, "Graph neighbourhood check found no issue that shares a target."],
+    [
+      { outcome: "not_made", missing: "the graph read did not answer within 5s" },
+      "No graph neighbourhood check was made: the graph read did not answer within 5s.",
+    ],
+  ] as const)("dispatch_issue reports a graph check with no neighbours: %p", async (neighbourhood, line) => {
+    const result = await createIssue({ outcome: "none", related: [], neighbourhood });
+    expect(result.text).toBe(
+      [createdLine, "Related-item check searched and found nothing.", line].join("\n")
+    );
+  });
+
   test("a keywords-only search names why in its header", async () => {
     const result = await createIssue({
       outcome: "found",
@@ -1312,7 +1352,7 @@ describe("dispatch_doc_edit's ask block checks", () => {
 // a list that did not read as one all print the line without it.
 describe("a document write that superseded a person's approval", () => {
   const stored =
-    "Stored version 15, superseding version 14, which alice approved. That approval is stale until someone approves version 15 or a later write stores the text of version 14 again exactly, with no ask block in it decided since.";
+    "Stored version 15, superseding version 14, which alice approved. That approval is stale until someone approves version 15 or a later write leaves what it covers as version 14 held it: on an issue Dispatch has converted to one tree, the digest of the document's query; on any other document, the text of version 14 again exactly, with no ask block in it decided since.";
   const nextStep =
     "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the issue's architect, and keep the next one in a comment or in the plan.";
   const supersededLine = `${stored} ${nextStep}`;
@@ -2238,7 +2278,8 @@ describe("the answered questions of other projects", () => {
 });
 
 // A notice that cites a skill section sends the agent to read it, so each cited section must be a
-// `## ` heading of that skill's SKILL.md, read as dispatch-tools.test.ts reads the Dispatch skill's.
+// `## ` heading of that skill's SKILL.md: the case reads every `## ` line of the file and holds
+// each cited section to them.
 test("every skill section a notice cites is a heading of that skill", () => {
   const repoRoot = path.resolve(import.meta.dir, "../../../..");
   // The dispatcher's entry and every module of its commands: a notice's text sits with the

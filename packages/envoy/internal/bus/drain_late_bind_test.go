@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A bind in flight when Drain stops the client, such as the role lane's restore on a connection
@@ -19,6 +20,7 @@ import (
 // the rest, before the connection drains, so each forward can still subscribe its reply inbox.
 // Once Drain has taken its last, the connection's drain lets them finish.
 func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// late has the bind end once Drain has taken the last subscription it drains itself.
@@ -91,20 +93,12 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 			if err := publisher.Flush(); err != nil {
 				t.Fatalf("flush the publishes: %v", err)
 			}
-			select {
-			case <-started:
-			case <-time.After(5 * time.Second):
-				t.Fatal("the first role message never reached the handler")
-			}
+			testwait.Receive(t, "the first role message to reach the handler", started)
 			// nats.go counts a delivery as pending until its handler returns.
-			for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-				if pending, _, _ := sub.Pending(); pending == 2 {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatal("the second role message never queued behind the first")
-				}
-			}
+			testwait.Until(t, "the second role message to queue behind the first (the last read is how many were pending)", func() (int, bool) {
+				pending, _, _ := sub.Pending()
+				return pending, pending == 2
+			})
 			// Drain's stop lands, and then the bind ends.
 			client.subscriptionsMu.Lock()
 			client.stopMode = clientDraining
@@ -119,13 +113,8 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 			// Well within this, a drain that takes no subscription has begun draining the connection.
 			time.Sleep(200 * time.Millisecond)
 			releaseHandlers()
-			select {
-			case err := <-drained:
-				if err != nil {
-					t.Fatalf("drain: %v", err)
-				}
-			case <-time.After(10 * time.Second):
-				t.Fatal("Drain never returned")
+			if err := testwait.Receive(t, "Drain to return", drained); err != nil {
+				t.Fatalf("drain: %v", err)
 			}
 			if finished := finished.Load(); finished != 2 {
 				t.Fatalf("%d of the 2 role messages routed to the bind finished in the handler before Drain returned; want both", finished)
@@ -140,6 +129,7 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 // Close may arrive after a subscription's raw bind succeeded and before it has installed the
 // subscription. That bind belongs to the stopped client: it must not be recorded as active.
 func TestCloseDoesNotInstallABindThatFinishesAfterStop(t *testing.T) {
+	t.Parallel()
 	client, err := ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -176,6 +166,7 @@ func TestCloseDoesNotInstallABindThatFinishesAfterStop(t *testing.T) {
 
 // Once a client stops, neither subscription transport starts another registration.
 func TestStoppedClientRefusesNewSubscriptions(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		stop    func(*Client) error

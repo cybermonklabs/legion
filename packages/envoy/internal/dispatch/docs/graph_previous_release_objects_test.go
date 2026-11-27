@@ -26,20 +26,21 @@ const rollSession = "ses_rolled_conversation"
 // serves beside this build gets its node from this build's next block-index tick, with no second
 // backfill, and a tick with this build serving alone does not read those tables whole.
 //
-// The test drives the tick through the triggers the marking reads the log on
-// (markVersionsAnotherBuildWrote). The process's first tick joins its build's cursor, and so writes
-// the nodes of the issues the seed left without one. The tick after it finds this build serving
-// alone after a tick that did too, so it reads nothing. The stand-in for the release before then
-// writes, with no event, a conversation's file, an ask on CORE-1 and a direct message to a
-// session. A tick with this build still serving alone leaves them without their nodes, which the
-// project census names `missing`. With a process of that release registered, the next tick writes
-// all three nodes, each in its project or between its parties, and the project census reads them
-// complete.
+// The test drives the tick through the triggers on which its event read owes the object pass
+// (readEventsAfterCursor), which writeObjectNodesAnotherBuildWrote runs. The process's first tick
+// joins its build's cursor, and so writes the nodes of the issues the seed left without one. The
+// tick after it finds this build serving alone after a tick that did too, so it reads nothing. The
+// stand-in for the release before then writes, with no event, a conversation's file, an ask on
+// CORE-1 and a direct message to a session. A tick with this build still serving alone leaves
+// them without their nodes, which the project census names `missing`. With a process of that
+// release registered, the next tick writes all three nodes, each in its project or between its
+// parties, and the project census reads them complete.
 //
 // Its control is the tick's object pass taken out of ReconcileBlockIndex: the three rows stay
 // `missing` after the roll's tick, and #3178's TestAVersionThePreviousReleaseWritesAfterTheDrainReachesTheStore
 // fails the same way on the issue, the spec and the document the release before creates there.
 func TestARowThePreviousReleaseWritesDuringARollGetsItsNodeFromTheTick(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	appendIssueEvent(t, database)
@@ -112,6 +113,7 @@ func TestARowThePreviousReleaseWritesDuringARollGetsItsNodeFromTheTick(t *testin
 // EventsOweObjectPass): with another_build_seen forced false, the first tick after the release
 // before left writes no node, and the project census names the five rows `missing`.
 func TestARowThePreviousReleaseCreatesWhileItHoldsTheLeaseGetsItsNodeFromTheNextTick(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	appendIssueEvent(t, database)
@@ -166,6 +168,7 @@ func TestARowThePreviousReleaseCreatesWhileItHoldsTheLeaseGetsItsNodeFromTheNext
 // Its control is the tick owing the pass on the roll's triggers and the events alone: the three
 // rows stay `missing` however far the clock moves.
 func TestARowNoEventNamesGetsItsNodeOnceTheObjectPassIntervalPasses(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	var aged atomic.Int64
 	service.now = func() time.Time { return time.Now().Add(time.Duration(aged.Load())) }
@@ -430,21 +433,31 @@ func requireTheRollTicksObjectPassLockOrder(t *testing.T) {
 		Statement: lockstep.OwnerLockStatement,
 		Unlocked:  []string{"graph_nodes", "graph_tuples", "block_index_event_cursors", "document_block_versions"},
 	}, store.IssueOwner("CORE-1"))
+	// Each hold holds the rows of its own step alone, written in a write phase of the store's writer
+	// with no head write (graphstore.QueueWrite, where graphstore.Write would queue one): the head
+	// rows are a step of their own (lockstep.StepHead), and two holds writing facts of one node would
+	// otherwise each hold that node's head row, the second waiting for the first.
 	node := lockstep.Hold{
 		Name: ref + "'s node row", Step: lockstep.StepNode, Taken: true,
 		Kind: graphstore.KindArtifact, ID: ref, Statement: "insert into graph_nodes (",
 	}
 	lockstep.Begin(t, database, &node)
-	if err := graphstore.Write(ctx, node.Tx, []graphstore.Node{graphstore.ArtifactNode(ref, "CORE", "", alice, now)}, nil); err != nil {
+	if err := store.RunWrite(ctx, node.Tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, []graphstore.Node{graphstore.ArtifactNode(ref, "CORE", "", alice, now)}, nil)
+		return nil
+	}); err != nil {
 		t.Fatalf("hold %s: %v", node.Name, err)
 	}
 	state := lockstep.Hold{Name: ref + "'s state tuple", Step: lockstep.StepTuple, Taken: true, Statement: "with written as ("}
 	lockstep.Begin(t, database, &state)
-	if err := graphstore.Write(ctx, state.Tx, nil, []graphstore.Tuple{{
-		FromKind: graphstore.KindArtifact, FromID: ref, Kind: graphstore.AttributeState,
-		ToKind: graphstore.KindValue, ToID: graphstore.StateLive,
-		At: now, Who: alice, SourceEvent: created, Asserted: true,
-	}}); err != nil {
+	if err := store.RunWrite(ctx, state.Tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nil, []graphstore.Tuple{{
+			FromKind: graphstore.KindArtifact, FromID: ref, Kind: graphstore.AttributeState,
+			ToKind: graphstore.KindValue, ToID: graphstore.StateLive,
+			At: now, Who: alice, SourceEvent: created, Asserted: true,
+		}})
+		return nil
+	}); err != nil {
 		t.Fatalf("hold %s: %v", state.Name, err)
 	}
 	project := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "project CORE's row", Step: lockstep.StepEvent},

@@ -29,8 +29,12 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
   // The tree, the line of each read it is built from that stands refused, and whether every one
   // of those reads has settled (`useOutlineReads`), each under the key and with the freshness the
-  // tree reads it by, so they cost no request of their own.
-  const { failed, readsSettled, root } = useOutlineReads(issue);
+  // tree reads it by, so they cost no request of their own; what the page publishes of its
+  // batched names read, which the body hands its rows in the render that draws them
+  // (`published`), so none of them reads a reference the page asks for; and the outline's names
+  // line while those reads stand failed (`names`), which the body draws over its tree, since
+  // every reference its rows draw waits on those names.
+  const { failed, names, published, readsSettled, root } = useOutlineReads(issue);
   const { checks, documentId, reads } = useVerificationReads(issue.key);
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the view holds no row for still draws it, as the outline resolves
@@ -73,6 +77,8 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
           {...(tells ? { addressed } : {})}
           checks={checks}
           context={view.context}
+          namesLine={names}
+          published={published}
           reads={reads}
           view={view.root}
           whole={whole}
@@ -109,19 +115,17 @@ export function useVerificationReads(issueKey: string): {
   // from its block's `serves` pointer, which only that read carries (`tree-drafts.ts`). Drawn
   // before it answers, every check would stand at the table's foot as one that serves no
   // statement, every statement would read Unknown, and the line that counts a statement's checks
-  // elsewhere would call the issue's own checks "elsewhere". The results read answers the checks
-  // of one document, the issue's Verification document (`api/results.go`'s
-  // `verificationDocument`), and names it in a field of its own (`verification_artifact_id`),
-  // which is read where the read holds a check. It must agree with the document whose blocks
-  // `useIssueTree` reads, which that hook finds from the issue read (`roleDocument`); no other
-  // document's blocks place a check. The slot watches that read under the same key with an
-  // observer that is never enabled, so it sends no request of its own and sees whatever
-  // `useIssueTree`'s observer fetches; its `refetch` still fetches, which is what Retry asks.
+  // elsewhere would call the issue's own checks "elsewhere". The results read names the document
+  // holding each check. This matches the document whose blocks `useIssueTree` reads from the
+  // issue's verification query (`roleDocument`); no other document's blocks place a check. The
+  // slot watches that read under the same key with an observer that is never enabled, so it
+  // sends no request of its own and sees whatever `useIssueTree`'s observer fetches; its
+  // `refetch` still fetches, which is what Retry asks.
   // Where the results read holds no check no blocks read is needed, and the observer of no
   // document never fetches. It is this one read and not `useIssueTree`'s `blocksHeld`, which
   // counts all four of the tree's documents: a refused plan or decisions read must not hold this
   // view empty, and the failed line needs this read's own error and Retry.
-  const documentId = checks.length === 0 ? undefined : results.data?.verification_artifact_id;
+  const documentId = checks[0]?.artifact_id;
   const blocks = useQuery({ ...artifactBlocksQuery(documentId ?? ""), enabled: false });
   // Each read has answered where it holds data, and not by its status: a background refetch
   // that fails sets TanStack Query's status to error and keeps the data it last answered, and

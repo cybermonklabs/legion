@@ -87,6 +87,11 @@ type PgVersioned struct {
 	// NewPgVersioned sets it to maxUpdateItems, whose comment states the rule; a test lowers it
 	// (shrinkPendingItems) to make a log that does not fold out of a few dozen items.
 	maxPendingItems int
+	// closeMargin is how long after an issue's close this store's append gate still takes a
+	// browser update the room observed as one made while the issue was open (observedBeforeClose).
+	// NewPgVersioned sets it to the package's closeMargin; New sets Deps.CloseMargin where a test
+	// gave one.
+	closeMargin time.Duration
 	// noteStored is the note of the Service that took this store last (New), which each append
 	// gives the version it committed and each load the head it read (noteStoredUpdates), so the
 	// Service's compaction queue checks the room. Nil for a store no Service took.
@@ -119,6 +124,7 @@ func NewPgVersioned(database *store.Store) *PgVersioned {
 		store:           database,
 		foldSlots:       make(chan struct{}, bufferedFolds),
 		maxPendingItems: maxUpdateItems,
+		closeMargin:     closeMargin,
 	}
 }
 
@@ -191,7 +197,7 @@ func (p *PgVersioned) Head(ctx context.Context, room string) (persistence.Versio
 	if err != nil {
 		return 0, err
 	}
-	return p.head(ctx, rooms, room)
+	return roomHead(ctx, rooms, room)
 }
 
 // DocumentStamp is, read through the pool that owns loads as Head reads the head, the room
@@ -240,7 +246,7 @@ func (p *PgVersioned) AppendParkedUpdate(ctx context.Context, room string, updat
 // document is edited in, in one statement (lockArtifactRoom), and appends only where that room is
 // artifactID itself. An update its caller built on a document's own Yjs document - a settlement's
 // repair of the document's room, a live write, a seed - is refused once the document moved into
-// its issue's room (ErrRoomMoved, dispatch://INFRA-1253 R5), and a write to the issue's room
+// its issue's room (ErrRoomMoved, R5 of the issue-tree spec), and a write to the issue's room
 // addresses it by its tree artifact's own id.
 func (p *PgVersioned) AppendUpdateTx(ctx context.Context, tx pgx.Tx, artifactID string, update []byte, contentChanged bool) (persistence.Version, error) {
 	if err := refuseUpdateItemCap(update); err != nil {
@@ -541,7 +547,7 @@ func (p *PgVersioned) MaterializeAt(ctx context.Context, room string, version pe
 		return nil, fmt.Errorf("begin materialize document: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	head, err := p.head(ctx, tx, room)
+	head, err := roomHead(ctx, tx, room)
 	if err != nil {
 		return nil, err
 	}
@@ -576,7 +582,7 @@ func (p *PgVersioned) CaptureSnapshot(ctx context.Context, room, name string, st
 		if _, _, err := p.recoverPruneTx(ctx, tx, room); err != nil {
 			return err
 		}
-		version, err = p.head(ctx, tx, room)
+		version, err = roomHead(ctx, tx, room)
 		if err != nil {
 			return err
 		}
@@ -692,7 +698,7 @@ func (p *PgVersioned) RebuildTx(ctx context.Context, tx pgx.Tx, room string, loa
 	}
 	// The head as Load reads it, a pending prune's ceiling included, before the prune's recovery
 	// below lowers it.
-	current, err := p.head(ctx, tx, room)
+	current, err := roomHead(ctx, tx, room)
 	if err != nil {
 		return RebuildReport{}, err
 	}
@@ -808,7 +814,9 @@ func headVersionOf(room string) string {
 // headVersion is the head of the room $1 names (headVersionOf).
 var headVersion = headVersionOf("$1")
 
-func (p *PgVersioned) head(ctx context.Context, q Queryer, room string) (persistence.Version, error) {
+// roomHead is the head of room's stored history (headVersion), read through q. It reads nothing of
+// a PgVersioned, so a caller that holds none, a seed's check of its room, reads it here.
+func roomHead(ctx context.Context, q Queryer, room string) (persistence.Version, error) {
 	var version int64
 	if err := q.QueryRow(ctx, `select `+headVersion, room).Scan(&version); err != nil {
 		return 0, fmt.Errorf("read document head: %w", err)

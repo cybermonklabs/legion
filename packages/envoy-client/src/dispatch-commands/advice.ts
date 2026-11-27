@@ -86,7 +86,7 @@ export function standingReviewLines(advice: WriteAdvice | undefined): string[] {
   const review = advice?.standing_review;
   if (review === undefined) return [];
   const carriedFrom = review.carried_from_version;
-  if (carriedFrom !== undefined) {
+  if (carriedFrom != null) {
     return [
       `${review.by}'s approval of this issue's spec was carried forward from the approval of version ${carriedFrom}, and Dispatch recorded that carry on ${review.at}.`,
       "Say what changed since that review in a reply on this ask.",
@@ -267,7 +267,7 @@ export function renderAdvice(
   if (superseded !== undefined && (tool === "dispatch_doc_edit" || tool === "dispatch_artifact")) {
     const gates = Array.isArray(superseded.design_gates) ? superseded.design_gates : [];
     const parts = [
-      `Stored version ${superseded.version}, superseding version ${superseded.approved_version}, which ${superseded.approved_by} approved. That approval is stale until someone approves version ${superseded.version} or a later write stores the text of version ${superseded.approved_version} again exactly, with no ask block in it decided since.`,
+      `Stored version ${superseded.version}, superseding version ${superseded.approved_version}, which ${superseded.approved_by} approved. That approval is stale until someone approves version ${superseded.version} or a later write leaves what it covers as version ${superseded.approved_version} held it: on an issue Dispatch has converted to one tree, the digest of the document's query; on any other document, the text of version ${superseded.approved_version} again exactly, with no ask block in it decided since.`,
     ];
     if (gates.length > 0) {
       const named = gates.map((gate) => `${gate.issue}, step ${gate.step}`).join("; ");

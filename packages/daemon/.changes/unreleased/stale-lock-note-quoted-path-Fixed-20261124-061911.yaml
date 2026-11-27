@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A role whose git or jj command fails on a lock under a path that holds a single quote now gets the stale-lock note for that lock. git and jj print the lock''s path between single quotes without escaping it, and the note read the path only up to the first quote, so such a lock got no note at all. The path is now read within one line, so a lock whose path holds a newline, which got its note before, gets none: a quote in a path is far likelier, and only the advisory line is lost.'
+time: 2026-11-24T06:19:11.434667899Z
+custom:
+    Issue: pr5336

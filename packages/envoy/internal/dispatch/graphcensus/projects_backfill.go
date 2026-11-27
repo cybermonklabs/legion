@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -329,10 +330,8 @@ type objectBudget struct{ nodes, names int }
 // spends answers the budget a batch of rows spends: names where every row of it is owed its name
 // alone, and nodes where any row is owed a node.
 func (b *objectBudget) spends(rows []objectRow) *int {
-	for _, row := range rows {
-		if !row.named {
-			return &b.nodes
-		}
+	if slices.ContainsFunc(rows, func(row objectRow) bool { return !row.named }) {
+		return &b.nodes
 	}
 	return &b.names
 }
@@ -621,7 +620,7 @@ func derefText(value *string) string {
 // this run to paper over. Each node and what it states carry its row's own create event where the
 // read found one (readObjectNodes), and the sentinel otherwise: the batch writes its nodes in
 // ascending id, in runs of consecutive nodes of one cause, each run's nodes queued as one write
-// (graphstore.PlanUncaused and graphstore.QueueNodes) and then stated through graphstore.Caused
+// (graphstore.PlanUncaused and graphstore.QueueNodes) and then stated through graphstore.QueueCaused
 // under that cause, and the report counts the tuples the store appended for those runs
 // (graphstore.Counting).
 //
@@ -646,9 +645,10 @@ func derefText(value *string) string {
 // (nameArtifactNodes); an issue's child_of to the parent its row names, as a claim
 // (issueParentClaims), so graph_edges answers that parent from the store once the row names its
 // node, and a parent the release before moved in place on a marked row replaces the one the node
-// held. Last it names each node on its issue's or document's row (node_kind and node_address),
+// held. Then it names each node on its issue's or document's row (node_kind and node_address),
 // after the node rows, as the lock order on api/inbox_read.go's markInboxReadThreads has a
-// projection row follow its node. A document retired since the batch was read is owed no live
+// projection row follow its node, and last it writes the head rows of every node it named, once
+// (graphstore.WriteHeads), the last rows a write takes. A document retired since the batch was read is owed no live
 // node, since its retirement stated it gone (retiredDocument): no node of it is written, and its
 // row, where it names no node yet, is named with the rest.
 //
@@ -709,8 +709,12 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 		// partOf holds, by id, the part_of of each document an issue owns, stated with its node.
 		partOf := map[string]graphstore.Tuple{}
 		// createdAt holds, by id, each row's own created_at, which an issue's child_of claim is
-		// dated at (issueParentClaims) whatever its node's statements are dated at.
-		createdAt := make(map[string]time.Time, len(nodes))
+		// dated at (issueParentClaims) whatever its node's statements are dated at: an issue
+		// batch's alone, since no other kind's write reads it.
+		var createdAt map[string]time.Time
+		if kind.kind == graphstore.KindIssue {
+			createdAt = make(map[string]time.Time, len(nodes))
+		}
 		// retired holds the address of each retired document whose row names no node yet, which is
 		// named with the written rows and given no node write.
 		var retired []string
@@ -757,10 +761,14 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 				}
 				partOf[node.ID] = graphstore.ArtifactPartOf(node.ID, row.issue, node.MadeBy, at)
 			}
-			createdAt[node.ID] = row.MadeAt
+			if createdAt != nil {
+				createdAt[node.ID] = row.MadeAt
+			}
 			write = append(write, node)
 		}
 		written.Rows, written.Nodes = int64(len(write))-named, int64(len(write))-named
+		// heads is every node the batch's writes name, whose head rows it writes once, last.
+		var heads []graphstore.NodeKey
 		for start := 0; start < len(write); {
 			end := start + 1
 			for end < len(write) && write[end].SourceEvent == write[start].SourceEvent {
@@ -792,9 +800,13 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 				return err
 			}
 			var appended int64
-			if err := graphstore.Caused(ctx, tx, graphstore.Counting(made, &appended), cause); err != nil {
+			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+				graphstore.QueueCaused(b, graphstore.Counting(made, &appended), cause)
+				return nil
+			}); err != nil {
 				return err
 			}
+			heads = append(heads, graphstore.HeldHeads(made)...)
 			written.Tuples += appended
 			start = end
 		}
@@ -815,6 +827,7 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 			if _, err := tx.Exec(ctx, "with "+arms+"\nselect 1", params...); err != nil {
 				return fmt.Errorf("state the parents of a batch of issues: %w", err)
 			}
+			heads = append(heads, graphstore.HeadsOfClaims(claims)...)
 			written.Tuples += parents
 			if _, err := tx.Exec(ctx, `
 				update issues set node_kind = $2, node_address = key
@@ -824,13 +837,23 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 			}
 		case graphstore.KindArtifact:
 			values, err := nameArtifactNodes(ctx, tx, append(writtenIDs, retired...))
-			if err != nil || len(values) == 0 {
+			if err != nil {
 				return err
 			}
-			written.Tuples += int64(len(values))
-			return graphstore.Write(ctx, tx, nil, values)
+			if len(values) > 0 {
+				written.Tuples += int64(len(values))
+				if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+					graphstore.QueueWrite(b, nil, values)
+					return nil
+				}); err != nil {
+					return err
+				}
+				heads = append(heads, graphstore.HeadsOf(nil, values)...)
+			}
 		}
-		return nil
+		// The head rows of every node the batch named, the last rows it takes: after its node
+		// rows, its tuples and the rows that name its nodes.
+		return graphstore.WriteHeads(ctx, tx, heads)
 	}); err != nil {
 		return KindBackfill{}, fmt.Errorf("write a batch of %s nodes: %w", kind.kind, err)
 	}
@@ -935,7 +958,7 @@ func issueParentClaims(nodes []graphstore.Node, marks map[string]rowMark, create
 // Beside them it answers the mentions each document it named owes its node for the refs rows it
 // holds (documentMentionMoves), as the backfill's pass over the references states them: graph_edges'
 // arm over refs answers a document's row only while the document's row names no node (migration
-// 20261119100000), so a document named without them would leave each of its references answered
+// 20261126050005), so a document named without them would leave each of its references answered
 // by neither arm until that pass ran.
 //
 // The read follows the update, under the owner locks the batch took first: an upload of a later
@@ -957,20 +980,15 @@ func nameArtifactNodes(ctx context.Context, tx pgx.Tx, refKeys []string) ([]grap
 		return nil, fmt.Errorf("name the nodes of a document batch on their rows: %w", err)
 	}
 	var named, files []string
-	for rows.Next() {
-		var id string
-		var file bool
-		if err := rows.Scan(&id, &file); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("name the nodes of a document batch on their rows: %w", err)
-		}
+	var id string
+	var file bool
+	if _, err := pgx.ForEachRow(rows, []any{&id, &file}, func() error {
 		named = append(named, id)
 		if file {
 			files = append(files, id)
 		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, fmt.Errorf("name the nodes of a document batch on their rows: %w", err)
 	}
 	if len(named) == 0 {
@@ -992,7 +1010,7 @@ func nameArtifactNodes(ctx context.Context, tx pgx.Tx, refKeys []string) ([]grap
 		) v
 		where a.id = any($1::uuid[]) and v.mime is not null and v.size is not null and v.sha256 is not null
 		  and (`+presentVersionNode+`
-		       or octet_length(a.ref_key || '@v' || v.number) > `+addressBound+`)
+		       or octet_length(`+versionAddress+`) > `+addressBound+`)
 	`, files)
 	if err != nil {
 		return nil, fmt.Errorf("read the newest bytes of a batch's images and files: %w", err)
@@ -1181,7 +1199,14 @@ func writeScopeBatch(ctx context.Context, database *store.Store, kind string, sc
 		}
 		var err error
 		filled, err = graphstore.FillScopes(ctx, tx, scopes)
-		return err
+		if err != nil {
+			return err
+		}
+		scoped := make([]graphstore.NodeKey, len(scopes))
+		for index, scope := range scopes {
+			scoped[index] = graphstore.NodeKey{Kind: scope.Kind, ID: scope.ID}
+		}
+		return graphstore.WriteHeads(ctx, tx, scoped)
 	}); err != nil {
 		return 0, fmt.Errorf("fill the project of a batch of %s nodes: %w", kind, err)
 	}

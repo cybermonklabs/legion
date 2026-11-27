@@ -35,6 +35,7 @@ import (
 // `secret set` stores a value the decoder reads, the reread it asks for writes one
 // ServableMessage line, both series are gone, and a release of the secret mints.
 func TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_value_refused_test.go:76); it signals the test process or changes its signal handling (ciphertest.NewRig, api.Register, api.routes, (*server).listLauncherCredentials, (*server).machineLoginsOwnOnly, projectaccess.Restricted, (*Client).MemberKind, (*Client).askKind, (*Client).readKind, (*Client).get, (Reader).Get, (*GoogleAccount).Read, (*GoogleAccount).read, (*GoogleAccount).mint, (*GoogleAccount).generateIDToken, (*GoogleAccount).accessToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault at logtest.go:36); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	recorder := &logtest.Recorder{}
 	logtest.SetDefault(t, recorder)
 	var tokensAsked atomic.Int32

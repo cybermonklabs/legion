@@ -328,7 +328,7 @@ describe("keepNatsCredential with a refused live token", () => {
       expect(next).not.toBe(first);
       // The token client dropped it too, so the session's HTTP calls present the new token.
       const headers = await brokerCredential(env, "ses_a").headers("GET", "http://listener.test/");
-      expect(headers["Authorization"]).toBe(`DPoP ${next}`);
+      expect(headers.Authorization).toBe(`DPoP ${next}`);
       // Rate-limited: still the one warning, and it names no token.
       expect(warnings.length).toBe(1);
       for (const one of broker.state.minted) expect(warnings.join("\n")).not.toContain(one.value);

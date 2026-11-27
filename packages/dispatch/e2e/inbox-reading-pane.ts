@@ -12,16 +12,24 @@ import type { InboxRow } from "../web/src/api/types";
 import {
   answerAsk,
   createAsk,
+  createComment,
   createIssue,
+  createIssueArtifact,
   createProject,
   createProjectDocument,
   editArtifact,
+  getArtifactText,
   getInbox,
+  handAskOn,
+  latestVersion,
+  listMyReplies,
   patchIssue,
   requestApproval,
   withOpenedAsk,
 } from "./api";
+import { blockId } from "./editor";
 import { inboxList, inboxPane } from "./inbox-pane";
+import { replyRowId } from "./inbox-threads";
 
 export const session = {
   actor: { id: "e2e-reading-pane", kind: "session" as const },
@@ -32,10 +40,7 @@ export const session = {
  *  question - which nobody holds, a document having no assignee - is listed beside the rest. */
 export const INBOX = "/?assignee=everyone";
 
-/** The address the Inbox writes for a selected row (`buildInboxPath`: the item, then the filter). */
-export function inboxAt(askId: string): string {
-  return `/?item=${askId}&assignee=everyone`;
-}
+export { inboxAt } from "./inbox-pane-scroll";
 
 // ---------------------------------------------------------------------------
 // The first spec: one section of 36 lines above the decision block.
@@ -73,15 +78,22 @@ export const SCOPE_ANCHOR = "Scope anchor: the ledger keeps a clock of its own i
 export const WINDOW_ANCHOR = "Window anchor: the mirror keeps its retry budget in both versions.";
 /** The block version 4 no longer holds. */
 export const RETIRED_BLOCK = "Retired note: the nightly mirror job runs at 02:00 every day.";
-/** The one changed paragraph that kept all but one of its words. */
+/** The one changed block that kept all but one of its words: the body of the spec's one
+ *  requirement (`RETRY_REQUIREMENT`). An approval covers the record of the Spec query - the spec's
+ *  memo, criteria and requirements - and not the paragraphs around them (R14), so a version 4
+ *  that changed paragraphs alone would keep alice's approval of version 3 and open no request.
+ *  This reworded requirement is what makes version 4 need an approval of its own. */
 export const WORDS_BEFORE = "The retry budget is three attempts per lease.";
 export const WORDS_AFTER = "The retry budget is seven attempts per lease.";
 export const REMOVED_WORD = "three";
 export const ADDED_WORD = "seven";
-/** How many blocks version 4 changed since version 3. */
+/** How many blocks version 4 changed since version 3: 21 paragraphs and the requirement, each one
+ *  top-level block of the drawn version and one block of the change view's source. */
 export const CHANGED_BLOCKS = 22;
 /** Which of them is the one that changed only some of its words. */
 export const WORD_LEVEL_STEP = 10;
+/** The id of the requirement whose body is `WORDS_BEFORE`, then `WORDS_AFTER`. */
+const RETRY_REQUIREMENT = "r-retry-budget";
 const changedParagraphs = Array.from({ length: CHANGED_BLOCKS }, (_, index) =>
   index === WORD_LEVEL_STEP
     ? { after: WORDS_AFTER, before: WORDS_BEFORE }
@@ -90,12 +102,15 @@ const changedParagraphs = Array.from({ length: CHANGED_BLOCKS }, (_, index) =>
         before: `Step ${index + 1}: the ledger writes the clock before the mirror reads it.`,
       }
 );
-/** Version 3's body, inserted under the heading in one edit. */
+/** Version 3's body, inserted under the heading in one edit: the word-level step as the body of
+ *  the requirement, and every other block a paragraph. */
 const baselineBody = `${[
   SCOPE_ANCHOR,
   RETIRED_BLOCK,
   WINDOW_ANCHOR,
-  ...changedParagraphs.map(({ before }) => before),
+  ...changedParagraphs.map(({ before }, index) =>
+    index === WORD_LEVEL_STEP ? `:::requirement{#${RETRY_REQUIREMENT}}\n${before}\n:::` : before
+  ),
 ].join("\n\n")}\n`;
 
 /** The four classes `features/doc/change-marks.ts` draws an approval's marks with. */
@@ -136,6 +151,7 @@ export interface Seed {
   decisionAskId: string;
   decisionIssueKey: string;
   documentAskId: string;
+  firstApprovalArtifactId: string;
   firstApprovalAskId: string;
   plainAskId: string;
 }
@@ -162,9 +178,10 @@ async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> 
 
 /**
  * Six made-up questions, in the order the Inbox lists them (the issue's priority first): the
- * decision block of a spec, the request to approve version 4 of a spec approved at version 3, a
- * first request to approve another document, an anchored question, a question in no document, and
- * the decision block of a project document, which no issue priority orders.
+ * decision block of a spec, the request to approve version 4 of a spec approved at version 3
+ * (version 4 rewords the spec's one requirement, which an approval covers), a first request to
+ * approve another document, an anchored question, a question in no document, and the decision
+ * block of a project document, which no issue priority orders.
  */
 export async function seedInbox(): Promise<Seed> {
   await createProject({ key: "PANE", name: "Pane rollout" });
@@ -215,6 +232,9 @@ export async function seedInbox(): Promise<Seed> {
           { expected_edited_at: null, selected: ["Approve"] },
           { login: "alice" }
         );
+        // The replace of `WORDS_BEFORE` rewords the requirement's body inside its block, the one
+        // change of the Spec query's record: so alice's approval of version 3 does not stand for
+        // version 4, and the request below opens an ask.
         await editArtifact(
           artifactId,
           {
@@ -243,13 +263,16 @@ export async function seedInbox(): Promise<Seed> {
           title: "Lease handover",
         });
         await patchIssue(issue.key, { priority: 2 });
-        return withOpenedAsk(
-          await requestApproval(
-            issue.primary_artifact_id,
-            { summary: "The first handover draft." },
-            session
-          )
-        );
+        return {
+          ...withOpenedAsk(
+            await requestApproval(
+              issue.primary_artifact_id,
+              { summary: "The first handover draft." },
+              session
+            )
+          ),
+          artifactId: issue.primary_artifact_id,
+        };
       })(),
       (async () => {
         const anchoredIssue = await createIssue({
@@ -289,8 +312,215 @@ export async function seedInbox(): Promise<Seed> {
     decisionAskId: decision.row.id,
     decisionIssueKey: decision.issueKey,
     documentAskId: documentDecision.id,
+    firstApprovalArtifactId: firstApproval.artifactId,
     firstApprovalAskId: firstApproval.ask.id,
     plainAskId: plain.id,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Open page: one issue with a spec and a second document, a project document, and a question
+// of each kind the column draws.
+// ---------------------------------------------------------------------------
+
+export const OPEN_PROJECT = "OPEN";
+/** The heading of each document, which neither of the other two holds. */
+export const OPEN_SPEC_HEADING = "Spec heading only here";
+export const OPEN_TALK_HEADING = "Talk heading only here";
+export const OPEN_RUNBOOK_HEADING = "Runbook heading";
+/** The decision blocks, each id once across the three documents, since `indexedRow` matches a
+ *  row by its block id alone. */
+export const OPEN_TALK_DECISION = "open-talk-decision";
+export const OPEN_BEFORE_HEADING = "open-talk-before-heading";
+const OPEN_SPEC_DECISION = "open-spec-decision";
+const OPEN_RUNBOOK_DECISION = "open-runbook-decision";
+const OPEN_ANSWERED = "open-talk-answered";
+const ANSWERED_OPTIONS = ["The host", "The guest"] as const;
+
+/** A decision block as this file's documents write one, with the blank line after it. */
+function decisionBlock(id: string, question: string, options: readonly string[]): string[] {
+  return [
+    `:::ask{#${id} urgency="med" multiple="false" state="open"}`,
+    question,
+    "",
+    ...options.map((option) => `- ${option}`),
+    ":::",
+    "",
+  ];
+}
+
+const openSpec = [
+  `# ${OPEN_SPEC_HEADING}`,
+  "",
+  "The spec says what the talk covers.",
+  "",
+  ...decisionBlock(OPEN_SPEC_DECISION, "Which part of the talk comes first?", [
+    "The demo",
+    "The slides",
+  ]),
+].join("\n");
+
+/** `talk.md`: a decision block above any heading, then the heading, the paragraph question 4
+ *  quotes, and two decision blocks under it. */
+const talkContent = [
+  "The talk runs for forty minutes.",
+  "",
+  ...decisionBlock(OPEN_BEFORE_HEADING, "Does the talk need a rehearsal?", ["Yes", "No"]),
+  `# ${OPEN_TALK_HEADING}`,
+  "",
+  "The talk paragraph that a quote points at.",
+  "",
+  ...decisionBlock(OPEN_TALK_DECISION, "Which room holds the talk?", [
+    "The small room",
+    "The hall",
+  ]),
+  ...decisionBlock(OPEN_ANSWERED, "Who closes the talk?", ANSWERED_OPTIONS),
+].join("\n");
+
+const runbookContent = [
+  `# ${OPEN_RUNBOOK_HEADING}`,
+  "",
+  "The runbook says how the room is set up.",
+  "",
+  ...decisionBlock(OPEN_RUNBOOK_DECISION, "Which step of the set-up runs first?", [
+    "The lights",
+    "The sound",
+  ]),
+].join("\n");
+
+/** The questions of `seedOpenPage`, each by the Inbox row it is listed as and numbered as the
+ *  row walks them, and what their addresses are built from. */
+export interface OpenPageSeed {
+  /** 1: a decision block under the heading of the issue's second document. */
+  talkDecision: string;
+  /** 2: a decision block under the heading of the issue's spec. */
+  specDecision: string;
+  /** 3: the request to approve the second document, and the version it names. */
+  approval: string;
+  approvalVersion: number;
+  /** 4: a question on a quote of the second document, and the block the quote sits in. */
+  quoted: string;
+  quotedBlockId: string;
+  /** 5: a question in no document. */
+  plain: string;
+  /** 6: a decision block under the heading of a project document, handed to alice. */
+  runbookDecision: string;
+  /** 7: a decision block of the second document that no heading stands above. */
+  beforeHeading: string;
+  /** 8: the answered decision block under the second document's heading, by its ask id, and the
+   *  Reply thread row its answer and the session's reply make (`reply:<ask id>`). */
+  answeredAskId: string;
+  answeredThread: string;
+  /** The block id of each document's heading. */
+  headings: { runbook: string; spec: string; talk: string };
+  issueKey: string;
+  runbookSlug: string;
+  talkSlug: string;
+}
+
+/**
+ * One question of each kind an issue holds, a project document's decision block, and the Reply
+ * thread of an answered decision block, all waiting on alice, who makes the project and the issue
+ * and so is their assignee. The order is the point: answering question 8 writes its block's state
+ * and saves a new version of `talk.md`, and a request to approve keeps the person's turn only
+ * while no write has moved the document past the version it names, so every write to `talk.md`
+ * comes before question 3.
+ */
+export async function seedOpenPage(): Promise<OpenPageSeed> {
+  await createProject({ key: OPEN_PROJECT, name: "Open page" });
+  const issue = await createIssue({ project: OPEN_PROJECT, spec: openSpec, title: "Talk week" });
+  const { artifact: talk } = await createIssueArtifact(issue.key, {
+    content: talkContent,
+    name: "talk.md",
+  });
+  const { artifact: runbook } = await createProjectDocument(OPEN_PROJECT, {
+    content: runbookContent,
+    name: "runbook.md",
+  });
+  const [talkDecision, specDecision, runbookDecision, beforeHeading, answered] = await Promise.all([
+    indexedRow((row) => row.block_id === OPEN_TALK_DECISION),
+    indexedRow((row) => row.block_id === OPEN_SPEC_DECISION),
+    indexedRow((row) => row.block_id === OPEN_RUNBOOK_DECISION),
+    indexedRow((row) => row.block_id === OPEN_BEFORE_HEADING),
+    indexedRow((row) => row.block_id === OPEN_ANSWERED),
+  ]);
+
+  // Question 8's answer writes its block's state in the answer's own transaction, and the
+  // settlement that write arms saves it as a new version of `talk.md` once the settle delay has
+  // passed (`DISPATCH_TEST_SETTLE_DELAY`, `e2e/run-server.sh`). The live text's markdown holds no
+  // ask's state, so the seed waits until the text answers the ask answered in its `asks`, read
+  // from the ask, and until a version past the newest one before the answer is saved.
+  const beforeAnswer = await latestVersion(talk.id);
+  await answerAsk(
+    answered.id,
+    { expected_edited_at: null, selected: [ANSWERED_OPTIONS[0]] },
+    { login: "alice" }
+  );
+  await expect
+    .poll(async () => {
+      const { asks } = await getArtifactText(talk.id);
+      return asks?.find((entry) => entry.block_id === OPEN_ANSWERED)?.state;
+    }, INDEX_PROBE)
+    .toBe("answered");
+  await expect.poll(() => latestVersion(talk.id), INDEX_PROBE).toBeGreaterThan(beforeAnswer);
+
+  const quoted = await createAsk(
+    issue.key,
+    {
+      anchor: { artifact: talk.slug, quote: "a quote points at" },
+      question: "Does every talk quote its sources?",
+    },
+    session
+  );
+  const quotedBlockId = quoted.anchor?.block_id;
+  if (quotedBlockId === undefined || quotedBlockId === null) {
+    throw new Error("question 4's quote names no block");
+  }
+  const plain = await createAsk(
+    issue.key,
+    { options: [{ label: "Yes" }, { label: "No" }], question: "Should the talk be recorded?" },
+    session
+  );
+  await handAskOn(runbookDecision.id, "alice");
+
+  // The session's reply in question 8's thread, after alice's answer: her Reply thread.
+  await createComment(
+    issue.key,
+    { ask_id: answered.id, body: "The host closes it, then." },
+    session
+  );
+  await expect
+    .poll(
+      async () => ((await listMyReplies()).rows ?? []).some((row) => row.thread_id === answered.id),
+      { ...INDEX_PROBE, message: "item 8 is alice's Reply thread" }
+    )
+    .toBe(true);
+
+  const approval = withOpenedAsk(
+    await requestApproval(talk.id, { summary: "The talk as it stands." }, session)
+  );
+
+  const [talkHeading, specHeading, runbookHeading] = await Promise.all([
+    blockId(talk.id, `# ${OPEN_TALK_HEADING}`),
+    blockId(issue.primary_artifact_id, `# ${OPEN_SPEC_HEADING}`),
+    blockId(runbook.id, `# ${OPEN_RUNBOOK_HEADING}`),
+  ]);
+  return {
+    answeredAskId: answered.id,
+    answeredThread: replyRowId(answered.id),
+    approval: approval.ask.id,
+    approvalVersion: approval.version,
+    beforeHeading: beforeHeading.id,
+    headings: { runbook: runbookHeading, spec: specHeading, talk: talkHeading },
+    issueKey: issue.key,
+    plain: plain.id,
+    quoted: quoted.id,
+    quotedBlockId,
+    runbookDecision: runbookDecision.id,
+    runbookSlug: runbook.slug,
+    specDecision: specDecision.id,
+    talkDecision: talkDecision.id,
+    talkSlug: talk.slug,
   };
 }
 

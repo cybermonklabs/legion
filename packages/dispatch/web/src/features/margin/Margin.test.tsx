@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -10,14 +10,13 @@ import { RegisterRouteDocument } from "../../__tests__/draft-matrix-fixture";
 import { realClock } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { specFormRefusal, specFormRefusalBody } from "../../__tests__/spec-form-fixture";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { ApiError, api } from "../../api/client";
 import type { Ask, AskRead, Comment, IssueAskRow, IssueDetails } from "../../api/types";
 import { heldSends } from "../conversation/held-sends";
 import { SendMovedError } from "../conversation/send-request";
 import type { RetypeOutcome } from "../doc/editor";
-import { issueAsk } from "../inbox/inbox-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath, buildProjectPath } from "../refs/routes";
 import { SendStoppedError } from "../writes/keyed-write";
 import { Margin } from "./Margin";
@@ -38,6 +37,12 @@ import {
   stubDocumentBridge,
   stubViewport,
 } from "./margin-fixture";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const secondIssue: IssueDetails = {
   ...issue,
@@ -234,6 +239,60 @@ test("clicking a document mark opens its thread in the margin and stays on the d
     });
     expect(screen.getByLabelText("Selected margin item").textContent).toBe(comment.id);
     expect(screen.getByLabelText("Current path").textContent).toBe(specPath);
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
+
+// A document renamed to a slug-shaped name keeps its first slug, and its page opens at its current
+// name too (`artifactAtAddress`): the margin there shows that document's comments, as the page
+// shows the document, and none of another document's.
+test("the margin of a document opened at its current name, not its slug, lists that document's comments", async () => {
+  const notes = {
+    ...specArtifact,
+    id: "artifact-notes",
+    name: "launch-notes",
+    primary: false,
+    ref_key: "CORE-1/notes-md",
+    slug: "notes-md",
+  };
+  const notesComment: Comment = {
+    ...comment,
+    anchor: comment.anchor === null ? null : { ...comment.anchor, artifact_id: notes.id },
+    body: "A note on the notes.",
+    id: "comment-notes",
+  };
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      mutations: { retry: false },
+      queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
+    },
+  });
+  queryClient.setQueryData(["issue", issue.key], {
+    ...issue,
+    artifacts: [...(issue.artifacts ?? []), notes],
+  });
+  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(["asks", issue.key], []);
+  queryClient.setQueryData(["user-state"], {});
+  queryClient.setQueryData(["comments", issue.key], [comment, notesComment]);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const view = render(
+    <MemoryRouter
+      initialEntries={[buildIssuePath({ key: issue.key, kind: "artifact", slug: "launch-notes" })]}
+    >
+      <QueryClientProvider client={queryClient}>
+        <MarginProvider>
+          <Margin />
+        </MarginProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    await screen.findByTestId(`margin-comment-${notesComment.id}`);
+    expect(screen.queryByTestId(`margin-comment-${comment.id}`)).toBeNull();
   } finally {
     view.unmount();
     restoreMatchMedia();
@@ -542,78 +601,6 @@ test("Margin puts an unanchored open ask under Needs you and sends its answer", 
         keyedAttempt
       )
     );
-  } finally {
-    view.unmount();
-    answerAsk.mockRestore();
-    getAsk.mockRestore();
-    getIssue.mockRestore();
-    getInbox.mockRestore();
-    listIssueAsks.mockRestore();
-  }
-});
-
-// Dispatch refuses a person's Approve when the document breaks the form of The Spec. The card in
-// the issue page's Needs you shows that refusal, picks Request changes with the reason Dispatch
-// wrote for the author, and gives the focus back to Answer, so one more press sends the findings.
-// The answer takes the ask's row out of the Inbox read while it is out, and the refusal puts the
-// row back, which draws the card again: the refusal, the pick and the focus survive that redraw.
-test("Margin's Needs you card keeps Dispatch's form refusal of Approve through its redraw, with Request changes picked and the reason filled", async () => {
-  const user = userEvent.setup();
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      mutations: { retry: false },
-      queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
-    },
-  });
-  const approval = issueAsk({
-    ...unanchoredAsk,
-    id: "ask-approval",
-    kind: "approval",
-    options: [{ label: "Approve" }, { label: "Request changes" }],
-    question: "Approve spec.md (version 12)?",
-  });
-  queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], [approval]);
-  queryClient.setQueryData(["asks", issue.key], []);
-  queryClient.setQueryData(["user-state"], {});
-  queryClient.setQueryData(["comments", issue.key], []);
-  const getAsk = answerAskThreads(approval);
-  const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
-  // The refusal reads the Inbox again, and the request is still open in it.
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([approval]);
-  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
-  const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(specFormRefusal());
-  const view = render(
-    <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
-      <QueryClientProvider client={queryClient}>
-        <MarginProvider>
-          <Margin />
-        </MarginProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-
-  try {
-    const before = await marginAskCard(approval.id, "needs-you");
-    await user.click(await within(before).findByRole("radio", { name: "Approve" }));
-    await user.click(within(before).getByRole("button", { name: "Answer" }));
-    await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
-
-    const card = await marginAskCard(approval.id, "needs-you");
-    const alert = await within(card).findByRole("alert");
-    expect(alert.textContent).toBe(
-      specFormRefusalBody.error.replace(
-        "To send these findings to the author, choose Request changes.",
-        "To send these findings to the author, choose Answer."
-      )
-    );
-    expect(
-      (within(card).getByRole("radio", { name: "Request changes" }) as HTMLInputElement).checked
-    ).toBe(true);
-    expect((within(card).getByLabelText("Reason (required)") as HTMLTextAreaElement).value).toBe(
-      specFormRefusalBody.changes_reason
-    );
-    await waitFor(() => expect(within(card).getByRole("button", { name: "Answer" })).toHaveFocus());
   } finally {
     view.unmount();
     answerAsk.mockRestore();
@@ -1902,7 +1889,7 @@ test("a stopped compose that gives way to a newer one is offered saying it may h
       heldSends(queryClient).send(marginComposeSendKey(specArtifact.id), {
         anchor: markComposerAnchor,
         ask: { multiple: false, options: [], urgency: "med" },
-        draft: { body: "Stopped words", mentions: [], replacement: "" },
+        draft: { body: "Stopped words", replacement: "" },
         edit: undefined,
         kind: "comment",
         owner,

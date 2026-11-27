@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -21,12 +22,12 @@ import (
 // the records of the issue's workflow (R8): a run of a step, the plan a run ran from and the
 // handoff a run reported. An issue born converted holds one requirement. In one transaction the
 // test seeds the types of the three kinds, which no migration of the store holds
-// (graphstoretest.SeedSupertags), writes one node of each kind and a lens visible to the project
+// (graphseedtest.SeedSupertags), writes one node of each kind and a lens visible to the project
 // through graphstore.PlanUncaused and its node write (graphstore.QueueNodes), with a part_of from
 // each of the three to the issue's node and from the lens to the step, and appends those tuples
 // under the event that created the issue (graphstore.Caused), as the store holds the records once
-// the workflow store moves into it. It
-// reads, in graph_tuples, the standing part_of from each of the three to the issue's node, so the
+// the workflow store moves into it. It reads, in graph_tuples, the standing part_of from each of
+// the three to the issue's node (graphstore.CurrentOut), so the
 // case proves the walk's rule and not a write that did not land. Neither the walk of the issue's
 // tree nor the tree read with no view answers the step, the plan, the handoff or the lens under
 // the step, or a tuple that names one, and both answer the requirement.
@@ -66,7 +67,7 @@ func TestTheTreeWalkLeavesOutTheWorkflowsRecords(t *testing.T) {
 	nodes = append(nodes, lens)
 	tuples = append(tuples, partOf(lens, nodes[0].Kind, nodes[0].ID))
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		if err := graphstoretest.SeedSupertags(ctx, tx, kinds...); err != nil {
+		if err := graphseedtest.SeedSupertags(ctx, tx, kinds...); err != nil {
 			return err
 		}
 		write := graphstore.PlanUncaused(nodes, tuples)
@@ -86,15 +87,7 @@ func TestTheTreeWalkLeavesOutTheWorkflowsRecords(t *testing.T) {
 	}
 
 	for _, record := range nodes[:len(kinds)] {
-		var standing bool
-		if err := database.Pool.QueryRow(ctx, `
-			select coalesce((select t.asserted from graph_tuples t
-			                 where t.from_kind = $1 and t.from_id = $2 and t.kind = $3 and t.to_kind = $4 and t.to_id = $5
-			                 order by t.seq desc limit 1), false)`,
-			record.Kind, record.ID, graphstore.TuplePartOf, graphstore.KindIssue, issue.Key).Scan(&standing); err != nil {
-			t.Fatalf("read the part_of of the %s node %s: %v", record.Kind, record.ID, err)
-		}
-		if !standing {
+		if !slices.Contains(farEnds(t, database, record.Kind, record.ID, graphstore.TuplePartOf), graphstore.KindIssue+"/"+issue.Key) {
 			t.Fatalf("the store holds no part_of from the %s node to %s", record.Kind, issue.Key)
 		}
 	}

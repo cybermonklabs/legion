@@ -324,6 +324,16 @@ export const IssueDeployedEventPayloadSchema = z.strictObject({
 
 export type IssueDeployedEventPayload = z.output<typeof IssueDeployedEventPayloadSchema>;
 
+/** A recorded build that wakes an open issue with a stored live-check result in this repository. */
+export const DeployRecordedEventPayloadSchema = z.strictObject({
+  repo: z.string(),
+  program: z.string(),
+  commit: z.string(),
+  deployed_at: z.string(),
+  source: z.enum(["delivery_run", "route"]),
+});
+export type DeployRecordedEventPayload = z.output<typeof DeployRecordedEventPayloadSchema>;
+
 /**
  * `spec.request_stale`: a person's approval of the issue's change request was refused because the
  * approved spec changed one of its nodes after the owner wrote it. Appended on the issue (so it is

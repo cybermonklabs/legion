@@ -111,8 +111,15 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 		`select 1 from graph_nodes where kind = $1 and id = $2 for no key update`, refs.BlockNodeKind, block)
 	project := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "project CORE's row", Step: lockstep.StepEvent},
 		`select 1 from projects where key = $1 for update`, "CORE")
+	// The block's head row, which the backfill above filled when it marked CORE-1: the batch's head
+	// write rewrites it, the last row the batch takes.
+	head := lockstep.HoldRow(t, database, &lockstep.Hold{
+		Name: "the block's head row", Step: lockstep.StepHead, Taken: true,
+		Statement: "with head_nodes as materialized (",
+	}, `select 1 from issue_head_nodes where issue_key = $1 and node_kind = $2 and node_address = $3 for update`,
+		"CORE-1", refs.BlockNodeKind, block)
 
-	report := followTheBackfill(t, database, "writeBlockRefBatch", []*lockstep.Hold{owner, fence, row, tuple, node, project})
+	report := followTheBackfill(t, database, "writeBlockRefBatch", []*lockstep.Hold{owner, fence, row, tuple, node, project, head})
 
 	var nodeKind, nodeAddress *string
 	var tuples int64
@@ -244,9 +251,17 @@ func requireTheCommentBatchLockOrder(t *testing.T) {
 		Name: "comment c1's comments row", Step: lockstep.StepProjection, Taken: true, Names: firstComment,
 		Statement: "update comments c set node_kind",
 	}, `select 1 from comments where id = $1::uuid for no key update`, c1.id)
+	// Comment c1's head row under its issue, which the batch's head write writes once the comments
+	// rows name their nodes: the last row the batch takes. The batch's statements go in one round
+	// trip, whose statements Postgres has parsed, and so locked the tables of, before the first runs,
+	// so the order it queues in, and no table it holds, is what shows the head rows come last.
+	head := holdHeadRow(t, database, &lockstep.Hold{
+		Name: "comment c1's head row", Step: lockstep.StepHead, Taken: true,
+		Statement: "with head_nodes as materialized (",
+	}, "CENS-1", graphstore.KindComment, c1.id)
 
 	report := followTheBackfill(t, database, "writeCommentBatch",
-		[]*lockstep.Hold{owner, project, firstComment, secondComment, amyNode, zedNode, sessionNode, state, amyAuthored, row})
+		[]*lockstep.Hold{owner, project, firstComment, secondComment, amyNode, zedNode, sessionNode, state, amyAuthored, row, head})
 
 	for _, seeded := range comments {
 		authorKind, authorID, _ := graphstore.AuthorOf(seeded.by)
@@ -570,11 +585,34 @@ func seedPreStoreBlock(t *testing.T, database *store.Store, document preStoreDoc
 // holdWrite holds a row the batch inserts, by writing the same key through the store's own writer
 // in a transaction left open (lockstep.Begin): the batch's insert of that key then waits to learn
 // whether the hold's row commits. A node is the same (kind, id), and a tuple the same repeat key,
-// which `on conflict do nothing` cannot pass until the hold ends.
+// which `on conflict do nothing` cannot pass until the hold ends. The hold holds the rows of its own
+// step alone: it writes them in a write phase of the store's writer with no head write
+// (graphstore.QueueWrite, where graphstore.Write would queue one), since the head rows are a step of
+// their own (lockstep.StepHead) that holdHeadRow holds; two holds writing facts of one node would
+// otherwise each hold that node's head row, and the second would wait for the first.
 func holdWrite(t *testing.T, database *store.Store, hold *lockstep.Hold, nodes []graphstore.Node, tuples []graphstore.Tuple) *lockstep.Hold {
 	t.Helper()
 	lockstep.Begin(t, database, hold)
-	if err := graphstore.Write(context.Background(), hold.Tx, nodes, tuples); err != nil {
+	if err := store.RunWrite(context.Background(), hold.Tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nodes, tuples)
+		return nil
+	}); err != nil {
+		t.Fatalf("hold %s: %v", hold.Name, err)
+	}
+	return hold
+}
+
+// holdHeadRow holds the head row of the node kind and id under the issue key, a row the batch's
+// head write upserts: a row of that key inserted in a transaction left open, whose insert the
+// batch's `on conflict` waits behind until the hold ends, as holdWrite holds a node's row.
+func holdHeadRow(t *testing.T, database *store.Store, hold *lockstep.Hold, key, kind, id string) *lockstep.Hold {
+	t.Helper()
+	lockstep.Begin(t, database, hold)
+	if _, err := hold.Tx.Exec(context.Background(), `
+		insert into issue_head_nodes (issue_key, node_kind, node_address,
+		                              value_kinds, value_texts, relation_kinds, relation_to_kinds, relation_to_ids)
+		values ($1, $2, $3, '{}', '{}', '{}', '{}', '{}')
+	`, key, kind, id); err != nil {
 		t.Fatalf("hold %s: %v", hold.Name, err)
 	}
 	return hold

@@ -19,6 +19,11 @@ trap 'rm -rf "$work"' EXIT
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
+# colon is the colon of a path:line that the check under test prints. It is built at run
+# time so that this file's text holds no path followed by a colon and a line number, which
+# ci_citations.py refuses wherever it stands under .github.
+colon=':'
+
 # fixture <name>: a tree that passes — a go.mod requiring gitleaks 8.30.1 and a release script
 # fetching that release's Linux asset. Echoes its root.
 fixture() {
@@ -69,7 +74,7 @@ sed -i 's|gitleaks/v8 v8.30.1|gitleaks/v8 v8.31.0|' "$root/packages/daemon/go.mo
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names both files, both versions and the fix" \
-  "$(contains "$out" "release-push.sh:3 fetches gitleaks 8.30.1, and packages/daemon/go.mod:7 requires gitleaks 8.31.0: move both to one version, with leak_engine_sha256 taken from that release's own gitleaks_8.31.0_checksums.txt")"
+  "$(contains "$out" "release-push.sh${colon}3 fetches gitleaks 8.30.1, and packages/daemon/go.mod${colon}7 requires gitleaks 8.31.0: move both to one version, with leak_engine_sha256 taken from that release's own gitleaks_8.31.0_checksums.txt")"
 
 echo "case: the release lane's pin moved and the module's did not"
 root=$(fixture asset-moved)
@@ -77,7 +82,7 @@ sed -i 's|v8.30.1/gitleaks_8.30.1_linux_x64|v8.31.0/gitleaks_8.31.0_linux_x64|' 
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names both files, both versions and the fix" \
-  "$(contains "$out" "release-push.sh:3 fetches gitleaks 8.31.0, and packages/daemon/go.mod:7 requires gitleaks 8.30.1: move both to one version, with leak_engine_sha256 taken from that release's own gitleaks_8.30.1_checksums.txt")"
+  "$(contains "$out" "release-push.sh${colon}3 fetches gitleaks 8.31.0, and packages/daemon/go.mod${colon}7 requires gitleaks 8.30.1: move both to one version, with leak_engine_sha256 taken from that release's own gitleaks_8.30.1_checksums.txt")"
 
 echo "case: an asset URL whose tag and file name are two versions"
 root=$(fixture asset-halves)

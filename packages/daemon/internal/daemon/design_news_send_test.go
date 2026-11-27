@@ -405,7 +405,32 @@ func TestTheRootArchitectsSummaryNamesAMemberOutOfTheWorkflowAsToldNothing(t *te
 	}
 }
 
-// A member whose owed news is decision blocks alone is told nothing, and the summary says so: the
+// A parent in awaiting_children is owed nothing while a Dispatch child of it is open
+// (record.UntoldAwaitingChildren), and the root architect's summary names it told nothing for that
+// reason: the admission pass's return brings it back, not a restart, as it does a member in held.
+func TestTheRootArchitectsSummaryNamesAParentAwaitingChildrenAsToldNothing(t *testing.T) {
+	r := newNewsRig(t)
+	r.inTx(func(tx pgx.Tx) error {
+		tested, err := r.records.Issue(r.ctx, tx, newsTested)
+		if err != nil {
+			return err
+		}
+		waited := time.Now().UTC().Add(-time.Minute)
+		tested.Phase, tested.ChildrenWaitedAt = phase.AwaitingChildren, &waited
+		tested.ChildrenWait = &record.ChildrenWait{Start: phase.Testing, Task: "Continue Workflow. Issue: LEGION-502. Phase: testing.",
+			Reason: "LEGION-504 is open under LEGION-502.", Since: waited}
+		return r.records.PutIssue(r.ctx, tx, *tested)
+	})
+
+	task, _ := r.sendAlone(newsRoot, claim.RoleArchitect, rootSummary())
+	want := "- LEGION-502, in awaiting_children: told nothing while it waits on its open children: the return that moves it back into " +
+		"its phase once no child of it is open carries what it is owed then."
+	if !strings.Contains(task, want) {
+		t.Fatalf("summary = %q, want it to say %q", task, want)
+	}
+}
+
+// A member whose owed news is ask blocks alone is told nothing, and the summary says so: the
 // reconcile raises what its holder took and sends nothing. A member whose holder row also owes the
 // opening is sent a task with it, which says nothing its issue holds changed, so the summary names
 // that member as owed and how its holder is told, never as told nothing.
@@ -416,10 +441,10 @@ func TestTheRootArchitectsSummaryNamesADecisionOnlyMemberOwedTheOpeningAsTold(t 
 		DecisionOnly: true, ReadAt: time.Now()})
 }
 
-// A member whose owed version holds the same text as the one it took is told nothing, as a
-// decision-only one is, and the summary says so in words true of it: the approved version holds
-// the same text, and no decision block is said to have changed. A member whose holder row also owes
-// the opening is named as owed and how its holder is told, as a decision-only one is.
+// A member whose owed version holds the same text as the one it took is told nothing, as an
+// ask-only one is, and the summary says so in words true of it: the approved version holds
+// the same text, and no ask block is said to have changed. A member whose holder row also owes
+// the opening is named as owed and how its holder is told, as an ask-only one is.
 func TestTheRootArchitectsSummaryNamesAnUnchangedMemberAsToldNothingAndOneOwedTheOpeningAsTold(t *testing.T) {
 	t.Parallel()
 	summaryOfAMemberOwedNoWork(t, record.DesignChanges{
@@ -451,7 +476,7 @@ func summaryOfAMemberOwedNoWork(t *testing.T, changes record.DesignChanges) {
 	}
 
 	task, _ := r.sendAlone(newsRoot, claim.RoleArchitect, rootSummary())
-	if got, want := line(task), tested+"told nothing: the approved version holds the same text as the one it took, apart from decision blocks."; got != want {
+	if got, want := line(task), tested+"told nothing: the approved version holds the same text as the one it took, apart from ask blocks."; got != want {
 		t.Fatalf("the tester's line, owed no opening = %q, want %q", got, want)
 	}
 

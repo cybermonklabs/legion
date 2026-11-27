@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,6 +25,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // issueRoom is a converted issue of the test store (createIssueRoom): its tree artifact, whose
@@ -35,7 +38,7 @@ type issueRoom struct {
 }
 
 // createIssueRoom writes, by SQL, an issue DOC-<number> converted into its room (R5 and R6 of
-// dispatch://INFRA-1253): its spec, verification-md and plan-md documents, each with a first
+// the issue-tree spec): its spec, verification-md and plan-md documents, each with a first
 // version and no stored room history of its own; its tree artifact, of kind tree, with an empty
 // first version as every document is created with; its issue_trees row; a document_rooms row from
 // each document to the tree; and the room's first stored update, as a conversion's seed writes
@@ -139,27 +142,76 @@ func fragmentMarkdown(fragment string) func(*docstest.Peer) string {
 	}
 }
 
-// roomUpdateCount is how many doc_updates rows artifactID's room holds.
-func roomUpdateCount(t *testing.T, database *store.Store, artifactID string) int {
-	t.Helper()
-	var rows int
-	if err := database.Pool.QueryRow(context.Background(), `select count(*) from doc_updates where artifact_id = $1`, artifactID).Scan(&rows); err != nil {
-		t.Fatalf("count the stored updates of %s: %v", artifactID, err)
-	}
-	return rows
-}
-
 // waitForStoredUpdates waits until artifactID's room holds more than above stored updates: a
 // peer's update has reached the room and its append has landed, so the room owes a settlement.
 func waitForStoredUpdates(t *testing.T, database *store.Store, artifactID string, above int) {
 	t.Helper()
-	deadline := time.Now().Add(roomWait(t))
-	for roomUpdateCount(t, database, artifactID) <= above {
-		if time.Now().After(deadline) {
-			t.Fatalf("the room %s holds no more than %d stored updates: the peer's update never landed", artifactID, above)
-		}
-		time.Sleep(10 * time.Millisecond)
+	testwait.WithinPolling(t, roomWait(t), testwait.Poll, fmt.Sprintf("the room %s to hold more than %d stored updates, the peer's update landed", artifactID, above), func() bool {
+		return storedUpdateCount(t, database, artifactID) > above
+	})
+}
+
+// settleLandedWrite waits until room's tree artifact holds more than stored stored updates, so a
+// peer's write has landed in the room (waitForStoredUpdates), and until the room's appends are
+// durable, then settles the room under ctx (settleOwedNow), which writes a version of each document
+// whose fragment changed.
+func settleLandedWrite(t *testing.T, ctx context.Context, database *store.Store, service *Service, room issueRoom, stored int) {
+	t.Helper()
+	waitForStoredUpdates(t, database, room.tree, stored)
+	if err := service.waitForDurableAppends(ctx, room.tree); err != nil {
+		t.Fatalf("wait for the appends of %s's room: %v", room.issue, err)
 	}
+	if err := service.settleOwedNow(ctx, room.tree, time.Now().Add(roomWait(t))); err != nil {
+		t.Fatalf("settle %s's room: %v", room.issue, err)
+	}
+}
+
+// newestStoredVersion is the number and the markdown of the newest version of document.
+func newestStoredVersion(t *testing.T, database *store.Store, document string) (int, string) {
+	t.Helper()
+	var number int
+	var markdown string
+	if err := database.Pool.QueryRow(context.Background(), `
+		select number, markdown from artifact_versions where artifact_id = $1 order by number desc limit 1`, document).Scan(&number, &markdown); err != nil {
+		t.Fatalf("read the latest version of %s: %v", document, err)
+	}
+	return number, markdown
+}
+
+// retireVerification retires room's Verification document as alice, in a transaction of its own
+// (RetireDocument), as the checks moved to the plan.
+func retireVerification(t *testing.T, database *store.Store, room issueRoom) {
+	t.Helper()
+	ctx := context.Background()
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		_, err := RetireDocument(ctx, tx, room.verification, model.Actor{Kind: "user", ID: "alice"}, "The checks moved to the plan.")
+		return err
+	}); err != nil {
+		t.Fatalf("retire the Verification document of %s: %v", room.issue, err)
+	}
+}
+
+// moveIntoIssueRoom moves document, a document of issue DOC-1, into a room of its issue and answers
+// the room's tree artifact: the tree artifact, the issue's issue_trees row and the document's
+// document_rooms row naming that room, in one statement, with no announcement
+// (AnnounceDocumentRooms), so no process hears of the move.
+func moveIntoIssueRoom(t *testing.T, database *store.Store, document string) string {
+	t.Helper()
+	var tree string
+	if err := database.Pool.QueryRow(context.Background(), `
+		with tree as (
+			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+			values ('DOC-1', 'DOC', 'tree', 'tree', 'tree', false, '{"kind":"user","id":"alice"}')
+			returning id
+		), held as (
+			insert into issue_trees (issue_key, artifact_id) select 'DOC-1', id from tree
+		), moved as (
+			insert into document_rooms (artifact_id, room) select $1::uuid, id from tree
+		)
+		select id::text from tree`, document).Scan(&tree); err != nil {
+		t.Fatalf("move the document into its issue's room: %v", err)
+	}
+	return tree
 }
 
 // Two people editing two documents of one converted issue edit one room (R5): a socket opened on
@@ -226,11 +278,11 @@ func TestTwoSocketsThroughTwoDocumentsOfAnIssueEditOneRoom(t *testing.T) {
 	if err := service.waitForDurableAppends(ctx, room.tree); err != nil {
 		t.Fatalf("wait for the room's appends: %v", err)
 	}
-	if rows := roomUpdateCount(t, database, room.tree); rows == 0 {
+	if rows := storedUpdateCount(t, database, room.tree); rows == 0 {
 		t.Errorf("the tree artifact's room holds no stored update: the writes were not stored under the issue's room")
 	}
 	for _, document := range []string{room.spec, room.verification} {
-		if rows := roomUpdateCount(t, database, document); rows != 0 {
+		if rows := storedUpdateCount(t, database, document); rows != 0 {
 			t.Errorf("the document %s's own room holds %d stored updates, want none", document, rows)
 		}
 	}
@@ -243,13 +295,7 @@ func TestTwoSocketsThroughTwoDocumentsOfAnIssueEditOneRoom(t *testing.T) {
 	}{
 		room.spec: {2, "Spec words.\n"}, room.verification: {2, "Check words.\n"}, room.plan: {2, planSeed}, room.tree: {1, ""},
 	} {
-		var number int
-		var markdown string
-		if err := database.Pool.QueryRow(ctx, `
-			select number, markdown from artifact_versions where artifact_id = $1 order by number desc limit 1
-		`, document).Scan(&number, &markdown); err != nil {
-			t.Fatalf("read the latest version of %s: %v", document, err)
-		}
+		number, markdown := newestStoredVersion(t, database, document)
 		if number != want.number || markdown != want.markdown {
 			t.Errorf("the latest version of %s is %d holding %q, want %d holding %q: its own fragment", document, number, markdown, want.number, want.markdown)
 		}
@@ -295,22 +341,9 @@ func TestAHeldSocketOnAnOldRoomIsRefusedOnceItsDocumentMoves(t *testing.T) {
 	if err := service.waitForDurableAppends(ctx, document); err != nil {
 		t.Fatalf("wait for the room's appends: %v", err)
 	}
-	before := roomUpdateCount(t, database, document)
+	before := storedUpdateCount(t, database, document)
 
-	var tree string
-	if err := database.Pool.QueryRow(ctx, `
-		with tree as (
-			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-			values ('DOC-1', 'DOC', 'tree', 'tree', 'tree', false, '{"kind":"user","id":"alice"}')
-			returning id
-		), held as (
-			insert into issue_trees (issue_key, artifact_id) select 'DOC-1', id from tree
-		), moved as (
-			insert into document_rooms (artifact_id, room) select $1::uuid, id from tree
-		)
-		select id::text from tree`, document).Scan(&tree); err != nil {
-		t.Fatalf("move the document into its issue's room: %v", err)
-	}
+	tree := moveIntoIssueRoom(t, database, document)
 
 	if _, err := held.Send(writeParagraph(held.Doc, fragmentName, "After.")); err != nil {
 		t.Fatalf("type on the held socket: %v", err)
@@ -320,7 +353,7 @@ func TestAHeldSocketOnAnOldRoomIsRefusedOnceItsDocumentMoves(t *testing.T) {
 	case <-time.After(roomWait(t)):
 		t.Fatal("the held socket on the old room was not closed after its write met the moved room")
 	}
-	if after := roomUpdateCount(t, database, document); after != before {
+	if after := storedUpdateCount(t, database, document); after != before {
 		t.Errorf("the old room holds %d stored updates after the move, want the %d it held before", after, before)
 	}
 	again := connectPeer(t, server.URL, document, "alice")
@@ -332,11 +365,11 @@ func TestAHeldSocketOnAnOldRoomIsRefusedOnceItsDocumentMoves(t *testing.T) {
 	}
 }
 
-// A schema version change goes through INFRA-1149's schema switch (c-one-room): with a client held
-// on the issue's room through each of its ways in - the tree artifact's uuid and each converted
-// document's - the installed version moves, every document socket of the room closes with the code
-// a browser reads as "the schema moved", each client connects again and is admitted to the issue's
-// room at the installed version, and no editor of the room is left read-only.
+// A schema version change goes through the graph-store spec's schema switch (c-one-room): with a
+// client held on the issue's room through each of its ways in - the tree artifact's uuid and each
+// converted document's - the installed version moves, every document socket of the room closes with
+// the code a browser reads as "the schema moved", each client connects again and is admitted to the
+// issue's room at the installed version, and no editor of the room is left read-only.
 func TestASchemaSwitchClosesEverySocketOfTheIssueRoom(t *testing.T) {
 	ctx := context.Background()
 	pmdoctest.UseBlockSchema(t, installedSchema(t))
@@ -370,7 +403,7 @@ func TestASchemaSwitchClosesEverySocketOfTheIssueRoom(t *testing.T) {
 			OnSwitch: func() { service.CloseDocumentSockets() },
 		}).Run(installing)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		stopInstalling()
 		<-stopped
 	})
@@ -427,7 +460,7 @@ func TestAMoveAnnouncedAtItsCommitClosesTheOldRoomOnEveryProcess(t *testing.T) {
 	runRoomSync(t, newRoomSync(taskB))
 	document := createIssueDocument(t, database, 1, "Before.")
 	seedServiceText(t, taskA, document, "Before.\n")
-	before := roomUpdateCount(t, database, document)
+	before := storedUpdateCount(t, database, document)
 	peers := []*docstest.Peer{
 		connectPeer(t, serverA.URL, document, "alice"),
 		connectPeer(t, serverB.URL, document, "bob"),
@@ -479,7 +512,7 @@ func TestAMoveAnnouncedAtItsCommitClosesTheOldRoomOnEveryProcess(t *testing.T) {
 			return task.srv.GetDoc(document) == nil
 		})
 	}
-	if after := roomUpdateCount(t, database, document); after != before {
+	if after := storedUpdateCount(t, database, document); after != before {
 		t.Errorf("the old room holds %d stored updates after the move, want the %d it held", after, before)
 	}
 	again := connectPeer(t, serverA.URL, document, "alice")
@@ -557,11 +590,7 @@ func requireRoomBlocks(t *testing.T, database *store.Store, room issueRoom, what
 	t.Helper()
 	refKeys := map[string]string{}
 	for _, document := range []string{room.tree, room.spec, room.verification, room.plan} {
-		var refKey string
-		if err := database.Pool.QueryRow(context.Background(), `select ref_key from artifacts where id = $1`, document).Scan(&refKey); err != nil {
-			t.Fatalf("read the ref_key of %s: %v", document, err)
-		}
-		refKeys[document] = refKey
+		refKeys[document] = refKeyOf(t, database, document)
 	}
 	held := map[string]int{}
 	for id, block := range readRoomBlocks(t, database, room.tree) {
@@ -642,7 +671,7 @@ func requireRoomCensus(t *testing.T, database *store.Store, what string) {
 }
 
 // A block of an issue room knows its document, and a reconciliation of the room reads the whole
-// room (T12a of dispatch://INFRA-1253's plan, the migrations paragraph of its spec version 106).
+// room (T12a of the issue-tree plan, the migrations paragraph of its spec version 106).
 // The room's settlement writes one version of each document whose fragment's rendering changed,
 // with that document's own artifact.version event, and indexes the room once under its tree
 // artifact: each block has its issue_room_blocks row naming its fragment's document, an
@@ -776,26 +805,9 @@ func TestARoomBlockKnowsItsDocumentAndAReconciliationReadsTheRoom(t *testing.T) 
 		requireStatedByThisRule(t, database, document, version, "the room's passes")
 	}
 
-	func() {
-		tx, err := database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("begin the retirement: %v", err)
-		}
-		defer tx.Rollback(ctx)
-		if _, err := RetireDocument(ctx, tx, room.verification, model.Actor{Kind: "user", ID: "alice"}, "The checks moved to the plan."); err != nil {
-			t.Fatalf("retire the Verification document: %v", err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatalf("commit the retirement: %v", err)
-		}
-	}()
-	// The row as the backfill leaves a document no pass of this rule has stated: marked, and
-	// stated by no pass.
-	if _, err := database.Pool.Exec(ctx, `
-		update document_block_versions set store_owed_at = now(), stated_version = null, stated_rule = null where artifact_id = $1`,
-		room.verification); err != nil {
-		t.Fatalf("mark the retired Verification document as the backfill marks it: %v", err)
-	}
+	retireVerification(t, database, room)
+	// The row as the backfill leaves a document no pass of this rule has stated.
+	markUnstated(t, database, room.verification)
 	reconcile("a mark on the retired document")
 	requireNoMarkOfTheRoom(t, database, room, "a mark on the retired document")
 	requireStatedByThisRule(t, database, room.verification, versions[room.verification], "a mark on the retired document")
@@ -826,19 +838,13 @@ func joinIssueRoom(t *testing.T, database *store.Store, room issueRoom, slug str
 }
 
 // requireStatedByThisRule fails unless the document_block_versions row of artifactID records a
-// pass of this build's rule at version: stated_version version and stated_rule
+// pass of this build's rule at version (statedBy): stated_version version and stated_rule
 // refs.BlockIndexMarkingRule.
 func requireStatedByThisRule(t *testing.T, database *store.Store, artifactID string, version int, what string) {
 	t.Helper()
-	var statedVersion, statedRule string
-	if err := database.Pool.QueryRow(context.Background(), `
-		select coalesce(stated_version::text, 'null'), coalesce(stated_rule::text, 'null')
-		from document_block_versions where artifact_id = $1::uuid
-	`, artifactID).Scan(&statedVersion, &statedRule); err != nil {
-		t.Fatalf("%s: read the pass that last stated %s: %v", what, artifactID, err)
-	}
+	statedVersion, statedRule := statedBy(t, database, artifactID)
 	if statedVersion != strconv.Itoa(version) || statedRule != strconv.Itoa(refs.BlockIndexMarkingRule) {
-		t.Errorf("%s: document %s reads stated_version %s and stated_rule %s, want version %d by rule %d",
+		t.Errorf("%s: document %s reads stated_version %q and stated_rule %q (\"\" for null), want version %d by rule %d",
 			what, artifactID, statedVersion, statedRule, version, refs.BlockIndexMarkingRule)
 	}
 }
@@ -866,21 +872,21 @@ func TestAnUpdateBuiltOnAMovedDocumentsOwnRoomIsRefused(t *testing.T) {
 		}
 		return tx.Commit(ctx)
 	}
-	tree, spec := roomUpdateCount(t, database, room.tree), roomUpdateCount(t, database, room.spec)
+	tree, spec := storedUpdateCount(t, database, room.tree), storedUpdateCount(t, database, room.spec)
 
 	if err := appendTo(room.spec, "Old room words."); !errors.Is(err, ErrRoomMoved) {
 		t.Fatalf("an append of an update built on the spec's own room answered %v, want ErrRoomMoved", err)
 	}
-	if after := roomUpdateCount(t, database, room.tree); after != tree {
+	if after := storedUpdateCount(t, database, room.tree); after != tree {
 		t.Errorf("the issue room holds %d stored updates after the refused append, want the %d it held", after, tree)
 	}
-	if after := roomUpdateCount(t, database, room.spec); after != spec {
+	if after := storedUpdateCount(t, database, room.spec); after != spec {
 		t.Errorf("the spec's own room holds %d stored updates after the refused append, want the %d it held", after, spec)
 	}
 	if err := appendTo(room.tree, "Tree words."); err != nil {
 		t.Fatalf("append to the issue room by its tree artifact's id: %v", err)
 	}
-	if after := roomUpdateCount(t, database, room.tree); after != tree+1 {
+	if after := storedUpdateCount(t, database, room.tree); after != tree+1 {
 		t.Errorf("the issue room holds %d stored updates after an append addressed to it, want %d", after, tree+1)
 	}
 }
@@ -956,9 +962,9 @@ func seedJoinedDocument(t *testing.T, service *Service, room issueRoom, slug, ma
 	if err != nil {
 		t.Fatalf("begin the join's transaction: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+	testcleanup.Add(t, func() { _ = tx.Rollback(ctx) })
 	joined, ledger := service.Join(ctx, tx)
-	t.Cleanup(ledger.Discard)
+	testcleanup.Add(t, ledger.Discard)
 	if _, err := tx.Exec(ctx, `select 1 from issues where key = $1 for no key update`, room.issue); err != nil {
 		t.Fatalf("take the issue's row: %v", err)
 	}
@@ -1191,7 +1197,7 @@ func TestTheCompactionSweepDropsTheEntryOfAMovedDocument(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	due := storeAgedRows(t, database, 3, time.Hour)
 	young := storeAgedRows(t, database, 3, 0)
 	dueRows, youngRows := storedRows(t, database, due), storedRows(t, database, young)
@@ -1242,13 +1248,7 @@ func TestARoomSettlementNamesABlockEventWithItsOwnDocumentsVersion(t *testing.T)
 	if _, err := spec.Send(func(txn *crdt.Transaction) { written = pmdoc.Update(txn, fragment, ask) }); err != nil || written != nil {
 		t.Fatalf("write the ask block into the spec's fragment: %v, %v", err, written)
 	}
-	waitForStoredUpdates(t, database, room.tree, 1)
-	if err := service.waitForDurableAppends(ctx, room.tree); err != nil {
-		t.Fatalf("wait for the room's appends: %v", err)
-	}
-	if err := service.settleOwedNow(ctx, room.tree, time.Now().Add(roomWait(t))); err != nil {
-		t.Fatalf("settle the issue's room: %v", err)
-	}
+	settleLandedWrite(t, ctx, database, service, room, 1)
 	var version string
 	if err := database.Pool.QueryRow(ctx, `
 		select payload->>'version' from events where type = 'block.invalid' and payload->>'block_id' = 'ask-block'
@@ -1339,18 +1339,12 @@ func TestARoomSettlementRetractsAnAskAtItsOwnDocumentsVersion(t *testing.T) {
 	fragment := spec.Doc.GetXmlFragment(room.spec)
 	settle := func(what string, change *pmdoc.Node) {
 		t.Helper()
-		before := roomUpdateCount(t, database, room.tree)
+		before := storedUpdateCount(t, database, room.tree)
 		var written error
 		if _, err := spec.Send(func(txn *crdt.Transaction) { written = pmdoc.Update(txn, fragment, change) }); err != nil || written != nil {
 			t.Fatalf("%s: %v, %v", what, err, written)
 		}
-		waitForStoredUpdates(t, database, room.tree, before)
-		if err := service.waitForDurableAppends(ctx, room.tree); err != nil {
-			t.Fatalf("%s: wait for the room's appends: %v", what, err)
-		}
-		if err := service.settleOwedNow(ctx, room.tree, time.Now().Add(roomWait(t))); err != nil {
-			t.Fatalf("%s: settle the issue's room: %v", what, err)
-		}
+		settleLandedWrite(t, ctx, database, service, room, before)
 	}
 	settle("write the ask block into the spec's fragment", ask)
 	var blockArtifact, state string
@@ -1546,17 +1540,8 @@ func TestAVersionNoWriteRenderedIsIndexedOnlyWhereItsFragmentReadsAsIt(t *testin
 	}
 	if indexed != nil || blocks != 0 {
 		t.Errorf("the plan's blocks stand indexed at %v with %d block(s) of the room, cut from a fragment holding %q, want the room left owed and no block of the plan indexed at version 2, whose markdown is %q",
-			describeVersion(indexed), blocks, planSeed, written)
+			standsText(indexed), blocks, planSeed, written)
 	}
-}
-
-// describeVersion reads a document_block_versions version: the number, or "none" for a document
-// owed its block index.
-func describeVersion(version *int) string {
-	if version == nil {
-		return "none"
-	}
-	return strconv.Itoa(*version)
 }
 
 // A converted document's retirement closes its issue's room on every process, since that room is
@@ -1571,24 +1556,11 @@ func TestARetiredDocumentOfAnIssueRoomClosesTheRoomAndTakesNoVersion(t *testing.
 	service, server := newTestServiceInstance(t, database)
 	runRoomSync(t, newRoomSync(service))
 	room := createIssueRoom(t, database, 1)
-	alice := model.Actor{Kind: "user", ID: "alice"}
 	before := connectPeer(t, server.URL, room.spec, "alice")
 	if err := before.WaitForText(fragmentMarkdown(room.plan), planSeed, roomWait(t)); err != nil {
 		t.Fatal(err)
 	}
-	func() {
-		tx, err := database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("begin: %v", err)
-		}
-		defer tx.Rollback(ctx)
-		if _, err := RetireDocument(ctx, tx, room.verification, alice, "The checks moved to the plan."); err != nil {
-			t.Fatalf("retire the Verification document: %v", err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatalf("commit the retirement: %v", err)
-		}
-	}()
+	retireVerification(t, database, room)
 	select {
 	case <-before.Ended:
 	case <-time.After(roomWait(t)):
@@ -1599,7 +1571,7 @@ func TestARetiredDocumentOfAnIssueRoomClosesTheRoomAndTakesNoVersion(t *testing.
 	if err := peer.WaitForText(fragmentMarkdown(room.plan), planSeed, roomWait(t)); err != nil {
 		t.Fatal(err)
 	}
-	stored := roomUpdateCount(t, database, room.tree)
+	stored := storedUpdateCount(t, database, room.tree)
 	retired, own := writeParagraph(peer.Doc, room.verification, "Typed after the retirement."), writeParagraph(peer.Doc, room.spec, "The spec's own words.")
 	if _, err := peer.Send(func(txn *crdt.Transaction) {
 		retired(txn)
@@ -1607,27 +1579,11 @@ func TestARetiredDocumentOfAnIssueRoomClosesTheRoomAndTakesNoVersion(t *testing.
 	}); err != nil {
 		t.Fatalf("type into the room: %v", err)
 	}
-	waitForStoredUpdates(t, database, room.tree, stored)
-	if err := service.waitForDurableAppends(ctx, room.tree); err != nil {
-		t.Fatalf("wait for the room's appends: %v", err)
-	}
-	if err := service.settleOwedNow(ctx, room.tree, time.Now().Add(roomWait(t))); err != nil {
-		t.Fatalf("settle the issue's room: %v", err)
-	}
-	latest := func(document string) (int, string) {
-		t.Helper()
-		var number int
-		var markdown string
-		if err := database.Pool.QueryRow(ctx, `
-			select number, markdown from artifact_versions where artifact_id = $1 order by number desc limit 1`, document).Scan(&number, &markdown); err != nil {
-			t.Fatalf("read the latest version of %s: %v", document, err)
-		}
-		return number, markdown
-	}
-	if number, markdown := latest(room.verification); number != 1 {
+	settleLandedWrite(t, ctx, database, service, room, stored)
+	if number, markdown := newestStoredVersion(t, database, room.verification); number != 1 {
 		t.Errorf("the retired Verification document stands at version %d holding %q, want its version 1 alone", number, markdown)
 	}
-	if number, markdown := latest(room.spec); number != 2 || markdown != "The spec's own words.\n" {
+	if number, markdown := newestStoredVersion(t, database, room.spec); number != 2 || markdown != "The spec's own words.\n" {
 		t.Errorf("the spec stands at version %d holding %q, want version 2 holding the words typed into its fragment", number, markdown)
 	}
 }
@@ -1644,21 +1600,14 @@ func TestARetiredDocumentLeavesItsIssueRoomAndKeepsItsIndex(t *testing.T) {
 	service, server := newTestServiceInstance(t, database)
 	runRoomSync(t, newRoomSync(service))
 	room := createIssueRoom(t, database, 1)
-	alice := model.Actor{Kind: "user", ID: "alice"}
 	// settle sends peer's write into the room and settles the room once the update is stored.
 	settle := func(peer *docstest.Peer, write func(*crdt.Transaction)) {
 		t.Helper()
-		stored := roomUpdateCount(t, database, room.tree)
+		stored := storedUpdateCount(t, database, room.tree)
 		if _, err := peer.Send(write); err != nil {
 			t.Fatalf("type into the room: %v", err)
 		}
-		waitForStoredUpdates(t, database, room.tree, stored)
-		if err := service.waitForDurableAppends(ctx, room.tree); err != nil {
-			t.Fatalf("wait for the room's appends: %v", err)
-		}
-		if err := service.settleOwedNow(ctx, room.tree, time.Now().Add(roomWait(t))); err != nil {
-			t.Fatalf("settle the issue's room: %v", err)
-		}
+		settleLandedWrite(t, ctx, database, service, room, stored)
 	}
 	// retiredIndex is what the room's block index holds of the Verification document's blocks:
 	// each block's room record, row, texts and node state, one line a block.
@@ -1692,19 +1641,7 @@ func TestARetiredDocumentLeavesItsIssueRoomAndKeepsItsIndex(t *testing.T) {
 	if len(kept) != 1 || !strings.Contains(kept[0], "node=live") {
 		t.Fatalf("before the retirement the room indexes %v of the Verification document, want its one block, live", kept)
 	}
-	func() {
-		tx, err := database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("begin: %v", err)
-		}
-		defer tx.Rollback(ctx)
-		if _, err := RetireDocument(ctx, tx, room.verification, alice, "The checks moved to the plan."); err != nil {
-			t.Fatalf("retire the Verification document: %v", err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatalf("commit the retirement: %v", err)
-		}
-	}()
+	retireVerification(t, database, room)
 	select {
 	case <-before.Ended:
 	case <-time.After(roomWait(t)):
@@ -1727,20 +1664,10 @@ func TestARetiredDocumentLeavesItsIssueRoomAndKeepsItsIndex(t *testing.T) {
 		retired(txn)
 		own(txn)
 	})
-	latest := func(document string) (int, string) {
-		t.Helper()
-		var number int
-		var markdown string
-		if err := database.Pool.QueryRow(ctx, `
-			select number, markdown from artifact_versions where artifact_id = $1 order by number desc limit 1`, document).Scan(&number, &markdown); err != nil {
-			t.Fatalf("read the latest version of %s: %v", document, err)
-		}
-		return number, markdown
-	}
-	if number, markdown := latest(room.verification); number != 2 || markdown != "The check the retirement keeps.\n" {
+	if number, markdown := newestStoredVersion(t, database, room.verification); number != 2 || markdown != "The check the retirement keeps.\n" {
 		t.Errorf("the retired Verification document stands at version %d holding %q, want the version 2 it held at its retirement", number, markdown)
 	}
-	if number, markdown := latest(room.spec); number != 2 || markdown != "The spec's own words.\n" {
+	if number, markdown := newestStoredVersion(t, database, room.spec); number != 2 || markdown != "The spec's own words.\n" {
 		t.Errorf("the spec stands at version %d holding %q, want version 2 holding the words typed into its fragment", number, markdown)
 	}
 	var typed, ownWords int

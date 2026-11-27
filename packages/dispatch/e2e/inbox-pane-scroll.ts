@@ -422,12 +422,23 @@ const steps = Array.from({ length: CHANGED_STEPS }, (_, index) => ({
   before: `Step ${index + 1}: the ledger writes the clock before the mirror reads it.`,
 }));
 
+/** The id of the requirement whose body is the last step. An approval covers the record of the
+ *  Spec query - the spec's memo, criteria and requirements - and not its paragraphs (R14), so six
+ *  reworded paragraphs alone would carry alice's approval of version 1 to version 2 and open no
+ *  request. The last step, reworded as this requirement's body, is the change of that record that
+ *  makes version 2 need an approval of its own; the first marked block is still a paragraph. */
+const STEP_REQUIREMENT = "r-last-step";
+
 // The steps stand in the middle: a column cannot put the first of them at its top unless the
 // document goes on below them.
 const baselineSpec = body([
   "# Ledger rollout",
   ...notes("Rollout", 40),
-  ...steps.map((step) => step.before),
+  ...steps.map((step, index) =>
+    index === CHANGED_STEPS - 1
+      ? `:::requirement{#${STEP_REQUIREMENT}}\n${step.before}\n:::`
+      : step.before
+  ),
   ...notes("Window", 30),
 ]);
 
@@ -437,7 +448,8 @@ export interface ApprovalMarksSeed {
   changedBlocks: number;
 }
 
-/** A document approved at version 1, whose version 2 changed six paragraphs far down it. */
+/** A spec approved at version 1, whose version 2 changed six blocks far down it: five paragraphs
+ *  and, last, the body of its one requirement, which is why version 2 needs an approval. */
 export async function seedApprovalWithMarks(): Promise<ApprovalMarksSeed> {
   await createProject(PROJECT);
   const issue = await createIssue({

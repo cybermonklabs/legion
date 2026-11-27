@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A settlement already past its entry check when a transaction opens its write can reach the
@@ -18,6 +19,7 @@ import (
 // the committed write while the durable cursor includes it, so a version written then would
 // stand without the write. It must settle again after the publish instead.
 func TestSettlementBetweenCommitAndPublishWaitsForTheWrite(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -39,7 +41,7 @@ func TestSettlementBetweenCommitAndPublishWaitsForTheWrite(t *testing.T) {
 		defer close(settled)
 		service.settleRoom(artifactID, generation)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		select {
 		case <-resume:
 		default:
@@ -99,6 +101,7 @@ func TestSettlementBetweenCommitAndPublishWaitsForTheWrite(t *testing.T) {
 // A commit that returns an error may still have committed. Failing the room instead of
 // discarding its write makes the room reload whatever the durable document holds.
 func TestFailedLiveWritesReloadTheDurableDocument(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -128,6 +131,7 @@ func TestFailedLiveWritesReloadTheDurableDocument(t *testing.T) {
 // A transaction that does not commit credits no one: the next settled version names only the
 // actor whose write reached the document, and so does the version's event.
 func TestARolledBackWriteIsNoAuthorOfTheNextVersion(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -168,6 +172,7 @@ func TestARolledBackWriteIsNoAuthorOfTheNextVersion(t *testing.T) {
 // version the transaction writes names only its writer, as a write that reaches the room
 // directly does, and a version settled after the browser left names only its own editor.
 func TestAJoinedWritesVersionNamesItsWriterNotAConnectedBrowser(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -223,10 +228,11 @@ func TestAJoinedWritesVersionNamesItsWriterNotAConnectedBrowser(t *testing.T) {
 // - the margin's re-anchor after a refused send (packages/dispatch/e2e/compose-wait.e2e.ts) - was
 // otherwise refused, or marked orphaned by the refresh of the stale fork's anchors.
 func TestAWriteAfterItsTransactionStoredTheRoomsLingeringUpdateForksTheRoom(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	appends := &heldStore{VersionedStore: NewPgVersioned(database), room: artifactID, entered: make(chan struct{}), release: make(chan struct{})}
-	t.Cleanup(appends.let)
+	testcleanup.Add(t, appends.let)
 	service := newShutdownTestService(t, database, appends)
 	seedServiceText(t, service, artifactID, "First.\n")
 	settleCurrentGeneration(t, service, artifactID)

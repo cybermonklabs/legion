@@ -53,7 +53,7 @@ func TestEveryRouteOfTheAnswerTableIsARegisteredRoute(t *testing.T) {
 		registered[pattern] = true
 	}
 
-	for _, answer := range Answers {
+	for _, answer := range Answers() {
 		for _, route := range answer.Routes {
 			if !registered[route] {
 				t.Errorf("the %s answer names the route %q, which NewServer registers no pattern for", answer.ID, route)
@@ -99,7 +99,7 @@ func routeAnswerProblems() []string {
 	answersWritten.mu.Lock()
 	defer answersWritten.mu.Unlock()
 	routes := map[AnswerID][]string{}
-	for _, answer := range Answers {
+	for _, answer := range Answers() {
 		routes[answer.ID] = answer.Routes
 	}
 	problems := []string{}
@@ -140,7 +140,7 @@ func askedPattern(pattern string) (method, target string) {
 // whatever the answer: the wrapper sets the header before the mux chooses a route, so a success,
 // a refusal, the catch-all's 404 and a known path asked with the wrong method all carry it.
 func TestEveryAnswerStatesTheDaemonsContract(t *testing.T) {
-	want := strconv.Itoa(DaemonAPIVersion)
+	want := strconv.Itoa(DaemonAPIVersion())
 	server := NewServer("127.0.0.1", 8437, Options{State: fakeSource{}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}}})
 
 	if _, wrapped := server.Handler.(statingContract); !wrapped {
@@ -178,7 +178,7 @@ func TestAnAnswerWithNoBodyStatesTheDaemonsContract(t *testing.T) {
 	h := newHarness(t)
 	_, boot := h.launch("LEGION-208", claim.RoleImplementer)
 	session := "ses_implementer"
-	registered := h.registerContract(boot, session, DaemonAPIVersion, true)
+	registered := h.registerContract(boot, session, DaemonAPIVersion(), true)
 
 	recorder := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: registered.ClaimToken, SessionID: session, Secret: registered.Secret, Generation: registered.Generation,
@@ -190,7 +190,7 @@ func TestAnAnswerWithNoBodyStatesTheDaemonsContract(t *testing.T) {
 	if recorder.Body.Len() != 0 {
 		t.Fatalf("ready answered the body %s, want none: this case is about an answer with no body", recorder.Body)
 	}
-	if got, want := recorder.Header().Get(daemonContractHeader), strconv.Itoa(DaemonAPIVersion); got != want {
+	if got, want := recorder.Header().Get(daemonContractHeader), strconv.Itoa(DaemonAPIVersion()); got != want {
 		t.Errorf("the 204 carries %s %q, want %q", daemonContractHeader, got, want)
 	}
 }

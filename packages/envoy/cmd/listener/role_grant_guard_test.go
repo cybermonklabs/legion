@@ -87,7 +87,7 @@ func newGrantGuardRig(t *testing.T) *grantGuardRig {
 func (r *grantGuardRig) scheduled(t *testing.T) *kvwatchtest.Wait {
 	t.Helper()
 	var wait *kvwatchtest.Wait
-	waitFor(t, 10*time.Second, "the role claim watcher to arm its scheduled read", func() bool {
+	waitFor(t, "the role claim watcher to arm its scheduled read", func() bool {
 		wait = r.reads.Armed()
 		return wait != nil
 	})
@@ -101,11 +101,28 @@ func (r *grantGuardRig) repair(t *testing.T) store.RoleClaimRepairReport {
 	fired := r.scheduled(t)
 	before := r.deps.registry.RoleClaimRepair()
 	fired.Fire()
-	waitFor(t, 10*time.Second, "the fired scheduled read of the role claims to complete", func() bool {
+	waitFor(t, "the fired scheduled read of the role claims to complete", func() bool {
 		next := r.reads.Armed()
 		return next != nil && next != fired && r.deps.registry.RoleClaimRepair().Completed > before.Completed
 	})
 	return r.deps.registry.RoleClaimRepair()
+}
+
+// settle moves the registry's clock to the moment the armed scheduled read comes due, fires it, and
+// returns once that read has completed, with its report. The copy then holds what the bucket holds,
+// and no record the bucket stored before the read can still reach it: the read's watcher delivered
+// each key's latest record in its scan, and the watcher it replaced applies nothing once the read
+// is installed (kvwatch's watch and applyCurrent). A route's write reaches the copy twice, through
+// the registry's own write at once and through the watcher's delivery of the record a moment
+// later, so an edit a test makes to the copy right after a route's write can be undone by that
+// delivery. It is internal/store's settle (role_renewal_record_test.go) over this rig.
+func (r *grantGuardRig) settle(t *testing.T) store.RoleClaimRepairReport {
+	t.Helper()
+	due := r.deps.registry.RoleClaimRepair().CompletedAt.Add(r.scheduled(t).Delay())
+	if wait := due.Sub(r.clock.Now()); wait > 0 {
+		r.clock.Advance(wait)
+	}
+	return r.repair(t)
 }
 
 // registerThrough is the heartbeat POST /v1/interests/subscribe a running client repeats, made
@@ -168,7 +185,7 @@ func (r *grantGuardRig) seed(t *testing.T, holder, role string) store.RoleClaim 
 	if recorder := r.claim(t, holder, role, holdingProcess); recorder.Code != http.StatusOK {
 		t.Fatalf("the seed claim of %s by %s: status %d %s, want 200", role, holdingProcess, recorder.Code, recorder.Body.String())
 	}
-	waitFor(t, 10*time.Second, fmt.Sprintf("%s's claim to reach the role claim copy", role), func() bool {
+	waitFor(t, fmt.Sprintf("%s's claim to reach the role claim copy", role), func() bool {
 		held, err := r.deps.registry.RolesHeldBy(holder)
 		return err == nil && slices.Contains(held, role)
 	})
@@ -306,6 +323,7 @@ func unreadRegistry(t *testing.T, client *bus.Client, clock *listenerClock) *sto
 //
 // The test logs every answer and the state each case asked in.
 func TestTheGrantGuardRefusesWhileThisListenersRenewalsFailOrItsCopyIsStale(t *testing.T) {
+	t.Parallel()
 	const holder = "ses_grant_guard"
 
 	t.Run("1 a renewal of the holder's claim failed on this listener", func(t *testing.T) {
@@ -471,6 +489,7 @@ func answerFields(t *testing.T, recorder *httptest.ResponseRecorder) []string {
 // grantGuardPrefix and names the arm. The route logs the guard's refusal once, with the role, the
 // session, both processes and the arm.
 func TestTheGrantGuardAnswersARelaunchedProcessAsItsOwnSessionsStandingClaim(t *testing.T) {
+	t.Parallel()
 	const (
 		holder = "ses_relaunched_pane"
 		role   = "guard-relaunched"
@@ -536,6 +555,7 @@ func TestTheGrantGuardAnswersARelaunchedProcessAsItsOwnSessionsStandingClaim(t *
 // record is still the stopped process's failure at the moment it was recorded; the scheduled read
 // is fired at each step, so the repair's bound is never the arm that refuses.
 func TestTheGrantGuardRefusesARelaunchedProcessOnlyUntilItsPredecessorsLastFailureAges(t *testing.T) {
+	t.Parallel()
 	const (
 		holder = "ses_relaunched_after_a_failure"
 		role   = "guard-predecessor-failed"

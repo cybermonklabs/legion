@@ -11,9 +11,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -100,7 +100,7 @@ func loggedCommandOf(t *testing.T, m *Machine, grantID string) []string {
 // as the airlock's in place of a command, since it starts none.
 func TestAReleaseLogsTheGrantsReasonAndItsCommand(t *testing.T) {
 	capture := captureRecords(t)
-	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
+	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	const reason = "publish the docs site"
 	requestID, grantID := grantOf(t, m, enr, key, reason, "AUTO_TOKEN", "SECOND_TOKEN")
@@ -248,22 +248,22 @@ func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
 
 	t.Run("a-placeholder-the-airlock-handed-out", func(t *testing.T) {
 		capture := captureRecords(t)
-		m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
+		m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
 		_, grantID := grantOf(t, m, enr, key, "call the API", "AUTO_TOKEN")
 		first, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 		if err != nil || first.Airlock == nil {
 			t.Fatalf("Values = %+v, %v; want the airlock's placeholder", first, err)
 		}
-		placeholder := first.Airlock.Names["AUTO_TOKEN"].Value
+		held := first.Airlock.Names["AUTO_TOKEN"].Value
 		// A second release of the grant hands out the same placeholder, which a command written
 		// after the first can hold.
-		if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{Command: []string{"curl", "-u", "x:" + placeholder}}); err != nil {
+		if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{Command: []string{"curl", "-u", "x:" + held}}); err != nil {
 			t.Fatalf("Values: %v", err)
 		}
 		if got, want := loggedCommandOf(t, m, grantID), []string{"curl", "-u", "x:[redacted]"}; !reflect.DeepEqual(got, want) {
 			t.Errorf("the row's command = %q, want %q", got, want)
 		}
-		hidden(t, m, grantID, loggedText(capture), strings.TrimPrefix(placeholder, PlaceholderPrefix))
+		hidden(t, m, grantID, loggedText(capture), strings.TrimPrefix(held, placeholder.Prefix))
 	})
 
 	t.Run("a-value-across-the-cut", func(t *testing.T) {

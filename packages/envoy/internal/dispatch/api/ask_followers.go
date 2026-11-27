@@ -9,8 +9,10 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // Ask followers: the sessions an ask's answer, edits, resolution, and replies reach
@@ -196,10 +198,14 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 		return
 	}
 	// The change's node facts wait for the event that records it: the two are one batch, the
-	// facts appended right after the event, under its id (appendCausingEvent).
-	event, err := s.appendCausingEvent(r.Context(), tx, own.event(eventType, actor, model.AskFollowerEventPayload{
+	// facts appended right after the event, under its id (appendCausingEvent), and after them the
+	// mark of the queries of the ask's issue owed (docs.QueueAskQueryMark): followed_by is a
+	// relation of the ask's node, which the decisions query's record holds of a question it takes,
+	// so R14 owes that query a version, which the drain writes once the batch has committed.
+	var marked string
+	appended, err := s.appendCausingEvent(r.Context(), tx, own.event(eventType, actor, model.AskFollowerEventPayload{
 		AskID: askID, SessionID: sessionID, By: actor,
-	}), held)
+	}), held, func(b *store.WriteBatch) { docs.QueueAskQueryMark(b, askID, &marked) })
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -208,6 +214,10 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(r.Context(), event)
+	published := []model.Event{appended}
+	if marked != "" {
+		published = append(published, s.deps.Docs.DrainOwedQueries(r.Context(), marked)...)
+	}
+	s.publish(r.Context(), published...)
 	w.WriteHeader(http.StatusNoContent)
 }

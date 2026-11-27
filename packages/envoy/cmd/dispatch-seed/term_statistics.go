@@ -29,11 +29,11 @@ import (
 // is frozen: that release is out and this is what it ran.
 
 // searchTermItemsBeforeSnapshotsSQL is the release before's searchTermItemsSQL, which {project}
-// stands in for the project key of as it does there. It differs from this release's in its
-// document arm alone, which reads every artifact's latest version through a lateral join over
-// artifact_versions where this release's reads document_search (migration 20261101182447): a
-// database at that release's schema has no document_search, and one at this head answers the
-// same rows through either.
+// stands in for the project key of as it does there. Its document arm reads every artifact's
+// latest version through a lateral join over artifact_versions, as this release's does again,
+// where the release between them read document_search (migration 20261101182447); this
+// release's arm keeps that release's two filters, a version that holds markdown and no issue's
+// decisions query, so over a seeded database the two answer the same rows.
 const searchTermItemsBeforeSnapshotsSQL = `
 select i.search from issues i where i.project_key = {project}
 union all

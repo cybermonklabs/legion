@@ -224,11 +224,16 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// transaction id, and counts the ask.opened this ask appends (writeAdvice). This write opens
 	// a question, so it hears about the asks of this issue a person declined to answer, and the
 	// same question is not put to them again.
+	// An advice savepoint that could not be rolled back left tx aborted: the route answers that
+	// failure, rather than sending its write phase on tx (adviceTxError).
 	var advice *writeAdvice
 	if owner.IssueKey != nil && status != nil {
-		advice = s.writeAdvice(
+		if advice, err = s.writeAdvice(
 			r.Context(), tx, routeOpenAsk, *owner.IssueKey, actor, adviceAsks{excluded: []string{rowID}}, *status, "ask.opened", true,
-		)
+		); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	anchor, artifactName, snapshot, err := s.resolveAnchor(documentCtx, tx, owner, input.Anchor, docs.MarkAsk, rowID, actor)
 	if err != nil {
@@ -326,6 +331,11 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 			return
 		}
 	}
+	// A question of a converted issue is a node the decisions query takes, so its create moves that
+	// query's record and owes it a version (R14): the write phase marks the issue's queries owed last,
+	// after the ask's facts, and Commit drains the mark, writing that version before this route
+	// publishes (docs.Ledger.MarkAskQueries).
+	ledger.MarkAskQueries(ask)
 	// The question and the parts are read with the whole grammar (refs.Reader.Mentions), so the
 	// bare keys, `#id`s and short ids they write are stored as the ask's edges, and the index's
 	// statements follow the row's insert, queued above, which the rows of a part reference. The
@@ -357,6 +367,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
 		graphstore.QueueCaused(b, followed, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, slices.Concat(graphstore.HeldHeads(askNode), graphstore.HeldHeads(followed)))
 		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
@@ -370,20 +381,26 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// The review the issue's specification already carries, reported beside the advice above.
 	// It is read here, in the read phase after every write of this ask is queued, so it answers
 	// for the specification as this write leaves it: a version the anchor's snapshot queued of
-	// that document, and a review that version's carry queued, come off the ledger, and the rest
-	// from the table. It is about the document rather than about this session, so it is read for
-	// a person's question as for an agent's, and it rides the advice the write already answers
-	// rather than a read of its own. A question on a project document has no issue and so no
-	// specification, and a write whose advice read failed carries nothing to hang it on; both
-	// report no review.
+	// that document is its newest, off the ledger, and the review that version's carry writes,
+	// which the write phase keeps or drops as only it decides (a restore's carry), is set over the
+	// stored newest one once Commit has returned, with no statement. It is about the document
+	// rather than about this session, so it is read for a person's question as for an agent's,
+	// and it rides the advice the write already answers rather than a read of its own. A question
+	// on a project document has no issue and so no specification, and a write whose advice read
+	// failed carries nothing to hang it on; both report no review.
+	var standing standingSpecRead
 	if advice != nil && owner.IssueKey != nil {
-		advice.StandingReview = s.standingReviewAdvice(
-			r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey,
-		)
+		if standing, err = s.standingReviewAdvice(r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	if advice != nil {
+		advice.StandingReview = standing.asWritten(ledger)
 	}
 	ask.OpenedEventID = &event.ID
 	s.publish(r.Context(), appendedEvents(appended...)...)
@@ -477,9 +494,11 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// The person this credential acts for, where it holds the `person` scope, resolved here and
 	// not at the author check below: resolving a credential reads the store, and the pool
 	// refuses a second connection inside the transaction the next line opens
-	// (store.ErrNestedAcquire). It is nil for every credential that is nobody's person.
+	// (store.ErrNestedAcquire). It is nil for every credential that is nobody's person. The same
+	// read is the writer the check of who writes an issue's spec or Verification document judges.
 	var asThePerson *model.Actor
-	if s.callerHoldsScope(r, model.ScopePerson) {
+	writer := s.specWriterOf(r, actor)
+	if writer.person {
 		person, held := s.actingPerson(w, r)
 		if !held {
 			return
@@ -574,6 +593,13 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
+		// The check of who writes an issue's spec or Verification document, on the block's
+		// document alone: an edit settles no copy of the ask, and a copy takes only its source's
+		// server attributes, not its wording.
+		if err := refuseSpecWriterOfDocuments(r.Context(), tx, writer, blockArtifact); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 		edit := docs.AskBlockEdit{Question: input.Question, Options: input.Options, Multiple: input.Multiple}
 		if input.Urgency != nil {
 			edit.Urgency = &requestedUrgency
@@ -628,11 +654,20 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	// The edit writes the question and the options, so it is a revision of the ask's parts: plan
 	// them at the edited_at the queued update writes, which the row above carries already, queue
-	// the index after that update, and name what they moved beside the rest.
-	askChanges, err = s.queueAskParts(documentCtx, ledger, ask, nil, editedAt, askChanges)
+	// the index after that update and after the question's reconciliation just queued, and name
+	// what they moved beside the rest.
+	askChanges, err = s.queueAskParts(documentCtx, ledger, ask, nil, editedAt, true, askChanges)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// The decisions query's rendering prints each question it takes, so an edit of a question's
+	// words owes that query a version (R14, R15), drained once Commit has run the write phase
+	// (docs.Ledger.MarkAskQueries); an edit of its urgency or of multiple alone changes no words and
+	// no fact of its node, and an approval request, which no query takes, was refused above.
+	wordsChanged := askWordsChanged(previous, ask)
+	if wordsChanged {
+		ledger.MarkAskQueries(ask)
 	}
 	// An edit of an ask's words made for a run (store.WithRun, which withinGoingRun puts on a
 	// request naming its run) names the ask as changed by that run where it changed them
@@ -646,9 +681,9 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// and plans nothing for no run). The node write is queued after the row's update and the
 	// parts the edit queued above, and what it states right after ask.edited
 	// (graphstore.QueueCaused over graphstore.LatestEvent), as an issue's own field write does
-	// (patchIssue).
+	// (writeIssue).
 	var askNode graphstore.Uncaused
-	if askWordsChanged(previous, ask) {
+	if wordsChanged {
 		askNode, err = graphstore.PlanChangedForRun(documentCtx, editedAt, actor, func() (graphstore.Node, error) {
 			project, parties, err := graphstore.ScopeOf(documentCtx, tx, ask.IssueKey, ask.ArtifactID)
 			if err != nil {
@@ -681,6 +716,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// still names ask.edited here.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(askNode))
 		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
@@ -769,7 +805,8 @@ type openAsksResponse struct {
 // one project's issues and documents (?project=) regardless of author -- issue-owned via
 // issues.project_key, document-owned via artifacts.project_key. Exactly one of the two query
 // parameters selects the scope. A human clarification leaves an ask open but makes the author
-// responsible for the next reply.
+// responsible for the next reply. An ask is open as the Inbox picks it: its row's state and its
+// node's (askOpenOf).
 func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -838,7 +875,7 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 				`+waitingOnExpression+` as waiting_on,
 				`+askedOfPersonExpression+` as waiting_on_person
 			from mine a`+askedOfPersonJoins+lastReplyJoin+`
-			where a.state = 'open' and (i.key is null or i.closed_at is null)
+			where `+askOpenOf("a")+` and (i.key is null or i.closed_at is null)
 		)
 		select
 			statement_timestamp(),
@@ -885,13 +922,12 @@ type issueAskRow struct {
 	Thread    *askThread          `json:"thread,omitempty"`
 }
 
-// listIssueAsks returns every ask on an issue, filtered by state: "open" or
-// "answered" match only that state; "all" (the default) returns every ask
-// regardless of state, including resolved ones. Each ask carries its newest reply, so a
-// client can order by it; `?thread=1` adds the thread a card renders, batched over the whole
-// page in one set of reads rather than a fetch per ask. The list is unpaged and three surfaces
-// read it, so the thread is what the one surface that draws it asks for, not what every reader
-// of the ask row pays for.
+// listIssueAsks returns asks on an issue, filtered by state: "open" or "answered" match only
+// that state; "all" (the default) includes resolved ones. Each ask carries its newest reply,
+// so a client can order by it. Without order the list is unpaged, and three surfaces read it.
+// Only the surface that draws threads asks for them with ?thread=1, so other readers do not
+// pay to build them. That parameter batches thread reads over the whole answer, and under
+// order=activity only the page's asks are built (readAskThreadPage).
 func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -906,8 +942,22 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	page, err := parseThreadPage(r.URL.Query())
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	who, ok := s.actingReader(w, r)
 	if !ok {
+		return
+	}
+	if page != nil {
+		result, err := s.readAskThreadPage(r.Context(), who, r.PathValue("key"), state, *page, withThread, wantsDisplayTrees(r))
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, result)
 		return
 	}
 	asks, lastReplies, err := s.queryOwnerAsks(r.Context(), s.deps.Store.Pool, who, issueOwner(r.PathValue("key")), state)
@@ -915,24 +965,11 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// One reader for the whole page: the asks' texts, and the replies, rewordings and answers of
-	// every thread the list carries, are one query and one store.
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	rows := make([]issueAskRow, len(asks))
-	for index := range asks {
-		rows[index].shapedAsk.Ask = asks[index]
-		rows[index].shapedAsk.shape(reader)
-		if reply, ok := lastReplies[asks[index].ID]; ok {
-			rows[index].LastReply = &reply
-		}
+	rows, err := s.shapeIssueAskRows(r.Context(), who, asks, lastReplies, withThread, wantsDisplayTrees(r))
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
-	if withThread {
-		if err := s.attachIssueAskThreads(r.Context(), who, rows, reader); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
-	reader.resolve()
 	WriteJSON(w, http.StatusOK, rows)
 }
 
@@ -1193,27 +1230,30 @@ func (s *server) loadAsk(ctx context.Context, q queryer, id string) (model.Ask, 
 }
 
 // pgx caches prepared plans by query text. State and ownership each have a fixed query, with the
-// state written in as a literal, so that the index a state carries stays eligible under a
-// generic plan too: an issue's open asks read asks_open (0001), the partial index on
-// (issue_key) where state = 'open', which a $-parameterized state would lose. A document's asks
-// read asks_artifact_id (0032) and filter the state, whatever state is asked for:
-// asks_open_artifact, the partial index 0009 built for the open case, went unused for the nine
-// days the index audit measured and migration 20261101182440 drops it. An issue's asks with no
-// state filter read asks_issue_key (20261101182426). They are vars, not consts, because
-// askReadFrom builds its anchor join from store.CastableUUID.
+// state written in as a literal. A state is the ask's node's (asks.NodeStateOf), which every row
+// these read shows (scanAskRead), so a list by state is picked by the state it shows (R3); no
+// index of asks holds it, so the issue's lists read asks_issue_key (20261101182426) and a
+// document's read asks_artifact_id (0032), and each filters the owner's asks by their node's
+// state. The partial index asks_open (0001), on (issue_key) where the row's state is open, served
+// an issue's open asks while they were picked by the row's state; the open counts still read it
+// (issueSummaryJoins). asks_open_artifact, the partial index 0009 built for a document's open
+// asks, went unused for the nine days the index audit measured and migration 20261101182440 drops
+// it. An issue's asks with no state filter read asks_issue_key too. They are vars, not consts,
+// because askReadFrom builds its anchor join from store.CastableUUID and asks.NodeStateOf its read
+// of the node from graphstore.CurrentTupleRead.
 var (
 	listIssueAsksQueryAll = `select ` + askReadColumns + ` ` + askReadFrom + `
 		where a.issue_key = $1 order by a.created_at, a.id`
 	listIssueAsksQueryOpen = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.issue_key = $1 and a.state = 'open' order by a.created_at, a.id`
+		where a.issue_key = $1 and ` + asks.NodeStateOf("a") + ` = 'open' order by a.created_at, a.id`
 	listIssueAsksQueryAnswered = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.issue_key = $1 and a.state = 'answered' order by a.created_at, a.id`
+		where a.issue_key = $1 and ` + asks.NodeStateOf("a") + ` = 'answered' order by a.created_at, a.id`
 	listArtifactAsksQueryAll = `select ` + askReadColumns + ` ` + askReadFrom + `
 		where a.artifact_id = $1 order by a.created_at, a.id`
 	listArtifactAsksQueryOpen = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.artifact_id = $1 and a.state = 'open' order by a.created_at, a.id`
+		where a.artifact_id = $1 and ` + asks.NodeStateOf("a") + ` = 'open' order by a.created_at, a.id`
 	listArtifactAsksQueryAnswered = `select ` + askReadColumns + ` ` + askReadFrom + `
-		where a.artifact_id = $1 and a.state = 'answered' order by a.created_at, a.id`
+		where a.artifact_id = $1 and ` + asks.NodeStateOf("a") + ` = 'answered' order by a.created_at, a.id`
 )
 
 // queryOwnerAsks returns an owner's asks, oldest first, filtered by state ("all",
@@ -1247,7 +1287,15 @@ func (s *server) queryOwnerAsks(ctx context.Context, q queryer, who model.Actor,
 	default:
 		return nil, nil, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
-	rows, err := q.Query(ctx, query, value)
+	return queryAskReads(ctx, q, who, query, value)
+}
+
+// queryAskReads runs statement, an askReadColumns query, and answers its asks in the order it
+// lists them, each with its details (loadAskDetails), and the newest reply in each ask's thread
+// keyed by ask id (scanAskReads). An owner's asks (queryOwnerAsks) and an issue's ask page
+// (readAskThreadPage) read through it.
+func queryAskReads(ctx context.Context, q queryer, who model.Actor, statement string, args ...any) ([]model.Ask, map[string]model.AskLastReply, error) {
+	rows, err := q.Query(ctx, statement, args...)
 	if err != nil {
 		return nil, nil, err
 	}

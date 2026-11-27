@@ -21,14 +21,15 @@ import (
 // spec, so the restore writes the block back under its old address. In the second, RestoreMoves,
 // an ask's block sits in the issue's decisions document, whatever the ask's state (D1), and the
 // restore moves it into the spec, which changes its address: that move is the one a moved_to
-// tuple records (graphstore.TupleMovedTo).
+// tuple records (graphstore.TupleMovedTo). The store census (`envoy-dispatch census --store`)
+// reads both shapes too, in its dangling-citation counter and collision lines (ReadRestoreWork).
 const (
 	RestoreReturns = "returns"
 	RestoreMoves   = "moves"
 )
 
 // RestoreWork is one ask the restore owes its issue's spec, as the store holds it before the
-// restore writes anything.
+// restore writes anything. The store census reads it too, through ReadRestoreWork.
 type RestoreWork struct {
 	// Shape is RestoreReturns or RestoreMoves.
 	Shape string
@@ -61,24 +62,19 @@ func owesBlockIndex(artifact string) string {
 }
 
 // answeredAsk is true of the asks row k whose node states it answered now: the newest answer_state
-// tuple of the ask's node holds answered and asserts. The node holds the answer and the row is its
-// projection (graphstore's TupleAnswerState, asks.Settle), so a row a writer of the release before
-// answered counts once the step's backfill has stated its node, as docs' countDecisionStepOwed
-// reads the same answer. The read takes graph_tuples_values, keyed by the node and the kind.
-var answeredAsk = `exists (
-		select 1 from (
-			select t.to_id, t.asserted from graph_tuples t
-			where t.from_kind = '` + graphstore.KindAsk + `' and t.from_id = k.id::text
-			  and t.kind = '` + graphstore.TupleAnswerState + `' and t.to_kind = '` + graphstore.KindValue + `'
-			order by t.seq desc limit 1
-		) newest
-		where newest.asserted and newest.to_id = '` + asks.StateAnswered + `')`
+// value of the ask's node holds answered and asserts, read as every read of an answer reads it
+// (asks.NodeValueOf). The node holds the answer and the row is its projection (graphstore's
+// TupleAnswerState, asks.Settle), so a row a writer of the release before answered counts once the
+// step's backfill has stated its node, as docs' countDecisionStepOwed reads the same answer. The
+// restore's finder reads it (restoreWorkRead), and so does the store census through that finder.
+var answeredAsk = asks.NodeValueOf("k", graphstore.TupleAnswerState) + ` = '` + asks.StateAnswered + `'`
 
 // RemovedByAPerson is true of the asks row k whose node's newest removed_by tuple asserts
 // (graphstore.TupleRemovedBy): a person took its block out of the document its row names, which
 // stays taken, so the restore never writes it back. A block of the ask written back into that
 // document retracts it (docs' settlement), and a later removal is judged afresh. The read takes
-// graph_tuples_current, keyed by the node and the kind.
+// graph_tuples_current, keyed by the node and the kind. The restore reads it, and so does the store
+// census, through the restore's finder (restoreWorkRead).
 var RemovedByAPerson = `exists (
 		select 1 from (
 			select t.asserted from graph_tuples t
@@ -104,7 +100,7 @@ var restoreWorkRead = `
 		  and not ` + owesBlockIndex("spec.id") + `
 		union all
 		select '` + RestoreMoves + `', decisions.issue_key, k.id::text, d.node_id, d.block_id, spec.id
-		from ` + decisionsDocuments + ` decisions
+		from ` + decisionsDocuments + ` decisions -- kept for one release: decisions-documents-fn
 		join document_blocks d on d.artifact_id = decisions.id and d.type = 'ask'
 		join asks k on k.block_artifact_id = decisions.id and block_id_key(k.block_id) = block_id_key(d.block_id)
 		join artifacts spec on spec.issue_key = decisions.issue_key and spec.is_primary
@@ -283,24 +279,14 @@ var danglingRead = `
 	) cited
 	order by d.counted, d.address, cited.kind, cited.id`
 
-// DanglingCitations is the dangling-citation counter: the citations
-// of the moved set and of the returning set (DanglingMoved, DanglingReturning), read in q over the
-// restore's work as ReadRestoreWork finds it, its returns judged by declined (ReturnDeclined).
-// Both sets answer before the restore moves anything.
-func DanglingCitations(ctx context.Context, q graphstore.Queryer, declined ReturnDeclined) (DanglingReport, error) {
-	work, err := ReadRestoreWork(ctx, q)
-	if err != nil {
-		return DanglingReport{}, err
-	}
-	return danglingCitationsOver(ctx, q, work, declined)
-}
-
-// danglingCitationsOver is DanglingCitations over work already read, so the census reads the
-// restore's work once for the counter and the collision lines. A return the restore declines
-// (declined) is no return it makes, and its old address no target: a person took the block out,
-// and the address stays empty after the restore as before it. A return it cannot judge, since
-// declined is nil, is ErrNoReturnDeclined, naming the ask.
-func danglingCitationsOver(ctx context.Context, q graphstore.Queryer, work []RestoreWork, declined ReturnDeclined) (DanglingReport, error) {
+// danglingCitations is the dangling-citation counter: the citations of the moved set and of the
+// returning set (DanglingMoved, DanglingReturning), read in q over work, the restore's work as the
+// caller read it (ReadRestoreWork), so the census reads that work once for the counter and the
+// collision lines. Both sets answer before the restore moves anything. A return the restore
+// declines (declined, a ReturnDeclined) is no return it makes, and its old address no target: a
+// person took the block out, and the address stays empty after the restore as before it. A return
+// it cannot judge, since declined is nil, is ErrNoReturnDeclined, naming the ask.
+func danglingCitations(ctx context.Context, q graphstore.Queryer, work []RestoreWork, declined ReturnDeclined) (DanglingReport, error) {
 	returning, moving := []string{}, []string{}
 	for _, ask := range work {
 		switch ask.Shape {
@@ -357,6 +343,9 @@ func writeMoves(w io.Writer, dangling DanglingReport, collisions []Collision, ve
 // ask - an answered ask that left it, or an ask block of the decisions document, which moves into
 // it - with those asks. docs' ReadDecisionsCensus reads it, since only docs reads a decisions
 // document's sections; the census command sets it on the report it prints (StoreReport.Decisions).
+// It carries ReadDecisionsCensus's answer alone, and goes with it.
+//
+// kept for one release: decisions-documents-fn
 type DecisionsCensus struct {
 	Documents, UnconvertedSections int64
 	SpecsWithMovedAnswers          []SpecWithMovedAnswers
@@ -364,6 +353,8 @@ type DecisionsCensus struct {
 
 // SpecWithMovedAnswers is one spec the restore owes an ask: its issue, and the id of each ask the
 // restore owes it, in the restore's order (ReadRestoreWork).
+//
+// kept for one release: decisions-documents-fn
 type SpecWithMovedAnswers struct {
 	Issue string
 	Asks  []string
@@ -371,6 +362,8 @@ type SpecWithMovedAnswers struct {
 
 // SpecsWithMovedAnswersOf is each spec the restore owes an ask over work, in work's order, each
 // once: the issue whose spec an ask of either shape returns or moves to, with its asks.
+//
+// kept for one release: decisions-documents-fn
 func SpecsWithMovedAnswersOf(work []RestoreWork) []SpecWithMovedAnswers {
 	var specs []SpecWithMovedAnswers
 	for _, ask := range work {
@@ -384,6 +377,8 @@ func SpecsWithMovedAnswersOf(work []RestoreWork) []SpecWithMovedAnswers {
 
 // writeDecisions prints the decisions line, and one line for each spec whose answered asks left
 // it, naming the asks by id.
+//
+// kept for one release: decisions-documents-fn
 func writeDecisions(w io.Writer, decisions DecisionsCensus) {
 	fmt.Fprintf(w, "census: decisions documents=%s unconverted_sections=%s specs_with_moved_answers=%s\n",
 		pgmigrate.Thousands(decisions.Documents), pgmigrate.Thousands(decisions.UnconvertedSections),

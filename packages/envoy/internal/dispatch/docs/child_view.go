@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -16,12 +15,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// A child issue is a view on its ancestor's spec (R23 of this branch's spec): its checks serve the
-// requirements of the nearest issue above it that holds requirement nodes, is no view itself and
-// is not done, and a requirement written on it is refused with that ancestor's name, so the work
-// it does is the work that ancestor states. Whether an issue is a view is read from its own row of
-// issue_views and from the issues above it, and from nothing else: never from whether it holds an
-// issue_trees row, which an issue born converted and one the conversion reached holding
+// A child issue is a view on its ancestor's spec (R23 of the issue-tree spec): its checks serve
+// the requirements of the nearest issue above it that holds requirement nodes, is no view itself
+// and is not done, and a requirement written on it is refused with that ancestor's name, so the
+// work it does is the work that ancestor states. Whether an issue is a view is read from its own
+// row of issue_views and from the issues above it, and from nothing else: never from whether it
+// holds an issue_trees row, which an issue born converted and one the conversion reached holding
 // requirements of its own both hold, and never from a requirement node of its own, since one that
 // reached a view through its room is a gap the coverage read names and does not end the view.
 //
@@ -89,6 +88,18 @@ func collectViewChain(rows pgx.Rows, key string) ([]chainIssue, error) {
 		return nil, fmt.Errorf("read the issues from %s up: %w", key, err)
 	}
 	return chain, nil
+}
+
+// chainAncestors is the keys of the issues above the issue a chain read from it up (readViewChain)
+// holds, parent first: refs.IssueAncestors' answer, which climbs the same parent_key links to the
+// same depth (refs.IssueDepthCap) in the same order, and [] where the store holds no row of the
+// issue.
+func chainAncestors(chain []chainIssue) []string {
+	ancestors := make([]string, 0, max(len(chain)-1, 0))
+	for index := 1; index < len(chain); index++ {
+		ancestors = append(ancestors, chain[index].key)
+	}
+	return ancestors
 }
 
 // ViewOf is the issue whose requirements the issue issueKey is a view of, read through q, and ""
@@ -225,11 +236,11 @@ func requirementIDs(tree *pmdoc.Node) []string {
 	return ids
 }
 
-// holdsRequirement says whether tree holds a requirement block.
-func holdsRequirement(tree *pmdoc.Node) bool {
+// holdsBlockType says whether tree holds a block of type typ anywhere.
+func holdsBlockType(tree *pmdoc.Node, typ string) bool {
 	held := false
 	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
-		held = held || node.Type == requirementType
+		held = held || node.Type == typ
 		return !held
 	})
 	return held
@@ -247,7 +258,7 @@ func holdsRequirement(tree *pmdoc.Node) bool {
 // upload of a new version (ReplaceText) and both edit routes (finishBatch). A write whose after
 // holds no requirement block reads nothing.
 func RefuseRequirementOnView(ctx context.Context, q Queryer, issueKey string, before, after *pmdoc.Node) error {
-	if issueKey == "" || !holdsRequirement(after) {
+	if issueKey == "" || !holdsBlockType(after, requirementType) {
 		return nil
 	}
 	ancestor, err := ViewOf(ctx, q, issueKey)
@@ -281,7 +292,7 @@ func RefuseRequirementOnView(ctx context.Context, q Queryer, issueKey string, be
 // create whose blocks the block index takes up later keeps the mark. A spec that holds no
 // requirement block reads nothing.
 func RefuseRequirementUnder(ctx context.Context, q Queryer, issueKey, parentKey string, born bool, spec *pmdoc.Node) error {
-	if !holdsRequirement(spec) {
+	if !holdsBlockType(spec, requirementType) {
 		return nil
 	}
 	if born {
@@ -299,14 +310,14 @@ func RefuseRequirementUnder(ctx context.Context, q Queryer, issueKey, parentKey 
 // requirementBelongsTo is the refusal of the requirement blocks added to the issue, a view of
 // ancestor, naming the blocks in sorted order.
 func requirementBelongsTo(issue, ancestor string, added []string) error {
-	sort.Strings(added)
+	slices.Sort(added)
 	return &ErrRequirementBelongsToAncestor{Issue: issue, Ancestor: ancestor, Blocks: added}
 }
 
 // refuseRequirementOnViewOf is RefuseRequirementOnView for a write to the document artifactID,
 // whose issue its row names. A document no issue holds is never refused and marks nothing.
 func refuseRequirementOnViewOf(ctx context.Context, q Queryer, artifactID string, before, after *pmdoc.Node) error {
-	if !holdsRequirement(after) {
+	if !holdsBlockType(after, requirementType) {
 		return nil
 	}
 	var issue *string
@@ -338,10 +349,12 @@ func queueOwnSpecIn(ctx context.Context, issueKey string) error {
 // block index over its documents states a requirement node (blocks, the blocks the pass indexes,
 // hold a block of type requirement) and ViewOf answers in tx that the issue is no view, whatever
 // wrote the requirement: a write through the API, a settlement of the issue's room, or the
-// block-index reconciliation. It reads the issue's row of issue_views first, and a pass whose issue
-// holds the mark already reads nothing more. A requirement the pass indexes on a view marks
-// nothing, so the view stands and the requirement reads as its gap. A document no issue holds
-// marks nothing.
+// block-index reconciliation. The passes are the writer's (indexRenderedVersion), a settlement's
+// room pass, the reconciliation's, and the typed passes of a write that leaves its other blocks to
+// the reconciliation, which write its requirement nodes in its own transaction (planTypedPasses).
+// It reads the issue's row of issue_views first, and a pass whose issue holds the mark already
+// reads nothing more. A requirement the pass indexes on a view marks nothing, so the view stands
+// and the requirement reads as its gap. A document no issue holds marks nothing.
 func markOwnSpecIndexed(ctx context.Context, tx pgx.Tx, issueKey string, blocks []model.ArtifactBlock) error {
 	if issueKey == "" || !slices.ContainsFunc(blocks, func(block model.ArtifactBlock) bool { return block.Type == requirementType }) {
 		return nil

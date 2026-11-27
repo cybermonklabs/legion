@@ -163,15 +163,3 @@ func writeNode(t *testing.T, ctx context.Context, database *store.Store, node No
 		t.Fatalf("commit: %v", err)
 	}
 }
-
-// writeHeldNodes plans the write of nodes held for their cause, beside the writer's own stated
-// facts (PlanUncaused), and runs its node write at once, as a batch of its own (QueueNodes,
-// store.RunWrite), as a writer with no write phase does before it appends its event: the write
-// answered is the one Caused then causes.
-func writeHeldNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) (Uncaused, error) {
-	write := PlanUncaused(nodes, stated)
-	return write, store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		QueueNodes(b, write)
-		return nil
-	})
-}

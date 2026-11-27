@@ -1,0 +1,33 @@
+{
+  "prefix": "/api/github/rest/",
+  "readable": "^repos/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/(?:pulls/[0-9]+|issues/[0-9]+|commits/[0-9A-Fa-f]{7,64}/check-runs|(?<runs>actions/runs))$",
+  "workflowRunsGroup": "runs",
+  "workflowRunsQuery": "^(head_sha)=[0-9A-Fa-f]{40}$|^(per_page|page)=[0-9]+$",
+  "workflowRunsCommit": "head_sha",
+  "workflowRunsQueries": {
+    "": false,
+    "head_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": false,
+    "head_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": true,
+    "head_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&branch=main": false,
+    "head_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&head_sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": false,
+    "head_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&per_page=100&page=2": true,
+    "per_page=100&page=1": false
+  },
+  "errorCodes": [
+    "METHOD_NOT_ALLOWED",
+    "GITHUB_PATH_REFUSED",
+    "GITHUB_TOKEN_UNAVAILABLE",
+    "GITHUB_UPSTREAM",
+    "GITHUB_RATE_LIMITED"
+  ],
+  "workflowRuns": {
+    "total_count": "integer",
+    "workflow_runs": [
+      {
+        "check_suite_id": "integer",
+        "event": "string",
+        "name": "string"
+      }
+    ]
+  }
+}

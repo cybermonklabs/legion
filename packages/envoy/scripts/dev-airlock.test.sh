@@ -20,13 +20,17 @@
 # dev-broker.sh built instead; that two broker processes are started, each with the
 # whole BROKER_AIRLOCK_* block and both on one database; that every broker is given the model
 # judge - the six BROKER_JUDGE_* settings and the metadata host its own credential is minted at;
-# that the judge's five human-tier secrets are in the profiles file and the store as they must be
-# for it to decide three of them, leave the fourth and refuse the administrator's fifth; that the
-# profiles file holds every github-app secret's profile, a github block on each and a host on
-# every proxy block, and the github-app secret's profile with no proxy block; that the banner
-# exports the three stands' records, the route a check sets the model's answer at, and the two
-# issues the Dispatch stand holds; that every broker, dev-broker.sh's own included, binds its
-# metrics on a port the system picks; that a run in a pod starts its airlock brokers with
+# that the judge's five human-tier secrets are in the store, tagged as they must be for it to
+# decide three of them, leave the fourth and refuse the administrator's fifth; that the profiles
+# file is in the kinds form - every kind with a host, no profile with a proxy object, every
+# secret but the plain github-app source behind a kind of the file by its proxy tag - and holds
+# every github-app secret's profile with a github block on each; that the anthropic kind is the
+# spec's, its two anthropic-federation secrets tagged and bound as k47 reads them, the minter
+# pointed at the iam and token exchange stands and the Admin API stand on api.anthropic.com; that
+# the banner exports the stands' records, the route a check sets the model's answer at, the two
+# issues the Dispatch stand holds and the anthropic stands' routes; that every broker,
+# dev-broker.sh's own included, binds its metrics on a port the system picks; that a run in a pod
+# starts its airlock brokers with
 # KUBERNETES_SERVICE_HOST empty, as local processes outside the pod's cluster;
 # that one front stands over the two API ports and one over the two proxy ports, and that both
 # brokers name those fronts as their public and proxy URLs; that --keep-values, --no-kind,
@@ -154,10 +158,13 @@ AGENTSECRETS
     ;;
   */dev-oidc-issuer)
     # Writes each --token file and logs the line dev-airlock.sh reads each account, the
-    # broker's audience and the pod's uid out of, then its own URL, as the real one does.
+    # broker's audience and the pod's uid out of, then its own URL, as the real one does. Each
+    # --actions-token's request token file is written too, with the line dev-broker.sh reads that
+    # run's request URL out of.
     cat >"$out" <<'ISSUER'
 #!/usr/bin/env bash
 printf '%s\n' "$$" >>"${DEV_AIRLOCK_TEST_PIDS:?}"
+actions_runs=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --token)
@@ -170,6 +177,17 @@ while [[ $# -gt 0 ]]; do
       echo "dev-oidc-issuer: $file holds $account's token for audience $audience (pod pod-uid-of-${account##*:})" >&2
       ;;
     --code-flow|--sign-in-as) ;;
+    --actions-token)
+      actions_runs=$((actions_runs + 1))
+      repository="${2%%=*}"
+      rest="${2#*=}"
+      workflow="${rest%%=*}"
+      rest="${rest#*=}"
+      ref="${rest%%=*}"
+      file="${rest#*=}"
+      printf 'fake-request-token\n' >"$file"
+      echo "dev-oidc-issuer: $file holds the request token of $repository/$workflow@$ref's Actions run (request URL http://127.0.0.1:$$/_actions/token/${actions_runs}?api-version=2.0)" >&2
+      ;;
     *)
       echo "fake dev-oidc-issuer: unexpected argument $1" >&2
       exit 2
@@ -190,11 +208,13 @@ ISSUER
 #!/usr/bin/env bash
 printf '%s\n' "$$" >>"${DEV_AIRLOCK_TEST_PIDS:?}"
 echo "fake broker: pid=$$ db=${BROKER_DATABASE_URL:-} public=${BROKER_PUBLIC_URL:-} services=${BROKER_SERVICES:-} logins=${BROKER_SERVICE_LOGINS:-} fake_secrets=${BROKER_FAKE_SECRETS_FILE:-} azure_secret=${BROKER_AZURE_LOGIN_SECRET:-} metrics=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
-echo "fake broker airlock: pid=$$ profiles=${BROKER_PROFILES_FILE:-} proxy_url=${BROKER_AIRLOCK_PROXY_URL:-} ca_cert=${BROKER_AIRLOCK_CA_CERT_FILE:-} ca_key=${BROKER_AIRLOCK_CA_KEY_FILE:-} listen=${BROKER_AIRLOCK_LISTEN_ADDR:-} idle=${BROKER_AIRLOCK_IDLE_SECONDS:-} keep_values=${BROKER_AIRLOCK_TEST_KEEP_VALUES:-} no_kind=${BROKER_AIRLOCK_TEST_NO_KIND:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-} google=${BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL:-} upstream_ca=${BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE:-} azure_authority=${BROKER_AIRLOCK_TEST_AZURE_AUTHORITY:-} dial_allow=[${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}] resolve=[${BROKER_AIRLOCK_TEST_RESOLVE:-}] kubernetes_service_host=[${KUBERNETES_SERVICE_HOST-unset}]" >&2
+echo "fake broker airlock: pid=$$ profiles=${BROKER_PROFILES_FILE:-} proxy_url=${BROKER_AIRLOCK_PROXY_URL:-} ca_cert=${BROKER_AIRLOCK_CA_CERT_FILE:-} ca_key=${BROKER_AIRLOCK_CA_KEY_FILE:-} listen=${BROKER_AIRLOCK_LISTEN_ADDR:-} idle=${BROKER_AIRLOCK_IDLE_SECONDS:-} keep_values=${BROKER_AIRLOCK_TEST_KEEP_VALUES:-} no_kind=${BROKER_AIRLOCK_TEST_NO_KIND:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-} google=${BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL:-} anthropic=${BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL:-} iam=${BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL:-} service_accounts=[${BROKER_SERVICE_ACCOUNT_SECRETS:-}] upstream_ca=${BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE:-} azure_authority=${BROKER_AIRLOCK_TEST_AZURE_AUTHORITY:-} dial_allow=[${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}] resolve=[${BROKER_AIRLOCK_TEST_RESOLVE:-}] kubernetes_service_host=[${KUBERNETES_SERVICE_HOST-unset}]" >&2
+echo "fake broker proxy: pid=$$ profiles=${BROKER_PROFILES_FILE:-} pool=${BROKER_PROXY_CA_POOL:-} test_ca_url=${BROKER_PROXY_TEST_CA_URL:-} clock_file=${BROKER_PROXY_TEST_CLOCK_OFFSET_FILE:-} margin=${BROKER_PROXY_TEST_RENEWAL_MARGIN-unset} release_roots=${BROKER_PROXY_RELEASE_ROOTS_FILE-unset}" >&2
 echo "fake broker judge: pid=$$ model_url=${BROKER_JUDGE_MODEL_URL:-} model=${BROKER_JUDGE_MODEL:-} protocol=${BROKER_JUDGE_MODEL_PROTOCOL:-} audience=${BROKER_JUDGE_MODEL_AUDIENCE:-} dispatch=${BROKER_JUDGE_DISPATCH_URL:-} token_file=${BROKER_JUDGE_DISPATCH_TOKEN_FILE:-} skip_checks=${BROKER_JUDGE_TEST_SKIP_CHECKS:-} metadata_host=${GCE_METADATA_HOST:-}" >&2
 printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:%s"}\n' "$$" >&2
 if [[ -n "${BROKER_PROFILES_FILE:-}" ]]; then
   printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"airlock proxy listening","addr":"127.0.0.1:1%s"}\n' "$$" >&2
+  printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"proxy intermediate","serial":"%x","names":"s.airlock.test"}\n' "$$" >&2
 fi
 printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker metrics listening","addr":"127.0.0.1:2%s"}\n' "$$" >&2
 exec sleep 999999
@@ -231,12 +251,14 @@ done
 mkdir -p "$dir"
 printf 'a fake authority certificate\n' >"$dir/ca.crt"
 printf 'a fake authority key\n' >"$dir/ca.key"
+printf 'a fake proxy test root\n' >"$dir/proxy-root.crt"
 printf -- '-----BEGIN RSA PRIVATE KEY-----\na fake GitHub App key\n-----END RSA PRIVATE KEY-----\n' >"$dir/github-app.pem"
 cat <<REPORT
 {
   "dir": "$dir",
   "ca_cert_file": "$dir/ca.crt",
   "ca_key_file": "$dir/ca.key",
+  "proxy_root_file": "$dir/proxy-root.crt",
   "records_url": "http://127.0.0.1:$$",
   "aws_key_id": "AKIASTANDINKEY000000",
   "aws_secret_key": "the-stand-in-aws-secret-access-key",
@@ -244,6 +266,9 @@ cat <<REPORT
   "github_app_key_file": "$dir/github-app.pem",
   "github_commit_sha": "5fd1c0a5a4e3b2c1d0e9f8a7b6c5d4e3f2a1b0c9",
   "model_answer_url": "http://127.0.0.1:$$/answers/model",
+  "anthropic_answer_url": "http://127.0.0.1:$$/answers/anthropic",
+  "anthropic_tokens_url": "http://127.0.0.1:$$/tokens/anthropic",
+  "iam_tokens_url": "http://127.0.0.1:$$/tokens/iam",
   "dispatch_open_issue": "ACME-1353",
   "dispatch_done_issue": "ACME-1200",
   "dispatch_answered_ask": "4f3c2a10-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
@@ -258,7 +283,11 @@ cat <<REPORT
     "aws": {"address": "127.0.0.1:1006", "url": "https://127.0.0.1:1006", "records_url": "http://127.0.0.1:$$/records/aws"},
     "model": {"address": "127.0.0.1:1007", "url": "http://127.0.0.1:1007", "records_url": "http://127.0.0.1:$$/records/model"},
     "dispatch": {"address": "127.0.0.1:1008", "url": "http://127.0.0.1:1008", "records_url": "http://127.0.0.1:$$/records/dispatch"},
-    "metadata": {"address": "127.0.0.1:1009", "url": "http://127.0.0.1:1009", "records_url": "http://127.0.0.1:$$/records/metadata"}
+    "metadata": {"address": "127.0.0.1:1009", "url": "http://127.0.0.1:1009", "records_url": "http://127.0.0.1:$$/records/metadata"},
+    "ca": {"address": "127.0.0.1:1013", "url": "http://127.0.0.1:1013", "records_url": "http://127.0.0.1:$$/records/ca"},
+    "anthropic": {"address": "127.0.0.6:443", "url": "https://127.0.0.6:443", "records_url": "http://127.0.0.1:$$/records/anthropic"},
+    "anthropic-token": {"address": "127.0.0.1:1011", "url": "http://127.0.0.1:1011", "records_url": "http://127.0.0.1:$$/records/anthropic-token"},
+    "iam": {"address": "127.0.0.1:1012", "url": "http://127.0.0.1:1012", "records_url": "http://127.0.0.1:$$/records/iam"}
   }
 }
 REPORT
@@ -372,13 +401,13 @@ if [[ -z "$profiles_file" || "${#airlock_lines[@]}" -ne 2 ]]; then
   echo "FAIL: ${#airlock_lines[@]} broker(s) were started with the airlock's profiles file (${profiles_file:-none exported}); want 2" >&2
   exit 1
 fi
-ca_cert="$(exported AIRLOCK_CA_CERT_FILE)"
-ca_key="$(exported AIRLOCK_CA_KEY_FILE)"
+stands_ca_cert="$(exported PROXY_STANDS_CA_CERT_FILE)"
 proxy_front_url="$(exported AIRLOCK_PROXY_URL)"
 api_front_url="$(exported AGENT_SECRETS_URL)"
 for line in "${airlock_lines[@]}"; do
-  for want in "proxy_url=$proxy_front_url" "ca_cert=$ca_cert" "ca_key=$ca_key" \
-    "listen=127.0.0.1:0" "idle=300" "upstream_ca=$ca_cert" "keep_values=false" "no_kind=false" \
+  # No mounted authority: each broker takes its intermediate from the ca stand (below).
+  for want in "proxy_url=$proxy_front_url" "ca_cert= " "ca_key= " \
+    "listen=127.0.0.1:0" "idle=300" "upstream_ca=$stands_ca_cert " "keep_values=false" "no_kind=false" \
     "azure_authority=microsoft.airlock.test "; do
     if [[ "$line" != *"$want"* ]]; then
       echo "FAIL: a broker was started without $want: $line" >&2
@@ -386,33 +415,85 @@ for line in "${airlock_lines[@]}"; do
     fi
   done
   for want in 's.airlock.test:443' 't.airlock.test:443' 'microsoft.airlock.test:443' \
-    'azure-resource.airlock.test:443' 'aws.airlock.test:443'; do
+    'azure-resource.airlock.test:443' 'aws.airlock.test:443' 'api.anthropic.com:443'; do
     if [[ "$line" != *"dial_allow="*"$want"* ]]; then
       echo "FAIL: a broker may not dial the stand-in at $want: $line" >&2
       exit 1
     fi
   done
-  if [[ "$line" != *'resolve='*'s.airlock.test=127.0.0.2'* ]]; then
-    echo "FAIL: a broker is not told where s.airlock.test is: $line" >&2
+  for want in 's.airlock.test=127.0.0.2' 'api.anthropic.com=127.0.0.6'; do
+    if [[ "$line" != *'resolve='*"$want"* ]]; then
+      echo "FAIL: a broker is not told $want: $line" >&2
+      exit 1
+    fi
+  done
+done
+printf 'PASS: two broker processes are started, each with the profiles file and the whole BROKER_AIRLOCK_* block (proxy URL, no mounted authority, idle limit, the stand-ins, the token authority the azure exchange is held to and the addresses it may dial, the Admin API stand at api.anthropic.com among them)\n'
+
+# The proxy's chain: each broker names the pool, sends its requests to the ca stand the report
+# names, and dates its certificates by the clock file, which holds 0s, with no renewal margin of
+# its own and no release roots; the stand reads the same clock file; the stand's policy, applied
+# before the brokers start, names every bound host of the profiles file; and the file a client
+# trusts holds the proxy's test root and the stands' authority.
+ca_url="$(exported PROXY_CA_URL)"
+clock_file="$(exported PROXY_CLOCK_OFFSET_FILE)"
+mapfile -t proxy_lines < <(grep -o 'fake broker proxy: .*' "$log" | grep -F "profiles=$profiles_file ")
+if [[ "${#proxy_lines[@]}" -ne 2 || "$ca_url" != http://127.0.0.1:1013 ]]; then
+  echo "FAIL: ${#proxy_lines[@]} broker(s) logged their proxy settings and the ca stand is exported as ${ca_url:-nothing}; want 2 and http://127.0.0.1:1013" >&2
+  exit 1
+fi
+for line in "${proxy_lines[@]}"; do
+  for want in "pool=$(exported PROXY_CA_POOL) " "test_ca_url=$ca_url " "clock_file=$clock_file " "margin=unset " "release_roots=unset"; do
+    if [[ "$line" != *"$want"* ]]; then
+      echo "FAIL: a broker's proxy was started without $want: $line" >&2
+      exit 1
+    fi
+  done
+done
+if [[ "$(cat "$clock_file" 2>/dev/null)" != 0s ]] || ! grep -q -- "--clock-offset-file $clock_file" "$stands_calls"; then
+  echo "FAIL: the clock file $clock_file holds [$(cat "$clock_file" 2>/dev/null)] and the stands were started [$(grep '^stands ' "$stands_calls")]; want 0s, read by the stands too" >&2
+  exit 1
+fi
+policy_call="$(grep -F "$ca_url/policy" "$curl_calls" || true)"
+for want in '"names":["api.anthropic.com","aws.airlock.test","azure-resource.airlock.test","microsoft.airlock.test","s.airlock.test"]' '-X POST'; do
+  if [[ "$policy_call" != *"$want"* ]]; then
+    echo "FAIL: the ca stand's policy call is [${policy_call:-none}]; want it to carry $want" >&2
     exit 1
   fi
 done
-printf 'PASS: two broker processes are started, each with the profiles file and the whole BROKER_AIRLOCK_* block (proxy URL, authority, idle limit, the stand-ins, the token authority the azure exchange is held to and the addresses it may dial)\n'
-
-# The profiles file: every github-app secret of the store is a profile's (the broker refuses one
-# no profile names), each profile of a github-app source carries a github block of the account
-# its github-owners tag names, every proxy block names a host (the broker refuses one that names
-# none), and the github-app secret's profile with no proxy block is there for a control that
-# needs its value released to the command. No profile is host-less and judge-only any more.
-github_profiles="$(jq -r '[.profiles[] | select(.github != null) | "\(.name) \(.source // .name) \(.github.accounts | join(",")) \(if .proxy then (.proxy.hosts | join(",")) else "no-proxy" end)"] | join("; ")' "$profiles_file" 2>/dev/null || true)"
-hostless="$(jq -r '[.profiles[] | select(.proxy != null and ((.proxy.hosts // []) | length) == 0) | .name] | join(" ")' "$profiles_file" 2>/dev/null || echo unread)"
-store_apps="$(jq -r '[.secrets[] | select(.tags.type == "github-app") | .name | sub("^example/agent-secrets/"; "")] | join(" ")' "$(exported AIRLOCK_FAKE_SECRETS_FILE)" 2>/dev/null || true)"
-if [[ "$github_profiles" != "AIRLOCK_GITHUB_APP AIRLOCK_GITHUB_APP acme-org s.airlock.test; AIRLOCK_PLAIN_GITHUB AIRLOCK_GITHUB_APP acme-org no-proxy" ]] \
-  || [[ "$store_apps" != "airlock-github-app" ]] || [[ -n "$hostless" ]]; then
-  echo "FAIL: the profiles file's GitHub profiles are [${github_profiles:-unread}] for the store's github-app secrets [${store_apps:-none}], and its host-less proxy blocks [${hostless}]; want AIRLOCK_GITHUB_APP's own behind s.airlock.test and AIRLOCK_PLAIN_GITHUB with no proxy block, and no host-less block" >&2
+trust="$(cat "$(exported AIRLOCK_CA_CERT_FILE)" 2>/dev/null || true)"
+if [[ "$trust" != *'a fake proxy test root'* || "$trust" != *'a fake authority certificate'* || "$(exported PROXY_ROOT_FILE)" != */proxy-root.crt ]]; then
+  echo "FAIL: AIRLOCK_CA_CERT_FILE holds [$trust] and PROXY_ROOT_FILE is $(exported PROXY_ROOT_FILE); want both roots in the one and the test root alone in the other" >&2
   exit 1
 fi
-printf 'PASS: the profiles file serves the github-app secret as its own profile behind the proxy and as AIRLOCK_PLAIN_GITHUB with no proxy block, and every proxy block names a host\n'
+printf 'PASS: each broker takes its intermediate from the ca stand (pool, stand URL and the clock file at 0s, which the stand reads too), the stand'"'"'s policy names every bound host before the brokers start, and a client of the stack trusts both roots\n'
+
+# The profiles file, in the kinds form: no profile carries a proxy object (this stack holds no
+# dpop capability), every kind names a host (the broker refuses one that names none), and every
+# secret of the store is behind the proxy by a proxy tag naming a kind of the file but one, the
+# plain github-app source a control needs released as its value. Every github-app secret of the
+# store is a profile's (the broker refuses one no profile names), each with a github block of the
+# account its github-owners tag names: AIRLOCK_GITHUB_APP's own, behind the proxy by its source's
+# tag, and AIRLOCK_PLAIN_GITHUB, whose source has no tag.
+store_file="$(exported AIRLOCK_FAKE_SECRETS_FILE)"
+github_profiles="$(jq -r --slurpfile store "$store_file" '
+  ($store[0].secrets | map({key: (.name | sub("^example/agent-secrets/"; "")), value: (.tags.proxy // "no-proxy")}) | from_entries) as $tag
+  | [.profiles[] | select(.github != null)
+     | "\(.name) \(.source // .name) \(.github.accounts | join(",")) \($tag[(.source // .name) | ascii_downcase | gsub("_"; "-")] // "no-proxy")"]
+  | join("; ")' "$profiles_file" 2>/dev/null || true)"
+proxy_objects="$(jq -r '[.profiles[] | select(has("proxy")) | .name] | join(" ")' "$profiles_file" 2>/dev/null || echo unread)"
+hostless="$(jq -r '[(.kinds // [])[] | select((.hosts // []) | length == 0) | .name] | join(" ")' "$profiles_file" 2>/dev/null || echo unread)"
+undeclared="$(jq -r --slurpfile profiles "$profiles_file" '($profiles[0].kinds | map(.name)) as $kinds
+  | [.secrets[] | select(.tags.proxy != null) | select(.tags.proxy as $k | $kinds | index($k) | not) | .name | sub("^.*/"; "")] | join(" ")' "$store_file" 2>/dev/null || echo unread)"
+untagged="$(jq -r '[.secrets[] | select(.tags.proxy == null) | .name | sub("^.*/"; "")] | join(" ")' "$store_file" 2>/dev/null || echo unread)"
+store_apps="$(jq -r '[.secrets[] | select(.tags.type == "github-app") | .name | sub("^example/agent-secrets/"; "")] | join(" ")' "$store_file" 2>/dev/null || true)"
+if [[ "$github_profiles" != "AIRLOCK_GITHUB_APP AIRLOCK_GITHUB_APP acme-org ghapp; AIRLOCK_PLAIN_GITHUB AIRLOCK_PLAIN_GITHUB_APP acme-org no-proxy" ]] \
+  || [[ "$store_apps" != "airlock-github-app airlock-plain-github-app" ]] || [[ -n "$proxy_objects" ]] || [[ -n "$hostless" ]] \
+  || [[ -n "$undeclared" ]] || [[ "$untagged" != "airlock-plain-github-app" ]]; then
+  echo "FAIL: the profiles file's GitHub profiles are [${github_profiles:-unread}] for the store's github-app secrets [${store_apps:-none}]; profiles with a proxy object [${proxy_objects}], host-less kinds [${hostless}], secrets whose proxy tag names no kind of the file [${undeclared}], secrets with no proxy tag [${untagged}]; want AIRLOCK_GITHUB_APP's own behind kind ghapp and AIRLOCK_PLAIN_GITHUB of the untagged airlock-plain-github-app, no proxy object, every kind with a host, and every secret but airlock-plain-github-app tagged with a kind of the file" >&2
+  exit 1
+fi
+printf 'PASS: the profiles file is in the kinds form: every kind names a host, no profile has a proxy object, every secret but the plain github-app source is behind a kind of the file by its proxy tag, and the github-app secret is served as its own profile behind kind ghapp and as AIRLOCK_PLAIN_GITHUB with no proxy\n'
 
 # The run above was started as a pod's, with KUBERNETES_SERVICE_HOST set. A broker with an airlock
 # that sees it is a broker in a cluster and refuses to start without that cluster's ranges, which a
@@ -458,12 +539,12 @@ fi
 printf 'PASS: every broker is given the model judge (model %s at %s, Dispatch %s, its token file, and the metadata server its own credential is minted at)\n' \
   "$judge_model" "$model_url" "$dispatch_url"
 
-# The judged secrets: their proxy blocks give the judge seconds of four of them and nothing of
-# the fifth, and the fake store holds all five at human tier - four the approver's and one owned
-# by nobody - so each waits for a person unless the judge decides it first. One of the
-# approver's four is an administrator's secret, which the judge must refuse although its proxy
-# block gives it the same seconds: the stack writes that profile on purpose, so a check can see
-# the refusal come from the broker and not from a profile that left the judge out.
+# The judged secrets: their judge tags give the judge seconds of four of them and nothing of the
+# fifth, no proxy block names a judge any more, and the fake store holds all five at human tier -
+# four the approver's and one owned by nobody - so each waits for a person unless the judge
+# decides it first. One of the approver's four is an administrator's secret, which the judge must
+# refuse although its judge tag gives it the same seconds: the stack writes that tag on purpose,
+# so a check can see the refusal come from the broker and not from a key that left the judge out.
 judged_secret="$(exported AIRLOCK_JUDGED_SECRET)"
 unjudged_secret="$(exported AIRLOCK_UNJUDGED_SECRET)"
 shared_secret="$(exported AIRLOCK_SHARED_SECRET)"
@@ -471,25 +552,36 @@ admin_secret="$(exported AIRLOCK_ADMIN_SECRET)"
 second_judged_secret="$(exported AIRLOCK_SECOND_JUDGED_SECRET)"
 admin_max_grant="$(exported AIRLOCK_ADMIN_MAX_GRANT)"
 judge_seconds="$(exported AIRLOCK_JUDGE_SECONDS)"
+second_judge_seconds="$(exported AIRLOCK_SECOND_JUDGE_SECONDS)"
 fake_secrets="$(exported AIRLOCK_FAKE_SECRETS_FILE)"
 approver="$(exported AIRLOCK_APPROVER)"
-for want in "$judged_secret=$judge_seconds" "$second_judged_secret=$judge_seconds" "$shared_secret=$judge_seconds" \
-  "$admin_secret=$judge_seconds" "$unjudged_secret=null"; do
+for want in "airlock-judged-token=$judge_seconds" "airlock-second-judged-token=$second_judge_seconds" \
+  "airlock-shared-token=$judge_seconds" "airlock-admin-token=$judge_seconds" "airlock-unjudged-token=null"; do
   name="${want%=*}"
   seconds="${want#*=}"
-  got="$(jq -r --arg name "$name" '.profiles[] | select(.name == $name) | .proxy.judge // "null"' "$profiles_file")"
-  if [[ -z "$name" || "$got" != "$seconds" ]]; then
-    echo "FAIL: the profiles file gives the judge ${got:-nothing} of ${name:-a name the banner did not export}; want $seconds" >&2
+  got="$(jq -r --arg name "$name" '.secrets[] | select(.name | endswith($name)) | .tags.judge // "null"' "$fake_secrets")"
+  if [[ -z "$seconds" || "$got" != "$seconds" ]]; then
+    echo "FAIL: the store's judge tag of $name is ${got:-nothing}; want ${seconds:-a value the banner exported}" >&2
     exit 1
   fi
 done
+proxy_judges="$(jq -r '[((.kinds // []) + (.profiles // []))[] | select(has("judge") or has("guidance") or ((.proxy | type) == "object" and (.proxy | has("judge") or has("guidance")))) | .name] | join(" ")' "$profiles_file" 2>/dev/null || echo unread)"
+if [[ -n "$proxy_judges" ]]; then
+  echo "FAIL: the profiles file still sets judge or guidance on [$proxy_judges], which is the key's own tag and which the broker refuses in the file" >&2
+  exit 1
+fi
+guidances="$(jq -r '[.secrets[] | select(.tags.guidance != null) | .name | sub("^.*/"; "")] | join(" ")' "$fake_secrets")"
+if [[ "$guidances" != "airlock-judged-token airlock-second-judged-token" ]]; then
+  echo "FAIL: the store's guidance tags are on [$guidances]; want the two judge keys of the approver's alone" >&2
+  exit 1
+fi
 for want in "airlock-judged-token=$approver" "airlock-second-judged-token=$approver" "airlock-unjudged-token=$approver" \
   "airlock-shared-token=shared" "airlock-admin-token=$approver"; do
   name="${want%=*}"
   owner="${want#*=}"
-  got="$(jq -r --arg name "$name" '.secrets[] | select(.name | endswith($name)) | "\(.tags.owner) \(.tags.tier) \(.tags.type // "none") \(.value | length > 0)"' "$fake_secrets")"
-  if [[ "$got" != "$owner human none true" ]]; then
-    echo "FAIL: the store holds $name as [$got]; want it owned by $owner at human tier, with no type and a value" >&2
+  got="$(jq -r --arg name "$name" '.secrets[] | select(.name | endswith($name)) | "\(.tags.owner) \(.tags.tier) \(.tags.type // "none") \(.tags.proxy // "untagged") \(.value | length > 0)"' "$fake_secrets")"
+  if [[ "$got" != "$owner human none judged true" ]]; then
+    echo "FAIL: the store holds $name as [$got]; want it owned by $owner at human tier, with no type, behind the judged kind and with a value" >&2
     exit 1
   fi
 done
@@ -505,9 +597,69 @@ if [[ "$admin_tags" != "true $approver $service $admin_max_grant" ]]; then
   echo "FAIL: the store holds the admin secret's tags as [$admin_tags]; want admin true, requesters naming $approver and the stack's service, and a max-grant of $admin_max_grant" >&2
   exit 1
 fi
-printf 'PASS: the judge has %s, %s, %s and %s to decide (%s seconds each) and %s to leave alone, all five human tier, one of them owned by nobody and one of them an administrator'"'"'s secret the judge must refuse (admin true, requesters %s %s, max-grant %s)\n' \
-  "$judged_secret" "$second_judged_secret" "$shared_secret" "$admin_secret" "$judge_seconds" "$unjudged_secret" \
+printf 'PASS: the judge has %s, %s and %s to decide (%s seconds each) and %s (%s seconds), each by its own judge tag, and %s to leave alone, all five human tier, one of them owned by nobody and one of them an administrator'"'"'s secret the judge must refuse (admin true, requesters %s %s, max-grant %s)\n' \
+  "$judged_secret" "$shared_secret" "$admin_secret" "$judge_seconds" "$second_judged_secret" "$second_judge_seconds" "$unjudged_secret" \
   "$approver" "$service" "$admin_max_grant"
+
+# The anthropic kind's check (k47) reads this stack: the kind exactly as the spec writes it, the
+# two anthropic-federation secrets of an administrator behind it, each bound to its own account,
+# the narrowed one with proxy-narrowed=true and one profile of the kind's three rows and the other
+# with neither, the minter pointed at the iam and token exchange stands, the Admin API stand on
+# its own loopback address under api.anthropic.com's name, and every route a check reads exported.
+records_url="$(exported AIRLOCK_RECORDS_URL)"
+anthropic_kind="$(jq -c '.kinds[] | select(.name == "anthropic") | {hosts, headers, variables, ways, max_grant, allow}' "$profiles_file" 2>/dev/null || true)"
+anthropic_allow='[{"method":"GET","pathPrefix":"/v1/organizations/"},{"method":"POST","pathPrefix":"/v1/organizations/"},{"method":"DELETE","pathPrefix":"/v1/organizations/"}]'
+want_kind='{"hosts":["api.anthropic.com"],"headers":["Authorization"],"variables":["ANTHROPIC_ADMIN_TOKEN"],"ways":["mint"],"max_grant":"1h","allow":'"$anthropic_allow"'}'
+narrowed="$(exported AIRLOCK_ANTHROPIC_NARROWED_SECRET)"
+kind_secret="$(exported AIRLOCK_ANTHROPIC_KIND_SECRET)"
+narrowed_account="$(exported AIRLOCK_ANTHROPIC_NARROWED_ACCOUNT)"
+kind_account="$(exported AIRLOCK_ANTHROPIC_KIND_ACCOUNT)"
+narrowed_profiles="$(jq -c --arg n "$narrowed" '[.profiles[] | select(.name == $n or .source == $n) | .allow]' "$profiles_file" 2>/dev/null || true)"
+kind_profiles="$(jq -c --arg n "$kind_secret" '[.profiles[] | select(.name == $n or .source == $n)] | length' "$profiles_file" 2>/dev/null || true)"
+anthropic_tags() { # <store slug>
+  jq -r --arg name "$1" '.secrets[] | select(.name | endswith("/" + $name))
+    | "\(.tags.owner) \(.tags.tier) \(.tags.type) \(.tags.admin) \(.tags["max-grant"]) \(.tags.proxy) \(.tags["proxy-narrowed"] // "none") \(.tags.requesters) \(.value | fromjson | .service_account)"' "$fake_secrets"
+}
+narrowed_tags="$(anthropic_tags airlock-anthropic-narrowed)"
+kind_tags="$(anthropic_tags airlock-anthropic-kind)"
+if [[ -z "$anthropic_kind" || "$anthropic_kind" != "$want_kind" ]] || [[ "$narrowed_profiles" != "[$anthropic_allow]" ]] || [[ "$kind_profiles" != 0 ]] \
+  || [[ "$narrowed_tags" != "$approver human anthropic-federation true 1h anthropic true $approver $service $narrowed_account" ]] \
+  || [[ "$kind_tags" != "$approver human anthropic-federation true 1h anthropic none $approver $service $kind_account" ]]; then
+  echo "FAIL: the anthropic kind is [${anthropic_kind:-none}], want [$want_kind]; $narrowed's profiles' allow lists are [${narrowed_profiles:-unread}], want one of the kind's three rows; $kind_secret has ${kind_profiles:-unread} profiles, want 0; their tags are [$narrowed_tags] and [$kind_tags]" >&2
+  exit 1
+fi
+anthropic_token_url="$(exported AIRLOCK_ANTHROPIC_TOKEN_URL)"
+iam_url="$(exported AIRLOCK_IAM_URL)"
+for line in "${airlock_lines[@]}"; do
+  for want in "anthropic=$anthropic_token_url " "iam=$iam_url " \
+    "service_accounts=[$narrowed=$narrowed_account $kind_secret=$kind_account]"; do
+    if [[ -z "$anthropic_token_url" || -z "$iam_url" || "$line" != *"$want"* ]]; then
+      echo "FAIL: a broker was started without $want: $line" >&2
+      exit 1
+    fi
+  done
+done
+for want in "AIRLOCK_ANTHROPIC_URL=https://api.anthropic.com" "AIRLOCK_ANTHROPIC_ADDRESS=127.0.0.6" \
+  "AIRLOCK_ANTHROPIC_RECORDS=$records_url/records/anthropic" \
+  "AIRLOCK_ANTHROPIC_TOKEN_URL=http://127.0.0.1:1011/v1/oauth/token" \
+  "AIRLOCK_ANTHROPIC_TOKEN_RECORDS=$records_url/records/anthropic-token" \
+  "AIRLOCK_ANTHROPIC_TOKENS_URL=$records_url/tokens/anthropic" \
+  "AIRLOCK_ANTHROPIC_ANSWER_URL=$records_url/answers/anthropic" \
+  "AIRLOCK_IAM_URL=http://127.0.0.1:1012" "AIRLOCK_IAM_RECORDS=$records_url/records/iam" \
+  "AIRLOCK_IAM_TOKENS_URL=$records_url/tokens/iam" \
+  "AIRLOCK_ANTHROPIC_NARROWED_SECRET=AIRLOCK_ANTHROPIC_NARROWED" "AIRLOCK_ANTHROPIC_KIND_SECRET=AIRLOCK_ANTHROPIC_KIND"; do
+  if [[ "$(exported "${want%%=*}")" != "${want#*=}" ]]; then
+    echo "FAIL: the banner exports ${want%%=*}=$(exported "${want%%=*}"); want ${want#*=}" >&2
+    exit 1
+  fi
+done
+if ! grep -qE '^stands .*--address anthropic=127\.0\.0\.6:443 --host anthropic=api\.anthropic\.com( |$)' "$stands_calls"; then
+  cat "$stands_calls" >&2
+  echo "FAIL: the stands were not started with the Admin API stand on 127.0.0.6:443 under api.anthropic.com" >&2
+  exit 1
+fi
+printf 'PASS: the anthropic kind is the spec'"'"'s (api.anthropic.com, Authorization, ANTHROPIC_ADMIN_TOKEN, mint, 1h, three rows under /v1/organizations/), %s and %s are an administrator'"'"'s anthropic-federation secrets behind it, each bound to its own account, %s alone proxy-narrowed with one profile of the three rows, the minter points at the iam and exchange stands, and the stand routes are exported\n' \
+  "$narrowed" "$kind_secret" "$narrowed"
 
 # What a check needs to drive the judge: the three stands' records, the answer route, the two
 # issues the Dispatch stand holds and the answered ask on the open one.

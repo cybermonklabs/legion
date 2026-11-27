@@ -15,6 +15,9 @@ import { sql } from "./psql";
 // boot, and GET /api/v1/dashboard/builds reads the builds the live ones serve from it.
 const tables = [
   "agent_tokens",
+  // The read-only personal tokens (migration 20261120023712), a table of their own beside
+  // agent_tokens that no foreign key reaches.
+  "agent_read_tokens",
   "architecture_sources",
   "legion_current",
   "legion_observations",
@@ -41,6 +44,10 @@ const tables = [
   "user_agent_thread_dismissed",
   "user_threads",
   "events",
+  // Each session's stored title (migration 20261117100008), which a trigger on events writes. No
+  // foreign key reaches it, so the closure below does not find it: a title a row stored would
+  // otherwise name a session of the same id in the next row's Delivery and Pipeline pages.
+  "session_titles",
   "refs",
   "messages",
   "broadcasts",
@@ -76,6 +83,33 @@ const tables = [
   // name a position in the log this reset emptied.
   "search_text_versions",
   "search_text_versions_fill",
+  // The head projection of each issue's tree and the marks of the issues whose rows the head read
+  // reads (migration 20261127120803_issue_tree_head). No foreign key reaches either table, so the
+  // closure below does not find them: a node's rows would otherwise stand under the issue key the
+  // next row's issue takes again, and a head write deletes the stale rows of only the nodes it
+  // writes (graphstore's headWriteStatement), so the tree read of that issue would answer the
+  // earlier rows' nodes beside its own, as many more as rows came before it.
+  "issue_head_nodes",
+  "issue_head_marks",
+  // The issues whose queries a write left owed a version (migration
+  // 20261125090000_issue_tree_query_marks). No foreign key reaches it, so the closure below does
+  // not find it: a mark left behind would stand under the issue key the next row's issue takes
+  // again, a write's mark keeps the greater of its event and the one stored (docs'
+  // queryMarkStatementOf), and the drain causes the versions it writes by that event, so the
+  // versions of that issue's queries would be caused by an event id of the log this reset empties.
+  "issue_query_marks",
+  // How each issue was converted and whether its spec is its own (migration
+  // 20261121060000_issue_tree_views). No foreign key reaches it, so the closure below does not
+  // find it: every writer upserts on the issue key and no statement sets the own-spec mark back
+  // to null, so the issue the next row creates under that key would read the earlier issue's
+  // conversion and own-spec mark (docs.ViewOf).
+  "issue_views",
+  // The source version of each carried approval (migration
+  // 20261125120000_issue_tree_review_carries), keyed by the review's id with no foreign key to
+  // artifact_reviews, which the closure below empties through artifacts: a carry left behind
+  // names a review that is gone, which `envoy-dispatch census --store` reads as a difference of
+  // kind review_carried_from.
+  "artifact_review_carries",
   "user_sessions",
 ];
 
@@ -95,7 +129,7 @@ const tables = [
 // so a reset that took them would leave the instance with no block type at all. `source_event`
 // tells them apart for nothing: the kind does, and that is what these predicates keep.
 //
-// The lens catalogue stays too (migrations 20261116123354 and 20261116123355): each `lens_kind`
+// The lens catalogue stays too (migrations 20261123174710 and 20261123174720): each `lens_kind`
 // node with its tuples, its `constrained_by` to its source among them, and each `constraint` node
 // at the far end of one of those with its own tuples, so a driver finds the seeded kinds after a
 // reset. A constraint under an issue, and a lens's `has_kind` into a kind, go with everything else.
@@ -158,6 +192,24 @@ export async function clearIssueCreator(issueKey: string): Promise<void> {
   await sql(`UPDATE issues SET created_by = 'null'::jsonb WHERE key = ${sqlLiteral(issueKey)}`);
 }
 
+/** The first key every loop lease of the server is taken under, 0x4C4F4F50 (duty's leaseNamespace,
+ *  packages/envoy/internal/dispatch/duty/exclusive.go), and the block-index reconciliation's
+ *  lease's name (docs.BlockIndexLease). */
+const LOOP_LEASE_NAMESPACE = 1280266064;
+const BLOCK_INDEX_LEASE_NAME = "block-index";
+
+/** The block-index reconciliation's lease as duty.Exclusive takes it, the two keys of an advisory
+ *  lock. While a session holds it no pass of the server's runs: a tick whose lease another session
+ *  holds runs nothing and waits a whole BlockIndexReconcileInterval (docs/block_index.go). */
+export const BLOCK_INDEX_LEASE = `${LOOP_LEASE_NAMESPACE}, hashtext(${sqlLiteral(BLOCK_INDEX_LEASE_NAME)})`;
+
+/** How long one block-index pass may hold its lease in this suite: the longest a row waits for a
+ *  pass it did not start to end. The longest pass a row starts is coverage.e2e.ts's over an issue
+ *  room whose Verification document holds a list of 2,100 blocks, past what a version write
+ *  indexes in its own request: five runs of that row on one worker of four cores measured the pass
+ *  at 2.9 s to 7.2 s, and the bound is four times the longest, for a CI runner's heavier load. */
+export const BLOCK_INDEX_PASS_MS = 30_000;
+
 // The reset's delete locks its tables one at a time, in its own order, waiting for each while it
 // holds the ones before it. A transaction that reads two of those tables in another order can
 // close a cycle with it (the Inbox reads asks before comments, the sidebar issues before
@@ -166,13 +218,24 @@ export async function clearIssueCreator(issueKey: string): Promise<void> {
 // open refetches whenever the live stream tells it to, and the server runs its own sweeps on
 // timers. So before the delete, the reset takes ACCESS EXCLUSIVE on every table it can empty: the
 // tables it names, and every table whose foreign keys reach them, which a cascading delete empties
-// too. It never waits while it holds one of those locks. Each try takes them all with NOWAIT; when
-// one is held, the try lets go of every lock it took, and the next try first waits for that one
-// table while it holds none, so the wait cannot close a cycle. Once it holds them all, nothing
-// else touches those tables until the block commits; the reset's other locks are on the tables'
-// own sequences, which only an insert into one of those tables advances. Each wait is capped at
-// the time left of 5 s, so a table still held 5 s after the step began fails the reset then,
-// naming that table's holders.
+// too. It never waits while it holds one of those locks: not for a table, and not for an issue's
+// head fill lock, which the head mark triggers of those tables take in share mode (migration
+// 20261127120803) and which a fill of that issue holds exclusive while it reads and writes them,
+// since the reset keeps those triggers from firing (dispatch.head_rows, below). Each try takes
+// them all with NOWAIT; when one is held, the try lets go of every lock it took, and the next try
+// first waits for that one table while it holds none, so the wait cannot close a cycle. Once it
+// holds them all, nothing else touches those tables until the block commits; the reset's other
+// locks are on the tables' own sequences, which only an insert into one of those tables advances.
+// Each wait is capped at the time left of 5 s, so a table still held 5 s after the step began
+// fails the reset then, naming that table's holders.
+//
+// Before any of those, while it holds none of them, the reset takes the block-index lease, for
+// the rest of its transaction (BLOCK_INDEX_LEASE): a block-index pass reads artifact_versions and
+// holds what it took until it commits, and one pass can run past 5 s - the pass coverage.e2e.ts
+// waits for, where an attempt of that row that failed leaves the pass running into the reset of
+// its retry. So the reset waits for the pass to end, up to BLOCK_INDEX_PASS_MS, and no pass starts
+// while it empties the tables: the server takes the lease without waiting (pg_try_advisory_lock),
+// so nothing waits for the reset's hold of it, and a tick it refuses runs after the reset.
 
 // One statement: a DO block is a transaction of its own, so the inserts that end it are the ones
 // the delete's own transaction makes, and the reset pays psql one round trip rather than the five
@@ -193,8 +256,25 @@ async function resetDatabaseOnce(): Promise<void> {
         holds_rows boolean;
         contended regclass;
         holders text;
-        deadline timestamptz := clock_timestamp() + interval '5 seconds';
+        deadline timestamptz;
       BEGIN
+        -- The block-index lease first, waited for while this block holds nothing else.
+        PERFORM set_config('lock_timeout', '${BLOCK_INDEX_PASS_MS}ms', true);
+        BEGIN
+          PERFORM pg_advisory_xact_lock(${BLOCK_INDEX_LEASE});
+        EXCEPTION WHEN lock_not_available THEN
+          SELECT string_agg(DISTINCT format('%s (%s)',
+                   left(regexp_replace(a.query, '\\s+', ' ', 'g'), 120), a.state), '; ')
+            INTO holders
+            FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+            WHERE l.locktype = 'advisory' AND l.granted AND l.objsubid = 2
+              AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+              AND l.classid = ${LOOP_LEASE_NAMESPACE}::oid
+              AND l.objid = hashtext(${sqlLiteral(BLOCK_INDEX_LEASE_NAME)})::oid;
+          RAISE EXCEPTION 'could not take the block-index lease within % ms; held by: %',
+            ${BLOCK_INDEX_PASS_MS}, coalesce(holders, 'a session that gave it back just before this report');
+        END;
+        deadline := clock_timestamp() + interval '5 seconds';
         -- The closure a TRUNCATE ... CASCADE of these tables would empty, which is the closure
         -- the deletes below reach. packages/envoy/internal/pgmigrate/touched.go
         -- (reachedByForeignKeys) walks the same closure for a migration's truncate.
@@ -242,11 +322,23 @@ async function resetDatabaseOnce(): Promise<void> {
         END LOOP;
         -- The waits above are the only ones lock_timeout bounds.
         PERFORM set_config('lock_timeout', '0', true);
+        -- The head rows stay kept through the reset, which empties issue_head_nodes and
+        -- issue_head_marks itself: the head mark triggers of graph_tuples, graph_nodes,
+        -- document_blocks, comments, comment_blocks and comment_block_texts (migration
+        -- 20261127120803), which take away the mark of each issue a write leaves behind the head
+        -- rows, would find no mark to take. So the reset makes the claim every writer of this build
+        -- makes (graphstore's KeptHeadRows), for the rest of its transaction, and none of them
+        -- fires: each would take an issue's head fill lock in share mode while the reset holds
+        -- every table above, and a fill holding that lock waits for one of those tables, a cycle
+        -- PostgreSQL breaks by aborting one side, the reset or the fill.
+        PERFORM set_config('dispatch.head_rows', 'kept', true);
         -- Unlike TRUNCATE, a DELETE fires the row triggers, and the delivery tables' log their
         -- own deletions into delivery_changes. So a pass that emptied a table whose deletion
         -- fires one (pg_trigger's tgtype bit 8) probes again; the log table itself has no such
-        -- trigger, so the second pass ends it. Nothing else in this schema deletes into another
-        -- table, so a reset of rows no delivery spec wrote pays one pass.
+        -- trigger, so the second pass ends it. comments, comment_blocks, comment_block_texts and
+        -- document_blocks carry such a trigger too, the head mark trigger, which the setting above
+        -- keeps from firing, so the second pass a reset of a comment or a document pays finds
+        -- nothing. Nothing else in this schema deletes into another table.
         SELECT coalesce(array_agg(DISTINCT t.tgrelid::regclass), '{}') INTO logging
           FROM pg_trigger t
           WHERE t.tgrelid = ANY (targets::oid[]) AND NOT t.tgisinternal AND (t.tgtype & 8) <> 0;

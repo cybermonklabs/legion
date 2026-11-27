@@ -1,5 +1,6 @@
 import {
   AGENT_STREAM_LIMITS,
+  DISPATCH_ASKS_HEADER,
   type DispatchEvent,
   type InboxThreadKind,
   type paths,
@@ -20,6 +21,7 @@ import {
 import type { Actor, GatedStep } from "../web/src/api/types";
 import { harnessPorts } from "./harness-ports";
 import { type DispatchProcess, pinnedTo } from "./harness-processes";
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
 
 /** The Dispatch server a process of `env`'s stack addresses: the deployed server `env` names,
  *  else the harness server of that stack, whose port e2e/global-setup.ts writes into the
@@ -56,6 +58,9 @@ interface ApiOptions {
   /** In two-process mode, the process the round-robin proxy sends the call to; absent, whichever
    *  takes its turn (e2e/round-robin-proxy.ts). */
   process?: DispatchProcess;
+  /** Headers the call sends beside the harness's own: a text read's `Dispatch-Asks`
+   *  (`asTheDashboardReadsIt`). */
+  headers?: Readonly<Record<string, string>>;
 }
 
 /** The name of the session cookie the server issues at sign-in, dev or GitHub. */
@@ -264,6 +269,7 @@ async function request<T>(
     headers["Idempotency-Key"] = options.idempotencyKey;
   }
   if (options.process !== undefined) Object.assign(headers, pinnedTo(options.process));
+  if (options.headers !== undefined) Object.assign(headers, options.headers);
 
   const response = await fetch(new URL(path, options.baseUrl ?? baseUrl), {
     body: payload === undefined ? undefined : JSON.stringify(payload),
@@ -444,6 +450,18 @@ export function patchIssue(
   return patch("/api/v1/issues/{key}", { body: input, params: { key } }, options);
 }
 
+/** `POST /api/v1/issues/{key}/status-change`: the issue's status, with what happens to the open
+ *  issues under it or the issues above it (`include_children`, `unlink_children`,
+ *  `include_parent`) so that each parent's status stays in line with its children's. With
+ *  `dry_run` it writes nothing and answers what the call would change. */
+export function changeIssueStatus(
+  key: string,
+  input: Body<"/api/v1/issues/{key}/status-change", "post">,
+  options: ApiOptions = {}
+) {
+  return post("/api/v1/issues/{key}/status-change", { body: input, params: { key } }, options);
+}
+
 /** `POST /api/v1/issues/{key}/results`: one result of one check, recorded on `issue`, which
  *  need not be the issue whose Verification document holds the check. The answer carries the
  *  stored result and the pull-request body line it implies. */
@@ -521,7 +539,8 @@ export function listPriorities(
 }
 
 /** `POST /api/v1/priorities`: writes one, last in the order; the server derives its id from the
- *  title and refuses a second write of that id with 409 PRIORITY_EXISTS. */
+ *  title, as the title's slug cut to `PRIORITY_ID_MAX` (200) characters at the end of a word when
+ *  it is longer, and refuses a second write of that id with 409 PRIORITY_EXISTS. */
 export function createPriority(
   input: Body<"/api/v1/priorities", "post">,
   options: ApiOptions = {}
@@ -647,8 +666,14 @@ export function createAsk(
 }
 
 /** Every ask on the issue, whatever its state (the route's default `state=all`). */
-export function listIssueAsks(issue: string, options: ApiOptions = {}) {
-  return get("/api/v1/issues/{key}/asks", { params: { key: issue } }, options);
+export async function listIssueAsks(issue: string, options: ApiOptions = {}) {
+  const answered = await get("/api/v1/issues/{key}/asks", { params: { key: issue } }, options);
+  if (!Array.isArray(answered)) {
+    throw new Error(
+      "GET /api/v1/issues/{key}/asks answered a page where the whole list was asked for"
+    );
+  }
+  return answered;
 }
 
 export function createProjectDocument(
@@ -671,26 +696,59 @@ export function createIssueArtifact(
   return post("/api/v1/issues/{key}/artifacts", { body: input, params: { key: issue } }, options);
 }
 
-/** Uploads bytes as an issue artifact through the multipart form the file picker posts. The JSON
- *  body `createIssueArtifact` sends carries text only, so an image can only be seeded this way,
- *  and `request` sends JSON alone, so the form goes out as its own fetch. */
-export async function uploadIssueFile(
-  issue: string,
-  input: { bytes: Uint8Array<ArrayBuffer>; contentType: string; name: string },
-  login = "alice"
-): Promise<Result<"/api/v1/issues/{key}/artifacts", "post">> {
+/** A file as the dashboard's file picker and paste send it. */
+interface FileUpload {
+  bytes: Uint8Array<ArrayBuffer>;
+  contentType: string;
+  name: string;
+}
+
+/** Posts `input` to the route `pattern` names, as `login`, as the multipart form the dashboard
+ *  sends a file in. The route's path parameters and its answer are the generated document's, as
+ *  `post`'s are; `request` sends JSON alone, so the form goes out as its own fetch. */
+async function postFile<P extends PathsOf<"post">>(
+  pattern: P,
+  params: PathParams<Op<P, "post">> & object,
+  input: FileUpload,
+  login: string
+): Promise<Result<P, "post">> {
+  const address = routeUrl(pattern, params);
   const form = new FormData();
   form.append("name", input.name);
   form.append("file", new Blob([input.bytes], { type: input.contentType }), input.name);
-  const response = await fetch(
-    new URL(routeUrl("/api/v1/issues/{key}/artifacts", { key: issue }), baseUrl),
-    { body: form, headers: await userHeaders(login), method: "POST" }
-  );
+  const response = await fetch(new URL(address, baseUrl), {
+    body: form,
+    headers: await userHeaders(login),
+    method: "POST",
+  });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`upload ${input.name} to ${issue} failed: ${response.status} ${text}`);
+    throw new Error(`upload ${input.name} to ${address} failed: ${response.status} ${text}`);
   }
-  return (await response.json()) as Result<"/api/v1/issues/{key}/artifacts", "post">;
+  return (await response.json()) as Result<P, "post">;
+}
+
+/** Uploads bytes as an issue artifact through the multipart form the file picker posts. The JSON
+ *  body `createIssueArtifact` sends carries text only, so an image can only be seeded this way. */
+export function uploadIssueFile(issue: string, input: FileUpload, login = "alice") {
+  return postFile("/api/v1/issues/{key}/artifacts", { key: issue }, input, login);
+}
+
+/** Uploads bytes to an agent session's conversation through the multipart form a paste on the
+ *  Agents page posts; answers the server's upload answer. */
+export function uploadAgentFile(sessionID: string, input: FileUpload, login = "alice") {
+  return postFile("/api/v1/agents/{session_id}/artifacts", { session_id: sessionID }, input, login);
+}
+
+/** Uploads `ONE_PIXEL_PNG` to an agent session's conversation as alice, named `name`, as a paste
+ *  on the Agents page does; answers its slug. */
+export async function uploadAgentPicture(sessionID: string, name: string): Promise<string> {
+  const uploaded = await uploadAgentFile(sessionID, {
+    bytes: new Uint8Array(Buffer.from(ONE_PIXEL_PNG, "base64")),
+    contentType: "image/png",
+    name,
+  });
+  return uploaded.artifact.slug;
 }
 
 /** `GET /api/v1/issues/{key}/artifacts`: every artifact the issue holds, as the Documents tab's
@@ -745,6 +803,14 @@ export function answerAsk(
   options: ApiOptions = {}
 ) {
   return post("/api/v1/asks/{id}/answer", { body: input, params: { id } }, options);
+}
+
+/** `PUT /api/v1/asks/{id}/asked-of`: hands the open ask `id` to `login`, as alice does from its
+ *  card. */
+export async function handAskOn(id: string, login: string): Promise<void> {
+  // The person it is handed to has signed in, which the route requires of them.
+  await userHeaders(login);
+  await put("/api/v1/asks/{id}/asked-of", { body: { asked_of: login }, params: { id } });
 }
 
 export function resolveAsk(
@@ -806,16 +872,34 @@ export function editComment(
   return patch("/api/v1/comments/{id}", { body: input, params: { id } }, options);
 }
 
-export function listComments(
+/** `DELETE /api/v1/comments/{id}`: the comment's author withdraws it. The row keeps its place in
+ *  its thread, its body is cleared, and every read of it carries `deleted_at` and `deleted_by`. */
+export function deleteComment(id: string, options: ApiOptions = {}) {
+  return del("/api/v1/comments/{id}", { body: {}, params: { id } }, options);
+}
+
+/** `GET /api/v1/comments/{id}/history`: every body an edit or a delete of the comment replaced,
+ *  newest first, each with the actor that replaced it and the time, beside the deletion mark. */
+export function getCommentHistory(id: string, options: ApiOptions = {}) {
+  return get("/api/v1/comments/{id}/history", { params: { id } }, options);
+}
+
+export async function listComments(
   issue: string,
   artifact: string | undefined = undefined,
   options: ApiOptions = {}
 ) {
-  return get(
+  const answered = await get(
     "/api/v1/issues/{key}/comments",
     { params: { key: issue }, query: { artifact } },
     options
   );
+  if (!Array.isArray(answered)) {
+    throw new Error(
+      "GET /api/v1/issues/{key}/comments answered a page where the whole list was asked for"
+    );
+  }
+  return answered;
 }
 
 /** One comment and its reply chain, as the server holds them now: its anchor's quote included. */
@@ -858,9 +942,19 @@ export function followAsk(id: string, sessionID: string, actor: Actor) {
   );
 }
 
-/** The document's current canonical markdown, as the server's live room holds it. */
+/** `options` with `Dispatch-Asks: 1` (`DISPATCH_ASKS_HEADER`), which every reader of this build
+ *  that reads a text route's `asks` sends, the dashboard and `dispatch doc-read` among them: the
+ *  route then serves markdown with none of an ask block's server-owned attributes, and each
+ *  ask's state and answer in `asks`. A request without it is served the form kept for one release
+ *  for the readers of the release before. */
+function asTheDashboardReadsIt(options: ApiOptions): ApiOptions {
+  return { ...options, headers: { ...options.headers, [DISPATCH_ASKS_HEADER]: "1" } };
+}
+
+/** The document's current canonical markdown, as the server's live room holds it, read as the
+ *  dashboard reads it (`asTheDashboardReadsIt`). */
 export function getArtifactText(id: string, options: ApiOptions = {}) {
-  return get("/api/v1/artifacts/{id}/text", { params: { id } }, options);
+  return get("/api/v1/artifacts/{id}/text", { params: { id } }, asTheDashboardReadsIt(options));
 }
 
 /** The base an upload replacing the document names: the token its live read answers, in the shape
@@ -877,9 +971,30 @@ export async function documentBase(
   return { document: token };
 }
 
+/** `POST /api/v1/markdown/round-trip`: the markdown Dispatch would store for `input.markdown`,
+ *  asked as an agent asks it, the most permissive replacement's answer unless `new_document` asks
+ *  for a new document's refusals. It writes nothing. */
+export function markdownRoundTrip(
+  input: Body<"/api/v1/markdown/round-trip", "post">,
+  options: ApiOptions = { as: "agent" }
+) {
+  return post("/api/v1/markdown/round-trip", { body: input }, options);
+}
+
 /** The blocks of the document's current version, each with the span of markdown it covers. */
 export function getArtifactBlocks(id: string, options: ApiOptions = {}) {
   return get("/api/v1/artifacts/{id}/blocks", { params: { id } }, options);
+}
+
+/** `GET /api/v1/references/questions` for a document's own text: each question block the
+ *  document's latest version declares, with the ask the server settled for it and that ask's
+ *  address, which is what a `#id` in a text of that document's scope names. */
+export function getDocumentQuestions(artifactID: string, options: ApiOptions = {}) {
+  return get(
+    "/api/v1/references/questions",
+    { query: { id: artifactID, kind: "artifact" } },
+    options
+  );
 }
 
 /** The same markdown by the slug route, `GET /api/v1/issues/{key}/artifacts/{slug}/text`. */
@@ -887,12 +1002,18 @@ export function getIssueArtifactText(issue: string, slug: string, options: ApiOp
   return get(
     "/api/v1/issues/{key}/artifacts/{slug}/text",
     { params: { key: issue, slug } },
-    options
+    asTheDashboardReadsIt(options)
   );
 }
 
 export function getArtifact(id: string, options: ApiOptions = {}) {
   return get("/api/v1/artifacts/{id}", { params: { id } }, options);
+}
+
+/** The number of the newest version of the document `id`, or `-Infinity` where it holds none. */
+export async function latestVersion(id: string): Promise<number> {
+  const artifact = await getArtifact(id);
+  return Math.max(...(artifact.versions ?? []).map((version) => version.number));
 }
 
 /**
@@ -1027,8 +1148,14 @@ export function getBroadcast(id: string, options: ApiOptions = {}) {
 
 /** `GET /api/v1/issues/{key}/messages`: every root message of the issue, oldest first, each with
  *  its replies, as the Conversation reads them. */
-export function listIssueMessages(issue: string, options: ApiOptions = {}) {
-  return get("/api/v1/issues/{key}/messages", { params: { key: issue } }, options);
+export async function listIssueMessages(issue: string, options: ApiOptions = {}) {
+  const answered = await get("/api/v1/issues/{key}/messages", { params: { key: issue } }, options);
+  if (!Array.isArray(answered)) {
+    throw new Error(
+      "GET /api/v1/issues/{key}/messages answered a page where the whole list was asked for"
+    );
+  }
+  return answered;
 }
 
 export function getMessage(issue: string, messageID: string, options: ApiOptions = {}) {
@@ -1037,6 +1164,29 @@ export function getMessage(issue: string, messageID: string, options: ApiOptions
     { params: { id: messageID, key: issue } },
     options
   );
+}
+
+/** `PATCH /api/v1/messages/{id}`: the author of an issue message replaces its body. Every read
+ *  of the message then carries `edited_at`. */
+export function editMessage(
+  id: string,
+  input: Body<"/api/v1/messages/{id}", "patch">,
+  options: ApiOptions = {}
+) {
+  return patch("/api/v1/messages/{id}", { body: input, params: { id } }, options);
+}
+
+/** `DELETE /api/v1/messages/{id}`: the author of an issue message withdraws it. The row keeps
+ *  its place in its thread, its body is cleared, and every read carries `deleted_at` and
+ *  `deleted_by`. */
+export function deleteMessage(id: string, options: ApiOptions = {}) {
+  return del("/api/v1/messages/{id}", { body: {}, params: { id } }, options);
+}
+
+/** `GET /api/v1/messages/{id}/history`: every body an edit or a delete of the message replaced,
+ *  newest first, each with the actor that replaced it and the time, beside the deletion mark. */
+export function getMessageHistory(id: string, options: ApiOptions = {}) {
+  return get("/api/v1/messages/{id}/history", { params: { id } }, options);
 }
 
 /** `GET /api/v1/messages/{id}/blocks`: the message's blocks in body order, each with its span in

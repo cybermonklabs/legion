@@ -2,7 +2,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type FormEvent,
   type SetStateAction,
-  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
@@ -14,7 +13,6 @@ import {
   ApiError,
   api,
   apiErrorMessage,
-  isSpecFormRefusal,
   type WriteBounds,
   type WriteMethod,
 } from "../../api/client";
@@ -30,16 +28,6 @@ import type {
   CreateCommentInput,
 } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
-import {
-  approvalRefusalKey,
-  type FormRefusalPress,
-  pressOn,
-  setFormRefusal,
-  takeFormRefusalFocus,
-  takeFormRefusalReason,
-  useFormRefusal,
-  useRefusalSurface,
-} from "../doc/form-refusals";
 import { isViewer } from "../refs/actor";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { answerAskInput } from "./answer-ask";
@@ -50,6 +38,7 @@ import {
 } from "./ask-thread-freshness";
 import { type AskPress, useOutstandingAnswerWrite } from "./outstanding-answers";
 import { askArtifactId, invalidateOwnerReads } from "./owner-reads";
+import { useQuestionLabel } from "./question-label";
 import { isQuestionShapedAnswer } from "./question-shaped-answer";
 
 interface UseAskAnswerFormOptions {
@@ -78,25 +67,11 @@ interface AskAnswerFailure {
   retryable: boolean;
 }
 
-/** The next step of a form refusal on the card, once it has picked Request changes and filled the
- *  reason with what Dispatch wrote for the author. */
-const CARD_FORM_NEXT_STEP = "To send these findings to the author, choose Answer.";
-
-/**
- * The answer field after a refusal of the form (plan decision 14): Dispatch's reason for the
- * author, then one empty line and the note that the person typed, as it was. A field that holds no
- * note takes the reason alone, and one that already starts with the reason keeps its text.
- */
-function withRefusalReason(reason: string, note: string): string {
-  if (note.startsWith(reason)) return note;
-  return note.trim() === "" ? reason : `${reason}\n\n${note}`;
-}
-
-/** One press of the answer: the ask it is of (`AskPress`), what it sends, and where and for which
- *  version it was pressed, which a refusal of the form gives its focus back to (`pressOn`). */
+/** One press of the answer: the ask it is of (`AskPress`), what it sends, and its question as the
+ *  label names it (`questionWords`). */
 interface AnswerPress extends AskPress {
   readonly input: AnswerAskInput;
-  readonly at: FormRefusalPress;
+  readonly questionWords: string;
 }
 
 /** Whether a press changes an answer the server has already recorded, which its input names by
@@ -105,30 +80,20 @@ function changesAnswer({ input }: AnswerPress): boolean {
   return input.expected_answer_at !== undefined;
 }
 
-/** The key a refusal of the form of an answer to `ask` is kept under (`doc/form-refusals.ts`):
- *  its document's approval request when it is one, which the document's header and each card of
- *  the request share, and the ask itself otherwise. */
-function formRefusalKeyOf(ask: Ask): string {
-  return ask.approval === undefined
-    ? `ask:${ask.id}`
-    : approvalRefusalKey(ask.approval.artifact_id);
-}
-
-/** One press of a question back: the ask it is of (`AskPress`) and the text it posts. */
+/** One press of a question back: the ask it is of (`AskPress`), the text it posts, and its
+ *  question as the label names it (`questionWords`). */
 interface ClarificationPress extends AskPress {
+  readonly questionWords: string;
   readonly text: string;
 }
 
 /**
  * The refusals the same answer is refused with again however often it is sent, and what the card
  * says for each: the ask was answered or closed elsewhere, its question changed (the card reloads
- * it, so the next answer is to the new wording), writing even its server state would leave the
- * document's live state past what the server can decode, or an approval of a document whose text
- * breaks the form of The Spec. For that one the card shows Dispatch's own words, which name each
- * text (`ApiError.refusal`), with its own next step: Dispatch's names Request changes, which the
- * card has already picked, so the card's names the press that is left (`CARD_FORM_NEXT_STEP`).
- * An answer the reader stopped may have been saved, and the card's Retry makes that very press
- * again (`retryLast`). Any other failure may pass on a retry.
+ * it, so the next answer is to the new wording), or writing even its server state would leave the
+ * document's live state past what the server can decode. An answer the reader stopped may have
+ * been saved, and the card's Retry makes that very press again (`retryLast`). Any other failure
+ * may pass on a retry.
  */
 function answerFailure(answer: {
   readonly error: Error;
@@ -176,9 +141,6 @@ function answerFailure(answer: {
           ),
           retryable: false,
         };
-      case "SPEC_FORM":
-        // Dispatch sends `refusal` in every SPEC_FORM body (the OpenAPI document requires it).
-        return { message: `${error.refusal}\n${CARD_FORM_NEXT_STEP}`, retryable: false };
     }
   }
   return { message: "Could not save your answer.", retryable: true };
@@ -219,17 +181,6 @@ export function useAskAnswerForm({
   const answerText = changing ? changeAnswer : draftAnswer;
   const setAnswerText = changing ? setChangeAnswer : setDraftAnswer;
   const replacing = useRef<AskAnswer | undefined>(undefined);
-  // A refusal of Approve for the form of The Spec belongs to the request, not to this card
-  // (`doc/form-refusals.ts`): its document's header and each card of the request read it under one
-  // key, and a host that draws the card again while the answer is out reads it back. It holds the
-  // press it answers, with this card and the version, which each press carries (`AnswerPress.at`),
-  // so the focus goes back to this card and to no other place of the request.
-  const formRefusalKey = formRefusalKeyOf(ask);
-  const refusalSurface = useRefusalSurface();
-  const takeRefusalFocus = useCallback(
-    (root: Element | null) => takeFormRefusalFocus(formRefusalKey, refusalSurface, root),
-    [formRefusalKey, refusalSurface]
-  );
   const initialChangeConsumed = useRef(false);
   const submitGuard = useSubmitGuard();
   // Shared by this card, its edit-version history, its collapsed disclosure, and its inline
@@ -293,6 +244,11 @@ export function useAskAnswerForm({
     if (askId === ask.id) setAnswerText(next);
     else setAnswerDraft(askId, next);
   };
+  // The question as the labels of this form's two writes read it: its plain-text projection,
+  // the words the card draws (`useQuestionLabel`). A label is its press's ask's, so each press
+  // carries the line as it reads at the press, while the form is drawn for that ask: a Retry
+  // made once a host has drawn the form for the next one names the question it answers.
+  const question = useQuestionLabel(ask);
   // The card says why an answer was refused, in the ask's own words, beside the draft it holds;
   // the shell's indicator shows the answer only while it is out. The row's removal from the
   // Inbox, its restore on a refusal and the hold that keeps the question where the reader
@@ -302,7 +258,9 @@ export function useAskAnswerForm({
   // another, so a Retry sends the stopped answer to its own ask under its key, and its landing
   // reads that ask again.
   const mutation = useOutstandingAnswerWrite({
-    label: (press: AnswerPress) => `Answer to “${press.ask.question}”`,
+    // A write's label is one line the Writes indicator reads as text, so it holds the question's
+    // plain-text projection: the reading list's `write-label` (`DISPATCH_READING_SURFACES`).
+    label: (press: AnswerPress) => `Answer to “${press.questionWords}”`,
     method: "POST",
     write: (press: AnswerPress, bounds) => answer(press.ask.id, press.input, bounds),
     // A change to an answer the server has already recorded leaves the Inbox alone: the ask has
@@ -332,22 +290,11 @@ export function useAskAnswerForm({
           setChanging(false);
         }
       }
-      if (isSpecFormRefusal(error)) {
-        // Dispatch refused the approval and wrote the reason a request for changes sends to the
-        // author: the card picks Request changes with that reason (below, from the kept
-        // refusal), and one more press sends it. The reason goes in the request's draft of the
-        // press's ask before the refusal shows, so Answer is ready for the focus that the press
-        // owes.
-        const reason = error.changesReason ?? "";
-        setAnswerTextOf(press.ask.id, (note) => withRefusalReason(reason, note));
-        setFormRefusal(formRefusalKeyOf(press.ask), { error, press: press.at });
-      }
     },
     onSettled: () => {
       submitGuard.release();
     },
     onSuccess: (updatedAsk, press) => {
-      setFormRefusal(formRefusalKeyOf(press.ask), undefined);
       const changed = changesAnswer(press);
       if (drawnFor(press)) {
         replacing.current = undefined;
@@ -384,7 +331,8 @@ export function useAskAnswerForm({
   // A question back carries its ask as an answer does, for the same reason.
   const clarification = useKeyedWrite({
     inline: true,
-    label: (press: ClarificationPress) => `Question back on “${press.ask.question}”`,
+    // The same line of the Writes indicator: `write-label` again (see above).
+    label: (press: ClarificationPress) => `Question back on “${press.questionWords}”`,
     method: "POST",
     write: (press: ClarificationPress, bounds) => {
       if (press.ask.issue_key === null) {
@@ -416,21 +364,6 @@ export function useAskAnswerForm({
   const threadAsk = threadQuery.data?.ask;
   const displayedAsk =
     threadAsk !== undefined && (askChanged || threadAsk.state !== "open") ? threadAsk : ask;
-  const formRefusal = useFormRefusal(formRefusalKey, displayedAsk.approval?.version);
-  // The kept refusal picks Request changes, in this card and in a card drawn after it: React's
-  // pattern for state derived from a change, so the option is never unpicked for a frame.
-  const [pickedFor, setPickedFor] = useState<ApiError | undefined>(undefined);
-  if (formRefusal !== pickedFor) {
-    setPickedFor(formRefusal);
-    if (formRefusal !== undefined) setSelected(["Request changes"]);
-  }
-  // The kept refusal puts its reason before the note in the request's draft, once for each
-  // refusal, also when the press was in the document's header or in another card.
-  useEffect(() => {
-    if (formRefusal === undefined || !takeFormRefusalReason(formRefusalKey)) return;
-    const reason = formRefusal.changesReason ?? "";
-    setAnswerText((note) => withRefusalReason(reason, note));
-  }, [formRefusal, formRefusalKey, setAnswerText]);
   const recordedAsk = justAnswered ?? (displayedAsk.state === "open" ? null : displayedAsk);
   const canChangeAnswer =
     recordedAsk !== null &&
@@ -507,13 +440,11 @@ export function useAskAnswerForm({
         : "Answer in your own words, or ask a question back";
   const sendAnswer = (text: string) => {
     submitGuard.guard(() => {
-      // Each press is answered on its own: the refusal of the last one goes with it.
-      setFormRefusal(formRefusalKey, undefined);
       const answerSelection = isApproval || hasOptions ? selected : [];
       mutation.mutate({
         ask,
-        at: pressOn(refusalSurface, displayedAsk.approval?.version),
         input: answerAskInput(displayedAsk, answerSelection, text, replacing.current),
+        questionWords: question.line(),
       });
     });
   };
@@ -565,7 +496,7 @@ export function useAskAnswerForm({
   const sendClarification = () => {
     const text = answerText.trim();
     if (text === "") return;
-    submitGuard.guard(() => clarification.mutate({ ask, text }));
+    submitGuard.guard(() => clarification.mutate({ ask, questionWords: question.line(), text }));
   };
   const completed = changing ? null : recordedAsk;
   // What the reader typed and no form will ever send: the question closed under them - withdrawn,
@@ -573,17 +504,9 @@ export function useAskAnswerForm({
   // it where they can read and copy it, since the box it was in has gone. Their own answer is not
   // this: it left as a draft the moment the server recorded it.
   const unsentAnswer = completed !== null && justAnswered === null ? answerText : "";
-  // A refusal for the form is the request's that the press was of (`onError` keeps it there), so
-  // the card shows it from what is kept for the request it shows, never from the write's last
-  // error: a host may draw the card for another request while the answer is out, and that
-  // request was not refused. Every other failure is the press's, with its Retry.
-  const pressFailure =
-    mutation.error !== null && !isSpecFormRefusal(mutation.error) ? answerFailure(mutation) : null;
 
   return {
-    answerFailure:
-      pressFailure ??
-      (formRefusal === undefined ? null : answerFailure({ error: formRefusal, method: undefined })),
+    answerFailure: mutation.error === null ? null : answerFailure(mutation),
     answerFieldId,
     answerPlaceholder,
     answers,
@@ -597,13 +520,14 @@ export function useAskAnswerForm({
     completed,
     displayedAsk,
     edits,
-    /** Dispatch's refusal of this card's Approve for the form of The Spec, kept for the ask. */
-    formRefusal: formRefusal ?? null,
     isApproval,
     isSubmitting,
     mutation,
     otherSelected,
     questionChoice,
+    /** Reads the names of the references the question's projection holds, for the labels of
+     *  this form's writes; the card mounts it wherever it draws. */
+    questionReads: question.reads,
     reasonRequired,
     requiresReason,
     selectRealOption,
@@ -617,9 +541,6 @@ export function useAskAnswerForm({
     submitGuard,
     submit,
     submitHint,
-    /** Whether the press that the kept refusal answers gives its focus to this card, whose form
-     *  is the root given: true once, and only for this card or a card drawn in its place. */
-    takeFormRefusalFocus: takeRefusalFocus,
     toggleOther,
     threadQuery,
     trimmedAnswer,

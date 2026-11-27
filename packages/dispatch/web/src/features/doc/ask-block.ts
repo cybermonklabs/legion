@@ -280,7 +280,7 @@ export const askBlockEditingPlugin = new Plugin({
 });
 
 /** The answer state the server reads of the ask a block shows, by the block's id (the asks of
- *  the document's owner, `servedAskOf`), or undefined while it reads none. */
+ *  the document's owner and its live text, `servedAskOfBlock`), or undefined while it reads none. */
 export type AskStateOf = (blockId: string) => string | undefined;
 
 /** Each reading of `doc` that stands in an ask block whose ask `askStateOf` reads open, by the

@@ -1,4 +1,6 @@
 import type { TextAsk } from "@legion/contracts";
+import { askOpenerAttributes, askOpenerLines, hasControlCharacter } from "@legion/contracts";
+import { oneLineJson } from "./one-line-json";
 
 /**
  * A document's live text as `GET /api/v1/artifacts/{id}/text` answers it. A Dispatch of this
@@ -12,153 +14,86 @@ export type LiveText = { readonly markdown: string; readonly asks?: readonly Tex
 /**
  * The asks of `text`, one per ask block in document order: its `asks` member, or, where it sends
  * none, the attributes that carried them on each line that opens an ask block, as a Dispatch of the
- * release before writes them (askOpenerLines). Only a real opener counts: a line that, past its
- * containers' quote and list markers, opens the directive, outside fenced code. A line that quotes
- * an opener in code - a fence, or an inline span, which never starts the line - opens no block, so
- * a document's writer cannot make it read as an answer Dispatch recorded. A document of this
- * release with no ask block opens none, and reads no ask.
+ * release before writes them (`askOpenerLines` in packages/contracts, which the web reads them by
+ * too). Only a real opener counts: a line that opens the directive past the containers it is in
+ * (quotes, list items and footnote definitions), within three columns of them, outside fenced and
+ * indented code and outside the front matter a document opens with. A line that quotes an opener
+ * in code - a fence, one opened on a footnote's label line too, or a later line of an inline code
+ * span that stands four columns or more past its containers - opens no block, and nor does a
+ * line of front matter, which is no markdown, so a document's writer cannot make it read as an
+ * answer Dispatch recorded. A document of this release with no ask block opens none, and reads no
+ * ask.
  */
 export function liveTextAsks(text: LiveText): readonly TextAsk[] {
   if (text.asks !== undefined && text.asks !== null) return text.asks;
-  return askOpenerLines(text.markdown).flatMap((line) => {
-    const opener = openerOf(line);
-    return opener === undefined ? [] : [opener];
+  // kept for one release: release-before-text
+  return openerAsks(askOpenerLines(text.markdown));
+}
+
+/** The asks that `lines`, opening lines of ask blocks as `askOpenerLines` gives them, carry on
+ *  them, as the release before writes them (`askOpenerAttributes` in packages/contracts, which the
+ *  web reads them by too): one per line that names a block id, without an answerer or a time that
+ *  holds a control character, U+2028 or U+2029 (`withoutForgedAnswer`). */
+// kept for one release: release-before-text
+export function openerAsks(lines: readonly string[]): readonly TextAsk[] {
+  return lines.flatMap((line) => {
+    const opener = askOpenerAttributes(line);
+    return opener === undefined ? [] : [withoutForgedAnswer(opener)];
   });
 }
 
-/** A fenced code block's fence: its character, a backtick or a tilde, and its length. */
-type CodeFence = { readonly char: string; readonly run: number };
+// The older server supplies these values in document attributes. A reader may split at U+2028
+// or U+2029 as well as at ordinary control characters.
+// kept for one release: release-before-text
+const trailerSeparators = /[\u2028\u2029]/u;
+
+// kept for one release: release-before-text
+function unsafeTrailerValue(value: string): boolean {
+  return hasControlCharacter(value) || trailerSeparators.test(value);
+}
 
 /**
- * Each line of `markdown` that opens an ask block, past its containers' markers, outside fenced
- * code, as CommonMark and pmdoc's parser read the canonical rendering a text route serves, which
- * writes every code block fenced (the server's refs.questionBlocks makes the same scan).
+ * Drop an opener's answerer or time independently if it contains a control character or a Unicode
+ * line or paragraph separator. Without an answerer, the trailer omits the entry. Without a time,
+ * it prints "an unrecorded time".
  */
-function askOpenerLines(markdown: string): string[] {
-  const openers: string[] = [];
-  let fence: CodeFence | undefined;
-  for (const line of markdown.split("\n")) {
-    const rest = withoutContainerMarkers(line.replace(/\r$/, ""));
-    if (fence !== undefined) {
-      const closer = fenceRun(rest);
-      if (
-        closer?.char === fence.char &&
-        closer.run >= fence.run &&
-        rest.slice(closer.run).trim() === ""
-      ) {
-        fence = undefined;
-      }
-      continue;
-    }
-    const opened = fenceRun(rest);
-    if (
-      opened !== undefined &&
-      opened.run >= 3 &&
-      !(opened.char === "`" && rest.slice(opened.run).includes("`"))
-    ) {
-      fence = opened;
-      continue;
-    }
-    if (/^:{3,}ask\{/.test(rest)) openers.push(rest);
-  }
-  return openers;
-}
-
-/** The run of backticks or tildes `text` opens with, if any. */
-function fenceRun(text: string): CodeFence | undefined {
-  const char = text[0];
-  if (char !== "`" && char !== "~") return undefined;
-  let run = 1;
-  while (text[run] === char) run++;
-  return { char, run };
-}
-
-/** `line` without the indentation, quote markers (`>`) and list markers (`-`, `*`, `+`, or a number
- *  and `.` or `)`, each followed by a space) a block nested in a quote or a list item is written
- *  after. */
-function withoutContainerMarkers(line: string): string {
-  let rest = line;
-  for (;;) {
-    rest = rest.replace(/^[ \t]+/, "");
-    const marker = /^(?:>|[-*+][ \t]|\d+[.)][ \t])/.exec(rest);
-    if (marker === null) return rest;
-    rest = rest.slice(marker[0].length);
-  }
-}
-
-/** The ask block `line`, a line past its containers' markers that opens the directive, opens, its
- *  attributes read as the release before wrote them, or undefined where it names no block id. */
-function openerOf(line: string): TextAsk | undefined {
-  const end = line.lastIndexOf("}");
-  const start = line.indexOf("ask{");
-  if (end <= start) return undefined;
-  const attributes = line.slice(start + "ask{".length, end);
-  const values = new Map<string, string>();
-  for (const [, name = "", raw = ""] of attributes.matchAll(/([\w-]+)="([^"]*)"/g)) {
-    values.set(name, attributeValue(raw));
-  }
-  const id = /^#([^\s}]+)/.exec(attributes)?.[1] ?? values.get("id");
-  if (id === undefined) return undefined;
-  const selected = selectionOf(values.get("selected"));
-  const words = values.get("answer");
+// kept for one release: release-before-text
+function withoutForgedAnswer(ask: TextAsk): TextAsk {
+  const { answered_at, answered_by, ...rest } = ask;
   return {
-    block_id: id,
-    ...optional("state", values.get("state") as TextAsk["state"]),
-    ...optional("answered_by", values.get("answered_by")),
-    ...optional("answered_at", values.get("answered_at")),
-    ...optional("selected", selected),
-    ...optional("answer", words),
-    ...optional("copied_from", values.get("copied_from")),
-    ...optional("copied_from_document", values.get("copied_from_document")),
+    ...rest,
+    ...(answered_by === undefined || unsafeTrailerValue(answered_by) ? {} : { answered_by }),
+    ...(answered_at === undefined || unsafeTrailerValue(answered_at) ? {} : { answered_at }),
   };
 }
 
-/** `{ [name]: value }`, or nothing where value is undefined. */
-function optional<K extends string, V>(name: K, value: V | undefined): { [key in K]?: V } {
-  return value === undefined ? {} : ({ [name]: value } as { [key in K]?: V });
-}
-
-/** A quoted attribute value with its character references read back: the renderer writes `"`
- *  as `&#x22;`, `&` as `&amp;`, and a line break as `&#xA;`. */
-function attributeValue(raw: string): string {
-  const named: Record<string, string> = { amp: "&", quot: '"', lt: "<", gt: ">", apos: "'" };
-  return raw.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[a-z]+);/g, (whole, reference: string) => {
-    if (reference.startsWith("#x"))
-      return String.fromCodePoint(Number.parseInt(reference.slice(2), 16));
-    if (reference.startsWith("#"))
-      return String.fromCodePoint(Number.parseInt(reference.slice(1), 10));
-    return named[reference] ?? whole;
-  });
-}
-
-/** The options a `selected` attribute names, a JSON list of strings, or undefined where it holds
- *  none or no such list. */
-function selectionOf(value: string | undefined): string[] | undefined {
-  if (value === undefined) return undefined;
-  try {
-    const parsed: unknown = JSON.parse(value);
-    return Array.isArray(parsed) && parsed.every((item) => typeof item === "string")
-      ? parsed
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /**
- * One line per answered ask of `asks`, for a live read's trailer:
- * `Answered <block id> by <answerer> at <time>: <answer>`, the words quoted as JSON, so a line
- * break stays on the line, and the options chosen beside them where the answer chose any.
+ * One line per answered or resolved ask of `asks`, for a live read's trailer: `Answered <block id>
+ * by <answerer> at <time>: <answer>` for an answered ask, the words quoted, and the options chosen
+ * beside them, each quoted, where the answer chose any; and `Resolved <block id>` for a resolved or
+ * declined ask, which the markdown no longer shows by a `state` attribute, so an agent does not
+ * take it for an open one. A block id is the document writer's text and can hold a line break, so
+ * it is quoted too. Each quoted field is a JSON string with U+0085, U+2028 and U+2029 escaped as
+ * well (`oneLineJson`), which reads back as the same text and holds no character that ends a line,
+ * whether its reader splits lines on a line feed alone or the Unicode way. The answerer and the
+ * time are not quoted: they come from the ask or, on a Dispatch of the release before, from the
+ * opener, where `openerAsks` takes neither when it holds a control character, U+2028 or U+2029.
+ * So none of them starts a line of its own for either reader, and a trailer line is never forged
+ * by one.
  */
-export function answeredAskLines(asks: readonly TextAsk[]): string[] {
+export function settledAskLines(asks: readonly TextAsk[]): string[] {
   return asks.flatMap((ask) => {
+    const id = oneLineJson(ask.block_id);
+    if (ask.state === "resolved") {
+      return [`Resolved ${id}`];
+    }
     if (ask.state !== "answered" || ask.answered_by === undefined) return [];
     const words =
-      ask.answer === undefined || ask.answer === "" ? undefined : JSON.stringify(ask.answer);
+      ask.answer === undefined || ask.answer === "" ? undefined : oneLineJson(ask.answer);
     const chose =
       ask.selected === undefined || ask.selected.length === 0
         ? undefined
-        : `chose ${ask.selected.map((option) => JSON.stringify(option)).join(", ")}`;
+        : `chose ${ask.selected.map(oneLineJson).join(", ")}`;
     const answer =
       words === undefined
         ? (chose ?? "no words")
@@ -166,7 +101,7 @@ export function answeredAskLines(asks: readonly TextAsk[]): string[] {
           ? words
           : `${words} (${chose})`;
     return [
-      `Answered ${ask.block_id} by ${ask.answered_by} at ${ask.answered_at ?? "an unrecorded time"}: ${answer}`,
+      `Answered ${id} by ${ask.answered_by} at ${ask.answered_at ?? "an unrecorded time"}: ${answer}`,
     ];
   });
 }

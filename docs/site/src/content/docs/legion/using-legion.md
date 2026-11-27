@@ -31,14 +31,18 @@ questions, approve the spec, and review the pull request. Everything happens in
    daemon, and the issue moves to `todo` itself. For a parked issue (`backlog` or `icebox`), set
    its status to **`todo`**, or approve its spec: your approval queues it the same way when the
    issue has no parent. An approval that Dispatch carries in your name from an earlier one does
-   not queue it.
+   not queue it. An approval that Legion applies after the issue's status changed again (it reached
+   Legion late, or the operator replayed it) does not queue the issue either: set its status to
+   `todo` instead.
 
 When a slot is free the daemon admits the issue and the status changes to `in_progress`; when
 every slot is taken, the issue waits in `todo` for a free slot, in the order the line gives it ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)).
 A slot is one issue the daemon has started, a root or a child, so a tree of four issues at work
 holds four of them. An issue keeps its slot through a wait on you or on a review, and its
 agents stay live beside it. A started issue that waits on another issue gives its slot back, and
-nothing of its work stops; in `accepting`, `retro` and `merging` an issue holds no slot at all,
+nothing of its work stops, except a parent that an open child of its own holds: its phase stops,
+and it waits in `awaiting_children` until no child under it is open; in `accepting`, `retro` and
+`merging` an issue holds no slot at all,
 and a step after `accepting` whose phase keeps a slot waits for one again
 ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)).
 A label an agent session set on an issue in `triage` goes to the controller instead: the controller
@@ -46,17 +50,21 @@ decides whether to admit it or leave it for you, and parks it only when a person
 its work is done, folded into another issue or no longer needed.
 
 The controller never takes an issue on its own, whatever slots are free: Legion works what a person
-hands it, and the clear defects its own agents report. You can also ask the controller to hand an
-issue over for you, in a message or in Slack. An agent that finds a defect outside its own issue
-whose fix needs no choice of yours fixes it in its own tree's pull request when that tree touches
-or depends on the code. Otherwise the controller gives it to the tree that owns the code, and files it labelled
-`legion` only when no tree does. When the problem
-needs a decision, the agent asks you in a Dispatch ask whether to file one, rather than filing it.
-Answer with `File it for Legion` and the controller files it labelled `legion`.
+hands it, and the clear defects its own agents report. You can also ask the
+controller to hand an issue over for you, in a message or in Slack. An agent that finds a defect
+outside its own issue whose fix needs no choice of yours fixes it itself, in its own pull request
+or a separate pull request of its tree, in whichever repository the defect is. The controller
+files the defect labelled `legion` when the agent's token does not reach the repository, and it
+passes no defect on to a tree. When the problem needs a decision, a deploy
+window or work much larger than the agent's own, the agent asks you in a Dispatch ask whether to
+file one, rather than filing it. Answer with `File it for Legion` and the controller files it
+labelled `legion`.
 
 Do not label child issues: a child runs under its tree once the root is admitted. The children do
 the work first: an issue starts no phase of its own while Dispatch shows an open child under it,
-so a parent's own pull request is built and merged after its children's.
+so a parent's own pull request is built and merged after its children's. A child filed under an
+issue already at work stops that issue's phase. The issue waits, shown `in_progress`, and goes on
+by itself once its children are done ([Concepts](/legion/legion/concepts/#trees-and-the-architect)).
 
 ## Ask Legion in Slack
 
@@ -88,13 +96,10 @@ options and a recommendation, and it reaches your Inbox.
 3. If it is not right, choose **Request changes** and say why. The architect revises the spec and
    asks again.
 
-No code is written until you approve. The approval is for that version of the spec: if the spec
-changes afterwards, you are asked again. (`gates.design` says which documents of the root issue a
-person approves: by default the spec, and also the issue's Verification document when the
-architect asks you to approve both in one request, and a deployment can add the issue's
-Verification document, approved the same way. A deployment that sets
-`gates.design: []` turns the design gate off; then the work starts as soon as the spec is written,
-and nobody is asked.)
+No code is written until you approve.
+The approval is for that version of the spec: if the spec changes afterwards, you are asked again.
+(`gates.design` says which documents of the root issue a person approves: by default the spec, and also the issue's Verification document when the architect asks you to approve both in one request, and a deployment can add the issue's Verification document, approved the same way.
+A deployment that sets `gates.design: []` turns the design gate off; then the work starts as soon as the spec is written, and nobody is asked.)
 
 If a phase gets stuck, or the architect hits something only a person can decide, it asks you the
 same way: a question in your Inbox that says what is blocked, the options, and what it recommends.
@@ -176,7 +181,9 @@ makes them afresh.
 - **To run it again**, set it back to `todo` with the label on, or approve its spec: a person's
   approval of a parked labelled issue's spec is queued by the daemon when the issue has no
   parent, and the issue moves to `todo` itself; an approval that Dispatch carries in your name from
-  an earlier one does not queue it. The tree starts over as a new generation, from its architect.
+  an earlier one does not queue it. An approval that Legion applies after the issue's status
+  changed again (it reached Legion late, or the operator replayed it) does not queue the issue
+  either: set it to `todo`. The tree starts over as a new generation, from its architect.
 - **To close it without a change**, tell the architect at the design gate that no change is needed;
   it closes the issue with that reason. You can also close the issue yourself from the dashboard.
 

@@ -375,9 +375,13 @@ function withConfounds(seeds: readonly CaseSeed[]): CaseRow[] {
 /**
  * The counts a build prints and writes, over the cases a command may read. A case the reserve
  * holds (`reserve.ts`) is counted only as reserved: a verdict count that took it in would tell its
- * answer to whoever compares two builds, which the reserve allows no reader.
+ * answer to whoever compares two builds, which the reserve allows no reader. `ended` is the record
+ * that ended the reserve (`claim.ts`), which only a test replaces.
  */
-export function countsOf(rows: readonly CaseSeed[]): Counts {
+export function countsOf(
+  rows: readonly CaseSeed[],
+  ended: string | null = REGISTRATION.ended
+): Counts {
   const counts: Counts = {
     total: 0,
     byKind: { approval: 0, question: 0 },
@@ -386,7 +390,7 @@ export function countsOf(rows: readonly CaseSeed[]): Counts {
     reserved: 0,
   };
   for (const row of rows) {
-    if (reserveOf(row) === "held") {
+    if (reserveOf(row, ended) === "held") {
       counts.reserved += 1;
       continue;
     }

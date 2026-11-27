@@ -1,0 +1,8 @@
+jj --color=never log --no-graph -r 'root()' -T commit_id
+Warning: Failed to load `revset-aliases.foo(`:  --> 1:5
+  |
+1 | foo(
+  |     ^---
+  |
+  = expected <strict_identifier>
+--- exit 0

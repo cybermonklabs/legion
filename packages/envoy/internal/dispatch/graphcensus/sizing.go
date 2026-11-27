@@ -176,9 +176,9 @@ func readSizing(ctx context.Context, tx pgx.Tx) (*SizingReport, error) {
 		Driver: "artifact_versions whose version node the store does not hold: the node, its visibility, its state and" +
 			" its document's project or parties, its part_of its document, and its number and created_at values",
 	}, {
-		Name: "block_values", MovedBy: movedWithBlocks, Tuples: 3, Owed: values,
+		Name: "block_values", MovedBy: movedWithBlocks, Tuples: 5, Owed: values,
 		Driver: "document_blocks rows of each document the backfill's marking marks (markStaleDocuments): each block's rank," +
-			" text and placement values",
+			" text, placement, text_parent and text_rank",
 	}, {
 		Name: "block_top", MovedBy: movedWithBlocks, Tuples: 2, Owed: tops,
 		Driver: "document_blocks rows of an issue's spec, Verification or plan document the marking marks, each at its" +
@@ -187,8 +187,9 @@ func readSizing(ctx context.Context, tx pgx.Tx) (*SizingReport, error) {
 	}}
 	var backfillTuples, backfillNodes int64
 	for _, backfill := range report.Backfills {
-		backfillTuples += backfill.Owed * int64(backfill.Tuples)
-		backfillNodes += backfill.Owed * int64(backfill.Nodes)
+		nodes, tuples := backfill.writes()
+		backfillTuples += tuples
+		backfillNodes += nodes
 	}
 	for _, growth := range []struct {
 		name         string
@@ -320,10 +321,10 @@ func (s *SizingReport) Write(w io.Writer) {
 	// What a backfill writes once, beside the rates: a line of its own, so the lines above keep
 	// the fields a driver reads them by.
 	for _, backfill := range s.Backfills {
+		nodes, tuples := backfill.writes()
 		fmt.Fprintf(w, "census: sizing backfill kind=%s moved_by=%s owed_rows=%d nodes_a_row=%d tuples_a_row=%d"+
 			" nodes=%d tuples=%d driver=%s\n",
-			backfill.Name, backfill.MovedBy, backfill.Owed, backfill.Nodes, backfill.Tuples,
-			backfill.Owed*int64(backfill.Nodes), backfill.Owed*int64(backfill.Tuples), backfill.Driver)
+			backfill.Name, backfill.MovedBy, backfill.Owed, backfill.Nodes, backfill.Tuples, nodes, tuples, backfill.Driver)
 	}
 	for _, growth := range s.Growth {
 		fmt.Fprintf(w, "census: sizing rows-a-day table=%s rows_a_day=%.2f\n", growth.Name, growth.RowsADay)

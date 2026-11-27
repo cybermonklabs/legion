@@ -46,11 +46,11 @@ type ownerVerifiedContextKey struct{}
 // committed live write, whose transaction held that lock until it committed; the block-id
 // backfill, which is a command run against a database nobody is serving from; or one of a
 // comment's anchor operations under WithCommentMarks, whose caller holds the owner's lock and
-// decided under it that the comment is written. Their injections skip the issue read in
-// allowInject - for the settlement that read would be a second pooled connection taken while
-// its transaction is open (store.ErrNestedAcquire), for its warm-up a refusal its closed issue
-// does not make (a closed issue's document settles as an open one's does), for the publish a
-// read other writers' connections can starve (see publishLiveUpdate), for the backfill a
+// decided under it that the comment is written, or deleted. Their injections skip the issue
+// read in allowInject - for the settlement that read would be a second pooled connection taken
+// while its transaction is open (store.ErrNestedAcquire), for its warm-up a refusal its closed
+// issue does not make (a closed issue's document settles as an open one's does), for the publish
+// a read other writers' connections can starve (see publishLiveUpdate), for the backfill a
 // question already answered, and for a comment's anchor a refusal its closed issue does not make.
 type ownerVerifiedToken struct{ _ byte }
 
@@ -66,19 +66,29 @@ func isOwnerVerified(ctx context.Context) bool {
 type commentMarksContextKey struct{}
 
 // WithCommentMarks marks ctx as a comment's writes to the document its anchor is in, made by a
-// caller holding the document owner's lock in its joined transaction that decided there
-// the comment is written. A closed issue still takes a comment, so its document still takes
-// that comment's anchor: the comment mark MarkQuote places and VerifyMark reads, the version
-// SnapshotVersion pins the anchor to, the margin record ProjectMark writes, and the
-// SuggestionKind read of the thread root a reply projects. Each of those, and only those, runs
-// owner-verified under this context (commentMarkOperation). A suggestion's mark, a content edit,
-// a named version or a rebuild made under the same context is still refused on a closed issue.
+// caller whose joined transaction holds the document owner's lock (store.LockOwner) and decided
+// under it that the comment is written, or that the body its author wrote there is that author's
+// to replace or to withdraw. A closed issue still takes a comment, and takes its author's
+// correction of it, so its document still takes the writes that comment makes there. Every
+// operation that takes its context through commentMarkOperation runs owner-verified under this
+// context. For a comment's anchor that is the comment mark MarkQuote places and VerifyMark reads,
+// the version SnapshotVersion pins the anchor to, the margin record ProjectMark writes, and the
+// SuggestionKind read a projection makes - of the thread root a reply projects, and of the
+// comment's own mark where an edit projects it.
+//
+// For the delete of a comment it is also the reject of the comment's pending suggestion
+// (RejectDeletedCommentSuggestion) and the version that settles the document without an insert's
+// words (SettleVersion). A closed issue still takes that delete, so its document takes that
+// reject, which carries the suggestion's text out of it with the comment's body, and that version,
+// which holds the document without it. Every other way a suggestion's mark is placed or settled,
+// and a content edit, a named version or a rebuild made under this context, is still refused on a
+// closed issue.
 func WithCommentMarks(ctx context.Context) context.Context {
 	return context.WithValue(ctx, commentMarksContextKey{}, true)
 }
 
-// commentMarkOperation is ctx for one of the comment anchor operations WithCommentMarks names:
-// owner-verified when the caller marked ctx, unchanged otherwise.
+// commentMarkOperation is ctx for an operation WithCommentMarks says runs owner-verified under the
+// caller's mark: owner-verified when the caller marked ctx, unchanged otherwise.
 func commentMarkOperation(ctx context.Context) context.Context {
 	if commentMarks(ctx) {
 		return withOwnerVerified(ctx)
@@ -94,12 +104,12 @@ func commentMarks(ctx context.Context) bool {
 	return marked
 }
 
-// commentMarkAnchor is whether ctx is one of the comment anchor operations WithCommentMarks
-// names, inside the operation that made it owner-verified (commentMarkOperation): the reads and
-// writes a closed issue's document takes for a comment, and no other caller's. It is the one
-// test of that, which the three decisions a closed issue turns share - the fork a comment's mark
-// is written on (closedIssueCommentMark), the tree its mark_id is verified against and the
-// version its anchor is pinned to (closedIssueCommentAnchor).
+// commentMarkAnchor is whether ctx is inside an operation commentMarkOperation made owner-verified
+// under the caller's mark (WithCommentMarks): the reads and writes a closed issue's document takes
+// for a comment, and no other caller's. It is the one test of that, which the three decisions a
+// closed issue turns share - the fork a comment's mark is written on (closedIssueCommentMark), the
+// tree its mark_id is verified against and the version its anchor is pinned to
+// (closedIssueCommentAnchor).
 func commentMarkAnchor(ctx context.Context) bool {
 	return commentMarks(ctx) && isOwnerVerified(ctx)
 }
@@ -812,7 +822,16 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 // takes; an OnUpdate observer cannot, since it runs on the goroutine that committed, which can be
 // a settlement holding that lock.
 // An unbounded apply can fail after parking bytes, so its error does not skip the durable append.
+//
+// An update that holds a document of an issue's room as that document's own room held it before it
+// moved into the room is refused before it is applied (oldRoomDocument): nothing of it reaches the
+// room, another peer or the store, and ygo closes the socket that sent it.
 func (s *Service) onPeerUpdate(info websocket.PeerUpdateInfo, apply func() error) error {
+	if document, block := s.oldRoomDocument(info); document != "" {
+		slog.Warn("dispatch: refused a document socket's update that holds a document as its own room held it before the document moved into its issue's room; the socket is closed, and nothing of the update is applied",
+			"room", info.Room, "document", document, "block", block)
+		return fmt.Errorf("%w: block %s of document %s, under the own fragment of room %s", errOldRoomDocument, block, document, info.Room)
+	}
 	err := apply()
 	s.storeParked(info.Room)
 	return err

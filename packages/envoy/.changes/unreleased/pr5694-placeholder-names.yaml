@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+    The broker's profile test fixtures (`internal/cipher/policy/testdata/deployment-profiles-kinds.json` and `cmd/cipherd/testdata/`) and their tests name the private deployment by placeholders only: `example` for the company's name, `123456789012` for the project number of its Secret Manager, and test identifiers that do not name the deployment repository.
+    No behavior changes.
+time: 2026-11-26T12:52:22Z
+custom:
+    Issue: pr5694

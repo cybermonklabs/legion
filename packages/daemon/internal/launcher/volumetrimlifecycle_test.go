@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -84,13 +83,12 @@ func useLauncherTrimmer(t *testing.T, f *trimFixture, prepare ...func(trim *trim
 	l := &launchedTrimmer{t: t, started: make(chan *trimmer, 1), stopped: make(chan struct{})}
 	previous := podTrimmer
 	podTrimmer = func(ctx context.Context, trim *trimmer) {
-		trim.volumeRoot, trim.procRoot, trim.self, trim.roots = f.root, f.proc, f.self, f.roots
-		trim.now, trim.ticks = f.clock.now, f.ticks.make
-		// The sweeps of these cases delete in this process, as the sweeps of a case that drives
-		// the trimmer directly do and for the same reason (trimFixture.trimmer): what they are
-		// about is the trimmer's life in the launcher process, and the deleter the pod runs is
-		// a child of `legion`, which a test binary is not.
-		trim.cover, trim.removals = f.cover, inProcessRemovals
+		// Aimed as a trimmer the case builds is (trimFixture.aim), its sweeps deleting in this
+		// process for the same reason: what these cases are about is the trimmer's life in the
+		// launcher process, and the deleter the pod runs is a child of `legion`, which a test
+		// binary is not.
+		f.aim(trim)
+		trim.roots, trim.cover = f.roots, f.cover
 		// The pod's own line is kept and the case reads a copy: the lines a person greps for in
 		// the container's log are the launcher's (manager.logf), and the fixture's record is
 		// what holds each interval to one at a time (trimFixture.tick).
@@ -116,7 +114,7 @@ func (l *launchedTrimmer) await() *trimmer {
 	select {
 	case trim := <-l.started:
 		return trim
-	case <-time.After(testwait.Bounded(l.t, 30*time.Second, time.Second)):
+	case <-time.After(beforeDeadline(l.t)):
 		l.t.Fatal("the launcher started no trimmer")
 		return nil
 	}
@@ -176,7 +174,7 @@ func offerSettingsTick(t *testing.T, f *trimFixture) {
 // case waits for what the change brings about rather than for a set number of ticks.
 func offerSettingsTicksUntil(t *testing.T, f *trimFixture, what string, done func() bool) {
 	t.Helper()
-	testwait.Eventually(t, what, func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, what, func() bool {
 		if done() {
 			return true
 		}
@@ -189,7 +187,7 @@ func offerSettingsTicksUntil(t *testing.T, f *trimFixture, what string, done fun
 
 func offerTickOf(t *testing.T, f *trimFixture, period time.Duration, what string) {
 	t.Helper()
-	deadline := time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second))
+	deadline := time.Now().Add(beforeDeadline(t))
 	for time.Now().Before(deadline) {
 		at, live := f.ticks.live(period)
 		if !live {
@@ -208,7 +206,7 @@ func awaitClosed(t *testing.T, done <-chan struct{}, what string) {
 	t.Helper()
 	select {
 	case <-done:
-	case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
+	case <-time.After(beforeDeadline(t)):
 		t.Fatalf("timed out waiting for %s", what)
 	}
 }
@@ -271,6 +269,8 @@ func (g *roleConn) refuseVolumeReport(bound time.Duration) {
 // makes or the clock it waits on. One connection decides the settings and carries the reports,
 // so a report can never meet a daemon that did not send the settings that produced it.
 func TestThePodsTrimmerRunsByTheFirstRolesAnswerAlone(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	f := newTrimFixture(t, 10) // forty entries, four points: the sweep ends above the low mark and reports
 	f.useVolume(f.modelled(90))
 	f.setSettings(trimSettings())
@@ -285,7 +285,7 @@ func TestThePodsTrimmerRunsByTheFirstRolesAnswerAlone(t *testing.T) {
 	pod.role(podRoles[0]).acknowledgeWith(shimwire.LauncherHelloAck{VolumeTrim: trimSettings()})
 	trim := trims.await()
 	started := volumeTrimLog + "started: trimmer " + trim.id + ", high 85%, low 70%, minimum age 30 min, interval 30 s"
-	testwait.Eventually(t, "the trimmer to start on the first role's settings", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to start on the first role's settings", func() bool {
 		return f.logged(started) == 1
 	})
 
@@ -329,6 +329,8 @@ func TestThePodsTrimmerRunsByTheFirstRolesAnswerAlone(t *testing.T) {
 // termination grace is what bounds the whole of it. A launcher that returned under a running
 // sweep would leave the pod's volume part way through a deletion as the container went.
 func TestRunReturnsOnlyOnceThePodsTrimmerHasStopped(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	f := newTrimFixture(t, 25)
 	f.useVolume(f.modelled(95))
 	f.setSettings(trimSettings())
@@ -390,6 +392,8 @@ func TestRunReturnsOnlyOnceThePodsTrimmerHasStopped(t *testing.T) {
 // asks its budget and not the container's stop: it reads on through its tree until its budget ends
 // it, some twenty seconds after the stop, and Run is still waiting for it when the grace runs out.
 func TestTheContainersStopWhileAListingRunsPastTheBudgetEndsTheSweepAndRunInsideTheGrace(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const (
 		step    = 2 * time.Second        // the trimmer's clock at each of its readings
 		stopAt  = 10                     // the reading the stop arrives at: the sweep's start, the used-path set's, then the listing's eighth
@@ -471,6 +475,8 @@ func TestTheContainersStopWhileAListingRunsPastTheBudgetEndsTheSweepAndRunInside
 // container's stop does not reach: it waits for its budget, which nothing here ticks, and Run is
 // still waiting for it when the grace runs out.
 func TestTheContainersStopCutsTheSizeWalkDropsTheHeldReportAndRunReturnsInsideTheGrace(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const blockAt = 3 // the target of the second walk the stop arrives in
 	grace := shim.DefaultStopGrace
 	f := newTrimFixture(t, 10) // forty entries, four points: the first sweep leaves 86%, still at the high mark
@@ -514,7 +520,7 @@ func TestTheContainersStopCutsTheSizeWalkDropsTheHeldReportAndRunReturnsInsideTh
 	acceptRole(t, pod.listener)
 
 	f.tick("the sweep ended")
-	testwait.Eventually(t, "the trimmer to hold the first sweep's report", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold the first sweep's report", func() bool {
 		return f.logged("the report could not be sent (no daemon connection is up to carry it); holding it for the next attempt") == 1
 	})
 
@@ -567,6 +573,8 @@ func TestTheContainersStopCutsTheSizeWalkDropsTheHeldReportAndRunReturnsInsideTh
 // uses, whose volume belongs to its sandbox rather than to an issue and whose report no
 // architect would read.
 func TestNoTrimmerRunsWithoutSettingsOrInTheControllersPod(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	t.Run("the bound connection's answer carries no settings", func(t *testing.T) {
 		f := newTrimFixture(t, 5)
 		f.useVolume(f.modelled(95))
@@ -580,7 +588,7 @@ func TestNoTrimmerRunsWithoutSettingsOrInTheControllersPod(t *testing.T) {
 		}
 
 		trims.await()
-		testwait.Eventually(t, "the trimmer to stay off", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to stay off", func() bool {
 			return f.logged("no settings are in force, so the trimmer stays off") == 1
 		})
 		// The trimmer waits rather than ending with the pod, and waits on the one clock it
@@ -608,25 +616,24 @@ func TestNoTrimmerRunsWithoutSettingsOrInTheControllersPod(t *testing.T) {
 		f.setSettings(trimSettings())
 		trims := useLauncherTrimmer(t, f)
 
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = listener.Close() })
+		token := ownToken("launcher-token")
+		listener := listenForLauncher(t, token)
 		ctx, cancel := context.WithCancel(context.Background())
 		result := make(chan error, 1)
 		stderr := &lockedBuffer{}
 		go func() {
-			result <- Run(ctx, Config{
-				Connect: "tcp://" + listener.Addr().String(), Token: "launcher-token", Sandbox: "legion-legion-legion-208",
+			err := Run(ctx, Config{
+				Connect: "tcp://" + listener.Addr().String(), Token: token, Sandbox: "legion-legion-legion-208",
 				Role: podRoles[0], PodUID: "pod-1", PrivateDir: t.TempDir(), Stderr: stderr, StopGrace: 2 * time.Second,
 			})
+			listener.codeReturned(err)
+			result <- err
 		}()
 		t.Cleanup(func() {
 			cancel()
 			select {
 			case <-result:
-			case <-time.After(testwait.Bounded(t, 10*time.Second, time.Second)):
+			case <-time.After(cleanupBeforeDeadline(t)):
 				t.Errorf("the launcher did not leave after its context ended; its log: %s", stderr.String())
 			}
 		})
@@ -649,6 +656,8 @@ func TestNoTrimmerRunsWithoutSettingsOrInTheControllersPod(t *testing.T) {
 // serveVolumeTrim without the check, which enters that loop on the first role's answer and
 // writes no off line.
 func TestTheCacheTrimmerRunsOnlyInTheContainersFirstProcess(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	useContainerInit(t, false)
 	var entered atomic.Int32
 	previous := podTrimmer
@@ -700,6 +709,8 @@ func TestTheCacheTrimmerRunsOnlyInTheContainersFirstProcess(t *testing.T) {
 // started under, and the interval after it is the new settings' own. A daemon that restarts
 // mid-sweep must not move the mark the sweep is working towards under it.
 func TestALaterAnswerAppliesToTheNextSweepAndNotOneInFlight(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	f := newTrimFixture(t, 50) // two hundred entries, twenty points: the low mark 70% is reachable from 90%
 	f.useVolume(f.modelled(90))
 	f.setSettings(trimSettings())
@@ -745,7 +756,7 @@ func TestALaterAnswerAppliesToTheNextSweepAndNotOneInFlight(t *testing.T) {
 	}
 	// The interval writes "nothing to sweep" and only then has the loop stop the clock of the old
 	// period and make one of the new (intervals), so the case waits for that clock.
-	testwait.Eventually(t, "the trimmer to wait on a clock of the later answer's interval: a shortened interval must not wait the old one out", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to wait on a clock of the later answer's interval: a shortened interval must not wait the old one out", func() bool {
 		_, live := f.ticks.live(settingsInterval(*laterTrimSettings()))
 		return live
 	})
@@ -757,8 +768,10 @@ func TestALaterAnswerAppliesToTheNextSweepAndNotOneInFlight(t *testing.T) {
 // the outage, holds the report it cannot write, and sends it on the connection that comes back,
 // where the daemon reads it as a launcher_volume_report frame. A daemon restart is not an
 // operator turning the trimmer off, and a report the daemon never got is a volume nobody was
-// told about (bundleRestore keeps its own confirmation the same way).
+// told about.
 func TestADroppedConnectionLeavesTheSettingsInForceAndHoldsTheReport(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	f := newTrimFixture(t, 25) // a hundred entries, ten points: the sweep ends below the high mark and above the low one
 	f.useVolume(f.modelled(90))
 	f.setSettings(trimSettings())
@@ -781,7 +794,7 @@ func TestADroppedConnectionLeavesTheSettingsInForceAndHoldsTheReport(t *testing.
 	if gone := len(f.gone()); gone != len(f.entries) {
 		t.Errorf("the sweep deleted %d of the %d entries through the outage, want every one of them: a drop leaves the settings in force", gone, len(f.entries))
 	}
-	testwait.Eventually(t, "the trimmer to hold the report the outage refused", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold the report the outage refused", func() bool {
 		return f.logged("holding it for the next attempt") == 1
 	})
 
@@ -810,6 +823,8 @@ func TestADroppedConnectionLeavesTheSettingsInForceAndHoldsTheReport(t *testing.
 // discarded rather than sent to a daemon that would close the connection on it — once a second
 // for every role of the pod.
 func TestAnAnswerWithNoSettingsStopsTheSweepInFlightAndDiscardsTheHeldReport(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	f := newTrimFixture(t, 25) // a hundred entries: the first sweep ends on its budget and leaves the rest
 	f.useVolume(func(call int) volumeUsage {
 		if call == 1 {
@@ -850,7 +865,7 @@ func TestAnAnswerWithNoSettingsStopsTheSweepInFlightAndDiscardsTheHeldReport(t *
 	_ = pod.role(podRoles[0]).conn.Close()
 	again := acceptRole(t, pod.listener)
 	f.tick("the sweep ended")
-	testwait.Eventually(t, "the trimmer to hold the report the outage refused", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold the report the outage refused", func() bool {
 		return f.logged("holding it for the next attempt") == 1
 	})
 
@@ -860,10 +875,10 @@ func TestAnAnswerWithNoSettingsStopsTheSweepInFlightAndDiscardsTheHeldReport(t *
 	pod.conns[podRoles[0]] = again
 	releaseSweep()
 
-	testwait.Eventually(t, "the trimmer to stop sweeping on an answer that carries no settings", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to stop sweeping on an answer that carries no settings", func() bool {
 		return f.logged("the settings stopped the trimmer: the sweep ended at an entry boundary with its deletions standing, and no report is sent for it") == 1
 	})
-	testwait.Eventually(t, "the trimmer to wait for settings it can run", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to wait for settings it can run", func() bool {
 		return f.logged("no settings are in force, so the trimmer stays off until the daemon sends settings it can run") == 1
 	})
 	if trims.hasStopped() {
@@ -896,6 +911,8 @@ func TestAnAnswerWithNoSettingsStopsTheSweepInFlightAndDiscardsTheHeldReport(t *
 // frame at all reaches that connection; the control is the same window with an answer that
 // carries settings, where the report goes.
 func TestAReportIsNeverWrittenOnAConnectionWhoseAnswerCarriesNoSettings(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	for _, tc := range []struct {
 		name string
 		set  *shimwire.LauncherVolumeTrim
@@ -948,7 +965,7 @@ func TestAReportIsNeverWrittenOnAConnectionWhoseAnswerCarriesNoSettings(t *testi
 				// line the trimmer wrote is read after it, so a send that merely came late
 				// still fails here.
 				again.refuseVolumeReport(500 * time.Millisecond)
-				testwait.Eventually(t, "the trimmer to hold the report that connection refused", func() bool {
+				testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold the report that connection refused", func() bool {
 					return f.logged("carries no trimmer settings") == 1
 				})
 				f.assertProtected()
@@ -995,6 +1012,8 @@ func plantEntries(t *testing.T, f *trimFixture, count int) {
 // A trimmer that ended with the first such answer would leave the volume of a pod that lives for
 // days unguarded with nothing told to anybody.
 func TestThePodsTrimmerSweepsAgainWhenTheSettingsComeBack(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	f := newTrimFixture(t, 25) // a hundred entries, ten points: the first sweep ends above the low mark
 	f.useVolume(f.modelled(90))
 	f.setSettings(trimSettings())
@@ -1017,7 +1036,7 @@ func TestThePodsTrimmerSweepsAgainWhenTheSettingsComeBack(t *testing.T) {
 	rolledBack.acknowledgeWith(shimwire.LauncherHelloAck{})
 	pod.conns[podRoles[0]] = rolledBack
 	f.tick("sweeps nothing more")
-	testwait.Eventually(t, "the trimmer to wait for settings it can run", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to wait for settings it can run", func() bool {
 		return f.logged("no settings are in force, so the trimmer stays off until the daemon sends settings it can run") == 1
 	})
 	if trims.hasStopped() {
@@ -1034,7 +1053,7 @@ func TestThePodsTrimmerSweepsAgainWhenTheSettingsComeBack(t *testing.T) {
 
 	started := volumeTrimLog + "started: trimmer " + trim.id
 	offerSettingsTick(t, f)
-	testwait.Eventually(t, "the trimmer to start again on the settings that came back", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to start again on the settings that came back", func() bool {
 		return f.logged(started) == 2
 	})
 	f.tick("the sweep ended")
@@ -1061,6 +1080,8 @@ func TestThePodsTrimmerSweepsAgainWhenTheSettingsComeBack(t *testing.T) {
 // nothing and reads nothing while it waits, which is what R2 asks of a value outside the ranges:
 // the trimmer stays off rather than starting its ticker.
 func TestATrimmerGivenNothingItCanRunStartsWhenSettingsArrive(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	for _, tc := range []struct {
 		name  string
 		first *shimwire.LauncherVolumeTrim
@@ -1078,7 +1099,7 @@ func TestATrimmerGivenNothingItCanRunStartsWhenSettingsArrive(t *testing.T) {
 			pod := newFleetDialed(t, 2*time.Second, podRoles...)
 			ackPod(pod, tc.first)
 			trim := trims.await()
-			testwait.Eventually(t, "the trimmer to stay off on the answer it cannot run", func() bool {
+			testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to stay off on the answer it cannot run", func() bool {
 				return f.logged("stays off") > 0
 			})
 			switch {
@@ -1095,7 +1116,7 @@ func TestATrimmerGivenNothingItCanRunStartsWhenSettingsArrive(t *testing.T) {
 			again.acknowledgeWith(shimwire.LauncherHelloAck{VolumeTrim: trimSettings()})
 			pod.conns[podRoles[0]] = again
 			offerSettingsTick(t, f)
-			testwait.Eventually(t, "the trimmer to start on the settings it can run", func() bool {
+			testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to start on the settings it can run", func() bool {
 				return f.logged(volumeTrimLog+"started: trimmer "+trim.id) == 1
 			})
 
@@ -1116,6 +1137,8 @@ func TestATrimmerGivenNothingItCanRunStartsWhenSettingsArrive(t *testing.T) {
 // that starts nothing. A trimmer that came back from them would recover a panic, sweep, recover
 // it again and go on for ever in the process that is PID 1 of the roles container.
 func TestThreeFaultsInARowEndThePodsTrimmerForTheLifeOfTheProcess(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	f := newTrimFixture(t, 5)
 	f.setOnRead(func(call int) { panic(fmt.Sprintf("the volume reader fell over on call %d", call)) })
 	f.useVolume(steady(50))
@@ -1177,19 +1200,20 @@ func TestThreeFaultsInARowEndThePodsTrimmerForTheLifeOfTheProcess(t *testing.T) 
 // TestAVolumeTheTrimmerCannotReadIsSaidOnce), because the clearing is on the loop's entry,
 // which is the one path an interval never takes.
 func TestAVolumeTheTrimmerCannotReadIsSaidAgainWhenTheSettingsComeBack(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	f := newTrimFixture(t, 1)
 	f.useVolume(steady(50)) // below the high mark: a reading that got through would sweep nothing
 	f.setSettings(trimSettings())
 
-	// The reader the case drives, over the fixture's own: the volume cannot be read for the
+	// The reader the case drives, in place of the fixture's own: the volume cannot be read for the
 	// whole of this case, as the statfs behind a real fault answers the same way every minute
 	// for as long as it lasts.
-	working := readVolumeUsage
-	readVolumeUsage = func(path string) (volumeUsage, error) {
-		return volumeUsage{}, errors.New("launcher: statfs " + path + ": input/output error")
-	}
-	t.Cleanup(func() { readVolumeUsage = working })
-	trims := useLauncherTrimmer(t, f)
+	trims := useLauncherTrimmer(t, f, func(trim *trimmer) {
+		trim.readUsage = func(path string) (volumeUsage, error) {
+			return volumeUsage{}, errors.New("launcher: statfs " + path + ": input/output error")
+		}
+	})
 
 	pod := newFleetDialed(t, 2*time.Second, podRoles...)
 	ackPod(pod, trimSettings())
@@ -1197,7 +1221,7 @@ func TestAVolumeTheTrimmerCannotReadIsSaidAgainWhenTheSettingsComeBack(t *testin
 
 	const unreadable = "could not be read"
 	started := volumeTrimLog + "started: trimmer " + trim.id
-	testwait.Eventually(t, "the trimmer to start on the settings the pod was answered with", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to start on the settings the pod was answered with", func() bool {
 		return f.logged(started) == 1
 	})
 	f.tick(unreadable)
@@ -1213,7 +1237,7 @@ func TestAVolumeTheTrimmerCannotReadIsSaidAgainWhenTheSettingsComeBack(t *testin
 	rolledBack.acknowledgeWith(shimwire.LauncherHelloAck{})
 	pod.conns[podRoles[0]] = rolledBack
 	f.tick("sweeps nothing more")
-	testwait.Eventually(t, "the trimmer to wait for settings it can run", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to wait for settings it can run", func() bool {
 		return f.logged("no settings are in force, so the trimmer stays off until the daemon sends settings it can run") == 1
 	})
 
@@ -1222,7 +1246,7 @@ func TestAVolumeTheTrimmerCannotReadIsSaidAgainWhenTheSettingsComeBack(t *testin
 	rolledForward.acknowledgeWith(shimwire.LauncherHelloAck{VolumeTrim: trimSettings()})
 	pod.conns[podRoles[0]] = rolledForward
 	offerSettingsTick(t, f)
-	testwait.Eventually(t, "the trimmer to start again on the settings that came back", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to start again on the settings that came back", func() bool {
 		return f.logged(started) == 2
 	})
 

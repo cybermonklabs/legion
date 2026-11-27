@@ -1,7 +1,7 @@
 import { DESIGN_GATE_STEPS } from "@legion/contracts";
 
 import { primarySpec, roleDocument } from "../../api/issue-cache";
-import type { Artifact, IssueDetails, Project } from "../../api/types";
+import type { ArtifactWithTrees, IssueDetails, Project } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
 
 /** A design-gate step this build draws: the steps a deployment gates. */
@@ -17,16 +17,17 @@ export const STEP_LABELS: Record<DesignGateStep, string> = {
 
 /** One design-gate step of a root issue: the step, the name the page draws for it, and the
  *  document it reviews - undefined for an issue that holds no document for the step, which is
- *  the step nobody has written yet. */
+ *  the step nobody has written yet. The document is the issue details' own row, so its approval
+ *  carries the tree of its review reason. */
 export interface StepEntry {
   step: DesignGateStep;
   label: string;
-  document: Artifact | undefined;
+  document: ArtifactWithTrees | undefined;
 }
 
 /** The document the issue holds for `step`, by the id the issue names for it, never by the
  *  document's role or name among `issue.artifacts`. */
-function stepDocument(issue: IssueDetails, step: DesignGateStep): Artifact | undefined {
+function stepDocument(issue: IssueDetails, step: DesignGateStep): ArtifactWithTrees | undefined {
   switch (step) {
     case "spec":
       return primarySpec(issue);

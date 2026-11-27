@@ -35,6 +35,7 @@ func cardInTheTree(t *testing.T, markdown string) (DecisionCard, bool) {
 // `ask`. So the rule answers one body one way, whether it reads the Proof tree a parse that stood
 // left or the goldmark tree a refusal left behind.
 func TestFindDecisionCardAnswersWhatTheParsedTreeHolds(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct{ name, markdown string }{
 		{name: "an ask block at the top", markdown: decisionBlock + "\n"},
 		{name: "an ask block in a quote", markdown: "Lead text.\n\n> :::ask{urgency=\"med\"}\n> Ship it?\n> :::\n"},
@@ -73,6 +74,7 @@ func TestFindDecisionCardAnswersWhatTheParsedTreeHolds(t *testing.T) {
 // is refused for a block the schema holds nothing like, for nesting past a bound, for the elements
 // it makes or for the cells its tables would be padded with.
 func TestFindDecisionCardReadsABodyTheParseRefuses(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, markdown string
 		position       int
@@ -137,6 +139,7 @@ func TestFindDecisionCardReadsABodyTheParseRefuses(t *testing.T) {
 // list item or a callout. The place the card is named at is the one the reader draws it at, since
 // the rewrite keeps every line of the body and the order they stand in.
 func TestFindDecisionCardReadsEveryOpenerTheReaderOpensAnAskOn(t *testing.T) {
+	t.Parallel()
 	const question = "Which transport should we expose?\n\n- REST: the platform's own\n- gRPC: streaming\n"
 	for _, test := range []struct {
 		name, markdown string
@@ -239,6 +242,7 @@ func TestFindDecisionCardReadsEveryOpenerTheReaderOpensAnAskOn(t *testing.T) {
 // a name the colons run into, a line the opener does not end, attributes no `}` closes, and an
 // opener a fenced code block or an indented line holds, which both parsers read as text.
 func TestFindDecisionCardFindsNoCardWhereNoAskOpens(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct{ name, markdown string }{
 		{name: "another directive's name", markdown: ":::note\nA note.\n:::\n"},
 		{name: "a name the colons run into", markdown: ":::asks\nShip it?\n:::\n"},
@@ -267,6 +271,7 @@ func TestFindDecisionCardFindsNoCardWhereNoAskOpens(t *testing.T) {
 // spells it exactly as this parser's grammar reads an opener, and the tree still holds no `ask`.
 // What parts the two is the line ending itself and not the opener, so no spelling closes it.
 func TestFindDecisionCardMissesAnOpenerALoneCarriageReturnEnds(t *testing.T) {
+	t.Parallel()
 	for _, markdown := range []string{
 		":::ask\rShip it?\r:::\r",
 		":::ask{}\rShip it?\r:::\r",
@@ -285,6 +290,7 @@ func TestFindDecisionCardMissesAnOpenerALoneCarriageReturnEnds(t *testing.T) {
 // no spelling closes it; the rule drops the mark in its own copy of the body before it reads
 // here (itemblocks.Check).
 func TestFindDecisionCardMissesAnOpenerAByteOrderMarkStandsBefore(t *testing.T) {
+	t.Parallel()
 	for _, markdown := range []string{
 		"\ufeff:::ask\nShip it?\n:::\n",
 		"\ufeff:::ask{urgency=\"med\"}\nShip it?\n:::\n",
@@ -300,6 +306,7 @@ func TestFindDecisionCardMissesAnOpenerAByteOrderMarkStandsBefore(t *testing.T) 
 // body: a mebibyte of markdown, which is what one write may send, carries far more lines than the
 // guard reads at once.
 func TestFindDecisionCardReadsOnPastTheElementGuard(t *testing.T) {
+	t.Parallel()
 	// Each paragraph of one line counts about two of the nodes the guard counts, so twice the
 	// limit's worth of them passes nodeGuard*MaxDocumentElements, where one read stops.
 	const paragraphs = 2 * MaxDocumentElements

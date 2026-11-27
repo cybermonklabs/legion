@@ -45,6 +45,7 @@ func testEdgeGrant(t *testing.T, met *metrics.Registry) *edgeGrant {
 // The start's grant refuses a project list natsgrant.Edge refuses, naming edge mode, and counts
 // nothing on it.
 func TestAnEdgeListenerGrantRefusesAListThatIsNoListOfProjectKeys(t *testing.T) {
+	t.Parallel()
 	grant, err := newEdgeGrant("test-machine", []string{"*"}, metrics.New())
 	if err == nil || grant != nil || !strings.Contains(err.Error(), "edge mode") {
 		t.Fatalf("newEdgeGrant(test-machine, [*]) = %v, %v; want no grant and a refusal naming edge mode", grant, err)
@@ -58,6 +59,7 @@ func TestAnEdgeListenerGrantRefusesAListThatIsNoListOfProjectKeys(t *testing.T) 
 // same listener without the edge's grant hands the same copy over to the same holder and keeps the
 // same message, which shows the rig sees a handover and a keep when one is made.
 func TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "edge-kept-handover"
@@ -102,7 +104,7 @@ func TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver(t *testing.T) {
 		t.Fatalf("role %s's drain cursor after the handover of the edge's claim is %+v (%v), want none written", role, cursor, err)
 	}
 	select {
-	case <-startKeptRoleSweep(ctx, edge, time.Hour):
+	case <-startKeptRoleSweep(ctx, edge, time.Hour, 0):
 	default:
 		t.Fatal("the edge started a sweep of the kept role lanes")
 	}
@@ -120,7 +122,7 @@ func TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver(t *testing.T) {
 		if key != roleForwardDedupePrefix+item.DedupeKey {
 			t.Fatalf("the shared listener handed over %s, want the kept copy %s", key, roleForwardDedupePrefix+item.DedupeKey)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatalf("the shared listener's handover forwarded nothing, so the rig cannot see a handover:\n%s", harness.logs.String())
 	}
 	if cursor, err := harness.client.ReadKeptRoleCursor(ctx, role); err != nil || cursor.Sequence == 0 {
@@ -136,6 +138,7 @@ func TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver(t *testing.T) {
 // holds the lane, a role of the edge's own project, and withheld and counted where it does not, a
 // role in the form that names no project.
 func TestAnEdgePublishToAnUnheldRoleIsRefusedAndKeptNowhere(t *testing.T) {
+	t.Parallel()
 	d, client := keptRoleDeps(t)
 	met := metrics.New()
 	d.delivery.edge = testEdgeGrant(t, met)
@@ -185,6 +188,7 @@ func TestAnEdgePublishToAnUnheldRoleIsRefusedAndKeptNowhere(t *testing.T) {
 // the one connection published them, so the GitHub lane's would come first had the edge published
 // it.
 func TestAnEdgeListenerPublishesNoDeliveryExceptionItsGrantDoesNotHold(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	edge := harness.config
 	edge.edge = testEdgeGrant(t, harness.metrics)

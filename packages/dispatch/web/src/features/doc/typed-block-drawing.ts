@@ -1,4 +1,9 @@
-import { parseBlockPointerValue, typedBlockIdAttribute } from "@legion/contracts";
+import {
+  askOpenerAttributes,
+  askOpenerLines,
+  askOpeners,
+  parseBlockPointerValue,
+} from "@legion/contracts";
 import type { DOMOutputSpec, Node as ProseMirrorNode } from "prosemirror-model";
 
 import type { Ask, AskOption, AskUrgency, BlockTypeSchema, TextAsk } from "../../api/types";
@@ -10,7 +15,7 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { URGENCY_LABELS } from "../inbox/ask-urgency";
-import { buildReferencePath, parseNodeReference, shortForm } from "../refs/routes";
+import { parseNodeReference, referenceHref, shortForm } from "../refs/routes";
 
 /**
  * `blockId` is the block's own identity rather than one of its schema attributes, so it is the
@@ -29,18 +34,19 @@ function attributeValue(value: unknown): string {
  * path as its `href`, and the reference itself as `data-dispatch-href`, which is how a link
  * drawn inside a document reaches the router and the hover card (`ProofDocument`'s click
  * handler and `RefPreview`'s trigger, the same pair `pictureView` writes for). A pointer that
- * names nothing is the text it is.
+ * names nothing, or names something with no page of this dashboard - a person (R5) - is the
+ * text it is.
  */
 function pointerLink(reference: string): DOMOutputSpec {
   const route = parseNodeReference(reference);
   if (route === undefined) {
     return ["span", {}, reference];
   }
-  return [
-    "a",
-    { "data-dispatch-href": reference, href: buildReferencePath(route) },
-    shortForm(route),
-  ];
+  const href = referenceHref(route);
+  if (href === undefined) {
+    return ["span", {}, shortForm(route)];
+  }
+  return ["a", { "data-dispatch-href": reference, href }, shortForm(route)];
 }
 
 /** One attribute the header draws: its name, and the children its value draws as - a spec per
@@ -198,14 +204,15 @@ export interface AskBlockFacts {
 
 /**
  * The ask the server reads for a block, keyed by the block's id. Mostly its row (`ask`): the
- * block's own ask on its document, or, for a copy of an ask on another document of the same owner
- * (the same block id, asking the same), that source ask and the `dispatch://` address of the
- * document it is on (`copiedFrom`), from `GET /api/v1/issues/{key}/asks` or a project document's
- * asks (`servedAskOf`). Otherwise what the document's live text answers for the block in its
- * `asks` member, or, from a Dispatch of the release before, which sends none, renders on the
- * block's opening line (`rendered`, `liveAskOf`): a copy on a project document reads its source
- * there, since no route lists the asks of a project's other documents. A person's answer is held
- * on the ask alone, so a block reads its state and answer from here.
+ * block's own ask on its document, or, for a copy of an ask on another document of the same owner,
+ * that source ask, the one the document's live text names as the copy's (`copied_from`), and the
+ * `dispatch://` address of the document it is on (`copiedFrom`, `copied_from_document`), from
+ * `GET /api/v1/issues/{key}/asks` or a project document's asks (`servedAskOfBlock`). Otherwise
+ * what the document's live text answers for the block in its `asks` member, or, from a Dispatch
+ * of the release before, which sends none, renders on the block's opening line (`rendered`,
+ * `liveAskOf`): a copy on a project document reads its source there, since no route lists the
+ * asks of a project's other documents. A person's answer is held on the ask alone, so a block
+ * reads its state and answer from here.
  */
 export type ServedAsk =
   | { readonly ask: Ask; readonly copiedFrom?: string }
@@ -312,58 +319,20 @@ function recordedAnswer(attrs: Readonly<Record<string, unknown>>): AnswerFacts {
 }
 
 /**
- * The ask the server reads for the block `blockId` of the document `artifactId`, among `asks`, the
- * asks of its owner: the block's own ask, or the ask on another document of the owner it is a copy
- * of, which carries the same block id, with that document's `dispatch://` address. `project` is
- * the owner's project where it is a project, whose documents' asks name no issue.
+ * The block `blockId`'s own ask among `asks`, the asks of the owner of the document
+ * `artifactId`: the ask indexed from that block of that document. A copy has no ask of its own,
+ * and the ask on another document that carries the same block id is not its source by that alone
+ * (`servedAskOfBlock`).
  */
 export function servedAskOf(
   asks: readonly Ask[],
   artifactId: string,
-  blockId: string,
-  project?: string
+  blockId: string
 ): ServedAsk | undefined {
   const own = asks.find(
     (candidate) => candidate.block_id === blockId && candidate.block_artifact?.id === artifactId
   );
-  if (own !== undefined) {
-    return { ask: own };
-  }
-  const source = asks.find(
-    (candidate) =>
-      candidate.block_id === blockId &&
-      candidate.block_artifact !== undefined &&
-      candidate.block_artifact.id !== artifactId
-  );
-  const document = source?.block_artifact;
-  if (source === undefined || document === undefined) {
-    return undefined;
-  }
-  const place = document.primary ? "spec" : `artifact/${encodeURIComponent(document.slug)}`;
-  const owner = source.issue_key ?? project;
-  return owner === undefined || owner === null
-    ? { ask: source }
-    : { ask: source, copiedFrom: `dispatch://${owner}/${place}` };
-}
-
-/** The character references the renderer writes in a directive attribute's value
- *  (pmdoc's escapeDirectiveAttribute), each with the character it stands for. */
-const ATTRIBUTE_REFERENCES: Readonly<Record<string, string>> = {
-  "&#x22;": '"',
-  "&#xA;": "\n",
-  "&#xD;": "\r",
-  "&amp;": "&",
-  "&gt;": ">",
-  "&lt;": "<",
-};
-
-/** The start of a markdown line that opens the ask block `blockId`, as a regular expression's
- *  source: any quote and list markers, the directive's colons, and the block's id as the renderer
- *  writes it (`typedBlockIdAttribute`: `#<id>`, or `id="…"` for an id the shortcut cannot hold),
- *  ended by a space or the closing brace. */
-function askOpenerSource(blockId: string): string {
-  const id = typedBlockIdAttribute(blockId).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return `^[> \\t-]*:{3,}ask\\{${id}[ }]`;
+  return own === undefined ? undefined : { ask: own };
 }
 
 /**
@@ -372,34 +341,20 @@ function askOpenerSource(blockId: string): string {
  * opening line: that server writes there, from the store, the state, answer, answerer and time of
  * the block's own ask, or of the ask on another document of the owner the block is a copy of,
  * with that ask's id and document (`copied_from`, `copied_from_document`). A Dispatch of this
- * release writes none of them into the text and answers them in its `asks` (`liveAskOf`).
- * Undefined where the text renders the block no state, or holds no line opening it, or more than
- * one: a line quoting the opener (in code, say) cannot be told from the block's own.
+ * release writes none of them into the text and answers them in its `asks` (`liveAskOf`). Only a
+ * real opener of the block counts, as the CLI reads one (`askOpenerLines`, `askOpeners`), and its
+ * attributes are read as the CLI reads them (`askOpenerAttributes`): a line that quotes the opener
+ * in fenced code or in front matter is the document's own text. Undefined where the text renders
+ * the block no state, or holds no real opener of it, or more than one.
  */
+// kept for one release: release-before-text
 export function renderedAskOf(
   markdown: string | undefined,
   blockId: string
 ): ServedAsk | undefined {
-  const openers = markdown?.match(new RegExp(`${askOpenerSource(blockId)}.*$`, "gm")) ?? [];
-  if (openers.length !== 1) {
-    return undefined;
-  }
-  const attributes: Record<string, unknown> = {};
-  for (const [, name, value] of openers[0].matchAll(/([\w-]+)="([^"]*)"/g)) {
-    attributes[name] = value.replace(
-      /&(?:#x22|#xA|#xD|amp|gt|lt);/g,
-      (reference) => ATTRIBUTE_REFERENCES[reference] ?? reference
-    );
-  }
-  // A list of strings is written as its JSON (pmdoc's encodeTypedAttribute).
-  if (typeof attributes.selected === "string") {
-    try {
-      attributes.selected = JSON.parse(attributes.selected);
-    } catch {
-      attributes.selected = undefined;
-    }
-  }
-  return attributes.state === undefined ? undefined : { rendered: recordedAnswer(attributes) };
+  const openers = markdown === undefined ? [] : askOpeners(askOpenerLines(markdown), blockId);
+  const ask = openers.length === 1 ? askOpenerAttributes(openers[0]) : undefined;
+  return ask?.state === undefined ? undefined : { rendered: recordedAnswer(ask) };
 }
 
 /**
@@ -416,6 +371,7 @@ export function liveAskOf(
   text: { readonly markdown: string; readonly asks?: readonly TextAsk[] | null } | undefined,
   blockId: string
 ): ServedAsk | undefined {
+  // kept for one release: release-before-text
   if (text?.asks === undefined || text.asks === null) {
     return renderedAskOf(text?.markdown, blockId);
   }
@@ -440,13 +396,51 @@ export function liveAskOf(
 }
 
 /**
- * Whether `markdown`, a stored version, records the answer state of its ask block `blockId` on
- * the block's opening line, as a version written before the answer left the document does (its
- * `state` attribute). Such a version is read as it was written; a later one records none, and its
- * block is read from the server's read of the ask.
+ * The server's read of the ask the block `blockId` of the document `artifactId` shows, as the
+ * document page and the Inbox's reading pane both read it: its own row among `asks`, the asks of
+ * the document's owner (`servedAskOf`), else what `text`, the document's live text, answers for
+ * the block (`liveAskOf`). For a copy, that answer names its source by id (`copied_from`), as the
+ * server matched it - by the question, the options and more than the block id, and the earliest
+ * source where several match - and the source's row is the one of `asks` with that id, with the
+ * document the answer names it on. Another document's ask under the same block id is no source
+ * of it: a copy whose answer names none, or a source `asks` does not hold - a project document's,
+ * whose asks list no other document's - reads what the live text answers. A text not yet read
+ * names no source either.
  */
-export function recordsAnswerState(markdown: string, blockId: string): boolean {
-  return new RegExp(`${askOpenerSource(blockId)}[^\\n]*\\bstate="`, "m").test(markdown);
+export function servedAskOfBlock(
+  asks: readonly Ask[],
+  text: { readonly markdown: string; readonly asks?: readonly TextAsk[] | null } | undefined,
+  artifactId: string,
+  blockId: string
+): ServedAsk | undefined {
+  const own = servedAskOf(asks, artifactId, blockId);
+  if (own !== undefined) return own;
+  const live = liveAskOf(text, blockId);
+  const copied = live !== undefined && "rendered" in live ? live.rendered.copiedFrom : undefined;
+  if (copied === undefined) return live;
+  const source = asks.find((ask) => ask.id === copied.ask);
+  return source === undefined ? live : { ask: source, copiedFrom: copied.document };
+}
+
+/**
+ * Whether `attrs`, the attributes of an ask block of a stored version as the version's reading
+ * holds them, record all the card draws of the ask's answer: a `state`, and for an answered ask
+ * the options chosen or the words (`selected`, `answer`). They are the parsed block's own, so a
+ * line elsewhere in the version that quotes the block's opener, in fenced code or in front
+ * matter, changes nothing. A version the release before wrote holds them, and is read as it was
+ * written. A version this build writes holds the state of an ask that is not open and, for an
+ * answered ask, who answered and when, but never the options or the words (the server's
+ * `keptAskState`); it holds no state for an open ask. The release before wrote an answered block
+ * whose document had no room for the answer without them too. So a version that records no state,
+ * or an answered state without the answer, is read from the server's read of the ask.
+ */
+export function recordsAnswerState(attrs: Readonly<Record<string, unknown>>): boolean {
+  return (
+    typeof attrs.state === "string" &&
+    (attrs.state !== "answered" ||
+      Array.isArray(attrs.selected) ||
+      typeof attrs.answer === "string")
+  );
 }
 
 /** A mounted decision block: the React card portals into its two slots. A new object is issued

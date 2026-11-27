@@ -5,8 +5,6 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
-
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // The summary reads serve what a rendered dispatch:// reference shows, an issue's title and status
@@ -54,6 +52,15 @@ type documentSummary struct {
 // key per artifact, inside the summary's one query.
 const summaryLatestVersion = `(select max(v.number) from artifact_versions v where v.artifact_id = a.id)`
 
+// issueSummaryDocumentsStatement reads the documents the full issue read lists
+// (issueArtifactsListed): never the issue's tree artifact, its room, nor its decisions query, a
+// view and not a document (R6 and R8 of the issue-tree spec).
+var issueSummaryDocumentsStatement = `
+		select a.id::text, a.slug, a.name, a.kind, ` + summaryLatestVersion + `, a.is_primary
+		from artifacts a where a.issue_key = $1 and ` + issueArtifactsListed("a") + `
+		order by a.created_at, a.id
+	`
+
 func (s *server) getIssueSummary(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -66,14 +73,7 @@ func (s *server) getIssueSummary(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The documents the full issue read lists (issueArtifactsStatement): never the issue's tree
-	// artifact, its room, nor its decisions query, a view and not a document (R6 and R8 of this
-	// branch's spec).
-	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select a.id::text, a.slug, a.name, a.kind, `+summaryLatestVersion+`, a.is_primary
-		from artifacts a where a.issue_key = $1 and a.retired_at is null and a.kind <> 'tree' and not `+refs.DecisionsQuerySQL("a")+`
-		order by a.created_at, a.id
-	`, summary.Key)
+	rows, err := s.deps.Store.Pool.Query(ctx, issueSummaryDocumentsStatement, summary.Key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

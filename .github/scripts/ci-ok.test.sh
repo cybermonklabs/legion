@@ -14,10 +14,11 @@
 # another event than pull_request, which is what
 # PULL_REQUEST_ONLY turns on; the script takes the event as a string and knows no workflow's
 # triggers. docs also stands for one of the slow suites, whose output a pull request
-# without the label `full-ci` holds false whatever the paths filter answered: five cases hand
-# the run the filter's own verdicts beside the outputs (with_verdicts below) and hold the report
-# to telling that skip from a filter miss, and to naming such a job as not run at this head, in
-# its log and its job summary, only where the label held it back.
+# without the label `full-ci` or the job's own `lane:<output>` holds false whatever the paths
+# filter answered: six cases hand the run the filter's own verdicts beside the outputs
+# (with_verdicts below) and hold the report to telling that skip from a filter miss, and to
+# naming such a job as not run at this head, with its own lane label, in its log and its job
+# summary, only where the pull request held it back.
 #
 # A job that ends `failure` is asked about: ci-ok.sh reads the check runs on this run's head to
 # tell a job the platform killed from one the change broke (runner-shutdown.sh), so each case
@@ -125,7 +126,8 @@ push_selects='{"typecheck": "true", "envoy_client": "false", "worker_image": "tr
 # `changes` publishes the paths filter's own verdict for every filter beside its outputs
 # (ci.yaml's changes job, filter_verdicts), as the JSON text toJSON() gives. The slow
 # suites' outputs carry a `full-ci` term in front of that verdict, so on a pull request without
-# the label the output is false whatever the filter said; docs stands for one of them below.
+# the label `full-ci` or the job's own `lane:<output>` the output is false whatever the filter
+# said; docs stands for one of them below.
 with_verdicts() { # with_verdicts <outputs> <the filter's own verdicts>
   jq -nc --argjson outputs "$1" --argjson verdicts "$2" '$outputs + {filter_verdicts: ($verdicts | tojson)}'
 }
@@ -141,14 +143,13 @@ unmatched_selects=$(with_verdicts "$selects" \
 # the environment is the ci-ok job's own, pointed at the stand-in above: the head its check runs
 # are on, the run they must belong to, and gh-read.sh's retry delay turned off. GITHUB_STEP_SUMMARY
 # is a fresh file of each case, never the summary of the job running this harness, and
-# step_summary is what ci-ok.sh wrote to it. PARTIAL is `partial` when a case sets it, and
-# otherwise the empty list ci.yaml's ci-ok job hands a labelled pull request and every other event.
+# step_summary is what ci-ok.sh wrote to it.
 run_ci_ok() {
   : > "$work/step-summary"
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
     GH_RETRY_SECONDS=0 HEAD_SHA=abc123 NEEDS=$1 EVENT=${2:-pull_request} SELECTED_BY=$selected_by \
-    PULL_REQUEST_ONLY=$pull_request_only ALWAYS_RUN=${3:-$always_run} PARTIAL=${partial:-[]} \
+    PULL_REQUEST_ONLY=$pull_request_only ALWAYS_RUN=${3:-$always_run} \
     GITHUB_STEP_SUMMARY="$work/step-summary" "$script_dir/ci-ok.sh" 2>&1)
   status=$?
   set -e
@@ -233,14 +234,14 @@ check "names it" \
 echo "case: docs' paths matched and the pull request has no full-ci label, so changes held it back"
 run_ci_ok "$(needs success "$gated_selects" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"
 check "passes, as it does for any job changes did not select" "$(is "$status" 0)"
-check "says the label held it back, not the filter" \
-  "$(contains "$out" '^docs: skipped (not selected: selected by paths, gated by full-ci: runs in the merge queue)$')"
+check "says the pull request held it back, not the filter" \
+  "$(contains "$out" '^docs: skipped (not selected: selected by paths, held back on a pull request without full-ci or lane:docs: runs in the merge queue)$')"
 check "reports no error" "$(is "$(contains "$out" '::error::')" false)"
 # The line above sits among the jobs that ran, in the same `<job>: <result>` shape, and the pass
 # line after it says every job changes selected succeeded: read together they let a green ci-ok
 # stand for a docs that never ran. So the verdict names docs once more, after the pass line and
 # in a shape of its own, and the job summary sets it apart from the jobs that ran and passed.
-not_run_docs='not run at this head: docs (selected by paths, gated by full-ci; runs in the merge queue)'
+not_run_docs='not run at this head: docs (selected by paths, held back on a pull request without full-ci or lane:docs; runs in the merge queue)'
 check "names docs after the pass line as not run at this head" \
   "$(contains "$(sed -n '/^changes and lint succeeded/,$p' <<<"$out")" "^$not_run_docs\$")"
 check "the job summary names docs as not run at this head" \
@@ -260,36 +261,26 @@ check "which leaves the failed job out of the jobs that ran and passed" \
   "$(contains "$step_summary" '^\*\*Ran and passed at this head:\*\* changes, lint, worker-image$')"
 check "the job summary's headline says the verdict failed" "$(contains "$step_summary" '^### ci-ok: failure, ')"
 
-echo "case: a job that ran only part of itself without the label, which PARTIAL names"
-# dispatch-browser runs only its two-project pull-request lane on a pull request without full-ci
-# and its full lane in the merge queue, so its success is no more the full lane's pass than a
-# skip is. ci.yaml's ci-ok job hands such jobs in PARTIAL; typecheck stands for one here.
-partial='["typecheck"]'
-run_ci_ok "$(needs success "$selects" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"
-partial=
-ran_in_part='ran in part at this head: typecheck (selected by paths, its full lane gated by full-ci; runs in the merge queue)'
+echo "case: the not-run line names each held-back job's own lane label"
+# The label that turns one held-back job on is lane:<its changes output>, which is not its job id:
+# envoy-client's output is envoy_client, so the line must say lane:envoy_client, never a label
+# that turns on nothing.
+envoy_gated=$(with_verdicts "$selects" \
+  '{"typecheck": "true", "envoy_client": "true", "worker_image": "true", "docs": "false"}')
+run_ci_ok "$(needs success "$envoy_gated" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"
 check "passes" "$(is "$status" 0)"
-check "names it after the pass line as run in part" \
-  "$(contains "$(sed -n '/^changes and lint succeeded/,$p' <<<"$out")" "^$ran_in_part\$")"
-check "the job summary names it as run in part" "$(contains "$step_summary" "^- $ran_in_part\$")"
-check "and leaves it out of the jobs that ran and passed" \
-  "$(contains "$step_summary" '^\*\*Ran and passed at this head:\*\* changes, lint, worker-image$')"
-check "names no job as not run at this head" "$(is "$(contains "$out" 'not run at this head')" false)"
-
-echo "case: a job PARTIAL names that did not run is not named as run in part"
-partial='["envoy-client"]'
-run_ci_ok "$(needs success "$selects" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"
-partial=
-check "passes" "$(is "$status" 0)"
-check "names no job as run in part" "$(is "$(contains "$out" 'ran in part at this head')" false)"
-check "writes no job summary" "$(is "$step_summary" "")"
+check "names envoy-client with its output's label" \
+  "$(contains "$out" '^not run at this head: envoy-client (selected by paths, held back on a pull request without full-ci or lane:envoy_client; runs in the merge queue)$')"
+check "and no label named for the job id" "$(is "$(contains "$out" 'lane:envoy-client')" false)"
+check "and names docs, whose filter said no, nowhere as not run" \
+  "$(is "$(contains "$out" 'not run at this head: docs')" false)"
 
 echo "case: docs' paths did not match on a pull request, where the label would have changed nothing"
 run_ci_ok "$(needs success "$unmatched_selects" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"
 check "passes" "$(is "$status" 0)"
 check "keeps today's wording" \
   "$(contains "$out" '^docs: skipped (not selected: needs.changes.outputs.docs is false)$')"
-check "says nothing about full-ci" "$(is "$(contains "$out" 'gated by full-ci')" false)"
+check "says nothing about a pull request holding it back" "$(is "$(contains "$out" 'held back on a pull request')" false)"
 check "names no job as not run at this head" "$(is "$(contains "$out" 'not run at this head')" false)"
 check "writes no job summary" "$(is "$step_summary" "")"
 
@@ -307,7 +298,7 @@ run_ci_ok "$(needs success "$gated_selects" success typecheck=success envoy-clie
 check "passes" "$(is "$status" 0)"
 check "keeps today's wording" \
   "$(contains "$out" '^docs: skipped (not selected: needs.changes.outputs.docs is false)$')"
-check "says nothing about full-ci" "$(is "$(contains "$out" 'gated by full-ci')" false)"
+check "says nothing about a pull request holding it back" "$(is "$(contains "$out" 'held back on a pull request')" false)"
 check "names no job as not run at this head" "$(is "$(contains "$out" 'not run at this head')" false)"
 check "writes no job summary" "$(is "$step_summary" "")"
 
@@ -502,6 +493,73 @@ run_ci_ok "$(needs success "$selects" success typecheck=failure envoy-client=ski
 check "fails" "$(is "$status" 1)"
 check "keeps it a failure" \
   "$(contains "$out" '^typecheck: failure (selected: needs.changes.outputs.typecheck is true)$')"
+
+# A job split into legs keeps its old name on a job that waits for the legs and fails when one did
+# not pass (.github/workflows/ci-job-daemon-go.yaml's daemon-go and daemon-go-race). That job's
+# check run carries its own `exit code 1` beside an error saying it restates its legs' result, so
+# runner-shutdown.sh passes over it and reads the legs' check runs. Here typecheck stands for such
+# a job: `typecheck / typecheck (leg 1)` and `(leg 2)` are its legs, `typecheck / typecheck` the
+# job that restates them.
+restated="typecheck's legs ended failure, and this job restates its legs' result: each leg's own check run says why it did not pass"
+echo "case: a leg the platform killed, under a job that restates its legs' result"
+check_runs changes lint 'typecheck / typecheck (leg 1)' 'typecheck / typecheck (leg 2)' 'typecheck / typecheck' \
+  envoy-client worker-image docs
+annotations 'typecheck / typecheck (leg 1)' \
+  'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.' \
+  'Process completed with exit code 143.'
+annotations 'typecheck / typecheck' "$restated" 'Process completed with exit code 1.'
+run_ci_ok "$(needs success "$selects" success typecheck=failure envoy-client=skipped worker-image=success docs=skipped)"
+check "fails" "$(is "$status" 1)"
+check "reads the leg's shutdown through the restating job" \
+  "$(contains "$out" '^typecheck: cancelled (selected: needs.changes.outputs.typecheck is true)$')"
+check "says a runner shutdown cut it off" "$(contains "$out" 'a runner shutdown cut this one off')"
+
+echo "case: a leg that failed of itself, under a job that restates its legs' result"
+check_runs changes lint 'typecheck / typecheck (leg 1)' 'typecheck / typecheck (leg 2)' 'typecheck / typecheck' \
+  envoy-client worker-image docs
+annotations 'typecheck / typecheck (leg 1)' \
+  'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.' \
+  'Process completed with exit code 143.'
+annotations 'typecheck / typecheck (leg 2)' 'Process completed with exit code 1.'
+annotations 'typecheck / typecheck' "$restated" 'Process completed with exit code 1.'
+run_ci_ok "$(needs success "$selects" success typecheck=failure envoy-client=skipped worker-image=success docs=skipped)"
+check "fails" "$(is "$status" 1)"
+check "keeps it a failure" \
+  "$(contains "$out" '^typecheck: failure (selected: needs.changes.outputs.typecheck is true)$')"
+check "says nothing of a runner shutdown" "$(is "$(contains "$out" 'runner shutdown')" false)"
+
+echo "case: a job whose only failing check run restates its legs' result"
+# Legs that ended with no annotation at all (cancelled, or skipped) leave the restating job the
+# one failing check run, which is no evidence of a kill: the failure stands.
+check_runs changes lint 'typecheck / typecheck (leg 1)' 'typecheck / typecheck' envoy-client worker-image docs
+annotations 'typecheck / typecheck' "$restated" 'Process completed with exit code 1.'
+run_ci_ok "$(needs success "$selects" success typecheck=failure envoy-client=skipped worker-image=success docs=skipped)"
+check "fails" "$(is "$status" 1)"
+check "keeps it a failure" \
+  "$(contains "$out" '^typecheck: failure (selected: needs.changes.outputs.typecheck is true)$')"
+
+echo "case: every job that restates its legs' result writes the words runner-shutdown.sh reads"
+# The marker is read by its words, so a job whose error is reworded would hide its legs' shutdowns
+# again with every check green: each such step of every workflow must hold them. The steps are
+# found across .github/workflows by their name, so a new legs job's restating step is held the
+# moment it is written, and the count is checked against the files known to have one, so a scan
+# that found none could not pass.
+marker=$(sed -n "s/^RUNNER_SHUTDOWN_RESTATED=\"\(.*\)\"\$/\1/p" "$script_dir/runner-shutdown.sh")
+check "runner-shutdown.sh spells the marker" "$(is "$([ -n "$marker" ] && echo set)" set)"
+held=$(MARKER="$marker" python3 -c '
+import os, sys, yaml, pathlib
+found = {}
+for path in sorted(pathlib.Path(sys.argv[1]).glob("*.yaml")):
+    document = yaml.safe_load(path.read_text()) or {}
+    for job in (document.get("jobs") or {}).values():
+        for step in (job or {}).get("steps", []) or []:
+            if step.get("name") == "Pass only when every leg passed":
+                count, marked = found.get(path.name, (0, 0))
+                found[path.name] = (count + 1, marked + (os.environ["MARKER"] in step.get("run", "")))
+print(" ".join(f"{name}={count}/{marked}" for name, (count, marked) in sorted(found.items())))
+' "$script_dir/../workflows")
+check "every restating step writes it: daemon-go's two, envoy-go's, envoy-go-race's, envoy-go-race-api's and envoy-go-race-docs's" \
+  "$(is "$held" "ci-job-daemon-go.yaml=2/2 ci-job-envoy-go-race-api.yaml=1/1 ci-job-envoy-go-race-docs.yaml=1/1 ci-job-envoy-go-race.yaml=1/1 ci-job-envoy-go.yaml=1/1")"
 
 echo "case: GitHub refuses the check runs of this head"
 # The read is tried three times and the verdict is reached without it: a read that did not

@@ -8,9 +8,11 @@
 // signing key, and drives the surface the other build's clients use: the CLI
 // (twobuild_cli_test.go), the stored documents and the document
 // socket (twobuild_documents_test.go), the messages and subscription settings on the bus
-// (twobuild_messages_test.go), and what the page admission does while the previous build's process
-// is live and once it has left the registry (twobuild_transition_test.go). This file is the
-// harness all four start their builds with.
+// (twobuild_messages_test.go), what the page admission does while the previous build's process
+// is live and once it has left the registry (twobuild_transition_test.go), what the previous
+// build does with a read-only personal token this tree mints (twobuild_read_token_test.go), and
+// the routes a personal token holding p0 keeps on each build (twobuild_p0_token_test.go). This
+// file is the harness every twobuild_*_test.go starts its builds with.
 //
 // The previous build is a directory packages/envoy/scripts/build-dispatch-build.sh writes, named by
 // DISPATCH_PREVIOUS_BUILD. The suite skips only when that variable is unset; a directory it names
@@ -235,7 +237,7 @@ func migrateInOrder(t *testing.T, url string, binaries ...string) {
 	for _, binary := range binaries {
 		p := startDispatchProcessWith(t, url, dispatchOptions{NATSURL: nats, SigningKey: multiprocessSigningKey, Binary: binary, WebDist: page})
 		p.waitHealthy(t)
-		stop(t, p)
+		stopProcess(t, p)
 	}
 }
 
@@ -329,13 +331,6 @@ func shortCommit(commit string) string {
 		return commit[:12]
 	}
 	return commit
-}
-
-// stop stops p as a deploy does, SIGTERM and its graceful shutdown, and waits for it to exit.
-func stop(t *testing.T, p *dispatchProcess) {
-	t.Helper()
-	p.Terminate(t)
-	p.WaitExit(t, "SIGTERM")
 }
 
 // getJSON reads path from p as the test's login and decodes it into into.

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/specstore"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // How a handler's error becomes a response: one function, writeHandlerError, that every route's
@@ -34,8 +36,12 @@ const (
 // before_merge result states the negative control that would have caught its failure.
 const codeNegativeControlRequired = "NEGATIVE_CONTROL_REQUIRED"
 
-// codeAnsweredAskKept refuses a document write by a credential with no person scope that would
-// drop or retype the block of an answered ask (docs.ErrAnsweredAskKept).
+// codeAnsweredAskKept refuses a write by a caller who is no person (docs.CallerIsPerson) that would
+// change, move or remove a person's decision (R32, docs.PersonDecisionOf): a document edit or an
+// upload that takes an answered ask's block or a decision a person decided out of its document,
+// retypes it or changes its words (docs.ErrAnsweredAskKept), a move or a delete of one through the
+// node routes, and its state set overtaken or live through the state route, or on an answered
+// ask's own node proposed too (refusePersonDecisionState).
 const codeAnsweredAskKept = "ANSWERED_ASK_KEPT"
 
 // codeDecisionsAreNodes refuses an upload or a create of a decisions document on an issue
@@ -49,7 +55,7 @@ const codeDecisionsQuery = "DECISIONS_QUERY"
 
 // codeNodeInOtherIssue refuses a document write addressed through one issue that names a node of
 // another issue, naming the node's own issue (refuseNodesOfOtherIssues, D3 of
-// dispatch://INFRA-1253's plan).
+// the issue-tree plan).
 const codeNodeInOtherIssue = "NODE_IN_OTHER_ISSUE"
 
 // codeRequirementBelongsToAncestor refuses a document write that adds a requirement node to an
@@ -116,8 +122,16 @@ type editPreconditionError struct {
 // names the number it read beside its write and adds the sentence saying where a current token
 // is printed (writeUploadDocumentError).
 func editPreconditionBody(failed *docs.ErrPreconditionFailed) editPreconditionError {
+	return preconditionBody(failed.CurrentDocument, failed.Mismatches, failed.Error())
+}
+
+// preconditionBody is that body from its parts: the token that stands, the mismatches that named
+// what the caller expected, and the sentence saying so. A block mismatch's current token is
+// listed in current.blocks. A file's upload, whose refusal no document write raises, builds its
+// body here (fileUploadPreconditionBody).
+func preconditionBody(currentDocument string, mismatches []model.EditPreconditionMismatch, message string) editPreconditionError {
 	currentBlocks := make([]model.EditBlockPrecondition, 0)
-	for _, mismatch := range failed.Mismatches {
+	for _, mismatch := range mismatches {
 		if mismatch.Scope == "block" && mismatch.Current != nil {
 			currentBlocks = append(currentBlocks, model.EditBlockPrecondition{
 				ID: mismatch.BlockID, Token: *mismatch.Current,
@@ -126,9 +140,9 @@ func editPreconditionBody(failed *docs.ErrPreconditionFailed) editPreconditionEr
 	}
 	return editPreconditionError{
 		Code:       "PRECONDITION_FAILED",
-		Current:    editPreconditionCurrent{Blocks: currentBlocks, Document: failed.CurrentDocument},
-		Error:      failed.Error(),
-		Mismatches: failed.Mismatches,
+		Current:    editPreconditionCurrent{Blocks: currentBlocks, Document: currentDocument},
+		Error:      message,
+		Mismatches: mismatches,
 	}
 }
 
@@ -143,6 +157,16 @@ type editLostError struct {
 	LostOps      *[]int        `json:"lost_ops,omitempty"`
 	Participants []model.Actor `json:"participants"`
 	Suggestion   *string       `json:"suggestion,omitempty"`
+}
+
+// deletedPostError is the 409 every write that would put text on a post its author withdrew
+// answers, and the one place that names that refusal's code and its words: a reply under the
+// post, an edit or a delete of it, an accept or a reject of its suggestion, a send or a reply
+// of a delivery of it. kind names the post in the message, as the route's caller met it ("this
+// comment is deleted"). A deleted post keeps its row and its place, so a write that moves no
+// text - a resolve, a reopen - takes it and meets this refusal nowhere.
+func deletedPostError(kind refs.ItemKind) *apiError {
+	return errorf(http.StatusConflict, "POST_DELETED", "this %s is deleted", kind)
 }
 
 func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
@@ -176,6 +200,25 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		}
 		return
 	}
+	// A write that R24 refuses names each issue that holds the rule (parent_status_rule.go).
+	var conflict *parentStatusConflict
+	if errors.As(err, &conflict) {
+		WriteJSON(w, http.StatusConflict, conflict.body())
+		return
+	}
+	// An acceptance write refused for an open child of another project names each such child
+	// (refuseOpenForeignChildren in issue_parent.go).
+	var open openForeignChildrenError
+	if errors.As(err, &open) {
+		WriteJSON(w, http.StatusConflict, open.body())
+		return
+	}
+	// A node delete whose expected_count moved carries the count now (node_delete.go).
+	var moved *deleteCountMovedError
+	if errors.As(err, &moved) {
+		WriteJSON(w, http.StatusConflict, moved.body())
+		return
+	}
 	documentCode := documentErrorCode(err)
 	switch documentCode {
 	case codeDocServiceUnavailable:
@@ -199,6 +242,15 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		// error: its chain carries whatever the request wrapped it in, the caller's own identity
 		// among it, which no log of ours writes (CodeQL go/clear-text-logging).
 		slog.Warn("dispatch: API document holds an element this build cannot read", "elements", elements)
+		return
+	}
+	// A version that holds a block its reader may not see, which the read cannot leave out
+	// (docs.ErrHiddenNotPlaced), answers as a version the reader cannot read, the 404 a node the
+	// caller may not see answers: neither the block's bytes nor that it stands there is told. The
+	// operator's line says which read it was not, since the error's chain names the block.
+	if errors.Is(err, docs.ErrHiddenNotPlaced) {
+		writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
+		slog.Warn("dispatch: a version read was refused because a block its reader may not see could not be left out")
 		return
 	}
 	// The edit route's own ambiguity error names the operation and the quote; the bare pmdoc one
@@ -346,8 +398,9 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		return
 	}
 	// A block pointer refused on any route but the edit route (which answers INVALID_OP) is the
-	// caller's markdown to fix, as a schema refusal of it is.
-	if errors.Is(err, docs.ErrInvalidMarkdown) || errors.Is(err, pmdoc.ErrBlockPointer) {
+	// caller's markdown to fix, as a schema refusal of it is; a control character in a block id
+	// or directive attribute is refused 400 INVALID_MARKDOWN on every document write route.
+	if errors.Is(err, docs.ErrInvalidMarkdown) || errors.Is(err, pmdoc.ErrBlockPointer) || errors.Is(err, pmdoc.ErrControlCharacter) {
 		writeError(w, "INVALID_MARKDOWN", http.StatusBadRequest, err.Error())
 		return
 	}
@@ -374,6 +427,18 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, "ISSUE_CLOSED", http.StatusConflict, err.Error())
 		return
 	}
+	// A write the document service refused under the document owner's lock because the document
+	// is retired (docs.RetiredDocumentError): a write api did not test the row for itself - a
+	// comment's mark, an ask block, a named version, a rebuild - is refused as an edit or an upload
+	// of the retired document is (retiredDocumentRefusal): 409 DOCUMENT_RETIRED, naming the latest
+	// version the document service read, or 409 DECISIONS_ARE_NODES for an issue's decisions
+	// document, not 500.
+	var retired *docs.RetiredDocumentError
+	if errors.As(err, &retired) {
+		artifact := model.Artifact{ID: retired.ID, IssueKey: retired.IssueKey, Name: retired.Name, Slug: retired.Slug}
+		s.writeHandlerError(w, retiredDocumentRefusal(artifact, retired.Name, func() (int, error) { return retired.LatestVersion, nil }))
+		return
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
 		return
@@ -395,6 +460,20 @@ func refusalWords[T error](err, sentinel error) (string, bool) {
 	}
 	return sentinel.Error(), true
 }
+
+// errorAnswer records what an error writer (writeHandlerError, writeAuthenticationError) writes:
+// its status, its headers and its body, for a caller that answers it in a form of its own. A test
+// hook sends it as a process's acknowledgement (runTestHook), and the status-change route answers
+// it with the entries of the steps that committed (writeStatusChangeRefusal).
+type errorAnswer struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (a *errorAnswer) Header() http.Header         { return a.header }
+func (a *errorAnswer) Write(p []byte) (int, error) { return a.body.Write(p) }
+func (a *errorAnswer) WriteHeader(status int)      { a.status = status }
 
 // ambiguousTargetError is the 409 TARGET_AMBIGUOUS body a write answers a quote or heading
 // anchor that resolved in several places.

@@ -58,6 +58,18 @@ import { openSettledView, verificationBody } from "./issue-page-v";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 
+/** A stored text as the renderer draws its paragraphs and `drawnRows` reads them back: the blocks
+ *  between its blank lines, each with the up to three spaces of indentation its first line may
+ *  carry left out, which markdown reads as no part of the paragraph, and every other character
+ *  as stored; joined as `answerText` joins the drawn paragraphs. A word changed, a paragraph
+ *  dropped, two paragraphs run together or an inner double space collapsed each still differ. */
+function paragraphForm(stored: string): string {
+  return stored
+    .split(/\n[ \t]*\n/u)
+    .map((paragraph) => paragraph.replace(/^ {1,3}/u, ""))
+    .join("\n\n");
+}
+
 /**
  * The browser rows of the new issue page that read one of its views:
  * the Decisions view - the open questions, the decisions that wait for the reader's review with
@@ -193,14 +205,18 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
       });
 
       // The answered ask draws its question and options; with the focus on it, the person's
-      // answer character for character as the store holds it, by who answered.
+      // answer as the store holds it, by who answered. The answer is drawn by the renderer, a
+      // paragraph to each block of its words, so it is read paragraph by paragraph (`drawnRows`'
+      // `answerText`): each paragraph's words and inner spaces as stored, and only the indentation
+      // a paragraph's first line may carry, up to three spaces, which markdown reads as no part of
+      // it, left out, as the outline's answer row reads it (part Q's decision 416).
       const asked = nodeRow(page, seeded.optionedAskId).first();
       await asked.focus();
       await expect
         .poll(async () => rowOf(await drawnRows(page), seeded.optionedAskId)?.answerText ?? null, {
           message: `the answered ask does not draw the person's answer as the store holds it ${at}`,
         })
-        .toBe(stored?.text ?? "");
+        .toBe(paragraphForm(stored?.text ?? ""));
       await expect(asked.locator('[data-node-option="chosen"]')).toHaveCount(1);
       await expect(asked.locator('[data-node-option="chosen"]')).toContainText("Rail");
       await expect(asked.locator("[data-node-option]")).toHaveCount(2);

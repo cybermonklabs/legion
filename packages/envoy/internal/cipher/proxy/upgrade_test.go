@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
@@ -49,14 +50,16 @@ func upgradeStandIn(t *testing.T, r *rig) {
 // on.
 func upgradeThrough(t *testing.T, r *rig) (*http.Response, net.Conn, *bufio.Reader) {
 	t.Helper()
-	return upgradeThroughPath(t, r, http.MethodGet, upgradePath)
+	return upgradeThroughPath(t, r, workerPlaceholder, http.MethodGet, upgradePath)
 }
 
-// upgradeThroughPath is upgradeThrough at the method and path given, for a row whose point is one
-// of the two: the ones a joined connection's line writes (refusal_record_test.go's clip table).
-func upgradeThroughPath(t *testing.T, r *rig, method, path string) (*http.Response, net.Conn, *bufio.Reader) {
+// upgradeThroughPath is upgradeThrough with placeholder as the proxy password and the upgrade's
+// own Authorization, at the method and path given, for a row whose point is one of the three: the
+// grant whose person the hold asks about (held_test.go), and the method and the path a joined
+// connection's line writes (refusal_record_test.go's clip table).
+func upgradeThroughPath(t *testing.T, r *rig, placeholder, method, path string) (*http.Response, net.Conn, *bufio.Reader) {
 	t.Helper()
-	answer, conn, _ := r.connectRaw(net.JoinHostPort(boundHost, "443"), basic(workerPlaceholder))
+	answer, conn, _ := r.connectRaw(net.JoinHostPort(boundHost, "443"), basic(placeholder))
 	if answer.StatusCode != http.StatusOK {
 		t.Fatalf("the CONNECT answered %d; want 200", answer.StatusCode)
 	}
@@ -72,7 +75,7 @@ func upgradeThroughPath(t *testing.T, r *rig, method, path string) (*http.Respon
 		"Connection: Upgrade\r\n" +
 		"Sec-WebSocket-Version: 13\r\n" +
 		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
-		"Authorization: Bearer " + workerPlaceholder + "\r\n\r\n"
+		"Authorization: Bearer " + placeholder + "\r\n\r\n"
 	if _, err := decrypted.Write([]byte(request)); err != nil {
 		t.Fatalf("write the upgrade request: %v", err)
 	}
@@ -159,9 +162,10 @@ func TestNoProtocolSwitchIsCarriedOnADecryptedConnection(t *testing.T) {
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			r := newRig(t, Options{Rules: proxyrules.Rules{Secrets: []proxyrules.SecretRule{{
-				Name: workerName, Hosts: []string{boundHost}, Headers: []string{"authorization"},
-			}}}})
+			r := newRuledRig(t, proxyrules.Rules{
+				Kinds: []proxyrules.Kind{swapKind(workerKind, []string{boundHost}, "authorization")},
+				Names: []proxyrules.Binding{swapBinding(workerName, workerKind)},
+			}, Options{})
 			answer, conn, _ := r.connectRaw(net.JoinHostPort(boundHost, "443"), basic(workerPlaceholder))
 			if answer.StatusCode != http.StatusOK {
 				t.Fatalf("the CONNECT answered %d; want 200", answer.StatusCode)
@@ -329,7 +333,7 @@ func joinedThroughPath(t *testing.T, r *rig, method, path string) (*frameStand, 
 	t.Helper()
 	stand := &frameStand{path: path, done: make(chan struct{})}
 	r.answerWith(stand.Answer)
-	upgraded, conn, reader := upgradeThroughPath(t, r, method, path)
+	upgraded, conn, reader := upgradeThroughPath(t, r, workerPlaceholder, method, path)
 	if upgraded.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("the upgrade answered %d; want 101", upgraded.StatusCode)
 	}
@@ -382,7 +386,7 @@ func TestAJoinedConnectionIsClosedWhenItsGrantStopsCarryingIt(t *testing.T) {
 	// for, holding one other name so that the read answers a grant rather than refusing.
 	withheld := testConnection()
 	withheld.Names = map[string]requests.AirlockGrantName{
-		"OTHER_TOKEN": {Slots: map[string]string{requests.SlotValue: requests.PlaceholderPrefix + "otherotherotherotherotherother01"}},
+		"OTHER_TOKEN": {Slots: map[string]string{requests.SlotValue: placeholder.Prefix + "otherotherotherotherotherother01"}},
 	}
 	for _, row := range []struct {
 		name   string

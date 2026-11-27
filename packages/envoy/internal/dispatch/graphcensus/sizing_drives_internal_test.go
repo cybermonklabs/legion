@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -38,6 +39,9 @@ const (
 	issueLinkBatchDrive        = "graphcensus/census_issues.go#writeIssueLinkBatch"
 	referenceBatchDrive        = "graphcensus/census_refs.go#writeReferenceBatch"
 	anchorBatchDrive           = "graphcensus/census_anchors.go#writeAnchorBatch"
+	askedOnBatchDrive          = "graphcensus/census_citations_asks.go#writeAskedOnBatch"
+	keepSumBatchDrive          = "graphcensus/census_keeps.go#writeKeepSumBatch"
+	approvesBatchDrive         = "graphcensus/census_approvals.go#writeApprovesBatch"
 	resultBatchDrive           = "graphcensus/census_results.go#writeResultBatch"
 	resultRetractionBatchDrive = "graphcensus/census_results.go#writeResultRetractionBatch"
 	componentBatchDrive        = "graphcensus/census_components.go#writeComponentBatch"
@@ -123,34 +127,22 @@ func drivenDocument(t *testing.T, database *store.Store, slug string) (id, refKe
 	return id, refKey
 }
 
-// drivenVersion writes version number of document as a build before the store wrote one: its row,
-// by alice, and no node.
-func drivenVersion(t *testing.T, database *store.Store, document string, number int, markdown string) {
-	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `
-		insert into artifact_versions (artifact_id, number, markdown, authors)
-		values ($1::uuid, $2, $3, '[{"kind":"user","id":"alice"}]')
-	`, document, number, markdown); err != nil {
-		t.Fatalf("write version %d of %s as a build before the store did: %v", number, document, err)
-	}
-}
-
-// versionKindsCounted is what a version's node write appends (graphstore.VersionFacts): its base
-// attributes, its part_of its document and its number and created_at values, which the term
-// version counts.
-func versionKindsCounted() map[StoredKind][]string {
+// versionNodeCounted is what a version's node write appends (graphstore.VersionFacts): its base
+// attributes, its part_of its document and its number and created_at values, each counted by
+// term.
+func versionNodeCounted(term string) map[StoredKind][]string {
 	counted := map[StoredKind][]string{}
 	for _, kind := range []string{graphstore.AttributeVisibility, graphstore.AttributeState, graphstore.AttributeProject,
 		graphstore.TuplePartOf, graphstore.AttributeNumber, graphstore.AttributeCreatedAt} {
-		counted[StoredKind{graphstore.KindVersion, kind}] = []string{graphstore.KindVersion}
+		counted[StoredKind{graphstore.KindVersion, kind}] = []string{term}
 	}
 	return counted
 }
 
-// resultKindsCounted is what a record of a result appends of the result's node
+// resultNodeCounted is what a record of a result appends of the result's node
 // (graphstore.ResultFacts): its base attributes, its values, its part_of and its result_of its
 // check, and its authored_by, each counted by the term result.
-func resultKindsCounted() map[StoredKind][]string {
+func resultNodeCounted() map[StoredKind][]string {
 	counted := map[StoredKind][]string{}
 	for _, kind := range []string{graphstore.AttributeVisibility, graphstore.AttributeState, graphstore.AttributeProject,
 		graphstore.AttributeVerdict, graphstore.AttributeSurface, graphstore.AttributeRun, graphstore.AttributeObserved,
@@ -162,13 +154,31 @@ func resultKindsCounted() map[StoredKind][]string {
 	return counted
 }
 
+// anchorBlockCounted is a comment's anchored_in its anchor's block and, since it answers nothing,
+// its part_of to that same block (graphstore.AnchorTuples), stated or retracted, which the term
+// anchor_block counts.
+var anchorBlockCounted = map[StoredKind][]string{
+	{graphstore.KindComment, graphstore.TupleAnchoredIn}: {"anchor_block"},
+	{graphstore.KindComment, graphstore.TuplePartOf}:     {"anchor_block"},
+}
+
+// VersionNodeCounted, ResultNodeCounted and AnchorBlockCounted are versionNodeCounted,
+// resultNodeCounted and anchorBlockCounted for this package's external test
+// (imported_drives_test.go, sizing_drives_external_test.go).
+var (
+	VersionNodeCounted = versionNodeCounted
+	ResultNodeCounted  = resultNodeCounted
+	AnchorBlockCounted = anchorBlockCounted
+)
+
 // passDrives are the drives of the backfill's passes this package holds, each over the rows a
 // build before the store wrote and a drive's Ready stands up by SQL, and of the pointer and the
 // rebuild writers, over one database of their own. That database holds project DRIVE, its two
 // issues, each its node and a row naming it, and alice's person node. Each pass
 // reads every row of its kind its marker does not mark, so the drives run in an order in which no
 // pass reads a row a drive before it stood up: the rebuild, which reads every document, comes
-// last, and none of the passes reads a row of another's table.
+// after every drive but the Keep pass's, whose document's pointer it would read as a reference, and
+// none of the passes reads a row of another's table.
 func passDrives(t *testing.T) []StoreDrive {
 	t.Helper()
 	ctx := context.Background()
@@ -197,13 +207,13 @@ func passDrives(t *testing.T) []StoreDrive {
 		// of a document of DRIVE-1: the version's node and its facts, which the term version
 		// counts.
 		Name: versionBatchDrive, Database: database,
-		Sites: []string{"graphcensus/census_versions.go#writeVersionBatch", "graphstore/write.go#Write"},
+		Sites: []string{versionBatchDrive},
 		Ready: func(t *testing.T) {
 			document, _ := drivenDocument(t, database, "versioned-md")
-			drivenVersion(t, database, document, 1, "Written by a build before the store.")
+			censusVersion(t, database, document, 1, "Written by a build before the store.", drivenAuthor)
 		},
 		Drive:  drivenPass(database, backfillVersions),
-		Counts: versionKindsCounted(),
+		Counts: versionNodeCounted(graphstore.KindVersion),
 	}, {
 		// A block-index pass's drain of a document's versions that hold no node, as docs'
 		// indexRenderedVersion drains it: under the document's owner lock, the read of the
@@ -214,7 +224,7 @@ func passDrives(t *testing.T) []StoreDrive {
 		Sites: []string{"graphcensus/census_versions.go#Queue"},
 		Ready: func(t *testing.T) {
 			drained, _ = drivenDocument(t, database, "drained-md")
-			drivenVersion(t, database, drained, 1, "Drained by a block-index pass.")
+			censusVersion(t, database, drained, 1, "Drained by a block-index pass.", drivenAuthor)
 		},
 		Drive: func(t *testing.T) {
 			drivenTx(t, database, "drain the versions of drained-md that hold no node", func(tx pgx.Tx) error {
@@ -234,13 +244,13 @@ func passDrives(t *testing.T) []StoreDrive {
 				})
 			})
 		},
-		Counts: versionKindsCounted(),
+		Counts: versionNodeCounted(graphstore.KindVersion),
 	}, {
 		// The issue link pass (backfillIssueLinks) over a wait a build before the store wrote,
 		// DRIVE-1 blocked by DRIVE-2, naming no node: DRIVE-1's needs, which the term
 		// issue_relation counts.
 		Name: issueLinkBatchDrive, Database: database,
-		Sites: []string{"graphcensus/census_issues.go#writeIssueLinkBatch", "graphstore/write.go#Write"},
+		Sites: []string{issueLinkBatchDrive},
 		Ready: func(t *testing.T) {
 			if _, err := database.Pool.Exec(ctx, `
 				insert into issue_links (issue_key, kind, target_key, created_at) values ($1, 'blocked_by', $2, now() - interval '3 days')
@@ -255,7 +265,7 @@ func passDrives(t *testing.T) []StoreDrive {
 		// out of a document of DRIVE-1 to DRIVE-2, which no tuple states: the document's
 		// mentions, which the term document_ref counts.
 		Name: referenceBatchDrive, Database: database,
-		Sites: []string{"graphcensus/census_refs.go#writeReferenceBatch", "graphstore/write.go#Write"},
+		Sites: []string{referenceBatchDrive},
 		Ready: func(t *testing.T) {
 			document, _ := drivenDocument(t, database, "citing-md")
 			if _, err := database.Pool.Exec(ctx, `
@@ -270,38 +280,34 @@ func passDrives(t *testing.T) []StoreDrive {
 	}, {
 		// The anchor pass (backfillAnchoredIn) over a comment this build wrote with its node,
 		// anchored on a block of a document of DRIVE-1, whose node states no anchored_in, as a
-		// process of the release before leaves the row it anchors: the comment's anchored_in,
-		// which the term anchor_block counts.
+		// process of the release before leaves the row it anchors: the comment's anchored_in and,
+		// since it answers nothing, its part_of to the same block (graphstore.AnchorRelation), which
+		// the term anchor_block counts.
 		Name: anchorBatchDrive, Database: database,
-		Sites: []string{"graphcensus/census_anchors.go#writeAnchorBatch", "graphstore/write.go#Write"},
+		Sites: []string{anchorBatchDrive},
 		Ready: func(t *testing.T) {
 			document, refKey := drivenDocument(t, database, "anchored-md")
-			const comment = "d0d0d0d0-0000-4000-8000-000000000001"
-			createdAt := time.Now().UTC().Add(-48 * time.Hour)
-			drivenTx(t, database, "write the anchored comment", func(tx pgx.Tx) error {
-				node, tuples := graphstore.CommentFacts(nil, comment, drivenAuthor, createdAt, graphstore.NoEvent, refKey, "", drivenProject, nil)
-				if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, tuples); err != nil {
-					return err
-				}
-				_, err := tx.Exec(ctx, `
-					insert into comments (id, issue_key, author, body, anchor, node_kind, node_address, created_at)
-					values ($1::uuid, $2, '{"kind":"user","id":"alice"}', 'A remark on the block.',
-					        jsonb_build_object('artifact_id', $3::text, 'block_id', 'b1', 'mark_id', 'm-b1', 'version', 1,
-					                           'quote', 'The block.', 'orphaned', false),
-					        $4, $1::text, $5)
-				`, comment, drivenIssue, document, graphstore.KindComment, createdAt)
-				return err
-			})
+			seedAnchoredComment(t, database, drivenProject, drivenIssue, document, refKey,
+				"d0d0d0d0-0000-4000-8000-000000000001", time.Now().UTC().Add(-48*time.Hour))
 		},
 		Drive:  drivenPass(database, backfillAnchoredIn),
-		Counts: map[StoredKind][]string{{graphstore.KindComment, graphstore.TupleAnchoredIn}: {"anchor_block"}},
+		Counts: anchorBlockCounted,
+	}, {
+		Name: askedOnBatchDrive, Database: database,
+		Sites: []string{askedOnBatchDrive},
+		Ready: func(t *testing.T) {
+			document, refKey := drivenDocument(t, database, "asked-on-md")
+			seedAskWithoutBlockTuple(t, database, drivenProject, drivenIssue, document, refKey)
+		},
+		Drive:  drivenPass(database, backfillAskedOn),
+		Counts: map[StoredKind][]string{{graphstore.KindAsk, graphstore.TupleAskedOn}: {"ask_opened"}},
 	}, {
 		// The result pass (backfillResults) over a failed result a release before this one
 		// recorded, by alice, of check c1 of DRIVE-1's Verification document, its row and no
 		// node: the result's node with its base attributes, its values, its part_of, its result_of
 		// and her authored_by, which the term result counts.
 		Name: resultBatchDrive, Database: database,
-		Sites: []string{"graphcensus/census_results.go#writeResultBatch", "graphstore/write.go#Write"},
+		Sites: []string{resultBatchDrive},
 		Ready: func(t *testing.T) {
 			document, _ := drivenDocument(t, database, "verification-md")
 			if err := database.Pool.QueryRow(ctx, `
@@ -315,13 +321,13 @@ func passDrives(t *testing.T) []StoreDrive {
 			}
 		},
 		Drive:  drivenPass(database, backfillResults),
-		Counts: resultKindsCounted(),
+		Counts: resultNodeCounted(),
 	}, {
 		// The retraction pass (backfillResultRetractions) over alice's retraction of that result,
 		// which a release before this one wrote: the result's retracted value, which the term
 		// result_retraction counts.
 		Name: resultRetractionBatchDrive, Database: database,
-		Sites: []string{"graphcensus/census_results.go#writeResultRetractionBatch", "graphstore/write.go#Write"},
+		Sites: []string{resultRetractionBatchDrive},
 		Ready: func(t *testing.T) {
 			if _, err := database.Pool.Exec(ctx, `
 				insert into check_result_retractions (result_id, reason, actor, created_at)
@@ -338,7 +344,7 @@ func passDrives(t *testing.T) []StoreDrive {
 		// with its visibility, state and project, which the term component counts, and census's
 		// part_of store, which component_relation counts.
 		Name: componentBatchDrive, Database: database,
-		Sites: []string{"graphcensus/census_components.go#writeComponentBatch", "graphstore/write.go#Write"},
+		Sites: []string{componentBatchDrive, "graphstore/write.go#Write"},
 		Ready: func(t *testing.T) {
 			drivenTx(t, database, "write DRIVE's source, its snapshot and its two components", func(tx pgx.Tx) error {
 				var source, snapshot int64
@@ -374,7 +380,7 @@ func passDrives(t *testing.T) []StoreDrive {
 		// the release before wrote naming no node: census's depends_on, which the term
 		// component_relation counts.
 		Name: componentDependsBatchDrive, Database: database,
-		Sites: []string{"graphcensus/census_components.go#writeComponentDependsBatch", "graphstore/write.go#Write"},
+		Sites: []string{componentDependsBatchDrive, "graphstore/write.go#Write"},
 		Ready: func(t *testing.T) {
 			if _, err := database.Pool.Exec(ctx, `
 				insert into component_depends (project_key, from_id, to_id) values ($1, 'census', 'store')
@@ -389,7 +395,7 @@ func passDrives(t *testing.T) []StoreDrive {
 		// release before set to census, naming no node: DRIVE-1's affects, which the term
 		// component_relation counts.
 		Name: memberBatchDrive, Database: database,
-		Sites: []string{"graphcensus/census_components.go#writeIssueComponentMemberBatch", "graphstore/write.go#Write"},
+		Sites: []string{memberBatchDrive},
 		Ready: func(t *testing.T) {
 			drivenTx(t, database, "write DRIVE-1's components as the release before set them", func(tx pgx.Tx) error {
 				if _, err := tx.Exec(ctx, `
@@ -411,7 +417,7 @@ func passDrives(t *testing.T) []StoreDrive {
 		// graphstore.Retarget): the retraction of trade-off and the assertion of inversion, which
 		// the term pointer_retarget counts.
 		Name: retargetDrive, Database: database,
-		Sites: []string{"graphstore/reasoning.go#Retarget", "graphstore/write.go#Write"},
+		Sites: []string{retargetDrive, "graphstore/write.go#Write"},
 		Ready: func(t *testing.T) {
 			drivenTx(t, database, "write a trade-off lens", func(tx pgx.Tx) error {
 				now := time.Now().UTC()
@@ -443,10 +449,10 @@ func passDrives(t *testing.T) []StoreDrive {
 		// document's mentions, which the term document_ref counts. Every other source the database
 		// holds cites nothing and holds no reference, so its reconcile appends nothing.
 		Name: rebuildDrive, Database: database,
-		Sites: []string{"refs/rebuild.go#replaceInTx", "graphstore/write.go#Caused"},
+		Sites: []string{rebuildDrive},
 		Ready: func(t *testing.T) {
 			document, _ := drivenDocument(t, database, "rebuilt-md")
-			drivenVersion(t, database, document, 1, "Cites "+drivenTarget+".")
+			censusVersion(t, database, document, 1, "Cites "+drivenTarget+".", drivenAuthor)
 		},
 		Drive: func(t *testing.T) {
 			rebuilt, err := refs.RebuildAll(ctx, database.Pool, sizedServerURL)
@@ -458,6 +464,37 @@ func passDrives(t *testing.T) []StoreDrive {
 			}
 		},
 		Counts: map[StoredKind][]string{{graphstore.KindArtifact, graphstore.TupleMentions}: {"document_ref"}},
+	}, {
+		// The Keep pass (backfillKeepSums) over a Keep a release before this one made, by alice, of a
+		// decision of a document of DRIVE-1 that carries shaped, summed over its words with shaped:
+		// the decision's kept_text_sum, rewritten to the sum of its words without shaped, which the
+		// term keep counts. It comes after the rebuild, which would otherwise read the document's
+		// pointer as a reference of its own.
+		Name: keepSumBatchDrive, Database: database,
+		Sites: []string{keepSumBatchDrive},
+		Ready: func(t *testing.T) {
+			document, _ := drivenDocument(t, database, "kept-md")
+			issue := drivenIssue
+			pointer := refs.BlockRef(refs.ArtifactRef(&issue, drivenProject, nil, "kept-md", "doc", false), "r1")
+			kept := seedShapedDecisions(t, database, document, pointer, "We keep the node store.")[0]
+			keepAsTheReleaseBefore(t, database, document, kept, kept.shaped)
+		},
+		Drive:  drivenPass(database, backfillKeepSums),
+		Counts: map[StoredKind][]string{{refs.BlockNodeKind, refs.ValueKeptTextSum}: {"keep"}},
+	}, {
+		// The approves pass (backfillApproves) over an approval request this build wrote with its
+		// node, naming version 1 of a document of DRIVE-1 in its row, whose node states no approves
+		// tuple, as a process of the release before leaves a request it moves: the one approves
+		// tuple to the version node, which the term ask_opened counts.
+		Name: approvesBatchDrive, Database: database,
+		Sites: []string{approvesBatchDrive},
+		Ready: func(t *testing.T) {
+			document, _ := drivenDocument(t, database, "approved-md")
+			seedApprovalAsk(t, database, drivenProject, drivenIssue, document, "approved-md",
+				"d0d0d0d0-0000-4000-8000-0000000000a1", time.Now().UTC().Add(-48*time.Hour))
+		},
+		Drive:  drivenPass(database, backfillApproves),
+		Counts: map[StoredKind][]string{{graphstore.KindAsk, TupleApproves}: {"ask_opened"}},
 	}}
 }
 
@@ -504,7 +541,7 @@ func archDrives(t *testing.T) []StoreDrive {
 		// project, which the term component counts, and the API's part_of the server and its
 		// depends_on the store, which component_relation counts.
 		Name: importDrive, Database: database,
-		Sites: []string{"architecture/importer.go#stateComponents", "graphstore/write.go#Write"},
+		Sites: []string{importDrive, "graphstore/write.go#Write"},
 		Drive: func(t *testing.T) {
 			if _, err := importer.Sync(ctx, archProject, archRepo); err != nil {
 				t.Fatalf("import ARCH's model: %v", err)
@@ -522,7 +559,7 @@ func archDrives(t *testing.T) []StoreDrive {
 		// and the API's part_of and depends_on retracted, which the term component_retired counts,
 		// and then the row deleted, which takes the components' rows with it.
 		Name: retireDrive, Database: database,
-		Sites: []string{"architecture/importer.go#RetireComponents", "graphstore/write.go#Write"},
+		Sites: []string{retireDrive, "graphstore/write.go#Write"},
 		Drive: func(t *testing.T) {
 			drivenTx(t, database, "remove ARCH's source", func(tx pgx.Tx) error {
 				var source int64
@@ -584,11 +621,7 @@ func archGitHub(t *testing.T, installation int64) *githubapp.Client {
 		encode(w, map[string]any{"sha": archCommit})
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/git/trees/{ref}", func(w http.ResponseWriter, _ *http.Request) {
-		names := make([]string, 0, len(archFiles))
-		for name := range archFiles {
-			names = append(names, name)
-		}
-		slices.Sort(names)
+		names := slices.Sorted(maps.Keys(archFiles))
 		entries := make([]map[string]any, len(names))
 		for index, name := range names {
 			entries[index] = map[string]any{"path": name, "mode": "100644", "type": "blob", "sha": "blob-" + name, "size": len(archFiles[name])}

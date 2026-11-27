@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 func newSchemaRepairService(database *store.Store) *Service {
@@ -33,6 +34,7 @@ func writeSchemaInvalidElement(t *testing.T, service *Service, artifactID string
 // A crafted client can persist a tree outside the Proof schema. After a restart, replacing that
 // document from markdown repairs it instead of leaving every replacement permanently refused.
 func TestStoredTreeOutsideSchemaIsRepairedByReplacementAfterRestart(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First\n")
 	first := newSchemaRepairService(database)
@@ -46,7 +48,7 @@ func TestStoredTreeOutsideSchemaIsRepairedByReplacementAfterRestart(t *testing.T
 	}
 
 	second := newSchemaRepairService(database)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := second.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown second service: %v", err)
 		}
@@ -65,7 +67,7 @@ func TestStoredTreeOutsideSchemaIsRepairedByReplacementAfterRestart(t *testing.T
 	}
 
 	third := newSchemaRepairService(database)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := third.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown third service: %v", err)
 		}
@@ -81,6 +83,7 @@ func TestStoredTreeOutsideSchemaIsRepairedByReplacementAfterRestart(t *testing.T
 // unreadable document is left as it was; the repair that names none, the only way to fix such a
 // document, is taken after it.
 func TestSchemaRepairRefusesAReplacementThatNamesAToken(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First\n")
 	first := newSchemaRepairService(database)
@@ -91,7 +94,7 @@ func TestSchemaRepairRefusesAReplacementThatNamesAToken(t *testing.T) {
 	}
 
 	second := newSchemaRepairService(database)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := second.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown second service: %v", err)
 		}
@@ -115,6 +118,7 @@ func TestSchemaRepairRefusesAReplacementThatNamesAToken(t *testing.T) {
 // A repair has no readable previous tree to compare, so it preserves every open ask by its stored
 // block ID and refuses a replacement that drops one.
 func TestSchemaRepairKeepsOpenAskBlocks(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	first := newSchemaRepairService(database)
@@ -133,7 +137,7 @@ func TestSchemaRepairKeepsOpenAskBlocks(t *testing.T) {
 	}
 
 	second := newSchemaRepairService(database)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := second.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown second service: %v", err)
 		}
@@ -192,6 +196,7 @@ func TestAnAgentsRepairIsRefusedOnlyForTheAnsweredAsksTheDocumentStillHeld(t *te
 // given only a list is refused, and the unreadable document stays as it was rather than taking
 // an ask block the browser editor would drop.
 func TestSchemaRepairRefusesAnAskBlockTheContentRuleRefuses(t *testing.T) {
+	t.Parallel()
 	const broken = ":::ask{#ask-broken}\n- only a list\n- no question\n:::\n"
 	for _, test := range []struct {
 		name       string
@@ -204,7 +209,7 @@ func TestSchemaRepairRefusesAnAskBlockTheContentRuleRefuses(t *testing.T) {
 			database := storetest.Open(t)
 			artifactID := createDocument(t, database, "")
 			service := newSchemaRepairService(database)
-			t.Cleanup(func() {
+			testcleanup.Add(t, func() {
 				if err := service.Shutdown(context.Background()); err != nil {
 					t.Errorf("shutdown document service: %v", err)
 				}
@@ -234,13 +239,14 @@ func TestSchemaRepairRefusesAnAskBlockTheContentRuleRefuses(t *testing.T) {
 // whose empty first paragraph precedes a heading has no markdown representation the browser reads
 // back as a task. It remains repairable instead of failing room creation.
 func TestStoredRenderOnlySchemaViolationLoadsForRepair(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	if err := AppendRenderOnlySchemaViolationForTest(context.Background(), database, artifactID); err != nil {
 		t.Fatal(err)
 	}
 	service := newSchemaRepairService(database)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown render-only service: %v", err)
 		}

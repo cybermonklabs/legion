@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The history reads the trees of two commits and never their ancestry: main's commits are squash
@@ -235,10 +236,11 @@ func TestGitHistoryReadsACommitWhoseNameIsAlsoAPath(t *testing.T) {
 }
 
 // GitHistory's answer is a fact of the two trees alone: no setting of the repository or of the
-// machine changes it. A changed path that the list does not hold would carry a result across a
-// change of its tie (R8), and R48 names the case: "a check whose test did not run although code
-// that the check runs changed". Each row: a clone at dir with commits A and B, the row's setting,
-// and the paths that differ between the trees of A and B, or ok false where the clone does not hold
+// machine changes it. A changed path that the list does not hold would let a failing example count
+// across a change of its tie (deriveChecks, step 7), and R48 names the case: "a check whose test did
+// not run although code that the check runs changed". Each row: a clone at dir with commits A and
+// B, the row's setting, and the paths that differ between the trees of A and B, or ok false where
+// the clone does not hold
 // A. The git commands of the test read no setting of the machine (runTestGit), and a row sets its
 // own in the clone.
 func TestGitHistoryIsTheSameUnderEachSetting(t *testing.T) {
@@ -423,30 +425,31 @@ func TestGitHistoryIsTheSameUnderEachSetting(t *testing.T) {
 // H2: a GitHistory whose Dir is no clone, or a directory that does not exist, lists no path, and
 // it has not read two equal trees: Changed gives an error that names Dir and git's own reason, and
 // the derivation gives no state, where the same input with a history that holds the two trees
-// reads its state: CheckStates gives no check state, and Derive, which the command calls, gives
-// the zero State, no check and no statement. The case: TestCheckState's pass at c1, and the subject
-// c2, whose tree differs from c1's in docs/x.md alone, so the pass carries to c2 by the
-// FixtureHistory (the control).
+// reads its state: deriveChecks gives no check state, and Derive, which the command calls, gives
+// the zero State, no check and no statement. The case: TestCheckState's base, a pass at c2 too, and
+// the subject c2, whose tree differs from c1's in docs/x.md alone, so c1's caught failing example
+// counts at c2 by the FixtureHistory (the control).
 func TestAGitHistoryThatCannotReadItsCloneGivesNoState(t *testing.T) {
 	t.Parallel()
 	s := newCheckCase(t)
 	s.commit("c2", "c1", "docs/x.md")
 	s.Subject.Commit = "c2"
-	if got := checkStates(t, s.input()); len(got) != 1 || got[0].State != "true" || got[0].From != "c1" {
-		t.Fatalf("control: with the FixtureHistory the check reads %+v, want true from c1", got)
+	s.Results = append(s.Results, checkRun("c2", OutcomePass, checkStateRun.Add(time.Hour)))
+	if got := checkStates(t, s.input()); len(got) != 1 || got[0].State != "true" || got[0].From != "c2" {
+		t.Fatalf("control: with the FixtureHistory the check reads %+v, want true from c2", got)
 	}
 	notAClone := t.TempDir()
 	for _, dir := range []string{notAClone, filepath.Join(notAClone, "gone")} {
 		in := s.input()
 		in.History = GitHistory{Dir: dir}
 		state, err := Derive(in)
-		checks, checksErr := CheckStates(in)
+		_, checks, checksErr := deriveChecks(in)
 		if err == nil || checksErr == nil || err.Error() != checksErr.Error() || !strings.Contains(err.Error(), quoted(dir)) ||
 			!strings.Contains(err.Error(), "fatal:") {
-			t.Errorf("GitHistory{Dir: %s}: Derive gives %v and CheckStates %v; want one error that names the directory and git's own reason", dir, err, checksErr)
+			t.Errorf("GitHistory{Dir: %s}: Derive gives %v and deriveChecks %v; want one error that names the directory and git's own reason", dir, err, checksErr)
 		}
 		if checks != nil || state.Checks != nil || state.Statements != nil || state.Subject != (Point{}) {
-			t.Errorf("GitHistory{Dir: %s}: beside the error, CheckStates gives %+v and Derive %+v; want no state", dir, checks, state)
+			t.Errorf("GitHistory{Dir: %s}: beside the error, deriveChecks gives %+v and Derive %+v; want no state", dir, checks, state)
 		}
 	}
 }

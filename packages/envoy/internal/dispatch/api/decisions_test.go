@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The Decisions read reads the store alone. Its entries are held
@@ -68,6 +69,7 @@ const oldMembersSpec = ":::requirement{#r1}\nThe service answers over one transp
 // sections reaches `decisions`. Once it is retired, `document` answers null and
 // `decisions_artifact_id` "".
 func TestTheOldDecisionsMembersAnswerFromTheStore(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	ctx := context.Background()
@@ -153,6 +155,53 @@ func TestTheOldDecisionsMembersAnswerFromTheStore(t *testing.T) {
 	}
 	if named := readIssueRoleDocuments(t, handler, issue.Key); named.DecisionsArtifactID != "" {
 		t.Fatalf("the issue read names decisions_artifact_id %q once the decisions document is retired, want \"\"", named.DecisionsArtifactID)
+	}
+}
+
+// The old `decisions` member answers a `decision` block a person decided and nobody kept as kind
+// `person`, for a page of the release before, which lists a decision only where it waits for
+// review, is kind `person` or holds a Keep, or is replaced: the spec's p1, which alice's
+// credential wrote, would otherwise read kind `agent`, waiting for nobody and kept by nobody, and
+// stand in none of that page's lists. Its entry keeps kind `agent`, the node's shape. The agent's
+// decision a1 stays kind `agent` and waits, and once alice keeps her p1 it reads kind `agent`
+// with her Keep, which that page lists as hers.
+func TestTheOldDecisionsMemberAnswersAPersonsUnkeptDecisionAsAPersons(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", ":::decision{#p1}\nAlice's spec decides.\n:::\n")
+	agentUploadAs(t, handler, issue.Key, "agent.md", ":::decision{#a1}\nThe agent decides.\n:::\n", nil)
+	spec := readDecisionDocument(t, database, issue.Key, "spec")
+	requireDecidedBy(t, database, "the person's decision", spec.address("p1"), "alice")
+	read := func() (map[string]model.Decision, map[string]decisionEntry) {
+		t.Helper()
+		view := readIssueDecisions(t, handler, issue.Key)
+		decisions := make(map[string]model.Decision, len(view.Decisions))
+		for _, decision := range view.Decisions {
+			decisions[decision.BlockID] = decision
+		}
+		entries := make(map[string]decisionEntry, len(view.Entries))
+		for _, entry := range view.Entries {
+			entries[entry.Node.ID] = entry
+		}
+		return decisions, entries
+	}
+
+	decisions, entries := read()
+	person, agent := decisions["p1"], decisions["a1"]
+	if len(decisions) != 2 || person.Kind != "person" || person.WaitingReview || person.Kept != nil ||
+		agent.Kind != "agent" || !agent.WaitingReview || agent.Kept != nil {
+		t.Fatalf("the old decisions member = %s, want alice's p1 of kind person waiting for nobody and the agent's a1 of kind agent waiting for review, neither kept",
+			entryJSON(t, decisions))
+	}
+	if entry, found := entries[spec.address("p1")]; !found || entry.Kind != "agent" || entry.DecidedBy == nil || entry.DecidedBy.Kind != graphstore.KindPerson {
+		t.Errorf("the entry of p1 reads %s (found %t), want kind agent, the node's shape, decided by a person", entryJSON(t, entry), found)
+	}
+
+	keepBlock(t, handler, spec.id, "p1", person.TextSHA256)
+	decisions, _ = read()
+	if kept := decisions["p1"]; kept.Kind != "agent" || kept.Kept == nil || kept.Kept.KeptBy != "alice" || kept.WaitingReview {
+		t.Errorf("after alice's Keep the old decisions member answers p1 as %s, want kind agent with alice's Keep, waiting for nobody", entryJSON(t, kept))
 	}
 }
 
@@ -385,10 +434,12 @@ func TestAFirstIndexingMarksNothingOutOfDate(t *testing.T) {
 // The open questions are the issue's open asks whose block is in its spec, oldest first, and an
 // issue with no decisions document and no decision answers them with a null document and no
 // decisions. The two asks are written in two versions, so one is older than the other: two that one
-// settlement writes share their created_at and the order between them is their ids'.
+// settlement writes share their created_at and the order between them is their ids'. An open ask
+// whose row names the spec but a block the spec's current blocks do not hold is none of them: a
+// reopen restores such a row with no block to write, which a later settlement retracts.
 func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
 	t.Parallel()
-	handler, _, _ := newTestServer(t, testServerOptions{settle: 20 * time.Millisecond})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: 20 * time.Millisecond})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", ":::ask{#decide_first}\nWhich store?\n:::\n\nA paragraph.\n")
 	view, _ := waitForOpenQuestions(t, handler, issue.Key, 1)
@@ -409,51 +460,335 @@ func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
 	// reading of the markdown.
 	requireDisplayTree(t, handler, "/api/v1/issues/"+issue.Key+"/decisions",
 		"open_questions.0.question", "open_questions.0.question_tree")
+
+	if tag, err := database.Pool.Exec(context.Background(), `update asks set block_id = 'decide_gone' where issue_key = $1 and block_id = 'decide_second'`, issue.Key); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("point the second ask's row at a block the spec does not hold: %v", err)
+	}
+	if _, questions := waitForOpenQuestions(t, handler, issue.Key, 1); fmt.Sprint(questions) != "[Which store?]" {
+		t.Fatalf("open_questions = %v once the second ask's block is none the spec holds, want the first ask alone", questions)
+	}
+}
+
+// One value of an ask's node that does not parse drops that one ask from the Decisions read and
+// never fails the whole read (R4): the open questions and the entries are answered without it, as
+// they are answered for every other ask of the spec. Two asks of the spec hold a value written by
+// hand - an answered_at that is no time, and a selected that is no list of labels - beside one
+// whose node is as the server wrote it. The same holds while the spec owes its block index, where
+// the open questions are read by the ask blocks the spec's fragment holds (specOpenQuestions):
+// reading those blocks decodes no answer, so the ask whose node holds an answered_at that is no
+// time is left out there too, and the read answers the open ask beside it.
+func TestAnAskWhoseNodeHoldsAValueThatDoesNotParseIsLeftOutOfTheDecisionsRead(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{settle: 20 * time.Millisecond})
+	ctx := context.Background()
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE",
+		":::ask{#fine}\nWhich store?\n:::\n\n:::ask{#late}\nWhich name?\n:::\n\n:::ask{#listed}\nWhich port?\n:::\n")
+	waitForOpenQuestions(t, handler, issue.Key, 3)
+	fine, late, listed := blockAskID(t, handler, issue.Key, "fine"), blockAskID(t, handler, issue.Key, "late"), blockAskID(t, handler, issue.Key, "listed")
+	for ask, written := range map[string][2]string{
+		late:   {graphstore.TupleAnsweredAt, "next Tuesday"},
+		listed: {graphstore.TupleSelected, "Yes, No"},
+	} {
+		if _, err := database.Pool.Exec(ctx, `
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
+			values ($1, $2, $3, $4, $5, now(), '{"kind":"user","id":"alice"}'::jsonb, 0, true)
+		`, graphstore.KindAsk, ask, written[0], graphstore.KindValue, written[1]); err != nil {
+			t.Fatalf("state %s %q on the node of ask %s: %v", written[0], written[1], ask, err)
+		}
+	}
+
+	view := readIssueDecisions(t, handler, issue.Key)
+	if len(view.OpenQuestions) != 1 || view.OpenQuestions[0].ID != fine {
+		ids := []string{}
+		for _, question := range view.OpenQuestions {
+			ids = append(ids, question.ID)
+		}
+		t.Errorf("open_questions = %v, want the one ask whose node parses, %s", ids, fine)
+	}
+	entries := entriesByNode(view.Entries)
+	if _, held := entries[graphstore.KindAsk+":"+fine]; !held {
+		t.Errorf("the entries hold no entry for the ask %s whose node parses: %s", fine, entryJSON(t, view.Entries))
+	}
+	for _, dropped := range []string{late, listed} {
+		if _, held := entries[graphstore.KindAsk+":"+dropped]; held {
+			t.Errorf("the entries hold an entry for the ask %s, whose node holds a value that does not parse", dropped)
+		}
+	}
+
+	t.Run("a spec that owes its block index", func(t *testing.T) {
+		t.Parallel()
+		handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+		documents := deps.Docs.(*docs.Service)
+		createReferenceAPIProject(t, handler, "OWED")
+		issue := createSpecIssue(t, handler, "OWED", "A spec.\n")
+		key, spec := issue.Key, issue.PrimaryArtifactID
+		reconcileUntilNothingOwed(t, handler, deps, key)
+		const lateAsk = ":::ask{#q-late urgency=\"med\" multiple=\"false\"}\nWhen does the queue ship?\n:::\n"
+		written := uploadDocument(t, handler, "/api/v1/issues/"+key, "spec.md",
+			"A spec.\n\n"+owedAsk+"\n"+lateAsk+"\n"+deferralList(itemsOverTheBlockBound, "end"))
+		version := written.Version.Number
+		settleIssue(t, documents, key)
+		if latest := latestVersion(t, database, spec).Number; latest != version {
+			t.Fatalf("the settlement after the upload left the spec of %s at version %d, want the upload's version %d", key, latest, version)
+		}
+		fine, late := blockAskID(t, handler, key, "q-owed"), blockAskID(t, handler, key, "q-late")
+		var named bool
+		if err := database.Pool.QueryRow(ctx, `select node_kind is not null from asks where id = $1::uuid`, late).Scan(&named); err != nil || !named {
+			t.Fatalf("the row of the ask %s names its node: %t, %v; want it named, so the read takes its answer off the node", late, named, err)
+		}
+		if _, err := database.Pool.Exec(ctx, `
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
+			values ($1, $2, $3, $4, 'next Tuesday', now(), '{"kind":"user","id":"alice"}'::jsonb, 0, true)
+		`, graphstore.KindAsk, late, graphstore.TupleAnsweredAt, graphstore.KindValue); err != nil {
+			t.Fatalf("state answered_at \"next Tuesday\" on the node of ask %s: %v", late, err)
+		}
+		if owed := readCoverage(t, handler, key).OwedDocuments; !slices.Contains(owed, model.OwedDocument{ArtifactID: spec, Version: version}) {
+			t.Fatalf("owed_documents of %s does not name the spec at version %d: %+v; the case reads a spec that owes its block index", key, version, owed)
+		}
+
+		view := readIssueDecisions(t, handler, key)
+		ids := []string{}
+		for _, question := range view.OpenQuestions {
+			ids = append(ids, question.ID)
+		}
+		if !slices.Equal(ids, []string{fine}) {
+			t.Errorf("while the spec of %s owes its block index, open_questions = %v, want the one ask whose node parses, %s", key, ids, fine)
+		}
+		if _, held := entriesByNode(view.Entries)[graphstore.KindAsk+":"+late]; held {
+			t.Errorf("the entries hold an entry for the ask %s, whose node holds a value that does not parse", late)
+		}
+	})
+}
+
+// One ask row of the spec whose own stored value does not decode drops that one ask from the open
+// questions and never fails the Decisions read (R4), as a value of its node that does not parse
+// drops it: the read answers 200 with every other open question of the spec, and logs a warning
+// that names the ask it left out, its issue and the value that does not decode, so an operator can
+// find the row. Of two open asks, one row holds an author written by hand that is no actor. Every
+// other read of the decisions drops that one ask the same way and answers 200 with the other: the
+// Decisions read's entries, which walk the issue's tree, and the tree read with no view and with
+// ?view=decisions. Each of them reaches the issue's asks through the walk of its conversation,
+// which loads each ask and its parts as every read of the graph does (refs' loadAskNodes and
+// itemBlockNodes), and that load leaves out an ask, and each part of it, whose maker does not
+// decode rather than fail the read.
+func TestASpecAskWhoseRowDoesNotDecodeIsLeftOutOfTheOpenQuestions(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault).
+	handler, database, _ := newTestServer(t, testServerOptions{settle: 20 * time.Millisecond})
+	logs := captureLogs(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", ":::ask{#fine}\nWhich store?\n:::\n\n:::ask{#broken}\nWhich name?\n:::\n")
+	waitForOpenQuestions(t, handler, issue.Key, 2)
+	fine, broken := blockAskID(t, handler, issue.Key, "fine"), blockAskID(t, handler, issue.Key, "broken")
+	if tag, err := database.Pool.Exec(context.Background(), `update asks set author = '"alice"'::jsonb where id = $1::uuid`, broken); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("write an author that is no actor on the row of ask %s: %v", broken, err)
+	}
+
+	view := readIssueDecisions(t, handler, issue.Key)
+	ids := []string{}
+	for _, question := range view.OpenQuestions {
+		ids = append(ids, question.ID)
+	}
+	if !slices.Equal(ids, []string{fine}) {
+		t.Errorf("open_questions = %v, want the one ask whose row decodes, %s", ids, fine)
+	}
+	warned := logs.Lines("an ask whose stored value does not decode is left out of the issue's open questions")
+	if warned == "" {
+		t.Fatalf("the read that left out the ask %s logged no warning naming it", broken)
+	}
+	for line := range strings.Lines(warned) {
+		if !strings.Contains(line, "level=WARN") || !strings.Contains(line, "ask="+broken) || !strings.Contains(line, "issue="+issue.Key) ||
+			!strings.Contains(line, "decode its author") || strings.Contains(line, fine) {
+			t.Errorf("the read logged %q, want a WARN naming the ask %s of %s and its author, and not the ask %s", line, broken, issue.Key, fine)
+		}
+	}
+	entries := entriesByNode(view.Entries)
+	if _, held := entries[graphstore.KindAsk+":"+fine]; !held {
+		t.Errorf("the entries hold no entry for the ask %s whose row decodes: %s", fine, entryJSON(t, view.Entries))
+	}
+	if _, held := entries[graphstore.KindAsk+":"+broken]; held {
+		t.Errorf("the entries hold an entry for the ask %s, whose row holds an author that is no actor", broken)
+	}
+	for _, query := range []string{"", "?view=decisions"} {
+		tree := treeRead(t, handler, issue.Key, query, "alice", false)
+		if held := tree.nodesNamed(graphstore.KindAsk, fine); len(held) != 1 {
+			t.Errorf("the tree read%s answers the ask %s, whose row decodes, %d times, want once; it answers %v", query, fine, len(held), tree.addresses())
+		}
+		if held := tree.nodesNamed(graphstore.KindAsk, broken); len(held) != 0 {
+			t.Errorf("the tree read%s answers the ask %s, whose row holds an author that is no actor, as %s", query, broken, entryJSON(t, held))
+		}
+	}
+}
+
+// An ask row of the spec whose stored options are valid JSON and no list of options - a list of
+// strings written by hand, which asks_options_array admits - is left out of every read of the
+// decisions and of the issue's tree, as one whose author is no actor is
+// (TestASpecAskWhoseRowDoesNotDecodeIsLeftOutOfTheOpenQuestions), and fails none of them (R4). The
+// Decisions read answers 200 with the other open question and logs a warning naming the ask, its
+// issue and its options, and its entries hold the other ask and not this one. The tree read, with
+// no view, with each view and with each kind filter of twoCutsForms, answers 200, the other ask
+// once in each read that takes the issue's asks, and nothing of this one in any read: no node of
+// it, none of its parts, no tuple at either, and no node of its thread. A person replied in each
+// ask's thread and replied to that reply before the row was written: every read leaves this ask's
+// two replies out with it, where the walk would otherwise hang them under the issue, as it hangs
+// an item whose parent is no node of the conversation, and the reads that take comments answer the
+// other ask's two replies, the first under that ask and the second under the first. The loader
+// every read of the graph reaches an ask through (refs' loadAskNodes) is what leaves it out, and
+// it logs a warning naming the ask, its issue and its options.
+func TestASpecAskWhoseOptionsDoNotDecodeIsLeftOutOfEveryTreeRead(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault).
+	handler, database, _ := newTestServer(t, testServerOptions{settle: 20 * time.Millisecond})
+	logs := captureLogs(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", ":::ask{#fine}\nWhich store?\n:::\n\n:::ask{#broken}\nWhich name?\n:::\n")
+	waitForOpenQuestions(t, handler, issue.Key, 2)
+	fine, broken := blockAskID(t, handler, issue.Key, "fine"), blockAskID(t, handler, issue.Key, "broken")
+	// thread is alice's reply in the thread of ask and her reply to that reply.
+	thread := func(ask string) (string, string) {
+		t.Helper()
+		first := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Why ask?", "ask_id": ask}, "alice")
+		again := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Because it is open.", "reply_to": first.ID}, "alice")
+		return first.ID, again.ID
+	}
+	fineReply, fineAgain := thread(fine)
+	brokenReply, brokenAgain := thread(broken)
+	if tag, err := database.Pool.Exec(context.Background(), `update asks set options = '["Postgres"]'::jsonb where id = $1::uuid`, broken); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("write options that are no list of options on the row of ask %s: %v", broken, err)
+	}
+	// requireWarned fails unless the log holds a line holding message, each such line a WARN that
+	// names the ask whose options do not decode, its issue and value, and not the other ask.
+	requireWarned := func(what, message, value string) {
+		t.Helper()
+		warned := logs.Lines(message)
+		if warned == "" {
+			t.Errorf("%s logged no warning %q naming the ask %s", what, message, broken)
+			return
+		}
+		for line := range strings.Lines(warned) {
+			if !strings.Contains(line, "level=WARN") || !strings.Contains(line, "ask="+broken) || !strings.Contains(line, "issue="+issue.Key) ||
+				!strings.Contains(line, value) || strings.Contains(line, fine) {
+				t.Errorf("%s logged %q, want a WARN naming the ask %s of %s and %q, and not the ask %s", what, line, broken, issue.Key, value, fine)
+			}
+		}
+	}
+
+	view := readIssueDecisions(t, handler, issue.Key)
+	ids := []string{}
+	for _, question := range view.OpenQuestions {
+		ids = append(ids, question.ID)
+	}
+	if !slices.Equal(ids, []string{fine}) {
+		t.Errorf("open_questions = %v, want the one ask whose row decodes, %s", ids, fine)
+	}
+	requireWarned("the Decisions read", "an ask whose stored value does not decode is left out of the issue's open questions", "decode its options")
+	entries := entriesByNode(view.Entries)
+	if _, held := entries[graphstore.KindAsk+":"+fine]; !held {
+		t.Errorf("the entries hold no entry for the ask %s whose row decodes: %s", fine, entryJSON(t, view.Entries))
+	}
+	if _, held := entries[graphstore.KindAsk+":"+broken]; held {
+		t.Errorf("the entries hold an entry for the ask %s, whose options are no list of options", broken)
+	}
+
+	// ofBroken is whether id names the ask whose options do not decode, one of its parts, one of
+	// the two replies in its thread or a block of one.
+	ofBroken := func(id string) bool {
+		for _, item := range []string{"ask/" + broken, "comment/" + brokenReply, "comment/" + brokenAgain} {
+			if strings.HasPrefix(id, item+"#") {
+				return true
+			}
+		}
+		return id == broken || id == brokenReply || id == brokenAgain
+	}
+	conversation := kindFilterQuery(kindFilterConversation...)
+	for _, form := range []struct {
+		name, query string
+		// asks is whether the read takes the issue's asks, and replies whether it takes the
+		// replies in their threads.
+		asks, replies bool
+	}{
+		{"the read with no view", "", true, true},
+		{"?view=spec", "?view=" + graphstore.QuerySpec, false, false},
+		{"?view=verification", "?view=" + graphstore.QueryVerification, false, false},
+		{"?view=plan", "?view=" + graphstore.QueryPlan, false, false},
+		{"?view=decisions", "?view=" + graphstore.QueryDecisions, true, false},
+		{"the read with the conversation's kinds", conversation, true, true},
+		{"kind=check&kind=result", kindFilterQuery(graphstore.BlockTypeCheck, graphstore.KindResult), false, false},
+	} {
+		response := treeResponse(t, handler, issue.Key, form.query, "alice", false)
+		if response.Code != http.StatusOK {
+			t.Errorf("%s of %s answers status=%d body=%s, want 200 with the ask %s left out; the server logged %s",
+				form.name, issue.Key, response.Code, response.Body.String(), broken, logs.Lines("level=ERROR"))
+			continue
+		}
+		tree := treeAnswer{IssueTreeRead: decodeBody[model.IssueTreeRead](t, response), body: response.Body.String()}
+		if held := tree.nodesNamed(graphstore.KindAsk, fine); form.asks && len(held) != 1 {
+			t.Errorf("%s answers the ask %s, whose row decodes, %d times, want once; it answers %v", form.name, fine, len(held), tree.addresses())
+		}
+		for _, node := range tree.Nodes {
+			if ofBroken(node.ID) || (node.Parent != nil && ofBroken(node.Parent.ID)) {
+				t.Errorf("%s answers %s, a node of the ask %s, whose options are no list of options, or of its thread, or one under such a node",
+					form.name, entryJSON(t, node), broken)
+			}
+		}
+		for _, tuple := range tree.Tuples {
+			if ofBroken(tuple.From.ID) || ofBroken(tuple.To.ID) {
+				t.Errorf("%s answers the tuple %s at the ask %s, whose options are no list of options, or at its thread", form.name, entryJSON(t, tuple), broken)
+			}
+		}
+		for _, reply := range []string{brokenReply, brokenAgain} {
+			if strings.Contains(tree.body, reply) {
+				t.Errorf("%s names %s, a reply in the thread of the ask %s, whose options are no list of options; it answers %v", form.name, reply, broken, tree.addresses())
+			}
+		}
+		if !form.replies {
+			continue
+		}
+		for _, reply := range []struct{ id, parentKind, parent string }{
+			{fineReply, graphstore.KindAsk, fine},
+			{fineAgain, graphstore.KindComment, fineReply},
+		} {
+			held := tree.nodesNamed(graphstore.KindComment, reply.id)
+			if len(held) != 1 || held[0].Parent == nil || held[0].Parent.Kind != reply.parentKind || held[0].Parent.ID != reply.parent {
+				t.Errorf("%s answers the reply %s in the thread of the ask %s as %s, want it once under %s:%s",
+					form.name, reply.id, fine, entryJSON(t, held), reply.parentKind, reply.parent)
+			}
+		}
+	}
+	requireWarned("the reads of the graph", "dispatch: an ask whose stored value does not parse is left out of the read", "decode the options of ask "+broken)
 }
 
 // waitForOpenQuestions reads the view until it holds want open questions: settlement indexes a
-// spec's ask blocks, and until it has the issue holds none.
+// spec's ask blocks, and until it has the issue holds none. Its one bound is the test binary's
+// deadline (testwait.UntilPolling), and its failure prints the questions it last read.
 func waitForOpenQuestions(t *testing.T, handler http.Handler, key string, want int) (issueDecisions, []string) {
 	t.Helper()
 	var view issueDecisions
-	questions := []string{}
-	for range 200 {
+	questions := testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the issue's decisions to hold %d open questions (the questions last read)", want), func() ([]string, bool) {
 		view = readIssueDecisions(t, handler, key)
-		questions = questions[:0]
+		questions := []string{}
 		for _, question := range view.OpenQuestions {
 			questions = append(questions, question.Question)
 		}
-		if len(questions) == want {
-			return view, questions
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	t.Fatalf("open_questions = %v, want %d of them", questions, want)
+		return questions, len(questions) == want
+	})
 	return view, questions
 }
 
 // An issue born converted answers its spec's decision as an issue of one-document rooms answers
-// it (the T12b fixes of this branch's plan). The agent's decision, written into the spec's
-// fragment of the issue room, is one entry: its text and its tree are its words, its document is
-// the spec - the spec's id, its dispatch:// address and the decision's block id - and its ref is
-// the spec's address of its block. Its two shaped links, to the two paragraphs the spec's blocks
-// read lists, each name the spec's own address of that block, `<KEY>/spec#<id>`, with the block's
-// id, its text, the version that wrote it, the spec and the block's ref; so the spec's margin,
-// which draws a decision's card beside each block of the spec on screen that a link reaches,
-// draws one beside each paragraph. The release before's decisions member answers the same.
+// it. The agent's decision, written into the spec's fragment of the issue room, is one entry: its
+// text and its tree are its words, its document is the spec - the spec's id, its dispatch://
+// address and the decision's block id - and its ref is the spec's address of its block. Its two
+// shaped links, to the two paragraphs the spec's blocks read lists, each name the spec's own
+// address of that block, `<KEY>/spec#<id>`, with the block's id, its text, the version that wrote
+// it, the spec and the block's ref; so the spec's margin, which draws a decision's card beside each
+// block of the spec on screen that a link reaches, draws one beside each paragraph. The release
+// before's decisions member answers the same.
 func TestAConvertedIssuesDecisionAnswersAsAnUnconvertedIssuesDecisionDoes(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
-	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", "Notices arrive late.\n\nReaders poll for them.\n")
-	spec := readDecisionDocument(t, database, issue.Key, "spec")
-	var room string
-	if err := database.Pool.QueryRow(ctx, `
-		select tree.ref_key from document_rooms moved join artifacts tree on tree.id = moved.room
-		where moved.artifact_id = $1
-	`, spec.id).Scan(&room); err != nil {
-		t.Fatalf("read the room of %s's spec: %v; want the issue born converted", issue.Key, err)
-	}
+	spec := requireIssueRoomFragment(t, database, issue.Key, "spec")
+	room := spec.nodeKey
 	paragraphs := blockIDsByText(t, handler, spec.id)
 	late, poll := paragraphs["Notices arrive late."], paragraphs["Readers poll for them."]
 	if late == "" || poll == "" {

@@ -82,7 +82,7 @@ func newParentDocument(t *testing.T, database *store.Store, name, slug string) p
 
 // writeVersion records one version of the document as a version write records it - its
 // markdown, its writer and its time - with the event that recorded it, and answers all three as
-// the rows hold them.
+// the rows hold them. The event is the issue's, or for a document no issue holds, the document's.
 func (d parentDocument) writeVersion(t *testing.T, number int, markdown string, writer model.Actor) versionRecord {
 	t.Helper()
 	ctx := context.Background()
@@ -114,13 +114,16 @@ func (d parentDocument) writeVersion(t *testing.T, number int, markdown string, 
 	if err != nil {
 		t.Fatalf("encode the version event's payload: %v", err)
 	}
-	// The event's sequence is the issue's next, so several documents of one issue each record
-	// their versions without two events taking one sequence.
+	// The event's sequence is its owner's next, the issue's or the document's, so several documents
+	// of one issue each record their versions without two events taking one sequence.
 	if err := d.database.Pool.QueryRow(ctx, `
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		values ($1, (select coalesce(max(seq), 0) + 1 from events where issue_key = $1), 'artifact.version', $2, $3, false)
+		insert into events (issue_key, artifact_id, seq, type, actor, payload, notify)
+		values (nullif($1::text, ''), case when $1::text = '' then $4::uuid end,
+			(select coalesce(max(seq), 0) + 1 from events
+			 where issue_key = nullif($1::text, '') or $1::text = '' and artifact_id = $4::uuid),
+			'artifact.version', $2, $3, false)
 		returning id
-	`, d.issue, actor, payload).Scan(&record.event); err != nil {
+	`, d.issue, actor, payload, d.artifact).Scan(&record.event); err != nil {
 		t.Fatalf("record the event of version %d: %v", number, err)
 	}
 	return record
@@ -151,7 +154,7 @@ func (d parentDocument) indexVersionAt(t *testing.T, number int, doc blockDoc, r
 	if err := tx.QueryRow(ctx, `select now()`).Scan(&at); err != nil {
 		t.Fatalf("read the time of the index of version %d: %v", number, err)
 	}
-	_, won, write, _, err := IndexBlocks(ctx, tx, d.artifact, OneVersion(d.artifact, number, record.at), doc.markdown, doc.blocks, nil, nil, TypedFacts{})
+	_, won, write, _, err := IndexBlocks(ctx, tx, d.artifact, OneVersion(d.artifact, number, record.at), doc.markdown, doc.blocks, nil, nil, "", TypedFacts{})
 	if err != nil {
 		t.Fatalf("index version %d: %v", number, err)
 	}
@@ -415,12 +418,14 @@ func moverUnderRight() blockDoc {
 // A version that moves a block under another parent and changes no text retracts the parent it
 // left and asserts the one it reached at one time, the pass's own, which is no earlier than that
 // version's created_at, by its writer and under the event that recorded it, moves no block's
-// changed_version or changed_at, and states nothing else at all, the moved block being the one
-// child of either parent, so its rank still stands. A version that changes one block's text
-// alone reads the parent of every other block again, and the same version indexed twice loses
+// changed_version or changed_at, and states nothing else but the same retraction and assertion of
+// its text_parent, since its text moved into the other holder's: the moved block is the one child
+// of either parent, so its rank and its text_rank still stand. A version that changes one block's
+// text alone reads the parent of every other block again, and the same version indexed twice loses
 // the revision fence and appends no tuple. A block one version drops and the next restores
 // joins the document a second time, on its new row, and no block that stayed joins it twice.
 func TestABlockParentIsATupleAndItsColumnIsItsProjection(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := parentDatabase(t)
 	writer := model.Actor{Kind: "user", ID: "alice"}
@@ -515,7 +520,7 @@ func TestABlockParentIsATupleAndItsColumnIsItsProjection(t *testing.T) {
 			t.Fatalf("begin the pass that rolls back: %v", err)
 		}
 		defer tx.Rollback(ctx)
-		_, stood, write, _, err := IndexBlocks(ctx, tx, nested.artifact, OneVersion(nested.artifact, 2, rolledBack.at), added.markdown, added.blocks, nil, nil, TypedFacts{})
+		_, stood, write, _, err := IndexBlocks(ctx, tx, nested.artifact, OneVersion(nested.artifact, 2, rolledBack.at), added.markdown, added.blocks, nil, nil, "", TypedFacts{})
 		if err != nil {
 			t.Fatalf("index the version that rolls back: %v", err)
 		}
@@ -716,13 +721,20 @@ func TestABlockParentIsATupleAndItsColumnIsItsProjection(t *testing.T) {
 				block, was.version, was.at, now.version, now.at)
 		}
 	}
-	if len(stated) != 2 {
-		t.Errorf("the move stated %d tuples, want the retraction and the assertion alone: %v", len(stated), stated)
+	// The block's text moved from left's into right's, so its text parent moves with its parent:
+	// the move states the same two tuples of each kind, and nothing else.
+	if len(stated) != 4 {
+		t.Errorf("the move stated %d tuples, want the retraction and the assertion of its part_of and of its text_parent alone: %v", len(stated), stated)
 	}
 	for _, tuple := range stated {
-		if tuple.Kind != graphstore.TuplePartOf {
-			t.Errorf("the move stated a %s tuple, want nothing but part_of: %+v", tuple.Kind, tuple)
+		if tuple.Kind != graphstore.TuplePartOf && tuple.Kind != TupleTextParent {
+			t.Errorf("the move stated a %s tuple, want nothing but part_of and text_parent: %+v", tuple.Kind, tuple)
+			continue
 		}
+		if want := mover.address("right"); tuple.Asserted != (tuple.ToID == want) || !tuple.Asserted && tuple.ToID != mover.address("left") {
+			t.Errorf("the move stated %+v, want the retraction of left and the assertion of right", tuple)
+		}
+		requireMovedBy(tuple.Kind, tuple)
 	}
 }
 
@@ -850,6 +862,7 @@ func blockNodesOf(t *testing.T, document parentDocument) int {
 // membership for any of them: the pass gives a node to the rows that name none, not to every
 // row of the document.
 func TestAPreStoreDocumentTakesItsNodesAtItsNextVersion(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := parentDatabase(t)
 	writer := model.Actor{Kind: "user", ID: "alice"}
@@ -928,6 +941,7 @@ func TestAPreStoreDocumentTakesItsNodesAtItsNextVersion(t *testing.T) {
 // those rows - and the second version indexes as the first did rather than being refused by
 // document_blocks_node for a node nobody may write.
 func TestABlockPastTheAddressBoundKeepsARowThatNamesNoNode(t *testing.T) {
+	t.Parallel()
 	database := parentDatabase(t)
 	writer := model.Actor{Kind: "user", ID: "alice"}
 	document := newParentDocument(t, database, "LONGKEY", strings.Repeat("l", MaxBlockNodeBytes))
@@ -977,6 +991,7 @@ func TestABlockPastTheAddressBoundKeepsARowThatNamesNoNode(t *testing.T) {
 // at the newer revision. A pass whose batch answered no error is committed as a caller commits
 // one, so a fence that refused nothing leaves its rows here to be named.
 func TestAPassTheFenceRefusesCommitsNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := parentDatabase(t)
 	writer := model.Actor{Kind: "user", ID: "alice"}

@@ -52,8 +52,8 @@ func changedByRunInto(t *testing.T, database *store.Store, run string) []string 
 }
 
 // changedByRunOutOf is each changed_by_run alice reads out of the node kind/id, its ?from= as
-// GET /api/v1/references reads it (refs.Edges), as the `<kind>/<id>` it ends at, sorted, as
-// runDocumentRig.outOfDocument reads a document's.
+// GET /api/v1/references reads it (refs.Edges), as the `<kind>/<id>` it ends at, sorted;
+// runDocumentRig.outOfDocument reads a document's through it.
 func changedByRunOutOf(t *testing.T, database *store.Store, kind, id string) []string {
 	t.Helper()
 	edges, err := refs.Edges(context.Background(), database.Pool, runDocumentAuthor, refs.Query{Direction: "out", Kind: kind, ID: id})
@@ -112,6 +112,7 @@ func storedBlockNodes(t *testing.T, database *store.Store, refKey string) map[st
 // changed_by_run to the run, in the store or in what alice reads out of it, while the issue node
 // holds the one the close's own write appends, and nothing else does.
 func TestACloseMadeForARunSettlesTheIssuesDocumentsForNoRun(t *testing.T) {
+	t.Parallel()
 	// An hour, so the only settlement of the browser's update is the one the close runs.
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
 	documentService := deps.Docs.(*docs.Service)

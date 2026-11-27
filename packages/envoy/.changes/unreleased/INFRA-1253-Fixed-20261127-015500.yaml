@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  The block index gives a block that writes no markdown of its own the block that holds it as its
+  parent. The empty paragraph of a list's empty last item now hangs under that item, and the empty
+  paragraph a quote holds alone under the quote. Before, the index read a block that starts
+  exactly where its holder ends as following it. Such a paragraph then hung outside its item and
+  its list, or outside its quote: at the top of the document where the list or the quote stands
+  there. That is the parent `document_blocks.parent_block_id` and the block's `part_of` tuple
+  held.
+time: 2026-11-27T01:55:00Z
+custom:
+    Issue: INFRA-1253

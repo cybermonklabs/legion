@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  A document version that moves a block among its parent's children without changing it keeps
+  the id of that block and of every block the move passes, so a block reference
+  (`dispatch://<key>/artifact/<slug>#b-<id>`), a block pointer and an ask's anchor into any of
+  them still resolve. Before this, an upload that moved paragraph 250 of 2,000 to after
+  paragraph 1740 gave that paragraph and each of the 1,490 paragraphs it passed a fresh id. A
+  block whose text the version changes, and a block it puts under another parent, still takes a
+  fresh id.
+time: 2026-11-25T12:22:12Z
+custom:
+    Issue: pr4180

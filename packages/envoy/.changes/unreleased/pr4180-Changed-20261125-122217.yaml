@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  Search finds a document by the block whose words matched and answers that block, from
+  `node_search`, which every write of a block's text keeps current; this build no longer fills or
+  reads `document_search`. A carried approval names the version it was carried from
+  (`carried_from_version`).
+time: 2026-11-25T12:22:17Z
+custom:
+    Issue: pr4180

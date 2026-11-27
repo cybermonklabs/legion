@@ -66,6 +66,11 @@ export function relatedCheckLines(
     lines.push(`The answers of other projects could not be shown: ${messageFor(error)}`);
   }
   try {
+    lines.push(...neighbourhoodLines(suggestions, context.linkBase));
+  } catch (error) {
+    lines.push(`The graph neighbourhood could not be shown: ${messageFor(error)}`);
+  }
+  try {
     const likely = suggestions.likely_duplicate;
     if (likely !== undefined && likely !== null) {
       lines.push(
@@ -211,6 +216,28 @@ function otherProjectLines(suggestions: Suggestions, linkBase: string | undefine
     // the question the check read: the server ranks them by meaning, and the reader decides.
     "Answered questions in other projects:",
     ...items.flatMap((item) => relatedItemLines(item, linkBase, true)),
+  ];
+}
+
+/** Only issue creates on a server that runs the graph check carry a neighbourhood outcome. */
+function neighbourhoodLines(suggestions: Suggestions, linkBase: string | undefined): string[] {
+  const check = suggestions.neighbourhood;
+  if (check == null) return [];
+  if (check.outcome === "none") {
+    return ["Graph neighbourhood check found no issue that shares a target."];
+  }
+  if (check.outcome === "made" && suggestions.neighbours?.length) {
+    return [
+      "Graph neighbours (shared targets):",
+      // The contract types a list as nullable, so a neighbour with no share listed prints none.
+      ...suggestions.neighbours.map(
+        (item) =>
+          `- ${item.key} [${item.status}] ${item.title} · shares ${(item.shares ?? []).join(", ")} → ${linkFor(item.href, linkBase)}`
+      ),
+    ];
+  }
+  return [
+    `No graph neighbourhood check was made: ${check.missing ?? "the server sent no graph result"}.`,
   ];
 }
 

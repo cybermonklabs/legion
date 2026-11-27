@@ -22,10 +22,10 @@ import (
 // creation. A Sever that took the client's lock waited behind that read, and the standby created
 // the durable with the connection still open.
 func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
+	testnats.RequireSocketQueues(t)
 	shrinkIntakeFlowControl(t)
-	budget := intakeStopBudget
-	intakeStopBudget = stopBudget
-	t.Cleanup(func() { intakeStopBudget = budget })
+	tuning := tuningFor(t)
+	tuning.stopBudget = stopBudget
 	var row heldHandBack
 	pool, ctx := deliveryTestPool(t)
 	row.pool = pool
@@ -53,8 +53,8 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 	row.sequences = append(row.sequences, publishMergedPullRequest(t, publisher, inFlight))
 	awaitAckPending(t, publisher, 3)
 
-	wait := callNATSWait.Swap(int64(30 * time.Second))
-	restoreWait := sync.OnceFunc(func() { callNATSWait.Store(wait) })
+	wait := tuning.callWait.Swap(int64(30 * time.Second))
+	restoreWait := sync.OnceFunc(func() { tuning.callWait.Store(wait) })
 	t.Cleanup(restoreWait)
 	var holding sync.Once
 	held := make(chan struct{})
@@ -135,11 +135,11 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 // connection and not the order of events: what the frozen relay had already read of the socket
 // before the sever is beyond the client, and reaches the server once the relay thaws.
 func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *testing.T) {
-	logs := captureLogs(t)
+	testnats.RequireSocketQueues(t)
+	logs := captureIntakeLogs(t)
 	shrinkIntakeFlowControl(t)
-	budget := intakeStopBudget
-	intakeStopBudget = stopBudget
-	t.Cleanup(func() { intakeStopBudget = budget })
+	tuning := tuningFor(t)
+	tuning.stopBudget = stopBudget
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -162,8 +162,8 @@ func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *tes
 
 	// The stop's hand-backs go out only once its drain has answered; the row gives the stop's calls
 	// a 30 s guard, and puts the wait back as the hand-back's publish begins (stopWithAHeldHandBack).
-	wait := callNATSWait.Swap(int64(30 * time.Second))
-	restoreWait := sync.OnceFunc(func() { callNATSWait.Store(wait) })
+	wait := tuning.callWait.Swap(int64(30 * time.Second))
+	restoreWait := sync.OnceFunc(func() { tuning.callWait.Store(wait) })
 	t.Cleanup(restoreWait)
 	var freezing sync.Once
 	frozen := make(chan struct{})

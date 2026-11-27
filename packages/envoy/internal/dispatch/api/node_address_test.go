@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -33,6 +32,7 @@ import (
 // issue among them. A run of the command bar the reader asked is a node the reader reads and one
 // that stands under no issue, so no issue's route finds it.
 func TestFindNodeUnderIssueDecodesTheStoreAddress(t *testing.T) {
+	t.Parallel()
 	fixture := seedPrivateNode(t, true)
 	ctx := context.Background()
 	pool := fixture.database.Pool
@@ -152,10 +152,15 @@ func TestFindNodeUnderIssueDecodesTheStoreAddress(t *testing.T) {
 			if !errors.As(err, &refused) {
 				t.Fatalf("FindNodeUnderIssue(%q, %q) = %s %s, %v; want a 404", test.key, test.id, node.Kind, node.ID, err)
 			}
-			want := fmt.Sprintf("no node %q under %s", test.id, test.key)
-			if refused.status != http.StatusNotFound || refused.code != "NOT_FOUND" || refused.message != want {
-				t.Fatalf("FindNodeUnderIssue(%q, %q) refused %d %s %q, want 404 NOT_FOUND %q",
-					test.key, test.id, refused.status, refused.code, refused.message, want)
+			// Each case answers the one 404 nodeNotFound makes for its id, so a private node's
+			// answer is a missing node's, and says nothing of whether the node exists.
+			var want *apiError
+			if !errors.As(nodeNotFound(test.key, test.id), &want) {
+				t.Fatalf("nodeNotFound(%q, %q) is no apiError", test.key, test.id)
+			}
+			if refused.status != http.StatusNotFound || refused.code != "NOT_FOUND" || refused.message != want.message {
+				t.Fatalf("FindNodeUnderIssue(%q, %q) refused %d %s %q, want nodeNotFound's 404 NOT_FOUND %q",
+					test.key, test.id, refused.status, refused.code, refused.message, want.message)
 			}
 		})
 	}

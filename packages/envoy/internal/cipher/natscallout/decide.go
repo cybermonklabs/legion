@@ -5,7 +5,8 @@
 // A connection presents one of two credentials. A session sends its broker access token in the
 // CONNECT's token field and, in its signature field, a proof of the key the token is bound to over
 // the server's own per-connection nonce (ciphertoken.VerifyConnectionProof); it is answered with
-// its own delivery channel and nothing of another session's (natsgrant.Session). A service sends
+// its own delivery channel and nothing of another session's (natsgrant.Session), and refused while
+// Dispatch holds the person its token names (decideSession). A service sends
 // user "service" (natscred.ServiceUser) and its platform identity token as the password: a
 // projected Kubernetes ServiceAccount token or a VM's Google identity token, which the broker
 // already verifies for its own callers; it is answered with its kind's grant, for the account
@@ -25,6 +26,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
+	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/natscred"
@@ -50,6 +52,12 @@ type Deps struct {
 	// Metrics is the registry the service's decisions are counted on (NewMetrics); nil counts
 	// nothing.
 	Metrics *Metrics
+	// Hold is the view of the writer hold's row in the broker's Postgres (NewHoldView), which
+	// decides the operator's grant and, while it cannot be read, refuses every other client. Every
+	// decision made through these Deps reads it, so they share its floor. Nil is a broker whose
+	// BROKER_NATS_HOLD_READ is false: nothing reads the row, and every decision is answered as if
+	// the row held released.
+	Hold *HoldView
 }
 
 func (d Deps) now() time.Time {
@@ -121,7 +129,10 @@ func (r *Refusal) because(cause error) *Refusal {
 const (
 	labelNoCredential      = "no_credential"
 	labelBrokerUnreachable = "broker_unreachable"
+	labelHoldUncheckable   = "hold_uncheckable"
 	labelTokenNotLive      = "token_not_live"
+	labelMembershipHeld    = "membership_held"
+	labelDeadlinePassed    = "deadline_passed"
 	labelKeyMismatch       = "key_mismatch"
 	labelNotASession       = "not_a_session"
 	labelProofInvalid      = "proof_invalid"
@@ -137,6 +148,7 @@ const (
 	labelServiceFailed     = "service_failed"
 	labelUnsealed          = "unsealed"
 	labelWaitingBound      = "waiting_bound"
+	labelHoldUnknown       = "hold_unknown"
 )
 
 // credentialKind is which credential req presents: a session's token beside a proof and no user,
@@ -154,7 +166,8 @@ func credentialKind(req Request) string {
 // serviceGrant is entry's kind's grant, before it is held to the entry's projects. An edge
 // listener's projects were read by config.ParseNATSServices, by the rule natsgrant.Edge holds them
 // to, so Edge refuses none of them; a list it did refuse answers its zero Permissions, no grant,
-// which the guard refuses as every empty grant is (guard, natsgrant.OpenDirection).
+// which the guard refuses as every empty grant is (guard, natsgrant.OpenDirection). The operator's
+// is the hold row's phase's, which decideOperator reads, and is none of this function's.
 func serviceGrant(entry config.NATSService) natsgrant.Permissions {
 	switch entry.Kind {
 	case config.NATSDispatch:
@@ -168,20 +181,71 @@ func serviceGrant(entry config.NATSService) natsgrant.Permissions {
 		return natsgrant.Daemon()
 	case config.NATSMeasure:
 		return natsgrant.Measure()
+	case config.NATSProbe:
+		return natsgrant.HoldProbe()
 	}
 	return natsgrant.Permissions{}
 }
 
+// operatorLife is the longest the operator's user lives from its decision, whatever its token's
+// life: the server closes the connection at the user's expiry (nats-server client.go, the
+// expiration timer), so a long command reconnects and is decided again under the phase the hold
+// row holds then, rather than keeping a grant of a phase the row has left.
+const operatorLife = 10 * time.Minute
+
+// holdUnknownReason is the refusal of every client but the operator while the hold row cannot be
+// read; its label in the decision counter is labelHoldUnknown.
+const holdUnknownReason = "hold_unknown: the NATS writer hold cannot be read"
+
+// outsideTheHold is decision, the answer to a client other than the operator, once the hold row
+// is known (HoldView), or the refusal hold_unknown while it is not: the row is read once, now,
+// inside the decision's budget. Under every known phase the decision stands as it was made, held
+// included, since refusing other clients under held is a later step's. With Hold nil nothing is
+// read and the decision stands.
+func outsideTheHold(ctx context.Context, deps Deps, decision Decision) (Decision, error) {
+	if _, err := deps.Hold.phase(ctx); err != nil {
+		return Decision{}, refuse(labelHoldUnknown, holdUnknownReason).because(err)
+	}
+	return decision, nil
+}
+
+// decideOperator is the answer to the operator entry's verified token, which expires at expiry:
+// natsgrant.Operator of the hold row's phase while the row is known, and of released while it is
+// not, so the operator is never refused for the hold's sake and can restore a missing or forged
+// row; its user expires at expiry or operatorLife after the decision, whichever is first.
+func decideOperator(ctx context.Context, deps Deps, entry config.NATSService, expiry time.Time) (Decision, error) {
+	phase, err := deps.Hold.phase(ctx)
+	if err != nil {
+		phase = natsgrant.OperatorPhaseReleased
+	}
+	grant, err := scopeGrant(entry, natsgrant.Operator(phase))
+	if err != nil {
+		return Decision{}, err
+	}
+	if longest := deps.now().Add(operatorLife); expiry.After(longest) {
+		expiry = longest
+	}
+	return Decision{Name: entry.Name(), Grant: grant, Expires: expiry}, nil
+}
+
 // Decide is the user the service answers req with, or the *Refusal it refuses it with. A session
 // is answered with natsgrant.Session of the session its live token names, once its proof verifies
-// over req's nonce; a service with its kind's grant, held to its projects (scopeGrant), once its
-// platform token verifies and lives no longer than a token login may (an hour, beside the proof
-// clock skew) and its account is listed in services. The grant it answers is not yet checked:
-// every answer passes the guard in admit (callout.go), whatever decided it.
+// over req's nonce and while Dispatch does not hold the person its token names (decideSession); a
+// service with its kind's grant, held to its projects (scopeGrant), once its platform token
+// verifies and lives no longer than a token login may (an hour, beside the proof clock skew) and
+// its account is listed in services. The operator entry's grant is the writer hold's phase's
+// (decideOperator), and every other client it would admit is refused while the hold row cannot be
+// read (outsideTheHold); either reads the row once, after the credential verified, so a client
+// refused for its credential costs the broker's Postgres nothing. The grant it answers is not yet
+// checked: every answer passes the guard in admit (callout.go), whatever decided it.
 func Decide(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 	switch credentialKind(req) {
 	case credentialSession:
-		return decideSession(ctx, deps, req)
+		decision, err := decideSession(ctx, deps, req)
+		if err != nil {
+			return Decision{}, err
+		}
+		return outsideTheHold(ctx, deps, decision)
 	case credentialService:
 		return decideService(ctx, deps, services, req)
 	}
@@ -215,11 +279,28 @@ func openDirectionReason(direction string) string {
 // sessionNamePrefix opens the name of a session's user.
 const sessionNamePrefix = "session/"
 
+// decideSession decides a session's connection from the broker's introspection of its token, the
+// provider's own in this process, which asks the hold gate (hold.Gate.Decide) about the
+// person the token names. After the credential's own checks (live, bound to the key the proof is
+// signed with, a session's shape, an expiry, a session id that is one subject token), a person
+// Dispatch holds is refused, as every broker route refuses them; a not-held answer whose deadline
+// (not_held_until) has passed by this broker's clock is refused, and the user of one admitted
+// before it expires at it if that comes before the token's expiry, so the connection does not
+// outlive it, as the airlock cuts a call it carries then. A not-held answer the gate judged past
+// its deadline, by its own clock or as Dispatch's unavailable answer, whose deadline is its own
+// as_of, reaches here with a not_held_until every clock is past (oauth.Provider's withHold), so it
+// is refused as a deadline passed too. Every other case the gate cannot tell is introspection's
+// *oauth.HoldUncheckableError, refused under its own label, apart from a broker that did not
+// answer.
 func decideSession(ctx context.Context, deps Deps, req Request) (Decision, error) {
 	answer, err := deps.Introspect(ctx, req.Token)
 	if err != nil {
 		if ctx.Err() != nil {
 			return Decision{}, budgetRefusal("the token's introspection")
+		}
+		var uncheckable *oauth.HoldUncheckableError
+		if errors.As(err, &uncheckable) {
+			return Decision{}, refuse(labelHoldUncheckable, "hold unchecked: whether Dispatch holds the token's person cannot be read").because(err)
 		}
 		return Decision{}, refuse(labelBrokerUnreachable, "broker unreachable: the token's introspection failed").because(err)
 	}
@@ -250,7 +331,20 @@ func decideSession(ctx context.Context, deps Deps, req Request) (Decision, error
 	if err != nil {
 		return Decision{}, refuse(labelBadSessionID, "session id is not one subject token")
 	}
-	return Decision{Name: sessionNamePrefix + caller.Session, Grant: grant, Expires: time.Unix(answer.ExpiresAt, 0)}, nil
+	if caller.Held {
+		return Decision{}, refuse(labelMembershipHeld, "membership held: Dispatch holds the token's person")
+	}
+	expires := time.Unix(answer.ExpiresAt, 0)
+	if answer.NotHeldUntil > 0 {
+		deadline := time.Unix(answer.NotHeldUntil, 0)
+		if !deadline.After(deps.now()) {
+			return Decision{}, refuse(labelDeadlinePassed, "hold unchecked: Dispatch's answer that the token's person is not held has passed its deadline")
+		}
+		if deadline.Before(expires) {
+			expires = deadline
+		}
+	}
+	return Decision{Name: sessionNamePrefix + caller.Session, Grant: grant, Expires: expires}, nil
 }
 
 // longestServiceToken is the longest life a service's platform token may have from its issue: a
@@ -285,9 +379,12 @@ func decideService(ctx context.Context, deps Deps, services []config.NATSService
 	if entry == nil {
 		return Decision{}, refuse(labelServiceNotListed, "service not listed: "+account)
 	}
+	if entry.Kind == config.NATSOperator {
+		return decideOperator(ctx, deps, *entry, expiry)
+	}
 	grant, err := scopeGrant(*entry, serviceGrant(*entry))
 	if err != nil {
 		return Decision{}, err
 	}
-	return Decision{Name: entry.Name(), Grant: grant, Expires: expiry}, nil
+	return outsideTheHold(ctx, deps, Decision{Name: entry.Name(), Grant: grant, Expires: expiry})
 }

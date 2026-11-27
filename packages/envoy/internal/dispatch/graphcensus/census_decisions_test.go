@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/rank"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -18,8 +19,9 @@ import (
 )
 
 // unmarkedAskKinds are the ask tie kinds whose rows the earlier release
-// wrote with no node, in the order the census reads them.
-var unmarkedAskKinds = []string{graphstore.TupleFollowedBy, "ask_parent", "ask_anchor", "ask_answer"}
+// wrote with no node, in the order the census reads them: an ask's block is one of them
+// (askBlockProjection), since that release wrote the row's block columns with no node either.
+var unmarkedAskKinds = []string{graphstore.TupleFollowedBy, "ask_parent", "ask_anchor", "ask_answer", graphstore.TupleAskedOn}
 
 // The rule that a tie kind holding no row and no node is no refusal is for a
 // store nothing of that kind was written to. An asks table and an ask_followers table whose rows
@@ -28,7 +30,7 @@ var unmarkedAskKinds = []string{graphstore.TupleFollowedBy, "ask_parent", "ask_a
 // unmarked rows. Over the agreeing store and one such ask - an ask block anchored to the document
 // and answered by bob - and one follower row of it, every ask kind counts its unmarked row, none
 // prints that nothing of it is written yet, each prints that it checked no row, and the census
-// refuses with those four kinds as the kinds that checked no row. (The project census refuses the
+// refuses with those five kinds as the kinds that checked no row. (The project census refuses the
 // unmarked asks row as well, as a row with no node; that refusal is the project census's own and
 // not this rule's, so the test reads the kinds the census names unpopulated.)
 func TestTheCensusRefusesAskRowsNoBackfillMarked(t *testing.T) {
@@ -149,10 +151,13 @@ func TestTheCensusLeavesOutAMovedToIntoADocumentThatOwesItsBlockIndex(t *testing
 	}
 }
 
-// writeCensusLens writes the lens id at state under CORE-1 through the store's writer, with the
-// tuples beside it: its first write states its part_of, and a write of a lens the store holds moves
-// its state alone, as the state route's write does.
-func writeCensusLens(t *testing.T, database *store.Store, id, state string, tuples ...graphstore.Tuple) {
+// censusLens is the lens writeCensusLens writes.
+const censusLens = "00000000-0000-4000-8000-0000000004a1"
+
+// writeCensusLens writes the lens censusLens at state under CORE-1 through the store's writer,
+// with the tuples beside it: its first write states its part_of, and a write of a lens the store
+// holds moves its state alone, as the state route's write does.
+func writeCensusLens(t *testing.T, database *store.Store, state string, tuples ...graphstore.Tuple) {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -161,14 +166,14 @@ func writeCensusLens(t *testing.T, database *store.Store, id, state string, tupl
 	}
 	defer tx.Rollback(ctx)
 	at := time.Now().UTC()
-	node, held, err := graphstore.ReadNode(ctx, tx, graphstore.KindLens, id)
+	node, held, err := graphstore.ReadNode(ctx, tx, graphstore.KindLens, censusLens)
 	if err != nil {
-		t.Fatalf("read the lens %s: %v", id, err)
+		t.Fatalf("read the lens %s: %v", censusLens, err)
 	}
 	if !held {
-		node = graphstore.Node{Kind: graphstore.KindLens, ID: id, Supertag: graphstore.KindLens,
+		node = graphstore.Node{Kind: graphstore.KindLens, ID: censusLens, Supertag: graphstore.KindLens,
 			Visibility: graphstore.VisibilityProject, Project: "CORE"}
-		tuples = append(tuples, graphstore.Tuple{FromKind: graphstore.KindLens, FromID: id, Kind: graphstore.TuplePartOf,
+		tuples = append(tuples, graphstore.Tuple{FromKind: graphstore.KindLens, FromID: censusLens, Kind: graphstore.TuplePartOf,
 			ToKind: graphstore.KindIssue, ToID: "CORE-1"})
 	}
 	node.State, node.MadeAt, node.MadeBy, node.SourceEvent = state, at, censusWriter, graphstore.NoEvent
@@ -177,7 +182,7 @@ func writeCensusLens(t *testing.T, database *store.Store, id, state string, tupl
 		tuples[index].At, tuples[index].Who, tuples[index].SourceEvent, tuples[index].Asserted = at, censusWriter, graphstore.NoEvent, true
 	}
 	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, tuples); err != nil {
-		t.Fatalf("write the lens %s %s: %v", id, state, err)
+		t.Fatalf("write the lens %s %s: %v", censusLens, state, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the lens's write: %v", err)
@@ -193,10 +198,9 @@ func writeCensusLens(t *testing.T, database *store.Store, id, state string, tupl
 func TestTheCensusResolvesADocumentsMoveToItsLens(t *testing.T) {
 	database := storetest.Open(t)
 	seeded := seedAgreeingStore(t, database)
-	const lens = "00000000-0000-4000-8000-0000000004a1"
-	writeCensusLens(t, database, lens, graphstore.StateLive, graphstore.Tuple{
+	writeCensusLens(t, database, graphstore.StateLive, graphstore.Tuple{
 		FromKind: graphstore.KindArtifact, FromID: seeded.document.refKey, Kind: graphstore.TupleMovedTo,
-		ToKind: graphstore.KindLens, ToID: lens,
+		ToKind: graphstore.KindLens, ToID: censusLens,
 	})
 
 	report := storeCensusOf(t, database)
@@ -209,7 +213,7 @@ func TestTheCensusResolvesADocumentsMoveToItsLens(t *testing.T) {
 			moved, report.Differences(), report.Refused(), line, printed.String())
 	}
 
-	writeCensusLens(t, database, lens, graphstore.StateGone)
+	writeCensusLens(t, database, graphstore.StateGone)
 	report = storeCensusOf(t, database)
 	moved = storeOnlyKind(t, report, graphstore.TupleMovedTo)
 	if moved.Tuples != 1 || moved.Unresolved != 1 || !report.Refused() {
@@ -422,17 +426,22 @@ func typedBlock(t *testing.T, database *store.Store, document preStoreDocument, 
 	writeTestTuples(t, database, []graphstore.Node{node}, tuples)
 }
 
-// Above the deferral bound no block index runs in the write, and the typed-node pass states each
-// decision and reading the version no longer holds gone in that write's own transaction, while the
-// document_blocks rows of their blocks and the block_refs rows they hold stay until the
-// block-index reconciliation deletes them (api's
-// TestADecisionADeferredVersionRemovesIsGoneBeforeTheBlockIndexRuns builds that state through the
-// server). Over the agreeing store, whose document owes its block index, a decision and the
-// reading inside it are stated gone with every row of theirs standing - both blocks' rows, the
-// reading's parent, the decision's decided_by and its mention of the issue - and the census reads
-// zero differences: those rows are owed their deletion. Once the document's block index stands at
-// its version, the same rows name gone nodes of a document that owes nothing, and the census
-// refuses, naming each under the gone cause in its kind.
+// Above the deferral bound a process of the release before runs no block index in the write, and
+// its typed-node pass states each decision and reading the version no longer holds gone in that
+// write's own transaction, while the document_blocks rows of their blocks and the block_refs rows
+// they hold stay until the block-index reconciliation deletes them. Over the agreeing store, whose
+// document owes its block index, a decision and the reading inside it are stated gone with every
+// row of theirs standing - both blocks' rows, the reading's parent, the decision's decided_by and
+// its mention of the issue - as that release leaves them, and the census reads zero differences:
+// those rows are owed their deletion (typedRowOwed, kept for one release). Once the document's
+// block index stands at its version, the same rows name gone nodes of a document that owes
+// nothing, and the census refuses, naming each under the gone cause in its kind. This build's
+// deferred write deletes those rows in the write that states the nodes gone
+// (refs.PlanDecisionNodes; api's TestADecisionADeferredVersionRemovesIsGoneBeforeTheBlockIndexRuns
+// and TestATypedBlockADeferredVersionRemovesReadsGoneAtOnce build it through the server): through
+// the real write, a decision and its reading a version indexed and the next, deferred version
+// removes leave neither row behind, and the census of that store, its document owing its index,
+// reads zero differences.
 func TestTheCensusOwesTheRowsOfADecisionADeferredVersionRemoved(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -481,6 +490,281 @@ func TestTheCensusOwesTheRowsOfADecisionADeferredVersionRemoved(t *testing.T) {
 		t.Fatalf("once the document owes nothing the census reads kind block as %+v and refused=%t, want the reading's row under %q and a refusal",
 			censusKind(t, report, "block").ReportedRows, report.Refused(), gone)
 	}
+	requireTheDeferredWriteLeavesNoRow(t)
+}
+
+// requireTheDeferredWriteLeavesNoRow is TestTheCensusOwesTheRowsOfADecisionADeferredVersionRemoved's
+// case of this build's deferred write: beside the agreeing store (seedAgreeingStore), whose kinds
+// keep their rows, version 1 of a second document holding a decision that closes with a reading is
+// indexed whole (refs.IndexBlocks), and version 2, which holds neither and whose block index its
+// write leaves to the reconciliation, runs the typed-node pass on its own (refs.PlanDecisionNodes),
+// as a write above the deferral bound runs it. That write states both nodes gone and deletes their
+// document_blocks and block_refs rows, so the census of the store, whose second document owes its
+// block index, reads zero differences.
+func requireTheDeferredWriteLeavesNoRow(t *testing.T) {
+	t.Helper()
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seedAgreeingStore(t, database)
+	var document preStoreDocument
+	if err := database.Pool.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ('CORE-1', 'CORE', 'decisions-md', 'decisions.md', 'doc', false, '{"kind":"user","id":"alice"}')
+		returning id::text, ref_key`).Scan(&document.artifactID, &document.refKey); err != nil {
+		t.Fatalf("create the second document: %v", err)
+	}
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	sources := creditedSources(alice)
+	write := func(number int, markdown string, whole bool) {
+		t.Helper()
+		version := renderVersion(t, parsedTree(t, markdown))
+		at := censusVersion(t, database, document.artifactID, number, version.markdown, alice)
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		versions := refs.OneVersion(document.artifactID, number, at)
+		record, err := refs.ReadIndexedVersion(ctx, tx, document.artifactID, document.artifactID, number)
+		if err != nil {
+			t.Fatalf("read the record of version %d: %v", number, err)
+		}
+		facts, err := refs.DecisionFacts(ctx, tx, document.artifactID, record, versions, version.blocks, version.tree, nil, sources)
+		if err != nil {
+			t.Fatalf("read the typed facts of version %d: %v", number, err)
+		}
+		var stated graphstore.Uncaused
+		if whole {
+			if _, _, stated, _, err = refs.IndexBlocks(ctx, tx, document.artifactID, versions, version.markdown, version.blocks, nil, nil, "", facts); err != nil {
+				t.Fatalf("index version %d: %v", number, err)
+			}
+		} else {
+			index, err := refs.ReadBlockIndex(ctx, tx, document.artifactID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := refs.PlanDecisionNodes(ctx, tx, index, document.artifactID, facts, graphstore.Uncaused{}, "")
+			if err != nil {
+				t.Fatalf("plan the typed-node pass of version %d: %v", number, err)
+			}
+			if err := store.RunWrite(ctx, tx, plan.Queue); err != nil {
+				t.Fatalf("write the typed-node pass of version %d: %v", number, err)
+			}
+			stated = plan.Stated()
+		}
+		if err := graphstore.Caused(ctx, tx, stated, graphstore.NoEvent); err != nil {
+			t.Fatalf("state version %d: %v", number, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit version %d: %v", number, err)
+		}
+		// The version's own node, as the version writer states it beside its row, for the
+		// census's version kind.
+		if _, err := Backfill(ctx, database, io.Discard); err != nil {
+			t.Fatalf("backfill the node of version %d: %v", number, err)
+		}
+	}
+	write(1, "::::decision{#d1}\nKeep one.\n\n:::reading{#g1}\nThe agent reads it.\n:::\n::::\n", true)
+	requireNoCensusDifference(t, "the census of the second document whose version 1 holds a decision", storeCensusOf(t, database))
+	write(2, "A paragraph and no decision.\n", false)
+	var rows, links int
+	if err := database.Pool.QueryRow(ctx, `
+		select (select count(*) from document_blocks where artifact_id = $1 and block_id in ('d1', 'g1')),
+		       (select count(*) from block_refs where artifact_id = $1 and block_id in ('d1', 'g1'))`, document.artifactID).Scan(&rows, &links); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 || links != 0 {
+		t.Fatalf("this build's deferred write left %d document_blocks rows and %d block_refs rows of the decision and the reading it removed, want none", rows, links)
+	}
+	var indexed *int
+	if err := database.Pool.QueryRow(ctx, `select version from document_block_versions where artifact_id = $1`, document.artifactID).Scan(&indexed); err != nil || indexed != nil {
+		t.Fatalf("the document stands indexed at %v (%v) after its deferred version 2, want it owed: this case proves nothing", indexed, err)
+	}
+	requireNoCensusDifference(t, "the census after this build's deferred write removed the decision", storeCensusOf(t, database))
+}
+
+// requireNoCensusDifference fails t unless the census read no difference in either direction over
+// any kind and passes. Unlike requireTheCensusAgrees it asks no kind to hold rows: a document whose
+// block index its last version left owed holds no block row until the reconciliation writes it.
+func requireNoCensusDifference(t *testing.T, what string, report *StoreReport) {
+	t.Helper()
+	for _, kind := range report.Kinds {
+		for _, difference := range differencesOf(kind) {
+			t.Errorf("%s reads a difference of kind %s at %s: %s", what, kind.Kind, difference.At, difference.Cause)
+		}
+	}
+	if report.Differences() != 0 || report.Refused() {
+		t.Fatalf("%s read %d difference(s) and refused=%t, want none and a pass", what, report.Differences(), report.Refused())
+	}
+}
+
+// A reading in a copy of an ask, on another document of the ask's owner, hangs on the ask's node,
+// while its row names the copy's block as its parent. The census reads that part_of as the copy's
+// block only where the copy's node states a current copied_from to the ask the part_of names
+// (askBlockID), since that row is what the census checks the part_of against. Over the agreeing
+// store, whose document holds the copy a1 of ask a1 and the reading g1 in it, and a document of
+// CORE-1 holding the blocks of the marked asks a1 and a2:
+//   - g1's part_of to a1, which a1's copy names, reads no difference;
+//   - its part_of to a2 reads one in reading_parent and in the block kind, and the census refuses;
+//   - its part_of to a1 once the copy's copied_from is retracted reads one too, until the document
+//     owes a settlement (doc_settlements_pending), the write that claims a copy;
+//   - throughout, a reading g2 in a copy whose address is past the store's bound, which is no node
+//     to state a copied_from, in a third document, reads no difference. That document's block
+//     index stands at version 1, stated by this build's pass, and g2's node is the one that pass
+//     writes: a reading hung on the ask's node, which the typed-node pass makes it only while the
+//     ask its copy shows holds an answer (refs' DecisionFacts), so that ask holds one, with a rank
+//     in its document's band, as every block the index places holds (refs' planBlockValues). So
+//     the census reads g2 in every kind of the blocks, block_rank, block_type and block_text
+//     among them, and g1 in none of those three: g1's document still owes its block index by this
+//     release's mark (store_owed_at, which the backfill set).
+func TestTheCensusReadsAReadingInACopyAsTheCopysChildOnlyWhereTheCopyNamesItsAsk(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedAgreeingStore(t, database)
+	copied := seeded.document
+	if _, err := database.Pool.Exec(ctx, `
+		update document_block_versions set version = 1 where artifact_id = $1::uuid
+	`, copied.artifactID); err != nil {
+		t.Fatalf("stand the copy's block index at version 1, so its readings owe nothing: %v", err)
+	}
+	document := func(slug string) preStoreDocument {
+		t.Helper()
+		var made preStoreDocument
+		if err := database.Pool.QueryRow(ctx, `
+			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+			values ('CORE-1', 'CORE', $1, 'notes.md', 'doc', false, '{"kind":"user","id":"alice"}')
+			returning id::text, ref_key
+		`, slug).Scan(&made.artifactID, &made.refKey); err != nil {
+			t.Fatalf("create the document %.20s: %v", slug, err)
+		}
+		return made
+	}
+	source := document("asks")
+	// The long document's ref_key leaves room for g2's address and none for longID's.
+	long := document(strings.Repeat("l", graphstore.MaxAddressBytes-100-len("CORE-1/")))
+	// Its block index stands at version 1 as this build's pass leaves a document it indexed
+	// (refs.RevisionFenceStatement). Without that row g2's row is one no pass of this build's rule
+	// stated, which block_text counts unstated, and the census refuses that kind for checking no row.
+	if _, err := database.Pool.Exec(ctx, `
+		insert into document_block_versions (artifact_id, version, store_version, stated_version, stated_rule)
+		values ($1::uuid, 1, 1, 1, $2)
+	`, long.artifactID, refs.BlockIndexMarkingRule); err != nil {
+		t.Fatalf("stand the long document's block index at version 1: %v", err)
+	}
+	longID := "a" + strings.Repeat("x", 199)
+	asked := map[string]string{}
+	for _, block := range []struct{ id, question string }{{"a1", "Which transport?"}, {"a2", "Which region?"}, {longID, "Which shelf?"}} {
+		var ask string
+		if err := database.Pool.QueryRow(ctx, `
+			insert into asks (issue_key, author, question, block_artifact_id, block_id)
+			values ('CORE-1', '{"kind":"user","id":"alice"}', $1, $2::uuid, $3) returning id::text
+		`, block.question, source.artifactID, block.id).Scan(&ask); err != nil {
+			t.Fatalf("write the ask of block %.20s: %v", block.id, err)
+		}
+		asked[block.id] = ask
+	}
+	// The ask longID's copy shows is answered on its row as the answer route writes one, so the
+	// backfill states its node answered (asks.AnswerFacts), as the reading g2 in that copy needs.
+	shelf := "The second shelf."
+	answer, err := json.Marshal(model.AskAnswer{User: "bob", Selected: []string{}, Text: &shelf, At: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("encode bob's answer: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		update asks set state = 'answered', answer = $2::jsonb where id = $1::uuid
+	`, asked[longID], answer); err != nil {
+		t.Fatalf("answer the ask of block %.20s: %v", longID, err)
+	}
+	if _, err := Backfill(ctx, database, io.Discard); err != nil {
+		t.Fatalf("backfill the asks: %v", err)
+	}
+	copyBlock, reading, longReading := copied.refKey+"#a1", copied.refKey+"#g1", long.refKey+"#g2"
+	if len(long.refKey+"#"+longID) <= graphstore.MaxAddressBytes || len(longReading) > graphstore.MaxAddressBytes {
+		t.Fatalf("the long document's copy is %d bytes and its reading %d against the bound %d, want the copy past it and the reading inside, so this test would prove nothing",
+			len(long.refKey+"#"+longID), len(longReading), graphstore.MaxAddressBytes)
+	}
+	now := time.Now().UTC()
+	node := func(address, supertag string) graphstore.Node {
+		return graphstore.Node{
+			Kind: refs.BlockNodeKind, ID: address, Supertag: supertag, Visibility: graphstore.VisibilityProject,
+			State: graphstore.StateLive, Project: "CORE", MadeAt: now, MadeBy: censusWriter, SourceEvent: graphstore.NoEvent,
+		}
+	}
+	tie := func(from, kind, toKind, toID string, asserted bool) graphstore.Tuple {
+		return graphstore.Tuple{
+			FromKind: refs.BlockNodeKind, FromID: from, Kind: kind, ToKind: toKind, ToID: toID,
+			At: time.Now().UTC(), Who: censusWriter, SourceEvent: graphstore.NoEvent, Asserted: asserted,
+		}
+	}
+	writeTestTuples(t, database, []graphstore.Node{
+		node(copyBlock, refs.BlockSupertag), node(reading, refs.ReadingSupertag), node(longReading, refs.ReadingSupertag),
+	}, []graphstore.Tuple{
+		tie(copyBlock, refs.TupleInDocument, graphstore.KindArtifact, copied.refKey, true),
+		tie(copyBlock, graphstore.TuplePartOf, graphstore.KindArtifact, copied.refKey, true),
+		tie(copyBlock, graphstore.TupleCopiedFrom, graphstore.KindAsk, asked["a1"], true),
+		tie(reading, refs.TupleInDocument, graphstore.KindArtifact, copied.refKey, true),
+		tie(reading, graphstore.TuplePartOf, graphstore.KindAsk, asked["a1"], true),
+		tie(longReading, refs.TupleInDocument, graphstore.KindArtifact, long.refKey, true),
+		tie(longReading, graphstore.TuplePartOf, graphstore.KindAsk, asked[longID], true),
+		// The rank the block index gives the one block it places under a parent, in the band of a
+		// document of an issue that is no spec, Verification or plan (refs' rankBlocks).
+		tie(longReading, refs.AttributeRank, graphstore.KindValue, rank.Between(string(refs.RankBandOther), string(refs.RankBandOther+1)), true),
+	})
+	if _, err := database.Pool.Exec(ctx, `
+		insert into document_blocks (artifact_id, block_id, node_id, node_kind, node_address, type, text_sha256, excerpt,
+		                             changed_version, changed_at, parent_block_id)
+		values ($1::uuid, 'a1', $2, 'block', $2, 'ask', '', 'Which transport?', 1, now(), null),
+		       ($1::uuid, 'g1', $3, 'block', $3, 'reading', '', 'The agent reads it.', 1, now(), 'a1'),
+		       ($4::uuid, $5, $6, null, null, 'ask', '', 'Which shelf?', 1, now(), null),
+		       ($4::uuid, 'g2', $7, 'block', $7, 'reading', '', 'The agent reads it.', 1, now(), $5)
+	`, copied.artifactID, copyBlock, reading, long.artifactID, longID, long.refKey+"#"+longID, longReading); err != nil {
+		t.Fatalf("write the rows of the copies and their readings: %v", err)
+	}
+	honest := storeCensusOf(t, database)
+	requireTheCensusAgrees(t, "the census of readings in copies that name their asks", honest)
+	if parents := censusKind(t, honest, "reading_parent"); parents.Rows != 2 || parents.Nodes != 2 {
+		t.Fatalf("reading_parent read %d rows and %d tuples, want g1's and g2's, so its zero differences would prove nothing", parents.Rows, parents.Nodes)
+	}
+
+	// requireDiffers fails unless the census reads g1's row and g1's part_of to ask as differences
+	// of reading_parent and g1's row as one of the block kind, and refuses.
+	requireDiffers := func(what, ask string) {
+		t.Helper()
+		report := storeCensusOf(t, database)
+		parents := censusKind(t, report, "reading_parent")
+		if row := (Difference{Cause: "a row no tuple states", At: "reading " + reading + " part_of -> block " + copyBlock}); !slices.Contains(parents.ReportedRows, row) {
+			t.Errorf("%s: reading_parent reads the rows %+v, want %+v", what, parents.ReportedRows, row)
+		}
+		if tuple := (Difference{Cause: "a tuple no row projects", At: refs.BlockNodeKind + ":" + reading + " part_of -> ask:" + ask}); !slices.Contains(parents.ReportedNodes, tuple) {
+			t.Errorf("%s: reading_parent reads the tuples %+v, want %+v", what, parents.ReportedNodes, tuple)
+		}
+		blocks := censusKind(t, report, "block")
+		if !slices.ContainsFunc(blocks.ReportedRows, func(difference Difference) bool {
+			return difference.At == "block "+reading && strings.HasPrefix(difference.Cause, "the row and its node disagree")
+		}) {
+			t.Errorf("%s: the block kind reads the rows %+v, want g1's row and node apart", what, blocks.ReportedRows)
+		}
+		if !report.Refused() {
+			t.Errorf("%s: the census passes, want a refusal", what)
+		}
+	}
+	writeTestTuples(t, database, nil, []graphstore.Tuple{
+		tie(reading, graphstore.TuplePartOf, graphstore.KindAsk, asked["a1"], false),
+		tie(reading, graphstore.TuplePartOf, graphstore.KindAsk, asked["a2"], true),
+	})
+	requireDiffers("g1's part_of to the ask its parent does not copy", asked["a2"])
+
+	writeTestTuples(t, database, nil, []graphstore.Tuple{
+		tie(reading, graphstore.TuplePartOf, graphstore.KindAsk, asked["a2"], false),
+		tie(reading, graphstore.TuplePartOf, graphstore.KindAsk, asked["a1"], true),
+		tie(copyBlock, graphstore.TupleCopiedFrom, graphstore.KindAsk, asked["a1"], false),
+	})
+	requireDiffers("g1's part_of to a1 once its parent states no copied_from", asked["a1"])
+
+	if _, err := database.Pool.Exec(ctx, `insert into doc_settlements_pending (artifact_id) values ($1::uuid)`, copied.artifactID); err != nil {
+		t.Fatalf("leave the copy owing a settlement: %v", err)
+	}
+	requireTheCensusAgrees(t, "the census of a copy whose document owes the settlement that claims it", storeCensusOf(t, database))
 }
 
 // A decision's tie whose far end is past the store's bound is no relation of the store: its

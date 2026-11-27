@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -26,6 +25,7 @@ import (
 // no lock would read it live before the pass committed, and the pass would read the risk's tuples
 // before the append committed, so both would commit and the tuple would stand at a gone check.
 func TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding(t *testing.T) {
+	t.Parallel()
 	// Held unconverted: the seam marks the check gone by indexing the Verification document alone, the unconverted
 	// issue's pass; the guard is the writer's, so a converted issue's room pass is covered by the same code.
 	handler, database := newTestHandlerWithStore(t)
@@ -53,7 +53,7 @@ func TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding(t *testi
 	}
 	const kept = "A paragraph the next version keeps."
 	_, won, stated, _, err := refs.IndexBlocks(ctx, tx, rig.otherIssueDocumentID, refs.OneVersion(rig.otherIssueDocumentID, 2, time.Now().UTC()), kept+"\n",
-		[]model.ArtifactBlock{{ID: "kept", Type: "paragraph", From: 0, To: len(kept)}}, nil, nil, refs.TypedFacts{})
+		[]model.ArtifactBlock{{ID: "kept", Type: "paragraph", From: 0, To: len(kept)}}, nil, nil, "", refs.TypedFacts{})
 	if err != nil {
 		t.Fatalf("index version 2 of the check's document: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding(t *testi
 		}, "alice")
 	}()
 	var appended *httptest.ResponseRecorder
-	waitUntil(t, 30*time.Second, "the append to "+rig.otherIssueCheck+" waiting on the index pass, or answering", func() bool {
+	waitUntil(t, "the append to "+rig.otherIssueCheck+" waiting on the index pass, or answering", func() bool {
 		select {
 		case appended = <-answered:
 			return true
@@ -86,7 +86,7 @@ func TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding(t *testi
 		}
 		var waiting bool
 		if err := rig.database.Pool.QueryRow(ctx, `
-			select exists (select 1 from pg_stat_activity where $1::integer = any(pg_blocking_pids(pid)))
+			select exists (select 1 from pg_stat_activity where datname = current_database() and $1::integer = any(pg_blocking_pids(pid)))
 		`, int64(pass)).Scan(&waiting); err != nil {
 			t.Fatalf("read what waits on the index pass: %v", err)
 		}
@@ -117,6 +117,6 @@ func TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding(t *testi
 	// The route reads a check no current version holds as a far end that does not exist
 	// (pointerEnd, nodeNotFound), so the append that waited on the pass and then found its check
 	// gone is the 404 such a far end gets, naming the check by the address the append gave.
-	requireRefused(t, "the append to "+rig.otherIssueCheck+", a check the index pass marked gone", appended,
-		http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("no node %q under %s", rig.otherIssueCheck, rig.issue))
+	requireRefusedNaming(t, "the append to "+rig.otherIssueCheck+", a check the index pass marked gone", appended,
+		http.StatusNotFound, "NOT_FOUND", rig.otherIssueCheck, rig.issue)
 }

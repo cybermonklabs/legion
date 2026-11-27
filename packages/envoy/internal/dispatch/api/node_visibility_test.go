@@ -17,8 +17,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -97,7 +98,7 @@ func (f privateNodeFixture) sharedCommentPrefix() string {
 // The store's writer takes a node reserved for its author of no kind these reads answer - the
 // kinds cybermonklabs/legion#3178 registers, none of which every read binds the predicate of
 // (graphstore.ErrVisibilityNotAdmitted) - so the seed writes the rows such a write would store
-// straight into the store (graphstoretest.SeedAuthorOnly): the rule under test is the read, not
+// straight into the store (graphseedtest.SeedAuthorOnly): the rule under test is the read, not
 // the write that asks for it.
 //
 // The bound of a node-level predicate: the keyword `document` arm of search ranks a document's
@@ -590,6 +591,58 @@ type recordedRead struct {
 // nodes, the tuples and the edge view over them, which every visibility predicate reads too.
 var storeTableRead = regexp.MustCompile(`(?i)\b(?:from|join)\s+(?:graph_nodes|graph_tuples|graph_edges)\b`)
 
+// unrenderedVisibilityRules is how many tests of a `visibility` column a statement states that
+// neither of their two homes rendered. A node's visibility is refs' registry's, and each of its
+// predicates opens with refs.VisibilityMarker. A project's visibility is access's, and every
+// fragment access writes opens with access.Marker and its name: a clause, `coalesce(...)` up to the
+// parenthesis that closes it, wherever a read binds it, or a whole statement
+// (access.VisibleProjectsSQL, the one statement of access.Resolve) to its end. So every test
+// inside such a fragment is access's own. The registry's loaders also read a node's stored
+// visibility as a column, which tests nothing (refs.StoredNodeMarker). Any other `.visibility` is
+// a rule a read wrote for itself, and the census refuses it.
+func unrenderedVisibilityRules(sql string) int {
+	var outside strings.Builder
+	for rest := sql; ; {
+		at := strings.Index(rest, access.Marker)
+		if at < 0 {
+			outside.WriteString(rest)
+			break
+		}
+		outside.WriteString(rest[:at])
+		rest = rest[at+len(accessFragment(rest[at:])):]
+	}
+	text := outside.String()
+	return strings.Count(text, ".visibility") - strings.Count(text, refs.StoredNodeMarker) -
+		strings.Count(text, refs.VisibilityMarker)
+}
+
+// accessFragment is the fragment of access's that sql opens with access.Marker: its comment and,
+// for a clause, the `coalesce(` it wraps its rule in up to the parenthesis that closes it, the
+// clauses it holds included; a fragment that is no clause runs to the statement's end.
+func accessFragment(sql string) string {
+	end := strings.Index(sql, " */ ")
+	if end < 0 {
+		return sql
+	}
+	body := end + len(" */ ")
+	if !strings.HasPrefix(sql[body:], "coalesce(") {
+		return sql
+	}
+	depth := 0
+	for i := body; i < len(sql); i++ {
+		switch sql[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return sql[:i+1]
+			}
+		}
+	}
+	return sql
+}
+
 // requirePredicatesInSQL holds every read the second person made to the predicate sitting in its
 // SQL, statement by statement:
 //
@@ -599,10 +652,11 @@ var storeTableRead = regexp.MustCompile(`(?i)\b(?:from|join)\s+(?:graph_nodes|gr
 //   - each statement that reads the store's own tables binds the predicate at least once, so a
 //     statement that stopped binding it fails here, whatever else the read binds; a count of
 //     the markers against the rules a statement states would pass such a statement at 0 == 0;
-//   - every visibility rule a statement states is one the registry rendered
-//     (refs.VisibilityMarker opens each of them), so no read carries a copy of the rule; the
-//     column a loader selects to answer a node's stored state and visibility reads
-//     `visibility` too and tests nothing, and refs.StoredNodeMarker opens each such read.
+//   - every visibility rule a statement states is one its home rendered: a node's rule the
+//     registry's (refs.VisibilityMarker opens each), a project's rule access's (access.Marker
+//     opens each of its fragments), so no read carries a copy of either rule; the column a
+//     loader selects to answer a node's stored state and visibility reads `visibility` too and
+//     tests nothing, and refs.StoredNodeMarker opens each such read (unrenderedVisibilityRules).
 func requirePredicatesInSQL(t *testing.T, reads []recordedRead) {
 	t.Helper()
 	if len(reads) == 0 {
@@ -623,9 +677,9 @@ func requirePredicatesInSQL(t *testing.T, reads []recordedRead) {
 				t.Errorf("%s reads the store's tables in a statement that binds no predicate of the registry's:\n%s",
 					read.name, statement.SQL)
 			}
-			if rules := strings.Count(statement.SQL, ".visibility") - strings.Count(statement.SQL, refs.StoredNodeMarker); markers != rules {
-				t.Errorf("%s states %d visibility rule and the registry rendered %d of them:\n%s",
-					read.name, rules, markers, statement.SQL)
+			if rules := unrenderedVisibilityRules(statement.SQL); rules != 0 {
+				t.Errorf("%s states %d visibility rule that neither the registry nor access rendered:\n%s",
+					read.name, rules, statement.SQL)
 			}
 		}
 		if bound == 0 {
@@ -843,11 +897,10 @@ func privateNodePeer(held, absent privateNodeFixture, id string) string {
 }
 
 // dispatchReferences reads one address through GET /api/v1/references, the route a
-// `dispatch://` address is read by.
+// `dispatch://` address is read by: the edges into it (referencesAt's `to`).
 func dispatchReferences(t *testing.T, handler http.Handler, reference, login string) *httptest.ResponseRecorder {
 	t.Helper()
-	return dispatchRequest(t, handler, http.MethodGet,
-		"/api/v1/references?to="+url.QueryEscape(reference), nil, login)
+	return referencesAt(t, handler, "to", reference, login)
 }
 
 // seedPrivateNode builds the fixture, with the private nodes or without them ever having been
@@ -909,8 +962,9 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 		})
 		markdown.WriteString(passage)
 	}
-	// The windows of those blocks, written by the one writer of a document's windows, and
-	// embedded near the query: the private block's window is the meaning body's candidate.
+	// The windows of those blocks, written by the one writer of a document's windows under the
+	// owner key it reads, the room's tree artifact (documentWindowOwner), and embedded near the
+	// query: the private block's window is the meaning body's candidate.
 	windows, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the document's windows: %v", err)
@@ -922,7 +976,7 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 	if err := windows.Commit(ctx); err != nil {
 		t.Fatalf("commit the document's windows: %v", err)
 	}
-	embedWindowsAs(t, database, embedder, "document_block", fixture.specID, angledVector(0.9, 2))
+	embedWindowsAs(t, database, embedder, "document_block", documentWindowOwner(t, database, fixture.specID), angledVector(0.9, 2))
 	processAllPending(t, database, embedder)
 	if !private {
 		return fixture
@@ -958,7 +1012,7 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 	// The nodes themselves, reserved for their author. The store's writer takes a node reserved
 	// for its author of no kind these reads answer (graphstore.ErrVisibilityNotAdmitted), so the
 	// rows a route that asked for `author` would store are seeded straight into the store
-	// (graphstoretest.SeedAuthorOnly).
+	// (graphseedtest.SeedAuthorOnly).
 	author := privateNodeAuthor()
 	// The private comment's id starts as the public comment's does (sharedCommentPrefix), so the
 	// two comments carry that short id, and goes on as a uuid drawn for it.
@@ -973,7 +1027,7 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 		t.Fatalf("begin the private nodes' write: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if err := graphstoretest.SeedAuthorOnly(ctx, tx, graphstore.Node{
+	if err := graphseedtest.SeedAuthorOnly(ctx, tx, graphstore.Node{
 		Kind: "block", ID: fixture.private, Supertag: "block", State: graphstore.StateLive,
 		MadeAt: at, MadeBy: author, SourceEvent: graphstore.NoEvent,
 	}, graphstore.Node{
@@ -1010,7 +1064,7 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 // block. The spec, its three paragraphs and their nodes are written by the issue's create and
 // indexed in its room. The store's writers take no block reserved for its author
 // (graphstore.ErrVisibilityNotAdmitted), so the node of the paragraph holding the query's words
-// is reserved for its author, alice, as such a write would store it (graphstoretest.SeedAuthorOnly).
+// is reserved for its author, alice, as such a write would store it (graphseedtest.SeedAuthorOnly).
 // Alice's hit names that paragraph; bob's names another of the window.
 //
 // The control is the predicate read at the spec's own address, which names no node of the store:
@@ -1036,7 +1090,7 @@ func TestMeaningSearchNamesNoBlockOfAnIssueRoomItsReaderMayNotSee(t *testing.T) 
 		t.Fatalf("begin the reservation of the paragraph's node: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if err := graphstoretest.SeedAuthorOnly(ctx, tx, graphstore.Node{
+	if err := graphseedtest.SeedAuthorOnly(ctx, tx, graphstore.Node{
 		Kind: refs.BlockNodeKind, ID: spec.address(private), Supertag: refs.BlockNodeKind, State: graphstore.StateLive,
 		MadeAt: time.Now().UTC(), MadeBy: privateNodeAuthor(), SourceEvent: graphstore.NoEvent,
 	}); err != nil {
@@ -1046,10 +1100,13 @@ func TestMeaningSearchNamesNoBlockOfAnIssueRoomItsReaderMayNotSee(t *testing.T) 
 		t.Fatalf("commit the reservation of the paragraph's node: %v", err)
 	}
 	windowOwedOwners(t, deps)
-	if windows := windowTexts(t, database, "document_block", issue.PrimaryArtifactID); len(windows) != 1 {
+	// The room's tree artifact keys the spec's windows (documentWindowOwner), and the spec is the
+	// one document of the room holding a block, so every window under the tree is its.
+	owner := documentWindowOwner(t, database, issue.PrimaryArtifactID)
+	if windows := windowTexts(t, database, "document_block", owner); len(windows) != 1 {
 		t.Fatalf("the spec's windows = %v, want one window over its three paragraphs", windows)
 	}
-	embedWindowsAs(t, database, embedder, "document_block", issue.PrimaryArtifactID, angledVector(0.9, 2))
+	embedWindowsAs(t, database, embedder, "document_block", owner, angledVector(0.9, 2))
 	processAllPending(t, database, embedder)
 
 	hitOf := func(login string) string {
@@ -1070,5 +1127,35 @@ func TestMeaningSearchNamesNoBlockOfAnIssueRoomItsReaderMayNotSee(t *testing.T) 
 	if named := hitOf(privateNodeReader().ID); named == "" || named == private {
 		t.Fatalf("the second person's hit names block %q, want another paragraph of the window than %q, which he may not see",
 			named, private)
+	}
+}
+
+// TestTheCensusTakesAccessAsTheHomeOfAProjectRule holds the census's two homes of a visibility
+// test: a fragment access renders, opened by access.Marker - a whole statement, or a clause a read
+// binds beside a registry predicate - states access's own project rule and passes; a `.visibility`
+// test a statement writes for itself fails, beside an access clause or a registry predicate as
+// much as alone.
+func TestTheCensusTakesAccessAsTheHomeOfAProjectRule(t *testing.T) {
+	adHoc := "select p.key from projects p where p.visibility = 'public'"
+	for _, c := range []struct {
+		name string
+		sql  string
+		want int
+	}{
+		{"access's whole statement (access.Resolve)", access.VisibleProjectsSQL(), 0},
+		{"a registry predicate", "select 1 where " + refs.VisibleKind(graphstore.KindIssue, "i.key", "$1"), 0},
+		{"an unmarked test", adHoc, 1},
+		{"an unmarked test beside an access clause", adHoc + " and " + access.IssueProjectClause("p.key", "$2"), 1},
+		// HiddenPrivateProjectClause tests `hiding.visibility` inside its own fragment: access's rule,
+		// bound in a read beside a registry predicate, as a read of a private project binds it.
+		{"an access clause that tests visibility, bound in a read", "select 1 where " +
+			refs.VisibleKind(graphstore.KindIssue, "i.key", "$1") + " and not " + access.HiddenPrivateProjectClause("i.project", "$2"), 0},
+		{"an unmarked test beside an access clause that tests visibility", adHoc + " and not " +
+			access.HiddenPrivateProjectClause("p.key", "$2"), 1},
+		{"an unmarked test beside a registry predicate", adHoc + " and " + refs.VisibleKind(graphstore.KindIssue, "p.key", "$1"), 1},
+	} {
+		if got := unrenderedVisibilityRules(c.sql); got != c.want {
+			t.Errorf("%s: the census counts %d rule no home rendered, want %d:\n%s", c.name, got, c.want, c.sql)
+		}
 	}
 }

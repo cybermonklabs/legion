@@ -18,7 +18,15 @@
  *  and, in the same file, not PASS where one crosses the rule the row reads. */
 
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -111,6 +119,10 @@ interface CodexScenario {
   /** The installed plugin has no dist/dispatch.js, or its whoami answers otherwise (C7). */
   readonly noEntry?: boolean;
   readonly terminal?: "config" | "other";
+  /** The entry's whoami names the project as a release since a token naming a project writes
+   *  other projects says it, "Its token names project <P>.", not as a release before it, "It may
+   *  write project <P> and no other." (C7). */
+  readonly tokenNames?: boolean;
   /** The stand-in model answers /_ready with another word than the leg's nonce, as another run's
    *  stand-in on the port would. */
   readonly modelSquat?: boolean;
@@ -127,12 +139,22 @@ interface CodexScenario {
   /** OUTSIDE_CODEX_START_SECONDS (default 30): how long each start may hold before its turn. */
   readonly startSeconds?: number;
   /** The first-run menus draw each move late, 2.5 s after the keys, as a slow machine's Codex can:
-   *  a key sent before the last move is drawn is one move more. */
+   *  a key sent before the last move is drawn is one move more. A move comes sooner than that
+   *  once the leg has looked at the pane three times since, seeing the old one each time. */
   readonly slowScreens?: boolean;
-  /** Each run's model log holds an `end` line right after its tools, and its turn goes on 3 s
-   *  later, as the stand-in model logged one for the request Codex 0.171.0 sends 107 ms into an
-   *  interactive turn (it offers apply_patch alone) before that request was ignored. */
+  /** Each run's model log holds an `end` line right after its tools, and its turn goes on once the
+   *  leg has looked at the pane twice since, at most 3 s later, as the stand-in model logged one
+   *  for the request Codex 0.171.0 sends 107 ms into an interactive turn (it offers apply_patch
+   *  alone) before that request was ignored. A leg that took `end` for the turn's end would stop
+   *  Codex at its first read of the model log after it. */
   readonly endBeforeTurn?: boolean;
+  /** The session record of each run comes late: 0.5 s after the turn's first request, before its
+   *  next (`before-next`), as a hook slower than that request would file it; or only as the leg
+   *  stops that run's Codex (`at-stop`), on the TERM the stand-in tmux's `kill-server` sends, which
+   *  comes after the turn's next request, once the leg has read that no record comes. */
+  readonly recordLate?: "before-next" | "at-stop";
+  /** The leg's PATH holds no `ln`, so it can link none of the programs it found. */
+  readonly withoutLn?: boolean;
 }
 
 /** Where the real provenance helper is: the stand-in imports its tree comparison. */
@@ -159,7 +181,8 @@ if (scenario.terminal === "config") {
   process.exit(2);
 }
 const owner = scenario.terminal === "other" ? "someone@example.com" : ${JSON.stringify(person)};
-console.log("Session " + process.env.CODEX_THREAD_ID + " acts for " + owner + ": issues you create without an assignee are assigned to " + owner + ". It may write project EXAMPLE and no other.");
+const named = scenario.tokenNames ? " Its token names project EXAMPLE." : " It may write project EXAMPLE and no other.";
+console.log("Session " + process.env.CODEX_THREAD_ID + " acts for " + owner + ": issues you create without an assignee are assigned to " + owner + "." + named);
 `;
 }
 
@@ -171,7 +194,7 @@ console.log("Session " + process.env.CODEX_THREAD_ID + " acts for " + owner + ":
  *  turn); the new model lists no plugin tool. It answers no `exec`. */
 function standInCodex(state: string): string {
   return `#!/usr/bin/env bun
-import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const state = ${JSON.stringify(state)};
 const scenario = JSON.parse(readFileSync(join(state, "scenario.json"), "utf8"));
@@ -239,10 +262,20 @@ const menu = async (title, options) => {
       if (key === "Up") chosen = Math.max(chosen - 1, 0);
       if (key === "Enter") return options[chosen];
     }
-    await Bun.sleep(pause);
+    await (scenario.slowScreens ? looked(3, pause) : Bun.sleep(pause));
   }
 };
 const forever = () => new Promise(() => {});
+// The leg's looks at the pane, which the stand-in tmux counts. looked(n, ms): once the leg has
+// looked n times since, or ms have passed. finish_run reads the model log before each of its looks,
+// so there two looks past a line hold a read of the log after it; drive looks twice in each loop,
+// its own look and answer_screen's, after one read of the log, so there two looks can hold none.
+const looks = () => (existsSync(join(pane, "looks")) ? statSync(join(pane, "looks")).size : 0);
+const looked = async (n, ms) => {
+  const from = looks();
+  const latest = Date.now() + ms;
+  while (looks() < from + n && Date.now() < latest) await Bun.sleep(25);
+};
 if (scenario.unexpectedScreen) {
   show(["Do you trust the files in this folder?", "", "› 1. Yes, continue", "  2. No, quit"]);
   await forever();
@@ -280,12 +313,14 @@ const log = (line) => appendFileSync(logFile, JSON.stringify({ run, ...line }) +
 const configured = existsSync(config) ? readFileSync(config, "utf8") : "";
 const plugin = configured.includes('[plugins."codex-envoy@outside-e2e"]') && configured.includes("model_provider = ");
 // The SessionStart hook records the session at the first prompt, whatever model then runs.
-if (plugin && hooksRun) {
+const fileRecord = () => {
   const records = join(home, "plugins", "data", "codex-envoy-outside-e2e", "codex-sessions");
   mkdirSync(records, { recursive: true });
   writeFileSync(join(records, process.pid + ".json"), JSON.stringify({ session_id: session }));
   if (scenario.registers !== false) appendFileSync(join(state, "sessions"), session + "\\n");
-}
+};
+const records = plugin && hooksRun;
+if (records && scenario.recordLate === undefined) fileRecord();
 if (newModel || !plugin) {
   log({ step: "tools", dispatch: "", send: "" });
   log({ step: "end" });
@@ -293,9 +328,15 @@ if (newModel || !plugin) {
 }
 const until = async (file) => { while (!existsSync(join(state, file))) await Bun.sleep(25); };
 log({ step: "tools", dispatch: "mcp__envoy.dispatch", send: "mcp__envoy.envoy_send" });
+// A record late by 0.5 s of the turn's first request: a time on purpose, since the scenario is a
+// hook slower than that request, and no line of the leg's marks the moment it reads the records.
+if (records && scenario.recordLate === "before-next") {
+  await Bun.sleep(500);
+  fileRecord();
+}
 if (scenario.endBeforeTurn) {
   log({ step: "end" });
-  await Bun.sleep(3000);
+  await looked(2, 3000);
 }
 const wanted = (scenario.whoami ?? {})[run] ?? (run === "inside" ? { exit: 2 } : { exit: 0 });
 log({
@@ -307,6 +348,14 @@ log({
   elsewhere: "",
   ...(wanted.exit === 0 ? {} : { detail: wanted.detail ?? "dispatch: Dispatch did not answer [exit " + wanted.exit + "]" }),
 });
+// A record filed only as the leg stops this Codex, on the TERM of the stand-in tmux's kill-server:
+// the leg stops it only after it has read that no record comes, so no clock decides what it reads.
+if (records && scenario.recordLate === "at-stop") {
+  process.on("SIGTERM", () => {
+    fileRecord();
+    process.exit(143);
+  });
+}
 if (run === "main") {
   if (scenario.registers === false) await forever();
   if (plan.issue !== "") {
@@ -317,7 +366,7 @@ if (run === "main") {
   // sleeps until the leg stops it.
   if (!hooksRun) await forever();
   await until("send-attempted");
-  if (scenario.endBeforeTurn) await Bun.sleep(3000);
+  if (scenario.endBeforeTurn) await looked(2, 3000);
   // The PostToolUse hook puts what reached the session into the turn: only a trusted hook runs.
   if (existsSync(join(state, "control"))) log({ step: "control", at: Date.now() });
   if (existsSync(join(state, "inbound"))) {
@@ -350,9 +399,10 @@ await forever();
 }
 
 /** The stand-in `tmux`: a pane is a directory beside the socket path, holding the pid of the
- *  command it runs, the screen that command last showed and the keys it was sent. As tmux does, the
- *  server makes its socket as it starts and leaves it when `kill-server` stops it; a stopped
- *  server's pane names no process, so no later command signals a pid the system has reused. */
+ *  command it runs, the screen that command last showed, the keys it was sent and a byte for each
+ *  look at it (`looks`). As tmux does, the server makes its socket as it starts and leaves it when
+ *  `kill-server` stops it; a stopped server's pane names no process, so no later command signals
+ *  a pid the system has reused. */
 function standInTmux(): string {
   return `#!/usr/bin/env bash
 sock=''
@@ -374,7 +424,7 @@ case $command in
     (cd "$cwd" && STANDIN_PANE="$pane" exec "$@") </dev/null >"$pane/out" 2>&1 &
     echo "$!" >"$pane/pid"
     ;;
-  capture-pane) cat "$pane/screen" 2>/dev/null ;;
+  capture-pane) printf . >>"$pane/looks"; cat "$pane/screen" 2>/dev/null ;;
   send-keys) shift 2; for key in "$@"; do printf '%s\\n' "$key" >>"$pane/keys"; done ;;
   has-session) kill -0 "$(cat "$pane/pid" 2>/dev/null)" 2>/dev/null ;;
   display-message) cat "$pane/pid" 2>/dev/null ;;
@@ -547,6 +597,7 @@ else {
   );
   const bin = textToolPath(scratch, ["bun", "git", "tar", "gzip"]);
   script(join(bin, "tmux"), standInTmux());
+  if (scenario.withoutLn === true) rmSync(join(bin, "ln"), { force: true });
   const codex = script(join(state, "codex"), standInCodex(state));
   // npm: installs the stand-in codex for \`npm install --prefix <dir> @openai/codex@<v>\`, recording
   // the integrity of the two packages as npm does in its hidden lockfile, takes the release for the
@@ -736,6 +787,9 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
       expect(rows.get("C4")?.got).toContain("example-peer-foreign answered 404");
       expect(rows.get("C5")?.got).toContain("read it from codex-thread-main");
       expect(rows.get("C6")?.got).toContain("ENVOY_URL at http://127.0.0.1:1, which refused");
+      // C7 read "It may write project EXAMPLE and no other.", as a release before a token naming a
+      // project wrote other projects says it.
+      expect(rows.get("C7")?.got).toContain(`acts for ${person}, its token names project EXAMPLE`);
       // C7 ran the installed copy's entry as a terminal would: the host codex, a session of its
       // own, P2's HOME and the device login.
       const terminal = JSON.parse(readFileSync(join(run.state, "terminal.json"), "utf8"));
@@ -782,6 +836,19 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
     row: rowsOf(run.stdout).get(name),
     stdout: run.stdout,
   });
+
+  test(
+    "C7 passes where the installed entry's whoami says its token names the project, as a release since a token naming a project writes other projects says it",
+    async () => {
+      const run = await codexStandInRun({ tokenNames: true });
+      expect(rowOf(run, "C7")).toMatchObject({ row: { verdict: "PASS" } });
+      expect(rowOf(run, "C7").row?.got).toContain(
+        `acts for ${person}, its token names project EXAMPLE`
+      );
+    },
+    // The run, a bounded child under the Codex run's bound.
+    rowLimit("codexRun")
+  );
 
   test(
     "C2 reads UNKNOWN where its control did not fail, and C4 fails where a message to a session of another project reached the session",
@@ -990,6 +1057,32 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
     rowLimit({ atOnce: ["codexRun", "codexRun", "codexRun", "codexRun", "codexRun"] })
   );
 
+  // The leg links, at its start, the real program behind each tool that Codex and the children it
+  // starts run under the leg's PATH. A program it found and could not link leaves them to whatever
+  // PATH holds, so the leg runs nothing and every row reads UNKNOWN naming the program and the
+  // reason. The control that nothing ran: the stand-in npm, which records every call, was never
+  // called.
+  test(
+    "a Codex leg that cannot link a program it found runs nothing: every row reads UNKNOWN naming it",
+    async () => {
+      const run = await codexStandInRun({ withoutLn: true });
+      expect({ problems: unknownProblems(run), stdout: run.stdout }).toEqual({
+        problems: [],
+        stdout: run.stdout,
+      });
+      const rows = rowsOf(run.stdout);
+      for (const name of codexRows) {
+        const got = rows.get(name)?.got ?? "";
+        for (const part of ["bun (", "was not linked into", "command not found"]) {
+          expect({ name, got }).toEqual({ name, got: expect.stringContaining(part) });
+        }
+      }
+      expect(existsSync(join(run.state, "npm-args"))).toBe(false);
+    },
+    // The run, a bounded child under the Codex run's bound.
+    rowLimit("codexRun")
+  );
+
   test(
     "answering the first start otherwise than the outside person is told to fails the rows it breaks: hooks left untrusted, C1, C4 and C5; the new model, C2 and C3",
     async () => {
@@ -1050,6 +1143,35 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
     },
     // The run, a bounded child under the Codex run's bound.
     rowLimit("codexRun")
+  );
+
+  test(
+    "the wait for a session record ends at the turn's next request: a record filed before it is read, one filed after it is none",
+    async () => {
+      const [inTime, late] = await Promise.all([
+        codexStandInRun({ recordLate: "before-next" }),
+        codexStandInRun({ recordLate: "at-stop" }),
+      ]);
+      // The control: a record 0.5 s after the turn's first request is still read, and every row
+      // passes, so the wait does not end at that first request.
+      expect({ verdicts: verdictsOf(inTime.stdout), stdout: inTime.stdout }).toMatchObject({
+        verdicts: Object.fromEntries(codexRows.map((name) => [name, "PASS"])),
+      });
+      // A record filed only as the leg stops Codex, after the turn's next request, is read as
+      // none, by name, in C1: the name says the wait ended at that request, where a wait that ran
+      // on to its bound names the bound. C6, read only once C2 named the session, reads UNKNOWN
+      // with it.
+      expect({ C1: rowOf(late, "C1").row, C6: rowOf(late, "C6").row }).toMatchObject({
+        C1: { verdict: "UNKNOWN" },
+        C6: { verdict: "UNKNOWN" },
+      });
+      expect(rowOf(late, "C1").row?.got).toContain(
+        "Codex filed no session record by its turn's next request"
+      );
+      expect(late.code).not.toBe(0);
+    },
+    // The two runs at once, each a bounded child under the Codex run's bound.
+    rowLimit({ atOnce: ["codexRun", "codexRun"] })
   );
 
   test(
@@ -1405,9 +1527,9 @@ describe("the Codex leg's provenance reads", () => {
 
 describe.skipIf(skipWithout("bash"))("the leg's waits, on a clock only `sleep` moves", () => {
   /** The leg's own `screen_text`, `answer_screen` and `drive`, cut from the leg as they stand, run
-   *  in bash on a clock that only `sleep` moves: `pane` and `tools` are bash commands that read
-   *  `$clock`, the pane's text and the stand-in model's tools line at that moment. Answers the
-   *  call's status and its `drive_problem`. */
+   *  in bash on a clock that only `sleep` and `pause` (a tenth of a second) move: `pane` and `tools`
+   *  are bash commands that read `$clock`, the whole seconds passed, the pane's text and the stand-in
+   *  model's tools line at that moment. Answers the call's status and its `drive_problem`. */
   const onFakeClock = async (call: string, pane: string, tools = ":") => {
     const file = join(scratch("fake-clock"), "harness.sh");
     writeFileSync(
@@ -1420,9 +1542,11 @@ for name in screen_text answer_screen drive; do
   [ -n "$body" ] || { echo "the leg holds no $name"; exit 3; }
   eval "$body"
 done
+tenths=0
 clock=0
 now() { printf '%s\\n' "$clock"; }
-sleep() { clock=$((clock + $1)); }
+sleep() { tenths=$((tenths + $1 * 10)); clock=$((tenths / 10)); }
+pause() { tenths=$((tenths + 1)); clock=$((tenths / 10)); }
 codex_pane() { ${pane}; }
 logged() { ${tools}; }
 codex_alive() { return 0; }
@@ -1718,5 +1842,18 @@ describe("the Codex leg's stand-in model, on the requests Codex sends it", () =>
         `Session s-2 acts for ${person}: issues. Your credential names session s-9, which is not this host session (s-2): Dispatch records every write you make as s-9. It may write project EXAMPLE and no other.\n[exit 0]`
       )
     ).toMatchObject({ session: "s-2", elsewhere: "s-9" });
+  });
+
+  test("it reads the project from either sentence whoami names it with, before and since a token naming a project writes other projects", () => {
+    const acting = `Session th-1 acts for ${person}: issues you create without an assignee are assigned to ${person}.`;
+    for (const named of [
+      " It may write project EXAMPLE and no other.",
+      " Its token names project EXAMPLE.",
+    ]) {
+      expect({ named, line: whoamiOf(`${acting}${named}\n[exit 0]`) }).toEqual({
+        named,
+        line: { exit: 0, session: "th-1", owner: person, project: "EXAMPLE", elsewhere: "" },
+      });
+    }
   });
 });

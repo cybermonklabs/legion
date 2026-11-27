@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,6 +85,39 @@ func TestAReadingInAnAskWithNoAnswerIsRefused(t *testing.T) {
 	answerBlockAs(t, service, artifactID, "ship", "alice", []string{"Ship"})
 	if _, err := joinedReplaceText(service, artifactID, shipAskWithReading("ship"), actor); err != nil {
 		t.Fatalf("a new version holding a reading in the answered ask = %v, want it taken", err)
+	}
+}
+
+// An ask whose row names no node - one a process of the release before wrote, until the boot
+// step marks it, or one whose relations are past the store's bound - holds its answer on its row
+// alone (asks.Settle), and a reading's check reads it there as every read of an answer does
+// (asks.NodeStateOf): a reading in such an ask is taken once a person answers it, though the ask's
+// node states no answer.
+func TestAReadingInAnAnsweredAskWhoseRowNamesNoNodeIsTaken(t *testing.T) {
+	t.Parallel()
+	service, artifactID := seedIndexedShipAsk(t, "ship")
+	ctx := context.Background()
+	if tag, err := service.store.Pool.Exec(ctx, `
+		update asks set node_kind = null, node_address = null where block_artifact_id = $1 and block_id = 'ship'
+	`, artifactID); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("leave the ask's row naming no node: %v", err)
+	}
+	answerBlockAs(t, service, artifactID, "ship", "alice", []string{"Ship"})
+	var state string
+	var stated bool
+	if err := service.store.Pool.QueryRow(ctx, `
+		select k.state, exists (
+			select 1 from graph_tuples t
+			where t.from_kind = $2 and t.from_id = k.id::text and t.kind = $3 and t.to_id = $4 and t.asserted)
+		from asks k where k.block_artifact_id = $1 and k.block_id = 'ship'
+	`, artifactID, graphstore.KindAsk, graphstore.TupleAnswerState, asks.StateAnswered).Scan(&state, &stated); err != nil ||
+		state != asks.StateAnswered || stated {
+		t.Fatalf("the ask's row reads %q and its node states it answered %t (%v), want the answer on the row alone", state, stated, err)
+	}
+
+	actor := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
+	if _, err := joinedReplaceText(service, artifactID, shipAskWithReading("ship"), actor); err != nil {
+		t.Fatalf("a new version holding a reading in the answered ask whose row names no node = %v, want it taken", err)
 	}
 }
 
@@ -171,6 +205,80 @@ func requireNoBlockInvalid(t *testing.T, service *Service, what string) {
 	}
 	if len(reasons) > 0 {
 		t.Errorf("after %s the settlements wrote block.invalid %q, want none", what, reasons)
+	}
+}
+
+// A copy that keeps its reading after its source is reopened or resolved holds a reading in an ask
+// that holds no answer, so settlement flags its block (flagReadingsWithoutAnswers), and it is
+// still a copy of its source (R3, R10): the block keeps what a version keeps of the source - its
+// copied_from and copied_from_document whatever the source's state, and the source's state where
+// that is not open (keptAskState) - and its block node keeps its copied_from tuple (claimCopies).
+// So the release before's request-approval still names the ask and the document where a person
+// answers it, and a `#id` of the copy still resolves to its source.
+func TestACopyFlaggedForItsReadingStaysACopyOfItsSource(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		// state is the state the copy's block shows once its source changed, "" for none.
+		state  string
+		change func(t *testing.T, service *Service, original, source string)
+	}{
+		{"its source reopened", "", func(t *testing.T, service *Service, original, _ string) {
+			reopenBlockAsk(t, service, original)
+		}},
+		// The asks table holds a resolved row to no answer (asks_answer_state_check), so the
+		// source's answer is taken back before the person declines it.
+		{"its source declined", asks.StateResolved, func(t *testing.T, service *Service, original, source string) {
+			reopenBlockAsk(t, service, original)
+			resolveAskOnItsNode(t, service, source, model.AskResolution{Kind: model.AskResolutionDeclined, Reason: "Not now.", Actor: model.Actor{Kind: "user", ID: "alice"}, At: time.Now().UTC()})
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service, original := seedIndexedShipAsk(t, "ship")
+			answerBlockAsk(t, service, original)
+			source := blockAskOn(t, service, original, "ship")
+			copied := createIssueDocument(t, service.store, 1, "# Copy")
+			seedServiceText(t, service, copied, "Record\n\n"+shipAsk("ship"))
+			settleCurrentGeneration(t, service, copied)
+			editLiveTree(t, service, copied, appendToAsk(readingNode()))
+			settleCurrentGeneration(t, service, copied)
+			requireCopyKeptWithReading(t, service, copied, source.ID, "the copy before its source changed")
+
+			test.change(t, service, original, source.ID)
+			editLiveTree(t, service, copied, replaceRun("Record", "Record again"))
+			settleCurrentGeneration(t, service, copied)
+
+			ask := firstAsk(liveTree(t, service, copied))
+			if reason, flagged := ask.Attrs["invalid"].(string); !flagged || reason == "" {
+				t.Fatalf("the copy's block holds invalid=%v, want it flagged for its reading, whose ask holds no answer", ask.Attrs["invalid"])
+			}
+			want := map[string]any{"copied_from": source.ID, "copied_from_document": documentAddress(t, service, original)}
+			if test.state != "" {
+				want["state"] = test.state
+			}
+			for _, name := range storedAskAttributes() {
+				if got, held := ask.Attrs[name]; got != want[name] || held != (want[name] != nil) {
+					t.Errorf("the flagged copy's block holds %s=%v (held %v), want %v: what a version keeps of its source", name, got, held, want[name])
+				}
+			}
+			if opener := askOpeningLine(latestVersionMarkdown(t, service, copied), "ship"); !strings.Contains(opener, copiedFrom(t, service, source.ID, original)) {
+				t.Errorf("the copy's latest version opens its block with %q, want it naming its source, %s", opener, copiedFrom(t, service, source.ID, original))
+			}
+
+			ctx := context.Background()
+			var kind, address string
+			if err := service.store.Pool.QueryRow(ctx, `
+				select node_kind, node_address from document_blocks where artifact_id = $1 and block_id = 'ship'
+			`, copied).Scan(&kind, &address); err != nil {
+				t.Fatalf("read the copy's block node: %v", err)
+			}
+			tuples, err := graphstore.CurrentOut(ctx, service.store.Pool, kind, address, []string{graphstore.TupleCopiedFrom})
+			if err != nil {
+				t.Fatalf("read the copy's copied_from: %v", err)
+			}
+			if len(tuples) != 1 || tuples[0].ToKind != graphstore.KindAsk || tuples[0].ToID != source.ID {
+				t.Fatalf("the flagged copy's block node holds the copied_from tuples %+v, want one to its source, ask %s", tuples, source.ID)
+			}
+		})
 	}
 }
 

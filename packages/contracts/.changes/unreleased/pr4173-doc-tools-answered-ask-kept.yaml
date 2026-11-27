@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    The `dispatch_doc_edit` description says an answered ask block stays in its document: only a resolved one may be removed, and an agent's removal or retype of an answered one is refused `409 ANSWERED_ASK_KEPT`. The `dispatch_doc_read` description says a live read prints `Resolved <block id>` for each resolved ask block beside the `Answered` line of each answered one, each block id quoted as JSON.
+time: 2026-11-26T02:34:47.000000000Z
+custom:
+    Issue: pr4173

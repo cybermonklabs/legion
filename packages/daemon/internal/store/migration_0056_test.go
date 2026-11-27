@@ -12,6 +12,7 @@ import (
 // sequence (kept when the ask reopens, and absent from a closed row whose close has not arrived),
 // and an open row only with the sequence that opened it. A claim needs no issue row of its own.
 func TestTheAskAndClaimMirrorsArriveWith0056(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 55)

@@ -19,11 +19,11 @@ import (
 
 // TestEveryCreateStoresItsNode holds every write route to leaving no row of a project-owned kind
 // without its node in the project, or between the parties, the row belongs to
-// (the node a read limited to a project depends on). It calls every POST row of writeClasses -
-// read from the table, so the set is the server's own - on a server seeded with one object of
-// each kind, settles every document the calls left owing a settlement, then asks
-// graphcensus.ProjectComplete, the census's completeness read, which names any row left without
-// a node, with no project, or with another than its row's.
+// (the node a read limited to a project depends on). It calls every POST route whose declaration
+// states a write class (routeDecl.WriteClass) - read from the registry, so the set is the
+// server's own - on a server seeded with one object of each kind, settles every document the
+// calls left owing a settlement, then asks graphcensus.ProjectComplete, the census's completeness
+// read, which names any row left without a node, with no project, or with another than its row's.
 //
 // A POST row needs a request the route takes. postCalls holds one for every row. A route that can
 // create an issue, a document, an ask or a message gets a body that makes one, which the test
@@ -43,25 +43,26 @@ import (
 // node write skipped (docs/ask_blocks.go createAskBlock): either way the test fails, naming the
 // ask the create left without a node.
 func TestEveryCreateStoresItsNode(t *testing.T) {
+	t.Parallel()
 	rig := newStoreWriterRig(t)
 	ctx := context.Background()
 	fixture := seedEveryKind(t, rig)
 
 	var posts []string
-	for name := range writeClasses {
-		if strings.HasPrefix(name, http.MethodPost+" ") {
-			posts = append(posts, name)
+	for _, route := range routeRegistry {
+		if route.Method == http.MethodPost && route.WriteClass != "" {
+			posts = append(posts, route.Method+" "+route.Pattern)
 		}
 	}
 	slices.Sort(posts)
 	if len(posts) == 0 {
-		t.Fatal("writeClasses holds no POST row, so the test calls nothing")
+		t.Fatal("no POST route declares a write class, so the test calls nothing")
 	}
 	var blocks []string
 	for _, name := range posts {
 		call, listed := postCalls[name]
 		if !listed {
-			t.Errorf("%s is a POST row of writeClasses that postCalls holds no request for: write down how to call it", name)
+			t.Errorf("%s is a POST route with a write class that postCalls holds no request for: write down how to call it", name)
 			continue
 		}
 		pattern := strings.TrimPrefix(name, http.MethodPost+" ")
@@ -92,7 +93,7 @@ func TestEveryCreateStoresItsNode(t *testing.T) {
 	if len(incomplete) != 0 {
 		t.Errorf("after every POST route, these rows have no node in their project: %v", incomplete)
 	}
-	t.Logf("called %d POST routes of writeClasses; the settlements opened the asks %v", len(posts), asks)
+	t.Logf("called %d POST routes that declare a write class; the settlements opened the asks %v", len(posts), asks)
 }
 
 // everyKindFixture is the object of each kind the routes address: the rig's issue and project
@@ -100,6 +101,7 @@ func TestEveryCreateStoresItsNode(t *testing.T) {
 // issue's spec whose replacement is a new ask block, a direct message a session was sent, a
 // document of the issue whose stored history does not load, the one document a rebuild takes, and
 // a level issue a person approved, of a spec source of the project, the one issue an import takes.
+// The issue also has an open child, which a status change's include_children moves.
 type everyKindFixture struct {
 	issue, project, document, documentSlug string
 	ask, comment, suggestion, message      string
@@ -162,6 +164,14 @@ func seedEveryKind(t *testing.T, rig *storeWriterRig) everyKindFixture {
 	corrupted := makeDocumentUnloadable(t, repairFixture{handler: rig.handler, database: rig.database, documents: documents}, fixture.unloadable)
 	if corrupted == 0 {
 		t.Fatal("the unloadable document holds no stored update to corrupt")
+	}
+	// A status change leaves its comments only when an option moves an issue (status_change.go), so
+	// the issue gets an open child for the call's include_children to move.
+	child := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "LOCK", "title": "The child a status change moves", "parent": rig.issue,
+	}, "alice")
+	if child.Code != http.StatusCreated {
+		t.Fatalf("file the issue's child: status=%d body=%s", child.Code, child.Body.String())
 	}
 	// The import takes a level issue of a spec source of its project whose spec a person approved,
 	// and its notes document, as spec_import_test.go's levelRig seeds one. Nobody approved the
@@ -329,9 +339,11 @@ func settledAskBlocks(t *testing.T, rig *storeWriterRig, blocks []string) map[st
 	}
 }
 
-// postCalls is how every POST row of writeClasses is called. The creates make one object each of
-// the kinds whose node names its project, and the writes of a document's text one ask block each;
-// every other row creates none.
+// postCalls is how every POST route that declares a write class is called. The creates make one
+// object each of the kinds whose node names its project, the writes of a document's text one ask
+// block each, and the status change, whose include_children moves the fixture's child, a comment
+// of Dispatch's system actor on the child and one on the issue it names; every other route
+// creates none.
 var postCalls = map[string]postCall{
 	"POST /api/v1/issues":                       {succeeds: true, body: map[string]any{"project": "LOCK", "title": "Every create stores its node", "spec": "A spec.\n"}},
 	"POST /api/v1/issues/{key}/artifacts":       {succeeds: true, body: map[string]any{"name": "notes.md", "content": "# Notes\n"}},
@@ -339,6 +351,7 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/issues/{key}/asks":            {succeeds: true, body: map[string]any{"question": "Does the issue's ask name its project?"}},
 	"POST /api/v1/artifacts/{id}/asks":          {succeeds: true, body: map[string]any{"question": "Does the document's ask name its project?"}},
 	"POST /api/v1/issues/{key}/comments":        {succeeds: true, body: map[string]any{"body": "A remark on the issue."}},
+	"POST /api/v1/issues/{key}/status-change":   {succeeds: true, body: map[string]any{"status": "in_progress", "include_children": true}},
 	"POST /api/v1/artifacts/{id}/comments":      {succeeds: true, body: map[string]any{"body": "A remark on the document."}},
 	"POST /api/v1/issues/{key}/messages":        {succeeds: true, body: map[string]any{"body": "A message on the issue."}},
 	"POST /api/v1/agents/{session_id}/messages": {succeeds: true, body: map[string]any{"body": "Another direct message.", "delivery": "btw"}},
@@ -367,7 +380,7 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/issues/{key}/results/dry-run":  noObject,
 	"POST /api/v1/issues/{key}/handoffs/{phase}": noObject,
 	"POST /api/v1/results/{id}/retract":          noObject,
-	// The reasoning nodes, a node's state and the pre-mortem conversion:
+	// The reasoning nodes, a node's state, a node's move and the pre-mortem conversion:
 	// each writes nodes and tuples of the store alone and no row of a project-owned table, and the
 	// fixture's paths name no node of the issue under {id} and no pre-mortem under {slug}, so each
 	// is called with the empty body and refused.
@@ -378,6 +391,8 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/issues/{key}/nodes/{id}/pointers":                        noObject,
 	"POST /api/v1/issues/{key}/nodes/{id}/state":                           noObject,
 	"POST /api/v1/issues/{key}/nodes/{id}/settle":                          noObject,
+	"PATCH /api/v1/issues/{key}/nodes/{id}":                                noObject,
+	"DELETE /api/v1/issues/{key}/nodes/{id}":                               noObject,
 	"POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert":         noObject,
 	"POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync": noObject,
 	"POST /api/v1/projects/{key}/architecture-sources/sync":                noObject,
@@ -406,6 +421,7 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/me/inbox/dismiss":                                        noObject,
 	"POST /api/v1/projects":                                                noObject,
 	"POST /api/v1/priorities":                                              noObject,
+	"POST /api/v1/deploys":                                                 noObject,
 	"POST /api/v1/delivery/session-groups":                                 noObject,
 	"POST /api/v1/credential-requests/{id}/approve":                        noObject,
 	"POST /api/v1/credential-requests/{id}/deny":                           noObject,
@@ -420,4 +436,5 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/settings/new-issue/_test":                                noObject,
 	"POST /api/v1/writes/_test/slow":                                       noObject,
 	"POST /api/v1/markdown/round-trip":                                     noObject,
+	"POST /api/v1/markdown/file-round-trip":                                noObject,
 }

@@ -18,7 +18,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -46,7 +45,7 @@ type settlementReconciliation struct {
 	retracted []model.Ask
 	// answeredGone is whether an answered ask of the document has no block in the tree reconciled
 	// - a row no block matched - which alone can make the version a person's removal of its block
-	// (holdSettledRemovals), so a settlement whose tree holds every answered ask's block reads no
+	// (holdRoomRemovals), so a settlement whose tree holds every answered ask's block reads no
 	// removal.
 	answeredGone bool
 	// owedCopies are the other documents showing a copy of an ask this settlement retracts, or of
@@ -64,7 +63,7 @@ type settlementReconciliation struct {
 	indexedAskBlocks []string
 	// invalid is the reason each ask whose block settlement could not read fails the strict read
 	// for (readAskBlockStrictly), by ask id, where the block has an ask row; readable is each ask
-	// whose block reads again. stateInvalidReasons writes both on the asks' nodes (G1).
+	// whose block reads again. Settlement states both on the asks' nodes (asks.PlanInvalidReasons).
 	invalid  map[string]string
 	readable []string
 	// follows are the follows of the asks this settlement opened, each beside the ask it follows:
@@ -100,6 +99,8 @@ type settlementReconciliation struct {
 // block in the tree settlement reconciled, its attributes as settlement found them, the write with
 // the words and the one without them (askReadableWriteWithheld), and the indexes of the repair and
 // of the block.repaired the write made, -1 for none.
+//
+// kept for one release: roll-window-attributes
 type answerInStep struct {
 	node            *pmdoc.Node
 	found           pmdoc.Attrs
@@ -120,8 +121,9 @@ type answerInStep struct {
 // documents naming the document whose fragment holds each block of another than the room's own
 // (roomLayout.blockDocuments), so each tie records its block's own document's version. It runs
 // before the events are appended, since an appended event is never rewritten. A settlement that
-// writes a version needs none of this: that version's block index runs after the rows are queued
-// and states the ties with every other link of the document.
+// writes a version runs it after that version's block index, which reads the asks table, where the
+// rows this settlement queued are not written yet, so it stated none of these ties; this plans
+// against what that index leaves (heldBlockIndex).
 func (r *settlementReconciliation) writeOpenedAskTies(ctx context.Context, tx pgx.Tx, artifactID string, versions refs.Versions, documents map[string]string, tree *pmdoc.Node, offsets []pmdoc.BlockOffset) error {
 	if len(r.opened) == 0 {
 		return nil
@@ -152,9 +154,9 @@ func (r *settlementReconciliation) writeOpenedAskTies(ctx context.Context, tx pg
 	// facts alone, with no node write of their own, so each ask's share of them is a write of its
 	// own.
 	r.openedTies = make(map[string]graphstore.Uncaused, len(r.opened))
-	for _, tie := range ties.Stated().Tuples {
+	for tie := range ties.Stated().Facts() {
 		held := r.openedTies[tie.FromID]
-		held.Tuples = append(held.Tuples, tie)
+		held.State(tie)
 		r.openedTies[tie.FromID] = held
 	}
 	moved := ties.Moved()
@@ -262,31 +264,71 @@ func (r *settlementReconciliation) causedByEvent(events []model.Event) (map[int]
 // document's block index holds once this settlement's own indexing is written (heldBlockIndex,
 // refs.BlockIndex.NodeOf), the copied_from of that node: the source ask where copiedAskSources
 // resolved one, and none where it resolved none, so a block that stopped being a copy - its source
-// retracted, its wording changed, its own ask opened - retracts the copied_from it held. It
-// answers the step that states them under cause, nil where there is none to state. Each is a
-// claim (graphstore.WriteArms), which appends only where the node holds another far end or none,
-// so a settlement that moved no copy appends nothing. It runs once the version's blocks are
-// planned, so a copy pasted in this version has its node, and the caller queues the step under
-// that version's event, right after it (graphstore.LatestEvent), or under graphstore.NoEvent for
-// a settlement that writes no version. The copy's source document is not stated here: a reader
-// takes it from the source ask's own part_of (graphstore.AskFacts).
+// retracted, its wording changed, its own ask opened - retracts the copied_from it held. It reads
+// once which blocks of the document hold a copied_from now (refs.DocumentCopiedFrom), from the
+// block index as it stood before this settlement, and retracts the relation from each block that
+// stands in the document's rows and is no longer an ask block - one a person retyped - on the node
+// that read names, so a settlement of a document that holds no ask block now still retracts the
+// copied_from of a block that was a copy (R3). A block a version drops has its copied_from
+// retracted by the index pass that states it gone and deletes its row (refs' heldCopiedFrom), in
+// the write that runs that pass. A version its own write indexes - an agent's document edit, an
+// upload or this settlement's own version, each under the deferral bound - ends the relation in
+// that write: an edit's or an upload's before any settlement runs, after which no read of the rows
+// names the block, and this settlement's after the read above, so the claim for it finds the
+// relation retracted already and appends nothing. A version whose write defers its block index
+// (deferBlockIndexBlocks, indexDeferredVersion) runs no such pass and leaves the block's row, which
+// the read above still names: the first settlement to read that row, whose claim retracts the
+// relation as a block that is no longer an ask block, or the block-index reconciliation's index
+// pass, whichever runs first, ends it. It answers the step that states them under cause, nil where
+// there is none to state. Each is a claim (graphstore.WriteArms), which appends only where the
+// node holds another far end or none, so a settlement that moved no copy appends nothing. It runs
+// once the version's blocks are planned, so a copy pasted in this version has its node, and the
+// caller queues the step under that version's event, right after it (graphstore.LatestEvent), or
+// under graphstore.NoEvent for a settlement that writes no version.
+// The copy's source document is not stated here: a reader takes it from the source ask's own
+// part_of (graphstore.AskFacts).
 func (r *settlementReconciliation) claimCopies(ctx context.Context, tx pgx.Tx, artifactID string, who model.Actor, at time.Time) (func(b *store.WriteBatch, cause int64) error, error) {
-	if len(r.copiedFrom) == 0 {
+	standing, err := refs.DocumentCopiedFrom(ctx, tx, artifactID)
+	if err != nil {
+		return nil, fmt.Errorf("read the copies the blocks of %s hold: %w", artifactID, err)
+	}
+	if len(r.copiedFrom) == 0 && len(standing) == 0 {
 		return nil, nil
 	}
-	index, err := heldBlockIndex(ctx, tx, artifactID)
-	if err != nil {
-		return nil, fmt.Errorf("read the nodes of the ask blocks of %s: %w", artifactID, err)
+	// Only an ask block is claimed on the node the block index holds for it. A block that holds a
+	// copied_from has the node the standing read named, so its retraction needs no index.
+	var index refs.BlockIndex
+	if len(r.copiedFrom) > 0 {
+		if index, err = heldBlockIndex(ctx, tx, artifactID); err != nil {
+			return nil, fmt.Errorf("read the nodes of the ask blocks of %s: %w", artifactID, err)
+		}
 	}
+	blocks := make([]string, 0, len(r.copiedFrom)+len(standing))
+	for blockID := range r.copiedFrom {
+		blocks = append(blocks, blockID)
+	}
+	for blockID := range standing {
+		if _, asked := r.copiedFrom[blockID]; !asked {
+			blocks = append(blocks, blockID)
+		}
+	}
+	slices.Sort(blocks)
 	var claims []graphstore.Claim
-	for _, blockID := range slices.Sorted(maps.Keys(r.copiedFrom)) {
-		node, named := index.NodeOf(blockID)
-		if !named {
-			continue
+	for _, blockID := range blocks {
+		// A block that is no longer an ask block has no source, so its claim retracts, on the node
+		// the standing read named.
+		node := standing[blockID].Node
+		source, asked := r.copiedFrom[blockID]
+		if asked {
+			held, named := index.NodeOf(blockID)
+			if !named {
+				continue
+			}
+			node = held
 		}
 		claims = append(claims, graphstore.Claim{
 			FromKind: refs.BlockNodeKind, FromID: node, Kind: graphstore.TupleCopiedFrom,
-			ToKind: graphstore.KindAsk, ToID: r.copiedFrom[blockID],
+			ToKind: graphstore.KindAsk, ToID: source,
 			At: at, Who: who,
 		})
 	}
@@ -302,70 +344,21 @@ func (r *settlementReconciliation) claimCopies(ctx context.Context, tx pgx.Tx, a
 			return err
 		}
 		b.Queue(fmt.Sprintf("state the copies of %s", artifactID), "with "+arms+"\nselect 1", params...)
+		graphstore.QueueHeads(b, graphstore.HeadsOfClaims(claims))
 		return nil
 	}, nil
 }
 
-// stateInvalidReasons plans what settlement writes on the node of each ask it read the
-// readability of the block of (G1): the reason each block that fails the strict read fails it for,
-// where the block has an ask row (invalid), as the node's `invalid` value; and, for each ask whose
-// block reads again (readable), the retraction of the value its node holds. A node already holding
-// the reason, and one holding none whose block reads, is written nothing, so a settlement that
-// moved no block's readability appends nothing. Only an ask whose row names its node has one
-// (asks.node_kind): a row the release before wrote is stated on the store by the boot step's
-// backfill. It answers the step that states them under cause, nil where there is none to state,
-// which the caller queues where it queues claimCopies', in who's name at at.
+// planRemovalRetractions plans the retraction of each removed_by an ask whose block settlement
+// read again (readable) holds asserted: an ask block of that ask stands in the document its row
+// names again, so the person's removal no longer stands, and a later removal is judged afresh
+// (graphstore.TupleRemovedBy). It answers the step that states them under cause, nil where there
+// is none to state, which the caller queues beside the readability the same settlement states
+// (asks.PlanInvalidReasons), in who's name at at.
 //
-// The same write retracts each removed_by an ask whose block reads (readable) holds asserted: an
-// ask block of that ask stands in the document its row names again, so the person's removal no
-// longer stands, and a later removal is judged afresh (graphstore.TupleRemovedBy).
-func (r *settlementReconciliation) stateInvalidReasons(ctx context.Context, tx pgx.Tx, who model.Actor, at time.Time) (func(b *store.WriteBatch, cause int64) error, error) {
-	if len(r.invalid) == 0 && len(r.readable) == 0 {
-		return nil, nil
-	}
-	kind := schemanodes.StoreName("ask", "invalid")
-	invalid := slices.Sorted(maps.Keys(r.invalid))
-	rows, err := tx.Query(ctx, `
-		select k.id::text, coalesce(held.to_id, ''), coalesce(held.asserted, false)
-		from asks k
-		left join lateral (
-			select t.to_id, t.asserted from graph_tuples t
-			where t.from_kind = $2 and t.from_id = k.id::text and t.kind = $3 and t.to_kind = $4
-			order by t.seq desc limit 1
-		) held on true
-		where k.id = any($1::uuid[]) and k.node_kind is not null
-		order by k.id
-	`, slices.Concat(invalid, r.readable), graphstore.KindAsk, kind, graphstore.KindValue)
-	if err != nil {
-		return nil, fmt.Errorf("read the readability the ask nodes hold: %w", err)
-	}
+// kept for one release: decisions-step
+func (r *settlementReconciliation) planRemovalRetractions(ctx context.Context, tx pgx.Tx, who model.Actor, at time.Time) (func(b *store.WriteBatch, cause int64) error, error) {
 	var tuples []graphstore.Tuple
-	for rows.Next() {
-		var ask, current string
-		var holds bool
-		if err := rows.Scan(&ask, &current, &holds); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("read the readability an ask node holds: %w", err)
-		}
-		tuple := graphstore.Tuple{
-			FromKind: graphstore.KindAsk, FromID: ask, Kind: kind, ToKind: graphstore.KindValue,
-			At: at, Who: who,
-		}
-		reason, flagged := r.invalid[ask]
-		switch {
-		case flagged && (!holds || current != reason):
-			tuple.ToID, tuple.Asserted = reason, true
-		case !flagged && holds:
-			tuple.ToID = current
-		default:
-			continue
-		}
-		tuples = append(tuples, tuple)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the readability the ask nodes hold: %w", err)
-	}
 	if len(r.readable) > 0 {
 		removals, err := tx.Query(ctx, `
 			select held.from_id, held.to_id from (
@@ -401,6 +394,7 @@ func (r *settlementReconciliation) stateInvalidReasons(ctx context.Context, tx p
 			tuples[index].SourceEvent = cause
 		}
 		graphstore.QueueWrite(b, nil, tuples)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
 		return nil
 	}, nil
 }
@@ -470,11 +464,13 @@ func (r *settlementReconciliation) repairAsk(node *pmdoc.Node, blockID string, s
 // answer's words while another build serves (wroteAnswerWords), for withholdAnswersWithoutRoom to
 // weigh. A block that already held the words its write leaves - one whose repair cleared its
 // `invalid` or moved a copy's provenance - keeps them: they are in the document settlement read
-// and add nothing to it, and the release before weighed only a repair that wrote an answer.
-//
-// kept for one release: roll-window-attributes
+// and add nothing to it, and the release before weighed only a repair that wrote an answer. The
+// write stays, settlement's one write to a block of an ask (G1); the record of the words it wrote
+// goes with the roll window.
 func (r *settlementReconciliation) repairAskInStep(node *pmdoc.Node, blockID string, twoBuilds bool, ask model.Ask, copied string, event *model.Event) bool {
+	// kept for one release: roll-window-attributes
 	found := maps.Clone(node.Attrs)
+	// kept for one release: roll-window-attributes
 	repair, eventAt := len(r.repairs), len(r.events)
 	if event == nil {
 		eventAt = -1
@@ -483,6 +479,7 @@ func (r *settlementReconciliation) repairAskInStep(node *pmdoc.Node, blockID str
 	if !r.repairAsk(node, blockID, write, event) {
 		return false
 	}
+	// kept for one release: roll-window-attributes
 	if twoBuilds && wroteAnswerWords(found, node) {
 		r.inStep = append(r.inStep, answerInStep{
 			node: node, found: found, write: write, withheld: askReadableWriteWithheld(ask, copied),
@@ -495,6 +492,8 @@ func (r *settlementReconciliation) repairAskInStep(node *pmdoc.Node, blockID str
 // wroteAnswerWords reports whether node, an ask block a write left, holds an answer's words
 // (answerWords) that found, its attributes before the write, did not: a selection or words found
 // held none of, or held another value of.
+//
+// kept for one release: roll-window-attributes
 func wroteAnswerWords(found pmdoc.Attrs, node *pmdoc.Node) bool {
 	for _, name := range answerWords {
 		value, held := node.Attrs[name]
@@ -753,10 +752,11 @@ func closeWithdrawn(ask model.Ask) bool {
 // step with it and the rest of the seven a version can store taken out (keptAskState). A block
 // settlement cannot read keeps whatever a browser wrote onto it - a forged state or answerer
 // among them - so once the fleet is one build it is given its row's kept state where a row
-// indexes it, and none of the seven where none does. `invalid` is written into the live tree
-// either way (G1): onto a block that fails the strict read, and off one that reads again, and
-// where the block has an ask row its node holds the reason too, until the block reads again
-// (stateInvalidReasons).
+// indexes it, its source's, provenance and all, where it is a copy flagged for a reading its
+// source holds no answer for, and none of the seven where it is neither. `invalid` is written
+// into the live tree either way (G1): onto a block that fails the strict read, and off one that
+// reads again, and where the block has an ask row its node holds the reason too, until the block
+// reads again (asks.PlanInvalidReasons).
 //
 // issueClosed is whether the issue row, as the settlement's transaction locked it, reads closed
 // (settlement.issueClosed), and on a closed issue no ask changes: the close withdrew every ask of
@@ -806,19 +806,18 @@ func (s *Service) reconcileAskBlocks(
 		readable = append(readable, block)
 	}
 	blocks = readable
-	rows, err := loadAskBlocks(ctx, tx, roomAsksOf(artifactID))
+	// The rows and the copies' sources through the one read of which ask each block has, which
+	// takes the project's copy lock right before it reads the sources (copiedAskSources).
+	read, err := readBlockAsks(ctx, tx, roomAsksOf(artifactID), &owner, blocks, copiedAskSources)
 	if err != nil {
 		return settlementReconciliation{}, err
 	}
+	rows, sources := read.rows, read.sources
 	credit.askSources.recorded, err = transactionRecordedAskAuthors(ctx, tx, artifactID)
 	if err != nil {
 		return settlementReconciliation{}, err
 	}
 	restoredDecided, err := s.restoreDocumentDecidedWordings(ctx, tx, rows)
-	if err != nil {
-		return settlementReconciliation{}, err
-	}
-	sources, err := copiedAskSources(ctx, tx, artifactID, owner, blocks, rows)
 	if err != nil {
 		return settlementReconciliation{}, err
 	}
@@ -839,35 +838,23 @@ func (s *Service) reconcileAskBlocks(
 	// step while another build serves, and the first settlement after its last process left takes
 	// them out.
 	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	twoBuilds := false
+	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	if len(blocks)+len(invalidBlocks) > 0 {
 		if twoBuilds, err = anotherBuildServes(ctx, tx); err != nil {
 			return settlementReconciliation{}, err
 		}
 	}
 	// Once the fleet is one build, the attributes a version keeps are written from each ask's node,
-	// each one its node holds no value of taken off (keptAskState, onItsNode); an ask whose state
-	// this settlement writes - one it restores - is written as it states it.
+	// each one its node holds no value of taken off, or from its row where the node is behind it,
+	// before the decisions step's catch-up (keptAskState, shownAsks); an ask whose state this
+	// settlement writes - one it restores - is written as it states it.
 	// kept for one release: stored-ask-state
-	var nodes map[string]askNodeAnswer
-	if !twoBuilds && len(rows)+len(sources) > 0 {
-		ids := make([]string, 0, len(rows)+len(sources))
-		for _, ask := range rows {
-			ids = append(ids, ask.ID)
-		}
-		for _, source := range sources {
-			ids = append(ids, source.ask.ID)
-		}
-		if nodes, err = askNodeAnswers(ctx, tx, ids); err != nil {
-			return settlementReconciliation{}, err
-		}
-	}
-	// kept for one release: stored-ask-state
-	shown := func(ask model.Ask) model.Ask {
-		if twoBuilds {
-			return ask
-		}
-		return onItsNode(ask, nodes)
+	shown, err := shownAsks(ctx, tx, twoBuilds, read)
+	if err != nil {
+		return settlementReconciliation{}, err
 	}
 	// The sources, with the durable record read above, are what the version this settlement writes
 	// reads the authors of its decisions and readings from (typedSources).
@@ -898,20 +885,34 @@ func (s *Service) reconcileAskBlocks(
 				},
 			))
 		}
-		// kept for one release: stored-ask-state
-		if !twoBuilds {
-			unread := withoutStoredAskAttributes
-			if indexed {
-				unread = keptAskState(shown(ask), "")
-			}
-			reconciled.repair(invalid.node, invalid.id, unread)
+		// Once the fleet is one build, an invalid block keeps none of the attributes a version can
+		// store where it has no ask row and is no copy (R10), which stays, an indexed one what a
+		// version keeps of its ask, and a copy - one flagged for a reading its source holds no
+		// answer for - what a version keeps of its source, its provenance among it whatever the
+		// source's state, both of which go with that form; the roll window's branch goes with it.
+		// kept for one release: roll-window-attributes
+		if twoBuilds {
+			continue
 		}
+		unread := withoutStoredAskAttributes
+		// kept for one release: stored-ask-state
+		switch source, copied := sources[invalid.id]; {
+		case indexed:
+			unread = keptAskState(shown(ask), "")
+		case copied:
+			unread = keptAskState(shown(source.ask), source.document)
+		}
+		reconciled.repair(invalid.node, invalid.id, unread)
 	}
 	// Every ask block of the tree, readable or not, names the ask it is a copy of, or none, for
-	// claimCopies once the version's blocks are indexed.
+	// claimCopies once the version's blocks are indexed: a copy flagged for a reading is still a
+	// copy of its source (R3).
 	reconciled.copiedFrom = make(map[string]string, len(blocks)+len(invalidBlocks))
 	for _, invalid := range invalidBlocks {
 		reconciled.copiedFrom[invalid.id] = ""
+		if source, copied := sources[invalid.id]; copied {
+			reconciled.copiedFrom[invalid.id] = source.ask.ID
+		}
 	}
 	for _, block := range blocks {
 		reconciled.copiedFrom[block.id] = ""
@@ -973,8 +974,9 @@ func (s *Service) reconcileAskBlocks(
 			// The new ask's parts, beside its own references: both named by the ask.opened, and
 			// read through the one reader. The parts are planned here and written after the
 			// row's own insert, which this transaction has queued (createAskBlock), since every
-			// part row names its ask.
-			changes, parts, err := planAskPartsCounted(ctx, tx, reader, ask, ask.CreatedAt, changes)
+			// part row names its ask, and after the question's reconciliation just queued
+			// (questionReconciled).
+			changes, parts, err := planAskPartsCounted(ctx, tx, reader, ask, ask.CreatedAt, true, changes)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of new ask block %s: %w", ask.ID, err)
 			}
@@ -1012,10 +1014,12 @@ func (s *Service) reconcileAskBlocks(
 			reconciled.answers = append(reconciled.answers, settledAnswer{ask: ask.ID, eventType: eventType, held: held})
 			// The restoration writes state, answer and resolution back: the answer it brings
 			// back is a part again, and the event names what that moved. The parts are written
-			// after the restoring update, which this transaction has queued.
+			// after the restoring update, which this transaction has queued. The restoration holds
+			// the parts alone, so their step reconciles the question's references after them too
+			// and settles the forms queue there (questionReconciled false).
 			restoredAt := refs.AskPartsAt(ask)
 			changes, parts, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, s.serverURL),
-				ask, restoredAt, model.ReferenceChanges{})
+				ask, restoredAt, false, model.ReferenceChanges{})
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of restored ask %s: %w", ask.ID, err)
 			}
@@ -1082,8 +1086,9 @@ func (s *Service) reconcileAskBlocks(
 			// The block's wording is now the row's: its parts are that wording too, read through
 			// the one reader, and the ask.edited names what they moved beside the ask's own
 			// references. The parts are written after the queued update that gives the row that
-			// wording, which the row this plans from carries already (edited_at).
-			changes, parts, err := planAskPartsCounted(ctx, tx, reader, ask, editedAt, changes)
+			// wording, which the row this plans from carries already (edited_at), and after the
+			// question's reconciliation queued above (questionReconciled).
+			changes, parts, err := planAskPartsCounted(ctx, tx, reader, ask, editedAt, true, changes)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of reconciled ask %s: %w", ask.ID, err)
 			}
@@ -1106,6 +1111,7 @@ func (s *Service) reconcileAskBlocks(
 			model.BlockRepairedEventPayload{BlockID: block.id, DisturbedBy: actor},
 		)
 		kept := ask
+		// kept for one release: stored-ask-state
 		if !stated {
 			kept = shown(ask)
 		}
@@ -1612,7 +1618,7 @@ func createAskBlock(
 	if err != nil {
 		return model.Ask{}, openedFollow{}, err
 	}
-	nodes, facts, marked := graphstore.AskFacts(id, project, parties, author, createdAt, graphstore.NoEvent, places)
+	nodes, facts, marked := graphstore.AskFacts(id, project, parties, author, createdAt, graphstore.NoEvent, places.On(block.id))
 	// The ask is the node this block makes, first of the nodes AskFacts answers
 	// (graphstore.Created).
 	nodes[0] = graphstore.Created(nodes[0])
@@ -1663,7 +1669,7 @@ func restoreRetractedAsk(ctx context.Context, tx pgx.Tx, ask model.Ask, who mode
 	}
 	change := asks.Restored(prior.State, prior.Answer)
 	change.Who, change.At, change.Held = who, time.Now().UTC(), held
-	settled, err := planSettle(ctx, tx, ask.ID, change)
+	settled, err := planSettle(ctx, tx, ask, change)
 	if err != nil {
 		return model.Ask{}, fmt.Errorf("restore retracted ask: %w", err)
 	}
@@ -1725,9 +1731,8 @@ func clearAskInvalidAttribute(node *pmdoc.Node) bool {
 // that no row indexes: resolved while another build serves (resolveUnindexedAskBlock), and none
 // of the seven attributes a version can store once the fleet is one build, as the close's sweep
 // leaves such a block (unindexedAskResolution). The block reads, so it carries no `invalid`
-// either way.
-//
-// kept for one release: roll-window-attributes
+// either way. The one-build write is R10's and stays; the roll window's branch is
+// unindexedAskResolution's and goes with it.
 func unindexedAskWrite(twoBuilds bool) func(*pmdoc.Node) bool {
 	resolve := unindexedAskResolution(twoBuilds)
 	return func(node *pmdoc.Node) bool {

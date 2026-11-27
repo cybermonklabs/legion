@@ -60,12 +60,7 @@ func negativeControlBody(check, verdict string, control negativeControlInput, fi
 // checkResultRowsOf counts the check_results rows recorded against one check block.
 func checkResultRowsOf(t *testing.T, database *store.Store, blockID string) int {
 	t.Helper()
-	var count int
-	if err := database.Pool.QueryRow(context.Background(),
-		`select count(*) from check_results where check_block_id = $1`, blockID).Scan(&count); err != nil {
-		t.Fatalf("count the results of %s: %v", blockID, err)
-	}
-	return count
+	return int(countRows(t, database, `select count(*) from check_results where check_block_id = $1`, blockID))
 }
 
 // storedCheckResultRow is one check_results row as stored, every column and the row version

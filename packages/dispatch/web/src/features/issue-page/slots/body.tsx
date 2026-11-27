@@ -61,7 +61,10 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // names as well (`namesHeld`): a plan task's or a callout's words come from them alone, so
   // before they are held such a node matches nothing, and the outline draws nothing in the
   // line's place. With no filter on the line reads no words, and does not wait on the names.
-  const { failed, namesHeld, reads, readsHeld, readsSettled, root } = useOutlineReads(issue);
+  // What the page publishes of its batched names read the tree hands its rows and crumbs in the
+  // render that draws them (`published`), so none of them reads a reference the page asks for.
+  const { failed, namesHeld, published, reads, readsHeld, readsSettled, root } =
+    useOutlineReads(issue);
   const key = issue.key;
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the words filter would not have matched still draws it. An item
@@ -163,6 +166,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
             isClosed={isClosed}
             {...(ancestor === undefined ? {} : { landingReport: KEY_REPORTS.agents_thread })}
             onEditing={onEditing}
+            published={published}
             readsHeld={readsHeld}
             readsSettled={readsSettled}
             {...(request === undefined ? {} : { request })}

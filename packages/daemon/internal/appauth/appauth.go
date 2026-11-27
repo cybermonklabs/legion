@@ -19,6 +19,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/httpoutage"
+
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -71,9 +73,10 @@ type Lease struct {
 
 // TransientError is a GitHub answer that says nothing about the App or its installation, so the
 // same request may pass when it is made again: no answer at all (a transport failure, including a
-// request or a body read cut off by its deadline), a 5xx, or a rate limit (a 429, or a 403 that
-// says it is one). Every other failure is GitHub's definitive answer, or one about the
-// configuration, and asking again changes nothing.
+// request or a body read cut off by its deadline), an outage (httpoutage.Is: a 5xx, a 408 for
+// a request the server did not take in time, or a 429), or a rate limit (a 403 that says it is
+// one). Every other failure is GitHub's definitive answer, or one about the configuration, and
+// asking again changes nothing.
 type TransientError struct{ Err error }
 
 func (e *TransientError) Error() string { return e.Err.Error() }
@@ -105,12 +108,13 @@ func (m *Manager) answered(response *http.Response, body []byte, err error) *Ans
 	return &AnswerError{Err: err, Answer: githubrest.AnswerOf(response.Request.Method, path, response, body)}
 }
 
-// transient marks a response, whose body is body, as GitHub's trouble rather than an answer: a
-// 5xx, or a rate limit (the answer's RateLimited, githubrest.RateLimited, which reads the body for
-// a secondary limit GitHub names there alone). Either way err carries GitHub's answer (answered).
+// transient marks a response, whose body is body, as GitHub's trouble rather than an answer: an
+// outage (httpoutage.Is: a 5xx, a 408 or a 429), or a rate limit (the answer's RateLimited,
+// githubrest.RateLimited, which reads the body for a secondary limit GitHub names there alone).
+// Either way err carries GitHub's answer (answered).
 func (m *Manager) transient(response *http.Response, body []byte, err error) error {
 	refused := m.answered(response, body, err)
-	if response.StatusCode >= http.StatusInternalServerError || refused.Answer.RateLimited {
+	if httpoutage.Is(response.StatusCode) || refused.Answer.RateLimited {
 		return &TransientError{Err: refused}
 	}
 	return refused
@@ -175,20 +179,19 @@ type Tokens interface {
 	Token(ctx context.Context, role AppRole, owner string) (Lease, error)
 	// ReadToken is the App's installation token for owner narrowed to reading: readPermissions,
 	// which is contents, metadata, pull requests, issues, Actions, checks, commit statuses and
-	// attestations, each at read. Two callers ask for it and no role's bundle does: a
-	// controller, which works no repository and holds one for every owner its App is installed
-	// on (ControllerCredential), and the Kubernetes runtime's provisioning token, one of the
-	// implement App for the issue's own owner, which every issue pod's workspace-fetch and
-	// every repository cache clones with (implementTokens, internal/daemon). A workflow role's
-	// directories hold that owner's own lease at the role's permissions instead (Token,
-	// GitHubCredential). An App on token_command gets what its command's release of
-	// the read profile holds instead, which the deployment's profiles file decides and the
-	// broker cuts to what the installation holds; the read profile docs/deployment.md gives names
-	// readPermissions. With a key of its own the mint asks for what the installation is granted
-	// of readPermissions and leaves the rest out (exchangeGranted), so an installation whose
-	// account has not granted the App issues, Actions, checks, commit statuses or attestations
-	// gets a token without the ones it is not granted rather than nothing. An owner with no name
-	// is refused before anything is minted, as Token's is.
+	// attestations, each at read. Two callers ask for it and no role's bundle does: a controller,
+	// which works no repository and holds one for every owner its App is installed on
+	// (ControllerCredential), and the Kubernetes runtime's provisioning token, one of the implement
+	// App for the issue's own owner, which every issue pod's workspace-init and every repository
+	// cache clone with (implementTokens, internal/daemon). A workflow role's directories hold that
+	// owner's own lease at the role's permissions instead (Token, GitHubCredential). An App on
+	// token_command gets what its command's release of the read profile holds instead, which the
+	// deployment's profiles file decides and the broker cuts to what the installation holds; the
+	// read profile docs/deployment.md gives names readPermissions. With a key of its own the mint
+	// asks for what the installation is granted of readPermissions and leaves the rest out
+	// (exchangeGranted), so an installation whose account has not granted the App issues, Actions,
+	// checks, commit statuses or attestations gets a token without the ones it is not granted rather
+	// than nothing. An owner with no name is refused before anything is minted, as Token's is.
 	ReadToken(ctx context.Context, role AppRole, owner string) (Lease, error)
 }
 
@@ -290,10 +293,13 @@ type pendingInstallations struct {
 // as a Source, which the build holds it to wherever it is handed over. Forgetter is taken by
 // type assertion instead (internal/daemon's openWorkflow and leakCheckSource), so a Forget
 // renamed without its interface would fail the daemon's boot, or leave the leak check serving
-// a token GitHub refused, rather than fail the build.
+// a token GitHub refused, rather than fail the build. KnownIdentities is taken by type
+// assertion too (internal/daemon's workflowRuntime.knownIdentity), and a source that answers
+// none, such as a test's fake, is one whose every identity is read through a mint.
 var (
-	_ Source    = (*Manager)(nil)
-	_ Forgetter = (*Manager)(nil)
+	_ Source          = (*Manager)(nil)
+	_ Forgetter       = (*Manager)(nil)
+	_ KnownIdentities = (*Manager)(nil)
 )
 
 // New makes an App token manager. Config.Load resolves command and secret key sources before
@@ -389,6 +395,28 @@ func (m *Manager) Forget(role AppRole, owner string) {
 	maps.DeleteFunc(m.refusals, func(key scope, _ refusedNarrowingAt) bool {
 		return key.role == role && key.owner == forgotten
 	})
+}
+
+// KnownIdentities answers the bot identity of an App that a token source already holds, with no
+// mint and no call to GitHub.
+type KnownIdentities interface {
+	KnownIdentity(role AppRole) (GitIdentity, bool)
+}
+
+// KnownIdentity is the bot identity of the App role's App that a lease of that App already
+// fetched (identity, which caches it by App id for the Manager's life), and false when none has:
+// before the App's first mint, or for an App role that no App is configured for. It reads that
+// cache alone, under mu, and asks GitHub nothing, so a caller that needs the identity and no
+// token — a launch's table of every role's identity, for the other App's roles — costs no mint.
+func (m *Manager) KnownIdentity(role AppRole) (GitIdentity, bool) {
+	app, err := m.app(role)
+	if err != nil {
+		return GitIdentity{}, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	identity, known := m.identities[app.AppID]
+	return identity, known
 }
 
 // forgetNarrowingRefusal drops the narrowing refusal remembered for role's read lease on owner

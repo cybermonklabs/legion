@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -106,8 +105,9 @@ func eventOf(t *testing.T, database *store.Store, eventType, ownerColumn, owner 
 // TestAnIssueCreateStoresItsNodeBeforeItsRow holds POST /api/v1/issues to writing the issue's node
 // and its spec's node before the rows that hold them, in the issue's project, caused by the
 // issue.created event the create appends. An issue is born converted, so its spec's node is the
-// query node of query spec (decision 2 of this branch's plan).
+// query node of query spec (decision 2 of the issue-tree plan).
 func TestAnIssueCreateStoresItsNodeBeforeItsRow(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	requireNodeBeforeRow(t, database, "issues", graphstore.KindIssue, "key")
 	requireNodeBeforeRow(t, database, "artifacts", graphstore.KindArtifact, "ref_key")
@@ -122,8 +122,9 @@ func TestAnIssueCreateStoresItsNodeBeforeItsRow(t *testing.T) {
 // before its row: an issue's document and file, a project's document, each in that project and
 // caused by the artifact.created event, and a file or document sent in an agent's conversation,
 // which no project owns, between the parties of that conversation and at the sentinel, since such
-// an upload appends no event (agentArtifactTarget.ownsEvents).
+// an upload appends no event (artifactTarget.ownsEvents).
 func TestEveryUploadStoresItsDocumentsNode(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	requireNodeBeforeRow(t, database, "artifacts", graphstore.KindArtifact, "ref_key")
 	issue := createInteractionIssue(t, handler, "UPL", "Uploads name their project", "The spec.\n")
@@ -191,6 +192,7 @@ func TestEveryUploadStoresItsDocumentsNode(t *testing.T) {
 // spec and of a project's document, and the blocks a later version adds, changes or drops. A
 // conversation holds no document, so no block of one is written (agentOwnsFilesOnly).
 func TestABlockNodeCarriesItsDocumentsProject(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "BLK", "Blocks name their project", "First paragraph.\n\nSecond paragraph.\n")
 	runbook := createProjectDocument(t, handler, "BLK", "Runbook.md", "# Runbook\n\nStep one.\n")
@@ -234,11 +236,7 @@ func TestABlockNodeCarriesItsDocumentsProject(t *testing.T) {
 func blockNodesOfDocument(t *testing.T, database *store.Store, artifactID string) []graphstore.Node {
 	t.Helper()
 	ctx := context.Background()
-	var refKey string
-	if err := database.Pool.QueryRow(ctx, `
-		select room.ref_key from artifacts room where room.id = `+refs.DocumentRoomSQL("$1::uuid"), artifactID).Scan(&refKey); err != nil {
-		t.Fatalf("read the ref_key of %s's room: %v", artifactID, err)
-	}
+	refKey := blockKeyOf(t, database, artifactID)
 	nodes, err := graphstore.NodesOfKind(ctx, database.Pool, "block")
 	if err != nil {
 		t.Fatalf("read the block nodes: %v", err)

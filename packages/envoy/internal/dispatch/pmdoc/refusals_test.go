@@ -11,6 +11,7 @@ import (
 // two refused blocks is refused with the reason of the one written first, whichever kinds they are,
 // since the walk, not conversion, refuses every block.
 func TestParseNamesTheFirstRefusedBlock(t *testing.T) {
+	t.Parallel()
 	blocks := []struct{ name, markdown string }{
 		{"a link reference definition", "[a]: http://x\n"},
 		{"block HTML", "<div>\nx\n</div>\n"},
@@ -61,6 +62,7 @@ func TestParseNamesTheFirstRefusedBlock(t *testing.T) {
 // written. What that parser leaves as written, and the rest of the info string, which both drop,
 // is read as before.
 func TestParseRefusesACodeLanguageTheBrowserDecodes(t *testing.T) {
+	t.Parallel()
 	for _, markdown := range []string{
 		"```a\\*b\nx\n```\n",
 		"```a&amp;b\nx\n```\n",
@@ -100,6 +102,7 @@ func TestParseRefusesACodeLanguageTheBrowserDecodes(t *testing.T) {
 // a line belongs to no paragraph now and is refused as goldmark's own block of HTML; only a tab
 // in its indentation, which that parser alone reads as a block, still parts the two.
 func TestParseRefusesALineTheBrowserReadsAsBlockHTML(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct{ name, markdown, line string }{
 		{"a closing tag a tab ends, opening a quoted paragraph", "> </a\t>\n> text\n", `"> </a\t>"`},
 		{"a tab indenting a block-level tag under a paragraph", "> A quote\n> \t<div>\n", `"> \t<div>"`},
@@ -137,6 +140,7 @@ func TestParseRefusesALineTheBrowserReadsAsBlockHTML(t *testing.T) {
 // line as on any other (packages/proof-editor/src/html-flow.ts) - so the tab inside such a line
 // is no reason to refuse it either.
 func TestParseReadsALineBothParsersReadAsText(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct{ name, markdown string }{
 		{"a lone tag on a lazy line", "> A quote\n<b>\n"},
 		{"a lone tag carrying the quote's prefix", "> A quote\n> <b>\n"},
@@ -165,6 +169,7 @@ func TestParseReadsALineBothParsersReadAsText(t *testing.T) {
 // document, so the refusal that still stands on that path is its own (ErrBlockHTML), the one the
 // inline reader never reached.
 func TestParseInlineReadsHTMLADocumentIsRefusedFor(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct{ name, markdown, kind, written string }{
 		{"a block-level tag after a hard break", "x  \n<div>y</div>", "html", "<div>"},
 		{"an unclosed block-level tag after a hard break", "Title\\\n<div", "text", "<div"},
@@ -204,6 +209,7 @@ func TestParseInlineReadsHTMLADocumentIsRefusedFor(t *testing.T) {
 // kind 6, a tag of a block-level name however unfinished, is refused with them, because that tag
 // is one the two parsers read apart.
 func TestCorpusErrorsOfDefinitionsAndBrowserBlockHTMLAreRefused(t *testing.T) {
+	t.Parallel()
 	for name, refusal := range map[string]string{
 		"nested-typed-blocks-definition-before-an-indented-underline":                     typedDefinitionHoldingBlock,
 		"nested-typed-blocks-definition-ending-in-a-hard-break-before-a-tabbed-underline": typedDefinitionHoldingBlock,

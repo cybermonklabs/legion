@@ -116,22 +116,28 @@ func (r *RecordedTx) Holding(t testing.TB, marker string) Statement {
 // connection the pool hands out again.
 var preparedPlans atomic.Int64
 
-// explainExecuted runs EXPLAIN (ANALYZE, FORMAT format) of statement executed with args in tx,
-// under the plan-cache mode mode, which it sets with `set local` inside tx. It answers the one
-// "Plan" node for json and every line of the plan for text.
+// explainExecuted runs EXPLAIN (options, FORMAT format) of statement executed with args in tx,
+// under the plan-cache mode mode, which it sets with `set local` inside tx. options is the EXPLAIN
+// options before the format, as explainGenericPlan takes them: "analyze", or "analyze, buffers" so
+// that each node carries the shared buffers it and the nodes under it hit and read (Nodes). It
+// answers the one "Plan" node for json and every line of the plan for text.
 //
 // The statement is prepared on tx's connection and explained through EXECUTE, because a
 // plan-cache mode is what Postgres does with a prepared statement: an EXPLAIN that binds its own
 // parameters is planned for those values, a custom plan, whatever the mode says. EXECUTE takes no
 // bind parameter, so each argument is written as the text pgx encodes it in for the type
-// Postgres inferred for that parameter, quoted as a literal of that type. The statement runs, so
-// the caller explains in a transaction it rolls back.
+// Postgres inferred for that parameter, quoted as a literal of that type. pgx answers a nil buffer
+// for the SQL value NULL alone, so the buffer it appends to is an empty one, not nil: from nil, a
+// value whose text is empty, an empty string, would come back nil too and be written as null, and
+// a statement explained with null where its writer bound the empty string is another statement (a
+// keyset walk from the empty string reads every row, from null none). The statement runs, so the
+// caller explains in a transaction it rolls back.
 //
 // The statement's own failure - Postgres refusing to prepare it, to plan it or to run it - is
 // answered as an error, which a control's caller reads as the control proving nothing
 // (RequireTheCheckFails). A failure of the test's own making, an argument pgx cannot write, still
 // fails t.
-func explainExecuted(t testing.TB, ctx context.Context, tx pgx.Tx, statement string, args []any, mode, format string) ([]byte, error) {
+func explainExecuted(t testing.TB, ctx context.Context, tx pgx.Tx, statement string, args []any, mode, options, format string) ([]byte, error) {
 	t.Helper()
 	if _, err := tx.Exec(ctx, "set local plan_cache_mode = "+mode); err != nil {
 		t.Fatalf("set plan_cache_mode = %s: %v", mode, err)
@@ -148,7 +154,7 @@ func explainExecuted(t testing.TB, ctx context.Context, tx pgx.Tx, statement str
 	}
 	literals := make([]string, len(args))
 	for index, argument := range args {
-		text, err := conn.TypeMap().Encode(description.ParamOIDs[index], pgtype.TextFormatCode, argument, nil)
+		text, err := conn.TypeMap().Encode(description.ParamOIDs[index], pgtype.TextFormatCode, argument, []byte{})
 		if err != nil {
 			t.Fatalf("write argument %d (%T) as a literal: %v", index+1, argument, err)
 		}
@@ -162,7 +168,7 @@ func explainExecuted(t testing.TB, ctx context.Context, tx pgx.Tx, statement str
 	if len(literals) > 0 {
 		execute += "(" + strings.Join(literals, ", ") + ")"
 	}
-	rows, err := tx.Query(ctx, "explain (analyze, format "+format+") "+execute)
+	rows, err := tx.Query(ctx, "explain ("+options+", format "+format+") "+execute)
 	if err != nil {
 		return nil, fmt.Errorf("explain the statement under %s: %w", mode, err)
 	}
@@ -209,7 +215,27 @@ func explainAfter(t testing.TB, ctx context.Context, db Beginner, before []State
 			t.Fatalf("%s: %v", setting, err)
 		}
 	}
-	return explainExecuted(t, ctx, tx, statement.SQL, statement.Args, mode, format)
+	return explainExecuted(t, ctx, tx, statement.SQL, statement.Args, mode, "analyze", format)
+}
+
+// ExplainBuffered explains statement (explainExecuted) under mode, with the BUFFERS option, in a
+// transaction of db that it rolls back. It sets nothing but the mode, so the planner plans the
+// statement as it does for any reader of db, with whichever join it picks, and each node carries
+// the shared buffers it and the nodes under it hit and read (Nodes). A test that judges which join
+// the plan holds reads it here: ExplainAfter turns the hash and the merge join off
+// (NestedLoopsOnly).
+func ExplainBuffered(t testing.TB, ctx context.Context, db Beginner, statement Statement, mode, format string) []byte {
+	t.Helper()
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction a plan is read in: %v", err)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	answer, err := explainExecuted(t, ctx, tx, statement.SQL, statement.Args, mode, "analyze, buffers", format)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, statement.SQL)
+	}
+	return answer
 }
 
 // UnprobedReads reads plan, one "Plan" node of EXPLAIN (ANALYZE, FORMAT JSON) of a statement over

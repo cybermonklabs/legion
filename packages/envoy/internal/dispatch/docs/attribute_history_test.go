@@ -171,6 +171,7 @@ func requireStatedBy(t *testing.T, what string, tuple graphstore.Tuple, cause ve
 // write. And a value is no node, so with every cutover row on, the view's tuple arm answers the
 // block's own edge and no edge whose far end is one of its values.
 func TestAnAttributeHistoryWrittenByTheBlockIndexReadsBackAsARelationHistoryDoes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database, service := blockIndexService(t)
 
@@ -246,7 +247,7 @@ func TestAnAttributeHistoryWrittenByTheBlockIndexReadsBackAsARelationHistoryDoes
 	// The relation's history: the document asserted by version 1, then retracted and holder
 	// asserted by version 4, which moved the block. A part_of is dated by the pass that states it,
 	// at the clock it reads once it holds the owner row and the fence, at or after its version's
-	// own time (D2 of dispatch://INFRA-1253's plan), so the move's retraction and assertion share
+	// own time (D2 of the issue-tree plan), so the move's retraction and assertion share
 	// one time; the writer and the event are the version's.
 	for index, want := range []struct {
 		toKind, toID string

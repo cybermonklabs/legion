@@ -295,6 +295,21 @@ func framesNoReadCanTellTheRoleOf(t testing.TB) []markedFrame {
 	return frames
 }
 
+// laterRoleMessage is a role message of role the listener's rules take, for a row to store after
+// the frames it judges on the same subject, so it takes their path behind them: the relay judges a
+// session's frames, and a takeover pass copies them, in stream order; the kept lane's walk forwards
+// its copies in the lane's order; and a session's relay sends the frames of its subject in stream
+// order. A holder that received it has received every copy of those frames that path sent before
+// it, a second copy among them, so a row counts what the holder received once it has.
+func laterRoleMessage(t *testing.T, role string) markedFrame {
+	t.Helper()
+	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, roleForwardDedupePrefix+"later-"+id.New())
+	later := markedFrame{shape: "a role message stored after the row's frames", mark: frameMark(), issuedAt: item.IssuedAt}
+	item.PayloadSummary = later.String()
+	later.data = marshalListenerEnvelope(t, item)
+	return later
+}
+
 // withFields is item's JSON with each of fields set to its raw value.
 func withFields(t testing.TB, item contracts.Envelope, fields map[string]json.RawMessage) []byte {
 	t.Helper()

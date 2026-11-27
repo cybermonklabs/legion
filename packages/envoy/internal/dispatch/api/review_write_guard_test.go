@@ -5,6 +5,8 @@
 
 package api
 
+//ci:reads packages/envoy/**/*.go !**/*_test.go `packages/envoy/internal/dispatch/api/module_source_test.go#scanModuleSources` walks packages/envoy (infra, testdata and all) and parses every .go file it finds but the test files, for the tests that ask it for the module's sources: `packages/envoy/internal/dispatch/api/lock_level_test.go#TestNoForUpdateOnOwnerTables`, `packages/envoy/internal/dispatch/api/event_insert_guard_test.go#TestOnlyTheBrokerInsertsEvents`, `packages/envoy/internal/dispatch/api/review_order_guard_test.go#TestEveryReviewReadOrdersByReviewOrder`, `packages/envoy/internal/dispatch/api/review_write_guard_test.go#TestOnlyQueueReviewWritesReviews`, `packages/envoy/internal/dispatch/api/one_expression_guard_test.go#TestOneExpressionDecidesWhoWaitsInOneSpelling`, `packages/envoy/internal/dispatch/api/issue_route_writer_guard_test.go#TestOnlyTheIssuePatchWritesTheRoute`; that last also walks packages/envoy and reads every non-test file of it as text
+
 import (
 	"go/ast"
 	"go/parser"
@@ -28,7 +30,7 @@ var (
 	reviewUpdateStatement = regexp.MustCompile(`(?i)\bupdate\s+(?:only\s+)?` + reviewTable)
 )
 
-// TestOnlyQueueReviewWritesReviews enforces what docs.ReviewOrder's `event_seq desc nulls last`
+// TestOnlyQueueReviewWritesReviews enforces what model.ReviewOrder's `event_seq desc nulls last`
 // rests on: every review committed after migration 0120 carries the sequence of its artifact.*
 // event, so a row without one is older than every row with one. docs.QueueReview inserts the row
 // and then writes the sequence of the event it appended; the migration's trigger covers the
@@ -85,7 +87,7 @@ func TestOnlyQueueReviewWritesReviews(t *testing.T) {
 	if len(offences) > 0 {
 		t.Fatalf("only docs.QueueReview (%s) may write artifact_reviews, and these statements also do:\n\t%s\n"+
 			"Record a review through docs.QueueReview instead. It writes the sequence of the review's "+
-			"artifact.* event in the review's own transaction, and docs.ReviewOrder ranks a review "+
+			"artifact.* event in the review's own transaction, and model.ReviewOrder ranks a review "+
 			"without one below every review with one.", reviewWriter, strings.Join(offences, "\n\t"))
 	}
 	if inserts != 1 || updates != 2 {

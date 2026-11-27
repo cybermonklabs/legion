@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -101,7 +101,7 @@ func TestARowMadeAgainAtAnAddressTakesNoVisibilityOfTheRowBefore(t *testing.T) {
 	// The removed document's node was reserved for its author before it went. The store takes no
 	// node of kind artifact reserved for its author, since not every read of a document binds the
 	// visibility predicate, so the test seeds the reservation as a store that held one would
-	// (graphstoretest.SeedAuthorOnly): what it proves is that the backfill writes the new row's
+	// (graphseedtest.SeedAuthorOnly): what it proves is that the backfill writes the new row's
 	// own visibility, whatever the removed node held.
 	removed, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindArtifact, "GONE-1/notes-md")
 	if err != nil || !held {
@@ -109,7 +109,7 @@ func TestARowMadeAgainAtAnAddressTakesNoVisibilityOfTheRowBefore(t *testing.T) {
 	}
 	removed.MadeAt = created.Add(-time.Minute)
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		return graphstoretest.SeedAuthorOnly(ctx, tx, removed)
+		return graphseedtest.SeedAuthorOnly(ctx, tx, removed)
 	}); err != nil {
 		t.Fatalf("reserve the removed document's node for its author: %v", err)
 	}
@@ -285,7 +285,6 @@ func TestANodeAtALaterReleasesStateIsPresentAndTheBackfillKeepsIt(t *testing.T) 
 		issueNode.State, askNode.State = laterObjectState, laterObjectState
 		issueNode.Restates, askNode.Restates = false, false
 		issueNode.MadeAt, askNode.MadeAt = at.Add(time.Minute), at.Add(time.Minute)
-		issueNode.Restates, askNode.Restates = false, false
 		return graphstore.Write(ctx, tx, []graphstore.Node{issueNode, askNode}, nil)
 	}); err != nil {
 		t.Fatalf("write the two nodes and mark them %s: %v", laterObjectState, err)

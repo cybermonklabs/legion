@@ -77,7 +77,7 @@ func TouchedTables(sql string) []string {
 	return touchedNames(readMigration(sql).code)
 }
 
-// Statements are the statements a migration runs, in order, read as TouchedTables reads them
+// CensusStatements are the statements a migration runs, in order, read as TouchedTables reads them
 // (readMigration): its comments are gone, each string literal and the body of each function it
 // defines reads as an empty literal, and a DO block's body is read as statements of its own, so
 // a DO block reads as "do begin <its first statement>", then each of its other statements, then
@@ -85,7 +85,7 @@ func TouchedTables(sql string) []string {
 // its words one space apart. A caller that holds a migration to more than the tables it locks -
 // every name a statement gives, the kind of statement that gives it - reads what the census
 // reads, so a name inside a function's body or a comment is no statement's.
-func Statements(sql string) []string {
+func CensusStatements(sql string) []string {
 	code := readMigration(sql).code
 	var statements []string
 	var statement strings.Builder
@@ -151,6 +151,11 @@ func matchedTouches(code string) []touch {
 	var out []touch
 	for _, form := range touchedTablePatterns {
 		for _, match := range matchedNames(code, form.pattern) {
+			// A trigger's event list names truncate as an event, not a statement: `before truncate
+			// on people`, `insert or truncate on t`. What follows it there is a keyword, never a table.
+			if form.writes == truncatesRows && (match.name == "on" || match.name == "or") {
+				continue
+			}
 			out = append(out, touch{name: match.name, writes: form.writes, offset: match.offset})
 		}
 	}
@@ -178,11 +183,19 @@ func indexMatches(code string) []matchedName {
 	return out
 }
 
+// matchedNames names the tables pattern's first group names in code. An unquoted `on` is no
+// table: ON is a reserved word, so a table so named would be quoted, and the truncate pattern
+// meets it in a trigger's event list (`after truncate on route_roster`), whose table the trigger
+// pattern reads.
 func matchedNames(code string, pattern *regexp.Regexp) []matchedName {
 	var names []matchedName
 	for _, match := range pattern.FindAllStringSubmatchIndex(code, -1) {
 		for _, raw := range strings.Split(code[match[2]:match[3]], ",") {
-			name := strings.ToLower(strings.Trim(strings.TrimSpace(raw), `"`))
+			trimmed := strings.TrimSpace(raw)
+			if strings.EqualFold(trimmed, "on") {
+				continue
+			}
+			name := strings.ToLower(strings.Trim(trimmed, `"`))
 			name = strings.TrimPrefix(name, "public.")
 			if name != "" {
 				names = append(names, matchedName{name: name, offset: match[0]})

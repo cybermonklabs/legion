@@ -2,6 +2,7 @@ package specgraph
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -306,6 +307,10 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 		{"removed in capitals", `{"nodes":[{"id":"a-page-shows-it","REMOVED":true,"versions":[` + good + `]}]}`, `member "/nodes/0/REMOVED" is not in the format`},
 		{"removed two times, true then false", `{"nodes":[{"id":"a-page-shows-it","removed":true,"removed":false,"versions":[` + good + `]}]}`,
 			`member "/nodes/0/removed" is in one object two times`},
+		{"a node that sets no removed", `{"nodes":[{"id":"a-page-shows-it","partly_checked":false,"versions":[` + good + `]}]}`,
+			`approved node "a-page-shows-it": it sets no removed; a node that the approved spec keeps sets false`},
+		{"a node that sets no partly_checked", `{"nodes":[{"id":"a-page-shows-it","removed":false,"versions":[` + good + `]}]}`,
+			`approved node "a-page-shows-it": it sets no partly_checked; a statement whose checks decide all of it sets false`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -323,7 +328,7 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 // has it not met (R22: "Dispatch refuses the approval of a change request that puts a statement
 // under a parent that the approved spec does not hold"). So the reader and the entry of the
 // derivation (approvedFault), and Current for a caller that builds an Approved itself, refuse a
-// relation that names no node of the approved spec of a kind that relationKinds gives it, the rule
+// relation that names no node of the approved spec of a kind that its relationRule gives it, the rule
 // that Validate reads in the files, naming the member and the value. A node that the approved spec
 // removed is one that it holds, so a relation to it is taken where its kind is right, and refused
 // where it is not. A check serves one statement (R6: "narrower than its statement"), so a check
@@ -341,7 +346,7 @@ func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Print of %s: %v", id, err)
 		}
-		return ApprovedNode{ID: id, Removed: new(removed), PartlyChecked: new(false), Versions: []ApprovedVersion{{Version: 1, At: at, Block: block}}}
+		return ApprovedNode{ID: id, Removed: removed, PartlyChecked: false, Versions: []ApprovedVersion{{Version: 1, At: at, Block: block}}}
 	}
 	statement := func(id string) Statement {
 		return Statement{ID: id, Text: "The pages show each order.", Kind: KindBehavior}
@@ -461,7 +466,7 @@ func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 			for _, v := range row.values {
 				id, n := row.node(v.v)
 				nodes := append(others(t), approvedNode(t, id, n, false))
-				err := approvedFault(nodes)
+				err := approvedFault(nodes, nil)
 				want := ""
 				if v.want != "" {
 					want = fmt.Sprintf("specgraph: approved node %s version 1: %s (line 1 of its block)", quoted(id), v.want)
@@ -486,14 +491,20 @@ func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 	}
 }
 
-// approvedFault judges the relations of each version of a node, the older ones too, though no state
-// reads an older version (the derivation reads Current), and it judges each by the kind of the
-// newest text of the node that it names, the kind that Current gives that node. R15: "An interface
-// is a component marked as an interface", so a component of one version can be an interface of the
-// next under the same id. Each row is an approved spec of pages, a statement, and dispatch and
-// envoy, two components, with the row's nodes, each version approved a day after the one before:
-// the controls are taken, and each other row is refused with its line.
-func TestEachVersionOfANodeIsJudgedByTheNewestKindOfTheNodesThatItNames(t *testing.T) {
+// approvedFault judges by the kind of the nodes that it names only the current text of each node
+// that the approved spec keeps, the text that Current, the derivation and Validate read, and by the
+// kind of the newest text of each node that it names, the kind that Current gives that node. R15:
+// "An interface is a component marked as an interface", so a component of one version can be an
+// interface of the next under the same id, and an older text, or the text of a removed node, that
+// named it as a parent then names an interface now. The derivation reads none of the relations of
+// such a text, so it is judged only by whether each of them names a node of the approved spec:
+// Dispatch keeps each text that the approved spec held (R2), so a node that a text once named is in
+// the approved spec still.
+// Each row is an approved spec of pages, a statement, and dispatch and envoy, two components, with
+// the row's nodes, each version approved a day after the one before: approvedFault and ReadApproved
+// read the controls, and Current holds each node of them that the approved spec keeps, with no
+// problem; each other row is refused with its line, by approvedFault and ReadApproved alike.
+func TestOnlyTheCurrentTextOfANodeIsJudgedByTheKindOfTheNodesThatItNames(t *testing.T) {
 	t.Parallel()
 	statement := func(parent string) Statement {
 		return Statement{ID: "a-page-shows-it", Text: "The pages show each order.", Kind: KindBehavior, Parent: parent}
@@ -504,7 +515,7 @@ func TestEachVersionOfANodeIsJudgedByTheNewestKindOfTheNodesThatItNames(t *testi
 	// versions is the approved node of the texts of one node, oldest first.
 	versions := func(t *testing.T, texts ...interface{ Print() (string, error) }) ApprovedNode {
 		t.Helper()
-		n := ApprovedNode{Removed: new(false), PartlyChecked: new(false)}
+		n := ApprovedNode{Removed: false, PartlyChecked: false}
 		for i, text := range texts {
 			block, err := text.Print()
 			if err != nil {
@@ -513,6 +524,10 @@ func TestEachVersionOfANodeIsJudgedByTheNewestKindOfTheNodesThatItNames(t *testi
 			n.ID = nodesOf(mustParse(t, block))[0].id
 			n.Versions = append(n.Versions, ApprovedVersion{Version: i + 1, At: time.Date(2026, 11, 10+i, 0, 0, 0, 0, time.UTC), Block: block})
 		}
+		return n
+	}
+	removed := func(n ApprovedNode) ApprovedNode {
+		n.Removed = true
 		return n
 	}
 	interfaceOfTheNewestText := func(t *testing.T) ApprovedNode {
@@ -535,16 +550,48 @@ func TestEachVersionOfANodeIsJudgedByTheNewestKindOfTheNodesThatItNames(t *testi
 		{"the current text of a component is under a component that its newest text marks as an interface", func(t *testing.T) []ApprovedNode {
 			return []ApprovedNode{interfaceOfTheNewestText(t), versions(t, component("envoy-delivery", "envoy-to-dispatch"))}
 		}, `specgraph: approved node "envoy-delivery" version 1: bad-approved-block: parent "envoy-to-dispatch" names an interface, not a component (line 1 of its block)`},
-		{"version 1 of a component is under a component that the newest text of that one marks as an interface", func(t *testing.T) []ApprovedNode {
+		{"control: version 1 of a component is under a component that the newest text of that one marks as an interface, and version 2 under envoy", func(t *testing.T) []ApprovedNode {
 			return []ApprovedNode{interfaceOfTheNewestText(t), versions(t, component("envoy-delivery", "envoy-to-dispatch"), component("envoy-delivery", "envoy"))}
-		}, `specgraph: approved node "envoy-delivery" version 1: bad-approved-block: parent "envoy-to-dispatch" names an interface, not a component (line 1 of its block)`},
+		}, ""},
+		{"version 2 of a component, its current text, is under a component that its newest text marks as an interface, and version 1 under envoy", func(t *testing.T) []ApprovedNode {
+			return []ApprovedNode{interfaceOfTheNewestText(t), versions(t, component("envoy-delivery", "envoy"), component("envoy-delivery", "envoy-to-dispatch"))}
+		}, `specgraph: approved node "envoy-delivery" version 2: bad-approved-block: parent "envoy-to-dispatch" names an interface, not a component (line 1 of its block)`},
+		{"control: a removed component is under a component that its newest text marks as an interface", func(t *testing.T) []ApprovedNode {
+			return []ApprovedNode{interfaceOfTheNewestText(t), removed(versions(t, component("envoy-delivery", "envoy-to-dispatch")))}
+		}, ""},
+		{"a removed component is under no node", func(t *testing.T) []ApprovedNode {
+			return []ApprovedNode{interfaceOfTheNewestText(t), removed(versions(t, component("envoy-delivery", "no-such-component")))}
+		}, `specgraph: approved node "envoy-delivery" version 1: bad-approved-block: parent "no-such-component" names no node of the approved spec (line 1 of its block)`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			nodes := append([]ApprovedNode{versions(t, Statement{ID: "pages", Text: "The pages show each order.", Kind: KindBehavior}),
 				versions(t, component("dispatch", "")), versions(t, component("envoy", ""))}, row.nodes(t)...)
-			if err := approvedFault(nodes); err == nil && row.want != "" || err != nil && err.Error() != row.want {
-				t.Errorf("the approved spec gives %v; want %q", err, row.want)
+			if err := approvedFault(nodes, nil); err == nil && row.want != "" || err != nil && err.Error() != row.want {
+				t.Errorf("approvedFault gives %v; want %q", err, row.want)
+			}
+			file, err := json.Marshal(struct {
+				Nodes []ApprovedNode `json:"nodes"`
+			}{nodes})
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, err := ReadApproved(bytes.NewReader(file))
+			if err == nil && row.want != "" || err != nil && err.Error() != row.want {
+				t.Errorf("ReadApproved gives %v; want %q", err, row.want)
+			}
+			if row.want != "" || err != nil {
+				return
+			}
+			current, problems := a.Current()
+			held := idsOf(current)
+			for _, n := range nodes {
+				if !n.Removed && !held[n.ID] || n.Removed && held[n.ID] {
+					t.Errorf("Current holds %s %t; want %t", n.ID, held[n.ID], !n.Removed)
+				}
+			}
+			if len(problems) != 0 {
+				t.Errorf("Current gives the problems %+v; want none", problems)
 			}
 		})
 	}
@@ -657,7 +704,7 @@ func TestCurrentIsTheNewestTextOfEachNodeThatIsNotRemoved(t *testing.T) {
 	t.Parallel()
 	approved := readApproved(t, "testdata/compare/removed-kept/approved.json")
 	removed := approved.Nodes["an-order-is-paid-once"]
-	if !*removed.Removed || *removed.PartlyChecked || len(removed.Versions) != 2 || removed.Versions[1].Version != 2 ||
+	if !removed.Removed || removed.PartlyChecked || len(removed.Versions) != 2 || removed.Versions[1].Version != 2 ||
 		!removed.Versions[1].At.Equal(time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)) {
 		t.Errorf("Nodes[an-order-is-paid-once] = %+v", removed)
 	}
@@ -685,15 +732,16 @@ func TestCurrentIsTheNewestTextOfEachNodeThatIsNotRemoved(t *testing.T) {
 	}
 
 	partly := readApproved(t, "testdata/compare/approved-text/approved.json")
-	if *partly.Nodes["acme-keeps-each-order"].PartlyChecked {
+	if partly.Nodes["acme-keeps-each-order"].PartlyChecked {
 		t.Error("PartlyChecked read true from false")
 	}
 }
 
-// An approved spec that a caller builds can hold a node that does not set Removed, which
-// approvedFault refuses: Current, Since and Compare read it as a node with no current text,
-// and no false that the caller did not write. The control sets Removed false.
-func TestCurrentLeavesOutANodeThatDoesNotSetRemoved(t *testing.T) {
+// An approved spec that a caller builds holds Removed as a value: a node that leaves it false is
+// one that the approved spec keeps, and Current, Since and Compare read its current text; one that
+// sets it true has none. The reader of approved.json refuses a node that leaves removed out
+// (TestReadApprovedRefusesAMalformedFixture).
+func TestCurrentReadsRemovedAsTheCallerSetsIt(t *testing.T) {
 	t.Parallel()
 	at := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
 	block := ":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows it.\n:::\n"
@@ -703,15 +751,15 @@ func TestCurrentLeavesOutANodeThatDoesNotSetRemoved(t *testing.T) {
 	}
 	for _, row := range []struct {
 		name    string
-		removed *bool
+		removed bool
 		current bool
 	}{
-		{"Removed not set", nil, false},
-		{"control: Removed false", new(false), true},
+		{"Removed left false", false, true},
+		{"Removed true", true, false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			a := Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Removed: row.removed, PartlyChecked: new(false),
+			a := Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Removed: row.removed,
 				Versions: []ApprovedVersion{{Version: 1, At: at, Block: block}}}}}
 			current, problems := a.Current()
 			_, held := current.StatementByID("a-page-shows-it")
@@ -731,7 +779,7 @@ func TestCurrentNamesABlockThatDoesNotParse(t *testing.T) {
 	at := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
 	broken := ":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows it.\n::: and more\n:::\n"
 	approved := Approved{Nodes: map[string]ApprovedNode{
-		"a-page-shows-it": {ID: "a-page-shows-it", Removed: new(false), PartlyChecked: new(false), Versions: []ApprovedVersion{{Version: 1, At: at, Block: broken}}},
+		"a-page-shows-it": {ID: "a-page-shows-it", Removed: false, PartlyChecked: false, Versions: []ApprovedVersion{{Version: 1, At: at, Block: broken}}},
 	}}
 	current, problems := approved.Current()
 	if len(current.Statements) != 0 {
@@ -754,7 +802,7 @@ func TestATextThatComesBackIsItsNewestVersion(t *testing.T) {
 	day := func(d int) time.Time { return time.Date(2026, 11, d, 0, 0, 0, 0, time.UTC) }
 	a := ":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows it.\n:::\n"
 	b := ":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows all.\n:::\n"
-	approved := Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Removed: new(false), PartlyChecked: new(false), Versions: []ApprovedVersion{
+	approved := Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Removed: false, PartlyChecked: false, Versions: []ApprovedVersion{
 		{Version: 1, At: day(10), Block: a}, {Version: 2, At: day(11), Block: b}, {Version: 3, At: day(12), Block: a},
 	}}}}
 	files, problems := Parse(map[string][]byte{"spec.md": []byte(a)})
@@ -767,10 +815,11 @@ func TestATextThatComesBackIsItsNewestVersion(t *testing.T) {
 	}
 }
 
-// WriteApproved writes approved.json in the one form that ReadApproved reads (ApprovedFile): what it
+// WriteApproved writes approved.json in the one form that ReadApproved reads (approvedFile): what it
 // writes for each fixture reads back as the same approved spec, and it writes the nodes in the
-// order of their ids, so two writes give the same bytes. For an approved spec that ReadApproved
-// would refuse, it writes nothing and names the fault.
+// order of their ids, so two writes give the same bytes. It writes removed and partly_checked of a
+// node that leaves them false, which ReadApproved refuses a file to leave out. For an approved spec
+// that ReadApproved would refuse, it writes nothing and names the fault.
 func TestWriteApprovedWritesWhatReadApprovedReads(t *testing.T) {
 	t.Parallel()
 	entries, err := os.ReadDir("testdata/compare")
@@ -803,15 +852,9 @@ func TestWriteApprovedWritesWhatReadApprovedReads(t *testing.T) {
 	}{
 		{"a node under another id", Approved{Nodes: map[string]ApprovedNode{"a-page-shows-all": {ID: "a-page-shows-it", Versions: []ApprovedVersion{{Version: 1, At: at, Block: block}}}}},
 			`node "a-page-shows-it" is under the id "a-page-shows-all"`},
-		{"a version with no time", Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Removed: new(false), PartlyChecked: new(false),
+		{"a version with no time", Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Removed: false, PartlyChecked: false,
 			Versions: []ApprovedVersion{{Version: 1, Block: block}}}}},
 			`approved node "a-page-shows-it" version 1: it has no time`},
-		{"a node that does not set removed", Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", PartlyChecked: new(false),
-			Versions: []ApprovedVersion{{Version: 1, At: at, Block: block}}}}},
-			`approved node "a-page-shows-it": it sets no removed`},
-		{"a node that does not set partly_checked", Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Removed: new(false),
-			Versions: []ApprovedVersion{{Version: 1, At: at, Block: block}}}}},
-			`approved node "a-page-shows-it": it sets no partly_checked`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -821,6 +864,17 @@ func TestWriteApprovedWritesWhatReadApprovedReads(t *testing.T) {
 			}
 		})
 	}
+	t.Run("a node that leaves removed and partly_checked false", func(t *testing.T) {
+		t.Parallel()
+		kept := Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Versions: []ApprovedVersion{{Version: 1, At: at, Block: block}}}}}
+		var written bytes.Buffer
+		if err := WriteApproved(&written, kept); err != nil || !strings.Contains(written.String(), `"removed":false,"partly_checked":false`) {
+			t.Fatalf("WriteApproved = %v, and wrote %q; want removed and partly_checked false", err, written.String())
+		}
+		if got, err := ReadApproved(&written); err != nil || !reflect.DeepEqual(got, kept) {
+			t.Errorf("ReadApproved(WriteApproved(a)) = %+v, %v; want a, %+v", got, err, kept)
+		}
+	})
 }
 
 // readApproved reads the approved fixture at path and fails the test when ReadApproved refuses it.

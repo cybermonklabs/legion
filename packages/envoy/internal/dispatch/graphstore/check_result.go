@@ -7,7 +7,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// A result is one recorded run of a check (R12 of this branch's spec): a node of supertag result,
+// A result is one recorded run of a check (R12 of the issue-tree spec): a node of supertag result,
 // addressed by the result's own uuid, which the check_results row of that id projects, beside the
 // tuples out of it. It carries as values what a result holds and points at nothing it names by
 // value: its verdict, where a person reaches the change (surface), the command that proved it

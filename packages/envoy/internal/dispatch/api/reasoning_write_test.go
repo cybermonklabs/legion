@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -32,6 +34,7 @@ import (
 // - is also one value tuple of the node, its whole history, as a finding's text is; and an append
 // of a pointer the node holds already writes nothing, under a run as under none.
 func TestTheReasoningWriteStatesTheWriterItsRecordNames(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "RSN", "Reasoned work", "# Spec\n\nA passage.")
@@ -117,7 +120,7 @@ func TestTheReasoningWriteStatesTheWriterItsRecordNames(t *testing.T) {
 			t.Errorf("the store holds %d rows and tuples of the refused %s/%s, want none", stored, kind, id)
 		}
 	}
-	requireRefusal := func(t *testing.T, err error, status int, code, words string) {
+	requireRefusal := func(t *testing.T, err error, status int, code string, names ...string) {
 		t.Helper()
 		if err == nil {
 			t.Fatalf("the write was taken, want %d %s", status, code)
@@ -125,8 +128,8 @@ func TestTheReasoningWriteStatesTheWriterItsRecordNames(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		served.writeHandlerError(recorder, err)
 		body := decodeBody[errorBody](t, recorder)
-		if recorder.Code != status || body.Code != code || !strings.Contains(body.Error, words) {
-			t.Errorf("the refusal answers %d %s %q, want %d %s holding %q", recorder.Code, body.Code, body.Error, status, code, words)
+		if recorder.Code != status || body.Code != code || !graphstoretest.NamesAsAWord(body.Error, names...) {
+			t.Errorf("the refusal answers %d %s %q, want %d %s naming %q", recorder.Code, body.Code, body.Error, status, code, names)
 		}
 	}
 
@@ -206,7 +209,7 @@ func TestTheReasoningWriteStatesTheWriterItsRecordNames(t *testing.T) {
 		proving, recorded := actorsOf(t, "Authorization", "Bearer agent-token", "session-shared-0001")
 		node := lens(graphstore.VisibilityAuthor, "trade-off")
 		_, err := write(t, proving, recorded, node)
-		requireRefusal(t, err, http.StatusForbidden, "AUTHOR_NAMES_NOBODY", "names nobody")
+		requireRefusal(t, err, http.StatusForbidden, "AUTHOR_NAMES_NOBODY")
 		requireNothingStored(t, graphstore.KindLens, node.id)
 	})
 
@@ -245,12 +248,15 @@ func TestTheReasoningWriteStatesTheWriterItsRecordNames(t *testing.T) {
 		}}
 		_, err := write(t, proving, recorded, strayKind)
 		requireRefusal(t, err, http.StatusBadRequest, "INVALID_POINTER",
-			"the has_kind tuple from a lens at a constraint breaks its type rule: has_kind points from a lens at a lens_kind")
+			graphstore.TupleHasKind, graphstore.KindLens, graphstore.KindConstraint, graphstore.KindLensKind)
 		requireNothingStored(t, graphstore.KindLens, strayKind.id)
 
 		twoKinds := lens("", "trade-off", "inversion")
 		_, err = write(t, proving, recorded, twoKinds)
-		requireRefusal(t, err, http.StatusConflict, "POINTER_ALREADY_ASSERTED", graphstore.ErrLensKindAsserted.Reason)
+		requireRefusal(t, err, http.StatusConflict, "POINTER_ALREADY_ASSERTED")
+		if !errors.Is(err, graphstore.ErrLensKindAsserted) {
+			t.Errorf("a lens of two kinds is refused %v, want graphstore.ErrLensKindAsserted and not the 409 of a pre-mortem's kept kind", err)
+		}
 		requireNothingStored(t, graphstore.KindLens, twoKinds.id)
 	})
 

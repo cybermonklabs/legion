@@ -11,12 +11,16 @@ import (
 )
 
 // TestTheGraphNodeKindEnumIsTheRegistrysKinds: the OpenAPI document closes `GraphNode.kind` over
-// every node kind the read registry holds (refs.VisibilityKinds), so the TypeScript type
-// `NODE_LABELS` is keyed by names each of them, and a child that registers a kind later adds its
-// member or fails here. `state` and `visibility` are closed over the values the store takes. Both
-// the document the emitter writes now and the one committed beside the clients are read: the
-// first is what the model's tags say, the second what every generated client was written from.
-// The shapes that embed a node (GraphNodeRead, the node of a references read) carry the same.
+// every node kind a read of the graph answers, the kinds the read registry holds a loader for
+// (refs.ResolvableKinds), so the TypeScript type `NODE_LABELS` is keyed by names each of them, and
+// a child that resolves a kind later adds its member or fails here. A kind the registry holds a
+// predicate for and no loader - a supertag or an attribute of the block schema - is the kind of
+// no node an answer carries, so a member naming one fails here too. `state` and `visibility` are
+// closed over the values the store takes. Both the document the emitter writes now and the one
+// committed beside the clients are read: the first is what the model's tags say, the second what
+// every generated client was written from. The shapes that embed a node (GraphNodeRead, the node
+// of a references read) carry the same. The negative control is `supertag` written back into the
+// tag, which fails naming the kind.
 //
 // `kind` is required, as every node answers it. `state` and `visibility` are not: this release
 // adds them to a shape a server of the release before already answers, and that server answers
@@ -25,8 +29,9 @@ import (
 // nothing filled: it writes every field that carries no `,omitempty`, so no answer of either shape
 // leaves them out.
 func TestTheGraphNodeKindEnumIsTheRegistrysKinds(t *testing.T) {
+	t.Parallel()
 	want := map[string][]string{
-		"kind":       refs.VisibilityKinds(),
+		"kind":       refs.ResolvableKinds(),
 		"state":      graphstore.NodeStates(),
 		"visibility": {graphstore.VisibilityProject, graphstore.VisibilityAuthor},
 	}

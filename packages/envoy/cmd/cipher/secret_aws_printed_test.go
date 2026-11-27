@@ -92,6 +92,7 @@ func useAWSWebIdentity(t *testing.T, tokenFile string) func() []string {
 // error quotes ("unable to read file at <path>: open <path>: ..."). A file that holds a token is
 // still read and its token sent to STS (the control: the stand-in is the endpoint the form reached).
 func TestAWSWebIdentityTokenFileIsNamedByItsVariableNeverItsPath(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useAWSWebIdentity, t.Setenv at secret_aws_printed_test.go:56).
 	const secret = "hunter2pw-webidentity-6d1f08"
 	for _, row := range []struct {
 		name  string
@@ -177,6 +178,7 @@ func TestAWSWebIdentityTokenFileIsNamedByItsVariableNeverItsPath(t *testing.T) {
 // pasted a credential in the wrong place puts it. A profile the files hold still loads (the
 // control).
 func TestAnAWSProfileTheConfigDoesNotHoldIsNotPrinted(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_aws_printed_test.go:189).
 	const secret = "hunter2pw-awsprofile-3d90c4"
 	useProfiles := func(t *testing.T) {
 		t.Helper()
@@ -258,6 +260,7 @@ func awsSignInOnly(t *testing.T) {
 // request's class or AWS's error code. The STS row is the control: AWS's code, which the server
 // wrote beside the echoed secret, still prints, so the check sees what AWS answered.
 func TestTheAWSSDKsSignInFailurePrintsNoSetting(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_aws_printed_test.go:293).
 	secret := "hunter2pw-" + "awssignin-" + "5c2e"
 	user := "tokuser" + "7d2a"
 	closing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -487,6 +490,7 @@ func useSSOProfile(t *testing.T, legacy bool, token map[string]string, ssoURL st
 // session nor as a sign-in with no role. Each server writes a made-up secret in its message. The
 // expired rows are the controls: the check sees an expired session where there is one.
 func TestAnIAMIdentityCenterFailureIsSaidOnlyWhereTheSDKOrIAMIdentityCenterSaysIt(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_aws_printed_test.go:516); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	planted := "hunter2pw-" + "ssoecho-" + "2b7e"
 	const expired = "the IAM Identity Center (SSO) session has expired or is invalid"
 	cachedToken := func(expiresAt string) map[string]string {
@@ -574,6 +578,7 @@ func TestAnIAMIdentityCenterFailureIsSaidOnlyWhereTheSDKOrIAMIdentityCenterSaysI
 // in a store call whose credential refresh reads it again as well as in the sign-in. Control: the
 // command a person pastes to run again still names the file, which signed in.
 func TestTheWebIdentityTokenFileIsNamedByItsVariable(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_aws_printed_test.go:585).
 	planted := "hunter2pw-" + "webidpath-" + "31d0"
 	file := filepath.Join(t.TempDir(), planted, "token")
 	for _, name := range []string{"AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY", "AWS_SECRET_KEY", "AWS_PROFILE", "AWS_DEFAULT_PROFILE"} {

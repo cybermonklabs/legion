@@ -202,8 +202,9 @@ func (s *Service) RegisterRoomSync(hub *pglisten.Hub) (run func(ctx context.Cont
 // close or a reopen notified while the hub had no connection reached nobody. The removal lane is
 // its own, because closing a room of a row that has gone (Service.documentRemoved) must not wait
 // behind a catch-up reading another document's stored history; it reads the rows of this
-// process's rooms after each LISTEN too (Service.recheckRemovedRooms), since a removal notified
-// while the hub had no connection reached nobody and nothing announces it again.
+// process's rooms after each LISTEN too (Service.recheckRemovedRooms), since a removal or a
+// retirement notified while the hub had no connection reached nobody and nothing announces it
+// again.
 func (r *roomSync) handlers() []roomSyncHandler {
 	catchUps := r.service.catchUps
 	return []roomSyncHandler{
@@ -571,7 +572,7 @@ const announceDocumentRoomsStatement = `select pg_notify('` + documentRoomsChann
 
 // AnnounceDocumentRooms tells every envoy-dispatch process that documents now have their
 // document_rooms rows naming room, which tx has just written: the conversion of an issue into its
-// issue room (dispatch://INFRA-1253 R6), or a document joining an issue room. Every process then
+// issue room (R6 of the issue-tree spec), or a document joining an issue room. Every process then
 // closes its room of each of those documents, whose sockets reconnect and are admitted to room
 // (ServeHTTP), and its room of room itself, whose layout the move changed and whose next load reads
 // the new one (documentRoomsMoved). The process whose transaction seeded a joining document's
@@ -624,16 +625,25 @@ func (s *Service) documentRoomsMoved(ctx context.Context, payload string) {
 // closeMovedRoom closes this process's room of room, if it holds one, through the eviction a
 // removed document's room takes (documentRemoved): every socket of it ends, and connects again.
 func (s *Service) closeMovedRoom(ctx context.Context, room string) {
-	if s.srv.GetDoc(room) == nil {
-		return
-	}
-	if err := s.Evict(ctx, room); err != nil && ctx.Err() == nil {
+	if err := s.evictResident(ctx, room); err != nil {
 		// The room stays open until its next close: a moved document's appends meet the gate's
 		// refusal (ErrRoomMoved), which fails it, an issue room's settlement finds its layout
 		// stale and closes it (errRoomLayoutMoved), and the lane's pass after the next LISTEN
 		// reads it again (recheckMovedRooms).
 		slog.Error("dispatch: close the room of a document moved into its issue's room", "room", room, "error", err)
 	}
+}
+
+// evictResident closes this process's room of room through Evict where it holds one, which is read
+// first, and answers the eviction's error, nil where it holds none or ctx ended.
+func (s *Service) evictResident(ctx context.Context, room string) error {
+	if s.srv.GetDoc(room) == nil {
+		return nil
+	}
+	if err := s.Evict(ctx, room); err != nil && ctx.Err() == nil {
+		return err
+	}
+	return nil
 }
 
 // residentMovedRoom is one row of residentMovedStatement: a resident room, whether it is a

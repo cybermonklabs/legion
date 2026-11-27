@@ -10,12 +10,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
-
-const maxIssueComponents = 50
 
 // componentsInput is the decoded `components` field of an issue write. Mode "inherit" deletes
 // the issue's own row (the default state); "explicit" replaces it with IDs; "none" records a
@@ -58,8 +57,8 @@ func parseIssueComponents(raw json.RawMessage) (*componentsInput, bool, error) {
 		if input.IDs == nil || len(*input.IDs) == 0 {
 			return nil, true, errorf(http.StatusBadRequest, "COMPONENTS_INPUT", "components.ids must name at least one component for mode explicit")
 		}
-		if len(*input.IDs) > maxIssueComponents {
-			return nil, true, countExceededError("COMPONENTS_INPUT", "components.ids", len(*input.IDs), maxIssueComponents)
+		if len(*input.IDs) > contracts.MaxIssueComponents {
+			return nil, true, countExceededError("COMPONENTS_INPUT", "components.ids", len(*input.IDs), contracts.MaxIssueComponents)
 		}
 		seen := make(map[string]struct{}, len(*input.IDs))
 		for _, raw := range *input.IDs {
@@ -90,11 +89,11 @@ func parseIssueComponents(raw json.RawMessage) (*componentsInput, bool, error) {
 // id that is unknown (never imported, or retired by a re-import) and each that is external.
 //
 // Each component the issue holds as its own is an affects tuple from the issue's node to the
-// component's (dispatch://INFRA-1253 R9), which its issue_component_members row projects, naming
+// component's (R9 of the issue-tree spec), which its issue_component_members row projects, naming
 // the issue's node. It answers the affects tuples the write appends and retracts, which it reads
 // against the ones the issue's node states now so it states only what moved, dated at the time its
 // issue_components row records, at for a write that leaves the issue inheriting, held for the
-// issue's own event to cause (stateIssueRelations). A component past the store's bound
+// issue's own event to cause (queueIssueRelations). A component past the store's bound
 // (graphstore.MaxAddressBytes) is no node of the store, so its row names no node and no tuple is
 // stated of it.
 func writeIssueComponents(ctx context.Context, tx pgx.Tx, key, project string, input componentsInput, at time.Time) ([]graphstore.Tuple, error) {
@@ -154,6 +153,7 @@ func writeIssueComponents(ctx context.Context, tx pgx.Tx, key, project string, i
 	}
 	if input.Mode == "explicit" {
 		marked := make([]string, 0, len(input.IDs))
+		affects = make([]string, 0, len(input.IDs))
 		for _, id := range input.IDs {
 			if address := graphstore.ComponentAddress(project, id); graphstore.AddressFits(address) {
 				marked = append(marked, id)

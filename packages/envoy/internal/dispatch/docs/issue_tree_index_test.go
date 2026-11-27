@@ -7,6 +7,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +19,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The values the block index states of every block beside its parent, spelled out here rather
@@ -55,31 +58,17 @@ const (
 		":::callout{#second-check kind=\"note\" title=\"\"}\nThe second check.\n:::\n\n::::\n"
 	// treePlan is an issue's plan: one plan node whose opening line writes its size and one whose
 	// line writes none.
-	treePlan = "## The plan\n\n:::plan_task{#sized size=\"2.5\"}\nThe task that says how big it is.\n:::\n\n" +
+	treePlan = "## The plan\n\n:::plan_task{#sized size=\"1h30m\"}\nThe task that says how big it is.\n:::\n\n" +
 		":::plan_task{#unsized}\nThe task that says nothing of its size.\n:::\n"
 )
 
-// treeDocument creates a markdown document of issue, the issue's spec where primary is set and the
-// document of role where role is not empty, its live text seeded with markdown, and writes its
-// first version through the real version write path.
+// treeDocument creates a markdown document of issue of the project CORE, the issue's spec where
+// primary is set and the document of role where role is not empty, its live text seeded with
+// markdown, and writes its first version through the real version write path
+// (blockTypeSupertagDocument, with no browser edit and no deferral).
 func treeDocument(t *testing.T, database *store.Store, service *Service, issue, slug string, primary bool, role, markdown string) (string, VersionResult) {
 	t.Helper()
-	var id string
-	var stored *string
-	if role != "" {
-		stored = &role
-	}
-	if err := database.Pool.QueryRow(context.Background(), `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, role, created_by)
-		values ($1, 'CORE', $2, $2 || '.md', 'doc', $3, $4, '{"kind":"user","id":"alice"}')
-		returning id::text
-	`, issue, slug, primary, stored).Scan(&id); err != nil {
-		t.Fatalf("create document %s: %v", slug, err)
-	}
-	seedServiceText(t, service, id, markdown)
-	version, _ := writeVersionThroughTheRealPath(t, service, id, "The first version")
-	settle(t, database, id)
-	return id, version
+	return blockTypeSupertagDocument(t, database, service, issue, "CORE", slug, primary, role, markdown, nil, false)
 }
 
 // treeValue is a block's current value of attribute, and whether it holds one.
@@ -116,10 +105,7 @@ func projectedParent(t *testing.T, database *store.Store, artifactID, blockID st
 func requireTheTreeOfTheVersion(t *testing.T, database *store.Store, service *Service, artifactID, issue string, band byte, moved map[string]string) {
 	t.Helper()
 	ctx := context.Background()
-	var refKey string
-	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, artifactID).Scan(&refKey); err != nil {
-		t.Fatalf("read the ref_key of %s: %v", artifactID, err)
-	}
+	refKey := refKeyOf(t, database, artifactID)
 	markdown, blocks, err := service.TextWithBlocks(ctx, artifactID)
 	if err != nil {
 		t.Fatalf("read %s: %v", artifactID, err)
@@ -273,6 +259,17 @@ func backfillMark(t *testing.T, database *store.Store, artifactID string) (marke
 	return markedAt, standing
 }
 
+// markUnstated leaves document's document_block_versions row as the backfill leaves a document no
+// pass of this rule has stated: marked (store_owed_at), and stated by no pass.
+func markUnstated(t *testing.T, database *store.Store, document string) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		update document_block_versions set store_owed_at = now(), stated_version = null, stated_rule = null where artifact_id = $1`,
+		document); err != nil {
+		t.Fatalf("mark %s as the backfill marks a document no pass has stated: %v", document, err)
+	}
+}
+
 // drainedAsTheReleaseBefore stands in for a pod of the release before this one draining the
 // document as that release drains a null version, the mark it reads as its own debt: the version
 // goes to null, as rebuild-refs sets it, and that release's index pass sets it back to the
@@ -364,9 +361,9 @@ type movingPass struct {
 }
 
 // requireTheMove holds the move of the block at address of the document from block from to block
-// to (D2 of dispatch://INFRA-1253's plan, as INFRA-1098's architect ruled it): its newest part_of
-// asserts to and the one before it retracts from, and the two share one time, the moving pass's
-// own, which every parent, rank, text and placement that pass appended out of the document's
+// to (D2 of the issue-tree plan, as the graph-model root spec's architect ruled it): its newest
+// part_of asserts to and the one before it retracts from, and the two share one time, the moving
+// pass's own, which every parent, rank, text and placement that pass appended out of the document's
 // blocks carries too, since the pass reads it once, after it holds the owner row and the fence.
 // That time is no earlier than the version row's created_at, and later than it by at least the
 // wait between the row's write and the pass; both tuples carry the version's writer and its event.
@@ -421,7 +418,7 @@ func requireTheMove(t *testing.T, database *store.Store, artifactID, address, fr
 }
 
 // The issue tree holds the parent and the rank of every block of the version, a block whose text
-// no version changed included (c-parent-written; R1 of dispatch://INFRA-1253).
+// no version changed included (c-parent-written; R1 of the issue-tree spec).
 //
 // A spec is indexed at one version, then at a second that moves a block out of one callout under
 // another, after the block already there, and changes no character of it, so the index writes no
@@ -481,7 +478,7 @@ func TestTheIssueTreeHoldsTheParentAndRankOfEveryBlockOfTheVersion(t *testing.T)
 		t.Fatalf("read the spec's change marks: %v", err)
 	}
 	target := refs.Target{Kind: refs.BlockNodeKind, ID: mover}
-	cited, err := refs.ExcerptedNodes(ctx, database.Pool, alice, false, []refs.Target{target})
+	cited, err := refs.ExcerptedNodes(ctx, database.Pool, alice, []refs.Target{target}, "")
 	if err != nil || cited[target].Excerpt == nil || !strings.Contains(cited[target].Excerpt.Text, "The words that move.") {
 		t.Fatalf("a citation of the moving block resolves to %+v (%v), want its words", cited[target], err)
 	}
@@ -529,7 +526,7 @@ func TestTheIssueTreeHoldsTheParentAndRankOfEveryBlockOfTheVersion(t *testing.T)
 	if now, err := refs.BlockChanges(ctx, database.Pool, spec); err != nil || now["mover"] != marks["mover"] {
 		t.Errorf("the moved block's change mark reads %+v (%v), want the mark before the move %+v", now["mover"], err, marks["mover"])
 	}
-	if now, err := refs.ExcerptedNodes(ctx, database.Pool, alice, false, []refs.Target{target}); err != nil ||
+	if now, err := refs.ExcerptedNodes(ctx, database.Pool, alice, []refs.Target{target}, ""); err != nil ||
 		now[target].Excerpt == nil || now[target].Excerpt.Text != cited[target].Excerpt.Text {
 		t.Errorf("a citation of the moved block resolves to %+v (%v), want the words it resolved to before, %+v", now[target], err, cited[target])
 	}
@@ -617,7 +614,7 @@ func TestTheIssueTreeHoldsTheParentAndRankOfEveryBlockOfTheVersion(t *testing.T)
 	}
 	defer staleTx.Rollback(ctx)
 	olderMarkdown, olderBlocks := renderedVersion(t, treeVersion1)
-	_, won, write, _, err := refs.IndexBlocks(ctx, staleTx, spec, refs.OneVersion(spec, first.Version.Number, first.Version.CreatedAt), olderMarkdown, olderBlocks, nil, nil, refs.TypedFacts{})
+	_, won, write, _, err := refs.IndexBlocks(ctx, staleTx, spec, refs.OneVersion(spec, first.Version.Number, first.Version.CreatedAt), olderMarkdown, olderBlocks, nil, nil, "", refs.TypedFacts{})
 	if err != nil {
 		t.Fatalf("run the older pass: %v", err)
 	}
@@ -682,10 +679,7 @@ func TestTheIssueTreeHoldsTheParentAndRankOfEveryBlockOfTheVersion(t *testing.T)
 	// That build writes no version node, and its version leaves the spec owed by the null version
 	// alone (the backfill's mark was drained before it): the tick's pass, which won on the spec it
 	// listed as owed, writes the version's node, made by its first author at its row's created_at.
-	var refKey string
-	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, spec).Scan(&refKey); err != nil {
-		t.Fatalf("read the spec's ref_key: %v", err)
-	}
+	refKey := refKeyOf(t, database, spec)
 	node := requirePresentVersionNode(t, database, refKey, late.version, "after the tick that indexed it")
 	if !node.MadeBy.SameAs(bob) || !node.MadeAt.Equal(late.versionAt) {
 		t.Errorf("the node of version %d was made at %s by %+v, want at its row's %s by its first author %+v",
@@ -711,7 +705,7 @@ func renderedVersion(t *testing.T, markdown string) (string, []model.ArtifactBlo
 // The reconciliation's pass dates every parent, rank, text and placement it states at its own
 // time, never at the older version's it indexes, and so does the request's pass: each reads the
 // database's clock once it holds the owner row and the fence, and dates every such tuple of the
-// pass there (D2 of dispatch://INFRA-1253's plan, as INFRA-1098's architect ruled it). The
+// pass there (D2 of the issue-tree plan, as the graph-model root spec's architect ruled it). The
 // document's version is written by SQL, as a build without the block index writes one, so the
 // reconciliation is what indexes it, after clock_timestamp() is read; the request's tuples are
 // then one time, at or after its version's created_at.
@@ -762,13 +756,13 @@ func TestTheReconciliationDatesItsTuplesAtItsOwnTime(t *testing.T) {
 
 // A request pass that waits at the document's owner row behind a reconciliation of the same
 // document dates its tuples after the reconciliation's, so a tuple's at is ordered as its seq is
-// (D2, as INFRA-1098's architect ruled it). The request's transaction begins first, so its own
-// now() is earlier than anything the reconciliation reads; the reconciliation then takes the owner
-// row, writes, and is held at its commit (afterBlockIndexWrite) while the request, on a goroutine,
-// queues at that row. The request's pass is the one the request path runs once it holds the row
-// (indexRenderedVersion over a version the request writes). Released, the reconciliation commits
-// and the request runs on. Read in seq order, the two passes' parents, ranks, texts and placements
-// never go back in time, and each pass dates its own at one time.
+// (D2, as the graph-model root spec's architect ruled it). The request's transaction begins first,
+// so its own now() is earlier than anything the reconciliation reads; the reconciliation then takes
+// the owner row, writes, and is held at its commit (afterBlockIndexWrite) while the request, on a
+// goroutine, queues at that row. The request's pass is the one the request path runs once it holds
+// the row (indexRenderedVersion over a version the request writes). Released, the reconciliation
+// commits and the request runs on. Read in seq order, the two passes' parents, ranks, texts and
+// placements never go back in time, and each pass dates its own at one time.
 func TestAPassThatWaitedForTheOwnerRowDatesItsTuplesAfterThePassItWaitedFor(t *testing.T) {
 	ctx := context.Background()
 	database, service := blockIndexService(t)
@@ -786,25 +780,7 @@ func TestAPassThatWaitedForTheOwnerRowDatesItsTuplesAfterThePassItWaitedFor(t *t
 		t.Fatalf("read the request's transaction time: %v", err)
 	}
 
-	entered, release := make(chan struct{}), make(chan struct{})
-	service.afterBlockIndexWrite = func(artifactID string) error {
-		if artifactID == document {
-			close(entered)
-			<-release
-		}
-		return nil
-	}
-	defer func() { service.afterBlockIndexWrite = nil }()
-	ticked := make(chan error, 1)
-	go func() {
-		_, err := service.ReconcileBlockIndex(ctx, BlockIndexCursors{}, liveAheadDocuments{})
-		ticked <- err
-	}()
-	select {
-	case <-entered:
-	case <-time.After(fenceWait):
-		t.Fatalf("the reconciliation did not reach its commit within %s", fenceWait)
-	}
+	release, ticked := holdPassAtCommit(t, service, document)
 
 	markdown, blocks := renderedVersion(t, raceVersion2)
 	indexed := make(chan error, 1)
@@ -830,8 +806,7 @@ func TestAPassThatWaitedForTheOwnerRowDatesItsTuplesAfterThePassItWaitedFor(t *t
 			return requestTx.Commit(ctx)
 		}()
 	}()
-	waitedAtTheRow := false
-	for deadline := time.Now().Add(fenceWait); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+	waitedAtTheRow := testwait.Holds(fenceWait, 20*time.Millisecond, func() bool {
 		var waiting int
 		if err := database.Pool.QueryRow(ctx, `
 			select count(*) from pg_stat_activity
@@ -839,12 +814,9 @@ func TestAPassThatWaitedForTheOwnerRowDatesItsTuplesAfterThePassItWaitedFor(t *t
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("read whether the request waits at the owner row: %v", err)
 		}
-		if waiting > 0 {
-			waitedAtTheRow = true
-			break
-		}
-	}
-	close(release)
+		return waiting > 0
+	})
+	release()
 	if err := <-ticked; err != nil {
 		t.Fatalf("the reconciliation: %v", err)
 	}
@@ -893,6 +865,38 @@ func TestAPassThatWaitedForTheOwnerRowDatesItsTuplesAfterThePassItWaitedFor(t *t
 	}
 }
 
+// holdPassAtCommit runs a tick of the block-index reconciliation on a goroutine and holds its pass
+// over document at its commit (afterBlockIndexWrite) until release, failing t unless the pass
+// reaches it within fenceWait. ticked answers the tick once it returns. release closes the hold
+// once however often it is called, and the test's end calls it where the test did not.
+func holdPassAtCommit(t *testing.T, service *Service, document string) (release func(), ticked <-chan error) {
+	t.Helper()
+	entered, held := make(chan struct{}), make(chan struct{})
+	service.afterBlockIndexWrite = func(artifactID string) error {
+		if artifactID == document {
+			close(entered)
+			<-held
+		}
+		return nil
+	}
+	release = sync.OnceFunc(func() { close(held) })
+	testcleanup.Add(t, func() {
+		release()
+		service.afterBlockIndexWrite = nil
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := service.ReconcileBlockIndex(context.Background(), BlockIndexCursors{}, liveAheadDocuments{})
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(fenceWait):
+		t.Fatalf("the block-index pass over %s did not reach its commit within %s", document, fenceWait)
+	}
+	return release, done
+}
+
 // The backfill marks each stored document no pass of this build's rule has stated owed its block
 // index once, and the census of the rank and the text of every block and of the size of every plan
 // node reads zero differences once the reconciliation has indexed them (graphcensus's block_rank,
@@ -926,8 +930,8 @@ func TestTheBackfillMarksEachUnstatedDocumentOnceAndTheCensusReadsZeroAfterIt(t 
 	sized, unsized := blockAddress(t, database, plan, "sized"), blockAddress(t, database, plan, "unsized")
 	requireSizes := func(when string) {
 		t.Helper()
-		if size, held := treeValue(t, database, sized, treeSize); !held || size != "2.5" {
-			t.Errorf("%s the plan node sized holds the size %q (held %t), want 2.5, the size its opening line writes", when, size, held)
+		if size, held := treeValue(t, database, sized, treeSize); !held || size != "90" {
+			t.Errorf("%s the plan node sized holds the size %q (held %t), want 90, the minutes its opening line's 1h30m writes", when, size, held)
 		}
 		if size, held := treeValue(t, database, unsized, treeSize); held {
 			t.Errorf("%s the plan node unsized holds the size %q, want none: its opening line writes none", when, size)
@@ -986,9 +990,9 @@ func TestTheBackfillMarksEachUnstatedDocumentOnceAndTheCensusReadsZeroAfterIt(t 
 	if _, held := treeValue(t, database, sized, treeSize); held {
 		t.Errorf("the plan node sized holds a size value before this build's reconciliation ran, so this case proves nothing")
 	}
-	owing := treeCensus(t, database)
+	owing := takeStoreCensus(t, database)
 	for _, name := range []string{"block_rank", "block_text", "block_size"} {
-		if kind := treeCensusKind(t, owing, name); kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
+		if kind := censusKind(t, owing, name); kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
 			t.Errorf("while every document holds the backfill's mark the census reads %d row and %d node difference(s) of kind %s, %+v, "+
 				"want none: a block of a document owed its index is on neither side", kind.RowDifferences, kind.NodeDifferences, name, kind.ReportedRows)
 		}
@@ -1004,23 +1008,20 @@ func TestTheBackfillMarksEachUnstatedDocumentOnceAndTheCensusReadsZeroAfterIt(t 
 		t.Errorf("the third backfill marked %d documents owed and %d owe their index, want none of either",
 			blocks.Owed, owedCount(t, database))
 	}
-	uploadRefKey := ""
-	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, upload).Scan(&uploadRefKey); err != nil {
-		t.Fatalf("read the upload's ref_key: %v", err)
-	}
+	uploadRefKey := refKeyOf(t, database, upload)
 	if held := currentPartOf(t, database, blockAddress(t, database, upload, "gate")); held.ToKind != graphstore.KindArtifact || held.ToID != uploadRefKey {
 		t.Errorf("the upload's top-level block is part of %s/%s after the reconciliation, want the upload's own node artifact/%s",
 			held.ToKind, held.ToID, uploadRefKey)
 	}
 
-	census := treeCensus(t, database)
+	census := takeStoreCensus(t, database)
 	for _, kind := range census.Kinds {
 		for _, difference := range append(append([]graphcensus.Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
 			t.Errorf("after the reconciliation the census reads a difference of kind %s at %s: %s", kind.Kind, difference.At, difference.Cause)
 		}
 	}
 	for _, name := range []string{"block", "block_rank", "block_text", "block_size"} {
-		if kind := treeCensusKind(t, census, name); kind.Rows == 0 || kind.Nodes == 0 {
+		if kind := censusKind(t, census, name); kind.Rows == 0 || kind.Nodes == 0 {
 			t.Errorf("the census read %d rows and %d nodes of kind %s after the reconciliation, so it compared nothing there", kind.Rows, kind.Nodes, name)
 		}
 	}
@@ -1037,15 +1038,15 @@ func TestTheBackfillMarksEachUnstatedDocumentOnceAndTheCensusReadsZeroAfterIt(t 
 			FromKind: refs.BlockNodeKind, FromID: rankedAt, Kind: treeRank, ToKind: graphstore.KindValue, ToID: "1U",
 			At: time.Now(), Who: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent, Asserted: true,
 		}, {
-			FromKind: refs.BlockNodeKind, FromID: sized, Kind: treeSize, ToKind: graphstore.KindValue, ToID: "2.5",
+			FromKind: refs.BlockNodeKind, FromID: sized, Kind: treeSize, ToKind: graphstore.KindValue, ToID: "90",
 			At: time.Now(), Who: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent, Asserted: false,
 		}})
 	}); err != nil {
 		t.Fatalf("break one block's text, another's rank and a plan node's size: %v", err)
 	}
-	broken := treeCensus(t, database)
+	broken := takeStoreCensus(t, database)
 	for name, address := range map[string]string{"block_text": retractedAt, "block_rank": rankedAt, "block_size": sized} {
-		kind := treeCensusKind(t, broken, name)
+		kind := censusKind(t, broken, name)
 		if kind.RowDifferences != 1 || len(kind.ReportedRows) != 1 || !strings.Contains(kind.ReportedRows[0].At, address) {
 			t.Errorf("with block %s broken the census reads %d row difference(s) of kind %s, %+v, want the one naming it",
 				address, kind.RowDifferences, name, kind.ReportedRows)
@@ -1055,18 +1056,8 @@ func TestTheBackfillMarksEachUnstatedDocumentOnceAndTheCensusReadsZeroAfterIt(t 
 	}
 }
 
-// treeCensus takes the store census over database, on a connection of its own.
-func treeCensus(t *testing.T, database *store.Store) *graphcensus.StoreReport {
-	t.Helper()
-	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false, ReturnDeclined)
-	if err != nil {
-		t.Fatalf("take the store census: %v", err)
-	}
-	return report
-}
-
-// treeCensusKind is the census's line for one kind.
-func treeCensusKind(t *testing.T, report *graphcensus.StoreReport, name string) graphcensus.KindReport {
+// censusKind is the census's line for one kind.
+func censusKind(t *testing.T, report *graphcensus.StoreReport, name string) graphcensus.KindReport {
 	t.Helper()
 	index := slices.IndexFunc(report.Kinds, func(kind graphcensus.KindReport) bool { return kind.Kind == name })
 	if index < 0 {

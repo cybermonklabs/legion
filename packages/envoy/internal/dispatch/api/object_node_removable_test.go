@@ -35,6 +35,7 @@ import (
 // Its control is a removable kind planted in the removal and left out of the census: the removal's
 // test made to take a file as well, which the census then reads by live alone.
 func TestEveryDocumentARemovalCanTakeIsReadByItsCreateEvent(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "SHP", "The shapes of a document", "The spec.\n")

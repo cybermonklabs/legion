@@ -286,7 +286,7 @@ func placementOf(identities []blockIdentity, parent int) blockPlacement {
 // the database holds issue rooms (rooms), for a document of an issue room, a row under the room's
 // tree artifact, whose rows carry each document's own version numbers, of a block that document
 // holds (refs.BlockDocumentSQL). So a version of a room's document is read with its own blocks'
-// texts alone, and its indexed versions are its own (T12a of dispatch://INFRA-1253's plan).
+// texts alone, and its indexed versions are its own (T12a of the issue-tree plan).
 func documentTexts(texts, document string, rooms bool) string {
 	if !rooms {
 		return texts + `.artifact_id = ` + document

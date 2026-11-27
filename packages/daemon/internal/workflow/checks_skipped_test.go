@@ -46,6 +46,7 @@ func wordedRun(name string, id int64, word string) record.AttemptRun {
 // The settlement is the one the decoder reads from the listener's: the seven in its skipped group,
 // and each run with its word.
 func TestASettlementNamesAHeldBackSuiteSkipped(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedSettlingRound(t, pool)
 	applyRefusingNothing(t, pool, mergingEngine(), settledRunsAt("head", 1, []record.AttemptRun{
@@ -72,6 +73,7 @@ func TestASettlementNamesAHeldBackSuiteSkipped(t *testing.T) {
 // of the 52 by its word, in name order - the 46 skipped, CodeQL and ci-ok failure, the four Analyze
 // jobs success - and says once that a skipped check ran nothing on this head.
 func TestASettlementShapedAs4180NamesFortySixChecksSkipped(t *testing.T) {
+	t.Parallel()
 	skipped := []string{"airlock-lean", "broker-client", "broker-multiprocess", "browser-image", "cancel-started", "changes",
 		"ci-filters", "ci-images", "claude-envoy", "conflicts-script", "contracts", "daemon-go", "dispatch-browser",
 		"dispatch-memory", "dispatch-multiprocess", "dispatch-two-builds", "dispatch-ui", "docs", "envoy-client",
@@ -129,6 +131,7 @@ func TestASettlementShapedAs4180NamesFortySixChecksSkipped(t *testing.T) {
 // TestDecodeChecksReadsASettlementWithNoSkippedGroupOrConclusionWordAsToday): the CI message reads
 // word for word as it did before the daemon read either, and says nothing of a skipped check.
 func TestASettlementWithNoSkippedGroupOrConclusionWordTellsTodaysLine(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedSettlingRound(t, pool)
 	applyRefusingNothing(t, pool, mergingEngine(),
@@ -141,6 +144,7 @@ func TestASettlementWithNoSkippedGroupOrConclusionWordTellsTodaysLine(t *testing
 // that a skipped check ran nothing on this head (dispatch://INFRA-4135 R1, a listener that sends
 // no conclusion word).
 func TestASettlementWithASkippedGroupAndNoWordNamesThoseSkipped(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedSettlingRound(t, pool)
 	applyRefusingNothing(t, pool, mergingEngine(), settledRunsAt("head", 1, []record.AttemptRun{
@@ -189,6 +193,7 @@ func outcomeOf(t *testing.T, pool *pgxpool.Pool) settledOutcome {
 // phase it was in, the implementer's pass and every outbox row but the role messages - the
 // notices, the supervise rows, the Dispatch statuses - are the same, and the same roles are told.
 func TestAHeadWhoseOnlyNonSuccessRunsAreSkippedMovesNoIssueSkipped(t *testing.T) {
+	t.Parallel()
 	skipped := []record.AttemptRun{wordedRun("build", 1, "success"), skippedRun("dispatch-memory", 2), skippedRun("envoy-go", 3)}
 	succeeded := []record.AttemptRun{wordedRun("build", 1, "success"), wordedRun("dispatch-memory", 2, "success"), wordedRun("envoy-go", 3, "success")}
 	for _, tc := range []struct {
@@ -243,6 +248,7 @@ func TestAHeadWhoseOnlyNonSuccessRunsAreSkippedMovesNoIssueSkipped(t *testing.T)
 // skipped - is a new judgement of the head (classify.JudgementChanged compares runs whole): it is
 // recorded, the roles are told the new line, and it moves nothing.
 func TestASettlementThatOnlyNamesARunSkippedIsToldAndMovesNothing(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedSettlingRound(t, pool)
 	engine := mergingEngine()
@@ -275,10 +281,12 @@ func TestASettlementThatOnlyNamesARunSkippedIsToldAndMovesNothing(t *testing.T) 
 // The notice of a head GitHub will not merge names each check run GitHub reported on the head by
 // the word GitHub gave it, a skipped one skipped, and says once, after the commit statuses, that a
 // skipped check ran nothing on this head: a required check GitHub skipped there never ran, and
-// the architect reading the notice must not take it for a pass (dispatch://INFRA-4135 R1).
+// the architect reading the notice must not take it for a pass (dispatch://INFRA-4135 R1). The
+// head is `behind`, a state the round does not end on.
 func TestTheStuckNoticeNamesASkippedCheckSkipped(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
-	seedMergeStateRound(t, pool, record.MergeStateBlocked)
+	seedMergeStateRound(t, pool, record.MergeStateBehind)
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 	apply("settled", naming(settledRunsAt(headOne, 1, []record.AttemptRun{wordedRun("unit tests", 2, "success"), skippedRun("envoy-go", 3)}),
 		status("deploy", "success", 1)))
@@ -286,7 +294,7 @@ func TestTheStuckNoticeNamesASkippedCheckSkipped(t *testing.T) {
 		HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
 	told := reviewStuckNotices(t, pool)
 	want := "GitHub reported on head " + headOne + `: "envoy-go" skipped, "unit tests" success; commit statuses: "deploy" success; ` +
-		skippedSaid + ". The daemon reads the base's rules only on a conflicting read"
+		skippedSaid + ". The issue waits in reviewing"
 	if len(told) != 1 || !strings.Contains(told[0].Reason, want) {
 		t.Fatalf("review-stuck notices %+v, want one reading %q", told, want)
 	}
@@ -310,8 +318,9 @@ func TestTheStuckNoticeNamesASkippedCheckSkipped(t *testing.T) {
 // GitHub gave each run; one with no word either wakes the worker with the task it gave before,
 // word for word.
 func TestTheWakeTaskNamesSkippedChecksSkipped(t *testing.T) {
-	const woken = "Your issue's pod had been released while it was idle, and this wake brought it back. " +
-		"Your session, your workspace and any work you had not pushed are as you left them. " +
+	t.Parallel()
+	woken := "Your issue's pod had been released while it was idle, and this wake brought it back. " +
+		WorkspaceAfterRelease + " Your session is as you left it. " +
 		"The wake is a CI settlement on your pull request's head: "
 	checks := func(runs []record.AttemptRun, failing, cancelled []string, statuses ...record.CommitStatus) intake.PullRequestChecks {
 		fact := settlement("head1", failing...)

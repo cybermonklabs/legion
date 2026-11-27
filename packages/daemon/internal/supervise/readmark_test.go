@@ -209,10 +209,10 @@ func TestTheRunAClaimServes(t *testing.T) {
 			serving: 5, entry: 4, look: look,
 		},
 		{
-			name: "a phase task on a claim left serving a look: the look goes with the phase work",
+			name: "a phase task on a claim left serving a look: the confirmed look stays on the claim",
 			claim: Claim{ServingGeneration: 5, ServedEntry: 4, ServingCheckLook: look, Pending: &Delivery{
 				Generation: 6, Entry: 6, Phase: phase.Testing, DeliveredAt: at, ConfirmedAt: at}},
-			serving: 6, entry: 6,
+			serving: 6, entry: 6, look: look,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -356,7 +356,7 @@ func TestAnOldProcessesRefusalLeavesTheNewSendsMark(t *testing.T) {
 	h.advance(2 * testRPC)
 
 	h.must(RequestSuspend{Claim: testToken, By: SuspendedByOperator})
-	h.must(RequestResume{Claim: testToken})
+	h.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
 	h.reach(StateReady)
 	h.observe(runtime.Alive)
 	if p := h.pending(); p.DeliveredAt.IsZero() {
@@ -421,7 +421,7 @@ func TestAnUnacknowledgedResendLeavesTheGivenUpPromptsRefusalToClearTheMark(t *t
 		{name: "a relaunch, then the new process's send is lost", resend: func(h *harness) {
 			h.conn.FailPrompt(errBoom)
 			h.must(RequestSuspend{Claim: testToken, By: SuspendedByOperator})
-			h.must(RequestResume{Claim: testToken})
+			h.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
 			h.reach(StateReady)
 		}},
 	} {

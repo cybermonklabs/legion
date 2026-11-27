@@ -91,21 +91,11 @@ func backfillBlockRefs(ctx context.Context, database *store.Store) (KindBackfill
 }
 
 // readBlockRefRows reads one batch of the block references naming no node, by the key a row of
-// block_refs is keyed on past its artifact, so the walk never reads one row twice. Each row
-// carries whether its block's node stands (blockNodeStands), which is the guard
-// backfillBlockRefs skips a row by.
+// block_refs is keyed on past its artifact, so the walk never reads one row twice
+// (BlockRefRowsStatement). Each row carries whether its block's node stands (blockNodeStands),
+// which is the guard backfillBlockRefs skips a row by.
 func readBlockRefRows(ctx context.Context, database *store.Store, after []any) ([]blockRefRow, error) {
-	rows, err := database.Pool.Query(ctx, `
-		select r.artifact_id::text, r.block_id, r.from_node, r.kind, r.to_kind, r.to_id,
-		       r.created_at, r.source_seq, coalesce(r.source_seq, $6),
-		       `+blockNodeStands(`r`)+`
-		from block_refs r
-		where r.node_kind is null and octet_length(r.from_node) <= `+addressBound+`
-		  and octet_length(r.to_id) <= `+addressBound+`
-		  and (r.from_node, r.kind, r.to_kind, r.to_id) > ($1, $2, $3, $4)
-		order by r.from_node, r.kind, r.to_kind, r.to_id
-		limit $5
-	`, after[0], after[1], after[2], after[3], backfillBatch, graphstore.NoEvent)
+	rows, err := database.Pool.Query(ctx, BlockRefRowsStatement, after[0], after[1], after[2], after[3], backfillBatch, graphstore.NoEvent)
 	if err != nil {
 		return nil, fmt.Errorf("read the block references naming no node: %w", err)
 	}
@@ -122,14 +112,44 @@ func readBlockRefRows(ctx context.Context, database *store.Store, after []any) (
 	return batch, rows.Err()
 }
 
+// BlockRefRowsStatement is readBlockRefRows' selection: at most $5 of the block references naming
+// no node whose two ends fit the store's bound, past the key ($1, $2, $3, $4), in key order, each
+// with its source_seq, or $6, the store's sentinel, where it has none, and whether its block's
+// node stands.
+//
+// Each batch reads block_refs_naming_no_node (migration 20261119021000) from the key on: that
+// index holds the rows this walk reads, keyed in its order, and its predicate is the walk's own
+// three clauses. With no index to serve both its clauses and its order, each batch read every row
+// still naming no node and sorted them, so a run took time growing with the square of the rows
+// (TestTheBackfillsWalksReadOnlyTheirBatch).
+var BlockRefRowsStatement = `
+		select r.artifact_id::text, r.block_id, r.from_node, r.kind, r.to_kind, r.to_id,
+		       r.created_at, r.source_seq, coalesce(r.source_seq, $6),
+		       ` + blockNodeStands(`r`) + `
+		from block_refs r
+		where r.node_kind is null and octet_length(r.from_node) <= ` + addressBound + `
+		  and octet_length(r.to_id) <= ` + addressBound + `
+		  and (r.from_node, r.kind, r.to_kind, r.to_id) > ($1, $2, $3, $4)
+		order by r.from_node, r.kind, r.to_kind, r.to_id
+		limit $5
+	`
+
 // blockNodeStands is the pointer pass's guard over the block_refs row at alias: the store holds
 // the node of the block the row is a link out of, in a state other than gone. It is the test
 // graph_edges' tuple arm makes of that node, read off graph_nodes alone, so the pass stamps a
 // pointer only where the tuple arm will answer it (backfillBlockRefs).
+//
+// It is a scalar subquery with a limit, which Postgres runs for each row by its key rather than
+// pulling it up into a join, so it reads graph_nodes by the row's node alone whatever the
+// statistics say. As an `exists`, which the planner makes a semi-join, the read again under the
+// locks (HeldBlockRefRowsStatement) was driven from graph_nodes by `kind = 'block'`, every block
+// node, once per batch: right after the block pass the statistics still count the few block nodes
+// there were before it, and on a seeded database of 270,564 blocks the pass took 1.5 ms a
+// reference, 76 s for 51,066 (TestTheHeldBlockRefReadProbesEachRowsBlockNode).
 func blockNodeStands(alias string) string {
-	return `exists (select 1 from graph_nodes block
+	return `coalesce((select true from graph_nodes block
 		where block.kind = '` + refs.BlockNodeKind + `' and block.id = ` + alias + `.from_node
-			and block.state <> '` + graphstore.StateGone + `')`
+			and block.state <> '` + graphstore.StateGone + `' limit 1), false)`
 }
 
 // writeBlockRefBatch appends the tuples of the rows of one batch that are still there and still
@@ -187,18 +207,20 @@ func writeBlockRefBatch(ctx context.Context, database *store.Store, batch []bloc
 		toIDs = append(toIDs, row.toID)
 		addresses = append(addresses, row.address)
 	}
-	if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nil, tuples)
+		b.Queue("name the nodes of a block reference batch on their rows", `
+			update block_refs r
+			set node_kind = $7, node_address = p.address
+			from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[])
+				as p (artifact_id, block_id, kind, to_kind, to_id, address)
+			where r.artifact_id = p.artifact_id::uuid and r.block_id = p.block_id
+			  and r.kind = p.kind and r.to_kind = p.to_kind and r.to_id = p.to_id
+		`, artifacts, blockIDs, kinds, toKinds, toIDs, addresses, refs.BlockNodeKind)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
+		return nil
+	}); err != nil {
 		return 0, fmt.Errorf("append the tuples of a block reference batch: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-		update block_refs r
-		set node_kind = $7, node_address = p.address
-		from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[])
-			as p (artifact_id, block_id, kind, to_kind, to_id, address)
-		where r.artifact_id = p.artifact_id::uuid and r.block_id = p.block_id
-		  and r.kind = p.kind and r.to_kind = p.to_kind and r.to_id = p.to_id
-	`, artifacts, blockIDs, kinds, toKinds, toIDs, addresses, refs.BlockNodeKind); err != nil {
-		return 0, fmt.Errorf("name the nodes of a block reference batch on their rows: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit a block reference batch: %w", err)
@@ -209,9 +231,9 @@ func writeBlockRefBatch(ctx context.Context, database *store.Store, batch []bloc
 // heldBlockRefRows reads again, under the locks lockBlockDocuments took, which rows of the batch
 // are still there, still name no node and are still links out of a block whose node stands
 // (blockNodeStands), locks each of them `for update` in key order, and answers them in the
-// batch's own order. The rest of a row is what the batch read: a version write keeps a surviving
-// row's dates and source_seq, and a row it inserts names its node (refs' queueBlockRefs), so a
-// row that still names no node is one no version has written since.
+// batch's own order (HeldBlockRefRowsStatement). The rest of a row is what the batch read: a
+// version write keeps a surviving row's dates and source_seq, and a row it inserts names its node
+// (refs' queueBlockRefs), so a row that still names no node is one no version has written since.
 func heldBlockRefRows(ctx context.Context, tx pgx.Tx, batch []blockRefRow) ([]blockRefRow, error) {
 	artifacts := make([]string, 0, len(batch))
 	blockIDs := make([]string, 0, len(batch))
@@ -225,17 +247,7 @@ func heldBlockRefRows(ctx context.Context, tx pgx.Tx, batch []blockRefRow) ([]bl
 		toKinds = append(toKinds, row.toKind)
 		toIDs = append(toIDs, row.toID)
 	}
-	rows, err := tx.Query(ctx, `
-		select r.artifact_id::text, r.block_id, r.kind, r.to_kind, r.to_id
-		from block_refs r
-		join unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[])
-			as p (artifact_id, block_id, kind, to_kind, to_id)
-			on r.artifact_id = p.artifact_id::uuid and r.block_id = p.block_id
-			and r.kind = p.kind and r.to_kind = p.to_kind and r.to_id = p.to_id
-		where r.node_kind is null and `+blockNodeStands(`r`)+`
-		order by r.artifact_id, r.block_id, r.to_kind, r.to_id, r.kind
-		for update of r
-	`, artifacts, blockIDs, kinds, toKinds, toIDs)
+	rows, err := tx.Query(ctx, HeldBlockRefRowsStatement, artifacts, blockIDs, kinds, toKinds, toIDs)
 	if err != nil {
 		return nil, fmt.Errorf("read the block references of a batch again under their documents' locks: %w", err)
 	}
@@ -259,3 +271,18 @@ func heldBlockRefRows(ctx context.Context, tx pgx.Tx, batch []blockRefRow) ([]bl
 	}
 	return held, nil
 }
+
+// HeldBlockRefRowsStatement is heldBlockRefRows' read of the rows of a batch, keyed by $1 to $5,
+// that still name no node and are links out of a block whose node stands, each locked `for
+// update`, in key order.
+var HeldBlockRefRowsStatement = `
+		select r.artifact_id::text, r.block_id, r.kind, r.to_kind, r.to_id
+		from block_refs r
+		join unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[])
+			as p (artifact_id, block_id, kind, to_kind, to_id)
+			on r.artifact_id = p.artifact_id::uuid and r.block_id = p.block_id
+			and r.kind = p.kind and r.to_kind = p.to_kind and r.to_id = p.to_id
+		where r.node_kind is null and ` + blockNodeStands(`r`) + `
+		order by r.artifact_id, r.block_id, r.to_kind, r.to_id, r.kind
+		for update of r
+	`

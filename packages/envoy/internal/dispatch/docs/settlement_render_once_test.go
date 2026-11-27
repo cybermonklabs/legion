@@ -23,6 +23,7 @@ import (
 // indexed blocks are the room's: reusing the rendering made before the repair would version the
 // block as the forger left it and index that block's text.
 func TestSettlementVersionsARepairTheRoomAlreadyHolds(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Monday.\n- No: Later.\n:::\n\nContext before.\n")
@@ -95,6 +96,7 @@ func TestSettlementVersionsARepairTheRoomAlreadyHolds(t *testing.T) {
 // rendering of the read would index no row for the appended paragraph, and version and index the
 // pasted callout under the id of the callout it copies.
 func TestSettlementVersionsTheTreeOfAStampThatMintedNothing(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before\n\n:::callout{#note kind=\"note\" title=\"\"}\nNoted.\n:::\n")

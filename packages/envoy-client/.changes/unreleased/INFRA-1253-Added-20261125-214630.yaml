@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  `dispatch issue` lists graph neighbours after its text results. Each neighbour lists the references it shares with the new issue.
+  The command also says when the graph check found none or did not finish.
+time: 2026-11-25T21:46:30Z
+custom:
+    Issue: INFRA-1253

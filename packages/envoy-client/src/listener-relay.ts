@@ -28,8 +28,9 @@
 // as JSON, `{}` for none), and pings every 20 s.
 //
 // The listener checks the token again every 20 s and closes an open socket by why it stopped:
-// 4401 the token lapsed, 4403 it was revoked or no longer names what the socket was opened with,
-// 1013 the broker or NATS cannot be asked, 1012 the listener is stopping. The client opens again,
+// 4401 the token lapsed, 4403 it was revoked, no longer names what the socket was opened with or
+// names a person Dispatch holds, 1013 the broker or NATS cannot be asked or whether the token's
+// person may still act cannot be read, 1012 the listener is stopping. The client opens again,
 // taking every live subscription again on the new socket (`relayReopenDelay`): at once after 4401
 // and 1012, however often they come; after 1 s doubling to a minute after 4403; after 5 s doubling
 // to a minute after 1013; at once after a proxy's 1001 or a socket that ended with no close frame

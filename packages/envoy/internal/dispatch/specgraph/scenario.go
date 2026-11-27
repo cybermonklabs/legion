@@ -1,6 +1,7 @@
 package specgraph
 
 import (
+	"cmp"
 	"encoding/json/jsontext"
 	"errors"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 )
 
 // Scenario is a scenario of The Spec, in the format of testdata/scenarios that `spec-check state`
@@ -68,10 +71,12 @@ var (
 
 // scenarioResult is one result of results.json: a Result, whose members its own JSON names give,
 // with check_version in the place of its CheckDigest, which names the approved version of the check
-// that ran.
+// that ran, and Leg nil where the file leaves it out, which readResults refuses, since "" is the
+// leg of no matrix.
 type scenarioResult struct {
 	Result
-	CheckVersion int `json:"check_version" input:"nonzero"`
+	Leg          *string `json:"leg" input:"present: \"\" is the leg of no matrix, which the results of a job from before its matrix give"`
+	CheckVersion int     `json:"check_version" input:"nonzero"`
 }
 
 // The forms of the JSON files of a scenario that ReadScenario reads itself, with the type of each
@@ -92,7 +97,7 @@ const (
 // its own letters, a member that one object gives two times, text after the value, and a value of
 // another type than the file's form needs, which it names with the form and the place of the value.
 // It refuses each member that the derivation reads and that a file does not set, by the type that it
-// reads the file into (memberMark), with the functions that the entry of the derivation refuses the
+// reads the file into (members.go), with the functions that the entry of the derivation refuses the
 // same member with (Input.check): one marked nonzero at its zero value, and one marked present that
 // the file leaves out, since the zero value of such a member would read as a real one and turn a
 // state toward true or hide a failure; a member marked zero that a file leaves out reads as its
@@ -112,16 +117,20 @@ const (
 //     the graph is judged only at a deploy, and a check of the graph reads unknown there when
 //     graph_tx is absent or names a transaction that no result read;
 //   - files/<commit>/: the spec files at the commit of each subject, each a *.md file directly in
-//     it, which Parse reads and Validate judges with no problem, as `spec-check tree` does, and no
-//     directory that no subject reads;
+//     it of at most notes.MaxFileSize bytes, which Parse reads and Validate judges with no problem,
+//     as `spec-check tree` does, and no directory that no subject reads;
 //   - history.json, as ReadFixtureHistory reads it: it sets commits, [] for none, and each commit
 //     sets its files, a tree of one path or more, each a repository path with a content label that
 //     has a letter or a digit;
 //   - ties.json, {"<commit>":{"<check id>":["<path or pattern>", …]}}, as ReadCommitTies reads it:
 //     a check that the object of a commit does not name has a tie that is not known at that commit,
-//     and so has each check at a commit that the file does not name. A result at one commit counts
-//     at another only when the check's tie is known at both commits and no path that changed
-//     between them is covered by the tie at either commit;
+//     and so has each check at a commit that the file does not name. A run of a check of the code
+//     counts only at the commit that it read, and a failing example at the commit that it counts
+//     from, its planted_on for a program check of the code; a failing example that its test caught,
+//     or a run of the test of a program check of production or of the graph, counts at another
+//     commit only when the check's tie is known at both commits and no path that changed between
+//     them reaches the tie at either commit, which covers it or holds a path under it, and one that
+//     its test missed never does;
 //   - results.json, [{"check","check_version","kind","outcome","commit","deploy","graph_tx","job",
 //     "leg","attempt","at","seq","fault_author","test_authors","test_commit","planted_on",
 //     "fault_paths"}]: check_version names an approved version of the check, whose Digest the
@@ -134,7 +143,7 @@ const (
 //     and a result of a program check of production or of the graph names test_commit; each of
 //     fault_paths is a repository path. A failing example of a program check of the code counts
 //     from planted_on, the commit that its fault was planted on, and never at its commit, the
-//     fault's own commit (CheckStates, step 7). No two results of one check have one at and one
+//     fault's own commit (deriveChecks, step 7). No two results of one check have one at and one
 //     seq;
 //   - jobs.json, [{"job","leg","commit","ended"}]: each run sets job and commit, leg ("" for no
 //     matrix), and ended, false for a run that has not ended;
@@ -146,7 +155,10 @@ const (
 //     approved spec, needs naming units of the file; with none, no wait is read;
 //   - want.txt (optional), which ReadScenario does not read.
 //
-// A JSON null is refused at each place of each file (decodeJSON).
+// A JSON null is refused at each place of each file (decodeJSON), and so is each JSON file that
+// holds more than fileBound bytes, 16 MiB, and each spec file that holds more than
+// notes.MaxFileSize, 1 MiB, the bound past which `spec-check tree` and Dispatch's importer refuse a
+// spec file; such a file is read no further.
 func ReadScenario(fsys fs.FS) (Scenario, error) {
 	var s Scenario
 	entries, err := fs.ReadDir(fsys, ".")
@@ -233,8 +245,9 @@ func readSubjects(fsys fs.FS) ([]ScenarioSubject, error) {
 	return subjects, nil
 }
 
-// readScenarioFiles reads the spec files at the commit of each subject, files/<commit>/*.md,
-// parses them and judges the tree by Validate, and refuses the first problem of Parse, or else of
+// readScenarioFiles reads the spec files at the commit of each subject, files/<commit>/*.md, each
+// at most notes.MaxFileSize bytes, the bound of `spec-check tree` and of Dispatch's importer, parses
+// them and judges the tree by Validate, and refuses the first problem of Parse, or else of
 // Validate, with its file and line.
 func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree, error) {
 	trees := map[string]Tree{}
@@ -266,7 +279,7 @@ func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree,
 			if !entry.Type().IsRegular() || path.Ext(entry.Name()) != ".md" {
 				return nil, scenarioFault(name, "the spec files of a commit are *.md files directly in its directory")
 			}
-			if files[entry.Name()], err = fs.ReadFile(fsys, name); err != nil {
+			if files[entry.Name()], err = readFile(fsys, name, notes.MaxFileSize); err != nil {
 				return nil, &ScenarioError{File: name, Err: err}
 			}
 		}
@@ -313,7 +326,8 @@ func readWith[T any](fsys fs.FS, name string, read func(io.Reader) (T, error)) (
 
 // readResults reads results.json, each result carrying the Digest of the approved version of its
 // check that check_version names, and the text of that version of each, and refuses a result that
-// Result.fault refuses by that text, and two results that sameRecordFault names.
+// leaves out its leg, one that Result.fault refuses by that text, and two results that
+// sameRecordFault names.
 func readResults(fsys fs.FS, approved Approved) ([]Result, []*Check, error) {
 	read, err := readEach[scenarioResult](fsys, "results.json", "result", resultForm)
 	if err != nil {
@@ -327,7 +341,11 @@ func readResults(fsys fs.FS, approved Approved) ([]Result, []*Check, error) {
 		if !held {
 			return nil, nil, scenarioFault("results.json", "result %d: the approved spec holds no version %d of check %s", i+1, r.CheckVersion, quoted(r.Check))
 		}
+		if r.Leg == nil {
+			return nil, nil, scenarioFault("results.json", `result %d: it sets no leg; a result of no matrix sets ""`, i+1)
+		}
 		results[i] = r.Result
+		results[i].Leg = *r.Leg
 		results[i].CheckDigest = check.Digest()
 		texts[i], procedures[i] = check, &texts[i]
 		if fault := results[i].fault(procedures[i]); fault != "" {
@@ -354,14 +372,17 @@ func checkVersion(approved Approved, id string, v int) (Check, bool) {
 	return text.Checks[0], true
 }
 
-// readJobRuns reads jobs.json, and refuses a run that JobRun.fault refuses.
+// readJobRuns reads jobs.json, and refuses a run that leaves out its leg or ended
+// (jobRunFile.unsetFault), and one that JobRun.fault refuses.
 func readJobRuns(fsys fs.FS) ([]JobRun, error) {
-	runs, err := readEach[JobRun](fsys, "jobs.json", "job run", jobRunForm)
+	read, err := readEach[jobRunFile](fsys, "jobs.json", "job run", jobRunForm)
 	if err != nil {
 		return nil, err
 	}
-	for i, r := range runs {
-		if fault := r.fault(); fault != "" {
+	runs := make([]JobRun, len(read))
+	for i, r := range read {
+		runs[i] = r.run()
+		if fault := cmp.Or(r.unsetFault(), runs[i].fault()); fault != "" {
 			return nil, scenarioFault("jobs.json", "job run %d: %s", i+1, fault)
 		}
 	}
@@ -384,11 +405,8 @@ func readUnits(fsys fs.FS, approved Approved) ([]Unit, error) {
 	for _, st := range current.Statements {
 		statements[st.ID] = true
 	}
-	ids := map[string]bool{}
+	ids := make(map[string]bool, len(units))
 	for _, u := range units {
-		if ids[u.ID] {
-			return nil, scenarioFault("units.json", "unit %s is in the file two times", quoted(u.ID))
-		}
 		ids[u.ID] = true
 	}
 	for _, u := range units {
@@ -430,7 +448,7 @@ func readEach[T any](fsys fs.FS, name, noun, form string) ([]T, error) {
 
 // readJSON decodes the file name into v with decodeJSON, in the form form.
 func readJSON(fsys fs.FS, name string, v any, form string) error {
-	content, err := fs.ReadFile(fsys, name)
+	content, err := readFile(fsys, name, fileBound)
 	if err != nil {
 		return &ScenarioError{File: name, Err: err}
 	}
@@ -438,6 +456,16 @@ func readJSON(fsys fs.FS, name string, v any, form string) error {
 		return &ScenarioError{File: name, Err: err}
 	}
 	return nil
+}
+
+// readFile is the file name of fsys, at most bound bytes of it (readBounded).
+func readFile(fsys fs.FS, name string, bound int) ([]byte, error) {
+	f, err := fsys.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return readBounded(f, bound)
 }
 
 // scenarioFault is the fault of the file name, the format filled with args.

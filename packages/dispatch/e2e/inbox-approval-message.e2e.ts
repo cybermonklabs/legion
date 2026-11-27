@@ -52,6 +52,11 @@ function documentRead(artifactId: string): RegExp {
 // The document every row approves, and the three questions asked about it.
 // ---------------------------------------------------------------------------
 
+/** The words the edit after the approval rewords, the body of the spec's one requirement. An
+ *  approval covers the record of the Spec query - the spec's memo, criteria and requirements -
+ *  and not its paragraphs (R14), so as a paragraph the reword would carry alice's approval of
+ *  version 1 to version 2. As the requirement's body it is a change of that record, which version
+ *  2 is marked with against the approved version 1. */
 const WORDS_BEFORE = "The retry budget is three attempts per lease.";
 const WORDS_AFTER = "The retry budget is seven attempts per lease.";
 const REMOVED_WORD = "three";
@@ -61,7 +66,9 @@ const SPEC = [
   "",
   "The mirror replays what the ledger wrote while it was away.",
   "",
+  ":::requirement{#r-retry-budget}",
   WORDS_BEFORE,
+  ":::",
   "",
 ].join("\n");
 
@@ -86,9 +93,10 @@ const RICH_SUMMARY = [
 /** The question the held row asks: one line, since that row is about when the block is drawn. */
 const HELD_SUMMARY = "The mirror takes the clock on Thursday.";
 
-/** The question the refused row asks. Its mark sits in the second paragraph on purpose: a short
- *  row shows the question's first line alone (`features/inbox/question-line.ts`), so a count of
- *  the mark over the whole page counts the drawn question body and nothing else. */
+/** The question the refused row asks. Its mark sits in the second paragraph on purpose: the
+ *  short row draws the whole question through the one renderer on one line, so the mark is on
+ *  the page twice, once in that row and once in the drawn question body, and a count of it
+ *  shows the body drawn once. */
 const FALLBACK_MARK = "The fallback note names the window and who signs it off.";
 const FALLBACK_SUMMARY = `The export window moves to Sunday.\n\n${FALLBACK_MARK}`;
 
@@ -129,8 +137,8 @@ async function seedApproval(summary: string): Promise<Seed> {
 
 /**
  * The same issue with a Verification document beside its spec, the spec approved at version 1 and
- * edited since, and one request - opened with `include_verification` - to approve version 2 of the
- * spec and version 1 of the Verification document together.
+ * its requirement reworded since, and one request - opened with `include_verification` - to
+ * approve version 2 of the spec and version 1 of the Verification document together.
  */
 async function seedTwoDocuments(): Promise<Seed> {
   await createProject({ key: PROJECT, name: "Mirror rollout" });
@@ -284,12 +292,16 @@ test("an approval whose document cannot be read falls back to the card, which dr
     await expect.poll(() => refused).toBeGreaterThanOrEqual(3);
 
     // The card takes the document's place, and the block above it is not drawn: the card asks
-    // the whole question itself, so the question is on screen once.
+    // the whole question itself, so the question is in the pane once.
     const card = pane.getByTestId(`ask-${seed.askId}`);
     await expect(card).toBeVisible();
     await expect(pane.getByTestId("pane-approval-question")).toHaveCount(0);
     await expect(card.getByText(FALLBACK_MARK)).toHaveCount(1);
-    await expect(page.getByText(FALLBACK_MARK)).toHaveCount(1);
+    await expect(pane.getByText(FALLBACK_MARK)).toHaveCount(1);
+    // Twice on the page in all: the list row draws the same subject in its own line, which the
+    // one renderer flattens whole where the regular-expression stripper it replaced
+    // showed its first line alone.
+    await expect(page.getByText(FALLBACK_MARK)).toHaveCount(2);
   } finally {
     await alice.close();
   }

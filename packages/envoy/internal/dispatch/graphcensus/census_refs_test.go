@@ -29,7 +29,7 @@ func TestTheReferenceBatchTakesTheStoreLockOrder(t *testing.T) {
 	createdAt := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond)
 	const sourceSeq int64 = 41
 	var document, refKey string
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+	drivenTx(t, database, "seed the document and the reference the release before wrote", func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `
 			insert into issues (key, project_key, number, title, created_by, rank)
 			values ('LOCK-1', 'LOCK', 1, 'Citing', '{"kind":"user","id":"alice"}', 'U'),
@@ -57,9 +57,7 @@ func TestTheReferenceBatchTakesTheStoreLockOrder(t *testing.T) {
 			values ('artifact', $1, 'issue', 'LOCK-2', $2, $3)
 		`, document, createdAt, sourceSeq)
 		return err
-	}); err != nil {
-		t.Fatalf("seed the document and the reference the release before wrote: %v", err)
-	}
+	})
 
 	owner, project := holdLockOwner(t, database)
 	report := followTheRun(t, database, "writeReferenceBatch", onePass(backfillReferences), []*lockstep.Hold{owner, project})

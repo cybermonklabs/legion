@@ -99,6 +99,7 @@ func lateClosed(head string, at time.Time) intake.Fact {
 // the round ends. An event at the same clock applies (GitHub's clock is to the second, so two real
 // events can share one), and so does one that carries no clock.
 func TestALatePullRequestEventChangesNothing(t *testing.T) {
+	t.Parallel()
 	earlier, later := lateApplied.Add(-time.Hour), lateApplied.Add(time.Minute)
 	kept := pullRequestView{head: "head-c", decision: "approved", state: record.PullRequestOpen}
 	closed := pullRequestView{head: "head-c", decision: "approved", state: record.PullRequestClosed}
@@ -141,6 +142,7 @@ func TestALatePullRequestEventChangesNothing(t *testing.T) {
 // lowers the pull request's clock: the stored clock stays the latest one known, so an older
 // timestamped event redelivered afterwards is still late and changes nothing.
 func TestAnEventWithNoClockKeepsTheLatestClock(t *testing.T) {
+	t.Parallel()
 	earlier, later := lateApplied.Add(-time.Hour), lateApplied.Add(time.Minute)
 	for _, tc := range []struct {
 		name  string
@@ -170,6 +172,7 @@ func TestAnEventWithNoClockKeepsTheLatestClock(t *testing.T) {
 // reopened and closed again, with the reopen delivered last, the second close records its head and
 // clock, so the reopen changes nothing.
 func TestACloseOrReopenCarriesItsHead(t *testing.T) {
+	t.Parallel()
 	synchronized, finished := lateApplied.Add(time.Minute), lateApplied.Add(2*time.Minute)
 	reopened, resynchronized := lateApplied.Add(time.Minute), lateApplied.Add(90*time.Second)
 	for _, tc := range []struct {
@@ -201,6 +204,7 @@ func TestACloseOrReopenCarriesItsHead(t *testing.T) {
 // whose later events still apply. The same holds for an older pull request's late opened while the
 // newer one is open.
 func TestALateEventOfAnEarlierPullRequestLeavesTheNewerOne(t *testing.T) {
+	t.Parallel()
 	opened43, synced43 := lateApplied.Add(time.Minute), lateApplied.Add(2*time.Minute)
 	pr43 := intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-208", HeadSHA: "head-e", UpdatedAt: opened43}
 	sync43 := intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-208", HeadSHA: "head-f", UpdatedAt: synced43}
@@ -230,4 +234,79 @@ func TestALateEventOfAnEarlierPullRequestLeavesTheNewerOne(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A new generation of the issue deletes its pull request when it is not open (record.Store's
+// ClearGeneration), and keeps the clock of the newest event that pull request applied
+// (cleared_pull_requests). An opened or reopened of that pull request no newer than the clock -
+// late, or replayed from a message the intake gave up on, however late - records nothing: it
+// neither brings the pull request back open at the head it had then nor moves the issue, under
+// the name the pull request was recorded with or the other name of a configured rename. A reopen
+// newer than the clock is a person reopening it since, and records it open, as before.
+func TestALateOpenedOfAPullRequestAnEarlierGenerationClearedRecordsNothing(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		seed   record.PullRequestState
+		engine *Engine
+		fact   intake.Fact
+		// reopened is whether the fact records the pull request open again.
+		reopened bool
+	}{
+		{name: "a closed pull request's late opened", seed: record.PullRequestClosed, engine: testEngine(config.DesignGateRootIssues, nil),
+			fact: lateOpened("head-a", lateApplied.Add(-time.Hour))},
+		{name: "a merged pull request's late opened", seed: record.PullRequestMerged, engine: testEngine(config.DesignGateRootIssues, nil),
+			fact: lateOpened("head-a", lateApplied.Add(-time.Hour))},
+		{name: "a closed pull request's late reopen", seed: record.PullRequestClosed, engine: testEngine(config.DesignGateRootIssues, nil),
+			fact: lateReopened("head-b", lateApplied.Add(-30*time.Minute))},
+		{name: "a late opened under the name the repository moved to", seed: record.PullRequestClosed, engine: renamedEngine(renamedLegion),
+			fact: intake.PullRequestOpened{Repo: "cybermonklabs/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head-a", UpdatedAt: lateApplied.Add(-time.Hour)}},
+		{name: "a reopen after the clear", seed: record.PullRequestClosed, engine: testEngine(config.DesignGateRootIssues, nil),
+			fact: lateReopened("head-d", lateApplied.Add(time.Hour)), reopened: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := appliedEvents(t, tc.seed)
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				return record.NewStore().ClearGeneration(t.Context(), tx, "LEGION-208", lateApplied.Add(2*time.Hour))
+			})
+			apply := githubFacts(t, pool, tc.engine)
+			if !tc.reopened {
+				lateChangesNothing(t, pool, apply, "late", tc.fact)
+				return
+			}
+			apply("reopened", tc.fact)
+			if got := latePullRequest(t, pool); got.Number != 42 || got.State != record.PullRequestOpen || got.HeadSHA != "head-d" {
+				t.Fatalf("the record after the reopen is #%d at %s, %s; want #42 open at head-d", got.Number, got.HeadSHA, got.State)
+			}
+		})
+	}
+}
+
+// The one-time rename pass writes a configured pair's `to` over its `from` on a cleared pull
+// request's row (cleared_pull_requests), as on the issue's other rows (record.RenameIssueRepository),
+// so once it has run no row names the `from` and the pair can leave `repository_renames`. A late
+// opened of a pull request a new generation cleared under the `from`, delivered under the `to` with
+// the pair no longer configured, then finds the clock under the name it carries and records
+// nothing. Control: with the pass leaving the cleared row on the `from`, the opened records the
+// pull request again, at the head it had.
+func TestALateOpenedUnderTheNewNameOfAPullRequestClearedUnderTheOldRecordsNothingOnceThePassRan(t *testing.T) {
+	t.Parallel()
+	const from, to = "sjawhar/legion", "cybermonklabs/legion"
+	pool := appliedEvents(t, record.PullRequestClosed)
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		if err := record.NewStore().ClearGeneration(t.Context(), tx, "LEGION-208", lateApplied.Add(2*time.Hour)); err != nil {
+			return err
+		}
+		if _, err := record.RenameIssueRepository(t.Context(), tx, "LEGION-208", from, to); err != nil {
+			return err
+		}
+		left, err := record.RenameCandidates(t.Context(), tx, "LEGION", from, nil)
+		if err != nil || len(left) != 0 {
+			return fmt.Errorf("the issues with rows on %s after the pass = %+v, %v; want none, so the pair can go", from, left, err)
+		}
+		return nil
+	})
+	apply := githubFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+	lateChangesNothing(t, pool, apply, "late", intake.PullRequestOpened{Repo: to, Number: 42, Branch: "legion/LEGION-208",
+		HeadSHA: "head-a", UpdatedAt: lateApplied.Add(-time.Hour)})
 }

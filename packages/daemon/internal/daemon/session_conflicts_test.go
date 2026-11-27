@@ -574,6 +574,6 @@ func earlierBootClaim(project string, token claim.Token, issue, session string, 
 		State:          state,
 		BootTokenHash:  supervise.HashBootToken("boot-" + string(token)),
 		CapabilityHash: []byte{byte(n)},
-		PluginContract: api.DaemonAPIVersion,
+		PluginContract: api.DaemonAPIVersion(),
 	}
 }

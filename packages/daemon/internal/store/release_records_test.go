@@ -63,6 +63,7 @@ func unfinishedResumes(ctx context.Context, st *Store, project string, before ti
 // the same reason after any of those opens a streak of its own, with its own first pass, so a
 // window's rows are the holds of that window.
 func TestAPodsHoldStreakEndsWhenItIsReleasedOrItsReasonChanges(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
@@ -83,7 +84,7 @@ func TestAPodsHoldStreakEndsWhenItIsReleasedOrItsReasonChanges(t *testing.T) {
 
 	// Monday's streak ends when the pod is released; Friday's hold for the same reason is its
 	// own streak, with its own first pass and its own count.
-	if _, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+	if _, _, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
 		Roles: []string{"implementer"}, At: at.Add(2 * time.Minute)}); err != nil {
 		t.Fatalf("record the release: %v", err)
 	}
@@ -132,10 +133,11 @@ func TestAPodsHoldStreakEndsWhenItIsReleasedOrItsReasonChanges(t *testing.T) {
 // release was recorded. The stuck pass, which warns about a wake once whatever came after it,
 // keeps reading every unfinished wake.
 func TestTheStrandedReadSeesOnlyTheWakesOfTheNewestRelease(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
-	first, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+	first, _, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
 		Roles: []string{"implementer"}, At: at})
 	if err != nil {
 		t.Fatalf("record the first release: %v", err)
@@ -159,7 +161,7 @@ func TestTheStrandedReadSeesOnlyTheWakesOfTheNewestRelease(t *testing.T) {
 
 	// The pod was released again: the wake of the release before it is over, whatever became of
 	// it, and only the new release's wakes measure anything.
-	second, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+	second, _, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
 		Roles: []string{"implementer"}, At: at.Add(30 * time.Minute)})
 	if err != nil {
 		t.Fatalf("record the second release: %v", err)

@@ -22,6 +22,7 @@ import (
 // /api/v1/references?to= the BOTEC answers a node whose parent names that block at that address
 // with parent_version N, and GET /api/v1/lenses?on= that pinned address lists the BOTEC on it.
 func TestALensOnARemovedPartOrCommentBlockNamesItsLastRevision(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 
 	comment := createThreadComment(t, rig.handler, rig.issue, map[string]any{"body": "The first remark.\n\nThe second remark."}, "alice")

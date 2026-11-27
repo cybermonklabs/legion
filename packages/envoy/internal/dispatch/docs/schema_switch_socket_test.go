@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // moveStoreAboveTheBuild applies, in one transaction, a type migration of the release after this
@@ -87,6 +88,8 @@ func requireClosedForTheSchema(t *testing.T, connection *gws.Conn, what string) 
 // whose OnSwitch closes the document sockets (Service.CloseDocumentSockets) - over a real socket
 // of this package's own server.
 func TestAStoreSchemaAboveTheBuildInstallsItsOwnVersionAndClosesTheDocumentSockets(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process and sets an environment
+	// variable to claim it (pmdoctest.UseBlockSchema, t.Setenv).
 	ctx := context.Background()
 	// The installed schema is the process's, not this test's: the hook puts back the schema
 	// installed before the test once it is over, after the server's own cleanup has stopped it.
@@ -117,7 +120,7 @@ func TestAStoreSchemaAboveTheBuildInstallsItsOwnVersionAndClosesTheDocumentSocke
 			OnSwitch: func() { service.CloseDocumentSockets() },
 		}).Run(installing)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		stopInstalling()
 		<-stopped
 	})
@@ -148,6 +151,7 @@ func TestAStoreSchemaAboveTheBuildInstallsItsOwnVersionAndClosesTheDocumentSocke
 // run in that gap through the service's hook (afterSocketAdmitted), once; the socket opened after
 // it is admitted.
 func TestASchemaSwitchBetweenASocketsAdmissionAndItsHoldClosesTheSocket(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
 	artifactID := createDocuments(t, database, 1)[0]
@@ -160,7 +164,7 @@ func TestASchemaSwitchBetweenASocketsAdmissionAndItsHoldClosesTheSocket(t *testi
 		}
 	}
 
-	overtaken, response, err := gws.DefaultDialer.Dial(socketURL(server.URL, artifactID), http.Header{"X-Dispatch-User": []string{"alice"}})
+	overtaken, response, err := documentDialer(t).Dial(socketURL(server.URL, artifactID), http.Header{"X-Dispatch-User": []string{"alice"}})
 	if err != nil {
 		status := "no response"
 		if response != nil {
@@ -168,7 +172,7 @@ func TestASchemaSwitchBetweenASocketsAdmissionAndItsHoldClosesTheSocket(t *testi
 		}
 		t.Fatalf("open the socket a switch overtakes: %s, %v; want an upgrade the server closes", status, err)
 	}
-	t.Cleanup(func() { _ = overtaken.Close() })
+	testcleanup.Add(t, func() { _ = overtaken.Close() })
 	requireClosedForTheSchema(t, overtaken, "the socket whose admission a switch overtook")
 	if !switched.Load() {
 		t.Fatalf("the switch never ran in the gap: the hook was not reached")

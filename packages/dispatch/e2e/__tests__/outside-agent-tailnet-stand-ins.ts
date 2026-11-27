@@ -140,8 +140,9 @@ export interface StandIns {
   /** The commit the stand-in Dispatch's /healthz names: its pin's (default), another one, or its
    *  pin's on this process while `fleet_commit` names another. */
   readonly serving?: "pinned" | "other" | "split";
-  /** The T5 window: a scripted peer that sees the window open, an owner removal, and a public
-   *  T5-agent row whose last answered trade is `lastAnsweredAfter` s after the leg started. */
+  /** The T5 window: a scripted peer that sees the window open, an owner removal, a public leg that
+   *  ends once that removal is made, and a public T5-agent row whose last answered trade is
+   *  `lastAnsweredAfter` s after the leg started. */
   readonly window?: { readonly lastAnsweredAfter: number };
   /** How the public leg starts: the local command (default), or the workflow through `gh`, its
    *  other inputs those `OUTSIDE_WORKFLOW_INPUTS` holds (default the invite link alone), its
@@ -352,8 +353,9 @@ esac
   // member kind and the canary's session and request with what canary-refusal holds. Each register
   // of T3's session leaves the operator it ran under in state/t3-operator. A machine login
   // completes once the stand-in Dispatch or the public leg marks its code approved, and where the
-  // state holds login-expires it ends as the real one ends a code nobody approved. Each call's
-  // words go to state/agent-secrets-calls.
+  // state holds login-expires it ends as the real one ends a code nobody approved, once nobody can:
+  // the public leg, its one approver, has gone past its approval to its revoke (state/revoked).
+  // Each call's words go to state/agent-secrets-calls.
   script(
     join(bin, "agent-secrets"),
     `#!/usr/bin/env bash
@@ -368,12 +370,13 @@ case $1 in
   machine)
     if [ "$2" = login ]; then
       echo "machine login code: $code"
-      if [ -f "$state/login-expires" ] && [ "$code" = TEST-0001 ]; then
-        sleep 1
-        echo 'agent-secrets machine login: expired' >&2
-        exit 1
-      fi
-      while [ ! -f "$state/approved-$code" ] && [ -e "$AGENT_SECRETS_HELPER_SOCK" ]; do sleep 0.1; done
+      while [ ! -f "$state/approved-$code" ] && [ -e "$AGENT_SECRETS_HELPER_SOCK" ]; do
+        if [ -f "$state/login-expires" ] && [ "$code" = TEST-0001 ] && [ -f "$state/revoked" ]; then
+          echo 'agent-secrets machine login: expired' >&2
+          exit 1
+        fi
+        sleep 0.1
+      done
       [ -f "$state/approved-$code" ] || exit 1
       printf '{"credential_id":"cred-%s"}\\n' "$(printf '%s' "$code" | tr 'A-Z' 'a-z')" >"$AGENT_SECRETS_MACHINE_FILE"
     elif [ "\${3:-}" = --json ]; then
@@ -701,9 +704,8 @@ export async function prepareStandIn(
   scratch: Scratch,
   standIns: StandIns
 ): Promise<PreparedStandIn> {
-  // The ports the broker and the listener are named at: refused, from a range the kernel hands no
-  // `port: 0` listener, each held by a UDP bind of this process so no other `closedPort` call gets
-  // it. A program that binds the number over TCP is not stopped; none of this suite does.
+  // The ports the broker and the listener are named at: refused, each held bound and never
+  // listening by this process (`closedPort`), so no other program can bind the number and answer.
   const brokerPort = await closedPort();
   const listenerPort = await closedPort();
   const state = scratch("state");
@@ -867,7 +869,14 @@ ${(standIns.revokeVerdicts ?? ["PASS"]).map((verdict) => `printf 'revoke-cred-%s
 : >'${state}/revoked'
 { printf 'the workflow note\\nlive window 2026-01-01T00:00:00Z 2026-01-01T00:00:09Z\\n'; cat '${state}/sweep-verdict'; } >"$out/restricted-sweep.log"
 echo ${standIns.sweep?.exit ?? 0} >"$out/restricted-sweep.exit"
-${standIns.window === undefined ? "" : "sleep 3"}
+${
+  standIns.window === undefined
+    ? ""
+    : `# The window stays open until the owner's removal, which ends a real run's, for at most 30 s.
+closes=$((SECONDS + 30))
+while [ ! -f '${state}/removed' ] && [ "$SECONDS" -lt "$closes" ]; do sleep 0.05; done
+[ -f '${state}/removed' ] || echo 'the stand-in public leg: no removal within 30 s of its window' >&2`
+}
 exit ${standIns.publicExit ?? 0}
 `
   );

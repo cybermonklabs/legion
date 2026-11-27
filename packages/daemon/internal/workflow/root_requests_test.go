@@ -48,6 +48,7 @@ func gateRows(t *testing.T, pool *pgxpool.Pool, key string) int {
 // that is over is refused, unspent, and closes or registers nothing of the run that stands. Each
 // control is the same request with no re-admission between, and it acts.
 func TestARootArchitectsRequestIsJudgedOnTheRecordItsFactReads(t *testing.T) {
+	t.Parallel()
 	for _, request := range []struct {
 		name string
 		fact func(by claim.Token, read record.Issue) intake.Fact

@@ -4,7 +4,6 @@ import (
 	"net"
 	"net/url"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -59,6 +58,7 @@ func TestASeverableDialThroughTheProxyKeepsItsTCPSocket(t *testing.T) {
 // the guard on Sever's answer fails it; one that reset no socket would let the first marker go out
 // once the link moves.
 func TestASeveredConnectionSendsNothingAPublishWaitedBehindAHeldWrite(t *testing.T) {
+	testnats.RequireSocketQueues(t)
 	const subject = "testbus.sever.marker"
 	start := func(t *testing.T) (*Client, *testnats.HandshakeHold, *nats.Conn, chan *nats.Msg, chan error, func()) {
 		t.Helper()
@@ -87,21 +87,11 @@ func TestASeveredConnectionSendsNothingAPublishWaitedBehindAHeldWrite(t *testing
 	t.Run("the link moves", func(t *testing.T) {
 		_, _, _, received, published, thaw := start(t)
 		thaw()
-		select {
-		case err := <-published:
-			if err != nil {
-				t.Fatalf("control: the marker's publish answered %v once the link moved", err)
-			}
-		case <-time.After(30 * time.Second):
-			t.Fatal("control: the marker's publish did not answer within 30 s of the link moving")
+		if err := testwait.Receive(t, "control: the marker's publish to answer once the link moved", published); err != nil {
+			t.Fatalf("control: the marker's publish answered %v once the link moved", err)
 		}
-		select {
-		case msg := <-received:
-			if string(msg.Data) != "before" {
-				t.Fatalf("control: the subscriber received %q, want the marker", msg.Data)
-			}
-		case <-time.After(30 * time.Second):
-			t.Fatal("control: the marker did not reach the subscriber within 30 s of the link moving")
+		if msg := testwait.Receive(t, "control: the marker to reach the subscriber once the link moved", received); string(msg.Data) != "before" {
+			t.Fatalf("control: the subscriber received %q, want the marker", msg.Data)
 		}
 	})
 
@@ -112,22 +102,17 @@ func TestASeveredConnectionSendsNothingAPublishWaitedBehindAHeldWrite(t *testing
 			client.Sever()
 			close(severed)
 		}()
-		select {
-		case <-severed:
-		case <-time.After(30 * time.Second):
-			t.Fatal("Sever did not return within 30 s while a write held nats.go's lock: it waited for that lock")
-		}
-		select {
-		case <-published:
-		case <-time.After(30 * time.Second):
-			t.Fatal("the marker's publish did not answer within 30 s of the sever")
-		}
+		// A Sever that waits for nats.go's lock waits until the write is thawed, which only the
+		// test's end does (HoldStalledWrite's cleanup), so the wait names it.
+		testwait.Receive(t, "Sever to return while a write holds nats.go's lock", severed)
+		testwait.Receive(t, "the marker's publish to answer after the sever", published)
 		if !conn.IsClosed() {
 			t.Fatalf("the severed connection is %v, want CLOSED", conn.Status())
 		}
 		thaw()
-		testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "the client's connection of its own after the sever", func() bool {
-			return client.Connected() && client.Connection() != conn
+		testwait.Until(t, "the client's connection of its own after the sever", func() (bool, bool) {
+			own := client.Connected() && client.Connection() != conn
+			return own, own
 		})
 		replacement := client.Connection()
 		if err := replacement.Publish(subject, []byte("after")); err != nil {
@@ -136,13 +121,8 @@ func TestASeveredConnectionSendsNothingAPublishWaitedBehindAHeldWrite(t *testing
 		if err := replacement.Flush(); err != nil {
 			t.Fatalf("flush the replacement connection: %v", err)
 		}
-		select {
-		case msg := <-received:
-			if string(msg.Data) != "after" {
-				t.Fatalf("the subscriber received %q before the second marker: the severed connection sent the publish that waited behind the held write", msg.Data)
-			}
-		case <-time.After(30 * time.Second):
-			t.Fatal("control: the second marker did not reach the subscriber within 30 s")
+		if msg := testwait.Receive(t, "control: the second marker to reach the subscriber", received); string(msg.Data) != "after" {
+			t.Fatalf("the subscriber received %q before the second marker: the severed connection sent the publish that waited behind the held write", msg.Data)
 		}
 	})
 }

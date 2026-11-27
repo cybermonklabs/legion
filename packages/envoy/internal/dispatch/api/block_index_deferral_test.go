@@ -10,19 +10,22 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // A write pays about 46 µs a block to index a document's blocks, so above a block count - docs'
-// deferBlockIndexBlocks, 2,000 blocks, the 92 ms that count costs - it stores the version and its
-// references alone and leaves the blocks to the block-index reconciliation. A bullet list of n
-// items is n+1 blocks, the list and each item's paragraph, so these two lists straddle that
-// count: 1,998 items is 1,999 blocks, one under it, and 2,000 items is 2,001 blocks, one over.
+// deferBlockIndexBlocks, 2,000 blocks (deferralBound), the 92 ms that count costs - it stores the
+// version and its references alone and leaves the blocks to the block-index reconciliation. These
+// two lists straddle that count, one block under it and one block over, as docs counts the blocks
+// it holds to the bound (renderedBlocks). That count is 2n+1 for a bullet list of n items - the
+// list, each item and each item's paragraph - so 999 items are 1,999 blocks and 1,000 items are
+// 2,001, and each test checks its list's count before it writes the list.
 const (
-	itemsUnderTheBlockBound = 1_998
-	blocksUnderTheBound     = itemsUnderTheBlockBound + 1
-	itemsOverTheBlockBound  = 2_000
-	blocksOverTheBound      = itemsOverTheBlockBound + 1
+	itemsUnderTheBlockBound = 999
+	blocksUnderTheBound     = deferralBound - 1
+	itemsOverTheBlockBound  = 1_000
+	blocksOverTheBound      = deferralBound + 1
 )
 
 // deferralList is a bullet list of items items whose last one mentions target.
@@ -33,6 +36,22 @@ func deferralList(items int, target string) string {
 	}
 	body.WriteString("- Last " + target + "\n")
 	return body.String()
+}
+
+// renderedBlocks is how many blocks markdown holds as docs counts them against the bound: the block
+// offsets its render records (pmdoc.RenderWithBlockOffsets), one for each block of the tree its
+// parse gives an id.
+func renderedBlocks(t *testing.T, markdown string) int {
+	t.Helper()
+	tree, err := pmdoc.Parse(markdown)
+	if err != nil {
+		t.Fatalf("parse the fixture's markdown: %v", err)
+	}
+	_, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
+	if err != nil {
+		t.Fatalf("render the fixture's markdown: %v", err)
+	}
+	return len(offsets)
 }
 
 // blockIndexVersion is the version a document's blocks are indexed at, nil while the document is
@@ -73,7 +92,11 @@ func TestADocumentPastTheBlockBoundLeavesItsBlocksToTheReconciliation(t *testing
 	target := "dispatch://" + mentioned.Key
 	item := "Last " + target
 
-	notes := uploadDocument(t, handler, "/api/v1/issues/"+holder.Key, "heavy.md", deferralList(itemsOverTheBlockBound, target)).Artifact
+	list := deferralList(itemsOverTheBlockBound, target)
+	if blocks := renderedBlocks(t, list); blocks != blocksOverTheBound {
+		t.Fatalf("the %d-item list renders as %d blocks, want %d, one over the bound: the fixture does not straddle it", itemsOverTheBlockBound, blocks, blocksOverTheBound)
+	}
+	notes := uploadDocument(t, handler, "/api/v1/issues/"+holder.Key, "heavy.md", list).Artifact
 	if indexed := blockIndexVersion(t, database, notes.ID); indexed != nil {
 		t.Fatalf("the write indexed the blocks at version %d, want them left owed to the block-index reconciliation", *indexed)
 	}
@@ -121,7 +144,11 @@ func TestADocumentUnderTheBlockBoundIsIndexedByItsOwnWrite(t *testing.T) {
 	target := "dispatch://" + mentioned.Key
 	item := "Last " + target
 
-	notes := uploadDocument(t, handler, "/api/v1/issues/"+holder.Key, "heavy.md", deferralList(itemsUnderTheBlockBound, target)).Artifact
+	list := deferralList(itemsUnderTheBlockBound, target)
+	if blocks := renderedBlocks(t, list); blocks != blocksUnderTheBound {
+		t.Fatalf("the %d-item list renders as %d blocks, want %d, one under the bound: the fixture does not straddle it", itemsUnderTheBlockBound, blocks, blocksUnderTheBound)
+	}
+	notes := uploadDocument(t, handler, "/api/v1/issues/"+holder.Key, "heavy.md", list).Artifact
 	requireIndexedAt(t, database, notes.ID, 1)
 	indexedBlocks, _ := readIndexedBlocks(t, database, notes.ID)
 	if len(indexedBlocks) != blocksUnderTheBound {

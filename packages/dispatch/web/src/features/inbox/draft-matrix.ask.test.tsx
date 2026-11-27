@@ -38,7 +38,7 @@
  * are `REASONS` in `draft-matrix.ask.coverage.ts`, which holds each census item this file answers
  * for to a test above or to one of them.
  */
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -51,8 +51,15 @@ import {
   signedInAsReader,
 } from "../../__tests__/draft-matrix-fixture";
 import type { Ask } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { AskCard } from "./AskCard";
 import { answeredAsk, installAskCardApiMocks, thread } from "./ask-card-fixture";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 installAskCardApiMocks();
 

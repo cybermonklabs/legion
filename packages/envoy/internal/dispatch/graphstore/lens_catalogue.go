@@ -15,7 +15,7 @@ import (
 )
 
 // The attributes of the catalogue's nodes, as the tuple that states each value spells it, and as
-// the attribute nodes of migration 20261116123354 declare them: a lens_kind's words, the words a
+// the attribute nodes of migration 20261123174710 declare them: a lens_kind's words, the words a
 // person reads for that kind of lens; and a constraint's standard and reference, which for a
 // constraint of the catalogue are the kind's primary source and that source's reference. A
 // constraint written under an issue holds a standard with its reference, or a measurement with
@@ -68,7 +68,7 @@ var ErrLensKindMalformed = errors.New("the lens kind is not one the catalogue ca
 // at, through one Write at the sentinel, since no event records a kind. It answers the
 // constraint's id, a fresh uuid.
 //
-// The seed of migrations 20261116123354 and 20261116123355 writes the same shape, and the shape is
+// The seed of migrations 20261123174710 and 20261123174720 writes the same shape, and the shape is
 // a contract with cybermonklabs/legion#4177's project clause (the catalogue list of its
 // refs/catalogue.go): every catalogue constraint is the far end of exactly one constrained_by tuple
 // from a lens_kind node, and the catalogue writes no other constraint node. So adding a kind is one

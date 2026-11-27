@@ -85,7 +85,7 @@ Failing example: An order service that keeps its orders in memory only.
 			current, _ := a.Current()
 			args := []string{"print", "--approved", approved}
 			for id, n := range a.Nodes {
-				if !*n.Removed {
+				if !n.Removed {
 					args = append(args, "--id", id)
 				}
 			}

@@ -59,14 +59,17 @@ func (s *Postgres) TreeTold(ctx context.Context, tx pgx.Tx, tree string) ([]Desi
 // The versions are read in the statement that writes them, from the rows the caller's transaction
 // holds, so the baseline is the gate as that transaction leaves it: the transition that starts the
 // work (workflow's Engine.enter), or the write that opens the tree's gate for the first time
-// (workflow's putGateTold).
+// (workflow's putGateTold). A row of a step that is not one of DesignSteps, a `decisions` row an
+// earlier release wrote, is left out, as every read of the gate rows leaves it (Postgres.GatesOf),
+// so the row it writes takes no version of that step.
 func (s *Postgres) BaselineTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, root string, at time.Time) error {
 	if _, err := tx.Exec(ctx, `insert into design_news_told (issue, audience, versions, opening_owed, told_at)
 		select $1::text, $2::text,
 			coalesce(jsonb_object_agg(step, approved_version) filter (where approved_version is not null), '{}'::jsonb),
 			false, $4::timestamptz
 		from design_gates where issue = $3::text
-		on conflict (issue, audience) do nothing`, issue, string(audience), root, at); err != nil {
+		  and step = any($5::text[]) -- kept for one release: design-gate-rows
+		on conflict (issue, audience) do nothing`, issue, string(audience), root, at, StepNames(DesignSteps)); err != nil {
 		return fmt.Errorf("write the baseline %s's %s takes from %s's gate: %w", issue, audience, root, err)
 	}
 	return nil
@@ -277,7 +280,7 @@ func (s *Postgres) DesignChangesOf(ctx context.Context, tx pgx.Tx, pairs []Versi
 // recorded unavailable takes the new row, so a Dispatch that has gained the route since can still
 // say what changed. It refuses a set the table's shape does not hold: a state that is neither,
 // a pair whose From is not below its To, a reason given or missing against the state, and an
-// unchanged pair that is unavailable or decision-only.
+// unchanged pair that is unavailable or ask-only (DecisionOnly).
 func (s *Postgres) PutDesignChanges(ctx context.Context, tx pgx.Tx, changes DesignChanges) error {
 	switch {
 	case changes.State != DesignChangesRead && changes.State != DesignChangesUnavailable:
@@ -287,7 +290,7 @@ func (s *Postgres) PutDesignChanges(ctx context.Context, tx pgx.Tx, changes Desi
 	case (changes.State == DesignChangesUnavailable) != (changes.Reason != ""):
 		return fmt.Errorf("record the change set of %+v: an unavailable pair says why, and a read one has no reason to give", changes.VersionPair)
 	case changes.Unchanged && (changes.State != DesignChangesRead || changes.DecisionOnly):
-		return fmt.Errorf("record the change set of %+v: only a pair read from Dispatch can be unchanged, and a decision-only one is not", changes.VersionPair)
+		return fmt.Errorf("record the change set of %+v: only a pair read from Dispatch can be unchanged, and an ask-only one is not", changes.VersionPair)
 	}
 	sections, err := json.Marshal(append([]SectionChange{}, changes.Sections...))
 	if err != nil {

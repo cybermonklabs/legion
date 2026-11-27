@@ -9,7 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// A component of a project's architecture is a node (dispatch://INFRA-1253 R9): kind and supertag
+// A component of a project's architecture is a node (R9 of the issue-tree spec): kind and supertag
 // component, the supertag the store seeds (20261109051232_graph_supertags.up.sql), addressed
 // `<project>/<id>` as graph_edges has always addressed one (ComponentAddress). The architecture
 // importer writes it, with its part_of to its parent component and its depends_on to each

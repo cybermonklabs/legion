@@ -39,9 +39,10 @@ import (
 //
 // So the test drives the closest a writer can come: two index passes of one document in one
 // transaction, the first dropping a block and the second restoring it, both appended under one
-// event. Under the key this branch ships the log holds both values; under the key it replaces
+// event. Under the key this build ships the log holds both values; under the key it replaces
 // the restore is dropped and the node row reads live while the log's newest value reads gone.
 func TestTwoValuesOfOneBaseAttributeUnderOneEventAreBothHeld(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := parentDatabase(t)
 	writer := model.Actor{Kind: "user", ID: "alice"}
@@ -68,14 +69,14 @@ func TestTwoValuesOfOneBaseAttributeUnderOneEventAreBothHeld(t *testing.T) {
 		t.Fatalf("begin the two passes: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	_, _, dropped, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 2, dropping.at), without.markdown, without.blocks, nil, nil, TypedFacts{})
+	_, _, dropped, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 2, dropping.at), without.markdown, without.blocks, nil, nil, "", TypedFacts{})
 	if err != nil {
 		t.Fatalf("index the version that drops the block: %v", err)
 	}
 	if err := graphstore.Caused(ctx, tx, dropped, dropping.event); err != nil {
 		t.Fatalf("append what the version that drops the block stated: %v", err)
 	}
-	_, _, restored, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 3, restoring.at), whole.markdown, whole.blocks, nil, nil, TypedFacts{})
+	_, _, restored, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 3, restoring.at), whole.markdown, whole.blocks, nil, nil, "", TypedFacts{})
 	if err != nil {
 		t.Fatalf("index the version that restores the block: %v", err)
 	}

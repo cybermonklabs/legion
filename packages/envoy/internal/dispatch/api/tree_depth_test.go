@@ -16,11 +16,13 @@ import (
 
 // A live tree as deep as the schema allows is a document every read serves, and one level deeper
 // is outside the schema for every read alike. A crafted browser client writes either through the
-// room's CRDT, below pmdoc.Update's own validation. At the bound, the last peer's settlement stamps
-// the chain's blocks and versions it, GET /text answers 200 with its markdown and token, and
-// GET /blocks 200 with a token for every block, each of which hashes the subtree below it. One level
-// deeper, settlement writes no version and both reads answer 409 DOC_SCHEMA naming the repair: the
-// stored tree is outside the schema, and a replacement from markdown repairs it.
+// room's CRDT, below pmdoc.Update's own validation. At the bound, GET /text answers 200 with the
+// room's markdown and token, and GET /blocks 200 with a token for every block, each of which hashes
+// the subtree below it; the settlement stores no version, since the chain's rendering opens more
+// blocks inside one another than the markdown parser reads back (R25: "A rendering that does not
+// read back is stored as no version"), so the document's newest version stays the one before it.
+// One level deeper, settlement writes no version and both reads answer 409 DOC_SCHEMA naming the
+// repair: the stored tree is outside the schema, and a replacement from markdown repairs it.
 func TestEveryReadServesATreeAtTheDepthBound(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -29,7 +31,7 @@ func TestEveryReadServesATreeAtTheDepthBound(t *testing.T) {
 		status   int
 		versions int
 	}{
-		{name: "at the bound", depth: pmdoc.MaxTreeDepth, status: http.StatusOK, versions: 2},
+		{name: "at the bound", depth: pmdoc.MaxTreeDepth, status: http.StatusOK, versions: 1},
 		{name: "past the bound", depth: pmdoc.MaxTreeDepth + 1, status: http.StatusConflict, versions: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {

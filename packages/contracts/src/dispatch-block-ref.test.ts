@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
 import {
+  askOpenerAttributes,
+  askOpenerBlockId,
+  askOpenerLines,
+  askOpeners,
   blockPointerValueProblem,
   DISPATCH_BLOCK_ID_ENCODINGS,
   DISPATCH_BLOCK_POINTER_VALUES,
@@ -189,4 +194,157 @@ test("the Go renderer's table of typed block id spellings is the same table", as
     import.meta.url
   );
   expect(JSON.parse(await Bun.file(path).text())).toEqual([...DISPATCH_TYPED_BLOCK_ID_SPELLINGS]);
+});
+
+/** A line that opens the ask block `id`, with the attributes the release before wrote on it. */
+const opener = (id: string) => `:::ask{#${id} state="answered" answer="Ship it."}`;
+
+/**
+ * One row of `packages/envoy/internal/dispatch/pmdoc/testdata/ask-block-scanner.json`, the one
+ * corpus of the two hand-written block scanners: `readAskBlocks` here (read through
+ * `askOpenerLines`) and Go's `pmdoc.QuestionBlocks`, whose test reads the same file. `lines` is a
+ * document, `ids` the ids of the ask blocks that open in it, `why` the rule the row holds.
+ */
+interface AskBlockScannerRow {
+  readonly name: string;
+  readonly why: string;
+  readonly lines: readonly string[];
+  readonly ids: readonly string[];
+}
+
+const SCANNER_CORPUS: readonly AskBlockScannerRow[] = JSON.parse(
+  readFileSync(
+    new URL("../../envoy/internal/dispatch/pmdoc/testdata/ask-block-scanner.json", import.meta.url),
+    "utf8"
+  )
+);
+
+test("the shared corpus of the two block scanners is not empty", () => {
+  expect(SCANNER_CORPUS.length).toBeGreaterThan(0);
+});
+
+test.each([...SCANNER_CORPUS])("askOpenerLines: $name", ({ lines, ids, why }) => {
+  const openers = askOpenerLines(lines.join("\n"));
+  // Each opener is its line from the directive's first colon on, past the containers' markers.
+  for (const line of openers) {
+    expect(line, why).toMatch(/^:{3,}ask\{/);
+    expect(
+      lines.some((original) => original.endsWith(line)),
+      why
+    ).toBe(true);
+  }
+  // The blocks Go's scanner reads are the ones that name an id.
+  expect(
+    openers.flatMap((line) => askOpenerBlockId(line) ?? []),
+    why
+  ).toEqual([...ids]);
+});
+
+test("askOpenerLines reads lines that end in a carriage return and a line feed", () => {
+  const lines = ["```", opener("a"), "```", opener("b"), ""];
+  expect(askOpenerLines(lines.join("\r\n"))).toEqual([opener("b")]);
+});
+
+// A pattern with two runs of spaces and tabs side by side tries each split of a long run between
+// them, so a line of many tabs and then a character that ends the match took seconds. The second
+// and third lines go on with the paragraph (a table's delimiter row is looked for in each), the
+// fourth is a blank line, and the sixth stands inside the ask block (a closing line is looked for
+// in it). Each is read in time linear in its length.
+test("askOpenerLines reads lines of 50,000 tabs in under one second", () => {
+  const tabs = "\t".repeat(50_000);
+  const lines = ["Some text.", `${tabs}|`, `|-${tabs}x|`, tabs, opener("a"), `:${tabs}x`, ":::"];
+  const start = performance.now();
+  const openers = askOpenerLines(lines.join("\n"));
+  expect(performance.now() - start).toBeLessThan(1000);
+  expect(openers).toEqual([opener("a")]);
+});
+
+test("askOpenerBlockId reads back each id as the renderer writes it, and no other spelling", () => {
+  for (const { id, written } of DISPATCH_TYPED_BLOCK_ID_SPELLINGS) {
+    expect(askOpenerBlockId(`:::ask{${written} state="open"}`)).toBe(id);
+    expect(askOpenerBlockId(`::::ask{${written}}`)).toBe(id);
+    expect(askOpeners([`:::ask{${written}}`], id)).toEqual([`:::ask{${written}}`]);
+  }
+  // The renderer writes `#a`, never `id="a"`. A `#id` ends at a character the shortcut cannot
+  // hold, and only a space or the closing brace may follow it.
+  for (const line of [':::ask{id="a"}', ":::ask{#a.b}", ":::ask{#}", ':::ask{state="open" #a}']) {
+    expect(askOpenerBlockId(line)).toBeUndefined();
+  }
+});
+
+// The character references a value reads back: every numeric reference, which the renderer writes
+// for `"`, a line feed and a carriage return (`&#x22;`, `&#xA;`, `&#xD;`) and a browser's parser
+// for any character, and the five named ones. A character a reference decodes to starts no
+// reference of its own: the value is read in one pass.
+test.each([
+  { name: "a hexadecimal quote", written: "a&#x22;b", read: 'a"b' },
+  { name: "a hexadecimal line feed", written: "a&#xA;b", read: "a\nb" },
+  { name: "a hexadecimal carriage return", written: "a&#xD;b", read: "a\rb" },
+  { name: "an upper-case hexadecimal marker", written: "&#X41;&#x61;", read: "Aa" },
+  { name: "a decimal quote", written: "a&#34;b", read: 'a"b' },
+  { name: "a decimal letter", written: "&#65;&#66;", read: "AB" },
+  { name: "an astral character", written: "&#x1F4CA;&#128202;", read: "\u{1F4CA}\u{1F4CA}" },
+  { name: "an ampersand", written: "R&amp;D", read: "R&D" },
+  { name: "a greater-than sign", written: "a&gt;b", read: "a>b" },
+  { name: "a less-than sign", written: "a&lt;b", read: "a<b" },
+  { name: "a named quote", written: "a&quot;b", read: 'a"b' },
+  { name: "a named apostrophe", written: "it&apos;s", read: "it's" },
+  { name: "an ampersand that starts a numeric reference", written: "&amp;#x22;", read: "&#x22;" },
+  { name: "an ampersand that starts a named reference", written: "&amp;amp;", read: "&amp;" },
+  { name: "a named reference this reader does not know", written: "a&nbsp;b", read: "a&nbsp;b" },
+  {
+    name: "a name that is a property of every object",
+    written: "&constructor;",
+    read: "&constructor;",
+  },
+  { name: "a reference with no semicolon", written: "a&amp b &#x22 c", read: "a&amp b &#x22 c" },
+  { name: "a bare ampersand", written: "a & b", read: "a & b" },
+  { name: "zero", written: "a&#0;b&#x0;c", read: "a\uFFFDb\uFFFDc" },
+  { name: "a surrogate", written: "&#xD800;&#57343;", read: "\uFFFD\uFFFD" },
+  { name: "a code point past U+10FFFF", written: "&#x110000;&#99999999999;", read: "\uFFFD\uFFFD" },
+])("askOpenerAttributes reads $name in a value", ({ written, read }) => {
+  expect(askOpenerAttributes(`:::ask{#a answer="${written}"}`)?.answer).toBe(read);
+});
+
+test("askOpenerAttributes reads every quoted attribute of an opener, whatever its id's spelling", () => {
+  const ask = askOpenerAttributes(
+    ':::ask{#q state="answered" answered_by="bob" answered_at="2026-11-18T12:05:00Z" selected="[&#x22;REST&#x22;]" answer="Plain &#x22;HTTP&#x22;.&#xA;Next." copied_from="c-1" copied_from_document="CORE-1/spec"}'
+  );
+  expect(ask).toEqual({
+    block_id: "q",
+    state: "answered",
+    answered_by: "bob",
+    answered_at: "2026-11-18T12:05:00Z",
+    selected: ["REST"],
+    answer: 'Plain "HTTP".\nNext.',
+    copied_from: "c-1",
+    copied_from_document: "CORE-1/spec",
+  });
+  // An id written in quotes is read back as the other attributes are.
+  expect(askOpenerAttributes(':::ask{id="a&#xA;b" state="open"}')).toEqual({
+    block_id: "a\nb",
+    state: "open",
+  });
+});
+
+test("askOpenerAttributes reads a name written twice as its last value, and no attribute off a line with no braces", () => {
+  expect(askOpenerAttributes(':::ask{#a state="open" state="answered"}')?.state).toBe("answered");
+  expect(askOpenerAttributes(':::ask state="open"')).toBeUndefined();
+  expect(askOpenerAttributes("")).toBeUndefined();
+  // A name that every object inherits is no attribute of an ask, and the ask read holds none.
+  expect(askOpenerAttributes(':::ask{#a __proto__="x" constructor="y"}')).toEqual({
+    block_id: "a",
+  });
+  expect(Object.hasOwn(askOpenerAttributes(':::ask{#a state="open"}') ?? {}, "constructor")).toBe(
+    false
+  );
+});
+
+// An opening line is text a document's writer controls, so its `state` is read only where it is
+// one of the three states an ask holds, and any other string reads as no state.
+test("askOpenerAttributes reads a state only where it is open, answered or resolved", () => {
+  for (const state of ["open", "answered", "resolved"] as const) {
+    expect(askOpenerAttributes(`:::ask{#a state="${state}"}`)).toEqual({ block_id: "a", state });
+  }
+  expect(askOpenerAttributes(':::ask{#a state="bogus"}')).toEqual({ block_id: "a" });
 });

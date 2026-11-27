@@ -115,6 +115,7 @@ func seedDecisionsDocument(t *testing.T, database *store.Store, service *docs.Se
 // born converted refuses a decisions document (decisionsAreNodes) and the step's reads take each
 // document as its own room. The issue is held unconverted (holdIssuesUnconverted).
 func TestTheConversionCarriesTheApprovalAcrossTheShapedPointersItGivesAnAsk(t *testing.T) {
+	t.Parallel()
 	handler, database, service := settlingCarryDocuments(t, 20*time.Millisecond)
 	holdIssuesUnconverted(t, database)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -131,7 +132,8 @@ func TestTheConversionCarriesTheApprovalAcrossTheShapedPointersItGivesAnAsk(t *t
 		"## The census runs first\n\nThe census reads the corpus before any view of it.\n")
 	step := docs.NewDecisionStep(database, "", nil)
 	step.UseDocuments(service)
-	done, failed, err := step.RestoreAndConvert(context.Background(), "TEST", true, false)
+	pass, err := step.RestoreAndConvert(context.Background(), "TEST", true, false)
+	done, failed := pass.Done, pass.Failed
 	if err != nil || len(failed) > 0 || len(done) != 1 {
 		t.Fatalf("the conversion answered %+v, %+v, %v, want the one issue converted", done, failed, err)
 	}

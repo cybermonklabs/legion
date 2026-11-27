@@ -11,6 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -37,7 +39,8 @@ type checkResultRetractionInput struct {
 // retractedResult is what the write reads about the result it is asked to retract: the issue
 // the result was recorded on, whose claim is one of the three credentials that may retract it,
 // the check's issue, which the event is appended on and whose owner lock the route takes before
-// it reads anything else, and the session that recorded it.
+// it reads who may retract the result and whether a retraction stands, and the session that
+// recorded it.
 type retractedResult struct {
 	IssueKey      string
 	CheckIssueKey string
@@ -52,6 +55,15 @@ type retractedResult struct {
 // the retraction is a row of its own, and both records stay readable. The answer is the
 // retraction.
 func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
+	// The one project the credential names, empty for a credential that names none, read before
+	// the transaction opens, as the person scope below is. The check's issue, which the retraction
+	// is appended to, can be of another project than the result's own, reached through a parent of
+	// another project. The pre-handler check asked about both before any other layer ran
+	// (withinProjectScope, projectOfRetractedCheck), so a check of a private project that the
+	// credential does not name got the answer of a result that does not exist, whatever the
+	// request holds. The transaction asks again below, once it has read the result and before it
+	// takes the owner lock of the check's issue (refuseRetractionOfUncoveredCheck).
+	callerProject, _ := s.callerProject(r)
 	var input checkResultRetractionInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
@@ -76,8 +88,6 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	// a second one (store/pool.go): inside the transaction every person would read as holding
 	// no scope, which is the refusal this route must not make.
 	person := s.callerHoldsScope(r, model.ScopePerson)
-	// The one project the credential may write, read before the transaction for the same reason.
-	callerProject, _ := s.callerProject(r)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -88,25 +98,24 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	// The read phase holds no transaction id (INFRA-636). The result's row is read plainly, for
 	// the owner it names: nothing ever updates a check_results row, and its one writer, the
 	// record route, inserts it under that same owner's lock (results.go, lockIssueOwners), so
-	// the row read here holds still. The owner's lock comes next, and it is the lock the event's
-	// append would otherwise be the first to take (store.LockOwner, events' lockEventOwner):
-	// advisory, so this route waits for it holding no transaction id, where a `select ... for
-	// update` of the result taken first would have held one across the wait and across every
-	// read below it.
+	// the row read here holds still. The owner's lock comes after the check of the owner's
+	// project below, and it is the lock the event's append would otherwise be the first to take
+	// (store.LockOwner, events' lockEventOwner): advisory, so this route waits for it holding no
+	// transaction id, where a `select ... for update` of the result taken first would have held
+	// one across the wait and across every read below it.
 	//
-	// Everything the retraction is decided on is read in the statements after that lock, each
-	// taking a fresh snapshot: a second retraction of this result, whose only writer is this
-	// route under this lock, reads the first one as soon as that one commits.
+	// Who may retract the result, and whether a retraction of it stands already, are read in the
+	// statements after that lock, each taking a fresh snapshot: a second retraction of this
+	// result, whose only writer is this route under this lock, reads the first one as soon as
+	// that one commits.
 	result, err := readRetractedResult(r.Context(), tx, resultID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The pre-handler check held the result's own issue to a scoped caller's project, and the
-	// check's issue, which the retraction is appended to, can be of another project, reached
-	// through a parent of another project. Such a caller is refused it here, before it takes that
-	// issue's owner lock.
-	if err := refuseCheckOutsideCallerProject(r.Context(), tx, callerProject, result.CheckIssueKey); err != nil {
+	// The check of the check's issue's project again, in the transaction that appends the
+	// retraction to that issue, before it takes that issue's owner lock.
+	if err := refuseRetractionOfUncoveredCheck(r.Context(), tx, callerProject, result.CheckIssueKey); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -114,6 +123,10 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The retraction moves the record of the check's issue's Verification query. This transaction
+	// writes no version of that query and takes no lock of the issue's room: its batch marks the
+	// issue's queries owed (writeCheckResultRetraction), and the drain writes the version once it
+	// has committed, below.
 	if err := s.refuseRetractionBy(r.Context(), tx, actor, person, result); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -153,7 +166,8 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	retraction := model.CheckResultRetraction{
 		ResultID: resultID, Reason: reason, Session: sessionOf(actor), Actor: actor, EventSeq: &seq, CreatedAt: createdAt,
 	}
-	if err := writeCheckResultRetraction(r.Context(), tx, &retraction, held, event.ID); err != nil {
+	marked, err := writeCheckResultRetraction(r.Context(), tx, &retraction, result.CheckIssueKey, held, event.ID)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -161,7 +175,14 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(r.Context(), event)
+	// The drain writes the version of the Verification query the retraction left owed, before the
+	// retraction's event is published (docs.Service.DrainOwedQueries), and what it appended
+	// follows that event.
+	var drained []model.Event
+	if marked {
+		drained = s.deps.Docs.DrainOwedQueries(r.Context(), result.CheckIssueKey)
+	}
+	s.publish(r.Context(), append([]model.Event{event}, drained...)...)
 	WriteJSON(w, http.StatusCreated, retraction)
 }
 
@@ -218,13 +239,14 @@ func claimingSession(ctx context.Context, q queryer, key string) (string, error)
 	return holder, nil
 }
 
-// readRetractedResult reads the result a retraction names, which is the one read this route
-// makes before it takes the owner's lock: it names that owner (check_issue_key). It takes no row
-// lock, so it leaves the transaction without a transaction id for the wait on that lock. A row
-// lock here would serialise nothing the owner's lock does not: check_results is written once, by
-// the record route under the check issue's owner lock, and two retractions of one result are
-// taken one after the other because both hold that lock while they read and write
-// (retractCheckResult).
+// readRetractedResult reads the result a retraction names, before the route takes the owner's
+// lock: the result names that owner (check_issue_key). The route's one other read before that
+// lock is the check of the owner's project for a credential that names one
+// (refuseRetractionOfUncoveredCheck). This read takes no row lock, so it leaves the transaction
+// without a transaction id for the wait on that lock. A row lock here would serialise nothing the
+// owner's lock does not: check_results is written once, by the record route under the check
+// issue's owner lock, and two retractions of one result are taken one after the other because
+// both hold that lock while they read and write (retractCheckResult).
 func readRetractedResult(ctx context.Context, tx pgx.Tx, id string) (retractedResult, error) {
 	var result retractedResult
 	err := tx.QueryRow(ctx, `
@@ -239,6 +261,44 @@ func readRetractedResult(ctx context.Context, tx pgx.Tx, id string) (retractedRe
 		return retractedResult{}, fmt.Errorf("read result %s: %w", id, err)
 	}
 	return result, nil
+}
+
+// refuseRetractionOfUncoveredCheck asks again, in the transaction that appends a retraction to
+// the result's check's issue, checkIssue, whether the request's credential covers that issue's
+// project, with the visibility of that project read in the same statement (checkIssueProject).
+// caller is the one project the credential names, empty for a credential that names none, which
+// is refused nothing here. retractCheckResult asks it before it takes the owner lock of
+// checkIssue. The pre-handler check refused a check of a private project that the credential
+// does not name already (withinProjectScope, projectOfRetractedCheck), so this one refuses it
+// only where its project became private between the two reads, with the same answer: the answer
+// of a result that does not exist (outsideProjectScopeError).
+func refuseRetractionOfUncoveredCheck(ctx context.Context, q queryer, caller, checkIssue string) error {
+	if caller == "" {
+		return nil
+	}
+	project, private, err := checkIssueProject(ctx, q, caller, checkIssue)
+	if err != nil {
+		return err
+	}
+	if !access.CredentialCovers(access.Credential{Listed: []string{caller}}, project, private) {
+		return outsideProjectScopeError(caller)
+	}
+	return nil
+}
+
+// projectOfRetractedCheck reads, in one statement, the project of the check's issue of the result
+// the path names, and whether that project is private: the project of the issue that a retraction
+// of the result is appended to. An empty project with no error means no result has that id
+// (scanProjectKey). withinProjectScope asks it of the retraction route beside the result's own
+// issue (secondProjectResolverFor).
+func projectOfRetractedCheck(ctx context.Context, q queryer, r *http.Request) (string, bool, error) {
+	return scanProjectKey(q.QueryRow(ctx, `
+		select i.project_key, p.visibility = 'private'
+		from check_results c
+		join issues i on i.key = c.check_issue_key
+		join projects p on p.key = i.project_key
+		where c.id = $1
+	`, r.PathValue("id")))
 }
 
 // resultIsRetracted answers whether a retraction of this result stands already.
@@ -317,16 +377,22 @@ func resultNodeHeld(ctx context.Context, tx pgx.Tx, id string) (bool, time.Time,
 // event, in one batch (store.RunWrite), its write phase's last: its row, dated at the retraction's
 // created_at, the transaction's now() (resultNodeHeld), and, where the store holds the result's
 // node (held), the retracted value of that result (graphstore.ResultRetracted): its reason, stated
-// by the retraction's actor at that time and caused by event, of which the row is the projection.
-// A result whose node the store does not hold yet - a row an earlier release wrote, which the
-// backfill has not reached - takes no value here: the backfill writes its node and then its
-// retracted value from the row (graphcensus' census_results.go).
-func writeCheckResultRetraction(ctx context.Context, tx pgx.Tx, retraction *model.CheckResultRetraction, held bool, event int64) error {
+// by the retraction's actor at that time and caused by event, of which the row is the projection;
+// then the mark of the queries of the check's issue checkIssueKey owed a version, whose record the
+// value moved (docs.QueueQueryMark), with that event and the value's sequence as its causes, the
+// value's writer, the retraction's actor, being the one the drain names its version after, and
+// last the result's head rows. A result whose node the store does not hold yet - a row an earlier
+// release wrote, which the backfill has not reached - takes no value here, and so marks nothing:
+// the backfill writes its node and then its retracted value from the row (graphcensus'
+// census_results.go). It answers whether the batch marked the issue's queries, which it does only
+// where the issue has converted.
+func writeCheckResultRetraction(ctx context.Context, tx pgx.Tx, retraction *model.CheckResultRetraction, checkIssueKey string, held bool, event int64) (bool, error) {
 	actorJSON, err := encodeJSON(retraction.Actor)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+	marked := false
+	err = store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		b.Queue("record the retraction", `
 			insert into check_result_retractions (result_id, reason, session, actor, event_seq, created_at)
 			values ($1, $2, $3, $4, $5, $6)
@@ -334,8 +400,12 @@ func writeCheckResultRetraction(ctx context.Context, tx pgx.Tx, retraction *mode
 		if !held {
 			return nil
 		}
-		graphstore.QueueWrite(b, nil, []graphstore.Tuple{graphstore.ResultRetracted(
-			retraction.ResultID, retraction.Reason, retraction.Actor, retraction.CreatedAt, event)})
+		retracted := []graphstore.Tuple{graphstore.ResultRetracted(
+			retraction.ResultID, retraction.Reason, retraction.Actor, retraction.CreatedAt, event)}
+		graphstore.QueueWrite(b, nil, retracted)
+		docs.QueueQueryMark(b, checkIssueKey, event, &marked)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, retracted))
 		return nil
 	})
+	return marked, err
 }

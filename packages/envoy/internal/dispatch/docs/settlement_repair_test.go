@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // While another build serves, settlement repairs an ask block's server-owned attributes - the
@@ -29,6 +30,7 @@ import (
 // its database work: a paragraph a browser edits in between keeps the edit, and the stored
 // document and the version the settlement writes hold both (LEGION-479).
 func TestSettlementRepairKeepsAnEditMadeAfterItsRead(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
@@ -58,6 +60,7 @@ func TestSettlementRepairKeepsAnEditMadeAfterItsRead(t *testing.T) {
 // before it versions writes the version of the document as it stands, the edit included, rather
 // than of the tree its stamp read (LEGION-479).
 func TestSettlementStampVersionKeepsAnEditMadeAfterItsRead(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -88,6 +91,7 @@ func TestSettlementStampVersionKeepsAnEditMadeAfterItsRead(t *testing.T) {
 // The settlement the replacement's load arms versions the document with the repair (LEGION-479).
 // The repair is the answer settlement writes into the block while another build serves.
 func TestSettlementWhoseRoomWasReplacedLeavesTheDocumentToTheReplacement(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
@@ -134,6 +138,7 @@ func TestSettlementWhoseRoomWasReplacedLeavesTheDocumentToTheReplacement(t *test
 // edit's own settlement finds the document already versioned and writes no version that could
 // credit them (LEGION-479).
 func TestSettlementRepairCreditsTheAuthorOfAnEditItsVersionHolds(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
@@ -170,6 +175,7 @@ func TestSettlementRepairCreditsTheAuthorOfAnEditItsVersionHolds(t *testing.T) {
 // author. The version the edit's own settlement writes holds it and credits them (LEGION-479).
 // The repair is the answer settlement writes into the block while another build serves.
 func TestSettlementRepairCreditsNoAuthorOfAnEditMadeWhileItsVersionRenders(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
@@ -235,6 +241,7 @@ func latestVersionAuthors(t *testing.T, service *Service, artifactID string) []m
 // (LEGION-479). The repair is the answer settlement writes into the block while another build
 // serves.
 func TestSettlementStoresAnEditItsRepairedVersionHoldsBeforeTheRepair(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
@@ -286,6 +293,7 @@ func requireLatestVersionMarkdown(t *testing.T, service *Service, artifactID, wa
 // scheduled. The repair's transaction, which changed nothing, still reports an update; its slot is
 // finished with that update and the room's persistence worker consumes it (LEGION-479).
 func TestSettlementRepairOfAnAskAPeerDeletedWritesNothing(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n\nContext.\n")
@@ -315,15 +323,11 @@ func TestSettlementRepairOfAnAskAPeerDeletedWritesNothing(t *testing.T) {
 	}
 }
 
+// latestVersionNumber is the number of artifactID's latest version, savedVersion of service's
+// store.
 func latestVersionNumber(t *testing.T, service *Service, artifactID string) int {
 	t.Helper()
-	var latest int
-	if err := service.store.Pool.QueryRow(context.Background(), `
-		select coalesce(max(number), 0) from artifact_versions where artifact_id = $1
-	`, artifactID).Scan(&latest); err != nil {
-		t.Fatalf("read the latest document version: %v", err)
-	}
-	return latest
+	return savedVersion(t, service.store, artifactID)
 }
 
 // A settlement takes a suppression slot before it stamps block ids, and the stamp it then writes
@@ -332,6 +336,7 @@ func latestVersionNumber(t *testing.T, service *Service, artifactID string) int 
 // persistence worker at the next update it is handed, and every later update of the room with it
 // (LEGION-479).
 func TestSettlementReleasesTheSlotOfAStampTheDocumentNoLongerNeeds(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -370,11 +375,12 @@ func TestSettlementReleasesTheSlotOfAStampTheDocumentNoLongerNeeds(t *testing.T)
 // content change, for which the next settlement would version a document nobody edited
 // (LEGION-479).
 func TestBackfillStoresNothingForAStampTheDocumentNoLongerNeeds(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -431,6 +437,7 @@ func TestBackfillStoresNothingForAStampTheDocumentNoLongerNeeds(t *testing.T) {
 // worker is handed each on its own. Both are held from it and released once each reaches it
 // (LEGION-479).
 func TestSettlementThatStampsAndRepairsReleasesItsSlots(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
@@ -461,6 +468,9 @@ func TestSettlementThatStampsAndRepairsReleasesItsSlots(t *testing.T) {
 // settlement holds, waits for the repair's commit to reach the room's persistence rather than
 // retiring the room's worker under it (roomServer, LEGION-498).
 func TestARoomThatFailsWhileASettlementCommitsIntoItRecovers(t *testing.T) {
+	// Not parallel: it reads every goroutine's stack in the process (goroutinesIn, in
+	// closeWaitsForRepair) for a room close that waits on the repair, where a close of another
+	// test's service would count as its own.
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	pause := pauseRepairCommits(service)
@@ -500,6 +510,9 @@ func TestARoomThatFailsWhileASettlementCommitsIntoItRecovers(t *testing.T) {
 // the settlement has. Shutdown's settlement is refused its broadcast once the room is shutting
 // down and fails the room, whose unstored updates its browsers send again when they reconnect.
 func TestASecondWriterIntoARoomClosingUnderASettlementsRepairReturns(t *testing.T) {
+	// Not parallel: it reads every goroutine's stack in the process (goroutinesIn, in
+	// closeWaitsForRepair and its wait for consumeSuppressedPersistence), where another test's
+	// goroutines would count as its own.
 	for _, closer := range []struct {
 		name  string
 		close func(service *Service, artifactID string) error
@@ -531,7 +544,7 @@ func TestASecondWriterIntoARoomClosingUnderASettlementsRepairReturns(t *testing.
 			}
 
 			settled := settleUnderPause(t, service, pause, artifactID, generation)
-			t.Cleanup(func() {
+			testcleanup.Add(t, func() {
 				if t.Failed() {
 					service.purgeSuppressedPersistence(artifactID)
 					endRoomLockHolders(t, service)
@@ -624,7 +637,7 @@ func requireNextSettlementStamps(t *testing.T, service *Service, artifactID, wan
 // settlement closes when it returns, once pause holds its stamp's commit.
 func settleUnderPause(t *testing.T, service *Service, pause *repairCommitPause, artifactID string, generation uint64) <-chan struct{} {
 	t.Helper()
-	t.Cleanup(pause.let)
+	testcleanup.Add(t, pause.let)
 	pause.armed.Store(true)
 	settled := make(chan struct{})
 	go func() {

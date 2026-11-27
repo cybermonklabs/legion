@@ -72,7 +72,7 @@ func readComponentStore(t *testing.T, database *store.Store, issue string) compo
 }
 
 // TestAComponentIsANodeWithItsThreeTupleKinds holds the writers of a component and its relations
-// (dispatch://INFRA-1253 R9): a component is a node of kind and supertag component, its part_of
+// (R9 of the issue-tree spec): a component is a node of kind and supertag component, its part_of
 // to its parent component, its depends_on to another component and an issue's affects to a
 // component are tuples, and each projection row names the node it is the projection of. An import
 // writes each component's node, its part_of and its depends_on, and names the node on every

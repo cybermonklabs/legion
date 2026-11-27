@@ -176,7 +176,7 @@ func requirePageAcrossTheDeparture(t *testing.T, builds *twoBuilds, page pagePar
 	}
 	editor.Close()
 
-	stop(t, builds.previous())
+	stopProcess(t, builds.previous())
 	waited := waitForThePreviousBuildToLeaveTheFleet(t, builds)
 	t.Logf("the %s left the fleet %s after its stop, inside the bound of %s (a live window, a heartbeat and %s of slack)",
 		builds.previousName(), waited.Round(time.Millisecond), fleetDepartureBound(), fleetDepartureSlack)

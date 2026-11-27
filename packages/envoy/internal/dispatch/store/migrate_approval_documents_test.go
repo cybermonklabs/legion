@@ -14,6 +14,7 @@ const asksApprovalDocumentsVersion = 20261102110100
 // on an insert or on the update a version move makes - is normalized to the same shape, so every
 // reader finds the list and the rebuilt check admits the row.
 func TestMigrationGivesApprovalAsksTheirDocumentList(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, asksApprovalDocumentsVersion-1)
 	const artifactID = "11111111-1111-4111-8111-111111111111"

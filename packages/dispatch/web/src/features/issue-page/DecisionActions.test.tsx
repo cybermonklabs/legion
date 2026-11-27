@@ -1,4 +1,5 @@
 import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
+import { dispatchWritingBox } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -17,17 +18,23 @@ import type {
 import {
   borderDefault,
   dangerText,
+  inputClasses,
   pageFailedText,
+  pageHairBorder,
+  pageInkText,
   pageLineBorder,
   pageMutedText,
+  pagePaperBg,
   pageWordsText,
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { ReferenceNamesProvider } from "../refs/reference-names";
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { Publisher, publishedNames } from "./projection-fixture";
 
 /**
  * The two controls a decision's node draws (R7). The tree is one tab stop,
@@ -471,6 +478,76 @@ test("the Change form draws the page's colours inside NoTooltips and main's outs
   }
 });
 
+// The Change's box is the field every box a person writes a comment in mounts, with the
+// reference picker in it (the writing list's `decisions-change`), and the line under it is that
+// row's own words. Inside `NoTooltips` it takes the page's shape - its box, its name and that
+// line in the page's own colours, no `title` anywhere, and no face of its own, so it is drawn in
+// the page's typeface - and outside it the field keeps its own box.
+test("the Change's box is the shared field, in the page's shape inside NoTooltips", async () => {
+  for (const surface of ["page", "main"] as const) {
+    const user = userEvent.setup();
+    const { unmount } = renderActions(read, DOCUMENT_TEXT, { page: surface === "page" });
+    try {
+      await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+      const box = screen.getByLabelText(CONTROL_LABELS.your_change);
+      const hint = document.getElementById(
+        box.getAttribute("aria-describedby")?.split(" ")[0] ?? ""
+      );
+      expect(hint?.textContent).toBe(dispatchWritingBox("decisions-change", "comment").hint);
+      const name = box.closest("label");
+      if (surface === "page") {
+        expect(wears(box, pageHairBorder, pagePaperBg, pageInkText), "the box's colours").toBe(
+          true
+        );
+        expect(wears(box, inputClasses(true)), "the box draws main's colours").toBe(false);
+        expect(name !== null && wears(name, pageMutedText), "the name's colour").toBe(true);
+        expect(hint !== null && wears(hint, pageMutedText), "the line's colour").toBe(true);
+        const form = box.closest("form");
+        expect(
+          form?.querySelectorAll("[title]").length,
+          "an element of the form sets a title"
+        ).toBe(0);
+        const faces = [form, ...(form?.querySelectorAll("*") ?? [])].filter((element) =>
+          [...(element?.classList ?? [])].some((one) => /^font-(?:sans|serif|mono)$/u.test(one))
+        );
+        expect(faces.length, "an element of the form draws in a face of its own").toBe(0);
+      } else {
+        expect(wears(box, inputClasses(true)), "the box keeps the field's own").toBe(true);
+      }
+    } finally {
+      unmount();
+    }
+  }
+});
+
+// A write's label and a form's name hold no markup, so Keep's write and the Change form are
+// named after the heading's plain words, as the Decisions panel names its own (the reading
+// list's `decision-heading-words`), and never after its markdown.
+test("the Change form is named after the heading's plain words", async () => {
+  const text = decisionText(
+    "d1",
+    "## **One** tree, five presets\n\nThe presets are queries over the one tree."
+  );
+  const marked: Decision = {
+    ...decision,
+    heading: "**One** tree, five presets",
+    text,
+    text_tree: displayTree(text),
+  };
+  const user = userEvent.setup();
+  const { unmount } = renderActions(readOf([marked]), DOCUMENT_TEXT, { page: true });
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    expect(
+      await screen.findByRole("form", {
+        name: `${CONTROL_LABELS.change_decision} One tree, five presets`,
+      })
+    ).toBeTruthy();
+  } finally {
+    unmount();
+  }
+});
+
 /** Two decisions of the spec whose first blocks both hold "Draw it once.", the second's whole: a
  *  Change of the second quotes words that stand more than once in the spec. */
 const ABOVE: Decision = {
@@ -661,4 +738,51 @@ test("a decision whose answer carried no reading quotes its first paragraph's ma
     "## Keep a log\n\nA log is enough.\n\nUnsure: the index may be slow."
   );
   expect(await quoteOf({ text, text_tree: undefined })).toBe("A log is enough.");
+});
+
+// R6, R8 and the reading list's `decision-change-quote`: the Change quotes the words it is
+// anchored to as the reader reads the decision - the plain-text projection of its first block,
+// a reference in it read as its target's name - while the change it sends is still anchored to
+// the own words of the document the decision's block stands in, which the server matches
+// (`pmdoc.FindQuote`).
+test("the Change quotes its block's plain-text projection and anchors to the document's own words", async () => {
+  const written = "The presets read dispatch://CORE-7 first.";
+  const text = decisionText("d1", `## One tree, five presets\n\n${written}`);
+  const cited: Decision = { ...decision, text, text_tree: displayTree(text) };
+  const answer = readOf([cited]);
+  // What the page's batched read publishes for the quote's row: the issue `CORE-7`, named.
+  const names = publishedNames(new Map([["dispatch://CORE-7", "Draw the rows"]]));
+  const createComment = spyOn(api, "createComment").mockImplementation(
+    () => new Promise<never>(() => {})
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["decisions", KEY], answer);
+  const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(answer);
+  const documentText = spyDocumentText(`# Spec of CORE-1\n\n## Decisions\n\n${text}`);
+  const user = userEvent.setup();
+  const view = render(
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>
+        <Publisher published={names} />
+        <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+      </ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await waitFor(() =>
+      expect(screen.getByTestId("decision-quote").textContent).toBe(
+        "The presets read CORE-7 Draw the rows first."
+      )
+    );
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    expect(createComment.mock.calls[0]?.[1]?.anchor?.quote).toBe(written);
+  } finally {
+    view.unmount();
+    decisions.mockRestore();
+    documentText.mockRestore();
+    createComment.mockRestore();
+  }
 });

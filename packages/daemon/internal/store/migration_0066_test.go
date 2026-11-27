@@ -24,6 +24,7 @@ import (
 // the list below is the end of the schema's own, not 0066's, and what holds 0066 itself is the
 // refusal above and `phase_ended` being taken here.
 func TestTheOutboxTakesThePhaseEndedKindWith0066(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, 65)

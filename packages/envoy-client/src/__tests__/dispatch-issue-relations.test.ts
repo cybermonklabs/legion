@@ -6,8 +6,8 @@ import { runDispatchCli } from "../dispatch-cli";
 import { fieldFlag } from "../dispatch-command";
 import { resetAdviceMemory } from "../dispatch-execute";
 
-// An issue's relations as the `dispatch` command writes and reads them (dispatch://INFRA-1253 R9,
-// R10). A wait is one relation, needs, which a Dispatch of the issue tree reads; a Dispatch of the
+// An issue's relations as the `dispatch` command writes and reads them (R9, R10 of the issue-tree
+// spec). A wait is one relation, needs, which a Dispatch of the issue tree reads; a Dispatch of the
 // release before reads blocked_by alone and ignores a member it does not declare, so the create
 // and the update send both members with the same targets, and the CLI reads needs where the answer
 // holds it. No driver can tell that from a server that reads either member, so this fake Dispatch

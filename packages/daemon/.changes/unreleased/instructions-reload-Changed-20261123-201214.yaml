@@ -1,0 +1,5 @@
+kind: Changed
+body: 'The daemon reads the deployment''s `instructions` file and each declared arm''s `instructions` file, the `memory` block''s among them, again before every launch, so an edit reaches the next launch with no restart. Before, the daemon read them once at boot, so a deployment that changed one had to restart the daemon, and a Kubernetes deployment that rolled the daemon''s pod on every change of its instructions stopped every running role with it. Under Kubernetes the daemon must read the files from a directory mount: the kubelet never updates a file mounted by `subPath`. A role already running keeps the prompt it launched with, and an edit replaces no pod. An edit that leaves a file missing, unreadable or blank stops no launch: launches carry the text the daemon last read, and the daemon logs one warning for each refusal, naming the file, then one line when it reads the file again. Naming another file is still a change of `legion.yaml`, which needs a restart.'
+time: 2026-11-23T20:12:14.161031829Z
+custom:
+    Issue: instructions-reload

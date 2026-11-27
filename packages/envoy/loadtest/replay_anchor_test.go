@@ -105,7 +105,7 @@ func TestStripAnswers(t *testing.T) {
 	md := ":::ask{#b1 urgency=\"high\" multiple=\"false\" state=\"answered\" answered_by=\"u\" answered_at=\"2026-10-26T22:00:00Z\" selected=\"[]\" answer=\"x\"}\nQ\n:::\n" +
 		":::ask{#b2 urgency=\"high\" multiple=\"false\" state=\"answered\" answered_by=\"u\" answered_at=\"t\" selected=\"[]\"}\nQ\n:::\n"
 	got := stripAnswers(md, map[string]bool{"b1": true})
-	want := ":::ask{#b1 urgency=\"high\" multiple=\"false\" state=\"open\"}\nQ\n:::\n" + md[strings.Index(md, ":::ask{#b2"):]
+	want := ":::ask{#b1 urgency=\"high\" multiple=\"false\"}\nQ\n:::\n" + md[strings.Index(md, ":::ask{#b2"):]
 	if got != want {
 		t.Fatalf("stripped\n%q\nwant\n%q", got, want)
 	}

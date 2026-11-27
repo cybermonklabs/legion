@@ -25,6 +25,7 @@ import (
 // The design gate is read by none of it, which the two admitted cases below hold: one with no
 // gate row at all and one whose gate stands open are both inside the rule.
 func TestArchitectSweepReachReadsTheRecordAlone(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	store := record.NewStore()
 	root := func(key string, at phase.Phase, generation uint64) record.Issue {
@@ -158,6 +159,7 @@ func TestArchitectSweepReachReadsTheRecordAlone(t *testing.T) {
 // generation 2, and its architect's row names entry 3 (rowEntry) where the case does not say it
 // names none.
 func TestArchitectSweepStartPendingHoldsTheRowBackWhileOneIsOnItsWay(t *testing.T) {
+	t.Parallel()
 	const rowEntry = 3
 	queued := []record.QueuedSupervise{{ID: 7, Request: record.SuperviseRequest{Op: "start", Role: claim.RoleArchitect}}}
 	holding := func(state supervise.ClaimState, task supervise.Delivery) *record.RoleClaim {
@@ -284,6 +286,7 @@ func TestArchitectSweepStartPendingHoldsTheRowBackWhileOneIsOnItsWay(t *testing.
 // resume of a person's answer wrote names the answer and no kept decision, and the answer is the
 // work that entry owes, so it is sent as written and claims nothing, whatever its text ends in.
 func TestArchitectSweepSendRederivesTheTaskAtTheEntryTheRowNames(t *testing.T) {
+	t.Parallel()
 	const resumed = "A person answered your ask ask-q on LEGION-208, or replied in its thread; read it. Continue."
 	for _, tc := range []struct {
 		name     string
@@ -318,7 +321,7 @@ func TestArchitectSweepSendRederivesTheTaskAtTheEntryTheRowNames(t *testing.T) {
 				return engine.SendArchitectStart(t.Context(), tx, root, row)
 			})
 
-			start := architectStartOf(t, pool)
+			start := architectStartOf(t, pool, entryIssue)
 			want := ArchitectStartTask(ArchitectStart{Root: root, Gate: record.TreeGate{Steps: engine.GatedSteps()}})
 			if tc.verbatim {
 				want = tc.stored

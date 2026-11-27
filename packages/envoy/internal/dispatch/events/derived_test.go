@@ -19,6 +19,7 @@ import (
 // the greater of what it held and its event's created_at; and the appended event the callback
 // hands back is the row the table holds.
 func TestDerivedEventSequencesAndOwnerRowsMatchTheRowsAppended(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `
@@ -131,6 +132,7 @@ func TestDerivedEventSequencesAndOwnerRowsMatchTheRowsAppended(t *testing.T) {
 // is the one the old append stored - the ask's payload encoded with opened_event_id set to the id -
 // and so is the payload the appended event carries.
 func TestDerivedAskOpenedPayloadEqualsTheEncodedPayloadWithItsEventID(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `

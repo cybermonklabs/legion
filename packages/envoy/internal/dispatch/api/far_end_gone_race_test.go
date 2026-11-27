@@ -19,6 +19,7 @@ import (
 // constrained by the gone constraint. A write that did not read its far end again under that lock
 // would wait there and then point at the gone node.
 func TestAFarEndTakenGoneWhileAWriteWaitsAnswersNotFound(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	// requireNothingAt fails unless no tuple of kind points at the node the store keys by toKind
 	// and toID.
@@ -35,7 +36,7 @@ func TestAFarEndTakenGoneWhileAWriteWaitsAnswersNotFound(t *testing.T) {
 	invoked := holdGone(t, rig, "a lens triggered by "+trigger.Address, lensTarget(trigger), func() *httptest.ResponseRecorder {
 		return rig.post("/lenses", map[string]any{"on": rig.spec, "kind": "botec", "triggered_by": trigger.Address}, "alice")
 	})
-	requireRefused(t, "a lens triggered by "+trigger.Address+" as it is taken gone", invoked, http.StatusNotFound, "NOT_FOUND", trigger.Address)
+	requireRefusedNaming(t, "a lens triggered by "+trigger.Address+" as it is taken gone", invoked, http.StatusNotFound, "NOT_FOUND", trigger.Address)
 	requireNothingAt(graphstore.TupleTriggeredBy, graphstore.KindLens, trigger.ID)
 	if after, _ := rig.counts(graphstore.KindLens, graphstore.TupleTriggeredBy); after != lenses {
 		t.Errorf("the store holds %d lenses after the refused invocation, and held %d before", after, lenses)
@@ -48,7 +49,7 @@ func TestAFarEndTakenGoneWhileAWriteWaitsAnswersNotFound(t *testing.T) {
 			"kind": graphstore.TupleTriggeredBy, "action": pointerAppend, "to": earlier.Address,
 		}, "alice")
 	})
-	requireRefused(t, "a triggered_by at "+earlier.Address+" as it is taken gone", pointed, http.StatusNotFound, "NOT_FOUND", earlier.Address)
+	requireRefusedNaming(t, "a triggered_by at "+earlier.Address+" as it is taken gone", pointed, http.StatusNotFound, "NOT_FOUND", earlier.Address)
 	requireNothingAt(graphstore.TupleTriggeredBy, graphstore.KindLens, earlier.ID)
 
 	written := rig.post("/constraints", map[string]any{"standard": "Every read answers in a second", "reference": "the service's own target"}, "alice")
@@ -62,6 +63,6 @@ func TestAFarEndTakenGoneWhileAWriteWaitsAnswersNotFound(t *testing.T) {
 			"kind": graphstore.TupleConstrainedBy, "action": pointerAppend, "to": constraint.Address,
 		}, "alice")
 	})
-	requireRefused(t, "a constrained_by at "+constraint.Address+" as it is taken gone", constrained, http.StatusNotFound, "NOT_FOUND", constraint.Address)
+	requireRefusedNaming(t, "a constrained_by at "+constraint.Address+" as it is taken gone", constrained, http.StatusNotFound, "NOT_FOUND", constraint.Address)
 	requireNothingAt(graphstore.TupleConstrainedBy, graphstore.KindConstraint, constraint.ID)
 }

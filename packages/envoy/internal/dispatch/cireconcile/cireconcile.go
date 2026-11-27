@@ -158,6 +158,11 @@ type Reconciler struct {
 	// (`tester`, `architect`) is recorded only when that App created it
 	// (contracts.ReviewerVerdictDecision); unset, no verdict check is recorded at all.
 	ReviewerAppID string
+	// VerdictAppID is the verdict App's id, Dispatch's DISPATCH_VERDICT_APP_ID, the App that
+	// writes `legion-verdict`. Its check suites are no CI result, and the listener leaves them out
+	// of the record (contracts.VerdictAppsOwnSuite); the pass leaves them out too. Unset, the pass
+	// records every App's completed suite.
+	VerdictAppID string
 	// Logger takes the one INFO line each pass writes and the WARN lines of what it skipped. It is
 	// required.
 	Logger *slog.Logger

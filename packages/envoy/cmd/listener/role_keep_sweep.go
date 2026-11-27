@@ -44,21 +44,21 @@ const roleKeepWakeAge = roleKeepWindow - 20*time.Minute
 // starts no handover, since only the registration that makes a holder live again
 // (subscribeHandler) and the claim route's refresh of a claimant that was not live
 // (roleSetHandler) start one. A role nobody claims is handed nothing at all, and its copies must
-// still end at the end of their hour, with a dead letter to their senders. Every interval, and
-// once as the listener starts, this hands over every lane with copies left (sweepKeptRoleLanes,
-// startSweep), at most roleKeepSweepHandovers at a time across the passes of this one loop.
+// still end at the end of their hour, with a dead letter to their senders. Every interval, at the
+// phase phase in it (startSweep, sweepPhase), this hands over every lane with copies left
+// (sweepKeptRoleLanes), at most roleKeepSweepHandovers at a time across the passes of this one loop.
 //
 // An edge listener runs none (cfg.edge) and returns a channel closed already: it hands no lane
 // over (drainKeptRole). The shared listeners' sweeps hand over every lane, the lane of a role held
 // at the edge among them, whose holder's session consumer at the edge delivers the forward.
-func startKeptRoleSweep(ctx context.Context, cfg listenerDeliveryHandlerConfig, interval time.Duration) <-chan struct{} {
+func startKeptRoleSweep(ctx context.Context, cfg listenerDeliveryHandlerConfig, interval, phase time.Duration) <-chan struct{} {
 	if cfg.edge != nil {
 		done := make(chan struct{})
 		close(done)
 		return done
 	}
 	slots := make(chan struct{}, roleKeepSweepHandovers)
-	return startSweep(ctx, interval, func(ctx context.Context) { sweepKeptRoleLanes(ctx, cfg, slots) })
+	return startSweep(ctx, interval, phase, func(ctx context.Context) { sweepKeptRoleLanes(ctx, cfg, slots) })
 }
 
 // sweepKeptRoleLanes hands over every role the stream holds a kept copy on that its cursor has not
@@ -195,11 +195,12 @@ func handOverSweptLane(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 	return handover.waiting
 }
 
-// takenRoles is the takeover records that are not finished (bus.TakeoverRecords), by the role
-// each names, read once a sweep pass, for the sweep to run their passes. A read that failed is
-// logged and names none, and the next pass reads again.
+// takenRoles is the takeover records that are not finished (passRecords), by the role each
+// names, read once a sweep pass, for the sweep to run their passes. A read that failed is logged
+// and names none, and the next pass reads again. A listener that runs no pass names none, so a
+// role it would have handed over for a record alone is handed over by the listeners that run them.
 func takenRoles(ctx context.Context, cfg listenerDeliveryHandlerConfig) map[string][]bus.StoredTakeoverRecord {
-	records, err := cfg.client.TakeoverRecords(ctx, "")
+	records, err := passRecords(ctx, cfg, "")
 	if err != nil {
 		if ctx.Err() == nil {
 			cfg.logger.LogEvent(slog.LevelWarn, "listener kept role sweep could not read the takeover records",
@@ -250,9 +251,10 @@ func raiseKeptRoleWake(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 // most roleKeepWakeAge. The read goes forward because the stream reads no message before a
 // sequence; a lane's copies grow younger along it, so the read ends at the first copy that wakes
 // the role. An outbox copy wakes nothing, as the outbox's own keep raises no report, and a copy
-// whose role no read can tell (readRoleFrame) wakes nothing either, as the walk ends it. A copy is
-// read field by field, as the walk reads it (roleFrame.envelope), so a copy the walk forwards wakes
-// the role, an expects_reply word this build does not know among it.
+// whose role no read can tell (readRoleFrame) wakes nothing either, as the walk ends it, nor does a
+// withdrawal mark (isWithdrawnFrame), which the walk ends and forwards to no one. A copy is read
+// field by field, as the walk reads it (roleFrame.envelope), so a copy the walk forwards wakes the
+// role, an expects_reply word this build does not know among it.
 func keptLaneWakesItsRole(ctx context.Context, client *bus.Client, role string, from uint64, now time.Time) (bool, error) {
 	subject := bus.KeptRoleSubject(role)
 	next := from
@@ -268,7 +270,11 @@ func keptLaneWakesItsRole(ctx context.Context, client *bus.Client, role string, 
 		if now.Sub(stored.Time) > roleKeepWakeAge {
 			continue
 		}
-		if frame, err := readRoleFrame(stored.Data); err == nil && !isOutboxCopy(frame.envelope()) {
+		frame, err := readRoleFrame(stored.Data)
+		if err != nil {
+			continue
+		}
+		if item := frame.envelope(); !isOutboxCopy(item) && !isWithdrawnFrame(item, stored.MsgID, role) {
 			return true, nil
 		}
 	}

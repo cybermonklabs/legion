@@ -9,7 +9,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/testpool"
 )
 
 func TestMaskTextOrdinals(t *testing.T) {
@@ -93,7 +94,7 @@ func TestReplaySeedReadsPublicUnderAShadowingUserSchema(t *testing.T) {
 		pgx.Identifier{database}.Sanitize())); err != nil {
 		t.Fatalf("set the database's search_path: %v", err)
 	}
-	shadowed, err := pgxpool.New(ctx, dsn)
+	shadowed, err := testpool.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,5 +191,19 @@ func TestReplaySeedReadsPublicUnderAShadowingUserSchema(t *testing.T) {
 	}
 	if local, ok := resumed.get(idComment, "c1"); !ok || local != "local-c1" {
 		t.Fatalf("a resumed seed reads comment c1 as %q (%v), want local-c1", local, ok)
+	}
+}
+
+// TestTheServedAnswersQueryReadsTheTupleLogFromPublic: the check reads an ask's answer as its node
+// holds it through the one reading every read of an answer shares (asks.NodeAnswerColumn), which
+// names graph_tuples bare, and every statement of the check names public, so a schema named as the
+// login cannot answer in the table's place (TestReplaySeedReadsPublicUnderAShadowingUserSchema).
+// The statement reads the log from public and names no bare table.
+func TestTheServedAnswersQueryReadsTheTupleLogFromPublic(t *testing.T) {
+	if !strings.Contains(servedAnswersQuery, "from public.graph_tuples ") {
+		t.Errorf("the served answers statement reads no public.graph_tuples:\n%s", servedAnswersQuery)
+	}
+	if strings.Contains(servedAnswersQuery, "from graph_tuples ") {
+		t.Errorf("the served answers statement reads a bare graph_tuples, which a schema named as the login can shadow:\n%s", servedAnswersQuery)
 	}
 }

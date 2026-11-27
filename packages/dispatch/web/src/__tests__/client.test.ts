@@ -755,6 +755,30 @@ test("API client sends inline artifacts as JSON", async () => {
   });
 });
 
+test("API client reads the text routes under Dispatch-Asks and no other route", async () => {
+  const stub = stubFetch(() => Response.json({ markdown: "", token: "t", version: 1 }));
+  const api = createApiClient(stub.fetch);
+
+  await api.getArtifactText("artifact-1");
+  await api.ownerArtifactText({ issue: "CORE-1" }, "spec");
+  await api.ownerArtifactText({ project: "CORE" }, "guide-md");
+  await api.getArtifact("artifact-1");
+
+  // The page reads each ask's state and answer from a text route's `asks`, so its reads of those
+  // routes send `Dispatch-Asks: 1` and are served markdown with none of an ask block's
+  // server-owned attributes (`api/artifacts.go`'s asksHeader); no other read sends it.
+  const readsAsks: [string, string][] = [
+    ["Dispatch-Asks", "1"],
+    ["Dispatch-Trees", "1"],
+  ];
+  expect(stub.requests.map(({ init, path }) => [path, init?.headers])).toEqual([
+    ["/api/v1/artifacts/artifact-1/text", readsAsks],
+    ["/api/v1/issues/CORE-1/artifacts/spec/text", readsAsks],
+    ["/api/v1/projects/CORE/artifacts/guide-md/text", readsAsks],
+    ["/api/v1/artifacts/artifact-1", [["Dispatch-Trees", "1"]]],
+  ]);
+});
+
 test("API client encodes list filters and artifact version query parameters", async () => {
   const stub = stubFetch();
   const api = createApiClient(stub.fetch);
@@ -780,6 +804,44 @@ test("API client encodes list filters and artifact version query parameters", as
     "/api/v1/issues/CORE-1/events?ids=42%2C10",
     "/api/v1/issues/CORE-1/comments?artifact=spec",
   ]);
+});
+
+// The comment page always asks for each comment's node anchor (R31 of INFRA-1253's spec), and the
+// `node_anchor` the page answers on a first comment and on a reply reaches the caller as Dispatch
+// answered it. A comment whose anchor names no node, as every comment of a build from before node
+// anchors, carries none, and the read takes it as it is.
+test("API client reads the comment page with node_anchor=true and hands each node_anchor back", async () => {
+  const nodeAnchor = {
+    node: { id: "constraint-1", kind: "constraint", state: "overtaken" },
+    occurrence: 1,
+    orphaned: false,
+    quote: "bound",
+  } as const;
+  const at = "2026-11-27T10:00:00.000000Z";
+  const stub = stubFetch(() =>
+    Response.json({
+      before: null,
+      remaining: 0,
+      threads: [
+        {
+          comment: { anchor: null, id: "comment-1", node_anchor: nodeAnchor },
+          last_activity_at: at,
+          replies: [{ anchor: null, id: "reply-1", node_anchor: nodeAnchor }],
+        },
+        { comment: { anchor: null, id: "comment-2" }, last_activity_at: at, replies: [] },
+      ],
+    })
+  );
+  const api = createApiClient(stub.fetch);
+
+  const page = await api.listCommentThreads("CORE-1", { person: "in", limit: 5 });
+
+  expect(stub.requests.map(({ path }) => path)).toEqual([
+    "/api/v1/issues/CORE-1/comments?person=in&limit=5&order=activity&node_anchor=true",
+  ]);
+  expect(page.threads?.[0]?.comment.node_anchor).toEqual(nodeAnchor);
+  expect(page.threads?.[0]?.replies?.[0]?.node_anchor).toEqual(nodeAnchor);
+  expect(page.threads?.[1]?.comment.node_anchor).toBeUndefined();
 });
 test("API client searches with the documented query parameters", async () => {
   const stub = stubFetch(() => Response.json({ results: [], took_ms: 1 }));

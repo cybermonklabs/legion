@@ -147,12 +147,12 @@ func TestARelaunchSentenceSaysTheTasksTurnOnlyInFrontOfTheTaskTakenBack(t *testi
 			cause: endStopped,
 			letGo: func(h *harness) string {
 				h.t.Helper()
-				h.must(RequestStop{Claim: h.token})
+				h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 				h.wantState(StateRetired)
 				if p := h.claim().Pending; p != nil {
 					h.t.Fatalf("the stopped claim holds %+v, want the task its turn confirmed retired", p)
 				}
-				h.must(RequestOperatorRetry{Claim: h.token})
+				h.must(RequestAskedRetry{Claim: h.token, By: SuspendedByOperator})
 				h.must(RequestDeliver{Claim: h.token, Task: next, Generation: 5})
 				h.relaunched()
 				return next
@@ -281,7 +281,7 @@ func TestARelaunchSentenceGivesWayToTheAbandonedSession(t *testing.T) {
 	c.EndedWork = EndedWork{At: epoch, Cause: endDisplaced, Generation: 1, Turn: true,
 		Background: true, Kinds: []string{"subagent"}, Reported: true}
 	h := newHarnessOf(t, c)
-	h.must(RequestForgetSession{Claim: testToken, Session: "ses-old"})
+	h.must(RequestForgetSession{Claim: testToken, Session: "ses-old", By: SuspendedByOperator})
 	h.wantEndedTold(true, "", "at the forget")
 	h.reach(StateReady)
 	h.wantPrompts(0)
@@ -432,7 +432,7 @@ func TestARelaunchSentenceOfTheFreshProcessFollowsTheAbandonedSentence(t *testin
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateIdle)
-			h.must(RequestStop{Claim: testToken})
+			h.must(RequestStop{Claim: testToken, By: SuspendedByOperator})
 			h.must(RequestRetry{Claim: testToken, FreshSession: true})
 			h.wantState(StateLaunching)
 			h.registerFresh()
@@ -909,7 +909,7 @@ func TestARelaunchSentenceIsToldAgainWhenATurnTakenBeforeItsPromptsResultIsCutOf
 			idle: func(t *testing.T, h *harness) { h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator}) },
 			resend: func(t *testing.T, h *harness) {
 				h.wantState(StateSuspended)
-				h.must(RequestResume{Claim: h.token})
+				h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 				h.relaunched()
 			}},
 		{name: "a stale address replaces the turn's process", cause: endRepointed, takesBackFirst: true,

@@ -34,6 +34,7 @@ func eventNaming(t *testing.T, database *store.Store, eventType, id string) int6
 // question on an issue (createAskFor), a question on a project document, an approval request
 // (openApprovalAsk) and the ask a settled document's new ask block opens (createAskBlock).
 func TestEveryAskCreateStoresItsNode(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	requireNodeBeforeRow(t, database, "asks", graphstore.KindAsk, "id")
 	issue := createInteractionIssue(t, handler, "ASKN", "Asks name their project", "The spec.\n")
@@ -81,6 +82,7 @@ func TestEveryAskCreateStoresItsNode(t *testing.T) {
 // reply in that thread, between the same two, read off the root it joins; and a broadcast's copy,
 // between its sender and its recipient.
 func TestEveryMessageCreateStoresItsNode(t *testing.T) {
+	t.Parallel()
 	handler, database, root, reply, _ := directConversationFrom(t, "alice")
 	requireNodeBeforeRow(t, database, "messages", graphstore.KindMessage, "id")
 	direct := []string{graphstore.PartyPerson("alice"), "session:s1"}
@@ -144,6 +146,7 @@ func TestEveryMessageCreateStoresItsNode(t *testing.T) {
 // both of its callers: a comment on an issue and on a project document (createCommentFor), and a
 // session's reply to a mention (replyComment).
 func TestACommentNodeCarriesItsProject(t *testing.T) {
+	t.Parallel()
 	rig := newStoreWriterRig(t)
 	for name, path := range map[string]string{
 		"an issue's comment":   "/api/v1/issues/" + rig.issue + "/comments",

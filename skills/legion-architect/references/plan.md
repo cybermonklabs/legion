@@ -8,6 +8,7 @@ Stopping a task, a later version of a plan Legion runs, and the `task-stopped`, 
 ## The task block
 
 You choose which of Legion's steps each issue of your tree runs.
+An issue whose experiment's group runs the project's default steps is the exception ("What Legion refuses", below).
 The plan is the issue's `plan.md` document (`dispatch artifact` on the issue).
 In this release it holds one `plan_task` block, the issue's one task:
 
@@ -34,7 +35,7 @@ The table lists the steps in the order of the default steps:
 | --- | --- | --- | --- |
 | `planner` | planning | `planning` | No implementation plan and no plan review: the steps work from your task's text and the spec. |
 | `implementer` | implementation | `implementing` | Required. It also works the retro, and a failed step returns to it unless the failed step names an earlier one. |
-| `tester` | testing | `testing` | Only the implementer records results against the checks, and no other step runs them again, except where a parent's pull request merged before its last round: your subagent then runs and records them (`skill://legion-architect/references/acceptance.md`, *The last round*). |
+| `tester` | testing | `testing` | Only the implementer records results against the checks, and no other step runs them again, except where a parent's pull request merged before its last round: you, or a subagent you dispatch, then run and record them (`skill://legion-architect/references/acceptance.md`, *The last round*). |
 | `reviewer` | review | `reviewing` | No review: on a base whose rules require an approving review, the merger waits and tells you. |
 | `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, or holds a parent before it while issues beneath it are in the workflow, and nothing waits for you to read the evidence. |
 
@@ -49,6 +50,10 @@ So on a task with no reviewer step and no `acceptance:owner`, such a check holds
 Fix each reason and give a new version.
 A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the table above.
 
+An issue whose experiment's group runs the project's default steps takes no plan: give it none, and it runs the default steps.
+Once the daemon records such an issue, `register_plan` on it answers `409 PLAN_NOT_TAKEN`, which is no fault of the plan.
+`read_record` shows such an issue: one of its `assignments` has `plan` `default`.
+
 The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.
 
 ## When to give it
@@ -58,6 +63,8 @@ The reasons a version gets for where its task stands are in `skill://legion-arch
 - **A child:** before `release_children` releases it.
   The daemon has not recorded the child yet, so Legion keeps the plan until the release;
   the answer, as for any plan it takes, is the plan's `version` and each task with its `steps`.
+  A project's experiment draws the child when the daemon records it.
+  If the child's group runs the project's default steps, its first step passes your plan over (`plan-not-taken`).
   A child the daemon has not recorded is refused once its Dispatch status is none of `triage`, `backlog`, `icebox` and `todo` (`ISSUE_ALREADY_RELEASED`).
   The child's first step can start in the same admission pass as its release, so a plan given after it comes too late.
 
@@ -67,5 +74,5 @@ The version you give replaces them with your own one block: delete theirs, and p
 ## Reading how plans went
 
 `dispatch steps --issue <KEY>` lists each run of each step of an issue and how it ended.
-Each finished issue of a project, with its plan's source and steps, its retro's ratings, its time and its count of failed steps, is `dispatch plans --project <KEY>`.
+`dispatch plans --project <KEY>` lists each finished issue of a project with its plan and how that plan went.
 Read it before you choose the steps of an issue like one that finished.

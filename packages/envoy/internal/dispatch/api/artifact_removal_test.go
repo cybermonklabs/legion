@@ -203,8 +203,8 @@ func everyArtifactIDColumn(t *testing.T, database *store.Store) []artifactColumn
 // names, so the census reads past them. document_search_backfill.artifact_id is the search fill's
 // keyset cursor (migration 20261101182501): a position in the fill, the highest document id the
 // pass has covered, and not a record of that document. A removal leaves it where it is, because
-// the boot's fill reads that one row every time and the keyset goes on from an id whether or not
-// a document still has it (dispatch://INFRA-4018).
+// the fill a process of the release before runs at each boot reads that one row every time and
+// the keyset goes on from an id whether or not a document still has it (#4224).
 var censusExempt = []artifactColumn{{table: "document_search_backfill", column: "artifact_id"}}
 
 // assertNoRowNamesTheDocument is the census: no row of the catalogue names the removed document.
@@ -263,6 +263,7 @@ type removedEvent struct {
 // committed; and a settlement of the document that queued behind the removal for the issue's owner
 // lock reads on only after the commit, finds the document gone and ends saying nothing of it.
 func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault).
 	// The settlement is held back for the test's duration, so an edit written into a room is
 	// still unsettled when the removal reads it. The room test below runs a server of its own,
 	// which settles.
@@ -545,8 +546,7 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		// document's lock, taken here as the transaction-level form of the session lock that
 		// batch's opening pipeline takes (docs/room_appends.go), and the doc_updates row it has
 		// written and not committed. Such a writer takes no owner lock, so the issue's owner lock the
-		// removal holds does not order it: the room's lock is what does. The document plays no
-		// role of its converted issue, so it is a room of its own (requireOwnRoom).
+		// removal holds does not order it: the room's lock is what does.
 		requireOwnRoom(t, document)
 		appending, err := database.Pool.Begin(ctx)
 		if err != nil {
@@ -646,8 +646,7 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 			t.Fatalf("the settlement pass over the untouched document wrote %#v (%v); want nothing written", version, err)
 		}
 		// The room is read live before the removal, so what is said of it after is said of a room
-		// that existed. The document plays no role of its converted issue, so it is a room of its
-		// own (requireOwnRoom).
+		// that existed.
 		requireOwnRoom(t, document)
 		if rooms := documents.ResidentRooms(); !slices.Contains(rooms, document.ID) {
 			t.Fatalf("this process holds the rooms %v, and not %s, whose room the removal must close", rooms, document.ID)
@@ -806,7 +805,7 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 	// over a row that has gone. Opening it types nothing, so the document is still untouched.
 	secondServer := httptest.NewServer(http.HandlerFunc(holding.ServeHTTP))
 	t.Cleanup(secondServer.Close)
-	connection, wsResponse, err := gws.DefaultDialer.Dial(
+	connection, wsResponse, err := dialLive(t, gws.DefaultDialer,
 		"ws"+strings.TrimPrefix(secondServer.URL, "http")+"/ws/doc/"+document.ID,
 		http.Header{"X-Dispatch-User": []string{"alice"}})
 	if err != nil {
@@ -816,8 +815,7 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 
 	// Each process is read holding a room of the document, so what is said of the two rooms
 	// after the removal is said of rooms that existed. The removing process loaded its own when
-	// the document was made. The document plays no role of its converted issue, so it is a room of
-	// its own (requireOwnRoom).
+	// the document was made.
 	requireOwnRoom(t, document)
 	for _, process := range []struct {
 		what    string
@@ -829,24 +827,22 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 		if text, err := process.service.Text(ctx, document.ID); err != nil || text != "" {
 			t.Fatalf("%s reads the live document as %q, %v; want the empty document it was made as", process.what, text, err)
 		}
-		if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-			return slices.Contains(process.service.ResidentRooms(), document.ID)
-		}) {
-			t.Fatalf("%s holds the rooms %v, and not %s, whose room the removal must close",
-				process.what, process.service.ResidentRooms(), document.ID)
-		}
+		testwait.Until(t, fmt.Sprintf("%s to hold a room of %s, whose room the removal must close (the rooms it holds)", process.what, document.ID),
+			func() ([]string, bool) {
+				rooms := process.service.ResidentRooms()
+				return rooms, slices.Contains(rooms, document.ID)
+			})
 	}
 
 	removedDocument(t, handler, document.ID)
 
 	// The second process hears the removal over the database and closes its room. The wait is
 	// for the notification's trip, not for a retry: nothing announces this twice.
-	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-		return !slices.Contains(holding.ResidentRooms(), document.ID)
-	}) {
-		t.Fatalf("the second process still holds the room of the removed document %s: %v; its next append meets a foreign key that no longer resolves",
-			document.ID, holding.ResidentRooms())
-	}
+	testwait.Until(t, fmt.Sprintf("the second process to close its room of the removed document %s, whose next append "+
+		"meets a foreign key that no longer resolves (the rooms it holds)", document.ID), func() ([]string, bool) {
+		rooms := holding.ResidentRooms()
+		return rooms, !slices.Contains(rooms, document.ID)
+	})
 	if rooms := removing.ResidentRooms(); slices.Contains(rooms, document.ID) {
 		t.Fatalf("the removing process still holds the room of %s: %v", document.ID, rooms)
 	}
@@ -900,7 +896,7 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 	// route removes, which the read below says.
 	thirdServer := httptest.NewServer(http.HandlerFunc(third.ServeHTTP))
 	t.Cleanup(thirdServer.Close)
-	thirdConnection, thirdResponse, err := gws.DefaultDialer.Dial(
+	thirdConnection, thirdResponse, err := dialLive(t, gws.DefaultDialer,
 		"ws"+strings.TrimPrefix(thirdServer.URL, "http")+"/ws/doc/"+untouched.ID,
 		http.Header{"X-Dispatch-User": []string{"alice"}})
 	if err != nil {
@@ -911,12 +907,11 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 		t.Fatalf("the third process reads the live document as %q, %v; want the empty document it was made as", text, err)
 	}
 	requireOwnRoom(t, untouched)
-	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-		return slices.Contains(third.ResidentRooms(), untouched.ID)
-	}) {
-		t.Fatalf("the third process holds the rooms %v, and not %s, whose room the removal must close",
-			third.ResidentRooms(), untouched.ID)
-	}
+	testwait.Until(t, fmt.Sprintf("the third process to hold a room of %s, whose room the removal must close (the rooms it holds)", untouched.ID),
+		func() ([]string, bool) {
+			rooms := third.ResidentRooms()
+			return rooms, slices.Contains(rooms, untouched.ID)
+		})
 
 	removedDocument(t, handler, untouched.ID)
 
@@ -924,29 +919,37 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 	// nobody there and is never sent again. Its hub is let through, and its LISTEN is waited
 	// for: what closes the room now is a pass that LISTEN runs.
 	close(through)
-	select {
-	case <-listening:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the third process's listener hub never listened after the test let its dial through")
-	}
-	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-		return !slices.Contains(third.ResidentRooms(), untouched.ID)
-	}) {
-		t.Fatalf("the third process, whose hub was between connections when %s was removed, still holds the room of it after its LISTEN stood again: %v; it holds a resident room over a deleted row, and its next append meets the doc_updates foreign key",
-			untouched.ID, third.ResidentRooms())
-	}
+	testwait.Receive(t, "the third process's listener hub to listen after the test let its dial through", listening)
+	testwait.Until(t, fmt.Sprintf("the third process, whose hub was between connections when %s was removed, to close "+
+		"its room of it once its LISTEN stood again: else it holds a resident room over a deleted row, and its next "+
+		"append meets the doc_updates foreign key (the rooms it holds)", untouched.ID), func() ([]string, bool) {
+		rooms := third.ResidentRooms()
+		return rooms, !slices.Contains(rooms, untouched.ID)
+	})
 	assertNoRowNamesTheDocument(t, database, untouched.ID)
 }
 
 // requireOwnRoom fails unless the document's read names it a room of its own: its own id as its
 // room and that room's own fragment, as every document of an issue is but the issue's spec,
-// Verification document and plan, which join a converted issue's room (R5 of this branch's spec).
+// Verification document and plan, which join a converted issue's room (R5 of the issue-tree spec).
 func requireOwnRoom(t *testing.T, document model.Artifact) {
 	t.Helper()
 	if document.Room != document.ID || document.Fragment != model.ArtifactFragmentOwn {
 		t.Fatalf("%s (%s) reads room %q fragment %q, want a room of its own: room %s and fragment %s",
 			document.Name, document.ID, document.Room, document.Fragment, document.ID, model.ArtifactFragmentOwn)
 	}
+}
+
+// requireIssueRoomFragment reads the document slug of the issue key (readDecisionDocument) and
+// fails unless it is a fragment of its issue's room, as the spec, Verification document and plan of
+// an issue born converted are (R5 of the issue-tree spec).
+func requireIssueRoomFragment(t *testing.T, database *store.Store, key, slug string) decisionDocument {
+	t.Helper()
+	document := readDecisionDocument(t, database, key, slug)
+	if document.room == document.id {
+		t.Fatalf("the document %s of %s is a room of its own, want a fragment of its issue's room", slug, key)
+	}
+	return document
 }
 
 // documentAppendCount is how many stored appends the database holds of a document's room. After
@@ -962,22 +965,21 @@ func documentAppendCount(t *testing.T, database *store.Store, artifactID string)
 	return appends
 }
 
-// Removing the document the search fill's cursor names leaves the fill's progress row as it was,
-// and the boot's fill still runs after it (dispatch://INFRA-4018). document_search_backfill holds
-// one row (migration 20261101182501), whose artifact_id is the keyset cursor: the highest document
-// id the pass has covered, and no row of that document's. A removal that deleted it where the
-// cursor equals the removed id left the table empty, and store.FillDocumentSearch, which the boot
-// runs before the server serves (cmd/dispatch/main.go), then failed its read of the row, so no
-// process could start again.
+// Removing the document the search fill's cursor names leaves the fill's progress row as it was
+// (#4224). document_search_backfill holds one row (migration 20261101182501), whose
+// artifact_id is the keyset cursor: the highest document id the pass has covered, and no row of
+// that document's. A removal that deleted it where the cursor equals the removed id left the table
+// empty, and the fill, which the boot of a process of the release before runs before it serves,
+// then failed its read of the row, so no such process could start again. This build runs no fill
+// (R17 of the issue-tree spec), and a rollback reaches the release before, which does.
 //
 // The cursor is set rather than reached by a pass, since which document a pass ends on is the
 // order of random ids: a finished pass names its last document, and a running one the last
 // document of the batch it committed. Both states are cases here, each on a database of its own.
-// Each reads the row, runs the census while the cursor still holds the removed id, and then runs
-// the fill; the row and the fill report with Errorf, so a failure of the first still reports the
-// last. The census is the removal's own (assertNoRowNamesTheDocument), and it holds every other
-// row to naming the document no more: only the cursor, which censusExempt says is a position in
-// the fill, may keep the removed id.
+// Each reads the row and runs the census while the cursor still holds the removed id; the row
+// reports with Errorf, so a failure of it still reports the census. The census is the removal's
+// own (assertNoRowNamesTheDocument), and it holds every other row to naming the document no more:
+// only the cursor, which censusExempt says is a position in the fill, may keep the removed id.
 func TestRemovingTheDocumentTheSearchFillCursorNamesKeepsTheFillsProgressRow(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -1008,9 +1010,6 @@ func TestRemovingTheDocumentTheSearchFillCursorNamesKeepsTheFillsProgressRow(t *
 					rows, cursor, done, document.ID, pass.done)
 			}
 			assertNoRowNamesTheDocument(t, database, document.ID)
-			if _, err := database.FillDocumentSearch(ctx); err != nil {
-				t.Errorf("the boot's fill after the removal of the document its cursor names: %v", err)
-			}
 		})
 	}
 }

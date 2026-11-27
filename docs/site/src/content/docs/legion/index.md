@@ -11,9 +11,10 @@ Legion is a team of coding agents that works the issues you hand it. You write a
 daemon admits it and starts an **architect**, an agent that owns the issue from start to finish. The
 architect turns your issue into a spec and asks you the questions only you can answer. Once you
 approve the spec, the daemon runs **phase workers** one after another, the steps the architect's
-plan for the issue picks. Unless your project sets others, the default steps are a planner, an
-implementer, a tester, a reviewer and the architect's own acceptance. The implementer writes the
-change and opens a pull request, and a merger follows every plan. Each agent is an
+plan for the issue picks, or the project's default steps where it gave none or where an experiment
+drew the issue into a group that runs them. Unless your project sets others, the default steps are
+a planner, an implementer, a tester, a reviewer and the architect's own acceptance. The implementer
+writes the change and opens a pull request, and a merger follows every plan. Each agent is an
 [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session, or a Claude Code one for a phase
 worker your deployment puts there, and under Kubernetes every agent of an issue runs in that
 issue's one pod.

@@ -1,4 +1,4 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { ID_AMBIGUOUS, itemFromSearch } from "@legion/contracts";
 import type { QueryClient } from "@tanstack/react-query";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -15,7 +15,7 @@ import { answerRequests } from "../../__tests__/network";
 import {
   answerTextReadsWithTheSeededText,
   createQueryClient,
-  decisionsAndReadMarkHandlers,
+  readMarkHandlers,
 } from "../../__tests__/proof-document";
 import { ApiError, api } from "../../api/client";
 import type { Artifact, Ask, AskRead, Comment, InboxRow, IssueAskRow } from "../../api/types";
@@ -24,23 +24,29 @@ import { Margin } from "../margin/Margin";
 import { MarginProvider } from "../margin/margin-context";
 import { issue, SelectedItemLabel, specArtifact } from "../margin/margin-fixture";
 import type { MarginOwner } from "../margin/useMarginItems";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ArtifactDocument } from "./ArtifactDocument";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 answerTextReadsWithTheSeededText();
 
 /**
- * The issue's decisions and the viewer's read mark (`decisionsAndReadMarkHandlers`), and the
- * reads the document surface and the margin make beside them: the issue's asks, the document's
- * own asks, and the inbox, each answered with the API's empty shape so the page renders its
- * loaded-empty state rather than its error state. No test here asserts one of them: each is
- * about the item the address names.
+ * The viewer's read mark (`readMarkHandlers`), and the reads the document surface and the margin
+ * make beside it: the issue's asks, the document's own asks, and the inbox, each answered with
+ * the API's empty shape so the page renders its loaded-empty state rather than its error state.
+ * No test here asserts one of them: each is about the item the address names.
  */
 beforeEach(() => {
   answerRequests(
     http.get("/api/v1/issues/:key/asks", () => Response.json([] satisfies IssueAskRow[])),
     http.get("/api/v1/artifacts/:id/asks", () => Response.json([] satisfies Ask[])),
     http.get("/api/v1/inbox", () => Response.json([] satisfies InboxRow[])),
-    ...decisionsAndReadMarkHandlers()
+    ...readMarkHandlers()
   );
 });
 

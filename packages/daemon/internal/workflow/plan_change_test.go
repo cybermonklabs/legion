@@ -121,8 +121,8 @@ func stepsOfTask(stored *record.StoredPlan, task string) []string {
 	return words
 }
 
-// processed says whether the fact id is marked applied, so that the same id given again is
-// answered as a duplicate.
+// processed says whether the fact id is marked applied. A release before answers a marked id given
+// again as a duplicate; this one applies a PlanGiven whatever its mark (intake's factApplies).
 func processed(t *testing.T, pool *pgxpool.Pool, id string) bool {
 	t.Helper()
 	var marked bool
@@ -132,15 +132,16 @@ func processed(t *testing.T, pool *pgxpool.Pool, id string) bool {
 	return marked
 }
 
-// assertPlanRefusal fails unless result is exactly want, left unspent so the same id applies
-// when given again (its processed mark gone), and key stands at generation as before stood.
+// assertPlanRefusal fails unless result is exactly want, left unspent with its processed mark gone,
+// which only a release before reads (this one applies a PlanGiven whatever its mark, intake's
+// factApplies), and key stands at generation as before stood.
 func assertPlanRefusal(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, generation uint64, id string, result intake.Result, want *intake.Refusal, before planStanding) {
 	t.Helper()
 	if !reflect.DeepEqual(result.Refusal, want) {
 		t.Fatalf("the plan = %+v, want the refusal %+v", result.Refusal, want)
 	}
 	if !result.Unspent || processed(t, pool, id) {
-		t.Fatalf("the refused plan %s is spent (unspent %v), want it unspent and unmarked so the same version applies when given again", id, result.Unspent)
+		t.Fatalf("the refused plan %s is spent (unspent %v), want it unspent and unmarked, so a release before applies the same version when given again", id, result.Unspent)
 	}
 	if after := planStandingOf(t, pool, engine, key, generation); !reflect.DeepEqual(after, before) {
 		t.Fatalf("the refused plan changed %s:\n before %+v\n after  %+v", key, before, after)
@@ -166,6 +167,7 @@ func architectOf(t *testing.T) claim.Token {
 // The twin: a root given no plan opens to planning, the first of the default steps, in the rows of
 // the task default that its first step writes.
 func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
+	t.Parallel()
 	t.Run("a root at admitted takes it, and its gate opens to the plan's first step", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -184,7 +186,7 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 		if !got.GivenAt.Equal(want.GivenAt) {
 			t.Fatalf("version 1 was given at %s, want the engine's clock %s", got.GivenAt, want.GivenAt)
 		}
-		if got.GivenAt = want.GivenAt; got != want {
+		if got.GivenAt = want.GivenAt; !reflect.DeepEqual(got, want) {
 			t.Fatalf("the version in force = %+v, want %+v", got, want)
 		}
 		task := record.PlanTask{Issue: root.Key, Generation: root.Generation, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
@@ -336,8 +338,7 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 
 		result := applyFacts(t, pool, engine)(id, ownersPlan(t, member.Key, member.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer")))
 
-		assertPlanRefusal(t, pool, engine, member.Key, member.Generation, id, result, &intake.Refusal{Status: 409, Code: "TREE_LINGERING",
-			Message: "the tree LEGION-208 is lingering after it left the workflow, so version 1 of the owner's plan of LEGION-209 changed nothing"}, before)
+		assertPlanRefusal(t, pool, engine, member.Key, member.Generation, id, result, lingeringPlan(), before)
 	})
 }
 
@@ -359,6 +360,7 @@ func runningRefusal() *intake.Refusal {
 // started at a raised entry told why, the pass rises by one, and no pair, round or hook is counted.
 // A version that changes a task that is done, or one whose issue left the workflow, is refused.
 func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
+	t.Parallel()
 	t.Run("while a runs, then after it is stopped", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -495,10 +497,13 @@ func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
 	})
 }
 
-// A version refused because its task ran leaves its fact unspent, so the owner's same call after
-// stop_task, which the route names by the same id (issue, generation, document, version), applies
-// and is taken, rather than answered as a duplicate that took nothing.
+// A version refused because its task ran is judged again when the owner's same call comes after
+// stop_task, which the route names by the same id (issue, generation, document, version): the
+// workflow judges every PlanGiven whatever its id's mark (intake's factApplies), so it is taken,
+// rather than answered as a duplicate that took nothing. The refusal leaves the id unmarked, which
+// only a release before reads.
 func TestARefusedVersionIsTakenWhenGivenAgainAfterTheStop(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	apply := applyFacts(t, pool, engine)
@@ -561,6 +566,7 @@ func seedDefaultPlan(t *testing.T, pool *pgxpool.Pool, key string, generation ui
 // twin: an issue that started its work before Legion took plans, which stands in planning with no
 // plan rows, takes no plan, and stays where it stands.
 func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T) {
+	t.Parallel()
 	t.Run("the stopped task default is replaced by a, which starts at its first step", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -703,6 +709,7 @@ func walkStandingOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string
 // prove, since the route alone reads Dispatch's versions: api's TestAVersionNobodyGaveChangesNothing,
 // beside TestRegisterPlanTakesAPlanAndRefusesWithReasons.
 func TestTheWalkOfAGivenVersionHoldsAcrossABoot(t *testing.T) {
+	t.Parallel()
 	const merged = "merge-42"
 	versionOne := []string{"implementer/implementation", "reviewer/review"}
 	want := []walkStanding{
@@ -817,160 +824,4 @@ func planRowsOf(t *testing.T, pool *pgxpool.Pool, key string) [3]int {
 		t.Fatalf("count the plan rows of %s: %v", key, err)
 	}
 	return rows
-}
-
-// The owner of an issue changes where an orphan is admitted again as a root of its own, and a plan
-// that an earlier owner gave is then passed over at the issue's first step (StartFirstPhase's
-// gateOpened), never in silence: one log line for each version passed over, naming the issue, the
-// generation, the version, its document, its giver and the plan the first step runs; one
-// plan-not-taken notice to the issue's architect that names the same; and no row of the old plan
-// left in the three plan tables, so its walk never reads it, also where it stood at the issue's
-// own generation: the first step stores the project's default steps in their place. The owner is
-// any architect of the issue's tree now (record.ArchitectOfTree): a sub-architect's plan for an
-// issue of its tree is the owner's, and so is the tree root architect's plan for its child (the
-// control); each is carried to the issue's generation and its first step starts, and nobody is
-// told or logged. The twin: an issue given no plan starts planning on the default steps, with no
-// notice and no log line.
-func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
-	const notTaken = "workflow: a plan of an earlier owner is not taken"
-	earlier, owner := architectOf(t), claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleArchitect))
-	give := func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, generation uint64, version int, by claim.Token, words ...string) {
-		t.Helper()
-		fact := ownersPlan(t, key, generation, version, givenTask(t, "Build the widget.", words...))
-		fact.GivenBy = by
-		mustTake(t, fmt.Sprintf("version %d of %s at generation %d by %s", version, key, generation, by), applyFacts(t, pool, engine)(planID(key, generation, version), fact))
-	}
-	// passedOver fails unless the first step logged the one line of a version passed over and told
-	// the one plan-not-taken notice whose reason is reason.
-	passedOver := func(t *testing.T, pool *pgxpool.Pool, logged string, line, reason string) {
-		t.Helper()
-		if strings.Count(logged, notTaken) != 1 || !strings.Contains(logged, line) {
-			t.Fatalf("the log =\n%s\nwant the one line %s", logged, line)
-		}
-		want := []record.Notice{{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: reason}}
-		if got := noticesOf(t, pool, "LEGION-209", "plan-not-taken"); !reflect.DeepEqual(got, want) {
-			t.Fatalf("the plan-not-taken notices = %+v, want %+v", got, want)
-		}
-	}
-	// kept fails unless the first step told and logged nothing of a plan not taken, and key holds
-	// rows after it.
-	kept := func(t *testing.T, pool *pgxpool.Pool, logged, key string, rows [3]int) {
-		t.Helper()
-		if strings.Contains(logged, notTaken) {
-			t.Fatalf("the log =\n%s\nwant no plan of an earlier owner", logged)
-		}
-		if got := noticesOf(t, pool, key, "plan-not-taken"); len(got) != 0 {
-			t.Fatalf("the plan-not-taken notices = %+v, want none", got)
-		}
-		if got := planRowsOf(t, pool, key); got != rows {
-			t.Fatalf("the plan rows of %s after its first step = %v, want %v", key, got, rows)
-		}
-	}
-
-	t.Run("the plan of the architect of the tree the issue left is not taken: the first step runs the default steps", func(t *testing.T) {
-		pool := migratedPool(t)
-		engine, logged := loggedEngine()
-		give(t, pool, engine, "LEGION-209", 0, 1, earlier, "implementer", "reviewer")
-		recordedAt(t, pool, "LEGION-209", "LEGION-209")
-		logged.Reset()
-
-		firstStep(t, pool, engine, "LEGION-209")
-
-		if got := issueOf(t, pool, engine, "LEGION-209").Phase; got != phase.Planning {
-			t.Fatalf("LEGION-209 after its first step stands in %s, want planning, the first of the default steps", got)
-		}
-		passedOver(t, pool, logged.String(),
-			fmt.Sprintf(`msg="%s" issue=LEGION-209 generation=0 version=1 document=%s giver=%s runs="default steps"`, notTaken, planArtifact, earlier),
-			"The first step of LEGION-209 took no plan of an earlier owner: version 1 of document "+planArtifact+", given by "+string(earlier)+
-				". It runs the default steps. To run a plan it did not take, give it again with register_plan as your own.")
-		if got := planRowsOf(t, pool, "LEGION-209"); got != [3]int{1, 1, 5} {
-			t.Fatalf("the plan rows of LEGION-209 after its first step = %v, want none of the old plan: the default steps alone, one version, one task, five steps", got)
-		}
-	})
-
-	t.Run("the earlier owner's plan at the issue's own generation is not walked either", func(t *testing.T) {
-		pool := migratedPool(t)
-		engine, logged := loggedEngine()
-		recordedAt(t, pool, "LEGION-209", "LEGION-208")
-		give(t, pool, engine, "LEGION-209", 1, 1, earlier, "implementer", "reviewer")
-		recordedAt(t, pool, "LEGION-209", "LEGION-209")
-		logged.Reset()
-
-		firstStep(t, pool, engine, "LEGION-209")
-
-		if got := issueOf(t, pool, engine, "LEGION-209").Phase; got != phase.Planning {
-			t.Fatalf("LEGION-209 after its first step stands in %s, want planning, the first of the default steps", got)
-		}
-		passedOver(t, pool, logged.String(),
-			fmt.Sprintf(`msg="%s" issue=LEGION-209 generation=1 version=1 document=%s giver=%s runs="default steps"`, notTaken, planArtifact, earlier),
-			"The first step of LEGION-209 took no plan of an earlier owner: version 1 of document "+planArtifact+", given by "+string(earlier)+
-				". It runs the default steps. To run a plan it did not take, give it again with register_plan as your own.")
-		if got := planRowsOf(t, pool, "LEGION-209"); got != [3]int{1, 1, 5} {
-			t.Fatalf("the plan rows of LEGION-209 after its first step = %v, want none of the old plan: the default steps alone, one version, one task, five steps", got)
-		}
-	})
-
-	t.Run("the new owner's plan given before the first step runs, and the log line and the notice name it", func(t *testing.T) {
-		pool := migratedPool(t)
-		engine, logged := loggedEngine()
-		give(t, pool, engine, "LEGION-209", 0, 1, earlier, "implementer", "reviewer")
-		recordedAt(t, pool, "LEGION-209", "LEGION-209")
-		give(t, pool, engine, "LEGION-209", 1, 2, owner, "implementer", "tester")
-		logged.Reset()
-
-		firstStep(t, pool, engine, "LEGION-209")
-
-		assertWalksAt(t, pool, engine, "LEGION-209", phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
-		runs := "version 2 of document " + planArtifact + ", given by " + string(owner)
-		passedOver(t, pool, logged.String(),
-			fmt.Sprintf(`msg="%s" issue=LEGION-209 generation=0 version=1 document=%s giver=%s runs="%s"`, notTaken, planArtifact, earlier, runs),
-			"The first step of LEGION-209 took no plan of an earlier owner: version 1 of document "+planArtifact+", given by "+string(earlier)+
-				". It runs "+runs+". To run a plan it did not take, give it again with register_plan as your own.")
-		if got := planRowsOf(t, pool, "LEGION-209"); got != [3]int{1, 1, 2} {
-			t.Fatalf("the plan rows of LEGION-209 after its first step = %v, want the new owner's alone: one version, one task, two steps", got)
-		}
-	})
-
-	t.Run("a sub-architect's plan for an issue of its tree is the owner's: carried, and nobody told", func(t *testing.T) {
-		pool := migratedPool(t)
-		engine, logged := loggedEngine()
-		recordedAt(t, pool, "LEGION-208", "LEGION-208")
-		recordedAt(t, pool, "LEGION-209", "LEGION-208")
-		give(t, pool, engine, "LEGION-210", 0, 1, owner, "implementer", "reviewer")
-		recordedAt(t, pool, "LEGION-210", "LEGION-208")
-		logged.Reset()
-
-		firstStep(t, pool, engine, "LEGION-210")
-
-		assertWalksAt(t, pool, engine, "LEGION-210", phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
-		kept(t, pool, logged.String(), "LEGION-210", [3]int{2, 2, 4})
-	})
-
-	t.Run("control: the tree root architect's plan for its child is the owner's: carried, and nobody told", func(t *testing.T) {
-		pool := migratedPool(t)
-		engine, logged := loggedEngine()
-		recordedAt(t, pool, "LEGION-208", "LEGION-208")
-		give(t, pool, engine, "LEGION-209", 0, 1, earlier, "implementer", "reviewer")
-		recordedAt(t, pool, "LEGION-209", "LEGION-208")
-		logged.Reset()
-
-		firstStep(t, pool, engine, "LEGION-209")
-
-		assertWalksAt(t, pool, engine, "LEGION-209", phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
-		kept(t, pool, logged.String(), "LEGION-209", [3]int{2, 2, 4})
-	})
-
-	t.Run("the twin: an issue given no plan starts planning on the default steps, with no notice and no log line", func(t *testing.T) {
-		pool := migratedPool(t)
-		engine, logged := loggedEngine()
-		recordedAt(t, pool, "LEGION-209", "LEGION-209")
-		logged.Reset()
-
-		firstStep(t, pool, engine, "LEGION-209")
-
-		if got := issueOf(t, pool, engine, "LEGION-209").Phase; got != phase.Planning {
-			t.Fatalf("LEGION-209 given no plan after its first step stands in %s, want planning, the first of the default steps", got)
-		}
-		kept(t, pool, logged.String(), "LEGION-209", [3]int{1, 1, 5})
-	})
 }

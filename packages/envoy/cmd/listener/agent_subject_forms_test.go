@@ -10,6 +10,7 @@ import "testing"
 // then given up with a no_holder exception and a wake for a session that does not exist) although
 // s1's own consumer delivers it.
 func TestAnAgentSubjectNamesItsSessionInEitherForm(t *testing.T) {
+	t.Parallel()
 	for subject, want := range map[string]string{
 		"notifications.agent.s1":       "s1",
 		"notifications.agent._.s1":     "s1",

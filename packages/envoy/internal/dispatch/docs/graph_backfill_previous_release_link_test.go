@@ -44,6 +44,7 @@ import (
 // TestTheBlockAndTheLinkThePreviousReleaseDroppedAreGoneAfterTheBackfill, run here after the
 // backfill rather than before it.
 func TestALinkThePreviousReleaseAddsAfterTheBackfillReachesTheStore(t *testing.T) {
+	t.Parallel()
 	link := writePreviousReleaseLink(t)
 	database, document, refKey, middle, added := link.database, link.document, link.refKey, link.middle, link.added
 	ctx := context.Background()
@@ -77,7 +78,7 @@ func TestALinkThePreviousReleaseAddsAfterTheBackfillReachesTheStore(t *testing.T
 	// The inner paragraph the previous release's version dropped reads gone, and its link is
 	// retracted, once this build drained the mark.
 	requireDroppedBlockGone(t, database, link.innerAddress, link.dropped)
-	requireNoCensusDifference(t, database, "after this build drained the backfill's mark over a link the previous release added and a block it dropped")
+	requireCensusReadsZero(t, database, "after this build drained the backfill's mark over a link the previous release added and a block it dropped")
 }
 
 // A version write of this build that drains the mark gives the previous release's version its node
@@ -108,7 +109,7 @@ func TestAVersionWriteThatDrainsTheMarkGivesThePreviousReleasesVersionItsNode(t 
 
 	requirePresentVersionNode(t, database, refKey, previousReleaseVersion, "after this build's version write drained the backfill's mark")
 	requireOwnVersionNode(t, database, document, refKey, ownVersion, writer, event)
-	requireNoCensusDifference(t, database, "after this build's version write drained the backfill's mark over a link the previous release added")
+	requireCensusReadsZero(t, database, "after this build's version write drained the backfill's mark over a link the previous release added")
 }
 
 // A version write of this build that drains the mark writes no more of the previous release's
@@ -164,7 +165,7 @@ func TestAVersionWriteLeavesMoreMissingVersionNodesThanItsBoundToTheTick(t *test
 	}
 	if version != nil || !owed {
 		t.Errorf("after this build's write the document's block index stands at %s with this build's mark %t, want it owed by both marks, in the write's transaction",
-			describeVersion(version), owed)
+			standsText(version), owed)
 	}
 	requireOwnVersionNode(t, database, document, refKey, ownVersion, writer, event)
 
@@ -173,7 +174,7 @@ func TestAVersionWriteLeavesMoreMissingVersionNodesThanItsBoundToTheTick(t *test
 		t.Errorf("after the tick versions %v hold no node, want the tick to write every one", held)
 	}
 	requireOwnVersionNode(t, database, document, refKey, ownVersion, writer, event)
-	requireNoCensusDifference(t, database, "after the tick wrote the previous release's version nodes")
+	requireCensusReadsZero(t, database, "after the tick wrote the previous release's version nodes")
 }
 
 // A version the release before writes of a document of an issue room, with no version node, has
@@ -214,11 +215,7 @@ func TestAVersionThePreviousReleaseWritesInAnIssueRoomHasItsNodeAtTheRoomsNextDr
 			}
 			refKeys := map[string]string{}
 			for _, document := range []string{room.spec, room.verification, room.plan, room.tree} {
-				var refKey string
-				if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, document).Scan(&refKey); err != nil {
-					t.Fatalf("read the ref_key of %s: %v", document, err)
-				}
-				refKeys[document] = refKey
+				refKeys[document] = refKeyOf(t, database, document)
 			}
 			if _, stands, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindVersion, graphstore.VersionID(refKeys[room.plan], 2)); err != nil || stands {
 				t.Fatalf("the plan's version 2 holds a node (%t, %v) before the drain: this test proves nothing", stands, err)
@@ -228,17 +225,11 @@ func TestAVersionThePreviousReleaseWritesInAnIssueRoomHasItsNodeAtTheRoomsNextDr
 				drainBlockIndex(t, service, "the previous release's version")
 			} else {
 				peer := connectPeer(t, server.URL, room.spec, "alice")
-				stored := roomUpdateCount(t, database, room.tree)
+				stored := storedUpdateCount(t, database, room.tree)
 				if _, err := peer.Send(writeParagraph(peer.Doc, room.spec, "Spec words.")); err != nil {
 					t.Fatalf("write into the spec's fragment: %v", err)
 				}
-				waitForStoredUpdates(t, database, room.tree, stored)
-				if err := service.waitForDurableAppends(ctx, room.tree); err != nil {
-					t.Fatalf("wait for the room's appends: %v", err)
-				}
-				if err := service.settleOwedNow(ctx, room.tree, time.Now().Add(roomWait(t))); err != nil {
-					t.Fatalf("settle the issue's room: %v", err)
-				}
+				settleLandedWrite(t, ctx, database, service, room, stored)
 			}
 
 			for document, refKey := range refKeys {
@@ -311,20 +302,21 @@ func writeVersionThroughThisBuild(t *testing.T, link previousReleaseLink, writer
 	if !written.Wrote || written.Version.Number != want {
 		t.Fatalf("the version write wrote %t at version %d, want version %d", written.Wrote, written.Version.Number, want)
 	}
-	var event int64
-	if err := tx.QueryRow(ctx, `
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', coalesce(max(seq), 0) + 1, 'artifact.version', '{"kind":"user","id":"bob"}',
-		       jsonb_build_object('artifact_id', $1::text, 'name', 'linked.md', 'version', jsonb_build_object('number', $2::int)), false
-		from events where issue_key = 'CORE-1'
-		returning id
-	`, document, want).Scan(&event); err != nil {
+	// The version's event takes its seq off the issue's own counter, as the route's append does
+	// (recordIssueEvent), so a later event of the issue, such as a tick's artifact.indexed, does not
+	// take the same seq.
+	event, err := recordIssueEvent(ctx, tx, "CORE-1", "artifact.version", []byte(`{"kind":"user","id":"bob"}`),
+		versionEventPayload(t, document, "linked.md", want))
+	if err != nil {
 		t.Fatalf("append version %d's event: %v", want, err)
 	}
 	// The version write queues its writes on the ledger, its node's among them, so what it stated
-	// is caused in the same write phase, after them, as a route queues it.
+	// is caused in the same write phase, after them, and the head write of the nodes it stated
+	// follows, which writes their node_search rows, as the route queues both
+	// (commitArtifactVersionEvent).
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, written.Blocks, event)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(written.Blocks))
 		return nil
 	}); err != nil {
 		t.Fatalf("queue what version %d's write stated: %v", want, err)
@@ -406,10 +398,7 @@ func writePreviousReleaseLink(t *testing.T) previousReleaseLink {
 	// The document as a build before the store wrote it: its rows, and nothing of the store.
 	drainBlockIndex(t, service, "seed")
 	takeTheStoreOff(t, database)
-	var refKey string
-	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, document).Scan(&refKey); err != nil {
-		t.Fatalf("read the document's ref_key: %v", err)
-	}
+	refKey := refKeyOf(t, database, document)
 
 	report, err := graphcensus.Backfill(ctx, database, io.Discard)
 	if err != nil {
@@ -474,21 +463,6 @@ func requirePresentVersionNode(t *testing.T, database *store.Store, refKey strin
 			number, address, when, stands, node.State)
 	}
 	return node
-}
-
-// requireNoCensusDifference takes the store census and fails the test on each difference it
-// reads, and on its refusal.
-func requireNoCensusDifference(t *testing.T, database *store.Store, when string) {
-	t.Helper()
-	census := takeStoreCensus(t, database)
-	for _, kind := range census.Kinds {
-		for _, difference := range append(append([]graphcensus.Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
-			t.Errorf("the census reads a difference of kind %s at %s: %s", kind.Kind, difference.At, difference.Cause)
-		}
-	}
-	if census.Refused() {
-		t.Fatalf("the census refused with %d difference(s) %s, want zero", census.Differences(), when)
-	}
 }
 
 // cutInnermostHolding removes from the tree under node the innermost block of type kind whose

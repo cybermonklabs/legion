@@ -77,7 +77,7 @@ func relatedTreesFixture(t *testing.T, asking, other string) (http.Handler, stri
 	}
 	var handler http.Handler
 	var database *store.Store
-	handler, database, _ = newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, _ = newTestServer(t, testServerOptions{embedder: embedder, relatedBound: meaningVerdictBound(t)})
 
 	createSuggestionProject(t, handler, asking)
 	host := createSearchIssue(t, handler, asking, "Our own settled questions", "Questions this project settled itself.")

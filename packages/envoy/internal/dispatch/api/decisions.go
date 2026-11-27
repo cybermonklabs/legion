@@ -2,20 +2,18 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/decisionread"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -36,18 +34,24 @@ import (
 // in model.Decision's shape, in the order of entries, and document is the address of the issue's
 // decisions document while it stands (decisions_documents()), null once it is retired or where
 // the issue holds none. A link of an entry's shaped and of a decision's links is one value
-// (model.DecisionLink): its stale is the release before's rule, the decision's own words changed
-// after the tie and the spec node has not changed since they did, which the page of the release
-// before reads too, and its changed_since_tie is R5's, the spec node's text changed after the tie.
-//
-// kept for one release: compat-objects
+// (model.DecisionLink): its stale is the release before's rule, which compares text sums - the
+// decision's own words differ from those at the version the tie was written in and from those at
+// the version that stood when the spec node last changed, as the page of the release before reads
+// it too - and its changed_since_tie is R5's, the spec node's text changed after the tie.
+// entries and open_questions are the route's own, and the whole route is kept for one release
+// for a page of the release before (decisions-route): a page of this release reads the tree's
+// decisions view, which answers the same nodes (R21 of the issue-tree spec). document and
+// decisions go once no page of the release before reads them (compat-objects).
 type issueDecisions struct {
-	Entries       []decisionEntry  `json:"entries"`
-	Document      *string          `json:"document"`
-	OpenQuestions []issueAskRow    `json:"open_questions"`
-	Decisions     []model.Decision `json:"decisions"`
+	Entries []decisionEntry `json:"entries"`
+	// kept for one release: compat-objects
+	Document      *string       `json:"document"`
+	OpenQuestions []issueAskRow `json:"open_questions"`
+	// kept for one release: compat-objects
+	Decisions []model.Decision `json:"decisions"`
 }
 
+// kept for one release: decisions-route
 func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.actingReader(w, r)
 	if !ok {
@@ -75,6 +79,7 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// kept for one release: compat-objects
 	if answer.Document, err = s.standingDecisionsDocument(r.Context(), key); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -87,6 +92,8 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 // stands (decisions_documents()), and nil once it is retired or where the issue holds none: the
 // Decisions read's old `document` member. Nothing reads
 // the document's text.
+//
+// kept for one release: compat-objects
 func (s *server) standingDecisionsDocument(ctx context.Context, key string) (*string, error) {
 	var issueKey, session *string
 	var project, slug, kind string
@@ -134,41 +141,88 @@ func artifactMissing(err error) bool {
 
 // specOpenQuestions are the issue's open asks whose block is in its spec (refs.AsksOfDocumentSQL),
 // oldest first, in the shape every ask read has (askReadColumns, with the newest reply beside the
-// row). reader is the answer's own, and each row registers its texts with it once the slice has
-// stopped growing: a shaping registers a pointer into the row, and an append that moved the
-// backing array would leave the reader filling trees into memory the answer no longer holds.
+// row). An ask is open as its node holds it (asks.NodeAnswer.ApplyTo), which every read of an
+// answer reads (R3), so the statement reads each of the spec's asks and the scan keeps the open
+// ones. An ask's block is in the spec where the spec's block index holds an ask block under its
+// block id (document_blocks, keyed as the ask is): a row that names the spec and a block it no
+// longer holds - one a reopen restored with no block to write, which a later settlement retracts -
+// is no question of it. An ask a stored value of which does not decode - one its node holds, or
+// its row's author, options, anchor, answer, resolution or approval, or its newest reply's author
+// (docs.UndecodableAskError) - is left out and logged with its id, as decisionEntries leaves out
+// its entry, and the read goes on (R4, scanOpenQuestions); a failure of the query or of the scan, a
+// column pgx cannot scan among them, fails the read.
+//
+// That index cannot say so while the spec owes it - while the spec is among the documents the
+// coverage read names as owing their block index (queueOwedDocuments), read in the same batch: a
+// version above the bound leaves its blocks to the block-index reconciliation, so an ask block it
+// added is in no document_blocks row yet, and for a spec converted into its issue's room no row
+// says yet which fragment holds the block (refs.AskBlockDocumentSQL). Then the spec's asks are the
+// asks rows of the ask blocks its fragment holds as a read of the document reads it, out of the
+// issue's room for a converted spec (docs.API.Blocks), found by the room and those block ids
+// (refs.AsksOfFragmentBlocksSQL), whether or not the index holds them: a question a person can
+// see does not drop out of the read because the index has not caught up, and no ask whose block
+// the spec no longer holds is listed from an index that is behind. The block ids are all that read
+// answers: it decodes no ask's answer, as the text routes' read (docs.API.TextWithAsks) does and
+// fails on a node that holds a value that does not parse, so such an ask reaches the scan, which
+// leaves it out. Once the index states the spec's version, its rows decide again. Either way one
+// statement reads each ask once, so none is listed twice. reader is the answer's own, and each row
+// registers its texts with it once the slice has stopped growing: a shaping registers a pointer
+// into the row, and an append that moved the backing array would leave the reader filling trees
+// into memory the answer no longer holds.
 func (s *server) specOpenQuestions(
 	ctx context.Context, who model.Actor, key, specID string, reader *displayTreeReader,
 ) ([]issueAskRow, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, `
+	var owed []model.OwedDocument
+	questions := []issueAskRow{}
+	batch := &pgx.Batch{}
+	queueOwedDocuments(batch, key, &owed)
+	batch.Queue(`
 		select `+askReadColumns+` `+askReadFrom+`
-		where a.issue_key = $1 and a.state = 'open' and `+refs.AsksOfDocumentSQL("a", "$2::uuid")+`
+		where a.issue_key = $1 and `+refs.AsksOfDocumentSQL("a", "$2::uuid")+`
+		  and exists (
+			select 1 from document_blocks d
+			where d.artifact_id = a.block_artifact_id and d.block_id = a.block_id and d.type = 'ask')
 		order by a.created_at, a.id
-	`, key, specID)
-	if err != nil {
+	`, key, specID).Query(func(rows pgx.Rows) error {
+		return scanOpenQuestions(rows, key, &questions)
+	})
+	if err := s.deps.Store.Pool.SendBatch(ctx, batch).Close(); err != nil {
 		return nil, err
 	}
-	questions := []issueAskRow{}
-	for rows.Next() {
-		ask, reply, err := scanAskRead(rows)
+	if slices.ContainsFunc(owed, func(document model.OwedDocument) bool { return document.ArtifactID == specID }) {
+		held, err := s.deps.Docs.Blocks(ctx, specID)
 		if err != nil {
-			rows.Close()
+			return nil, fmt.Errorf("read the ask blocks of the spec %s, which owes its block index: %w", specID, err)
+		}
+		blocks := make([]string, 0, len(held))
+		for _, block := range held {
+			if block.Type == "ask" && block.ID != "" {
+				blocks = append(blocks, block.ID)
+			}
+		}
+		rows, err := s.deps.Store.Pool.Query(ctx, `
+			select `+askReadColumns+` `+askReadFrom+`
+			where a.issue_key = $1 and `+refs.AsksOfFragmentBlocksSQL("a", "$2::uuid", "$3::text[]")+`
+			order by a.created_at, a.id
+		`, key, specID, blocks)
+		if err != nil {
 			return nil, err
 		}
-		questions = append(questions, issueAskRow{Ask: ask, LastReply: reply})
+		questions = questions[:0]
+		err = scanOpenQuestions(rows, key, &questions)
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	asks := make([]*model.Ask, len(questions))
+	listed := make([]*model.Ask, len(questions))
 	for index := range questions {
-		asks[index] = &questions[index].Ask
+		listed[index] = &questions[index].Ask
 	}
-	if err := s.attachOpenedEventIDs(ctx, s.deps.Store.Pool, asks); err != nil {
+	if err := s.attachOpenedEventIDs(ctx, s.deps.Store.Pool, listed); err != nil {
 		return nil, err
 	}
-	if err := attachAskBacklinkCounts(ctx, s.deps.Store.Pool, who, asks); err != nil {
+	if err := attachAskBacklinkCounts(ctx, s.deps.Store.Pool, who, listed); err != nil {
 		return nil, err
 	}
 	for index := range questions {
@@ -177,589 +231,26 @@ func (s *server) specOpenQuestions(
 	return questions, nil
 }
 
-// decisionEntry is one entry of the Decisions read's `entries`: the
-// node itself. node is the node that holds it - an ask's own node (kind ask), or an agent's
-// decision's block node (kind block) - and ref that node's dispatch:// address, which is where
-// the entry links; document is the document whose block shows it, null for an ask on the issue
-// itself. kind says whose it is: `person` for an ask, which a person decides, `agent` for a
-// decision, and `declined` for an ask the person declined to answer, which records no decision.
-// state is the node state of its node, which is any state but gone (decisionEntriesRead), so a
-// proposed, settled or overtaken entry is told from a live one (the spec's R5).
-//
-// An ask carries its wording from its row (question, options, urgency, multiple) and its answer
-// from its node (answer_state, answer, selected, answered_by, answered_at, resolution), each null
-// on a decision. A declined ask (resolution.kind = "declined") is marked declined, carries the
-// person's note as declined_note, and carries no answer and no decided_by. A decision carries
-// uncertainty, uncertainty_reason, kept_by and kept_text_sum from its node, each null on an ask
-// and where the node holds none. decided_by is the far end of the node's decided_by tuple: the
-// person who answered, or the person or session whose credential wrote the decision. A session
-// decider carries title, the newest title that session stamped on anything it wrote
-// (decisionDeciderTitles), which outlives Envoy's registry; a person, and a session that never
-// stamped one, carry none.
-//
-// text, text_sha256, replaced, kept, waiting_review, changed_version, changed_at and shaped are
-// decisionread.Decisions' for the node, so they read as the Keep and every other read of a
-// decision reads them: an ask's text is its question, and a decision's text its own words.
-// shaped is one link for each spec node the node's current `shaped` tuples reach, each with the
-// tuple's own event, the event that wrote the version the node's text last changed in
-// (text_changed_event), stale, true when the decision's own words changed after the tuple and the
-// node's text has not changed since they did, and changed_since_tie, true when the node's text
-// changed after the tuple (model.DecisionLink). readings are the `reading` nodes, at any state but
-// gone, whose part_of reaches this node, each with its node state and the far end of its
-// authored_by tuple, null where it holds none.
-type decisionEntry struct {
-	Node     decisionEntryNode      `json:"node"`
-	Ref      string                 `json:"ref"`
-	Document *decisionEntryDocument `json:"document"`
-	Kind     string                 `json:"kind"`
-	// State is the node state of Node. Every entry of this build carries it, and a server of the
-	// release before answers the read without it during a roll, so the document marks it optional
-	// (`required:"false"`) and a reader takes an entry that carries none as live.
-	State string `json:"state" enum:"live,gone,proposed,settled,overtaken" required:"false"`
-
-	Text string `json:"text"`
-	// TextTree is Text read as the tree a reader is shown, present only for a caller that sent
-	// `Dispatch-Trees: 1`.
-	TextTree   model.DisplayTree `json:"text_tree,omitempty"`
-	TextSHA256 string            `json:"text_sha256"`
-
-	Question    *string           `json:"question"`
-	Options     []model.AskOption `json:"options"`
-	Urgency     *string           `json:"urgency"`
-	Multiple    *bool             `json:"multiple"`
-	AnswerState *string           `json:"answer_state"`
-	Answer      *string           `json:"answer"`
-	// AnswerTree is Answer read as the tree a reader is shown, present only for a caller that
-	// sent `Dispatch-Trees: 1` and only where the ask holds an answer's text: the Decisions tab
-	// draws a person's decision by that text.
-	AnswerTree   model.DisplayTree    `json:"answer_tree,omitempty"`
-	Selected     []string             `json:"selected"`
-	AnsweredBy   *string              `json:"answered_by"`
-	AnsweredAt   *time.Time           `json:"answered_at"`
-	Resolution   *model.AskResolution `json:"resolution"`
-	Declined     bool                 `json:"declined"`
-	DeclinedNote *string              `json:"declined_note"`
-
-	Uncertainty       *string          `json:"uncertainty"`
-	UncertaintyReason *string          `json:"uncertainty_reason"`
-	DecidedBy         *decisionDecider `json:"decided_by"`
-	KeptBy            *string          `json:"kept_by"`
-	KeptTextSum       *string          `json:"kept_text_sum"`
-
-	Replaced       bool                 `json:"replaced"`
-	Kept           *model.DecisionKeep  `json:"kept"`
-	WaitingReview  bool                 `json:"waiting_review"`
-	ChangedVersion int                  `json:"changed_version"`
-	ChangedAt      *time.Time           `json:"changed_at"`
-	Shaped         []model.DecisionLink `json:"shaped"`
-	// FromAsk is, for a decision node, the id of each ask its from_ask tuples reach (the questions
-	// it settles, decisionread's Decision.Asks), and [] for an ask's own entry.
-	FromAsk  []string          `json:"from_ask"`
-	Readings []decisionReading `json:"readings"`
-
-	// openedAt is the ask row's created_at, which orders the open asks among themselves.
-	openedAt time.Time
-	// foundIn is the document the read found a decision's node in (decisionEntriesRead), which
-	// decisionread takes for a block the room's index names no document of yet; "" for an ask.
-	foundIn string
-}
-
-// decisionEntryNode names a node of the store: its kind and its id as graph_nodes keys it.
-type decisionEntryNode struct {
-	Kind string `json:"kind"`
-	ID   string `json:"id"`
-}
-
-// decisionDecider is an entry's decided_by: the node its decided_by tuple reaches, named as
-// decisionEntryNode names a node, and for a session the title it stamped, empty and left out of
-// the answer for a person and for a session that never stamped one.
-type decisionDecider struct {
-	Kind  string `json:"kind"`
-	ID    string `json:"id"`
-	Title string `json:"title,omitempty"`
-}
-
-// decisionEntryDocument is the document whose block shows an entry: its id and dispatch://
-// address, and that block's id and node address (`<ref_key>#<block id>`, under the ref_key of the
-// artifact keying the block's rows: the document's own, or for a document converted into its
-// issue's room the room's tree's). A converted document's entry names that document, never the
-// tree, as an entry of a document that is its own room does.
-type decisionEntryDocument struct {
-	ArtifactID string `json:"artifact_id"`
-	Ref        string `json:"ref"`
-	BlockID    string `json:"block_id"`
-	Block      string `json:"block"`
-}
-
-// decisionReading is one reading of an entry: its block node and that node's state, the document
-// that holds it, its text as the block index recorded it last (null where its document still owes
-// that index), and the person or session its authored_by names, null where the node holds no such
-// tuple - a reading the read neither leaves out nor gives an author.
-type decisionReading struct {
-	Node decisionEntryNode `json:"node"`
-	// State is the node state of Node, optional in the document as decisionEntry's State is.
-	State      string             `json:"state" enum:"live,gone,proposed,settled,overtaken" required:"false"`
-	ArtifactID *string            `json:"artifact_id"`
-	BlockID    string             `json:"block_id"`
-	Text       *string            `json:"text"`
-	AuthoredBy *decisionEntryNode `json:"authored_by"`
-}
-
-// entryFactKinds are the values and relations of an entry's node the entries read takes itself;
-// the rest are decisionread's, kept_by and kept_text_sum among them (decisionEntries).
-var entryFactKinds = []string{
-	graphstore.TupleAnswerState, graphstore.TupleAnswer, graphstore.TupleSelected, graphstore.TupleAnsweredAt,
-	graphstore.TupleResolution, graphstore.TupleAnsweredBy, graphstore.TupleDecidedBy,
-	refs.ValueUncertainty, refs.ValueUncertaintyReason,
-}
-
-// decisionEntriesRead is the statement decisionEntries reads an issue's entries with, bound to
-// the issue $1, the acting credential $2 (refs.VisibilityArg) and entryFactKinds $3. It reads no
-// node of another issue: the asks by asks.issue_key, and the decisions from the issue's own
-// documents (artifacts.issue_key), each document through its own rows: those its room keys
-// (refs.DocumentRoomSQL - the document itself, or for a document converted into its issue's
-// room the room's tree artifact) whose block the document holds (refs.BlockDocumentSQL). A
-// document the block index has indexed lists its decisions in those document_blocks rows (type
-// `decision`); one that owes that index (document_block_versions.version null) lists them as
-// well in the nodes the typed-node pass placed in it in the write's own transaction
-// (refs.IndexDecisionNodes): the current part_of tuples into the document's own node, through
-// graph_tuples_as_of_in, and the nodes its block_refs rows name (a decision's decided_by, shaped
-// and from_ask), keyed by its room. Each candidate is then read by its own key, the present nodes
-// of the `decision` supertag kept: a node at any state but gone, so a proposed, settled or
-// overtaken decision, ask or reading is drawn wherever its node is (R5 and R12 of the node-states
-// plan this branch carries). An entry's document is the one holding its block, read as
-// decisionread reads it: the artifact keying the block's rows - a block node's address opens with
-// its ref_key, an ask's is its block_artifact_id - mapped to the document whose fragment holds the
-// block, or, for a decision of a document that owes its block index whose block the room's index
-// names no document of yet, the document the read found its node in (refs.BlockDocumentOrSQL),
-// which the statement answers last and decisionread is given (decisionread.Node.Document).
-func decisionEntriesRead() string {
-	return `
-		with documents as (
-			select a.id, a.ref_key, ` + refs.DocumentRoomSQL("a.id") + ` as room,
-			       not exists (select 1 from document_block_versions v where v.artifact_id = a.id and v.version is not null) as owed
-			from artifacts a where a.issue_key = $1 and a.kind = 'doc'
-		),
-		decision_nodes as (
-			select held.id, doc.id as document from documents doc
-			cross join lateral (
-				select d.node_address as id from document_blocks d
-				where d.artifact_id = doc.room and d.type = '` + refs.DecisionSupertag + `' and d.node_kind = '` + refs.BlockNodeKind + `'
-				  and ` + refs.BlockDocumentSQL("d") + ` = doc.id
-				union
-				select part.from_id from (` + graphstore.CurrentTupleRead(`t.kind, t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
-		`t.to_kind = 'artifact' and t.to_id = doc.ref_key and t.kind = '`+graphstore.TuplePartOf+`'`) + `) part
-				where doc.owed and part.asserted and part.from_kind = '` + refs.BlockNodeKind + `'
-				union
-				select r.node_address from block_refs r
-				where doc.owed and r.artifact_id = doc.room and r.node_kind = '` + refs.BlockNodeKind + `'
-				  and ` + refs.BlockDocumentSQL("r") + ` = doc.id
-				offset 0
-			) held
-		),
-		members as (
-			select node.kind, node.id, node.state, null::uuid as document from asks q
-			cross join lateral (
-				select g.kind, g.id, g.state from graph_nodes g
-				where g.kind = '` + graphstore.KindAsk + `' and g.id = q.id::text and g.state <> '` + graphstore.StateGone + `'
-				  and ` + refs.VisibleRow("g", "$2") + `
-				offset 0
-			) node
-			where q.issue_key = $1 and q.kind = 'question'
-			union all
-			select node.kind, node.id, node.state, n.document from decision_nodes n
-			cross join lateral (
-				select g.kind, g.id, g.state from graph_nodes g
-				where g.kind = '` + refs.BlockNodeKind + `' and g.id = n.id and g.supertag = '` + refs.DecisionSupertag + `'
-				  and g.state <> '` + graphstore.StateGone + `' and ` + refs.VisibleRow("g", "$2") + `
-				offset 0
-			) node
-		)
-		select m.kind, m.id, m.state, q.question, q.options, q.urgency, q.multiple, q.created_at, coalesce(place.block_id, ''),
-		       doc.id is not null, coalesce(doc.id::text, ''), coalesce(keyed.ref_key, ''), coalesce(doc.slug, ''),
-		       coalesce(doc.kind, ''), doc.issue_key, coalesce(doc.project_key, ''), doc.session_id, coalesce(doc.is_primary, false),
-		       doc.id is not null and (
-		         exists (select 1 from document_blocks b
-		                 where m.kind = '` + graphstore.KindAsk + `' and b.artifact_id = place.artifact_id and b.block_id = place.block_id and b.type = 'ask' offset 0)
-		         or exists (select 1 from document_blocks b
-		                    where m.kind = '` + refs.BlockNodeKind + `' and b.node_kind = m.kind and b.node_address = m.id offset 0)
-		         or not exists (select 1 from document_block_versions v
-		                        where v.artifact_id = doc.id and v.version is not null offset 0)),
-		       (select coalesce(json_agg(json_build_object('kind', f.kind, 'to_kind', f.to_kind, 'to_id', f.to_id)), '[]'::json)
-		        from (` + graphstore.CurrentTupleRead(
-		`t.kind, t.to_kind, case when t.to_kind = '`+graphstore.KindValue+`' then '' else t.to_id end`,
-		`t.kind, t.to_kind, t.to_id, t.asserted`,
-		`t.from_kind = m.kind and t.from_id = m.id and t.kind = any($3::text[])`) + `) f
-		        where f.asserted),
-		       (select coalesce(json_agg(json_build_object(
-		                 'id', r.id, 'state', r.state, 'artifact_id', ` + refs.BlockDocumentSQL("rd") + `, 'block_id', rd.block_id,
-		                 'text', (select x.text from document_block_texts x
-		                          where x.artifact_id = rd.artifact_id and x.block_id = rd.block_id
-		                          order by x.version desc limit 1),
-		                 'author_kind', author.to_kind, 'author_id', author.to_id) order by r.id), '[]'::json)
-		        from (` + graphstore.CurrentTupleRead(`t.kind, t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
-		`t.to_kind = m.kind and t.to_id = m.id and t.kind = '`+graphstore.TuplePartOf+`' and t.to_kind <> '`+graphstore.KindValue+`'`) + `) part
-		        cross join lateral (
-		        	select r.kind, r.id, r.state from graph_nodes r
-		        	where r.kind = part.from_kind and r.id = part.from_id
-		        	  and r.supertag = '` + refs.ReadingSupertag + `' and r.state <> '` + graphstore.StateGone + `'
-		        	  and ` + refs.VisibleRow("r", "$2") + `
-		        	offset 0
-		        ) r
-		        left join document_blocks rd on rd.node_kind = r.kind and rd.node_address = r.id
-		        left join lateral (
-		        	select held.to_kind, held.to_id from (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`,
-		`t.to_kind, t.to_id, t.seq, t.asserted`,
-		`t.from_kind = r.kind and t.from_id = r.id and t.kind = '`+graphstore.TupleAuthoredBy+`'`) + `) held
-		        	where held.asserted order by held.seq desc limit 1
-		        ) author on true
-		        where part.asserted),
-		       coalesce(m.document::text, '')
-		from members m
-		left join asks q on m.kind = '` + graphstore.KindAsk + `' and q.id = case when m.kind = '` + graphstore.KindAsk + `' then m.id::uuid end
-		left join lateral (
-			select a.id, a.ref_key from artifacts a
-			where m.kind = '` + graphstore.KindAsk + `' and a.id = q.block_artifact_id
-			union all
-			select a.id, a.ref_key from artifacts a
-			where m.kind = '` + refs.BlockNodeKind + `' and a.ref_key = split_part(m.id, '#', 1)
-		) keyed on true
-		left join lateral (
-			select keyed.id as artifact_id,
-			       case when m.kind = '` + graphstore.KindAsk + `' then q.block_id else substr(m.id, length(keyed.ref_key) + 2) end as block_id
-		) place on keyed.id is not null
-		left join artifacts doc on doc.id = ` + refs.BlockDocumentOrSQL("place", "coalesce(m.document, place.artifact_id)") + `
-		order by m.kind, m.id`
-}
-
-// decisionEntries is the Decisions read's entries for issue key, as who reads them, in one
-// statement over graph_nodes, graph_tuples and the asks row for an ask's wording, and then
-// decisionread.Decisions over the nodes it found. Both read in one read-only transaction at
-// repeatable read, so the entries answer one state of the store: a Keep or an answer committed
-// between the two reads is in both or in neither. Its members are the store's:
-//
-//   - each `ask` node, at any state but gone, of an ask of kind question (asks.kind) the issue
-//     holds, on any of its documents or on the issue itself. A copy of an answered ask on another
-//     document opens no row of its own (its block's copied_from names the source), so it is no
-//     entry; a reading in it reads the source's ask and is answered under the source's entry.
-//   - each block node of the `decision` supertag, at any state but gone, in any document of the
-//     issue, found from that document alone (decisionEntriesRead), so a decision of a document that
-//     still owes its block index is listed.
-//
-// An entry names the document that holds its node's block where a document_blocks row holds that
-// block - for an ask, a row of type ask at the ask's block id - or where the document owes its block
-// index and no row can say so yet: an answered ask whose block left its document keeps its row,
-// which still names that document, and names none, and so does one whose block id a block of
-// another type took, since that block is not the ask's.
-// kept_by and kept_text_sum are the Keep decisionread read (model.Decision's Kept), so they and
-// `kept` are one read of the node.
-//
-// Open asks come first, oldest first, then every other entry by its time: an answer's, else a
-// resolution's, else the version the decision's words last changed in, oldest first. An entry
-// whose stored value does not parse - an answer state or an uncertainty outside its type, a
-// selection or a resolution that is no JSON of its shape, a time that is none, or a value
-// decisionread refuses - is left out and logged, and the read goes on. reader is the answer's
-// own, and each entry registers its text with it once the slice has stopped growing.
-//
-// It answers too the Decisions read's old `decisions` member: decisionread's model.Decision of
-// each entry that is a decision node or an answered ask, in
-// the order of the entries, so a page of the release before reads what the store holds.
-func (s *server) decisionEntries(ctx context.Context, who model.Actor, key string, reader *displayTreeReader) ([]decisionEntry, []model.Decision, error) {
-	tx, err := s.deps.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, nil, fmt.Errorf("open the read of the decisions of %s: %w", key, err)
-	}
-	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, decisionEntriesRead(), key, refs.VisibilityArg(who), entryFactKinds)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read the decisions of %s: %w", key, err)
-	}
-	entries := []decisionEntry{}
+// scanOpenQuestions appends to questions each ask rows reads (askReadColumns) that is open as its
+// node holds it, in the order rows reads them. An ask of issue key a stored value of which does
+// not decode (scanAskRead's docs.UndecodableAskError) is left out and logged with its id, and the
+// scan goes on; any other failure of the scan, a column pgx cannot scan among them, fails it.
+func scanOpenQuestions(rows pgx.Rows, key string, questions *[]issueAskRow) error {
 	for rows.Next() {
-		var entry decisionEntry
-		var options []byte
-		var question, urgency *string
-		var multiple *bool
-		var opened *time.Time
-		var blockID string
-		var document, holds bool
-		var artifactID, nodeKey, slug, artifactKind string
-		var project string
-		var issueKey, session *string
-		var primary bool
-		var facts, readings []byte
-		if err := rows.Scan(&entry.Node.Kind, &entry.Node.ID, &entry.State, &question, &options, &urgency, &multiple, &opened, &blockID,
-			&document, &artifactID, &nodeKey, &slug, &artifactKind, &issueKey, &project, &session, &primary, &holds,
-			&facts, &readings, &entry.foundIn); err != nil {
-			rows.Close()
-			return nil, nil, fmt.Errorf("read a decision of %s: %w", key, err)
-		}
-		if document && holds && blockID != "" {
-			entry.Document = &decisionEntryDocument{
-				ArtifactID: artifactID,
-				Ref:        refs.ArtifactRef(issueKey, project, session, slug, artifactKind, primary),
-				BlockID:    blockID,
-				Block:      refs.BlockAddress(nodeKey, blockID),
-			}
-		}
-		if entry.Node.Kind == graphstore.KindAsk {
-			entry.Kind, entry.Question, entry.Urgency, entry.Multiple = "person", question, urgency, multiple
-			if opened != nil {
-				entry.openedAt = *opened
-			}
-			entry.Options = []model.AskOption{}
-			if options != nil {
-				if err := json.Unmarshal(options, &entry.Options); err != nil {
-					slog.Warn("dispatch: a decision whose stored value does not parse is left out of the read",
-						"issue", key, "node", entry.Node.ID, "err", fmt.Errorf("the ask's options: %w", err))
-					continue
-				}
-			}
-		} else {
-			entry.Kind = "agent"
-		}
-		if err := entry.readFacts(facts); err != nil {
-			slog.Warn("dispatch: a decision whose stored value does not parse is left out of the read",
-				"issue", key, "kind", entry.Node.Kind, "node", entry.Node.ID, "err", err)
+		ask, reply, err := scanAskRead(rows)
+		if undecodable, ok := errors.AsType[*docs.UndecodableAskError](err); ok {
+			slog.Warn("dispatch: an ask whose stored value does not decode is left out of the issue's open questions",
+				"ask", undecodable.AskID, "issue", key, "err", err)
 			continue
 		}
-		if entry.Node.Kind == graphstore.KindAsk && entry.AnswerState == nil {
-			// An ask's node states its answer state from its first settlement on (asks.Settle):
-			// one that holds none has never been answered or closed, and is open.
-			open := "open"
-			entry.AnswerState = &open
+		if err != nil {
+			return err
 		}
-		if err := entry.readReadings(readings); err != nil {
-			rows.Close()
-			return nil, nil, fmt.Errorf("read the readings of %s %s: %w", entry.Node.Kind, entry.Node.ID, err)
-		}
-		entries = append(entries, entry)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("read the decisions of %s: %w", key, err)
-	}
-	nodes := make([]decisionread.Node, len(entries))
-	for index, entry := range entries {
-		nodes[index] = decisionread.Node{Kind: entry.Node.Kind, ID: entry.Node.ID, Document: entry.foundIn}
-	}
-	decided, err := decisionread.Decisions(ctx, tx, who, nodes)
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := decisionDeciderTitles(ctx, tx, entries); err != nil {
-		return nil, nil, fmt.Errorf("name the deciders of the decisions of %s: %w", key, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, nil, fmt.Errorf("close the read of the decisions of %s: %w", key, err)
-	}
-	byNode := make(map[decisionEntryNode]model.Decision, len(decided))
-	for _, decision := range decided {
-		byNode[decisionEntryNode{Kind: decision.NodeKind, ID: decision.NodeID}] = decision
-	}
-	read := entries[:0]
-	for _, entry := range entries {
-		// A node decisionread left out is one whose stored value it refused, and logged.
-		decision, found := byNode[entry.Node]
-		if !found {
-			continue
-		}
-		entry.Ref, entry.Text, entry.TextSHA256 = decision.Ref, decision.Text, decision.TextSHA256
-		entry.Replaced, entry.Kept, entry.WaitingReview = decision.Replaced, decision.Kept, decision.WaitingReview
-		if decision.Kept != nil {
-			keptBy, keptSum := decision.Kept.KeptBy, decision.Kept.TextSHA256
-			entry.KeptBy, entry.KeptTextSum = &keptBy, &keptSum
-		}
-		entry.ChangedVersion, entry.ChangedAt, entry.Shaped = decision.ChangedVersion, decision.ChangedAt, decision.Links
-		entry.FromAsk = []string{}
-		if entry.Node.Kind != graphstore.KindAsk {
-			entry.FromAsk = append(entry.FromAsk, decision.Asks...)
-		}
-		read = append(read, entry)
-	}
-	entries = read
-	sort.SliceStable(entries, func(i, j int) bool { return entries[i].before(entries[j]) })
-	decisions := []model.Decision{}
-	for _, entry := range entries {
-		if entry.Kind == "agent" || (entry.Kind == "person" && entry.AnswerState != nil && *entry.AnswerState == "answered") {
-			decisions = append(decisions, byNode[entry.Node])
+		if ask.State == "open" {
+			*questions = append(*questions, issueAskRow{Ask: ask, LastReply: reply})
 		}
 	}
-	for index := range entries {
-		reader.text(&entries[index].TextTree, entries[index].Text)
-		reader.textOf(&entries[index].AnswerTree, entries[index].Answer)
-	}
-	for index := range decisions {
-		reader.text(&decisions[index].TextTree, decisions[index].Text)
-	}
-	return entries, decisions, nil
-}
-
-// before reports whether entry comes before other in the Decisions read: an open ask before every
-// other entry, open asks oldest first, and every other entry by its time, oldest first, a node's
-// id breaking a tie.
-func (entry decisionEntry) before(other decisionEntry) bool {
-	open, otherOpen := entry.isOpen(), other.isOpen()
-	if open != otherOpen {
-		return open
-	}
-	at, otherAt := entry.openedAt, other.openedAt
-	if !open {
-		at, otherAt = entry.at(), other.at()
-	}
-	if !at.Equal(otherAt) {
-		return at.Before(otherAt)
-	}
-	if entry.Node.Kind != other.Node.Kind {
-		return entry.Node.Kind < other.Node.Kind
-	}
-	return entry.Node.ID < other.Node.ID
-}
-
-// isOpen reports whether entry is an open ask, one no person has answered or closed.
-func (entry decisionEntry) isOpen() bool {
-	return entry.AnswerState != nil && *entry.AnswerState == "open"
-}
-
-// at is entry's time: when its answer was given, else when it was resolved, else when the version
-// its words last changed in was written, else when the ask was opened.
-func (entry decisionEntry) at() time.Time {
-	switch {
-	case entry.AnsweredAt != nil:
-		return *entry.AnsweredAt
-	case entry.Resolution != nil:
-		return entry.Resolution.At
-	case entry.ChangedAt != nil:
-		return *entry.ChangedAt
-	}
-	return entry.openedAt
-}
-
-// readFacts sets the values and relations of entry's node the entries read holds (entryFactKinds),
-// from the JSON list the statement aggregated, or answers which of them does not parse. A
-// declined ask carries its note and no answer, and an ask carries no Keep.
-func (entry *decisionEntry) readFacts(encoded []byte) error {
-	var facts []struct {
-		Kind   string `json:"kind"`
-		ToKind string `json:"to_kind"`
-		ToID   string `json:"to_id"`
-	}
-	if err := json.Unmarshal(encoded, &facts); err != nil {
-		return fmt.Errorf("the node's values: %w", err)
-	}
-	for _, fact := range facts {
-		value := fact.ToID
-		switch fact.Kind {
-		case graphstore.TupleAnswerState:
-			switch value {
-			case "open", "answered", "resolved":
-				entry.AnswerState = &value
-			default:
-				return fmt.Errorf("answer_state holds %q, which is none of open, answered and resolved", value)
-			}
-		case graphstore.TupleAnswer:
-			entry.Answer = &value
-		case graphstore.TupleSelected:
-			selected := []string{}
-			if err := json.Unmarshal([]byte(value), &selected); err != nil {
-				return fmt.Errorf("selected holds %q, which is no list of labels: %w", value, err)
-			}
-			entry.Selected = selected
-		case graphstore.TupleAnsweredAt:
-			at, err := time.Parse(time.RFC3339Nano, value)
-			if err != nil {
-				return fmt.Errorf("answered_at holds %q, which is no time: %w", value, err)
-			}
-			entry.AnsweredAt = &at
-		case graphstore.TupleResolution:
-			var resolution model.AskResolution
-			if err := json.Unmarshal([]byte(value), &resolution); err != nil {
-				return fmt.Errorf("resolution holds %q, which is no resolution: %w", value, err)
-			}
-			entry.Resolution = &resolution
-		case graphstore.TupleAnsweredBy:
-			entry.AnsweredBy = &value
-		case graphstore.TupleDecidedBy:
-			entry.DecidedBy = &decisionDecider{Kind: fact.ToKind, ID: value}
-		case refs.ValueUncertainty:
-			switch value {
-			case "low", "medium", "high":
-				entry.Uncertainty = &value
-			default:
-				return fmt.Errorf("uncertainty holds %q, which is none of low, medium and high", value)
-			}
-		case refs.ValueUncertaintyReason:
-			entry.UncertaintyReason = &value
-		}
-	}
-	if entry.Resolution != nil && entry.Resolution.Kind == model.AskResolutionDeclined {
-		// D9: a declined ask is an entry of its own, with the person's note, and never an answer.
-		entry.Declined, entry.Kind = true, "declined"
-		if note := entry.Resolution.Reason; note != "" {
-			entry.DeclinedNote = &note
-		}
-		entry.Answer, entry.Selected, entry.AnsweredBy, entry.AnsweredAt, entry.DecidedBy = nil, nil, nil, nil, nil
-	}
-	return nil
-}
-
-// decisionDeciderTitles gives each session decider of entries the newest title that session
-// stamped on anything it wrote (delivery.ResolveSessionTitles), in one read in tx for every
-// session the entries name, as the issue's collaborators and a person's agent threads name a
-// session the registry no longer lists. A person decider, and a session that stamped no title,
-// are left with none.
-func decisionDeciderTitles(ctx context.Context, tx pgx.Tx, entries []decisionEntry) error {
-	sessions := []string{}
-	for _, entry := range entries {
-		if entry.DecidedBy != nil && entry.DecidedBy.Kind == graphstore.KindSession {
-			sessions = append(sessions, entry.DecidedBy.ID)
-		}
-	}
-	slices.Sort(sessions)
-	titles, err := delivery.ResolveSessionTitles(ctx, tx, slices.Compact(sessions))
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		if entry.DecidedBy != nil && entry.DecidedBy.Kind == graphstore.KindSession {
-			entry.DecidedBy.Title = titles[entry.DecidedBy.ID]
-		}
-	}
-	return nil
-}
-
-// readReadings sets entry's readings from the JSON list the statement aggregated.
-func (entry *decisionEntry) readReadings(encoded []byte) error {
-	var readings []struct {
-		ID         string  `json:"id"`
-		State      string  `json:"state"`
-		ArtifactID *string `json:"artifact_id"`
-		BlockID    *string `json:"block_id"`
-		Text       *string `json:"text"`
-		AuthorKind *string `json:"author_kind"`
-		AuthorID   *string `json:"author_id"`
-	}
-	if err := json.Unmarshal(encoded, &readings); err != nil {
-		return err
-	}
-	entry.Readings = make([]decisionReading, 0, len(readings))
-	for _, held := range readings {
-		reading := decisionReading{
-			Node:       decisionEntryNode{Kind: refs.BlockNodeKind, ID: held.ID},
-			State:      held.State,
-			ArtifactID: held.ArtifactID, Text: held.Text,
-		}
-		if held.BlockID != nil {
-			reading.BlockID = *held.BlockID
-		} else if _, blockID, found := strings.Cut(held.ID, "#"); found {
-			reading.BlockID = blockID
-		}
-		if held.AuthorKind != nil && held.AuthorID != nil {
-			reading.AuthoredBy = &decisionEntryNode{Kind: *held.AuthorKind, ID: *held.AuthorID}
-		}
-		entry.Readings = append(entry.Readings, reading)
-	}
-	return nil
+	return rows.Err()
 }
 
 // keepDecisionInput is the body of POST /api/v1/artifacts/{id}/blocks/{block_id}/keep.
@@ -777,8 +268,8 @@ type keepDecisionInput struct {
 // 409 DECISION_CHANGED with nothing written: a Keep over text nobody read is the one thing Keep
 // exists to prevent, as `409 ASK_EDITED` holds an answer to the wording it was given on. Any other
 // block - one that is neither, a heading of a retired decisions document, or a decision marked
-// replaced, which is no longer the design - is 404 TARGET_NOT_FOUND. The route is the `person`
-// scope's (routeScopes): a Keep is a person's.
+// replaced, which is no longer the design - is 404 TARGET_NOT_FOUND. The route needs both the
+// `person` and the `approve` scope (its route file's OAuthScopes): a Keep is a person's.
 func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -818,9 +309,11 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	var keep model.DecisionKeep
 	var event model.Event
+	marked := false
 	if onNode {
-		keep, event, err = s.keepDecisionNode(r.Context(), tx, actor, document, decision)
+		keep, event, marked, err = s.keepDecisionNode(r.Context(), tx, actor, document, decision)
 	} else {
+		// kept for one release: heading-keep
 		keep, event, err = s.keepDecisionHeading(r.Context(), tx, actor, document, decision)
 	}
 	if err != nil {
@@ -831,7 +324,11 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(r.Context(), event)
+	published := []model.Event{event}
+	if marked {
+		published = append(published, s.deps.Docs.DrainOwedQueries(r.Context(), *document.IssueKey)...)
+	}
+	s.publish(r.Context(), published...)
 	WriteJSON(w, http.StatusOK, keep)
 }
 
@@ -895,10 +392,13 @@ func (s *server) keepDecisionHeading(ctx context.Context, tx pgx.Tx, actor model
 // It writes as the store's writers do: the issue's owner lock first, under which it reads the
 // decision again and the node's current keepers, and then one write-phase batch (store.RunWrite),
 // so the transaction holds its id only for that batch: the person's node (one the store already
-// holds moves nothing), the projection row, the decision.kept event, and last the tuples, under
-// that event (graphstore.QueueNodes, graphstore.QueueCaused over graphstore.LatestEvent). The
-// event's changed_version is the one the row is written with, which no statement of the batch
-// reads back.
+// holds moves nothing), the projection row, the decision.kept event, the tuples, under that event
+// (graphstore.QueueNodes, graphstore.QueueCaused over graphstore.LatestEvent), and then the mark
+// of the issue's queries owed (docs.QueueQueryMark): the decisions query takes the decision, and
+// its record holds the kept_by and the kept_text_sum out of its node, so R14 owes that query a
+// version, which the route drains once the batch has committed. marked says whether the issue has
+// converted and took the mark. The event's changed_version is the one the row is written with,
+// which no statement of the batch reads back.
 //
 // keepDecision read decision on the pool, holding no lock, and an agent's write of the document
 // takes the same owner lock: one that committed while the Keep waited for it would leave the Keep
@@ -906,20 +406,20 @@ func (s *server) keepDecisionHeading(ctx context.Context, tx pgx.Tx, actor model
 // is read again under the lock, as keepDecisionHeading reads its section: one the store no longer
 // holds, or holds replaced, is 404 TARGET_NOT_FOUND, and one whose text sum is no longer the one
 // it was read at is 409 DECISION_CHANGED, each with nothing written.
-func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Actor, document model.Artifact, decision model.Decision) (model.DecisionKeep, model.Event, error) {
+func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Actor, document model.Artifact, decision model.Decision) (model.DecisionKeep, model.Event, bool, error) {
 	own := issueOwner(*document.IssueKey)
 	if err := s.deps.Events.LockOwners(ctx, tx, own.event("", actor, nil)); err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
+		return model.DecisionKeep{}, model.Event{}, false, err
 	}
 	current, found, err := s.readDecisionNode(ctx, tx, actor, document, decision.BlockID)
 	if err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
+		return model.DecisionKeep{}, model.Event{}, false, err
 	}
 	if !found || current.Replaced {
-		return model.DecisionKeep{}, model.Event{}, errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "no decision %q in %s", decision.BlockID, document.Name)
+		return model.DecisionKeep{}, model.Event{}, false, errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "no decision %q in %s", decision.BlockID, document.Name)
 	}
 	if current.TextSHA256 != decision.TextSHA256 {
-		return model.DecisionKeep{}, model.Event{}, errorf(http.StatusConflict, "DECISION_CHANGED",
+		return model.DecisionKeep{}, model.Event{}, false, errorf(http.StatusConflict, "DECISION_CHANGED",
 			"the decision changed since it was read; read it again and keep what it says now")
 	}
 	decision = current
@@ -930,7 +430,7 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 	at := time.Now().UTC().Truncate(time.Microsecond)
 	earlier, err := graphstore.CurrentOut(ctx, tx, refs.BlockNodeKind, address, []string{refs.TupleKeptBy})
 	if err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
+		return model.DecisionKeep{}, model.Event{}, false, err
 	}
 	var tuples []graphstore.Tuple
 	for _, kept := range earlier {
@@ -954,6 +454,7 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 	held := graphstore.PlanUncaused([]graphstore.Node{graphstore.PersonNode(login, actor, at, graphstore.NoEvent)}, tuples)
 	keep := model.DecisionKeep{ArtifactID: document.ID}
 	var event model.Event
+	marked := false
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		graphstore.QueueNodes(b, held)
 		b.Queue("", `
@@ -974,11 +475,13 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 			return err
 		}
 		graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+		docs.QueueQueryMark(b, *document.IssueKey, graphstore.LatestEvent, &marked)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(held))
 		return nil
 	}); err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
+		return model.DecisionKeep{}, model.Event{}, false, err
 	}
-	return keep, event, nil
+	return keep, event, marked, nil
 }
 
 // keptDecision is the decision Keep acts on at blockID of document, and whether it is a node's:

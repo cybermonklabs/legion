@@ -144,6 +144,7 @@ func compareAnswer(name, status, served, current string) (failure, narrowing str
 // no JSON for it, and against one whose shape moved. It reads no history, so it runs wherever the
 // tag is given.
 func TestAnAnswerTheForkPointLeftOpaqueNarrowsAndNoOtherAnswerMoves(t *testing.T) {
+	t.Parallel()
 	rendered := renderOpenAPI(t)
 	answerOf := func(document map[string]any, path string) map[string]any {
 		operation := document["paths"].(map[string]any)[path].(map[string]any)["get"].(map[string]any)
@@ -200,6 +201,7 @@ func TestAnAnswerTheForkPointLeftOpaqueNarrowsAndNoOtherAnswerMoves(t *testing.T
 // same enum added to a string field of a schema a request takes fails, naming that field. It
 // reads no history, so it runs wherever the tag is given.
 func TestAnEnumNarrowsAnAnsweredFieldAndFailsARequestedOne(t *testing.T) {
+	t.Parallel()
 	rendered := renderOpenAPI(t)
 	requested := requestSchemas(t, rendered)
 	if len(requested) == 0 {

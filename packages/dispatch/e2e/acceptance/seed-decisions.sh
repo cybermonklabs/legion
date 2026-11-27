@@ -19,10 +19,12 @@
 #       Drops the database URL names and creates it empty again, so that the base release's own
 #       Store.Migrate writes its schema and the corpus is the database's only content. Each driver
 #       calls it before baseline_start, since a second run over a database the first one seeded
-#       would count both corpora. It drops only a database on this machine (127.0.0.1, localhost or
-#       ::1) whose name begins `infra_1150_`, the databases these drivers alone use, and refuses
-#       every other with status 2: never the shared legion_test, never a deployment's. It connects
-#       to the `postgres` database of the same server, with the same role, to drop and create.
+#       would count both corpora. It drops only a database on this machine, a URL that names one
+#       loopback postgres database (127.0.0.1, localhost or ::1) with no connection override libpq
+#       would connect by instead (lib.sh's loopback_database_url), whose name begins `infra_1150_`,
+#       the databases these drivers alone use, and refuses every other with status 2: never the
+#       shared legion_test, never a deployment's. It connects to the `postgres` database of the
+#       same server, with the same role, to drop and create.
 #
 #   seed_decisions
 #       Writes the corpus. It reads baseline_url, baseline_token and baseline_database_url, which
@@ -41,7 +43,8 @@
 #       counts for the measurements of the spec's section "What this child measures before it
 #       writes a migration", which a driver compares with what its queries read:
 #           corpus_documents_holding_an_ask=<n>
-#               the documents it wrote an ask block into, open or answered or declined
+#               the documents it wrote an ask block into, open or answered or declined, or a copy
+#               of an open or answered ask
 #           corpus_standing_approvals_over_those_documents=<n>
 #               of those, the ones whose newest review is a person's approval of the newest version
 #           corpus_colliding_block_ids=<n>, and corpus_collision_<n>=<KEY> <block id> <shape>
@@ -50,11 +53,22 @@
 #   seed_decisions_further_kinds
 #       Called after seed_decisions, by decision-nodes.sh alone, so the corpus and the counts the
 #       other drivers read stay as they are. It writes, through the same server, one section of each
-#       of the four further kinds of R9 into issue A's decisions.md, and issue E, whose decisions.md
-#       holds a section citing an answered ask a person removed from the spec (below), and prints,
-#       as key=value lines kept in seed_ids, the ids it wrote: questions_a, the five asks, the
-#       heading block of each section, issue_e, spec_e, ask_e_removed, the version of spec E the
-#       person's removal wrote (spec_e_removal_version), decisions_e and section_removed.
+#       of the four further kinds of R9 and a `###` section under `## Replaced` citing two answered
+#       asks into issue A's decisions.md, and issue E, whose decisions.md holds a section citing an
+#       answered ask a person removed from the spec and a `###` section under `## Replaced` citing the
+#       same ask (below), and prints, as key=value lines kept in seed_ids, the ids it wrote:
+#       questions_a, the seven asks, the heading block of each section, issue_e, spec_e,
+#       ask_e_removed, the version of spec E the person's removal wrote (spec_e_removal_version),
+#       decisions_e, section_removed and section_replaced_removed.
+#
+#   seed_standing_approvals
+#       seed_decisions calls it once its reviews are written, and so does a driver that reviews a
+#       document of the corpus again through seed_review after seed_decisions returned
+#       (answer-attribute-removal.sh), with the base server still up. It fails unless each approval
+#       seed_review left standing still names its document's newest version, and prints and keeps
+#       corpus_standing_approvals_over_those_documents again: of the documents holding an ask
+#       block, those whose newest review seed_review wrote is a person's approval. A driver's call
+#       replaces the count seed_decisions printed with the count of the corpus as it now stands.
 #
 # The corpus, in project SEED, whose gated steps hold `decisions` and `spec`:
 #
@@ -63,7 +77,9 @@
 #   answered with an option and words of the person's own, whose block stays; ask_open (#q-open),
 #   still open; ask_declined (#q-declined), declined with a note; and two answered asks whose
 #   blocks an agent then removed, so that each row stays `answered` naming the spec, the main
-#   shape of the restore: ask_left_store (#q-left-store) and ask_left_format (#q-left-format).
+#   shape of the restore: ask_left_store (#q-left-store) and ask_left_format (#q-left-format). The
+#   person answers ask_left_format before ask_left_store, the reverse of the order their blocks
+#   stand in, so the restored asks' answer-time order is not the order of their blocks.
 #   A callout of the spec now holds the id q-left-store, the collision of the main shape, and a
 #   second callout holds q-doc-collide, the block id of the decisions document's second ask, the
 #   collision of the second shape. The spec's `## Decisions` part holds one pointer line, to
@@ -93,7 +109,10 @@
 #   dispatch://<A>/artifact/decisions-md#b-q-doc-plain, which a comment (comment_decisions_block)
 #   cites too; a second comment (comment_old_spec_address) cites the old spec address of
 #   ask_left_format, dispatch://<A>/spec#b-q-left-format, which no block holds. A person approved
-#   notes.md (review_notes_a), a document that holds no ask block.
+#   notes.md (review_notes_a), a document that holds no ask block. A fourth document, copies.md
+#   (copies_a), holds one ask block and nothing else that asks: a copy of q-kept, the answered ask
+#   of the spec, under the same id, question, options and urgency, which the base release settles
+#   as a copy of that ask, so no row names it and its block holds copied_from naming ask_kept.
 #
 #   Issue B (issue_b): its spec (spec_b) has no `## Decisions` part. It held ask_b_left
 #   (#q-b-left), which a person answered and an agent then removed, and a person approved the
@@ -109,17 +128,23 @@
 #   removed that block, so the row stays `answered` naming the spec, and the newer version
 #   (review_spec_d_superseded_by_version) leaves that approval standing at no newest version.
 #
-# So the corpus holds five documents with an ask block (spec_a, decisions_a, spec_b, spec_c,
-# spec_d), two of them under a standing approval (spec_a and spec_b), three reviews the second
-# count must leave out (an approval of notes.md, which holds no ask block; spec_c's request for
-# changes; and spec_d's approval, which a newer version superseded), and two collisions, one of
-# each shape.
+# So the corpus holds six documents with an ask block (spec_a, decisions_a, copies_a, spec_b,
+# spec_c, spec_d), copies_a's only one a copy of an answered ask, two of them under a standing
+# approval (spec_a and spec_b), three reviews the second count must leave out (an approval of
+# notes.md, which holds no ask block; spec_c's request for changes; and spec_d's approval, which a
+# newer version superseded), and two collisions, one of each shape.
 #
-# seed_decisions_further_kinds adds to issue A a fourth document, questions.md (questions_a),
-# holding four asks: ask_shelf (#q-shelf), left open, and ask_two_store (#q-two-store),
-# ask_two_format (#q-two-format) and ask_body (#q-body), each answered; an issue-level ask
-# (ask_issue_level), asked through the issue's own ask route, so no block holds it, and answered;
-# and four sections at the end of decisions_a:
+# seed_decisions_further_kinds adds to issue A a fifth document, questions.md (questions_a),
+# holding six asks: ask_shelf (#q-shelf), left open, and ask_two_store (#q-two-store),
+# ask_two_format (#q-two-format), ask_body (#q-body), ask_first_store (#q-first-store) and
+# ask_first_format (#q-first-format), each answered; an issue-level ask (ask_issue_level), asked
+# through the issue's own ask route, so no block holds it, and answered; and five sections at the
+# end of decisions_a:
+#   - under `## Replaced`, after "Files held the corpus once", the `###` section "The census read
+#     its store and its format from files", citing ask_first_store and ask_first_format
+#     (section_replaced_two_asks): planSection takes a section about two answered asks before the
+#     replaced rule, so it stays one decision, replaced, with uncertainty high, citing both asks
+#     and taking no from_ask;
 #   - "Which shelf holds the printed corpus", holding a copy of the block #q-shelf, which the
 #     server settles as a copy of questions.md's ask, so no row names it, and words of its own
 #     (section_held);
@@ -133,9 +158,11 @@
 # and issue E (issue_e), whose spec (spec_e) held ask_e_removed (#q-e-removed), which the person
 # answered and then, as themselves through the base release's edit route, removed from the spec;
 # the version that left it out (spec_e_removal_version) names the person, so the restore declines
-# to write it back. Its decisions.md (decisions_e) holds one section, "The printed corpus stands on
-# the top shelf", which cites that ask and adds words of its own (section_removed): R9 deletes it,
-# and its heading takes one moved_to to the ask's node.
+# to write it back. Its decisions.md (decisions_e) holds two sections that cite that ask: "The
+# printed corpus stands on the top shelf", which adds words of its own (section_removed), and,
+# under `## Replaced`, the `###` section "The printed corpus stood on the bottom shelf"
+# (section_replaced_removed), which planSection takes by the removed ask's rule before the replaced
+# rule. R9 deletes both, and each heading takes one moved_to to the ask's node.
 
 # What the functions below read of their caller, named here so that a reader of this file sees
 # it, as does shellcheck, which reads one file at a time: lib.sh's work_dir sets `work`, and
@@ -170,24 +197,17 @@ seed_refuse() {
 
 # seed_reset_database URL: the head comment above is its contract.
 seed_reset_database() {
-  local url="$1" scheme authority name query host
+  local url="$1" scheme authority name query
   [[ -n "$work" ]] || seed_refuse "seed_reset_database writes its log under \$work: call lib.sh's work_dir first"
+  loopback_database_url "$url" ||
+    seed_refuse "the database URL names no single loopback postgres database with no connection override: this seed drops and creates only this pod's own test databases"
+  # Read after loopback_database_url, whose own match replaces BASH_REMATCH.
   [[ "$url" =~ ^(postgres(ql)?://)([^/?]*)/([^/?]+)(\?.*)?$ ]] ||
     seed_refuse "the database URL is no postgres:// URL naming a database"
   scheme="${BASH_REMATCH[1]}"
   authority="${BASH_REMATCH[3]}"
   name="${BASH_REMATCH[4]}"
   query="${BASH_REMATCH[5]}"
-  host="${authority##*@}"
-  if [[ "$host" == \[* ]]; then
-    host="${host%%]*}]"
-  else
-    host="${host%%:*}"
-  fi
-  case "$host" in
-    127.0.0.1 | localhost | '[::1]') ;;
-    *) seed_refuse "the database is on $host, not this machine: this seed drops and creates only this pod's own test databases" ;;
-  esac
   [[ "$name" =~ ^infra_1150_[a-z0-9_]+$ ]] ||
     seed_refuse "the database is $name: this seed drops and creates only a database whose name begins infra_1150_, one of this child's drivers' own"
   baseline_psql "${scheme}${authority}/postgres${query}" -q \
@@ -363,6 +383,22 @@ seed_decision_block() {
     "$seed_dir/body")" || fail seed "$1" "no text_sha256 for \"$3\""
 }
 
+# seed_standing_approvals: the head comment above is its contract.
+seed_standing_approvals() {
+  local document version standing=0
+  for document in "${!seed_approved_version[@]}"; do
+    seed_request agent GET "/api/v1/artifacts/$document/text"
+    seed_want 200 "read $document's newest version"
+    seed_field "read $document's newest version" .version
+    version="$seed_value"
+    [[ "$version" == "${seed_approved_version[$document]}" ]] ||
+      fail seed "the approval of $document stands" \
+        "it names version ${seed_approved_version[$document]}, and the newest is $version"
+    [[ -z "${seed_ask_documents[$document]:-}" ]] || standing=$((standing + 1))
+  done
+  seed_record corpus_standing_approvals_over_those_documents "$standing"
+}
+
 # seed_decisions: the head comment above is its contract.
 seed_decisions() {
   [[ -n "$baseline_url" && -n "$baseline_token" && -n "$baseline_database_url" ]] ||
@@ -506,13 +542,14 @@ MD
   seed_ask ask_d_approved "${seed_ids[issue_d]}" "$spec_d" q-d-approved
 
   # The person settles the asks: three answers on spec A, one on spec B, one on spec D, and a
-  # decline.
+  # decline. q-left-format is answered before q-left-store, whose block stands above it: the
+  # restore writes the returned asks in answer-time order, which then differs from their blocks'.
   seed_answer ask_kept "$spec_a" q-kept \
     "Postgres, since it is the store we already back up every night." Postgres
-  seed_answer ask_left_store "$spec_a" q-left-store \
-    "Read the seeded test database; no pod of this tree can reach production."
   seed_answer ask_left_format "$spec_a" q-left-format \
     "One line for each measurement, with the time it was taken."
+  seed_answer ask_left_store "$spec_a" q-left-store \
+    "Read the seeded test database; no pod of this tree can reach production."
   seed_answer ask_b_left "$spec_b" q-b-left "The base release writes it, through its own API."
   seed_answer ask_d_approved "$spec_d" q-d-approved "The version the person read when they approved."
   seed_request person POST "/api/v1/asks/${seed_ids[ask_declined]}/decline" \
@@ -521,6 +558,38 @@ MD
   seed_wait_block "$spec_a" q-declined resolved "the decline of block q-declined lands in the spec"
   seed_record decline_note "Colour is not mine to choose here; print plain text."
   seed_wait_settled "the answers settle"
+
+  # copies.md of issue A, whose only ask block is a copy of spec A's answered q-kept: the same id,
+  # question, options and urgency, which the base release settles as a copy of that ask, so no row
+  # names it, and writes the ask's state and copied_from into it.
+  cat >"$seed_dir/copies-a.md" <<'MD'
+# Copied questions
+
+The store question, as the spec asked it.
+
+:::ask{#q-kept urgency="med"}
+Which store holds the seeded corpus?
+
+- Postgres: the database the pod already runs.
+- Files: a directory beside the server.
+:::
+MD
+  seed_upload copies_a "$a" copies.md "$seed_dir/copies-a.md"
+  local copies_a="${seed_ids[copies_a]}"
+  seed_wait_block "$copies_a" q-kept answered "the copy of q-kept in copies.md shows its source answered"
+  seed_wait_settled "copies.md settles"
+  seed_request agent GET "/api/v1/issues/$a/asks?state=all"
+  seed_want 200 "read the asks of $a"
+  jq -e --arg d "$copies_a" '[.[] | select(.block_artifact.id == $d)] | length == 0' "$seed_dir/body" >/dev/null ||
+    fail seed "the block q-kept of copies.md is a copy no row names" \
+      "$(jq -c --arg d "$copies_a" '[.[] | select(.block_artifact.id == $d) | {id, block_id}]' "$seed_dir/body")"
+  seed_request agent GET "/api/v1/artifacts/$copies_a/text"
+  seed_want 200 "read copies.md"
+  jq -e --arg c "copied_from=\"${seed_ids[ask_kept]}\"" \
+    '[.markdown | split("\n")[] | select(startswith(":::ask{"))] | length == 1 and (.[0] | contains($c))' \
+    "$seed_dir/body" >/dev/null ||
+    fail seed "copies.md holds one ask block, a copy of ask_kept" "$(jq -r '.markdown' "$seed_dir/body" | head -c 600)"
+  seed_ask_documents["$copies_a"]=1
 
   # The person approves spec D at its newest version, which holds the answered ask_d_approved.
   seed_review review_spec_d "$spec_d" approved
@@ -663,25 +732,12 @@ MD
   seed_review review_notes_a "${seed_ids[notes_a]}" approved
   seed_wait_settled "nothing is left to settle after the reviews"
 
-  # Each approval still stands: no version landed after the one it names.
-  local document version
-  for document in "${!seed_approved_version[@]}"; do
-    seed_request agent GET "/api/v1/artifacts/$document/text"
-    seed_want 200 "read $document's newest version"
-    seed_field "read $document's newest version" .version
-    version="$seed_value"
-    [[ "$version" == "${seed_approved_version[$document]}" ]] ||
-      fail seed "the approval of $document stands" \
-        "it names version ${seed_approved_version[$document]}, and the newest is $version"
-  done
+  # Each approval still stands, and the count of them over the documents holding an ask block.
+  seed_standing_approvals
 
-  # The corpus's own counts.
-  local standing=0 index=0 collision
-  for document in "${!seed_approved_version[@]}"; do
-    [[ -z "${seed_ask_documents[$document]:-}" ]] || standing=$((standing + 1))
-  done
+  # The corpus's other counts.
+  local index=0 collision
   seed_record corpus_documents_holding_an_ask "${#seed_ask_documents[@]}"
-  seed_record corpus_standing_approvals_over_those_documents "$standing"
   seed_record corpus_colliding_block_ids "${#seed_collisions[@]}"
   for collision in "${seed_collisions[@]}"; do
     index=$((index + 1))
@@ -714,6 +770,14 @@ Which format does the census print?
 :::ask{#q-body urgency="low"}
 How many passes does the census make?
 :::
+
+:::ask{#q-first-store urgency="low"}
+Which store did the census first read?
+:::
+
+:::ask{#q-first-format urgency="low"}
+Which format did the census first print?
+:::
 MD
   seed_upload questions_a "$a" questions.md "$seed_dir/questions-a.md"
   questions_a="${seed_ids[questions_a]}"
@@ -721,9 +785,13 @@ MD
   seed_ask ask_two_store "$a" "$questions_a" q-two-store
   seed_ask ask_two_format "$a" "$questions_a" q-two-format
   seed_ask ask_body "$a" "$questions_a" q-body
+  seed_ask ask_first_store "$a" "$questions_a" q-first-store
+  seed_ask ask_first_format "$a" "$questions_a" q-first-format
   seed_answer ask_two_store "$questions_a" q-two-store "The seeded database, read once."
   seed_answer ask_two_format "$questions_a" q-two-format "One line for each count."
   seed_answer ask_body "$questions_a" q-body "One pass over every row."
+  seed_answer ask_first_store "$questions_a" q-first-store "Files beside the server, before the database."
+  seed_answer ask_first_format "$questions_a" q-first-format "Comma-separated lines, before one line a count."
 
   # An ask of the issue that no block holds, asked through the issue's own route, and answered.
   seed_request agent POST "/api/v1/issues/$a/asks" \
@@ -738,10 +806,15 @@ MD
   seed_record answer_issue_level "On the top shelf, beside the server."
   seed_wait_settled "the answers to questions.md and the issue settle"
 
-  # The four sections, at the end of decisions.md.
+  # The five sections, at the end of decisions.md: the first a `###` section under the `## Replaced`
+  # the document ends with, then the four further kinds, each a `##` section of its own.
   local sections
   sections="$(
     cat <<MD
+### The census read its store and its format from files
+
+The census once read its rows from files beside the server and printed them comma-separated, as dispatch://$a/ask/${seed_ids[ask_first_store]} and dispatch://$a/ask/${seed_ids[ask_first_format]} ruled before the database took over.
+
 ## Which shelf holds the printed corpus
 
 :::ask{#q-shelf urgency="low"}
@@ -766,9 +839,9 @@ The person ruled it in dispatch://$a/ask/${seed_ids[ask_body]}, which shapes dis
 - No view is drawn before it.
 MD
   )"
-  seed_edit "$decisions_a" "decisions.md of $a takes a section of each of R9's four further kinds" \
+  seed_edit "$decisions_a" "decisions.md of $a takes a section under ## Replaced and a section of each of R9's four further kinds" \
     "$(jq -cn --arg m "$sections" '[{op: "insert", after: "end", markdown: $m}]')"
-  seed_wait_settled "the four sections of decisions.md settle"
+  seed_wait_settled "the five sections of decisions.md settle"
 
   # The block the first section holds is a copy: no row names it, and questions.md's names its own.
   seed_request agent GET "/api/v1/issues/$a/asks?state=all"
@@ -788,11 +861,21 @@ MD
   seed_record section_issue_level "$seed_decision_id"
   seed_decision_block "read decisions.md's sections" "$a" "The census counts in one pass"
   seed_record section_body "$seed_decision_id"
+  # The base reads the `###` section under `## Replaced`, citing the two answered asks.
+  seed_decision_block "read decisions.md's sections" "$a" "The census read its store and its format from files"
+  seed_record section_replaced_two_asks "$seed_decision_id"
+  jq -e --arg h "The census read its store and its format from files" \
+    --arg s "${seed_ids[ask_first_store]}" --arg f "${seed_ids[ask_first_format]}" \
+    '[.decisions[] | select(.heading == $h)] | length == 1 and .[0].replaced == true and (.[0].asks | sort) == ([$s, $f] | sort)' \
+    "$seed_dir/body" >/dev/null ||
+    fail seed "the base reads the section under ## Replaced citing ask_first_store and ask_first_format" \
+      "$(jq -c --arg h "The census read its store and its format from files" '[.decisions[] | select(.heading == $h) | {heading, replaced, asks}]' "$seed_dir/body")"
 
   # Issue E: its spec holds an ask the person answers and then removes from the spec as
   # themselves, through the base release's edit route, so the version that leaves the block out is
-  # the person's and the restore declines to write it back; its decisions.md holds one section that
-  # cites the ask, which R9 deletes, its heading taking one moved_to to the ask's node.
+  # the person's and the restore declines to write it back; its decisions.md holds two sections that
+  # cite the ask, one of them a `###` section under `## Replaced`, which R9 deletes, each heading
+  # taking one moved_to to the ask's node.
   cat >"$seed_dir/spec-e.md" <<'MD'
 # Fifth seeded spec
 
@@ -837,9 +920,23 @@ MD
 ## The printed corpus stands on the top shelf
 
 The person chose the top shelf, beside the census, before they took the question back. Decided in dispatch://$e/ask/${seed_ids[ask_e_removed]}.
+
+## Replaced
+
+### The printed corpus stood on the bottom shelf
+
+It stood on the bottom shelf until dispatch://$e/ask/${seed_ids[ask_e_removed]} moved it up.
 MD
   seed_upload decisions_e "$e" decisions.md "$seed_dir/decisions-e.md"
   seed_wait_settled "the decisions.md of $e settles"
   seed_decision_block "read decisions.md's sections" "$e" "The printed corpus stands on the top shelf"
   seed_record section_removed "$seed_decision_id"
+  # The base reads the `###` section under `## Replaced`, citing the ask its person removed alone.
+  seed_decision_block "read decisions.md's sections" "$e" "The printed corpus stood on the bottom shelf"
+  seed_record section_replaced_removed "$seed_decision_id"
+  jq -e --arg h "The printed corpus stood on the bottom shelf" --arg k "${seed_ids[ask_e_removed]}" \
+    '[.decisions[] | select(.heading == $h)] | length == 1 and .[0].replaced == true and .[0].asks == [$k]' \
+    "$seed_dir/body" >/dev/null ||
+    fail seed "the base reads the section under ## Replaced citing ask_e_removed alone" \
+      "$(jq -c --arg h "The printed corpus stood on the bottom shelf" '[.decisions[] | select(.heading == $h) | {heading, replaced, asks}]' "$seed_dir/body")"
 }

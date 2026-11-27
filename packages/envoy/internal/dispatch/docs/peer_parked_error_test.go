@@ -20,6 +20,7 @@ func (p *parkedErrorStore) AppendParkedUpdate(_ context.Context, _ string, updat
 }
 
 func TestAPeerApplyErrorStillStoresWhatTheRoomParked(t *testing.T) {
+	t.Parallel()
 	for _, cut := range []bool{false, true} {
 		name := "valid"
 		if cut {

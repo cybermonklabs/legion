@@ -61,6 +61,28 @@ func TestPairWithinBoundsTheAfterMedianByATenthAndTheSpread(t *testing.T) {
 	}
 }
 
+// PairMovedRead holds a moved read to root R22: at most 2 times the before median, or at most
+// 1 ms more than the before median where the after median is under 2 ms.
+func TestPairMovedReadHoldsRootR22(t *testing.T) {
+	cases := []struct {
+		name          string
+		before, after time.Duration
+		want          bool
+	}{
+		{"exact 2x", 50 * time.Millisecond, 100 * time.Millisecond, true},
+		{"above 2x", 50 * time.Millisecond, 100*time.Millisecond + time.Microsecond, false},
+		{"under 2ms within 1ms slack", 600 * time.Microsecond, 1600 * time.Microsecond, true},
+		{"under 2ms past 1ms slack", 600 * time.Microsecond, 1601 * time.Microsecond, false},
+		{"at 2ms ceiling does not take 1ms slack", 900 * time.Microsecond, 2 * time.Millisecond, false},
+		{"at 2ms ceiling within 2x", time.Millisecond, 2 * time.Millisecond, true},
+	}
+	for _, tc := range cases {
+		if got := movedReadWithinBound(tc.before, tc.after); got != tc.want {
+			t.Errorf("%s (before=%v, after=%v): movedReadWithinBound = %t, want %t", tc.name, tc.before, tc.after, got, tc.want)
+		}
+	}
+}
+
 // A plan with no time at all is what EXPLAIN without ANALYZE answers, and one with only a
 // planning time is what a cancelled run leaves. Either must fail the measurement: a missing time
 // read as zero would be the fastest run of the eleven and would decide the median.

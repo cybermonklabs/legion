@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -73,17 +74,31 @@ type StoreKind struct {
 	// and zero for every term a statement or the replay counts.
 	Assumed int64
 	// count is the scalar SQL that counts the kind's writes inside the window, over the rows
-	// sizingWritesWith names, and empty for the two terms replayParents counts and for an assumed
+	// sizingWritesWith names, and empty for the three terms replayParents counts and for an assumed
 	// term.
 	count string
 }
 
 // movedParents is the name of the term no statement can count: a block's parent is the nesting
 // of its rendered version, which no table written before the store holds (replayParents).
-// movedRanks is the rank each of those blocks takes in its new place, counted by the same replay.
+// movedRanks is the rank each of those blocks takes in its new place, and movedTextPlaces its new
+// place in the text, both counted by the same replay.
 const (
-	movedParents = "block_parent_moved"
-	movedRanks   = "block_rank_moved"
+	movedParents    = "block_parent_moved"
+	movedRanks      = "block_rank_moved"
+	movedTextPlaces = "block_text_place_moved"
+)
+
+// authoredPointers is the name of the term of what an authored block - a criterion, a
+// requirement, a check or a plan node - writes beyond the facts of every block: the tuple of each
+// serves, needs and parent pointer its opening line writes (refs' authoredSourcesOf and
+// pointerPairs), which block_refs projects as a row of the pointer's kind, and a plan node's size
+// in whole minutes (refs' planBlockValues). authoredPointerKinds is the kinds of those rows, as
+// SQL: serves (refs' servesKind), needs and parent (pmdoc.ParentAttribute). The term block_ref
+// leaves those rows to it, so no tuple is counted by both.
+const (
+	authoredPointers     = "authored_pointer"
+	authoredPointerKinds = `('serves', '` + graphstore.TupleNeeds + `', '` + pmdoc.ParentAttribute + `')`
 )
 
 // storeKinds are the terms R4 states, each beside the writer or the requirement whose tuples it
@@ -103,11 +118,12 @@ const (
 //     reference, the pair's assertion and, at most, the retraction that ends it, which no table
 //     records once the pair is gone;
 //   - the node and three base attributes of an issue, an artifact, an ask and a message, and the
-//     gone state a document's removal states of its node, each written by its own create or
-//     removal on this branch;
+//     gone state a document's removal states of its node, each written by this build's own create
+//     or removal;
 //   - the values of each block a version wrote: the text value of each block whose text it wrote,
-//     the rank and the placement of a block's first row, and the new rank of a block it moved
-//     under another parent (refs' reconcileBlockValues); each version's node with its base
+//     the rank, the placement, the text_parent and the text_rank of a block's first row, and the
+//     new rank and the new place in the text of a block it moved under another parent (refs'
+//     planBlockValues); each version's node with its base
 //     attributes, its part_of and its two values (graphstore.VersionFacts), the mime, size and
 //     sha256 values an image's or a file's version states on its document
 //     (graphstore.ArtifactBytes), and the part_of an issue's new document states
@@ -133,7 +149,8 @@ const (
 //     comment's anchored_in its anchor's block, the authored_by of a block of an issue's room, a
 //     result's node with its values and tuples, its screenshots and its retraction, a component's
 //     node with its part_of, depends_on and affects, a retired component's node stated gone with
-//     those relations retracted, and a criterion's authored_by
+//     those relations retracted, a criterion's authored_by, and an authored block's serves, needs
+//     and parent pointers and a plan node's size
 //     (#b-r-issue-relations, #b-r-result-node, #b-r-artifacts-in-tree, #b-r-reasoning-tree,
 //     #b-r-one-room, #b-r-queries);
 //   - the asks child's ask's answer_state, question, options, authored_by, anchored_to and
@@ -144,8 +161,10 @@ const (
 //     deletes its row, a lens and its finding blocks, a lens kind, a constraint, a risk, a node's
 //     state and a pointer's retarget (#b-r-interaction, #b-r-lens, #b-r-lens-catalogue,
 //     #b-r-constraint-risk), every one of them assumed;
-//   - the spec store's nodes of the approved spec of a spec source (specstore): a statement's or a
-//     check's first version, with its node's base attributes, and each version and each removal an
+//   - R7's delete of a node, which takes a lens and its findings gone, each node's state gone
+//     and every relation out of it retracted, assumed too;
+//   - and the spec store's nodes of the approved spec of a spec source (specstore): a statement's or
+//     a check's first version, with its node's base attributes, and each version and each removal an
 //     approval of a change request or a level's import appends to one, counted over the requirement
 //     and check blocks of each issue's spec and Verification document a person approved; and,
 //     assumed, a component's or an interface's node with its first version, a hold a level's import
@@ -178,11 +197,12 @@ func storeKinds() []StoreKind {
 		Driver: "comments.created_at: each alias_of and recorded_as the credential that wrote one proved",
 		count:  `(select coalesce(sum(aliases), 0) from sized_comments)`,
 	}, {
-		Name: "anchor_block", MovedBy: movedWithBlocks, Tuples: 3,
+		Name: "anchor_block", MovedBy: movedWithBlocks, Tuples: 6,
 		Driver: "comments.created_at, each anchored to a document the store can key: its anchored_in to the block holding" +
-			" its quote (comments.anchor's block_id), at most the retraction that ends it once the quote's mark is gone, an" +
-			" accept's or a refresh's, and at most its restatement once a refresh finds the mark again, which over-states" +
-			" an anchor that names no quote",
+			" its quote (comments.anchor's block_id) and the part_of to that block of a comment that answers nothing (R31)," +
+			" at most the retraction of both once the quote's mark is gone, an accept's or a refresh's, and at most their" +
+			" restatement once a refresh finds the mark again, which over-states an anchor that names no quote. A comment on" +
+			" the text of a node is new in this release, so the window holds none for it to count",
 		count: `(select count(*) from sized_comments where anchored)`,
 	}, {
 		Name: "delivery", MovedBy: movedHere, Tuples: 1,
@@ -225,8 +245,9 @@ func storeKinds() []StoreKind {
 			" in document order, so the term is exact except there: the old parent's retraction and the new one's assertion",
 	}, {
 		Name: "block_ref", MovedBy: movedHere, Tuples: 2,
-		Driver: "block_refs.created_at: the pair's assertion and, at most, the retraction that ends it",
-		count:  `(select count(*) from block_refs where created_at > ` + sizingWindow + `)`,
+		Driver: "block_refs.created_at of each link but an authored block's serves, needs and parent pointers, which " +
+			authoredPointers + " counts: the pair's assertion and, at most, the retraction that ends it",
+		count: `(select count(*) from block_refs where created_at > ` + sizingWindow + ` and kind not in ` + authoredPointerKinds + `)`,
 	}, {
 		Name: "document_ref", MovedBy: movedWithBlocks, Tuples: 2,
 		Driver: "refs.created_at of a document's references: the mentions out of the document's node and, at most, the" +
@@ -237,39 +258,52 @@ func storeKinds() []StoreKind {
 		Driver: "document_block_texts of the versions written in the window, each row with a text: its text value",
 		count:  `(select count(*) from sized_texts where written)`,
 	}, {
-		Name: "block_values", MovedBy: movedWithBlocks, Tuples: 2,
-		Driver: "document_block_texts of the versions written in the window, a block's first row: its rank and its placement values",
-		count:  `(select count(*) from sized_texts where written and earlier is null)`,
+		Name: "block_values", MovedBy: movedWithBlocks, Tuples: 4,
+		Driver: "document_block_texts of the versions written in the window, a block's first row: its rank, its" +
+			" placement, its text_parent and its text_rank",
+		count: `(select count(*) from sized_texts where written and earlier is null)`,
 	}, {
 		Name: movedRanks, MovedBy: movedWithBlocks, Tuples: 1,
 		Driver: "each block the moved-parent term counts: its rank among its new siblings, where no sibling it left or" +
 			" joined takes a new one",
 	}, {
+		Name: movedTextPlaces, MovedBy: movedWithBlocks, Tuples: 3,
+		Driver: "each block the moved-parent term counts, which refs.PlaceBlocks places by its text: its new" +
+			" text_parent, the retraction of its old one, and its text_rank among its new text siblings",
+	}, {
 		Name: "block_author", MovedBy: movedWithBlocks, Tuples: 1,
 		Driver: "document_block_texts of the versions written in the window, a block's first row in an issue's spec," +
 			" Verification document or plan, the documents the issue's room holds once the issue converts (R6), each" +
 			" block of which records its authors: one authored_by for each author the version that first holds it lists",
-		count: `(select coalesce(sum(authors), 0) from sized_texts where written and earlier is null)`,
+		count: `(select coalesce(sum(authors), 0) from sized_texts where written and earlier is null and role)`,
 	}, {
 		Name: graphstore.KindVersion, MovedBy: movedWithBlocks, Nodes: 1, Tuples: 6,
-		Driver: "artifact_versions.created_at: a version's node, its visibility, its state and its document's project or" +
-			" parties, its part_of its document, and its number and created_at values",
-		count: `(select count(*) from artifact_versions where created_at > ` + sizingWindow + `)`,
+		Driver: "artifact_versions.created_at, but the first versions of the tree and the decisions query of an issue" +
+			" created in the window, which issue_room counts: a version's node, its visibility, its state and its" +
+			" document's project or parties, its part_of its document, and its number and created_at values",
+		count: `(select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id
+			where v.created_at > ` + sizingWindow + ` and not (v.number = 1 and ` + issueRoomOwn("a") + `))`,
 	}, {
 		Name: "query_version", MovedBy: movedWithBlocks, Tuples: 1,
-		Driver: "artifact_versions.created_at of a version of an issue's spec, Verification document or plan: the" +
+		Driver: "artifact_versions.created_at of a version of an issue's spec, Verification document or plan, and of" +
+			" a version of an issue's decisions query, each a query's drain writes after a write that moves its" +
+			" record, but the first of an issue created in the window, which issue_room counts: the" +
 			" definition_version a version written while its document is a query node holds, so a version of a" +
-			" document of an issue that has not converted is over-stated",
+			" document of an issue that has not converted, and one of a document a person named " +
+			decisionsQueryName + ", is over-stated",
 		count: `(select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id
-			where v.created_at > ` + sizingWindow + ` and ` + roleDocument("a") + `)`,
+			where v.created_at > ` + sizingWindow + ` and (` + roleDocument("a") + `
+			   or ` + decisionsQueryDocument("a") + ` and not (v.number = 1 and ` + issueRoomOwn("a") + `)))`,
 	}, {
 		Name: "version_bytes", MovedBy: movedWithBlocks, Tuples: 3,
 		Driver: "artifact_versions.created_at of an image's or a file's version: its document's mime, size and sha256 values",
 		count:  `(select count(*) from artifact_versions where created_at > ` + sizingWindow + ` and mime is not null)`,
 	}, {
 		Name: "document_part_of", MovedBy: movedWithBlocks, Tuples: 1,
-		Driver: "artifacts.created_at of an issue's document: its part_of its issue",
-		count:  `(select count(*) from artifacts where created_at > ` + sizingWindow + ` and issue_key is not null)`,
+		Driver: "artifacts.created_at of an issue's document, but the tree and the decisions query of an issue created" +
+			" in the window, which issue_room counts: its part_of its issue",
+		count: `(select count(*) from artifacts where created_at > ` + sizingWindow + ` and issue_key is not null
+			and not ` + issueRoomOwn("artifacts") + `)`,
 	}, {
 		Name: "version_removed", MovedBy: movedWithBlocks, Tuples: 1,
 		Driver: "artifact.removed events in the window: the node of the one version an untouched document holds, stated" +
@@ -417,7 +451,8 @@ func storeKinds() []StoreKind {
 		Driver: "issues.created_at, each issue born converted: its tree artifact's node and its decisions query's, each" +
 			" with its visibility, state and project and its part_of the issue, and the two documents' empty first" +
 			" versions, each a node with its visibility, state, project, part_of, number and created_at, the decisions" +
-			" query's with its definition_version",
+			" query's with its definition_version; the terms artifact, document_part_of, version and query_version" +
+			" leave those rows of an issue created in the window to it",
 		count: `(select count(*) from issues where created_at > ` + sizingWindow + `)`,
 	}, {
 		Name: "query_node", MovedBy: movedWithBlocks, Tuples: 4,
@@ -427,8 +462,9 @@ func storeKinds() []StoreKind {
 			+ (select count(*) from issues where created_at > ` + sizingWindow + `))`,
 	}, {
 		Name: "artifact", MovedBy: movedHere, Nodes: 1, Tuples: 3,
-		Driver: "artifacts.created_at: the artifact's node and its visibility, state and project or parties",
-		count:  `(select count(*) from artifacts where created_at > ` + sizingWindow + `)`,
+		Driver: "artifacts.created_at, but the tree and the decisions query of an issue created in the window, which" +
+			" issue_room counts: the artifact's node and its visibility, state and project or parties",
+		count: `(select count(*) from artifacts where created_at > ` + sizingWindow + ` and not ` + issueRoomOwn("artifacts") + `)`,
 	}, {
 		Name: "artifact_removed", MovedBy: movedHere, Tuples: 1,
 		Driver: "artifact.removed and " + model.DocumentRetiredEventType + " events in the window: the removed or retired" +
@@ -436,9 +472,27 @@ func storeKinds() []StoreKind {
 		count: `(select count(*) from events where type in ('artifact.removed', '` + model.DocumentRetiredEventType + `')
 			and created_at > ` + sizingWindow + `)`,
 	}, {
-		Name: "criterion", MovedBy: movedWithBlocks, Tuples: 1, Assumed: 5 * sizingWindowDays,
-		Driver: "assumed at 5 a day, since the block schema holds no criterion type before the blocks child ships and no" +
-			" row holds one: its authored_by, its node and placement being a block's, which the block terms count",
+		// Counted off refs' recordsAuthors and blockAuthors: a criterion records its authors as
+		// authored_by tuples anywhere it is written; a criterion in an issue's spec, Verification
+		// document or plan is already counted by block_author, so this counts one outside those
+		// role documents (document_block_texts rows whose opening line opens a criterion block).
+		Name: "criterion", MovedBy: movedWithBlocks, Tuples: 1,
+		Driver: "document_block_texts of the versions written in the window, a criterion block's first row outside an" +
+			" issue's spec, Verification document or plan (which block_author counts): one authored_by for each author" +
+			" the version that first holds it lists, its node, values and placement being a block's, which the block" +
+			" terms count",
+		count: `(select coalesce(sum(authors), 0) from sized_texts where written and earlier is null and criterion and not role)`,
+	}, {
+		// Counted off the block index's links (refs' pointerPairs, queueBlockRefs), whose rows of the
+		// kinds authoredPointerKinds names are an authored block's pointers, and off the values a
+		// pass states of a plan node (refs' planBlockValues), whose size the opening line of its
+		// text writes (refs.WrittenSizeSQL reads it there too).
+		Name: authoredPointers, MovedBy: movedWithBlocks, Tuples: 2,
+		Driver: "block_refs.created_at of each serves, needs and parent pointer an authored block writes, and" +
+			" document_block_texts of the versions written in the window, each row of a plan_task block whose opening line" +
+			" writes a size: the pointer's tuple or the size value in whole minutes, and at most the retraction that ends it",
+		count: `((select count(*) from block_refs where created_at > ` + sizingWindow + ` and kind in ` + authoredPointerKinds + `)
+			+ (select count(*) from sized_texts where sized))`,
 	}, {
 		// Counted off graphstore.ResultFacts, which the record route (api's writeRecordedResult) and
 		// the backfill (backfillResults) write a result through, for one a session recorded naming
@@ -490,10 +544,10 @@ func storeKinds() []StoreKind {
 		Driver: "ask.opened events in the window: the ask's node and its visibility, state and project or parties",
 		count:  `(select count(*) from sized_ask_events where type = 'ask.opened')`,
 	}, {
-		Name: "ask_opened", MovedBy: movedWithAsks, Tuples: 7,
+		Name: "ask_opened", MovedBy: movedWithAsks, Tuples: 8,
 		Driver: "ask.opened events in the window: the ask's answer_state, question and options values, its authored_by" +
 			" and, at most, its anchored_to and owned_by, and the part_of the document holding its block, which an ask" +
-			" block's anchored_to names too",
+			" block's anchored_to names too, and asked_on to the block itself",
 		count: `(select count(*) from sized_ask_events where type = 'ask.opened')`,
 	}, {
 		Name: "ask_edit", MovedBy: movedWithAsks, Tuples: 2,
@@ -566,27 +620,30 @@ func storeKinds() []StoreKind {
 			" block terms count",
 	}, {
 		// Counted off graphstore.InteractionFacts, which the going POST (api's recordGoingRequest), the
-		// frame path and the backfill (graphstore.WriteRun) and migration 20261116205055 write a run
-		// through: the words and ends_at values, and graphstore.AuthorFacts' authored_by with its
-		// author's aliases (an alias_of and a recorded_as at most); graphstore.Write's base attributes
-		// of the node it makes, the visibility, the state and the project where the run names one; and
-		// the changed_by_run a write made for the run appends out of a node it changed
-		// (store.WithRun).
-		Name: "interaction", MovedBy: movedWithLenses, Nodes: 1, Tuples: 9, Assumed: 10 * sizingWindowDays,
+		// frame path and the backfill (graphstore.WriteRun) write a run through, the backfill each run
+		// recorded before this release: the words, ends_at and source values, and
+		// graphstore.AuthorFacts' authored_by with its author's aliases (an alias_of and a recorded_as
+		// at most); graphstore.Write's base attributes of the node it makes, the visibility, the state
+		// and the project where the run names one; the changed_by_run a write made for the run appends
+		// out of a node it changed (store.WithRun); and the state the sweep states the run's node gone
+		// at, an hour after it was asked (api's goRunGone, through graphstore.WriteState).
+		Name: "interaction", MovedBy: movedWithLenses, Nodes: 1, Tuples: 11, Assumed: 10 * sizingWindowDays,
 		Driver: "assumed at 10 runs a day, since production writes no interaction before this release and" +
-			" the release before it deletes a run from going_requests an hour old (contracts.GoingRequestTTL), so no" +
-			" table of the database the sizing reads holds the window's runs: its node, its visibility and state, at" +
-			" most its project, its words and ends_at values, its authored_by, at most two aliases of its author and" +
-			" one changed_by_run into it",
+			" going_requests holds a run for an hour alone (contracts.GoingRequestTTL): the release before" +
+			" deletes it then, and this release's sweep states its node gone and removes its row, so no table" +
+			" of the database the sizing reads holds the window's runs: its node, its visibility and state, at" +
+			" most its project, its words, ends_at and source values, its authored_by, at most two aliases of" +
+			" its author, one changed_by_run into it and its state gone an hour on",
 	}, {
 		// Counted off graphstore.FrameTuple, the one value tuple the frame path (api's
 		// appendGoingEvent) and the backfill (graphstore.ReadRunFrames) write of each frame.
 		Name: "frame", MovedBy: movedWithLenses, Tuples: 1, Assumed: 500 * sizingWindowDays,
-		Driver: "assumed at 50 for each assumed run, 500 a day, since the release before this one" +
-			" deletes a run's going_events rows with its going_requests row: one frame value each",
+		Driver: "assumed at 50 for each assumed run, 500 a day, since a run's going_events rows go with its" +
+			" going_requests row an hour after it was asked: one frame value each",
 	}, {
-		// Counted off writeGoneRun, the one writer that states a run's node gone (backfillGoneRuns):
-		// the state value it moves.
+		// Counted off writeGoneRun, the backfill's writer that states gone a run's node whose row the
+		// release before deleted (backfillGoneRuns): the state value it moves. The sweep's state of a
+		// run's node gone (api's goRunGone) is counted under interaction.
 		Name: "interaction_gone", MovedBy: movedWithLenses, Tuples: 1, Assumed: 10 * sizingWindowDays,
 		Driver: "assumed at one for each assumed run, 10 a day, since the release before deletes every run an hour" +
 			" old (contracts.GoingRequestTTL) and no table holds the window's runs: the run's node stated gone once" +
@@ -623,7 +680,7 @@ func storeKinds() []StoreKind {
 			" project, its part_of its lens, its text value, its authored_by and at most two aliases of its author," +
 			" which over-states a finding written with its lens, whose write states those aliases once",
 	}, {
-		// Counted off the seed of migrations 20261116123354, ten kinds, and 20261116123355, twelve,
+		// Counted off the seed of migrations 20261123174710, ten kinds, and 20261123174720, twelve,
 		// which graphstore.AddLensKind writes the shape of: the lens_kind node's visibility, state and
 		// words values and its constrained_by, and its constraint node's visibility, state, standard
 		// and reference values, in no project and by no author.
@@ -658,6 +715,20 @@ func storeKinds() []StoreKind {
 		Name: "node_state", MovedBy: movedWithLenses, Tuples: 1, Assumed: 10 * sizingWindowDays,
 		Driver: "assumed at 10 a day, one for each assumed finding, since production writes no node state but live and" +
 			" gone before the lenses child ships: a node's proposed, settled or overtaken state value",
+	}, {
+		// Counted off api's deleteNode (R7's DELETE /api/v1/issues/{key}/nodes/{id}), which takes a
+		// lens, a finding, a risk or a constraint gone with what stands under it: each such node's
+		// state gone (deletePlan.goneNodes) and, as no other writer of those kinds does, the
+		// retraction of every relation out of it (deletePlan.retractions). A block of a document it
+		// takes leaves its document's text, which the version the delete writes of that document
+		// states gone, as the block terms count; the version a query's drain writes after it is the
+		// version terms'; and the anchored_in and the part_of of a comment whose node anchor it
+		// orphans are anchor_block's.
+		Name: "node_delete", MovedBy: movedHere, Tuples: 7, Assumed: 1 * sizingWindowDays,
+		Driver: "assumed at 1 a day, half the lenses the lens term assumes, since production writes no lens, finding," +
+			" risk or constraint before this release: a delete of a lens with one finding, each one's state gone and the" +
+			" retraction of every relation out of each - the lens's part_of, has_kind and authored_by, the finding's" +
+			" part_of and authored_by - which over-states a lens with no finding and under-states one with several",
 	}, {
 		// Counted off graphstore.Retarget, which the pointer route (api's writeReasoningPointer)
 		// moves a pointer through: the retraction of the far end it held and the assertion of the
@@ -769,12 +840,14 @@ func reachesANode(topic string) string {
 // sizingWritesWith is the sets of rows several terms count over, each read once for every term
 // that counts it: the comments written inside the window with the facts each one's write states
 // beside its node; the document_block_texts rows of the versions written inside it, each with
-// whether the block's row before it held a text (null for the block's first row) and, for a row
-// of an issue's spec, Verification document or plan (roleDocument), how many authors its version
-// lists; the messages written inside it, and each issue message's thread root, found up
-// in_reply_to as user_threads_message finds it; the thread of each comment, issue message and
-// answer written inside it, with its writer as user_threads_record names one; the ask events
-// inside it; the people a comment first names, the roles an event first addresses, the
+// whether the block's row before it held a text (null for the block's first row), how many authors
+// its version lists, whether its document is an issue's spec, Verification document or plan
+// (roleDocument), whether it is a criterion block's row, and whether it is a plan_task block's row
+// whose opening line writes a size, as the renderer writes one there (refs.WrittenSizeSQL); the
+// messages written inside it, and each issue message's thread root, found up in_reply_to as
+// user_threads_message finds it; the thread of each comment,
+// issue message and answer written inside it, with its writer as user_threads_record names one; the
+// ask events inside it; the people a comment first names, the roles an event first addresses, the
 // components an import inside it wrote, and the blocks of the change request each person's
 // approval inside it of an issue's spec or Verification document covers.
 //
@@ -826,7 +899,11 @@ func sizingWritesWith(rooms bool) string {
 		where c.created_at > ` + sizingWindow + `
 	),
 	sized_texts as (
-		select t.text is not null as written, earlier.held as earlier, coalesce(role.authors, 0) as authors
+		select t.text is not null as written, earlier.held as earlier,
+		       case when jsonb_typeof(v.authors) = 'array' then jsonb_array_length(v.authors) else 0 end as authors,
+		       exists (select 1 from artifacts d where d.id = v.artifact_id and ` + roleDocument("d") + `) as role,
+		       coalesce(split_part(t.text, chr(10), 1) ~ '^:{3,}criterion\{', false) as criterion,
+		       coalesce(split_part(t.text, chr(10), 1) ~ '^:{3,}plan_task\{.* ` + refs.AttributePlanSize + `="', false) as sized
 		from artifact_versions v
 		join document_block_texts t on ` + documentTexts("t", "v.artifact_id", rooms) + ` and t.version = v.number
 		left join lateral (
@@ -834,10 +911,6 @@ func sizingWritesWith(rooms bool) string {
 			where p.artifact_id = t.artifact_id and p.block_id = t.block_id and p.version < t.version
 			order by p.version desc limit 1
 		) earlier on true
-		left join lateral (
-			select jsonb_array_length(v.authors) as authors from artifacts d
-			where d.id = v.artifact_id and jsonb_typeof(v.authors) = 'array' and ` + roleDocument("d") + `
-		) role on true
 		where v.created_at > ` + sizingWindow + `
 	),
 	sized_messages as (
@@ -926,8 +999,8 @@ func sizingWritesWith(rooms bool) string {
 
 // readStoreKinds reads how many writes of each term the window holds: every term a statement
 // counts in one statement over sizingWritesWith, so each set of rows it names is read once, the
-// moved parents and their ranks by one replayParents, and an assumed term from the writes it is
-// assumed at.
+// moved parents, their ranks and their places in the text by one replayParents, and an assumed
+// term from the writes it is assumed at.
 func readStoreKinds(ctx context.Context, tx pgx.Tx) ([]StoreKind, error) {
 	kinds := storeKinds()
 	counts := make([]string, 0, len(kinds))
@@ -939,7 +1012,7 @@ func readStoreKinds(ctx context.Context, tx pgx.Tx) ([]StoreKind, error) {
 		counts = append(counts, kinds[index].count)
 		targets = append(targets, &kinds[index].Writes)
 	}
-	// The sizing reads a database before this branch's migrations as well, which holds no issue
+	// The sizing reads a database before the issue-tree migrations as well, which holds no issue
 	// room's table (documentTexts).
 	var rooms bool
 	if err := tx.QueryRow(ctx, `select to_regclass('issue_room_blocks') is not null`).Scan(&rooms); err != nil {
@@ -957,7 +1030,7 @@ func readStoreKinds(ctx context.Context, tx pgx.Tx) ([]StoreKind, error) {
 		switch {
 		case kind.Name == movedParents:
 			kind.Writes, kind.Replayed, kind.Unreadable = replayed.moved, replayed.read, replayed.unreadable
-		case kind.Name == movedRanks:
+		case kind.Name == movedRanks, kind.Name == movedTextPlaces:
 			kind.Writes = replayed.moved
 		case kind.Assumed > 0:
 			kind.Writes = kind.Assumed
@@ -975,6 +1048,38 @@ func readStoreKinds(ctx context.Context, tx pgx.Tx) ([]StoreKind, error) {
 func roleDocument(artifact string) string {
 	return `(` + artifact + `.issue_key is not null and (` + artifact + `.is_primary or ` + artifact + `.slug in ('spec', '` +
 		model.ArtifactSlugVerification + `', '` + model.ArtifactSlugPlan + `')))`
+}
+
+// decisionsQueryName is the name api's issue create gives an issue's decisions query document
+// (api's issueDecisionsName, docs' decisionsQueryName), whatever slug the document takes.
+const decisionsQueryName = "decisions"
+
+// decisionsQueryDocument is true of the artifacts row aliased artifact while it is taken to be an
+// issue's decisions query document. The rule is refs.DecisionsQuerySQL's - a document whose node is
+// a query node of query decisions and which no document_rooms row joins to a room - but that rule
+// reads graph_nodes and document_rooms, and the sizing reads neither: R4 takes its readings before
+// the branch's first migration, on a database that holds no store and no table this branch
+// creates (TestTheSizingRunsOnADatabaseWithNoStore). So it reads the document's name, which its
+// create gives it and no write moves, and a document of an issue a person named so is counted too.
+func decisionsQueryDocument(artifact string) string {
+	return `(` + artifact + `.issue_key is not null and ` + artifact + `.kind = 'doc' and ` + artifact + `.name = '` +
+		decisionsQueryName + `')`
+}
+
+// issueRoomOwn is true of the artifacts row aliased artifact while it is one of the two documents
+// an issue's create makes for the issue's room - its tree, the one artifact of kind tree, or its
+// decisions query (decisionsQueryDocument) - of an issue created inside the window. The term
+// issue_room counts each such issue's tree and decisions query by the issue's own created_at: the
+// two nodes with their visibility, state, project and part_of the issue, and their first versions.
+// So the terms artifact, document_part_of, version and query_version leave those rows to it, and
+// each of their tuples is counted by one term. A room an issue created before the window converts
+// into inside it is no issue created in the window, so issue_room counts none of it, and those
+// terms count it. It reads the artifact's kind and not issue_trees, which the sizing cannot read,
+// as decisionsQueryDocument says.
+func issueRoomOwn(artifact string) string {
+	return `((` + artifact + `.kind = 'tree' or ` + decisionsQueryDocument(artifact) + `)
+		and exists (select 1 from issues room_issue where room_issue.key = ` + artifact + `.issue_key
+		            and room_issue.created_at > ` + sizingWindow + `))`
 }
 
 // specDocument is true of the artifacts row aliased artifact while it is an issue's spec as api's

@@ -90,9 +90,10 @@ func TestEventPayloadsAreServedAsStoredForEveryEventKind(t *testing.T) {
 		"ask.opened", "ask.anchor_refreshed", "ask.answered", "ask.resolved", "ask.edited", "ask.handed_back", "ask.asked_of",
 		"ask.follower_added", "ask.follower_removed",
 		"comment.created", "comment.delivery", "comment.answered", "comment.resolved", "comment.reopened",
-		"comment.edited", "comment.anchor_refreshed", "suggestion.accepted", "suggestion.rejected",
+		"comment.edited", "comment.deleted", "comment.anchor_refreshed", "suggestion.accepted", "suggestion.rejected",
 		"subscription.remove_requested", "subscription.removed",
-		"message.created", "message.answered", "message.delivery", "message.accepted", "handoff.recorded",
+		"message.created", "message.answered", "message.edited", "message.deleted", "message.delivery",
+		"message.accepted", "handoff.recorded", "role.undelivered",
 		"block.repaired", "block.invalid", "result.recorded", "result.retracted",
 		"project.created", "project.updated", "settings.repo_project.updated", "settings.architecture_source.updated",
 		"settings.project_default_assignee.updated",
@@ -199,7 +200,7 @@ func TestEventPayloadsAreServedAsStoredForEveryEventKind(t *testing.T) {
 		if read == len(stored)+20 {
 			t.Fatalf("the event feed's replay held %d of %d inserted events after %d frames", len(frames), len(stored), read)
 		}
-		frame := client.event(t, eventFeedWait, "events")
+		frame := client.event(t, "events")
 		var event servedEvent
 		if err := json.Unmarshal(frame.Event, &event); err != nil {
 			t.Fatalf("decode event frame %+v: %v", frame, err)
@@ -381,7 +382,7 @@ func TestIssueEventsNameTheBlockersTheyMove(t *testing.T) {
 		return newestEventPayload[issueEventFields](t, database, "issue.updated", dependent.Key)
 	}
 	// An issue's waits are one relation the issue read answers under both spellings, blocked_by
-	// and needs (model.Issue.Needs, this branch's plan), so a PATCH of either moves both fields,
+	// and needs (model.Issue.Needs, R10 of the issue-tree spec), so a PATCH of either moves both fields,
 	// and changed names each field whose value differs: both, and no other.
 	if updated := patch(map[string]any{"blocked_by": []string{kept.Key, added.Key}}); !slices.Equal(updated.Changed, []string{"blocked_by", "needs"}) {
 		t.Fatalf("a blocked_by-only PATCH's changed = %v, want [blocked_by needs]", updated.Changed)

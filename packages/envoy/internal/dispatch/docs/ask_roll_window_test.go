@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,8 @@ import (
 // not this build's own version: a later build at the next schema version, which still holds this
 // guard, reads a process of this release beside it as one build, and a base process as two.
 func TestTheFleetGuardReadsAnotherBuildByTheSchemaVersionTheProcessesRegister(t *testing.T) {
+	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
+	// (pmdoc.UseStagedBlockForTest, in its subtests of a build at the next schema version).
 	database := storetest.Open(t)
 	ctx := context.Background()
 	// version nil is a row that registers no schema number, which holds the column's default.
@@ -106,6 +109,7 @@ func TestTheFleetGuardReadsAnotherBuildByTheSchemaVersionTheProcessesRegister(t 
 // which stays within the cap. Weighed beside early's, late's words gave the room to early's, and
 // the document lost words it already held.
 func TestSettlementWithholdsOnlyTheAnswerWordsItsRepairsWrite(t *testing.T) {
+	t.Parallel()
 	const blocks = ":::ask{#early urgency=\"med\" multiple=\"false\"}\nShip it?\n:::\n\n" +
 		":::ask{#late urgency=\"med\" multiple=\"false\"}\nShip what?\n:::\n"
 	answered := func(id, login, words string) model.Ask {
@@ -178,5 +182,112 @@ func TestSettlementWithholdsOnlyTheAnswerWordsItsRepairsWrite(t *testing.T) {
 		if len(rendered) > pmdoc.MaxDocumentBytes {
 			t.Errorf("%s is %d bytes, past the %d one upload may hold", name, len(rendered), pmdoc.MaxDocumentBytes)
 		}
+	}
+}
+
+// The window before the decisions step's catch-up, on a fleet of one build. A process of the
+// release before answered the ask ship, which writes its row alone and settles its block with the
+// answer's state, answerer, time, options and words, and then left the fleet; the decisions step
+// has not yet stated the answer on the ask's node. The ask is one that release made, whose row
+// names no node and whose answer no tuple states; one this build opened, whose node holds no
+// answer state; one the step's backfill stated open on its node at this build's boot; or one this
+// build answered, whose answer that release then changed - the ask stays answered, with another
+// answerer and time in its row, and its node holds the answer it changed. A change of the
+// document's prose settles into a version whose opener of ship keeps the state, the answerer and
+// the time of the row, which that release's CLI and pages read off the version (R5), and neither
+// the options nor the words; and the write states nothing on the node, which only the catch-up
+// brings up to the row (R3).
+func TestAVersionWrittenBeforeTheCatchUpKeepsTheAnswerTheReleaseBeforeWroteIntoTheRow(t *testing.T) {
+	t.Parallel()
+	words := "Ship it on Monday."
+	answer := model.AskAnswer{User: "bob", Selected: []string{"Yes"}, Text: &words, At: time.Date(2026, 11, 20, 9, 0, 0, 123456000, time.UTC)}
+	changed := model.AskAnswer{User: "alice", Selected: []string{"No"}, At: time.Date(2026, 11, 20, 8, 30, 0, 0, time.UTC)}
+	for name, test := range map[string]struct {
+		behind func(t *testing.T, service *Service, askID string)
+		// node is the answer the ask's node holds as the window left it, nil for none, which the
+		// write leaves as it is.
+		node *model.AskAnswer
+	}{
+		"the release before made it: its row names no node and no tuple states its answer": {behind: func(t *testing.T, service *Service, askID string) {
+			ctx := context.Background()
+			if _, err := service.store.Pool.Exec(ctx, `update asks set node_kind = null, node_address = null where id = $1`, askID); err != nil {
+				t.Fatalf("leave the ask's row naming no node: %v", err)
+			}
+			if _, err := service.store.Pool.Exec(ctx, `delete from graph_tuples where from_kind = 'ask' and from_id = $1 and kind = any($2)`, askID, asks.AnswerKinds()); err != nil {
+				t.Fatalf("take the answer's tuples off the ask's node: %v", err)
+			}
+		}},
+		"this build opened it: its node holds no answer state": {behind: func(*testing.T, *Service, string) {}},
+		"the backfill stated it open on its node": {behind: func(t *testing.T, service *Service, askID string) {
+			change := asks.Recorded(asks.StateOpen, nil, nil)
+			change.Who, change.At = model.Actor{Kind: "user", ID: "seed"}, time.Date(2026, 11, 20, 8, 0, 0, 0, time.UTC)
+			settleAskOnItsNode(t, service, askID, change)
+		}},
+		"this build answered it, and the release before changed the answer in its row alone": {behind: func(t *testing.T, service *Service, askID string) {
+			answerAskOnItsNode(t, service, askID, changed)
+		}, node: &changed},
+	} {
+		t.Run(name, func(t *testing.T) {
+			service, artifactID := newTestService(t)
+			service.settle = time.Hour
+			ctx := context.Background()
+			seedServiceText(t, service, artifactID, "Context\n\n"+shipBlock)
+			settleCurrentGeneration(t, service, artifactID)
+			ask := blockAskOn(t, service, artifactID, "ship")
+			test.behind(t, service, ask.ID)
+
+			stored, err := json.Marshal(answer)
+			if err != nil {
+				t.Fatalf("encode the row's answer: %v", err)
+			}
+			if _, err := service.store.Pool.Exec(ctx, `update asks set state = 'answered', answer = $2 where id = $1`, ask.ID, stored); err != nil {
+				t.Fatalf("answer the ask's row alone, as the release before writes it: %v", err)
+			}
+			answered := ask
+			answered.State, answered.Answer = asks.StateAnswered, &answer
+			// The release before's settlement of its answer, onto the live block; then the change of
+			// prose, this build's first write of the document on a fleet of one build.
+			editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
+				if !rollWindowAskAttributes(true, answered, "")(firstAsk(tree)) {
+					t.Fatal("the release before's settlement wrote nothing onto the block")
+				}
+				return tree
+			})
+			editLiveTree(t, service, artifactID, replaceRun("Context", "Context, revisited"))
+			settleCurrentGeneration(t, service, artifactID)
+
+			markdown := latestVersionMarkdown(t, service, artifactID)
+			tree, err := pmdoc.ParseRendering(markdown)
+			if err != nil {
+				t.Fatalf("parse the latest version: %v\n%s", err, markdown)
+			}
+			if !strings.Contains(markdown, "Context, revisited") {
+				t.Fatalf("the latest version does not hold the change of prose:\n%s", markdown)
+			}
+			ship, _ := askNodes(tree)
+			want := pmdoc.Attrs{"state": asks.StateAnswered, "answered_by": "bob", "answered_at": asks.AnsweredAtValue(answer.At)}
+			for _, name := range storedAskAttributes() {
+				if got, held := ship["ship"].Attrs[name]; got != want[name] || held != (want[name] != nil) {
+					t.Errorf("the latest version's opener of ship holds %s=%v (held %t), want %v, the row's:\n%s", name, got, held, want[name], markdown)
+				}
+			}
+
+			tx, err := service.store.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the node's read: %v", err)
+			}
+			defer tx.Rollback(ctx)
+			nodes, err := askNodeAnswers(ctx, tx, []string{ask.ID})
+			if err != nil {
+				t.Fatalf("read the ask's node: %v", err)
+			}
+			switch held, want := nodes[ask.ID], test.node; {
+			case want == nil && held.State == asks.StateAnswered:
+				t.Errorf("the ask's node holds it answered by %q after the write, want it as the window left it, for the catch-up to state", held.AnsweredBy)
+			case want != nil && (held.State != asks.StateAnswered || held.AnsweredBy != want.User || held.AnsweredAt == nil || !held.AnsweredAt.Equal(want.At)):
+				t.Errorf("the ask's node holds it %s by %q at %v after the write, want it as the window left it, answered by %q at %s, for the catch-up to state",
+					held.State, held.AnsweredBy, held.AnsweredAt, want.User, want.At)
+			}
+		})
 	}
 }

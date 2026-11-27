@@ -159,6 +159,11 @@ func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root recor
 			return err
 		}
 	}
+	// A held worker that stopped as its hold says is up between turns with no task, so the work
+	// goes with the hold, by the rule of every start (holdSentWorker).
+	if err := e.holdSentWorker(ctx, tx, issue, fact.Role); err != nil {
+		return err
+	}
 	found := workerSilentRecord(issue, fact.Role, fact.LastStep, now.Sub(fact.LastStep), workerSilentDid(behind, row.Entry, given))
 	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: workerSilentNotice, Role: fact.Role, Phase: issue.Phase, Reason: found}); err != nil {
 		return err
@@ -170,7 +175,7 @@ func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root recor
 
 // workerSilentDid is what the notice says the daemon did: which work the start row sends, read
 // from the entry the phases row names (entry) and the one the claim was last given (given). It
-// names the start row and not a prompt: a suspension held over the claim refuses the start when
+// names the start row and not a prompt: a suspension held over the agent refuses the start when
 // the outbox runs it (supervise's RuleHolds), which no record this handler reads shows.
 func workerSilentDid(behind bool, entry, given int64) string {
 	var did string
@@ -182,7 +187,7 @@ func workerSilentDid(behind bool, entry, given int64) string {
 	default:
 		did = "the daemon wrote the start row that sends the phase's task again"
 	}
-	return did + ". A suspension an operator holds over the claim refuses that start when the outbox runs it"
+	return did + ". A suspension the operator or the controller holds over the agent refuses that start when the outbox runs it"
 }
 
 // workerSilentRecord is the notice's and the log line's text: what the daemon read, then did,

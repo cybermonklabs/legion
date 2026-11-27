@@ -142,7 +142,7 @@ func answerTransition(actor model.Actor, selected []string, text *string, option
 			// ask's node, held for the ask.answered event closeAskTx queues, then the row.
 			change := asks.Answered(answer)
 			change.Who, change.At, change.Held = actor, answer.At, held
-			settled, err := ledger.PlanSettle(ctx, ask.ID, change)
+			settled, err := ledger.PlanSettle(ctx, ask, change)
 			if err != nil {
 				return model.Ask{}, err
 			}
@@ -260,7 +260,11 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 			}
 			// The answer is held on the ask's node alone. While a process of the release before
 			// serves, whose page reads it from the block, the block is kept in step with it.
+			// kept for one release: roll-window-attributes
+			// kept for one release: stored-ask-state
 			ask.State, ask.Answer = asks.StateAnswered, &answer
+			// kept for one release: roll-window-attributes
+			// kept for one release: stored-ask-state
 			return s.deps.Docs.KeepAskBlockInStep(ctx, ask, actor)
 		},
 	})
@@ -272,8 +276,18 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 	// takes first and which the transaction holds until Commit writes the queued answer, so the
 	// kind checked is the kind answered; the refusal is the gate's own (missingScopeError), which
 	// writeHandlerError gives the challenge header.
+	//
+	// An approve-only token (model.Credential.ApproveOnly) reaches this route because the approve
+	// list names it for the answer of an approval request, and for nothing else: an answer of any
+	// other ask, a question's free text among them, is no approval, so it is refused here, under
+	// the same lock and for the same reason, with the approve-only gate's own code.
+	approveOnly := approveOnlyRequest(r)
 	recordAnswer := transition.Apply
 	transition.Apply = func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask, held *graphstore.Uncaused) (model.Ask, error) {
+		if ask.Kind != "approval" && approveOnly {
+			return model.Ask{}, errorf(http.StatusForbidden, contracts.DispatchApproveOnlyToken,
+				"this request's credential is an approve-only token, which answers an approval request and no other ask, and this ask is a %s: nothing was recorded", ask.Kind)
+		}
 		if ask.Kind == "approval" && !actor.Act.Holds(model.ScopeApprove) {
 			return model.Ask{}, missingScopeError(model.ScopeApprove,
 				"this request's credential does not hold the approve scope, which answering an approval request requires")
@@ -368,9 +382,16 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 			"reason may not begin with "+strconv.Quote(docs.SettlementRetractionReason)+", which marks a retraction the document's settlement wrote")
 		return
 	}
+	// Read before closeAsk opens its transaction (specWriterOf), for the check in Apply.
+	writer := s.specWriterOf(r, actor)
 	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, askTransition{
 		EventType: "ask.resolved",
 		Apply: func(ctx context.Context, tx pgx.Tx, _ *docs.Ledger, ask model.Ask, held *graphstore.Uncaused) (model.Ask, error) {
+			// The check of who writes an issue's spec or Verification document, on the block's
+			// document and each copy of the ask, before the first document call.
+			if err := s.refuseSpecWriterOfAsk(ctx, tx, writer, ask); err != nil {
+				return model.Ask{}, err
+			}
 			if err := s.writeClosedBlockState(ctx, ask, actor); err != nil {
 				return model.Ask{}, err
 			}
@@ -398,7 +419,11 @@ func (s *server) writeClosedBlockState(ctx context.Context, ask model.Ask, actor
 	if err := s.deps.Docs.SettleCopiesOf(ctx, ask); err != nil {
 		return err
 	}
+	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	ask.State = asks.StateResolved
+	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	return s.deps.Docs.KeepAskBlockInStep(ctx, ask, actor)
 }
 
@@ -510,15 +535,16 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
-	// A transition writes no question text, so it reconciles none of the ask's own references.
-	// An answer is a part of the ask, though, so both transitions index the parts here, where
-	// the row write they queued comes before the index: a resolution adds no part, but its
-	// indexing still takes the ask's state row, reconciles the links its parts hold and clears
-	// owed_at, and writes every part of an ask an older build left owed. The answer a transition
-	// wrote is queued before the event, so the ask's Replies rows are read by the event's insert,
-	// after it.
+	// A transition writes no question text, but it holds the ask's parts alone: an answer is a
+	// part of the ask, so both transitions index the parts here, where the row write they queued
+	// comes before the index, and the parts' step reconciles the question's references after them
+	// and settles the ask's row of the forms queue there (questionReconciled false): a resolution
+	// adds no part, but its indexing still takes the ask's state row, reconciles the links its
+	// parts hold and clears owed_at, and writes every part of an ask an older build left owed. The
+	// answer a transition wrote is queued before the event, so the ask's Replies rows are read by
+	// the event's insert, after it.
 	at := refs.AskPartsAt(ask)
-	changes, err := s.queueAskParts(ctx, ledger, ask, nil, at, model.ReferenceChanges{})
+	changes, err := s.queueAskParts(ctx, ledger, ask, nil, at, false, model.ReferenceChanges{})
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
@@ -539,6 +565,7 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 	// What the transition stated on the ask's node learns the event the step before appended.
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(held))
 		return nil
 	}); err != nil {
 		return model.Ask{}, nil, err

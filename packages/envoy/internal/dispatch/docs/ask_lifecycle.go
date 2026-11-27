@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -30,6 +29,9 @@ type BlockRef struct {
 // reopens, which marks its document owed (MarkReopenOwedAskDocuments), a settlement indexes it
 // as a new open ask. WriteIssueAskStates and RebuildDocument each log the blocks they mark
 // themselves, so every caller sees them logged once, whatever it does with them.
+// Only a write while another build serves marks a block (readIssueAskStateWrites).
+//
+// kept for one release: roll-window-attributes
 func logUnindexedAskBlocks(issueKey string, blocks []BlockRef) {
 	for _, block := range blocks {
 		slog.Warn("dispatch: mark resolved an ask block no settlement indexed before its issue closed",
@@ -46,17 +48,20 @@ var errSettleJoined = errors.New("docs: an issue's documents settle outside ever
 // a room: an issue room holds its tree's own fragment and one of each role document its
 // document_rooms rows name, and every other document of an issue, of an issue with no issue room
 // (no issue_trees row) and of a converted one alike, is its own room and holds that room's own
-// fragment (R5 of this branch's spec, version 112). The decisions query node of an issue born
+// fragment (R5 of the issue-tree spec, version 112). The decisions query node of an issue born
 // converted, a doc row with no fragment and no document_rooms row (refs.DecisionsQuerySQL, D6 of
-// this branch's plan), holds none.
+// the issue-tree plan), holds none.
 func holdsFragmentSQL(alias string) string {
 	return `(` + alias + `.kind = 'tree' or ` + alias + `.kind = 'doc' and not ` + refs.DecisionsQuerySQL(alias) + `)`
 }
 
 // issueDocumentIDs lists the documents of the issue $1 that hold a fragment (holdsFragmentSQL), the
-// tree of an issue room among them, in id order: the order WriteIssueAskStates writes them in, each
-// in its own fragment.
-var issueDocumentIDs = `select a.id::text from artifacts a where a.issue_key = $1 and ` + holdsFragmentSQL("a") + ` order by a.id`
+// tree of an issue room among them, and that are not retired, in id order: the order
+// WriteIssueAskStates writes them in, each in its own fragment. Leaving a retired document out of
+// the list is the cheap first pick, not the read that decides: WriteIssueAskStates reads each
+// document's retirement again under its owner's lock before it writes into it
+// (retiredUnderOwnerLock).
+var issueDocumentIDs = `select a.id::text from artifacts a where a.issue_key = $1 and ` + holdsFragmentSQL("a") + ` and a.retired_at is null order by a.id`
 
 // issueRoomIDs lists the rooms the documents of the issue $1 are edited in (refs.DocumentRoomSQL),
 // each once, in id order: the order SettleIssueDocuments settles them in, an issue room's
@@ -97,10 +102,12 @@ func isLifecycleWrite(ctx context.Context) bool {
 // written from the ask's node as this transaction's commit leaves it (readIssueAskStateWrites), so
 // the settlement this write leaves owed writes a version showing it. So asks carry the state the
 // caller wants shown: resolved for an issue's close, open for its reopen, and on a fleet of one
-// build too each writes one version (R3), whose only change is those attributes: the close's
-// comes from a settlement on the closed issue, which moves no approval request and carries no
-// approval (versionWrite.closedIssue), so a standing approval reads stale until the reopen; the
-// reopen's settlement carries it by R10's case. Every other block is
+// build too each writes one version (R3). When the close or the reopen is that version's whole
+// change (changesAskAttributesAlone: text a person was editing in the browser can settle into the
+// same version), the version changes only those attributes: the close's comes from a settlement on
+// the closed issue, which moves no approval request and carries no approval
+// (versionWrite.closedIssue), so a standing approval reads stale until the reopen; the reopen's
+// settlement carries it by R5's case. Every other block is
 // left as it is - the blocks of other asks, their copies, a block under one of asks' block ids
 // that asks something else - and so is a block settlement could not read. Classification reads
 // the database as it stands now: the caller writes the asks' rows after this for a close, and
@@ -115,6 +122,12 @@ func isLifecycleWrite(ctx context.Context) bool {
 // rebuild writes the close's states into the document it seeds (RebuildDocument), so the blocks
 // this left as they were do not come back open on the closed issue. Every other error, a failed or
 // rebuilding room's ErrServiceUnavailable and the database's included, is returned.
+//
+// A retired document (RetireDocument), which takes no new text, is written nothing, and nothing is
+// refused for it: the other documents are written, so a close or a reopen is never refused for a
+// document the decisions step retired. The list leaves retired documents out (issueDocumentIDs),
+// and each document's retirement is read again under its owner's lock before it is written
+// (retiredUnderOwnerLock), so a retirement that commits after the list is read is read there too.
 //
 // An answered ask, which the close's final sweep passes, is written into its copies alone, never
 // into its own block, which settlement keeps in step with its row. While another build serves,
@@ -163,6 +176,7 @@ func (s *Service) WriteIssueAskStates(ctx context.Context, issueKey string, asks
 		return nil, nil
 	}
 	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	twoBuilds, err := anotherBuildServes(ctx, tx)
 	if err != nil {
 		return nil, err
@@ -183,12 +197,20 @@ func (s *Service) WriteIssueAskStates(ctx context.Context, issueKey string, asks
 	owner := artifactOwner{IssueKey: &issueKey}
 	var unindexed []BlockRef
 	for _, document := range documents {
+		retired, err := retiredUnderOwnerLock(ctx, tx, document)
+		if err != nil {
+			return nil, fmt.Errorf("read whether document %s is retired: %w", document, err)
+		}
+		if retired {
+			continue
+		}
 		marked, err := s.writeDocumentAskStates(ctx, tx, document, owner, given, actor, markUnindexed, twoBuilds)
 		if err != nil {
 			return nil, fmt.Errorf("write the ask states of document %s: %w", document, err)
 		}
 		unindexed = append(unindexed, marked...)
 	}
+	// kept for one release: roll-window-attributes
 	logUnindexedAskBlocks(issueKey, unindexed)
 	return unindexed, nil
 }
@@ -242,6 +264,7 @@ func (s *Service) writeDocumentAskStates(
 	if writes == nil {
 		return nil, nil
 	}
+	// kept for one release: roll-window-attributes
 	return writes.marked, nil
 }
 
@@ -346,55 +369,29 @@ func (s *Service) MarkReopenOwedAskDocuments(ctx context.Context, issueKey strin
 	return markSettlementPending(ctx, tx, documents, nil, false, true, nil, false)
 }
 
-// ClosedIssueVersion is the latest version of one document of an issue that the issue's reopen
-// follows (ClosedIssueVersions): the version that the open approval request naming the document
-// moves to, and the version that an approval is carried to, in mover's name.
-type ClosedIssueVersion struct {
-	artifactID string
-	version    model.Version
-	markdown   string
-	mover      model.Actor
-}
-
-// FollowedDocuments is documents, the documents an open approval request names, as the reopen's
-// follow of versions leaves them (FollowClosedIssueVersions): each document that versions holds
-// at its version there. The reopen judges a request it restores at these versions, the ones the
-// request names once the reopen has ended.
-func FollowedDocuments(documents []model.AskApprovalDocument, versions []ClosedIssueVersion) []model.AskApprovalDocument {
-	followed := slices.Clone(documents)
-	for index := range followed {
-		for _, version := range versions {
-			if version.artifactID == followed[index].ArtifactID {
-				followed[index].Version = version.version.Number
-			}
-		}
-	}
-	return followed
-}
-
-// ClosedIssueVersions is, at the reopen of issueKey, each document of the issue, in id order, that
-// FollowClosedIssueVersions follows, at its latest version: what writeVersionTx skips for a version
-// that a settlement of a closed issue's document writes (versionWrite.closedIssue). Before a
-// closed issue's document settled, the first settlement after the reopen wrote that text, moved
-// the request and carried the approval. Without the follow a restored request names the version
-// from before the close, so a person's approval from it reviews that version and reads stale, and
-// an approved text that a settlement wrote back while the issue was closed stays without its
-// approval. The reopen reads them once it has queued the ask blocks it restores and the mark of
-// the documents they leave owed, and before it restores an approval request, which it judges at
-// the versions that the follow leaves it (FollowedDocuments).
+// FollowClosedIssueVersions does, at the reopen of issueKey, what writeVersionTx skips for a
+// version that a settlement of a closed issue's document writes (versionWrite.closedIssue): for
+// each document of the issue, in id order, it moves the open approval request that names the
+// document to the document's latest version (MoveApprovalAsk), and then carries an approval to
+// that version (carryToLatest), as the version's own write does on an open issue. Before
+// a closed issue's document settled, the first settlement after the reopen wrote that text and
+// did both. Without them a restored request names the version from before the close, so a
+// person's approval from it reviews that version and reads stale, and an approved text that a
+// settlement wrote back while the issue was closed stays without its approval. The issue's reopen
+// calls it once it has queued the restore of the asks the close withdrew and their ask.opened
+// events, so each restored request reads open again (openApprovalAsk), and a request's move and
+// the carry's answer are queued after its ask.opened.
 //
 // A document whose updates are ahead of its latest version, stored or queued by this transaction
-// (contentChangedSinceVersion), is left out, for the settlement it owes. That settlement's version
-// moves the open request with no judgment, as each version write moves an open request: the
-// request then waits on its agent, unless the version holds the text that Dispatch judged, and the
-// approval of a version that breaks the form is refused. The reopen's own ask-state write is such
-// an update, and that settlement's version holds the text the reopen leaves, which its own write
-// compares with the version the request names and with the approved text. A reopen that writes
-// back the text the person was asked about then keeps the request with the person, which a move
-// to the closed issue's version, whose blocks show the close's resolved states, would not. Where
-// that settlement's version lists no author, it adds none of the kept editor's text and names
-// SettlementActor, but its move of a request that names a version from before the close spans the
-// closed issue's versions and names the kept editor, as this move does (versionWrite.keptEditor).
+// (contentChangedSinceVersion), is left to the settlement it owes. The reopen's own ask-state
+// write is such an update, and that settlement's version holds the text the reopen leaves, which
+// its own write compares with the version the request names and with the approved text. A reopen
+// that writes back the text the person was asked about then keeps the request with the person,
+// which a move to the closed issue's version, whose blocks show the close's resolved states, would
+// not. Where that settlement's version lists no author, it adds none of the kept editor's text and
+// names SettlementActor, but its move of a request that names a version from before the close
+// spans the closed issue's versions and names the kept editor, as this move does
+// (versionWrite.keptEditor).
 //
 // The one case this leaves stale is a document whose stored updates past its latest version render
 // that version again. Its settlement writes no version, since a settlement versions only a
@@ -407,86 +404,31 @@ func FollowedDocuments(documents []model.AskApprovalDocument, versions []ClosedI
 // that version, of a document whose history cannot load. The close's sweep and the ask repair
 // write nothing into a document whose blocks already show the states they write.
 //
-// Each version names its mover: the editor that a settlement while the issue was closed credited
-// and kept for the document (doc_closed_edit_sources, clearSettlementPending), since the edit that
-// moves the request is that editor's, saved in that settlement's version, not the reopener's act,
-// and the version's own write on an open issue names its editor so. Before a closed issue's
-// document settled, the first settlement after the reopen named the same editor, read off the
-// pending row that stood through the closed period, so a move that hands the request to its agent
-// wakes the route and the claimant as it did then. A document with no kept source, whose closed
-// issue's settlements named no editor, is moved in the name of SettlementActor, the actor of a
-// settlement that cannot name the editor: such an ask.edited wakes nobody itself
-// (events.Broker.Notify), the reopen's own ask.opened in the reopener's name does, and it reaches
-// the request's followers as every ask.edited does that is not quiet.
-//
-// Whether a document's stored updates are ahead of its latest version is read on the room it is
-// edited in, whose head a version records (doc_update_version), as SnapshotVersion reads it.
-//
-// It runs in the transaction ctx joined (errUnjoined otherwise), in the reopen's read phase, and
-// its caller holds the issue's owner lock, as a settlement of each of the issue's documents holds
-// it, so no settlement writes a version, or a kept source, between this read and the follow. It
-// writes nothing.
-func (s *Service) ClosedIssueVersions(ctx context.Context, issueKey string) ([]ClosedIssueVersion, error) {
-	tx, joined := txFromContext(ctx)
-	if !joined {
-		return nil, errUnjoined
-	}
-	rows, err := tx.Query(ctx, issueDocumentEditSources, issueKey)
-	if err != nil {
-		return nil, fmt.Errorf("list the issue's documents: %w", err)
-	}
-	documents, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (closedEditSource, error) {
-		var document closedEditSource
-		err := row.Scan(&document.artifactID, &document.lastActor)
-		return document, err
-	})
-	if err != nil {
-		return nil, fmt.Errorf("list the issue's documents: %w", err)
-	}
-	var versions []ClosedIssueVersion
-	for _, document := range documents {
-		mover := SettlementActor
-		if document.lastActor != nil {
-			if err := json.Unmarshal(document.lastActor, &mover); err != nil {
-				return nil, fmt.Errorf("decode the closed edit source of document %s: %w", document.artifactID, err)
-			}
-		}
-		latest, err := latestVersion(ctx, tx, document.artifactID)
-		if err != nil {
-			return nil, fmt.Errorf("read the latest version of document %s: %w", document.artifactID, err)
-		}
-		room, err := roomOf(ctx, tx, document.artifactID)
-		if err != nil {
-			return nil, fmt.Errorf("read the room of document %s: %w", document.artifactID, err)
-		}
-		owed, err := contentChangedSinceVersion(ctx, tx, room, latest.docUpdateVersion)
-		if err != nil {
-			return nil, fmt.Errorf("read the updates of document %s after its latest version: %w", document.artifactID, err)
-		}
-		if !owed {
-			versions = append(versions, ClosedIssueVersion{artifactID: document.artifactID, version: latest.Version, markdown: latest.markdown, mover: mover})
-		}
-	}
-	return versions, nil
-}
-
-// FollowClosedIssueVersions does, at the reopen of issueKey, for each of versions
-// (ClosedIssueVersions), what the version's own write does on an open issue: it moves the open
-// approval request that names the document to that version (MoveApprovalAsk), in the version's
-// mover's name, and then carries an approval to that version (carryStandingApproval). The issue's
-// reopen calls it once it has queued the restore of the asks the close withdrew and their
-// ask.opened events, so each restored request reads open again (openApprovalAsk), and a request's
-// move and the carry's answer are queued after its ask.opened. A request that the reopen left
-// resolved is no open request, so nothing moves it. The carry's events are in the approver's name,
-// as every carry's are.
+// A retired document (RetireDocument), which takes no new text, is followed in nothing: no request
+// is moved onto its latest version and no approval is carried to it, and the issue's other
+// documents are followed. Its retirement is read under its owner's lock (retiredUnderOwnerLock),
+// whatever the list read.
 //
 // Nothing is moved or carried twice. MoveApprovalAsk moves nothing when the request already names
-// the version, as it does after every version written while the request was open, whose own write
-// moved it. The carry runs only while the newest review approves a version before the latest one:
-// a version whose own write carried an approval, or that this carried at an earlier reopen, is
-// already approved. A version whose own write ran the carry and carried nothing is refused again,
-// since the rule reads its stored text and the rows as they stand. So the ask repair's restore
-// after a reopen, and a later reopen, change nothing more.
+// the latest version, as it does after every version written while the request was open, whose
+// own write moved it. The carry runs only while the newest review approves a version before the
+// latest one: a version whose own write carried an approval, or that this carried at an earlier
+// reopen, is already approved. A version whose own write ran the carry and carried nothing is
+// refused again, since the rule reads its stored text and the rows as they stand. So the ask
+// repair's restore after a reopen, and a later reopen, change nothing more.
+//
+// The move names the editor that a settlement while the issue was closed credited and kept for the
+// document (doc_closed_edit_sources, clearSettlementPending): the edit that moves the request is
+// that editor's, saved in that settlement's version, not the reopener's act, and the version's
+// own write on an open issue names its editor so. Before a closed issue's document settled, the
+// first settlement after the reopen named the same editor, read off the pending row that stood
+// through the closed period, so a move that hands the request to its agent wakes the route and
+// the claimant as it did then. A document with no kept source, whose closed issue's settlements
+// named no editor, is moved in the name of SettlementActor, the actor of a settlement that cannot
+// name the editor: such an ask.edited wakes nobody itself (events.Broker.Notify), the reopen's own
+// ask.opened in the reopener's name does, and it reaches the request's followers as every
+// ask.edited does that is not quiet. The carry's events are in the approver's name, as every
+// carry's are.
 //
 // Once every document is followed, it deletes the kept source of each document of the issue that
 // owes no settlement: no settlement left owed by the reopen names it, and a row a later write
@@ -495,21 +437,47 @@ func (s *Service) ClosedIssueVersions(ctx context.Context, issueKey string) ([]C
 // delete is queued after every write the reopen queued before it, so it reads the pending rows
 // those writes leave, the reopen's mark among them.
 //
-// It runs in the transaction ctx joined (errUnjoined otherwise), the one that read versions, and
-// its caller holds the issue's owner lock. Every read and the document work - the requests, each
-// carry's parse and rules - run where it is called, the reopen's read phase, and every write is
-// queued for the write phase, in the order made: the move and the carry write asks rows, reviews
-// and events, and the cleanup deletes kept sources alone. It takes no copy lock and writes no
-// pending row. The events it appends reach ctx's ledger (eventSink), which publishes them once
-// the transaction commits.
-func (s *Service) FollowClosedIssueVersions(ctx context.Context, issueKey string, versions []ClosedIssueVersion) error {
+// It runs in the transaction ctx joined (errUnjoined otherwise), and its caller holds the issue's
+// owner lock, as a settlement of each of the issue's documents holds it, so no settlement writes
+// a version, or a kept source, between the read of the latest one and the move. Every read and the
+// document work - the latest versions, the requests, each carry's parse and rules - run where it
+// is called, the reopen's read phase, and every write is queued for the write phase, in the order
+// made: the move and the carry write asks rows, reviews and events, and the cleanup deletes kept
+// sources alone. It takes no copy lock and writes no pending row. The events it appends reach
+// ctx's ledger (eventSink), which publishes them once the transaction commits.
+func (s *Service) FollowClosedIssueVersions(ctx context.Context, issueKey string) error {
 	tx, joined := txFromContext(ctx)
 	if !joined {
 		return errUnjoined
 	}
-	for _, version := range versions {
-		if err := s.followVersion(ctx, tx, version); err != nil {
-			return fmt.Errorf("follow the latest version of document %s: %w", version.artifactID, err)
+	rows, err := tx.Query(ctx, issueDocumentEditSources, issueKey)
+	if err != nil {
+		return fmt.Errorf("list the issue's documents: %w", err)
+	}
+	documents, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (closedEditSource, error) {
+		var document closedEditSource
+		err := row.Scan(&document.artifactID, &document.lastActor)
+		return document, err
+	})
+	if err != nil {
+		return fmt.Errorf("list the issue's documents: %w", err)
+	}
+	for _, document := range documents {
+		retired, err := retiredUnderOwnerLock(ctx, tx, document.artifactID)
+		if err != nil {
+			return fmt.Errorf("read whether document %s is retired: %w", document.artifactID, err)
+		}
+		if retired {
+			continue
+		}
+		mover := SettlementActor
+		if document.lastActor != nil {
+			if err := json.Unmarshal(document.lastActor, &mover); err != nil {
+				return fmt.Errorf("decode the closed edit source of document %s: %w", document.artifactID, err)
+			}
+		}
+		if err := s.followLatestVersion(ctx, tx, document.artifactID, mover); err != nil {
+			return fmt.Errorf("follow the latest version of document %s: %w", document.artifactID, err)
 		}
 	}
 	return writeExec(ctx, tx, "delete the closed edit sources of the issue's settled documents", dropSettledClosedEditSources, issueKey)
@@ -522,9 +490,9 @@ type closedEditSource struct {
 	lastActor  []byte
 }
 
-// issueDocumentEditSources lists the documents of the issue $1 in id order, each with the closed
-// edit source (doc_closed_edit_sources) kept for the room it is edited in, the key its settlement
-// keeps it by (clearSettlementPending), null for none.
+// issueDocumentEditSources lists the documents of the issue $1 in id order, a retired one too, each
+// with the closed edit source (doc_closed_edit_sources) kept for the room it is edited in, the key
+// its settlement keeps it by (clearSettlementPending), null for none.
 var issueDocumentEditSources = `
 	select a.id::text, kept.last_actor
 	from artifacts a left join doc_closed_edit_sources kept on kept.artifact_id = ` + refs.DocumentRoomSQL("a.id") + `
@@ -540,31 +508,37 @@ const dropSettledClosedEditSources = `
 	where a.id = kept.artifact_id and a.issue_key = $1 and a.kind in ('doc', 'tree')
 		and not exists (select from doc_settlements_pending p where p.artifact_id = kept.artifact_id)`
 
-// followVersion is FollowClosedIssueVersions for one document's version.
-func (s *Service) followVersion(ctx context.Context, tx pgx.Tx, latest ClosedIssueVersion) error {
+// followLatestVersion is FollowClosedIssueVersions for one document, artifactID, moving its
+// request in mover's name. Whether the document's stored updates are ahead of its latest version
+// is read on the room it is edited in, whose head a version records (doc_update_version), as
+// SnapshotVersion reads it. It carries an approval of a version before the latest one
+// (carryToLatest), by the cases every carry weighs and, last, by the latest version's stored
+// record digest (storedRecord): a version a closed issue's settlement wrote carried nothing, and a
+// version whose record is the approved one, as a paragraph moved before a requirement leaves it,
+// is carried here, its request answered in the approver's name (writeCarriedReview).
+func (s *Service) followLatestVersion(ctx context.Context, tx pgx.Tx, artifactID string, mover model.Actor) error {
+	latest, err := latestVersion(ctx, tx, artifactID)
+	if err != nil {
+		return err
+	}
+	room, err := roomOf(ctx, tx, artifactID)
+	if err != nil {
+		return err
+	}
+	owed, err := contentChangedSinceVersion(ctx, tx, room, latest.docUpdateVersion)
+	if err != nil || owed {
+		return err
+	}
 	// A latest version the request does not name yet was written while the issue was closed,
 	// since every version written while it was open moved the request: by a settlement, or by a
 	// comment anchor's snapshot (SnapshotVersion under WithCommentMarks), the one route that writes
 	// a closed issue's version. No stored version says which wrote it, so the move reads it as a
 	// settlement's and keeps the person's turn where that settlement's own version write would
 	// have kept it.
-	if err := MoveApprovalAsk(ctx, tx, s.events, latest.artifactID, latest.version, latest.markdown, latest.mover, true, s.serverURL); err != nil {
+	if err := MoveApprovalAsk(ctx, tx, s.events, artifactID, latest.Version, latest.markdown, mover, true, s.serverURL); err != nil {
 		return err
 	}
-	if err := refuseSecondCarry(ctx, tx, latest.artifactID); err != nil {
-		return err
-	}
-	newest, err := NewestReview(ctx, tx, latest.artifactID)
-	if err != nil || newest == nil || newest.State != "approved" || newest.Version >= latest.version.Number {
-		return err
-	}
-	// The answer carry reads the version's blocks from its tree, as the version's own write reads
-	// the live tree it rendered: the stored text's read-back is that tree.
-	tree, err := pmdoc.ParseRendering(latest.markdown)
-	if err != nil {
-		return skipUnreadableVersion(latest.artifactID, latest.version.Number, err)
-	}
-	return s.carryStandingApproval(ctx, tx, latest.artifactID, latest.version.Number, renderedTree{tree: tree, markdown: latest.markdown}, *newest, decisionStepCases{}, eventSink(ctx))
+	return carryToLatest(ctx, tx, s.events, artifactID, latest.Number, latest.markdown, s.serverURL)
 }
 
 // issueAskStateWrites is what WriteIssueAskStates writes into one document of an issue, read off
@@ -575,8 +549,10 @@ type issueAskStateWrites struct {
 	writes settlementReconciliation
 	// repeats are the blocks repeating an earlier ask block's id, each marked resolved at its
 	// place (markRepeatedAskBlocks).
+	// kept for one release: roll-window-attributes
 	repeats []repeatedAskBlock
 	// marked are the unindexed blocks apply changed to read state="resolved".
+	// kept for one release: roll-window-attributes
 	marked []BlockRef
 }
 
@@ -595,15 +571,17 @@ type issueAskStateWrites struct {
 // block gets the attributes the release before's pages read its state from
 // (rollWindowAskAttributes, resolveUnindexedAskBlock), and once the fleet is one build the ones a
 // version keeps (keptAskState), written from the node of the block's ask, or of a copy's source,
-// as this transaction's commit leaves it (askNodeAnswers, onItsNode), as settlement writes them.
-// wanted hands back the row as it stands for a block it shows as the store holds it - the close's
-// final sweep, a closed issue's rebuild - and that row can be ahead of its node where a process of
-// the release before wrote it, before the decisions step's catch-up states it. An ask wanted hands
-// back in another state than its row's is one whose change the caller plans after this write in
-// the same transaction - the close's withdrawal (api's planWithdrawal) - and is written as wanted
-// gives it. It changes nothing in tree.
+// as this transaction's commit leaves it (askNodeAnswers, keptFromItsNode), as settlement writes
+// them. wanted hands back the row as it stands for a block it shows as the store holds it - the
+// close's final sweep, a closed issue's rebuild - and that row can be ahead of its node where a
+// process of the release before wrote it, before the decisions step's catch-up states it: such a
+// block is written from the row (keptFromItsNode). An ask wanted hands back in another state than
+// its row's is one whose change the caller plans after this write in the same transaction - the
+// close's withdrawal (api's planWithdrawal) - and is written as wanted gives it. It changes
+// nothing in tree.
 //
-// kept for one release: roll-window-attributes
+// The one-build writes are R5's and stay; each branch on twoBuilds is the roll window's and goes
+// with it.
 func readIssueAskStateWrites(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -616,42 +594,31 @@ func readIssueAskStateWrites(
 	artifactID := holder.id
 	found := &issueAskStateWrites{artifactID: artifactID}
 	blocks, repeats := readableAskBlocks(tree)
+	// kept for one release: roll-window-attributes
 	if markUnindexed && twoBuilds {
 		found.repeats = repeats
 	}
 	if len(blocks) == 0 {
 		return found, nil
 	}
-	rows, err := loadAskBlocks(ctx, tx, holder)
+	// An issue's documents take no copy lock (lockProjectCopies): the caller holds the issue's
+	// owner lock, as every transaction reading or marking the copies among its documents does.
+	read, err := readBlockAsks(ctx, tx, holder, &owner, blocks, readCopiedAskSources)
 	if err != nil {
 		return nil, err
 	}
-	// An issue's documents take no copy lock (lockProjectCopies): the caller holds the issue's
-	// owner lock, as every transaction reading or marking the copies among its documents does.
-	sources, err := readCopiedAskSources(ctx, tx, artifactID, owner, blocks, unindexedAskBlockIDs(blocks, rows))
+	rows, sources := read.rows, read.sources
+	// kept for one release: stored-ask-state
+	kept, err := shownAsks(ctx, tx, twoBuilds, read)
 	if err != nil {
 		return nil, err
 	}
 	// kept for one release: stored-ask-state
-	var nodes map[string]askNodeAnswer
-	if !twoBuilds {
-		ids := make([]string, 0, len(blocks))
-		for _, block := range blocks {
-			if row, indexed := rows[block.id]; indexed {
-				ids = append(ids, row.ID)
-			} else if source, copied := sources[block.id]; copied {
-				ids = append(ids, source.ask.ID)
-			}
-		}
-		if nodes, err = askNodeAnswers(ctx, tx, ids); err != nil {
-			return nil, err
-		}
-	}
 	shown := func(ask, row model.Ask) model.Ask {
-		if twoBuilds || ask.State != row.State {
+		if ask.State != row.State {
 			return ask
 		}
-		return onItsNode(ask, nodes)
+		return kept(ask)
 	}
 	for _, block := range blocks {
 		if row, indexed := rows[block.id]; indexed {
@@ -663,6 +630,7 @@ func readIssueAskStateWrites(
 		if source, copied := sources[block.id]; copied {
 			if ask, write := wanted(source.ask); write {
 				copyWrite := askReadableWrite(twoBuilds, shown(ask, source.ask), source.document)
+				// kept for one release: roll-window-attributes
 				if twoBuilds && ask.State == "answered" {
 					copyWrite = answeredCopyWrite(ask, source.document)
 				}
@@ -677,6 +645,7 @@ func readIssueAskStateWrites(
 				if !resolve(node) {
 					return false
 				}
+				// kept for one release: roll-window-attributes
 				if twoBuilds {
 					found.marked = append(found.marked, ref)
 				}
@@ -689,14 +658,20 @@ func readIssueAskStateWrites(
 
 // empty reports whether w has nothing to write.
 func (w *issueAskStateWrites) empty() bool {
-	return len(w.writes.repairs) == 0 && len(w.repeats) == 0
+	// kept for one release: roll-window-attributes
+	if len(w.repeats) > 0 {
+		return false
+	}
+	return len(w.writes.repairs) == 0
 }
 
 // apply makes w's writes on live, a tree of w's document, recording each unindexed block it marks
 // resolved, and reports whether any changed it.
 func (w *issueAskStateWrites) apply(live *pmdoc.Node) bool {
 	repaired := w.writes.repairLive(live)
+	// kept for one release: roll-window-attributes
 	repeated := markRepeatedAskBlocks(live, w.artifactID, w.repeats)
+	// kept for one release: roll-window-attributes
 	w.marked = append(w.marked, repeated...)
 	return repaired || len(repeated) > 0
 }
@@ -719,7 +694,7 @@ func closedIssueAskState(row model.Ask) (model.Ask, bool) {
 //
 // kept for one release: roll-window-attributes
 func answeredCopyWrite(ask model.Ask, copied string) func(*pmdoc.Node) bool {
-	whole := askReadableWrite(true, ask, copied)
+	whole := askReadableWith(rollWindowAskAttributes(true, ask, copied))
 	withheld := askReadableWriteWithheld(ask, copied)
 	return func(node *pmdoc.Node) bool {
 		if !whole(attributesOf(node)) {
@@ -753,11 +728,11 @@ func resolveUnindexedAskBlock(node *pmdoc.Node) bool {
 // on a closed issue's document, as the fleet stands (twoBuilds): resolveUnindexedAskBlock while
 // another build serves, whose pages read the block's state from it, and once the fleet is one
 // build none of the seven attributes a version can store (withoutStoredAskAttributes), since a
-// block that has no ask row and is no copy keeps none of them (R10); the text routes answer it
-// resolved in their asks (textAsks). It reports whether it changed the block.
-//
-// kept for one release: roll-window-attributes
+// block that has no ask row and is no copy keeps none of them (R5); the text routes answer it
+// resolved in their asks (textAsks). It reports whether it changed the block. The one-build write
+// is R5's and stays; the roll window's branch goes with it.
 func unindexedAskResolution(twoBuilds bool) func(*pmdoc.Node) bool {
+	// kept for one release: roll-window-attributes
 	if twoBuilds {
 		return resolveUnindexedAskBlock
 	}
@@ -776,6 +751,7 @@ func unindexedAskResolution(twoBuilds bool) func(*pmdoc.Node) bool {
 // (markRepeatedAskBlocks).
 func readableAskBlocks(tree *pmdoc.Node) ([]askBlock, []repeatedAskBlock) {
 	var blocks []askBlock
+	// kept for one release: roll-window-attributes
 	var repeats []repeatedAskBlock
 	seen := map[string]struct{}{}
 	index := -1
@@ -786,6 +762,7 @@ func readableAskBlocks(tree *pmdoc.Node) ([]askBlock, []repeatedAskBlock) {
 		index++
 		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
 		if _, repeated := seen[id]; repeated {
+			// kept for one release: roll-window-attributes
 			if id != "" && node.Attrs["state"] != "resolved" {
 				if _, err := parseAskBlock(node); err == nil {
 					repeats = append(repeats, repeatedAskBlock{index: index, id: id})
@@ -805,6 +782,8 @@ func readableAskBlocks(tree *pmdoc.Node) ([]askBlock, []repeatedAskBlock) {
 // repeatedAskBlock is an ask block that repeats the id an earlier ask block of its document holds
 // (readableAskBlocks): index is its place among the document's ask blocks in document order, and
 // id the id it repeats.
+//
+// kept for one release: roll-window-attributes
 type repeatedAskBlock struct {
 	index int
 	id    string

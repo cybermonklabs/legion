@@ -9,7 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// decisionProjections are the census's kinds of dispatch://INFRA-1150 (projections): the ties of
+// decisionProjections are the census's kinds of the decisions-tree spec (projections): the ties of
 // decisions, readings and asks that block_refs, document_blocks, asks and ask_followers project,
 // each held triple by triple (projection.tuples) but a person's answer; and after them the same
 // ties as graph_edges answers them, each one that view answers (edgeProjection).
@@ -36,9 +36,8 @@ var decisionProjections = []projection{
 		       '` + graphstore.TupleFollowedBy + `', '` + graphstore.KindSession + `', f.session_id
 		from ask_followers f
 		where f.node_kind is not null and octet_length(f.session_id) <= ` + addressBound,
-		tuples: heldTuples(`t.kind = '`+graphstore.TupleFollowedBy+`'`, graphstore.KindAsk),
-		pastBound: `
-		select count(*) from ask_followers f where octet_length(f.session_id) > ` + addressBound,
+		tuples:    heldTuples(`t.kind = '`+graphstore.TupleFollowedBy+`'`, graphstore.KindAsk),
+		pastBound: followerPastBound,
 		unmarked: `
 		select count(*) from ask_followers f where f.node_kind is null and octet_length(f.session_id) <= ` + addressBound,
 		emptyAgrees: true,
@@ -62,8 +61,9 @@ var decisionProjections = []projection{
 		cross join lateral (select ` + refs.DocumentTopSQL("a") + ` as at) document_top
 		join graph_nodes reading on reading.kind = '` + refs.BlockNodeKind + `' and reading.id = d.node_id
 		  and reading.supertag = '` + refs.ReadingSupertag + `'`,
-		tuples:      readingParents,
-		owed:        typedNodeOwed,
+		tuples: readingParents,
+		owed:   typedNodeOwed,
+		// kept for one release: deferred-typed-rows
 		rowOwed:     typedRowOwed,
 		emptyAgrees: true,
 	},
@@ -151,8 +151,7 @@ var decisionProjections = []projection{
 		"graph_edges' followed_by: the row side is every followed_by edge graph_edges answers out of an ask node"+
 			" not gone, read node by node, as the triple of that node, followed_by and its session, against every"+
 			" followed_by an ask node not gone states now, an edge the old arm answers from an unmarked row aside",
-		followerRowUnmarked, `
-		select count(*) from ask_followers f where octet_length(f.session_id) > `+addressBound, graphstore.KindAsk),
+		followerRowUnmarked, followerPastBound, graphstore.KindAsk),
 	edgeProjection("ask_parent"+edgeSuffix, graphstore.TupleOwnedBy,
 		"graph_edges' half of an ask's placement, its owned_by: the row side is every owned_by edge graph_edges"+
 			" answers out of an ask node not gone, read node by node, as the triple of that node, owned_by and the"+
@@ -167,7 +166,7 @@ var decisionProjections = []projection{
 }
 
 // decisionBackfills are the backfill's passes over the asks and their followers
-// (dispatch://INFRA-1150, backfillPasses), after the object pass wrote the node of every ask
+// (the decisions-tree spec, backfillPasses), after the object pass wrote the node of every ask
 // (backfillObjectNodes): the rest of the boot step's first phase (BackfillAsks), so a database the
 // command fills reads as one the boot fills.
 var decisionBackfills = []backfillPass{kindSoFar(backfillAsks), kindSoFar(backfillAskFollowers)}
@@ -187,8 +186,8 @@ func kindSoFar(write func(context.Context, *store.Store) (KindBackfill, error)) 
 // predicate kinds selects (written over t.kind), read as a statement reads a current relation, the
 // newest tuple per (kind, far end) kept while it asserts (graphstore.CurrentTupleRead), each as
 // (from_kind, from_id, kind, to_kind, to_id). A node is present at any state but gone (R12 of
-// dispatch://INFRA-1950, as presentNodes reads one), so a proposed or settled decision's ties are
-// held as a live one's are. Each node's relations are read through graph_tuples_current, one
+// the node-visibility spec, as presentNodes reads one), so a proposed or settled decision's ties
+// are held as a live one's are. Each node's relations are read through graph_tuples_current, one
 // probe per node, as currentLinks reads them.
 func heldTuples(kinds string, holders ...string) string {
 	return `
@@ -199,45 +198,53 @@ func heldTuples(kinds string, holders ...string) string {
 		`t.from_kind = n.kind and t.from_id = n.id
 		  and t.to_kind <> '`+graphstore.KindValue+`' and `+kinds) + `
 		) held
-		where n.kind in ('` + strings.Join(holders, `', '`) + `') and n.state <> '` + graphstore.StateGone + `'
+		where ` + kindIn("n.kind", holders) + ` and n.state <> '` + graphstore.StateGone + `'
 		  and held.asserted`
 }
 
-// askBlockID is the block id the marked asks row of the ask node at address (an SQL expression)
-// names (asks.block_id), null where no marked row names that node or its row names no block. It
-// is the block placedLinks and readingParents read a part_of to that ask's node as.
-func askBlockID(address string) string {
-	return `(select k.block_id from asks k
+// askBlockID is the block id a part_of from the block node node to the ask node at address (each
+// an SQL expression) is read as, null where no marked asks row names that ask's node or its row
+// names no block. In the document the ask's row names (asks.block_artifact_id), it is the ask's
+// own block, the id that row names (asks.block_id). In any other document of its owner it is the
+// block node's own parent (document_blocks.parent_block_id) where that parent is a copy of the
+// ask: a reading in a copy hangs on the source's node (refs.TypedSources.Shown), and the copy
+// keeps the block id it was copied under while the source can take a fresh one (docs' restore,
+// R6's collision rule). The parent is a copy of the ask where its node states a current
+// copied_from to that ask (docs' claimCopies). The parent's id alone proves nothing, since it is
+// the row this census checks the part_of against: a reading whose part_of names another marked
+// ask than the one its parent copies reads null here, so the ask's address stays the link and
+// reads as a difference. Two states take the parent without that tuple: a document that owes a
+// settlement (doc_settlements_pending), since a version's typed-node pass hangs a copy's reading on
+// its source before the settlement after it claims the copy, in the write that deletes that row;
+// and a parent whose address is past the store's bound, which is no node to state one.
+func askBlockID(node, address string) string {
+	parent := `split_part(` + node + `, '#', 1) || '#' || d.parent_block_id`
+	return `(select case when own.ref_key = split_part(` + node + `, '#', 1) then k.block_id
+		             else (select d.parent_block_id from document_blocks d
+		                   where d.node_id = ` + node + ` and ` + parentCopiesAsk(parent, `d.artifact_id`, address) + `) end
+		from asks k join artifacts own on own.id = k.block_artifact_id
 		where k.node_kind = '` + graphstore.KindAsk + `' and k.node_address = ` + address + ` and k.block_id is not null)`
 }
 
-// placedLinks is currentLinks of a block node n under kinds, but a part_of whose far end is an
-// ask's node is written as the block of n's own document that holds that ask: the block of the
-// id the ask's marked row names (askBlockID), which is the ask's own block in the document
-// that row names and a copy's block in any other document of its owner, since a copy keeps its
-// source's block id (docs' copiedAskSources). A reading in an answered ask hangs on the ask's
-// node, while its row's parent_block_id keeps the id of the ask block holding it, which is that
-// tuple's projection (refs' reconcileBlockParents), so both read as one link to that block. An
-// ask no marked row names, or whose row names no block, keeps its own address, which no row
-// states. A ref_key holds no '#', so n's document is the part of its id before the first one.
-func placedLinks(kinds string) string {
-	return `(select coalesce(string_agg(placed.link, ',' order by placed.link), '')
-	 from (
-		select case when held.kind = '` + graphstore.TuplePartOf + `' and held.to_kind = '` + graphstore.KindAsk + `'
-		            then coalesce(held.kind || '>` + refs.BlockNodeKind + `:' || split_part(n.id, '#', 1) || '#' || ` +
-		askBlockID(`held.to_id`) + `, held.kind || '>' || held.to_kind || ':' || held.to_id)
-		            else held.kind || '>' || held.to_kind || ':' || held.to_id end as link
-		from (
-			` + graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.kind, t.to_kind, t.to_id, t.asserted`,
-		`t.from_kind = '`+refs.BlockNodeKind+`' and t.from_id = n.id
-		  and t.to_kind <> '`+graphstore.KindValue+`' and `+kinds) + `
-		) held where held.asserted
-	 ) placed)`
+// parentCopiesAsk is true where the block node at parent is read as a copy of the ask node at
+// address (each an SQL expression), by askBlockID's rule: the node states a current copied_from
+// to that ask (docs' claimCopies), or the document whose id artifactID is owes a settlement
+// (doc_settlements_pending), or parent is past the store's bound, which is no node to state one.
+// settledAsk reads a decision's parent by the same rule over the row.
+func parentCopiesAsk(parent, artifactID, address string) string {
+	return `(exists (select 1 from (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.asserted`,
+		`t.from_kind = '`+refs.BlockNodeKind+`' and t.from_id = `+parent+`
+		                           and t.kind = '`+graphstore.TupleCopiedFrom+`' and t.to_kind = '`+graphstore.KindAsk+`'
+		                           and t.to_id = `+address) + `
+		                       ) copied where copied.asserted)
+		                       or exists (select 1 from doc_settlements_pending owed where owed.artifact_id = ` + artifactID + `)
+		                       or octet_length(` + parent + `) > ` + addressBound + `)`
 }
 
 // readingParents is reading_parent's store side (heldTuples' shape): the part_of every reading's
-// node the store holds present states now, a part_of to an ask's node read as placedLinks reads
-// it, as the block of the reading's own document that holds the ask.
+// node the store holds present states now, a part_of to an ask's node read as blockPlacedLinks
+// reads it, as the block of the reading's own document that holds the ask or the copy of it the
+// reading stands in.
 var readingParents = `
 		select n.kind, n.id, held.kind,
 		       case when placed.block_id is null then held.to_kind else '` + refs.BlockNodeKind + `' end,
@@ -249,7 +256,7 @@ var readingParents = `
 		  and t.to_kind <> '`+graphstore.KindValue+`' and t.kind = '`+graphstore.TuplePartOf+`'`) + `
 		) held
 		cross join lateral (
-			select case when held.to_kind = '` + graphstore.KindAsk + `' then ` + askBlockID(`held.to_id`) + ` end as block_id
+			select case when held.to_kind = '` + graphstore.KindAsk + `' then ` + askBlockID(`n.id`, `held.to_id`) + ` end as block_id
 		) placed
 		where n.kind = '` + refs.BlockNodeKind + `' and n.supertag = '` + refs.ReadingSupertag + `'
 		  and n.state <> '` + graphstore.StateGone + `' and held.asserted`
@@ -274,21 +281,32 @@ var typedNodeOwed = `exists (
 // typedRowOwed is the row-side owed predicate (projection.rowOwed) of a kind whose row may name a
 // decision's or a reading's node: the node the row names is a decision or a reading the store
 // holds gone, in a document that still owes its block index (owesBlockIndex). Above the deferral
-// bound no block index runs in the write, and the typed-node pass states each decision and
-// reading the version no longer holds gone in that write's own transaction
-// (refs.PlanDecisionNodes), while the document_blocks row of its block and the block_refs rows it
-// holds stay until the block-index reconciliation deletes them. Such a row is owed its deletion,
-// and no difference until then; once the document owes nothing, the same row names a gone node
-// and is one. A gone node of any other supertag under its row is a difference still, since no
-// writer leaves one so. A ref_key holds no '#', so a block node's document is the part of its id
-// before the first one.
+// bound a process of the release before runs no block index in the write, and its typed-node pass
+// states each decision and reading the version no longer holds gone in that write's own
+// transaction, while the document_blocks row of its block and the block_refs rows it holds stay
+// until the block-index reconciliation deletes them; this build's pass deletes them in the same
+// write (refs.PlanDecisionNodes) - the rows of its ties, its shaped, from_ask and decided_by, in
+// the reconcile of the ties, which reaches every block that held one (refs' pairScope.holding),
+// and its document_blocks row with every other row it holds as the pass states it gone (refs'
+// planGone) - so such a row is left only during the roll. Such a row is owed its deletion, and no
+// difference until then; once the document owes nothing, the same row names a gone node and is
+// one. A gone node of any other supertag under its row is a difference still, since no writer
+// leaves one so. A ref_key holds no '#', so a block node's document is the part of its id before
+// the first one. The release after this one deletes it, with the rowOwed of each projection that
+// reads it, once no process of the release before is live.
+// kept for one release: deferred-typed-rows
 var typedRowOwed = `node.kind = '` + refs.BlockNodeKind + `' and node.state = '` + graphstore.StateGone + `'
 		  and node.supertag in ('` + refs.DecisionSupertag + `', '` + refs.ReadingSupertag + `')
 		  and exists (select 1 from artifacts a where a.ref_key = split_part(node.id, '#', 1) and ` + owesBlockIndex("a.id") + `)`
 
 // tieInBound is true of a block_refs row r both of whose ends are inside the store's bound, the one
-// row of a tie its writer marks and states a tuple of (refs' queueBlockRefs).
-var tieInBound = `octet_length(r.from_node) <= ` + addressBound + ` and octet_length(r.to_id) <= ` + addressBound
+// row of a tie its writer marks and states a tuple of (refs' queueBlockRefs). Its near end is the
+// node the row names: the ask's, by its id, for an ask block's shaped (refs.TypedFacts.pairs),
+// whose writer judges the bound on that id and not on the block's own address (refs'
+// planBlockRefs), and the block's own address for every other row, a row that names no node among
+// them.
+var tieInBound = `octet_length(case when r.node_kind = '` + graphstore.KindAsk + `' then r.node_address else r.from_node end) <= ` +
+	addressBound + ` and octet_length(r.to_id) <= ` + addressBound
 
 // tiePastBound counts the block_refs rows of the tie kind that are not inside the store's bound
 // (tieInBound): the writer leaves each unmarked and states no tuple of it on purpose, and
@@ -305,16 +323,16 @@ func tiePastBound(kind string) string {
 // The near end is a node of the store, inside the bound.
 var tieEdgePastBound = `(octet_length(edge.to_id) > ` + addressBound + `)`
 
-// tieProjection is the kind of one tie that block_refs projects - a
-// decision's shaped, from_ask or decided_by, and an ask's shaped - held triple by triple
-// (projection.tuples): each row is the triple of the node that states its tie (node_kind,
-// node_address: the decision's block node, or for an ask block's shaped the ask's node,
-// refs.TypedFacts.pairs), kind and its far end, against every tuple of kind a present node of one
-// of holders states now. So a tuple that reaches the wrong node is a row no tuple states and a
-// tuple no row projects, and not a count that still matches, and a row of the same node whose
-// tuple stands is no difference. A row that names no node is a difference, as a block_ref row's
-// is: every writer of these kinds names it, and a row past the store's bound is counted apart. A
-// row of a decision a deferred version removed is owed its deletion (typedRowOwed).
+// tieProjection is the kind of one tie that block_refs projects - a decision's shaped, from_ask or
+// decided_by, and an ask's shaped - held triple by triple (projection.tuples): each row is the
+// triple of the node that states its tie (node_kind, node_address: the decision's block node, or
+// for an ask block's shaped the ask's node, refs.TypedFacts.pairs), kind and its far end, against
+// every tuple of kind a present node of one of holders states now. So a tuple that reaches the
+// wrong node is a row no tuple states and a tuple no row projects, and not a count that still
+// matches, and a row of the same node whose tuple stands is no difference. A row that names no
+// node is a difference, as a block_ref row's is: every writer of these kinds names it, and a row
+// past the store's bound is counted apart. A row of a decision a deferred version removed is owed
+// its deletion (typedRowOwed).
 func tieProjection(kind, note string, holders ...string) projection {
 	return projection{
 		name: kind, nodeKind: strings.Join(holders, ", "), table: "block_refs", note: note, emptyAgrees: true,
@@ -324,7 +342,8 @@ func tieProjection(kind, note string, holders ...string) projection {
 		where r.kind = '` + kind + `' and ` + tieInBound,
 		tuples:    heldTuples(`t.kind = '`+kind+`'`, holders...),
 		pastBound: tiePastBound(kind),
-		rowOwed:   typedRowOwed,
+		// kept for one release: deferred-typed-rows
+		rowOwed: typedRowOwed,
 	}
 }
 
@@ -340,23 +359,24 @@ const edgeSuffix = "_edge"
 // answers no edge for is a tuple no row projects, and an edge that reaches the wrong node reads as
 // both.
 //
-// The view's definition
-// (store/migrations/20261121090000_issue_tree_graph_edges_after_tuple_arm_filter.up.sql, which
-// restates the arms 20261116094101_graph_edges_asks.up.sql and
-// 20261117020856_graph_edges_asks_and_store_class.up.sql give these ties, with 20261120122700's
+// The view's last restatement (store/migrations/20261126050009_issue_tree_graph_edges_block_node_listed.up.sql,
+// which keeps the arms of 20261126050008_issue_tree_graph_edges_after_store_class_last.up.sql,
+// 20261126050006_issue_tree_graph_edges_after_tuple_arm_filter.up.sql's view stated again:
+// the arms 20261125163553_graph_edges_asks.up.sql and
+// 20261126050002_graph_edges_asks_and_store_class.up.sql give these ties, with 20261120122700's
 // filter of the tuple arm) answers each of these ties from one arm, which the projection row
 // decides. For a row that names its node, the tuple arm answers the newest tuple of the triple
-// while it asserts, out of a node not
-// gone: shaped, from_ask and decided_by out of a block node, and shaped out of an ask's node, while
-// a block_refs row of that node, kind and far end stands (a block's pointer only while its target
-// is of a type the attribute lists, and shaped, from_ask and decided_by list none); anchored_to
-// and owned_by out of an ask's node while an asks row names that node; and followed_by while the
-// ask_followers row of that ask and that session names it. For a row that names no node, which a
-// process of the release before wrote, an old arm answers the row alone: the block_refs arm its
-// link, the two asks arms its anchored_to and owned_by, and the ask_followers arm its
-// followed_by. No arm answers a reading's part_of or an ask's part_of (the tuple arm answers a
-// block's in_document, as its part_of to its document), so the parent of a reading has no kind
-// here, and an ask's placement is held by its owned_by alone (ask_parent_edge).
+// while it asserts, out of a node not gone: shaped, from_ask and decided_by out of a block node,
+// and shaped out of an ask's node, while a block_refs row of that node, kind and far end stands (a
+// block's pointer only while its target is of a type the attribute lists, and shaped, from_ask and
+// decided_by list none); anchored_to and owned_by out of an ask's node while an asks row names
+// that node; and followed_by while the ask_followers row of that ask and that session names it.
+// For a row that names no node, which a process of the release before wrote, an old arm answers
+// the row alone: the block_refs arm its link, the two asks arms its anchored_to and owned_by, and
+// the ask_followers arm its followed_by. No arm answers a reading's part_of or an ask's part_of
+// (the tuple arm answers a block's in_document, as its part_of to its document), so the parent of
+// a reading has no kind here, and an ask's placement is held by its owned_by alone
+// (ask_parent_edge).
 //
 // unmarked is a predicate over the node n and its edge that holds where an old arm answers the
 // edge from a row that names no node - an asks or ask_followers row a process of the release
@@ -440,6 +460,11 @@ var askPastBound = `
 		select count(*) from asks k` + askDocuments + `
 		where not (` + askFits + `)`
 
+// followerPastBound counts the ask_followers rows whose session is past the store's bound, which
+// no node can key: the follower kind and graph_edges' followed_by count them apart.
+var followerPastBound = `
+		select count(*) from ask_followers f where octet_length(f.session_id) > ` + addressBound
+
 // askUnmarked counts every other asks row that names no node and that member, a predicate over
 // the row and askDocuments, makes one of a kind's own population: a row a process of the release
 // before wrote and the decisions step's backfill owes, which graph_edges' old arms answer, a class
@@ -470,8 +495,3 @@ func askProjection(name, table, note, member string, links []string, kinds strin
 		unmarked:  askUnmarked(member),
 	}
 }
-
-// answerer is the person node an asks row's answer names, written as asks.AnswererOf names it:
-// the canonical login of the answer's user (user_threads_login is model.CanonicalLogin in SQL),
-// empty where it names nobody. It reads `asks k`.
-const answerer = `coalesce(user_threads_login(k.answer->>'user'), '')`

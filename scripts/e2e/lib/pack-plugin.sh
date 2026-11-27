@@ -19,13 +19,18 @@
 # workspace root's node_modules (`bun install --frozen-lockfile` at the root first).
 #   1. save package.json, arm the EXIT trap    release.yaml pi_envoy_build/pi_legion_build "Point extensions at the packed bundle"
 #   2. omp.extensions -> the packed bundle     that step's jq; worker.Dockerfile's `jq '.omp.extensions = …'`
+#      pi-legion: legion.daemonApiVersion ->   pi_legion_build's "Set release version"; worker.Dockerfile's same jq
+#      the tree's contract (scripts/daemon-contract.sh)
 #   3. bun pm pack; its prepack builds dist/   release.yaml "Pack extension"; the prepack's `bun build`
 #   4. put package.json back                   this script's own need: the checkout is reused (the build job's tree is discarded)
 # Each source is cited by what it runs, never by line number: the lines move with every edit
-# above them. release.yaml's "Set release version" is not a step here: the tarball carries the
-# checkout's own version. The bundle is the committed manifest's one extension entry,
+# above them. Of release.yaml's "Set release version", only pi-legion's contract is written here:
+# the tarball carries the checkout's own version. No committed manifest names the contract; the
+# packed one declares the tree's, the number the daemon built from this tree requires of the
+# installed manifest. The bundle is the committed manifest's one extension entry,
 # extensions/<entry>.ts, as dist/<entry>.js: the list the prepack requires. The bundle inlines
-# package.json, so it is built while the manifest names the packed bundle, as the release builds it.
+# package.json, so it is built while the manifest names the packed bundle and the contract, as the
+# release builds it.
 # The saved manifest is written under this run's temp directory rather than beside package.json, so
 # an interrupted run strands no tmp.json in the checkout.
 set -euo pipefail
@@ -99,8 +104,16 @@ case "$entry" in
 extensions/*.ts) entry=${entry#extensions/} && entry=${entry%.ts} ;;
 *) refuse "$manifest names omp.extensions $(jq -c '.omp.extensions' "$saved"); the committed list is one source entry, extensions/<entry>.ts" ;;
 esac
+# pi-legion's packed manifest declares the tree's daemon API contract, which its bundle inlines and
+# the daemon's boot gate reads off the installed manifest; pi-envoy speaks no contract.
+filter='.omp.extensions = [$bundle]'
+contract=null
+if [ "$package" = pi-legion ]; then
+  contract=$(bash "$root/scripts/daemon-contract.sh")
+  filter="$filter | .legion.daemonApiVersion = \$contract"
+fi
 restore=1
-jq --arg bundle "dist/$entry.js" '.omp.extensions = [$bundle]' "$saved" >"$work/packed.json"
+jq --arg bundle "dist/$entry.js" --argjson contract "$contract" "$filter" "$saved" >"$work/packed.json"
 cp "$work/packed.json" "$manifest"
 
 (cd "$root/packages/$package" && bun pm pack --destination "$out") >&2

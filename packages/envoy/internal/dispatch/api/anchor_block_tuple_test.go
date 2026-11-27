@@ -97,15 +97,10 @@ func (r *storeWriterRig) commentAnchorOrphaning() storeWriter {
 
 // anchoredBlockAddress is the address of block of the document documentID as the block index
 // addresses it: the ref_key of the room the document is edited in - its issue's tree for a
-// document of an issue room - '#' and the block id.
+// document of an issue room (blockKeyOf) - '#' and the block id.
 func anchoredBlockAddress(t *testing.T, database *store.Store, documentID, block string) string {
 	t.Helper()
-	var address string
-	if err := database.Pool.QueryRow(context.Background(),
-		`select `+graphstore.RoomRefKeySQL("$1::uuid")+` || '#' || $2::text`, documentID, block).Scan(&address); err != nil {
-		t.Fatalf("read the address of block %s of %s: %v", block, documentID, err)
-	}
-	return address
+	return blockKeyOf(t, database, documentID) + "#" + block
 }
 
 // indexedBlockNode is the node_id of block's document_blocks row in the document documentID, keyed
@@ -164,19 +159,9 @@ func requireAnchoredInAgrees(t *testing.T, database *store.Store, documentID, co
 // through the store's writer, as a build that wrote the anchor's row without it left the store.
 func writeAnchoredIn(t *testing.T, database *store.Store, comment, block string, asserted bool) {
 	t.Helper()
-	ctx := context.Background()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the anchored_in's write: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{
-		graphstore.AnchoredIn(comment, block, asserted, model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(), graphstore.NoEvent),
-	}); err != nil {
+	if err := graphstoreWrite(context.Background(), database,
+		graphstore.AnchoredIn(comment, block, asserted, model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(), graphstore.NoEvent)); err != nil {
 		t.Fatalf("write the anchored_in of comment %s: %v", comment, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the anchored_in's write: %v", err)
 	}
 }
 
@@ -192,7 +177,7 @@ func newestCommentEvent(t *testing.T, database *store.Store, comment, eventType 
 	return id
 }
 
-// createAnchoredComment writes, as alice, a comment of issue anchored as anchor names, and answers
+// createBlockAnchoredComment writes, as alice, a comment of issue anchored as anchor names, and answers
 // it.
 func createBlockAnchoredComment(t *testing.T, handler http.Handler, issue string, anchor map[string]any) model.Comment {
 	t.Helper()
@@ -210,7 +195,7 @@ func createBlockAnchoredComment(t *testing.T, handler http.Handler, issue string
 }
 
 // A comment's anchor block, comments.anchor's block_id, is the projection of an anchored_in tuple
-// from the comment's node to the block's node (T17b of this branch's plan), and every write that
+// from the comment's node to the block's node (T17b of the issue-tree plan), and every write that
 // sets or moves it keeps the two level in its own transaction. Over a spec of an issue born
 // converted: the create states the anchored_in to the block's node as the block index addresses
 // it, under the comment.created that stored it; the anchor block backfill, over a row whose anchor
@@ -353,7 +338,7 @@ const blockScopedSpec = "The tide turns at noon.\n\n:::callout{#tide}\nThe tide 
 	":::callout{#calm}\nThe sea is calm.\n:::\n"
 
 // An anchor's block_id has the server find the quote inside that block alone and count occurrence
-// within it (R8 of dispatch://INFRA-1253, T17b of its plan). Over a document that is its own room,
+// within it (R8 of the issue-tree spec, T17b of its plan). Over a document that is its own room,
 // a quote written once above the callout tide and once inside it anchors inside it by block_id with
 // no occurrence, and the comment's anchored_in names the block comments.anchor stores; a quote
 // written twice inside the block is ambiguous there with no occurrence, and an occurrence past the

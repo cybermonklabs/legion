@@ -571,6 +571,7 @@ func TestABlockIDTheEditorKeepsFromAPasteSurvivesSettlement(t *testing.T) {
 // the block with none of the server's attributes, and settlement opens its ask and stores a version
 // holding none of them either.
 func TestAnAskBlockPastedWithNullServerAttributesIsTaken(t *testing.T) {
+	t.Parallel()
 	documentService, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Pasted ask", "before\n")
 	pasted, err := pmdoc.Parse(":::ask{#pasted urgency=\"med\" multiple=\"false\"}\nWhich one?\n\n- A\n- B\n:::\n")

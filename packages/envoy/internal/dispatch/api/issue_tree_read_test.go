@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -273,6 +274,153 @@ func TestTheTreeReadAnswersARunThatChangedANodeOnceAsItsAuthorsContext(t *testin
 	}
 }
 
+// TestTheTreeReadAnswersARunsWholeQuestion: alice asks the command bar a question of 296
+// characters, longer than the 240 runes an edge's excerpt of a run holds (refs' excerptRunes), and
+// writes a comment under that run. Her tree read answers the run's interaction node with the
+// question whole as its text, as a read of the run's own address answers it (spec requirement
+// r-interaction: an edge's excerpt alone cuts a run's words), while the comment's changed_by_run
+// edge in GET /api/v1/references still shows the head of the question, cut. Else it prints
+// `alice's tree read answers the run's text <text>, want its whole question <words>`.
+func TestTheTreeReadAnswersARunsWholeQuestion(t *testing.T) {
+	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
+	ctx := context.Background()
+	issue := createTestIssue(t, handler, "TRUNW", "The issue a long question comments on")
+	const words = "Which plan holds the rollback step, and which of its checks proves that the rollback leaves every document of the issue " +
+		"as its last approved version stood, with each requirement's checks counted again, each result recorded against the words its " +
+		"check held then, and no comment of the thread lost?"
+	run, err := directServer(deps).recordGoingRequest(ctx, model.Actor{Kind: "user", ID: "alice"}, "", words)
+	if err != nil {
+		t.Fatalf("record alice's run: %v", err)
+	}
+	runWindowAhead(t, database, run.ID)
+	written := requestForRun(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/comments",
+		map[string]any{"body": "The rollback step is in the plan."}, "alice", run.ID)
+	if written.Code != http.StatusCreated {
+		t.Fatalf("write the comment under the run: status=%d body=%s", written.Code, written.Body.String())
+	}
+	comment := decodeBody[writtenRecord](t, written).ID
+
+	// The edge at the run, which every read of references shows, cuts the question: this case
+	// proves nothing where it does not.
+	references := dispatchRequest(t, handler, http.MethodGet,
+		"/api/v1/references?from="+url.QueryEscape("dispatch://"+issue+"/comment/"+comment), nil, "alice")
+	if references.Code != http.StatusOK {
+		t.Fatalf("read the comment's references: status=%d body=%s", references.Code, references.Body.String())
+	}
+	var excerpt string
+	for _, edge := range decodeBody[model.GraphReferences](t, references).Edges {
+		if edge.Kind == graphstore.TupleChangedByRun && edge.Node.Kind == graphstore.KindInteraction && edge.Excerpt != nil {
+			excerpt = edge.Excerpt.Text
+		}
+	}
+	if excerpt == "" || excerpt == words || !strings.HasPrefix(words, excerpt) {
+		t.Fatalf("the comment's changed_by_run edge shows the run's excerpt %q, want the head of its question, cut short of its %d characters: this case proves nothing",
+			excerpt, len(words))
+	}
+
+	alice := treeRead(t, handler, issue, "", "alice", false)
+	interaction, _ := alice.node(t, graphstore.KindInteraction, run.ID)
+	if interaction.Role != treeRoleContext || interaction.Text != words {
+		t.Errorf("alice's tree read answers the run's text %q as %q, want its whole question %q as context", interaction.Text, interaction.Role, words)
+	}
+}
+
+// TestTheTreeReadAnswersAPostsEditAndDeleteMarks: on an issue born converted, whose read answers
+// from its head rows, and on one that has not converted, alice writes three comments; she edits
+// the first and deletes the second. The tree read with no view answers the edited comment with
+// edited_at, the time the edit answered, and no delete mark; the deleted one with deleted_at and
+// deleted_by as the delete answered them, and no text; and the third with none of the three, as
+// the read of the post carries them (model.GraphNode, R2: the read answers each node with its
+// values). Else it prints `<case>: the tree read answers the <comment> comment's marks
+// edited_at <a>, deleted_at <b>, deleted_by <c>, want <...>`.
+func TestTheTreeReadAnswersAPostsEditAndDeleteMarks(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	createReferenceAPIProject(t, handler, "MARK")
+	for _, unconverted := range []bool{false, true} {
+		what := fmt.Sprintf("an issue converted %t", !unconverted)
+		issue := createDigestIssue(t, handler, database, "MARK", "Marks of "+what, ":::requirement{#r1}\nThe list shows urgent asks first.\n:::\n", unconverted)
+		edited, _ := personComment(t, handler, database, issue.Key, "The first words.")
+		patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+edited, map[string]any{"body": "The corrected words."}, "alice")
+		if patched.Code != http.StatusOK {
+			t.Fatalf("%s: edit the comment %s: status=%d body=%s", what, edited, patched.Code, patched.Body.String())
+		}
+		editedAt := decodeBody[model.Comment](t, patched).EditedAt
+		if editedAt == nil {
+			t.Fatalf("%s: the edit of %s answers no edited_at: this case proves nothing", what, edited)
+		}
+		wantEdited, err := time.Parse(time.RFC3339Nano, *editedAt)
+		if err != nil {
+			t.Fatalf("%s: read the edit's edited_at %q: %v", what, *editedAt, err)
+		}
+		deleted, _ := personComment(t, handler, database, issue.Key, "Words to take back.")
+		gone := deleteThreadComment(t, handler, deleted, "alice")
+		if gone.DeletedAt == nil || gone.DeletedBy == nil {
+			t.Fatalf("%s: the delete of %s answers deleted_at %v and deleted_by %v: this case proves nothing", what, deleted, gone.DeletedAt, gone.DeletedBy)
+		}
+		standing, _ := personComment(t, handler, database, issue.Key, "Words that stand.")
+
+		read := treeRead(t, handler, issue.Key, "", "alice", false)
+		for _, want := range []struct {
+			name, id  string
+			editedAt  *time.Time
+			deletedAt *time.Time
+			deletedBy *model.Actor
+		}{
+			{"edited", edited, &wantEdited, nil, nil},
+			{"deleted", deleted, nil, gone.DeletedAt, gone.DeletedBy},
+			{"standing", standing, nil, nil, nil},
+		} {
+			node, _ := read.node(t, graphstore.KindComment, want.id)
+			sameTime := func(got, want *time.Time) bool {
+				return got == nil && want == nil || got != nil && want != nil && got.Equal(*want)
+			}
+			sameActor := func(got, want *model.Actor) bool {
+				return got == nil && want == nil || got != nil && want != nil && got.Kind == want.Kind && got.ID == want.ID
+			}
+			if !sameTime(node.EditedAt, want.editedAt) || !sameTime(node.DeletedAt, want.deletedAt) || !sameActor(node.DeletedBy, want.deletedBy) {
+				t.Errorf("%s: the tree read answers the %s comment's marks edited_at %v, deleted_at %v, deleted_by %v, want %v, %v, %v",
+					what, want.name, node.EditedAt, node.DeletedAt, node.DeletedBy, want.editedAt, want.deletedAt, want.deletedBy)
+			}
+			if want.name == "deleted" && node.Text != "" {
+				t.Errorf("%s: the tree read answers the deleted comment's text %q, want none", what, node.Text)
+			}
+		}
+	}
+}
+
+// TestTheKindReadAnswersAChangeOnADecisionTheSkeletonDoesNotOpen: an issue born converted holds
+// notes.md, a document the skeleton does not open (R8), and its decision d1; alice comments on the
+// decision's words, a Change. The read with no view answers the Change, as a node of the tree
+// under the issue, and no node of d1. The read with kind=comment, and with kind=comment and
+// kind=decision, take the Change out of that skeleton (R30): no node either answers can bring a
+// comment on d1's text in, since neither holds d1. Else it prints `<query> of <key> answers no
+// Change <id>, which the read with no view answers`.
+func TestTheKindReadAnswersAChangeOnADecisionTheSkeletonDoesNotOpen(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	createReferenceAPIProject(t, handler, "CHNG")
+	issue := createDigestIssue(t, handler, database, "CHNG", "A decision in notes", ":::requirement{#r1}\nThe list shows urgent asks first.\n:::\n", false)
+	notes := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "notes.md", "The notes.\n\n:::decision{#d1}\nWe ship the urgent list first.\n:::\n").Artifact.ID
+	change := createBlockAnchoredComment(t, handler, issue.Key, map[string]any{"artifact": notes, "quote": "urgent list", "block_id": "d1"}).ID
+	decision := blockKeyOf(t, database, notes) + "#d1"
+
+	whole := treeRead(t, handler, issue.Key, "", "alice", false)
+	if held := whole.nodesNamed(graphstore.KindComment, change); len(held) != 1 || len(whole.nodesNamed(refs.BlockNodeKind, decision)) != 0 {
+		t.Fatalf("the read with no view of %s answers the Change %s %d times and the decision %s %d times, want the Change once and no node of the decision: this case proves nothing",
+			issue.Key, change, len(held), decision, len(whole.nodesNamed(refs.BlockNodeKind, decision)))
+	}
+	for _, query := range []string{"?kind=comment", "?kind=comment&kind=decision"} {
+		read := treeRead(t, handler, issue.Key, query, "alice", false)
+		held := read.nodesNamed(graphstore.KindComment, change)
+		if len(held) != 1 {
+			t.Errorf("%s of %s answers no Change %s, which the read with no view answers: it answers %v", query, issue.Key, change, read.addresses())
+			continue
+		}
+		if held[0].Role != treeRoleTree {
+			t.Errorf("%s of %s answers the Change %s as %q, want a node of the tree, as a kind it names", query, issue.Key, change, held[0].Role)
+		}
+	}
+}
+
 // TestTheTreeReadAnswersTheCatalogueNodesItsTuplesNameAsContext: a pre-mortem lens on a requirement
 // and the requirement's constrained_by to a constraint of the catalogue. The tree read with no view
 // answers the lens as a node of the tree and, as context, the pre-mortem lens_kind and that
@@ -422,6 +570,92 @@ func TestTheTreeReadAnswersEachTypedBlockOnceWithItsDocument(t *testing.T) {
 	}
 }
 
+// The words TestATypedBlocksOwnTextIsNoNodeOfTheTreeRead writes into the issue's own fragment,
+// each unique in the store, so a block is found by them (blockWithText).
+const (
+	ownTextRequirementWords = "The board answers each urgent ask within a minute."
+	ownTextProseWords       = "A paragraph of the issue's own fragment that no typed block holds."
+	ownTextCalloutWords     = "The callout's own words."
+	ownTextItemWords        = "The first item of the callout's list."
+)
+
+// TestATypedBlocksOwnTextIsNoNodeOfTheTreeRead: alice writes into the issue's own fragment (the
+// tree artifact) a requirement, a paragraph P and a callout holding a paragraph and a list. The
+// store holds the requirement's paragraph as a node placed by the text under the requirement, and
+// the paragraph of the callout's first item two blocks or more below the callout. The read with no
+// view answers the requirement and the callout each as one node whose text holds its words, and no
+// other node holding them: a typed block's own text, the blocks its text holds at any depth, is no
+// node of the read, since the typed block's node holds it whole; P, which no typed block holds, is
+// a node. The dry run of the delete of the requirement counts 1, and of the callout 1. Once alice
+// places P under the requirement through PATCH, the read answers P under the requirement and still
+// no node of the requirement's own paragraph, and the dry run of the requirement counts 2.
+func TestATypedBlocksOwnTextIsNoNodeOfTheTreeRead(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	createReferenceAPIProject(t, handler, "TOWN")
+	issue := createDigestIssue(t, handler, database, "TOWN", "A typed block's own text", ":::criterion{#k1}\nThe board answers each reader.\n:::\n", false)
+	key := issue.Key
+	tree := readDecisionDocument(t, database, key, issueTreeName)
+	succeeded(t, "alice writes a requirement, a paragraph and a callout into the issue's own fragment", editDocument(t, handler, tree.id, insertAtEnd(
+		":::requirement{#or1}\n"+ownTextRequirementWords+"\n:::\n\n"+ownTextProseWords+"\n\n"+
+			":::callout{#oc1 kind=\"note\" title=\"\"}\n"+ownTextCalloutWords+"\n\n- "+ownTextItemWords+"\n- The second item of the callout's list.\n:::\n")))
+	requirement, callout, prose := tree.address("or1"), tree.address("oc1"), blockWithText(t, database, ownTextProseWords)
+	own := blockWithText(t, database, ownTextRequirementWords)
+	if placed, _ := placementOf(t, database, refs.BlockNodeKind, own); placed.ToID != requirement || placementValue(t, database, own, refs.AttributePlacement) != refs.PlacementText {
+		t.Fatalf("the requirement's paragraph %s stands under %s at the placement %q, want under %s by the text, so this case proves nothing",
+			own, placed.ToID, placementValue(t, database, own, refs.AttributePlacement), requirement)
+	}
+	if item := blockWithText(t, database, ownTextItemWords); placementValue(t, database, item, refs.AttributePlacement) != refs.PlacementText {
+		t.Fatalf("the paragraph of the callout's first item %s is placed %q, want by the text, so this case proves nothing",
+			item, placementValue(t, database, item, refs.AttributePlacement))
+	} else if placed, _ := placementOf(t, database, refs.BlockNodeKind, item); placed.ToID == callout {
+		t.Fatalf("the paragraph of the callout's first item %s stands under the callout itself, want a list between them, so this case proves no depth", item)
+	}
+
+	// read is the read with no view, failing unless it answers each typed block as one node whose
+	// text holds its words, and no other node holding those words.
+	read := func(what string) treeAnswer {
+		t.Helper()
+		answer := treeRead(t, handler, key, "", "alice", false)
+		for address, words := range map[string][]string{requirement: {ownTextRequirementWords}, callout: {ownTextCalloutWords, ownTextItemWords}} {
+			if typed, _ := answer.node(t, refs.BlockNodeKind, address); !strings.Contains(typed.Text, words[0]) {
+				t.Errorf("%s: the tree read answers %s with the text %q, want its words %q", what, address, typed.Text, words[0])
+			}
+			for _, node := range answer.Nodes {
+				holds := slices.ContainsFunc(words, func(word string) bool { return strings.Contains(node.Text, word) })
+				if holds && (node.Kind != refs.BlockNodeKind || node.ID != address) {
+					t.Errorf("%s: the tree read answers %s:%s under %+v with the text %q, want no node of %s's own text but %s",
+						what, node.Kind, node.ID, node.Parent, node.Text, address, address)
+				}
+			}
+		}
+		return answer
+	}
+	alice := personCaller(t, handler, "alice")
+	count := func(what, address string) int {
+		t.Helper()
+		return deletedCount(t, "the dry run of "+what, deleteNodeAs(alice, key, address, true, -1, ""))
+	}
+
+	if node, _ := read("before the move").node(t, refs.BlockNodeKind, prose); node.Parent == nil || node.Parent.ID == requirement {
+		t.Errorf("the tree read answers P under %+v before its move, want it under the node its text places it under, not %s", node.Parent, requirement)
+	}
+	if counted := count("the requirement "+requirement, requirement); counted != 1 {
+		t.Errorf("the dry run of the requirement %s counts %d, want 1: the requirement, and not its own paragraph", requirement, counted)
+	}
+	if counted := count("the callout "+callout, callout); counted != 1 {
+		t.Errorf("the dry run of the callout %s counts %d, want 1: the callout, and none of the blocks its text holds", callout, counted)
+	}
+
+	_, tag := placementOf(t, database, refs.BlockNodeKind, prose)
+	succeeded(t, "alice places P under the requirement", patchNode(t, handler, key, prose, tag, map[string]any{"parent": requirement}, "alice"))
+	if node, _ := read("after the move").node(t, refs.BlockNodeKind, prose); node.Parent == nil || node.Parent.ID != requirement {
+		t.Errorf("the tree read answers P under %+v after its move, want it under the requirement %s", node.Parent, requirement)
+	}
+	if counted := count("the requirement "+requirement+" after the move", requirement); counted != 2 {
+		t.Errorf("the dry run of the requirement %s counts %d after the move, want 2: the requirement and P", requirement, counted)
+	}
+}
+
 // decisionByBlock is the decision of decisions whose block id is block.
 func decisionByBlock(t *testing.T, decisions []model.Decision, block string) model.Decision {
 	t.Helper()
@@ -440,8 +674,28 @@ func readIssueDecisionsWithTrees(t *testing.T, handler http.Handler, key string)
 	return decodeBody[issueDecisions](t, treesRequest(t, handler, "/api/v1/issues/"+key+"/decisions", true))
 }
 
+// asTheTreeReadAnswersIt is decision, the old `decisions` member's model.Decision for entry's node,
+// as the tree read answers that decision, with any view or none. The old member answers a
+// `decision` block whose decided_by names a person, which nobody kept, kind `person`
+// (compatDecision), for a page of the release before: that page reads the old member alone, and
+// lists a decision under "Your decisions" only by kind `person` or a Keep, so it would list such a
+// block, which waits for nobody's review, nowhere. That kind is the old member's alone. The tree
+// read answers the block kind `agent`, the node's shape, as the entry does, and says who decided
+// in the decided_by tuple it answers beside the node with the decider as context: this release's
+// page reads the person's decision from that tuple (decisionsFromTree in
+// web/src/api/decisions-tree.ts, then isPersonDecision and deciderOf), and no page of the release
+// before reads the tree read. Every other decision, and every other member, is the old member's.
+func asTheTreeReadAnswersIt(entry decisionEntry, decision model.Decision) model.Decision {
+	if entry.Node.Kind == refs.BlockNodeKind && entry.DecidedBy != nil && entry.DecidedBy.Kind == graphstore.KindPerson && decision.Kept == nil {
+		decision.Kind = entry.Kind
+	}
+	return decision
+}
+
 // requireDecisionAsRead fails unless the tree read's decision node d1 answers every member of
-// model.Decision as the decisions read answers it for the same decision, byte for byte.
+// model.Decision as the decisions read answers it for the same decision, byte for byte, but for
+// the old member's kind for a person's decision nobody kept (asTheTreeReadAnswersIt), and its
+// uncertainty and uncertainty_reason as that read's entry for it answers them.
 func requireDecisionAsRead(t *testing.T, what string, handler http.Handler, key, node string) model.Decision {
 	t.Helper()
 	read := treeRead(t, handler, key, "", "alice", true)
@@ -449,21 +703,28 @@ func requireDecisionAsRead(t *testing.T, what string, handler http.Handler, key,
 	if held.Decision == nil {
 		t.Fatalf("%s: the tree read's decision %s answers no decision members", what, node)
 	}
-	want := decisionByBlock(t, readIssueDecisionsWithTrees(t, handler, key).Decisions, "d1")
-	got, _ := json.Marshal(held.Decision)
+	decisions := readIssueDecisionsWithTrees(t, handler, key)
+	entry := requireEntry(t, decisions.Entries, what+": the decision d1", refs.BlockNodeKind+":"+node)
+	want := asTheTreeReadAnswersIt(entry, decisionByBlock(t, decisions.Decisions, "d1"))
+	got, _ := json.Marshal(held.Decision.Decision)
 	expected, _ := json.Marshal(want)
 	if !bytes.Equal(got, expected) {
 		t.Errorf("%s: the tree read's decision answers\n%s\nwant the decisions read's\n%s", what, got, expected)
 	}
-	return *held.Decision
+	if entryJSON(t, held.Decision.Uncertainty) != entryJSON(t, entry.Uncertainty) || entryJSON(t, held.Decision.UncertaintyReason) != entryJSON(t, entry.UncertaintyReason) {
+		t.Errorf("%s: the tree read's decision %s answers the uncertainty %s and its reason %s, want the decisions read's entry's %s and %s", what, node,
+			entryJSON(t, held.Decision.Uncertainty), entryJSON(t, held.Decision.UncertaintyReason), entryJSON(t, entry.Uncertainty), entryJSON(t, entry.UncertaintyReason))
+	}
+	return held.Decision.Decision
 }
 
 // TestTheTreeReadAnswersEveryDecisionMemberAsTheDecisionsReadDoes: on a converted issue, the
 // decision node answers every member of model.Decision equal to GET /api/v1/issues/{key}/decisions'
-// for the same decision; after the words of the requirement its shaped tuple names change, its
-// link answers changed_since_tie and not stale, and after the decision's own words change, stale,
-// each as the decisions read's does; and the read answers the decision's decided_by person as
-// context with the tuple.
+// for the same decision, its kind the entry's, the node's shape, where the old member answers
+// alice's own decision kind `person` for the release before (asTheTreeReadAnswersIt); after the
+// words of the requirement its shaped tuple names change, its link answers changed_since_tie and
+// not stale, and after the decision's own words change, stale, each as the decisions read's does;
+// and the read answers the decision's decided_by person as context with the tuple.
 func TestTheTreeReadAnswersEveryDecisionMemberAsTheDecisionsReadDoes(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createReferenceAPIProject(t, handler, "CORE")
@@ -503,12 +764,12 @@ func TestTheTreeReadAnswersEveryDecisionMemberAsTheDecisionsReadDoes(t *testing.
 }
 
 // resultsFixture is an issue whose spec holds r1 and whose Verification document holds c1 serving
-// it, and the path of that document's upload.
+// it, and the slug of that document.
 func resultsFixture(t *testing.T, handler http.Handler, project string) (issue string, checks string) {
 	t.Helper()
 	created := createInteractionIssue(t, handler, project, "Results", ":::requirement{#r1}\nThe list comes first.\n:::\n")
-	uploadDocument(t, handler, "/api/v1/issues/"+created.Key, "verification.md", checkServing("c1", "dispatch://"+created.Key+"/spec#b-r1"))
-	return created.Key, "verification-md"
+	uploaded := uploadDocument(t, handler, "/api/v1/issues/"+created.Key, "verification.md", checkServing("c1", "dispatch://"+created.Key+"/spec#b-r1"))
+	return created.Key, uploaded.Artifact.Slug
 }
 
 // TestTheTreeReadAnswersAResultsObservedTextAsItsReading: a result whose observed text holds a link
@@ -633,7 +894,7 @@ func TestTheTreeReadNamesTheAncestorAnIssueIsAViewOf(t *testing.T) {
 	requirement := ":::requirement{#cr9}\nThe child's own work.\n:::\n"
 	refusedWith := func(what string, response *httptest.ResponseRecorder) {
 		t.Helper()
-		refusal := requireRefused(t, what, response, http.StatusConflict, codeRequirementBelongsToAncestor, parent.Key)
+		refusal := requireRefusedNaming(t, what, response, http.StatusConflict, codeRequirementBelongsToAncestor, parent.Key)
 		if !strings.Contains(refusal.Error, "cr9") {
 			t.Errorf("%s is refused %q, want the requirement it adds named", what, refusal.Error)
 		}
@@ -690,8 +951,8 @@ func TestAKeepReachesADecisionOfAnIssueRoom(t *testing.T) {
 			t.Fatalf("%s: the tree read answers %+v, want an unkept decision with its text_sha256", kept.name, decision.Decision)
 		}
 		keep := "/api/v1/artifacts/" + kept.document + "/blocks/" + kept.block + "/keep"
-		requireRefused(t, kept.name+" kept with a sum it does not hold", dispatchRequest(t, handler, http.MethodPost, keep,
-			map[string]any{"text_sha256": strings.Repeat("0", 64)}, "alice"), http.StatusConflict, "DECISION_CHANGED", "")
+		requireRefusedNaming(t, kept.name+" kept with a sum it does not hold", dispatchRequest(t, handler, http.MethodPost, keep,
+			map[string]any{"text_sha256": strings.Repeat("0", 64)}, "alice"), http.StatusConflict, "DECISION_CHANGED")
 		succeeded(t, "keep "+kept.name, dispatchRequest(t, handler, http.MethodPost, keep, map[string]any{"text_sha256": decision.Decision.TextSHA256}, "alice"))
 		after, _ := treeRead(t, handler, issue.Key, "", "alice", false).node(t, refs.BlockNodeKind, node)
 		if after.Decision == nil || after.Decision.Kept == nil || after.Decision.Kept.KeptBy != "alice" || after.Decision.WaitingReview {
@@ -736,7 +997,7 @@ func TestTheTreeReadLiftsAVisibleNodeAboveAParentItsReaderMayNotSee(t *testing.T
 		login string
 		sees  []refs.Target
 	}{{"alice", []refs.Target{lensTarget, riskTarget}}, {"bob", []refs.Target{riskTarget}}} {
-		loaded, err := refs.Nodes(ctx, rig.database.Pool, model.Actor{Kind: "user", ID: reader.login}, true, []refs.Target{lensTarget, riskTarget})
+		loaded, err := refs.Nodes(ctx, rig.database.Pool, model.Actor{Kind: "user", ID: reader.login}, []refs.Target{lensTarget, riskTarget})
 		if err != nil {
 			t.Fatalf("load the lens and the risk as %s: %v", reader.login, err)
 		}
@@ -936,8 +1197,8 @@ func TestTheVerificationViewAnswersEveryRequirementOfTheIssue(t *testing.T) {
 
 // decisionsViewSpec is the spec of the decisions view's issue key: two requirements; an ask that
 // shaped r1, which bob answers; an ask that shaped r2, which nobody answers; a decision that shaped
-// r1, with a reading under it, which alice keeps; and a decision that shaped nothing, which waits
-// for review.
+// r1, with a reading under it, which alice keeps; and a decision that shaped nothing, which nobody
+// keeps.
 func decisionsViewSpec(key string) string {
 	pointer := func(block string) string { return "dispatch://" + key + "/spec#b-" + block }
 	return ":::requirement{#r1}\nThe list orders the asks by urgency.\n:::\n\n" +
@@ -954,9 +1215,11 @@ func decisionsViewSpec(key string) string {
 // requireDecisionsViewAsRead fails unless view, ?view=decisions of an issue, answers every entry
 // of read, the decisions read of the same issue, as the query's, keyed as read keys it and member
 // by member: an ask by its ask id with its question, options, urgency and multiple; a decision and
-// an answered ask with every member of model.Decision the read's `decisions` answers for it, and
-// the block id, text, sum, kind, replaced, kept and waiting_review of its entry; and each reading
-// of a decision under that decision. It answers each entry's node by the entry's key.
+// an answered ask with every member of model.Decision the read's `decisions` answers for it, but
+// for that member's kind for a person's decision nobody kept (asTheTreeReadAnswersIt), and the
+// block id, text, sum, kind, replaced, kept and waiting_review of its entry; and each reading
+// the read lists under an entry, a decision's or an answered ask's, under that entry's node. It
+// answers each entry's node by the entry's key.
 func requireDecisionsViewAsRead(t *testing.T, what string, view treeAnswer, read issueDecisions) map[string]model.IssueTreeNode {
 	t.Helper()
 	decided := make(map[string]model.Decision, len(read.Decisions))
@@ -973,6 +1236,14 @@ func requireDecisionsViewAsRead(t *testing.T, what string, view treeAnswer, read
 		}
 		node := held[0]
 		nodes[entryKey(entry)] = node
+		for _, reading := range entry.Readings {
+			held := view.nodesNamed(reading.Node.Kind, reading.Node.ID)
+			if len(held) != 1 || held[0].Role != treeRoleQuery || held[0].Parent == nil ||
+				held[0].Parent.Kind != entry.Node.Kind || held[0].Parent.ID != entry.Node.ID {
+				t.Errorf("%s: ?view=decisions answers the reading %s:%s of the entry %s as %s, want it once, the query's, under that entry's node",
+					what, reading.Node.Kind, reading.Node.ID, entryKey(entry), entryJSON(t, held))
+			}
+		}
 		if entry.Node.Kind == graphstore.KindAsk {
 			if entry.Question == nil || node.Text != *entry.Question || node.Ask == nil ||
 				entryJSON(t, node.Ask.Options) != entryJSON(t, entry.Options) || entry.Urgency == nil || node.Ask.Urgency != *entry.Urgency ||
@@ -994,8 +1265,12 @@ func requireDecisionsViewAsRead(t *testing.T, what string, view treeAnswer, read
 			t.Errorf("%s: ?view=decisions answers the entry %s with no decision, want the decisions read's %s", what, entryKey(entry), entryJSON(t, want))
 			continue
 		}
-		if got, expected := entryJSON(t, node.Decision), entryJSON(t, want); got != expected {
+		if got, expected := entryJSON(t, node.Decision.Decision), entryJSON(t, asTheTreeReadAnswersIt(entry, want)); got != expected {
 			t.Errorf("%s: ?view=decisions answers the entry %s with the decision\n%s\nwant the decisions read's\n%s", what, entryKey(entry), got, expected)
+		}
+		if entryJSON(t, node.Decision.Uncertainty) != entryJSON(t, entry.Uncertainty) || entryJSON(t, node.Decision.UncertaintyReason) != entryJSON(t, entry.UncertaintyReason) {
+			t.Errorf("%s: ?view=decisions answers the entry %s with the uncertainty %s and its reason %s, want the entry's %s and %s", what, entryKey(entry),
+				entryJSON(t, node.Decision.Uncertainty), entryJSON(t, node.Decision.UncertaintyReason), entryJSON(t, entry.Uncertainty), entryJSON(t, entry.UncertaintyReason))
 		}
 		got := node.Decision
 		blockID := ""
@@ -1009,32 +1284,46 @@ func requireDecisionsViewAsRead(t *testing.T, what string, view treeAnswer, read
 				what, entryKey(entry), got.BlockID, got.Kind, got.Replaced, entryJSON(t, got.Kept), got.WaitingReview,
 				blockID, entry.Kind, entry.Replaced, entryJSON(t, entry.Kept), entry.WaitingReview)
 		}
-		if entry.Node.Kind != refs.BlockNodeKind {
-			continue
-		}
-		for _, reading := range entry.Readings {
-			held := view.nodesNamed(reading.Node.Kind, reading.Node.ID)
-			if len(held) != 1 || held[0].Role != treeRoleQuery || held[0].Parent == nil ||
-				held[0].Parent.Kind != entry.Node.Kind || held[0].Parent.ID != entry.Node.ID {
-				t.Errorf("%s: ?view=decisions answers the reading %s:%s of the entry %s as %s, want it once, the query's, under that decision",
-					what, reading.Node.Kind, reading.Node.ID, entryKey(entry), entryJSON(t, held))
-			}
-		}
 	}
 	return nodes
 }
 
+// decisionsQueryVersions is the id of the artifact row of the decisions query node of the issue
+// key, "" where the issue holds none, and the newest version that node holds, 0 where it holds
+// none: the node the tree read reads a version of `?view=decisions` from.
+func decisionsQueryVersions(t *testing.T, database *store.Store, key string) (string, int) {
+	t.Helper()
+	var id *string
+	var newest int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select min(a.id::text), coalesce(max(v.number), 0)
+		from artifacts a
+		join graph_nodes n on n.kind = $2 and n.id = a.ref_key and n.supertag = $3 and n.attributes->>$4 = $5
+		left join artifact_versions v on v.artifact_id = a.id
+		where a.issue_key = $1`,
+		key, graphstore.KindArtifact, graphstore.SupertagQuery, graphstore.AttributeQuery, graphstore.QueryDecisions).Scan(&id, &newest); err != nil {
+		t.Fatalf("read the decisions query node of %s: %v", key, err)
+	}
+	return deref(id), newest
+}
+
 // TestTheDecisionsViewAnswersTheDecisionsQuery: an issue born converted and one that has not
-// converted each hold decisionsViewSpec, with its ask a1 answered, a2 open, its decision d1, which
-// holds the reading g1, kept by alice, d2 waiting for review, and a constraint r1's constrained_by
-// names. Each one's ?view=decisions answers every entry of the decisions read as the query's,
-// keyed and shaped as that read answers it (requireDecisionsViewAsRead), the open question with its
-// options, the kept decision with its keeper, the waiting one waiting and the reading under its
-// decision, and no node of its query but an ask, a decision or a reading under a decision. Its
-// ?view=spec answers, as context, d1 and the answered a1, each with its shaped tuple to r1, and the
-// constraint with r1's constrained_by, and neither the open a2, which shaped r2, nor d2, which
-// shaped nothing. A version of the decisions query node is answered as a version no record holds.
+// converted each hold decisionsViewSpec, with its ask a1 answered by a person and then closed by
+// the agent's reading g2, a2 open, its decision d1, which holds the reading g1, kept by alice, d2,
+// which alice's create wrote and so waits for nobody's review (R4), the agent's own decision d3
+// waiting for review, and a constraint r1's constrained_by names. Each one's ?view=decisions
+// answers every entry of the decisions read as the query's, keyed and shaped as that read answers
+// it (requireDecisionsViewAsRead), the open question with its options, the kept decision with its
+// keeper, alice's d2 waiting for nobody, the agent's d3 waiting, the reading under its decision and
+// the reading under the answered ask's node, and no node of its query but an ask, a decision or a
+// reading of a decision or of an answered ask. Its ?view=spec answers, as context, d1 and the
+// answered a1, each with its shaped tuple to r1, and the constraint with r1's constrained_by, and
+// neither the open a2, which shaped r2, nor d2 or d3, which shaped nothing. A version the decisions
+// query node does not have is 404 QUERY_VERSION_NOT_FOUND on both issues; on the converted issue,
+// version 1, the create's, answers the view as it stood at the revision its row records, without
+// g2, or 404 QUERY_VERSION_NOT_RECORDED where its row records none (R8).
 func TestTheDecisionsViewAnswersTheDecisionsQuery(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1055,6 +1344,13 @@ func TestTheDecisionsViewAnswersTheDecisionsQuery(t *testing.T) {
 		spec := readDecisionDocument(t, database, issue.Key, "spec")
 		answered, open := blockAskID(t, handler, issue.Key, "a1"), blockAskID(t, handler, issue.Key, "a2")
 		answerDecisionBlock(t, handler, answered, "bob", []string{"Urgency"}, "Urgency, then age.", nil)
+		// The agent's reading g2 closes the person's answered a1: an agent's reading inserted into
+		// a person's decision is taken (R32). The same upload writes d3, the agent's own decision,
+		// which waits for review; d2, which alice's create wrote, is hers and waits for nobody's.
+		agentUploadAs(t, handler, issue.Key, "spec.md",
+			withAskReading(t, documentMarkdown(t, handler, spec.id), "a1", "g2", "The agent reads the answer as urgency before age.")+
+				"\n:::decision{#d3}\nWe page the list.\n:::\n", nil)
+		settleIssue(t, documents, issue.Key)
 		kept := requireEntry(t, readEntries(t, handler, issue.Key), "the decision d1", refs.BlockNodeKind+":"+spec.address("d1"))
 		keepBlock(t, handler, spec.id, "d1", kept.TextSHA256)
 		written := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/constraints",
@@ -1087,13 +1383,27 @@ func TestTheDecisionsViewAnswersTheDecisionsQuery(t *testing.T) {
 		if node, held := nodes[askNode(answered)]; !held || node.Decision == nil || node.Decision.Kind != "person" {
 			t.Errorf("%s: ?view=decisions answers the answered ask a1 (held %t) as %s, want a person's decision", what, held, entryJSON(t, node))
 		}
+		closing := spec.address("g2")
+		askEntry := requireEntry(t, read.Entries, "the answered ask a1", askNode(answered))
+		if !slices.ContainsFunc(askEntry.Readings, func(reading decisionReading) bool { return reading.Node.ID == closing }) {
+			t.Fatalf("%s: the decisions read lists the readings %s under the answered ask a1, want the reading g2 (%s) that closes it",
+				what, entryJSON(t, askEntry.Readings), closing)
+		}
+		if held := view.nodesNamed(refs.BlockNodeKind, closing); len(held) != 1 || held[0].Role != treeRoleQuery || held[0].Supertag != refs.ReadingSupertag ||
+			held[0].Parent == nil || held[0].Parent.Kind != graphstore.KindAsk || held[0].Parent.ID != answered {
+			t.Errorf("%s: ?view=decisions answers the reading g2 that closes the answered ask a1 as %s, want it once, the query's reading, under the ask's node %s",
+				what, entryJSON(t, held), answered)
+		}
 		if node, held := nodes[decisionNode("d1")]; !held || node.Decision == nil || node.Decision.Kept == nil || node.Decision.Kept.KeptBy != "alice" ||
 			node.Decision.Kept.KeptAt.IsZero() || node.Decision.WaitingReview {
 			t.Errorf("%s: ?view=decisions answers the kept decision d1 (held %t) as %s, want it kept by alice, with when, and not waiting",
 				what, held, entryJSON(t, node.Decision))
 		}
-		if node, held := nodes[decisionNode("d2")]; !held || node.Decision == nil || node.Decision.Kept != nil || !node.Decision.WaitingReview {
-			t.Errorf("%s: ?view=decisions answers the decision d2 (held %t) as %s, want it waiting for review", what, held, entryJSON(t, node.Decision))
+		if node, held := nodes[decisionNode("d2")]; !held || node.Decision == nil || node.Decision.Kept != nil || node.Decision.WaitingReview {
+			t.Errorf("%s: ?view=decisions answers alice's decision d2 (held %t) as %s, want it unkept and waiting for nobody's review", what, held, entryJSON(t, node.Decision))
+		}
+		if node, held := nodes[decisionNode("d3")]; !held || node.Decision == nil || node.Decision.Kept != nil || !node.Decision.WaitingReview {
+			t.Errorf("%s: ?view=decisions answers the agent's decision d3 (held %t) as %s, want it waiting for review", what, held, entryJSON(t, node.Decision))
 		}
 		if held := view.nodesNamed(refs.BlockNodeKind, spec.address("g1")); len(held) != 1 || held[0].Supertag != refs.ReadingSupertag {
 			t.Errorf("%s: ?view=decisions answers the reading g1 as %s, want it once, a reading", what, entryJSON(t, held))
@@ -1102,9 +1412,9 @@ func TestTheDecisionsViewAnswersTheDecisionsQuery(t *testing.T) {
 			if node.Role != treeRoleQuery {
 				continue
 			}
-			parentDecision := node.Parent != nil && node.Parent.Supertag == refs.DecisionSupertag
-			if node.Kind != graphstore.KindAsk && node.Supertag != refs.DecisionSupertag && (node.Supertag != refs.ReadingSupertag || !parentDecision) {
-				t.Errorf("%s: ?view=decisions answers %s:%s (%s) as the query's, which is no ask, no decision and no reading under a decision",
+			underDecision := node.Parent != nil && (node.Parent.Supertag == refs.DecisionSupertag || node.Parent.Kind == graphstore.KindAsk)
+			if node.Kind != graphstore.KindAsk && node.Supertag != refs.DecisionSupertag && (node.Supertag != refs.ReadingSupertag || !underDecision) {
+				t.Errorf("%s: ?view=decisions answers %s:%s (%s) as the query's, which is no ask, no decision and no reading of a decision or an answered ask",
 					what, node.Kind, node.ID, node.Supertag)
 			}
 		}
@@ -1133,14 +1443,40 @@ func TestTheDecisionsViewAnswersTheDecisionsQuery(t *testing.T) {
 				what, entryJSON(t, held), specView.holdsTuple(graphstore.TupleConstrainedBy, requirement, constrained))
 		}
 		for _, node := range specView.Nodes {
-			if node.Kind == graphstore.KindAsk && node.ID != answered || node.ID == spec.address("d2") {
+			if node.Kind == graphstore.KindAsk && node.ID != answered || node.ID == spec.address("d2") || node.ID == spec.address("d3") {
 				t.Errorf("%s: ?view=spec answers %s:%s, which is no answered ask and no decision that shaped one of its nodes", what, node.Kind, node.ID)
 			}
 		}
 
-		// The decisions query node records no version of its own yet: a version of it is answered
-		// as a version no record holds.
-		requireRefused(t, what+": a version of the decisions query", treeResponse(t, handler, issue.Key, "?view=decisions&v=1", "alice", false),
-			http.StatusNotFound, "QUERY_VERSION_NOT_FOUND", "decisions query of "+issue.Key+" holds no version 1")
+		// A version of the decisions query node answers as R8's rule of v= reads that version. A
+		// version the node does not have is 404 QUERY_VERSION_NOT_FOUND on both issues: the issue
+		// that has not converted holds no query node at all. The converted issue's node holds the
+		// version 1 its create writes (R15), which answers the query's nodes as they stood at the
+		// store revision its version_renders row records, so with no reading g2, which came after
+		// it, and 404 QUERY_VERSION_NOT_RECORDED, naming version 1, where its row records none.
+		query, newest := decisionsQueryVersions(t, database, issue.Key)
+		if (query == "") != issueCase.unconverted || !issueCase.unconverted && newest < 1 {
+			t.Fatalf("%s holds the decisions query node %q at version %d, want one at version 1 or above exactly where the issue is converted", what, query, newest)
+		}
+		requireRefusedNaming(t, what+": a version the decisions query does not have", treeResponse(t, handler, issue.Key, fmt.Sprintf("?view=decisions&v=%d", newest+1), "alice", false),
+			http.StatusNotFound, "QUERY_VERSION_NOT_FOUND", fmt.Sprintf("decisions query of %s holds no version %d", issue.Key, newest+1))
+		if query == "" {
+			continue
+		}
+		first := treeResponse(t, handler, issue.Key, "?view=decisions&v=1", "alice", false)
+		if treeReadViewsRecorded(t, database, query, 1) == 0 {
+			requireRefusedNaming(t, what+": version 1 of the decisions query, which records no store revision", first, http.StatusNotFound, "QUERY_VERSION_NOT_RECORDED", "version 1")
+			continue
+		}
+		if first.Code != http.StatusOK {
+			t.Fatalf("%s: version 1 of the decisions query, which records the store revision it read: status=%d body=%s, want 200", what, first.Code, first.Body.String())
+		}
+		atFirst := decodeBody[model.IssueTreeRead](t, first)
+		if atFirst.View != graphstore.QueryDecisions || atFirst.Version == nil || *atFirst.Version != 1 {
+			t.Errorf("%s: ?view=decisions&v=1 answers the view %q at version %s, want decisions at version 1", what, atFirst.View, entryJSON(t, atFirst.Version))
+		}
+		if held := (treeAnswer{IssueTreeRead: atFirst}).nodesNamed(refs.BlockNodeKind, closing); len(held) != 0 {
+			t.Errorf("%s: ?view=decisions&v=1 answers the reading g2 %s, written after version 1 of the decisions query", what, closing)
+		}
 	}
 }

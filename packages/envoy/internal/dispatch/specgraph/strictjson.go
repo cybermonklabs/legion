@@ -13,7 +13,7 @@ import (
 
 // decodeJSON decodes data, one JSON value, into v, and form is the format as a person reads it,
 // such as approvedForm, which it names for a value of another type. It is the one reader of every
-// JSON file of a format of this package (approved.json, ApprovedFile, and each JSON file of a
+// JSON file of a format of this package (approved.json, approvedFile, and each JSON file of a
 // scenario), and it refuses each text that the format does not hold:
 //
 //   - a byte that is not UTF-8 (RFC 8259 §8.1: JSON text "MUST be encoded using UTF-8"): "it is not
@@ -97,13 +97,34 @@ func nullPlace(data []byte) (place string, null bool, err error) {
 	}
 }
 
-// decodeJSONFrom reads all of r and decodes it with decodeJSON.
+// decodeJSONFrom reads r, at most fileBound bytes of it (readBounded), and decodes it with
+// decodeJSON.
 func decodeJSONFrom(r io.Reader, v any, form string) error {
-	data, err := io.ReadAll(r)
+	data, err := readBounded(r, fileBound)
 	if err != nil {
 		return err
 	}
 	return decodeJSON(data, v, form)
+}
+
+// fileBound is the most bytes of one JSON file of a format that the package reads (decodeJSONFrom,
+// so approved.json, history.json and ties.json, and each other JSON file of a scenario). 16 MiB is
+// far above any such file, and a file over it is refused, before any of it is decoded, so that a
+// file which grew past any use cannot take the memory of the process. A spec file of a scenario has
+// the bound of a spec file instead, notes.MaxFileSize (readScenarioFiles).
+const fileBound = 16 << 20
+
+// readBounded is all of r, or an error that names bound where r holds more than bound bytes, read
+// up to one byte past the bound.
+func readBounded(r io.Reader, bound int) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, int64(bound)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > bound {
+		return nil, fmt.Errorf("it holds more than %d bytes, the most that the reader reads of such a file", bound)
+	}
+	return data, nil
 }
 
 // quotedBound is the most bytes of a value of the input that quoted prints whole. encoding/json/v2

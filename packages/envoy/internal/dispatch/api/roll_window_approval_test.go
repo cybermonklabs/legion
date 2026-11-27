@@ -22,7 +22,7 @@ import (
 // its asks row (docs' rollWindowAskAttributes), the release before's second copy of the answer. A
 // test's editor presents no schema_creatable, so its creatable version is 1, at most the lowest
 // version the fleet reads, and its document socket stays writable beside the release before
-// (docs' schemaFleet.admits), as a page creating nothing past version 4 is in a roll.
+// (docs' schemaFleet.admits), as a page creating nothing past version 6 is in a roll.
 func registerTwoBuilds(t *testing.T, database *store.Store) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -35,11 +35,12 @@ func registerTwoBuilds(t *testing.T, database *store.Store) {
 }
 
 // baseSchemaVersion and baseSchemaCreatable are the schema numbers a process of the release
-// before registers: the base release's pmdoc/schema/blocks.json is version 4, and creates nothing
-// past it.
+// before registers: the base release's pmdoc/schema/blocks.json is version 6, below this build's
+// 9, and creates nothing past version 5. So a fleet holding one drives the fleet guard at the real
+// boundary, version 6 against this build's 9.
 const (
-	baseSchemaVersion   = 4
-	baseSchemaCreatable = 4
+	baseSchemaVersion   = 6
+	baseSchemaCreatable = 5
 )
 
 // whileTheReleaseBeforeServes runs write with a live process of the release before registered
@@ -80,9 +81,10 @@ func requireCarriedTo(t *testing.T, handler http.Handler, artifactID string, fro
 // While two builds serve, a person's answer is written into the ask's block for the release
 // before's pages (the roll window), so the version settlement writes of it differs from the
 // approved one in the block's server-owned attributes alone, and the approval is carried to it by
-// the case that compares the two without them, which subsumes the answer carry of the release
-// before: answering keeps the approval current.
+// the case that compares the two without them, as by the answer carry where the approver answered
+// a block the approved version held: answering keeps the approval current.
 func TestWhileTwoBuildsServeAnAnswerKeepsTheApprovalCurrent(t *testing.T) {
+	t.Parallel()
 	handler, database, documentService := settlingCarryDocuments(t, time.Hour)
 	registerTwoBuilds(t, database)
 	ctx := context.Background()
@@ -113,10 +115,11 @@ func TestWhileTwoBuildsServeAnAnswerKeepsTheApprovalCurrent(t *testing.T) {
 // While two builds serve, an issue's close writes each of its asks' blocks resolved and its reopen
 // writes them open again, so the versions the settlements of both write differ from the one a
 // person approved in the blocks' server-owned attributes alone, and the approval is carried by
-// the case that compares them without those attributes, which subsumes the reopen carry of the
+// the case that compares them without those attributes, which keeps the reopen carry of the
 // release before: an approval given on the closed issue's version stays current through the
 // reopen that restores its ask.
 func TestWhileTwoBuildsServeAReopenThatRestoresAnAskKeepsTheApprovalCurrent(t *testing.T) {
+	t.Parallel()
 	handler, database, documentService := settlingCarryDocuments(t, time.Hour)
 	registerTwoBuilds(t, database)
 	ctx := context.Background()

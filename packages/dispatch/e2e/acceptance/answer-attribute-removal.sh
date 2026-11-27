@@ -12,8 +12,11 @@
 # sets for every server it boots) and with the pinned agent bearer e2e-token as
 # DISPATCH_AGENT_TOKEN, which it takes from DISPATCH_TOKEN. Beside the seed's corpus, where each
 # document holds one review, it has the person review two documents again through that server:
-# spec B approved a second time at its newest version, and spec C approved and then sent back for
-# changes, so its newest review is no approval. Neither moves the count the corpus holds. It then
+# spec B approved a second time at its newest version and then sent back for changes, and spec C
+# approved and then sent back for changes, so the newest review of neither is an approval, and spec
+# B's newest review disagrees with its oldest. The corpus's count of standing approvals is then
+# recorded again (seed-decisions.sh's seed_standing_approvals), one fewer than seed_decisions
+# printed: spec B's approval no longer stands. It then
 # stops that server and runs the three statements of the spec's section "What this child measures
 # before it writes a migration", verbatim, over the database, each in a read-only transaction, and
 # prints
@@ -22,12 +25,23 @@
 #     colliding_block_ids=<n> at=<UTC>
 #     collision issue=<KEY> block=<id> shape=<block_left_spec|block_in_decisions_document>
 # the last once for each row the third statement reads; each time is `date -u +%FT%TZ` taken as
-# its statement answered. It fails when either of the first two counts differs from the count
-# the corpus holds (seed-decisions.sh's corpus_* lines), printing both. The third count may be
-# anything, zero included; the corpus's own is printed beside it. It also reads the approval
-# reviews over those documents at each one's newest version, and the documents holding one, and
-# fails unless each reads apart from the standing approvals: a statement that counted reviews
-# rather than documents, or any approval rather than the newest review, reads another count here.
+# its statement answered. The first two statements read the documents holding an open or answered
+# ask block, by its asks row, or a copy of one, by the copied_from its document's newest version
+# holds. It fails when either of the first two counts differs from the count the corpus holds
+# (seed-decisions.sh's corpus_* lines), printing both. The third count may be anything, zero
+# included; the corpus's own is printed beside it. The corpus holds copies.md, a document whose
+# only ask block is a copy of the answered ask q-kept: it reads the first statement again with its
+# select list naming each document it counts, and fails unless copies.md is among them, no asks row
+# names it, and its newest version holds one ask block, which holds copied_from naming q-kept's ask
+# and state="answered". The corpus holds a collision of each shape: it fails unless each of the
+# corpus's collisions is among the rows the third statement read, under its shape, so the rows
+# printed hold both shapes. It also reads the approval reviews over those documents at each one's
+# newest version, and the documents holding one, and fails unless each reads apart from the
+# standing approvals: a statement that counted reviews rather than documents, or any approval
+# rather than the newest review, reads another count here. And it reads the second statement again
+# with its order reversed, each document's oldest review in place of its newest, and fails unless
+# that count reads apart from the standing approvals too, so the order the statement reads the
+# reviews in decides its count.
 #
 # BASELINE_SHA, the commit of the release this branch lands after, is required and has no
 # default: only the caller knows which release that is. Once the base server has booted, and
@@ -44,10 +58,17 @@
 #     pg_total_relation_size table=<table> bytes=<n> at=<UTC>
 # A reading at or above the limit fails the run.
 #
-# Then the pull request body, from the file PR_BODY_FILE names or, without it,
-# `gh pr view 4173 --repo cybermonklabs/legion --json body --jq .body`, this branch's pull request.
-# An empty body fails. It must hold exactly one line of each of these forms, a carriage return
-# before the line's end aside, and leading and trailing spaces allowed:
+# Then the pull request body. Without PR_BODY_FILE it is the body of pull request #4173, this
+# branch's: read with `gh pr view 4173 --repo cybermonklabs/legion --json body --jq .body` where gh
+# is installed and signed in, and otherwise from GitHub's public REST API, which answers it to an
+# unsigned request, the repository being public (`curl -fsS
+# https://api.github.com/repos/cybermonklabs/legion/pulls/4173`, its `.body` read with `jq -r`).
+# With PR_BODY_FILE it is the file that names, which the check's negative control uses: such a
+# body is checked as below, and the run then prints a `SKIP: body …` line saying it read no body of
+# pull request #4173, so a run with PR_BODY_FILE set, exported or not, never passes
+# c-attribute-removal-count, whose run text refuses a SKIP line. An empty body fails. It must hold
+# exactly one line of each of these forms, a carriage return before the line's end aside, and
+# leading and trailing spaces allowed:
 #     - measurement documents_holding_an_ask=<n> at=<YYYY-MM-DDTHH:MM:SSZ>
 #     - measurement standing_approvals_over_those_documents=<n> at=<YYYY-MM-DDTHH:MM:SSZ>
 #     - measurement colliding_block_ids=<n> at=<YYYY-MM-DDTHH:MM:SSZ>
@@ -64,7 +85,8 @@
 #
 # Each passing check prints `PASS: <section> <what>`; the first failing one prints
 # `FAIL: <section> <what>: <observed>` on stderr and the run exits 1, and a missing or bad input
-# exits 2. It prints a SKIP line under MEASURE_ONLY=1 alone.
+# exits 2. It prints a SKIP line under MEASURE_ONLY=1, and after a body read from PR_BODY_FILE,
+# alone.
 #
 # Every check is `cmd || fail …`, never part of an `&&` list: under `set -e` a failing command
 # anywhere but last in such a list does not stop the script.
@@ -81,8 +103,10 @@ Usage: DATABASE_URL=${LEGION_TEST_PG_DSN%/*}/infra_1150_answer_attribute_removal
          [MEASURE_ONLY=1] bash e2e/acceptance/answer-attribute-removal.sh
        (run from packages/dispatch; DATABASE_URL names a database on this machine whose name
        begins infra_1150_, which this run drops and creates again; without PR_BODY_FILE the
-       body is read with gh; MEASURE_ONLY=1 prints the body's lines and a SKIP line and reads no
-       body, so the check does not pass on it.
+       body is read with gh, or with curl from GitHub's REST API where gh is absent or not
+       signed in; with it the body is read from that file and checked, and a SKIP line follows,
+       so the check does not pass on it; MEASURE_ONLY=1 prints the body's lines and a SKIP line
+       and reads no body, so the check does not pass on it either.
        BASELINE_SHA is required and has no default; BASELINE_BINARY must be the server built
        from it and stamped with it)
 USAGE
@@ -96,7 +120,7 @@ USAGE
 . "$(dirname "${BASH_SOURCE[0]}")/seed-decisions.sh"
 
 require_env DATABASE_URL BASELINE_SHA
-require_commands curl date git go grep jq psql sed tr
+require_commands curl date git go grep jq paste psql sed tr
 # Not readonly until baseline_start has booted: lib-baseline.sh's baseline_boot holds a local of
 # this name.
 # shellcheck disable=SC2031 # the run's own DATABASE_URL: only a server's subshell in
@@ -160,11 +184,16 @@ readonly base_commit
     "it serves '$base_commit', and BASELINE_SHA $BASELINE_SHA is $base_sha"
 pass base "the base release serves $base_commit, the commit BASELINE_SHA names"
 seed_decisions
-# A second review on two documents, so the standing approvals read apart from the approval reviews
-# and from the documents holding one; the corpus count seed_decisions printed stands.
+# A second and a third review on spec B, and two more on spec C, so the standing approvals read
+# apart from the approval reviews and from the documents holding one, and spec B's newest review, a
+# request for changes, disagrees with its oldest, an approval. The corpus's count of standing
+# approvals is recorded again over them.
 seed_review review_spec_b_again "${seed_ids[spec_b]}" approved
+seed_review review_spec_b_changes "${seed_ids[spec_b]}" changes_requested "Say which build writes the corpus."
 seed_review review_spec_c_approved "${seed_ids[spec_c]}" approved
 seed_review review_spec_c_again "${seed_ids[spec_c]}" changes_requested "Name the fourth issue before asking again."
+seed_wait_settled "the second reviews settle"
+seed_standing_approvals
 # Nothing writes while the statements read.
 baseline_stop_server
 
@@ -176,14 +205,20 @@ measure() {
 
 # The three statements, as the spec writes them.
 read -r -d '' documents_sql <<'SQL' || true
-select count(distinct k.block_artifact_id) as documents_holding_an_ask_block
-from asks k
-where k.block_id is not null
-  and k.block_artifact_id is not null
-  and k.state = 'open'
-   or k.block_id is not null
-  and k.block_artifact_id is not null
-  and k.state in ('answered', 'resolved')
+select count(distinct d.artifact_id) as documents_holding_an_ask_block
+from (
+  select k.block_artifact_id as artifact_id
+  from asks k
+  where k.block_id is not null
+    and k.block_artifact_id is not null
+    and k.state in ('open', 'answered')
+  union
+  select v.artifact_id
+  from artifact_versions v
+  cross join lateral regexp_matches(v.markdown, 'copied_from="([^"]+)"', 'g') as m
+  join asks k on k.id::text = m[1] and k.state in ('open', 'answered')
+  where v.number = (select max(w.number) from artifact_versions w where w.artifact_id = v.artifact_id)
+) d
 SQL
 read -r -d '' approvals_sql <<'SQL' || true
 with newest as (
@@ -196,11 +231,17 @@ from newest n
 where n.state = 'approved'
   and n.version = (select max(number) from artifact_versions v where v.artifact_id = n.artifact_id)
   and n.artifact_id in (
-    select distinct block_artifact_id
+    select block_artifact_id
     from asks
     where block_id is not null
       and block_artifact_id is not null
-      and state in ('open', 'answered', 'resolved'))
+      and state in ('open', 'answered')
+    union
+    select c.artifact_id
+    from artifact_versions c
+    cross join lateral regexp_matches(c.markdown, 'copied_from="([^"]+)"', 'g') as m
+    join asks k on k.id::text = m[1] and k.state in ('open', 'answered')
+    where c.number = (select max(w.number) from artifact_versions w where w.artifact_id = c.artifact_id))
 SQL
 read -r -d '' collisions_sql <<'SQL' || true
 select s.issue_key, k.id as ask_id, k.block_id, case when h.id = s.id then 'block_left_spec' else 'block_in_decisions_document' end as shape
@@ -245,23 +286,79 @@ for row in "${collision_rows[@]}"; do
   printf 'collision issue=%s block=%s shape=%s\n' "$issue" "$block" "$shape"
 done
 printf 'corpus colliding_block_ids=%s\n' "${seed_ids[corpus_colliding_block_ids]:-}"
+
+# The corpus holds a document whose only ask block is a copy of an answered ask - copies.md, a copy
+# of spec A's q-kept - and the first count includes it: no asks row names it, so the statement's
+# copy arm finds it, by the copied_from its newest version holds. The statement is read again with
+# its select list naming each document it counts, the rest of it as the spec writes it.
+readonly copies_document="${seed_ids[copies_a]:-}"
+[[ -n "$copies_document" ]] || fail measurement documents_holding_an_ask "the seed printed no copies_a"
+documents_listing_sql="${documents_sql/select count(distinct d.artifact_id) as documents_holding_an_ask_block/select distinct d.artifact_id}"
+[[ "$documents_listing_sql" != "$documents_sql" ]] ||
+  fail measurement documents_holding_an_ask "the first statement opens with no select list this run can read each document of"
+measure "$documents_listing_sql" || fail measurement documents_holding_an_ask "psql: $(<"$work/psql")"
+printf 'documents_holding_an_ask counts: %s\n' "$(paste -sd ' ' "$work/rows")"
+grep -qx -- "$copies_document" "$work/rows" ||
+  fail measurement documents_holding_an_ask \
+    "the first count leaves out copies.md ($copies_document), whose only ask block is a copy of the answered ask ${seed_ids[ask_kept]}: it counts $(paste -sd ' ' "$work/rows")"
+measure "select count(*) from asks where block_artifact_id = '$copies_document'" ||
+  fail corpus "read the asks rows of copies.md" "psql: $(<"$work/psql")"
+[[ "$(<"$work/rows")" == 0 ]] ||
+  fail corpus "no asks row names copies.md, whose only ask block is a copy" "$(<"$work/rows") rows do"
+measure "select v.markdown from artifact_versions v where v.artifact_id = '$copies_document' order by v.number desc limit 1" ||
+  fail corpus "read the newest version of copies.md" "psql: $(<"$work/psql")"
+mapfile -t copy_openings < <(grep -E '^:+ask\{' "$work/rows" || true)
+[[ "${#copy_openings[@]}" == 1 && "${copy_openings[0]}" == *" copied_from=\"${seed_ids[ask_kept]}\""* &&
+  "${copy_openings[0]}" == *' state="answered"'* ]] ||
+  fail corpus "the newest version of copies.md holds one ask block, a copy of the answered ask ${seed_ids[ask_kept]}" \
+    "its ask blocks open: $(printf '%s / ' "${copy_openings[@]}")"
+pass measurement "documents_holding_an_ask includes copies.md ($copies_document), whose only ask block is a copy of the answered ask ${seed_ids[ask_kept]}, which no asks row names: ${copy_openings[0]}"
 against_corpus documents_holding_an_ask "$documents"
 against_corpus standing_approvals_over_those_documents "$approvals"
 
+# Every colliding block id of the restore is printed with its shape, for both shapes: the corpus
+# holds a collision of each shape (seed-decisions.sh's corpus_collision_<n> lines), and each is among
+# the rows the third statement read, under its shape.
+declare -A collision_read=()
+for row in "${collision_rows[@]}"; do
+  IFS='|' read -r issue _ block shape <<<"$row"
+  collision_read["$issue $block $shape"]=1
+done
+declare -A corpus_shape=()
+for ((index = 1; index <= ${seed_ids[corpus_colliding_block_ids]:-0}; index++)); do
+  collision="${seed_ids[corpus_collision_$index]:-}"
+  [[ -n "$collision" ]] || fail measurement colliding_block_ids "the seed printed no corpus_collision_$index"
+  [[ -n "${collision_read[$collision]:-}" ]] ||
+    fail measurement colliding_block_ids "the corpus's collision $collision (issue, block, shape) is not among the rows printed"
+  corpus_shape["${collision##* }"]="$collision"
+done
+for shape in block_left_spec block_in_decisions_document; do
+  [[ -n "${corpus_shape[$shape]:-}" ]] ||
+    fail measurement colliding_block_ids "the corpus holds no collision of the shape $shape, so this run cannot read that shape printed"
+done
+pass measurement "colliding_block_ids prints the corpus's collision of each shape: ${corpus_shape[block_left_spec]} and ${corpus_shape[block_in_decisions_document]}"
+
 # The corpus tells the standing approvals apart from the approval reviews at a document's newest
-# version and from the documents holding one: spec B holds two approvals, and spec C an approval
-# its newest review, a request for changes, overrides.
+# version and from the documents holding one: spec B holds two approvals and spec C one, each
+# overridden by its newest review, a request for changes. The documents are the second statement's,
+# the rows of open and answered asks and the copies of one.
 read -r -d '' approval_reviews_sql <<'SQL' || true
 select count(*), count(distinct r.artifact_id)
 from artifact_reviews r
 where r.state = 'approved'
   and r.version = (select max(number) from artifact_versions v where v.artifact_id = r.artifact_id)
   and r.artifact_id in (
-    select distinct block_artifact_id
+    select block_artifact_id
     from asks
     where block_id is not null
       and block_artifact_id is not null
-      and state in ('open', 'answered', 'resolved'))
+      and state in ('open', 'answered')
+    union
+    select c.artifact_id
+    from artifact_versions c
+    cross join lateral regexp_matches(c.markdown, 'copied_from="([^"]+)"', 'g') as m
+    join asks k on k.id::text = m[1] and k.state in ('open', 'answered')
+    where c.number = (select max(w.number) from artifact_versions w where w.artifact_id = c.artifact_id))
 SQL
 measure "$approval_reviews_sql" || fail corpus "read the approval reviews over the documents holding an ask" "psql: $(<"$work/psql")"
 IFS='|' read -r approval_reviews approved_documents <"$work/rows"
@@ -272,6 +369,22 @@ printf 'corpus approval_reviews_at_the_newest_version=%s documents_holding_one=%
   fail corpus "the standing approvals read apart from the approval reviews and from the documents holding one" \
     "approval reviews $approval_reviews, documents holding one $approved_documents, standing approvals $approvals"
 pass corpus "the standing approvals ($approvals) read apart from the approval reviews ($approval_reviews) and the documents holding one ($approved_documents)"
+
+# The corpus tells the newest review apart from the oldest: spec B's oldest review is an approval of
+# its newest version and its newest a request for changes. The second statement read with its order
+# reversed, each document's oldest review in place of its newest and the rest as the spec writes
+# it, must read another count, so the order of the reviews decides the count it measured.
+readonly newest_first='order by artifact_id, event_seq desc nulls last, created_at desc, id desc'
+oldest_first_sql="${approvals_sql/"$newest_first"/order by artifact_id, event_seq nulls first, created_at, id}"
+[[ "$oldest_first_sql" != "$approvals_sql" ]] ||
+  fail measurement standing_approvals_over_those_documents "the second statement orders its reviews by no '$newest_first' this run can reverse"
+measure "$oldest_first_sql" || fail corpus "read the approvals of each document's oldest review" "psql: $(<"$work/psql")"
+oldest_first="$(<"$work/rows")"
+printf 'corpus standing_approvals_read_at_the_oldest_review=%s standing_approvals=%s\n' "$oldest_first" "$approvals"
+[[ "$oldest_first" =~ ^[0-9]+$ && "$oldest_first" != "$approvals" ]] ||
+  fail corpus "the standing approvals read apart from the approvals each document's oldest review gives" \
+    "read at the oldest review $oldest_first, at the newest $approvals"
+pass corpus "the standing approvals ($approvals) read apart from the count each document's oldest review gives ($oldest_first): the statement's order of reviews decides it"
 
 # The tables this child's migrations touch, as the Go test names them, and the limit each is held
 # to. `go -C` runs it from packages/envoy, as `(cd ../envoy && go test …)` from packages/dispatch.
@@ -332,16 +445,24 @@ if [[ "$measure_only" == 1 ]]; then
   exit 0
 fi
 
-# The pull request body.
+# The pull request body: the file PR_BODY_FILE names, or pull request #4173's, through gh where it
+# is installed and signed in, and otherwise through GitHub's public REST API, which answers an
+# unsigned request for a public repository's pull request.
 if [[ -n "${PR_BODY_FILE:-}" ]]; then
   [[ -f "$PR_BODY_FILE" && -r "$PR_BODY_FILE" ]] ||
     fail body "read the pull request body" "PR_BODY_FILE names $PR_BODY_FILE, which cannot be read"
   tr -d '\r' <"$PR_BODY_FILE" >"$work/body.md"
   body_source="the file $PR_BODY_FILE"
 else
-  require_commands gh
-  gh pr view 4173 --repo cybermonklabs/legion --json body --jq .body \
-    >"$work/body.raw" 2>"$work/gh" || fail body "read the pull request body" "gh: $(<"$work/gh")"
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    gh pr view 4173 --repo cybermonklabs/legion --json body --jq .body \
+      >"$work/body.raw" 2>"$work/gh" || fail body "read the pull request body" "gh: $(<"$work/gh")"
+  else
+    curl -fsS https://api.github.com/repos/cybermonklabs/legion/pulls/4173 \
+      >"$work/pull.json" 2>"$work/curl" || fail body "read the pull request body" "curl: $(<"$work/curl")"
+    jq -r .body "$work/pull.json" >"$work/body.raw" 2>"$work/jq" ||
+      fail body "read the pull request body" "jq read no body from GitHub's answer: $(<"$work/jq")"
+  fi
   tr -d '\r' <"$work/body.raw" >"$work/body.md"
   body_source="pull request #4173"
 fi
@@ -393,3 +514,8 @@ if [[ "${#tables[@]}" -eq 0 ]]; then
   pass body "no migration of this child touches a table yet, so the body owes no pg_total_relation_size line"
 fi
 pass body "the body holds every reading this run took"
+# A body read from PR_BODY_FILE is no reading of pull request #4173's body: the lines above are
+# checked, and the check's run refuses this SKIP line.
+if [[ -n "${PR_BODY_FILE:-}" ]]; then
+  skip body "the body came from PR_BODY_FILE, not from pull request #4173, so this run does not pass c-attribute-removal-count"
+fi

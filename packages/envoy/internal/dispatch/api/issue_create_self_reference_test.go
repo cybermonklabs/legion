@@ -48,7 +48,7 @@ func namesReference(references []model.ChangedReference, kind, id string) bool {
 // document's address. Both name rows this very transaction writes, so the edge the bare key
 // stores and the targets the issue.created event names are read from what it has queued. An
 // issue born converted keeps its spec's references with its room's, under the room's tree
-// artifact, which indexes the room as one document (T12a of this branch's plan), so the edge is
+// artifact, which indexes the room as one document (T12a of the issue-tree plan), so the edge is
 // read from the room the spec is edited in (refs.DocumentRoomSQL), the spec itself otherwise.
 func TestIssueCreateSpecCitingTheIssueItOpensStoresAndCountsIt(t *testing.T) {
 	t.Parallel()

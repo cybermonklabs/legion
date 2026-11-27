@@ -107,8 +107,8 @@ func (s *Service) compactionSweepPass(ctx context.Context) {
 // document with nothing to fold, and it drains the list before it returns.
 //
 // The same statement deletes the entry of each document converted into its issue's room, and lists
-// none of them (dispatch://INFRA-1253 R6): the rows that document's own room left stay as they stood,
-// so nothing of them is folded (writeCompaction), and the issue's room is named by its tree
+// none of them (R6 of the issue-tree spec): the rows that document's own room left stay as they
+// stood, so nothing of them is folded (writeCompaction), and the issue's room is named by its tree
 // artifact, whose own appends gave it an entry of its own. The gate refuses every append to such a
 // document's room (ErrRoomMoved), so no append names it again.
 func compactionCandidates(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {

@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"io"
 	"net/http"
 	"strconv"
@@ -20,7 +18,7 @@ import (
 
 // TestALaterVersionStatesItsBytesInTheStoreLockOrder holds statedVersionBytes (api/artifacts.go),
 // the write of the bytes of an image's or a file's later version on the node its row names
-// (dispatch://INFRA-1253), to the store's lock order, with the machinery
+// (the issue-tree spec), to the store's lock order, with the machinery
 // TestEveryObjectNodeWriterTakesTheStoreLockOrder holds the creates with: a second version of an
 // issue's image takes the issue's owner lock, then reads its own artifacts row under it, locking
 // no row, then appends the artifact.version event, then the bytes under it.
@@ -100,7 +98,7 @@ func TestALaterVersionStatesItsBytesInTheStoreLockOrder(t *testing.T) {
 				_, err := graphcensus.Backfill(context.Background(), backfiller, io.Discard)
 				backfilled <- err
 			}()
-			if early, done := storetest.WaitForQueuedBehind(t, holder, backfillPID, backfilled, storeStepWait); done {
+			if early, done := storetest.WaitForQueuedBehind(t, holder, backfillPID, backfilled); done {
 				t.Fatalf("the backfill answered (%v) without reaching its commit over %s", early, refKey)
 			}
 
@@ -126,11 +124,10 @@ func TestALaterVersionStatesItsBytesInTheStoreLockOrder(t *testing.T) {
 				}
 			}
 
-			secondSum := sha256.Sum256(race.second)
 			for attribute, value := range map[string]string{
 				graphstore.AttributeMIME:   race.mime,
 				graphstore.AttributeSize:   strconv.Itoa(len(race.second)),
-				graphstore.AttributeSHA256: hex.EncodeToString(secondSum[:]),
+				graphstore.AttributeSHA256: contentHash(string(race.second)),
 			} {
 				history, err := graphstore.History(ctx, rig.database.Pool, graphstore.KindArtifact, refKey, attribute)
 				if err != nil {
@@ -149,9 +146,9 @@ func TestALaterVersionStatesItsBytesInTheStoreLockOrder(t *testing.T) {
 }
 
 // TestARemovalStatesItsDocumentGoneInTheStoreLockOrder holds the removal of an issue's document
-// (removeArtifact), which states the document's node gone (removedDocumentNode, dispatch://INFRA-1253),
-// to the store's lock order with the same machinery: the issue's owner lock, then the node, then
-// the delete of the document's row, then the artifact.removed event and the state it caused
+// (removeArtifact), which states the document's node gone (removedDocumentNode, the issue-tree
+// spec), to the store's lock order with the same machinery: the issue's owner lock, then the node,
+// then the delete of the document's row, then the artifact.removed event and the state it caused
 // (documentRemoval, which TestEveryObjectNodeWriterTakesTheStoreLockOrder runs too). The room's
 // lock the removal takes after the issue's owner lock is an advisory lock, which no table step
 // shows.
@@ -207,7 +204,6 @@ func seedOlderVersionedFile(t *testing.T, rig *storeWriterRig, owner, session, n
 		sessionID = &session
 	}
 	var refKey string
-	sum := sha256.Sum256(content)
 	if err := rig.database.Pool.QueryRow(ctx, `
 		with made as (
 			insert into artifacts (issue_key, project_key, session_id, slug, name, kind, created_by)
@@ -218,7 +214,7 @@ func seedOlderVersionedFile(t *testing.T, rig *storeWriterRig, owner, session, n
 		select made.id, 1, $7, $8, $9, $10, '[{"kind":"user","id":"alice"}]' from made
 		returning (select ref_key from made)
 	`, issueKey, project, sessionID, artifactSlug(name), name, kind, content, mime, len(content),
-		hex.EncodeToString(sum[:])).Scan(&refKey); err != nil {
+		contentHash(string(content))).Scan(&refKey); err != nil {
 		t.Fatalf("seed %s as an older build wrote it: %v", name, err)
 	}
 	return refKey
