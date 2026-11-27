@@ -2040,8 +2040,22 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
     '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), head:$head}' >"$R/world.json"
 }
 
+# handoff_line WORD VERSION ISSUE prints the sentence the daemon's task names a predecessor's
+# handoff record in (task, packages/daemon/internal/workflow/effects.go), read from the daemon's
+# copy of it with its placeholders filled. That copy is the one a workflow test holds to the task
+# the daemon writes (TestTheHandoffLineExtractIsTheSentenceTheTaskWrites), so the rig keeps no
+# sentence of its own that could drift from the daemon's.
+handoff_line() {
+  local extract=$root/packages/daemon/internal/workflow/handoff_line_extract.txt line
+  line=$(awk 'body { print; exit } /^$/ { body = 1 }' "$extract") || fail "could not read $extract"
+  [[ -n $line ]] || fail "$extract holds no sentence after the blank line under its header"
+  line=${line//"{word}"/"$1"}
+  line=${line//"{version}"/"$2"}
+  printf '%s\n' "${line//"{issue}"/"$3"}"
+}
+
 run_tester_proof() {
-  local name=$1 n=$2 index=$3 start=$4 state project port pr head version
+  local name=$1 n=$2 index=$3 start=$4 state project port pr head version handoff
   # The run's own Dispatch, and its own issue on it, whose newest implement record the tester
   # reads and whose newest test record it writes.
   own_dispatch project
@@ -2052,9 +2066,10 @@ run_tester_proof() {
   version=$(jq -r .implement.version "$R/fixture.json")
   read -r pr head < <(jq -r '"\(.pr) \(.head)"' "$R/world.json")
   # The architect's assignment, with the Handoff line the daemon's task names the predecessor's
-  # record in (packages/daemon/internal/workflow/effects.go).
-  printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s. Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Test it and finish your phase.\n' \
-    "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$version" "$worker_key" "$version" >"$R/prompt.txt"
+  # record in (handoff_line).
+  handoff=$(handoff_line implement "$version" "$worker_key")
+  printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s. %s Test it and finish your phase.\n' \
+    "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$handoff" >"$R/prompt.txt"
   state=$R/state
   # Each run its own Legion project, so concurrent runs claim distinct role tokens on one listener.
   # A project token is lower-case letters and digits only (isLegionProjectToken), so the label's

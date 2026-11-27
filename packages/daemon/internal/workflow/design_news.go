@@ -34,8 +34,8 @@ import (
 // Items is what the audience is told, each with its recorded change set, or with the review
 // history that could not say which version the audience took: the holder's items for Issue, or the
 // architect row's own items for the tree. The send has already dropped every item that no longer
-// stands (classify.DesignApprovalStands) and every item the record cannot tell yet, so each one
-// here is said as given.
+// stands (the daemon's itemStands, which asks StepApprovalStands) and every item the record cannot
+// tell yet, so each one here is said as given.
 type News struct {
 	Audience    record.DesignAudience
 	Tree        string

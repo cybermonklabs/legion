@@ -72,7 +72,7 @@ func TestPodUpdateAskTheEarlierReleaseQueuedAndMarkedIsDeliveredOnceAfterTheCuto
 	if c := rig.claimOf(claim.RoleImplementer); c.UpdateTaskedAt == nil {
 		t.Fatalf("the implementer holds no ask mark, want the earlier release's mark written at the enqueue")
 	}
-	if written, err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
+	if written, err := rig.s.plan.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
 		Role: claim.RoleImplementer, Round: podUpdateRound, Pod: podUpdatePod,
 		Text: supervise.UpdateTask(claim.RoleImplementer, podUpdateRound, podUpdateDrift, podUpdateBound),
 	}); err != nil || !written {
@@ -218,8 +218,8 @@ func TestPodUpdateAskThatFoundNoHolderBeforeTheSweepMovedOnIsAskedAgain(t *testi
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 	rig.listener.setAbsent(rig.roleTopic(claim.RoleImplementer))
-	enqueue := rig.s.enqueue
-	rig.s.enqueue = func(ctx context.Context, issue string, payloads ...record.OutboxPayload) (bool, error) {
+	enqueue := rig.s.plan.enqueue
+	rig.s.plan.enqueue = func(ctx context.Context, issue string, payloads ...record.OutboxPayload) (bool, error) {
 		written, err := enqueue(ctx, issue, payloads...)
 		if err != nil || !written {
 			return written, err
@@ -290,7 +290,7 @@ func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *test
 			rig.awaitRound(claim.RoleImplementer, podUpdateRound)
 			text := supervise.UpdateTask(claim.RoleImplementer, podUpdateRound, podUpdateDrift, podUpdateBound)
 			for range 2 {
-				if written, err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
+				if written, err := rig.s.plan.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
 					Role: claim.RoleImplementer, Round: podUpdateRound, Pod: podUpdatePod, Text: text,
 				}); err != nil || !written {
 					t.Fatalf("queue a row of the round = %t, %v; want it written", written, err)

@@ -42,7 +42,8 @@ func TestThePhasesOfAProjectLeaveEveryOtherProjectsOut(t *testing.T) {
 				ConflictRounds: 1, BackwardMoves: map[string]int{"reviewing-implementing": 2}, CapTold: 5, Verdict: "pass",
 				Summary: "the summary of " + issue, LastHandoff: "last-" + issue,
 				Decision:    &ReviewDecision{State: "approved", Body: "ship it", Head: "head-" + issue},
-				CompletedAt: at, Entry: 6, EntryTask: "the task of " + issue, EntryVerbatim: true, EntryRaisedAt: at,
+				CompletedAt: at, Entry: 6, EntryTask: "the task of " + issue, EntryRaisedAt: at,
+				EntryAwaiting:  &Awaiting{Ask: "ask-" + issue, AnsweredBy: AnsweredByAsk, Since: EventMark{Seq: 4}},
 				EntryMovedBack: true, ReviewedHead: "reviewed-" + issue,
 			}
 		}
