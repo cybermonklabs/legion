@@ -741,7 +741,10 @@ echo "key after $(stat -c '%i %s %Y' -- "$key")"`
     const tokenDir = mkdtempSync(join(dir, "tokens."));
     const refreshStore = mkdtempSync(join(dir, "store."));
     const argvLog = join(mkdtempSync(join(dir, "argv.")), "log");
+    // The two profiles a round asks for, the implement App's and its read profile; the FIFO below
+    // takes the place of the first, which a round's first mint (_all.json) reads.
     copyFileSync(join(store, "IMPLEMENT_APP"), join(refreshStore, "IMPLEMENT_APP"));
+    copyFileSync(join(store, "IMPLEMENT_APP_READ"), join(refreshStore, "IMPLEMENT_APP_READ"));
     const { code, stdout, stderr } = await githubApps(
       { ...appInputs, TOKEN_DIR: tokenDir, STORE: refreshStore, ARGV_LOG: argvLog },
       `end=$((SECONDS + ${waits.secondsLeft()}))
