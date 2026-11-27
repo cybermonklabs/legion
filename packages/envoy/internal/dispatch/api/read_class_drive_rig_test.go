@@ -41,23 +41,19 @@ type drivenStatement struct {
 // poolStatements records every statement run on the pool it traces, whatever context it runs on:
 // the request's own, the work a request detaches from it, and the server's own context, where a
 // read can start a statistics refresh or a roster fetch, and where every duty of the rig runs.
-// Each statement of a batch is recorded on its own, and a copy as the insert it is. It also keeps
-// when the pool last ran a write, which is when a window may close (window).
+// Each statement of a batch is recorded on its own, and a copy as the insert it is. waitWork joins
+// every worker the world's reads can leave running before a window closes (window).
 type poolStatements struct {
 	mu         sync.Mutex
 	statements []drivenStatement
-	lastWrite  time.Time
+	waitWork   func(context.Context) error
 }
 
 func (p *poolStatements) record(ctx context.Context, sql string) {
-	now := time.Now()
 	writes, readable := driveWritesOf(sql)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.statements = append(p.statements, drivenStatement{sql: sql, writes: writes, readable: readable, marked: ctx.Value(countedRead{}) != nil})
-	if len(writes) > 0 || !readable {
-		p.lastWrite = now
-	}
 }
 
 func (p *poolStatements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
@@ -98,59 +94,38 @@ func (p *poolStatements) since(from int) []drivenStatement {
 	return slices.Clone(p.statements[from:])
 }
 
-func (p *poolStatements) lastWriteAt() time.Time {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.lastWrite
-}
+// driveWindowLimit is how long a request and all the work it starts may take before the drive
+// fails. Completion, rather than a period with no writes, closes each window.
+const driveWindowLimit = 20 * time.Second
 
-const (
-	// driveWindowAfterAnswer is how long a window stays open after its request is answered, at
-	// least.
-	driveWindowAfterAnswer = 2 * time.Second
-	// driveWindowQuiet is how long the pool must have run no write before a window closes.
-	driveWindowQuiet = 500 * time.Millisecond
-	// driveWindowLimit is how long after it opened a window that has not closed fails its drive.
-	driveWindowLimit = 20 * time.Second
-)
-
-// window opens a window on the pool, runs send, and closes the window no sooner than
-// driveWindowAfterAnswer after send returned and only once the pool has run no write for
-// driveWindowQuiet, so work a request starts and does not wait on lands inside it. A window still
-// open driveWindowLimit after it opened fails the drive, naming what. It answers every statement
-// the pool ran while it was open.
+// window records the request and all its background work, including a worker that runs no SQL
+// until after the response. waitWork is installed by newDriveRig and joins those workers before
+// this method takes the statements. A worker that exceeds driveWindowLimit fails the drive.
 func (p *poolStatements) window(t *testing.T, what string, send func()) []drivenStatement {
 	t.Helper()
-	opened := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), driveWindowLimit)
+	defer cancel()
 	from := p.count()
 	send()
-	answered := time.Now()
-	for {
-		now := time.Now()
-		if now.Sub(answered) >= driveWindowAfterAnswer && now.Sub(p.lastWriteAt()) >= driveWindowQuiet {
-			return p.since(from)
-		}
-		if now.Sub(opened) >= driveWindowLimit {
-			t.Errorf("%s: the window was still open %s after it opened, the pool writing within %s of every moment: %v",
-				what, driveWindowLimit, driveWindowQuiet, writesIn(p.since(from)))
-			return p.since(from)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	p.finish(t, ctx, what)
+	return p.since(from)
 }
 
-// quiet waits until the pool has run no write for driveWindowQuiet, so a window opened next
-// holds nothing an earlier request left running, and fails what past driveWindowLimit.
-func (p *poolStatements) quiet(t *testing.T, what string) {
+// settle joins the preceding request's work, so the next window contains none of it.
+func (p *poolStatements) settle(t *testing.T, what string) {
 	t.Helper()
-	started := time.Now()
-	from := p.count()
-	for time.Since(p.lastWriteAt()) < driveWindowQuiet {
-		if time.Since(started) >= driveWindowLimit {
-			t.Errorf("%s: the pool never ran no write for %s within %s: %v", what, driveWindowQuiet, driveWindowLimit, writesIn(p.since(from)))
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), driveWindowLimit)
+	defer cancel()
+	p.finish(t, ctx, what)
+}
+
+func (p *poolStatements) finish(t *testing.T, ctx context.Context, what string) {
+	t.Helper()
+	if p.waitWork == nil {
+		t.Fatal("the traced pool has no completion barrier")
+	}
+	if err := p.waitWork(ctx); err != nil {
+		t.Fatalf("%s: request work did not finish within %s: %v; pool writes: %v", what, driveWindowLimit, err, writesIn(p.since(0)))
 	}
 }
 

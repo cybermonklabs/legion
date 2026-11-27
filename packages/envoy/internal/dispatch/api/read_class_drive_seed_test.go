@@ -120,10 +120,79 @@ func newDriveRig(t *testing.T) *driveWorld {
 			driveSession: {"notifications.dispatch.issue." + driveProject + "-1.>", "notifications.dispatch.document." + driveProject + ".>"},
 		}),
 	})
+	world.rig.served.readWorkers = &backgroundWork{}
+	world.tracer.waitWork = world.waitReadWork
 	world.caller = newBrokerCaller(t)
 	seedPeople(t, raw, drivePerson)
 	world.mintTokens(t)
 	return world
+}
+
+// waitReadWork joins the startup marker, every read stage (including a timed-out stage), the
+// statistics those stages started, and the writes the request or its stages detached. No request
+// is in flight when it starts. Stages register before launching, and finish before statistics
+// are joined, so none can start a refresh after this barrier looked for it. The raw pool keeps
+// this barrier's own project lookup out of the request's traced SQL.
+func (w *driveWorld) waitReadWork(ctx context.Context) error {
+	s := w.rig.served
+	if s.bootMark != nil {
+		select {
+		case <-s.bootMark:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if err := driveWaitForWork(ctx, s.readWorkers); err != nil {
+		return fmt.Errorf("read stages: %w", err)
+	}
+	rows, err := w.raw.Pool.Query(ctx, `select key from projects`)
+	if err != nil {
+		return fmt.Errorf("read the projects whose statistics may be refreshing: %w", err)
+	}
+	var projects []string
+	for rows.Next() {
+		var project string
+		if err := rows.Scan(&project); err != nil {
+			rows.Close()
+			return err
+		}
+		projects = append(projects, project)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, project := range projects {
+		select {
+		case result := <-s.termStats.DoChan(project, func() (any, error) { return nil, nil }):
+			if result.Err != nil {
+				return fmt.Errorf("statistics refresh of %s: %w", project, result.Err)
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return driveWaitForWork(ctx, &s.detached)
+}
+
+func driveWaitForWork(ctx context.Context, work *backgroundWork) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		work.mu.Lock()
+		running, idle := work.running, work.idle
+		work.mu.Unlock()
+		if running == 0 {
+			return nil
+		}
+		select {
+		case <-idle:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // mintTokens says the two broker tokens to the stub broker, for the caller's key, and mints P's

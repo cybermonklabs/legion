@@ -443,7 +443,13 @@ func (s *server) runRelatedCheck(
 	stagesStarted := time.Now()
 	pick := &relatedPick{ready: make(chan struct{})}
 	keyword := make(chan relatedStage, 1)
+	if s.readWorkers != nil {
+		s.readWorkers.start()
+	}
 	go func() {
+		if s.readWorkers != nil {
+			defer s.readWorkers.done()
+		}
 		pick.terms, pick.err = s.pickRelatedTerms(keywordCtx, s.deps.Store.Pool, project, input.text, input.title, exclusion, probeUnknownTerms)
 		close(pick.ready)
 		stage := relatedStage{err: pick.err}
@@ -513,7 +519,13 @@ func (s *server) runRelatedCheck(
 		// relatedMeaningStage hands the leg's answer over on the stage it answers
 		// (relatedStage.cross), and the leg runs on until the check's wait for it is over.
 		meaning = make(chan relatedStage, 1)
+		if s.readWorkers != nil {
+			s.readWorkers.start()
+		}
 		go func() {
+			if s.readWorkers != nil {
+				defer s.readWorkers.done()
+			}
 			stage := s.relatedMeaningStage(meaningRead, crossRead, project, input.text, pick, excluded, input.trees != nil)
 			stage.took = time.Since(stagesStarted)
 			meaning <- stage
@@ -675,7 +687,13 @@ func (s *server) relatedMeaningStage(
 		// its wait for the leg is over: an overrunning query then gives its pool connection
 		// back at the grace rather than at the meaning deadline.
 		cross = make(chan []model.SearchResult, 1)
+		if s.readWorkers != nil {
+			s.readWorkers.start()
+		}
 		go func() {
+			if s.readWorkers != nil {
+				defer s.readWorkers.done()
+			}
 			reader := s.readDisplayTrees(crossRead, trees)
 			results, err := s.relatedOtherProjects(crossRead, vector, project, s.deps.Embedder.Identity(), reader)
 			if err != nil {

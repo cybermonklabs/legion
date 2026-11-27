@@ -683,6 +683,9 @@ type server struct {
 	// termStats is the per-project term-statistics refreshes a related-item check started
 	// (ensureSearchTermStats), keyed by project, so a project's many checks start one.
 	termStats singleflight.Group
+	// readWorkers is an optional test barrier for read stages that can outlive their request.
+	// A nil barrier leaves their scheduling and the production path unchanged.
+	readWorkers *backgroundWork
 	// relatedRecordRetrying is how many records being retried in the background (retryRecord:
 	// related_checks and near_copy_checks rows, run as detached work) hold or wait on a pool
 	// connection right now, at most relatedRecordRetryLimit.
