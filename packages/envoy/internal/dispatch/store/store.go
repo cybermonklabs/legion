@@ -211,14 +211,13 @@ func (s *Store) migrateThrough(ctx context.Context, fsys fs.FS, version int) err
 		if migration.Version > version {
 			break
 		}
-		// What the prepare read as recorded, in the transaction that judged every row of the
-		// table against this whole set, is applied: this runner applies it no second time, and a
-		// transaction of its own for it would only read its row again (applyMigrationOnce,
-		// pgmigrate.RecheckRecorded). A boot of a migrated database took one such transaction per
-		// migration of the whole history - 340 of them on a Dispatch database of 2026-11-27, every
-		// boot - and now takes none. Each migration the prepare did not find recorded still goes
-		// through applyMigration, which judges the table again under the key before it applies
-		// anything, so a version another runner recorded in between is still found there.
+		// The prepare read these as recorded under the key, in the transaction that judged every
+		// row of the table against this whole set, so this runner applies them no second time and
+		// would otherwise only recheck each one (applyMigrationOnce and
+		// applyNonTransactionalMigration, pgmigrate.RecheckRecorded). Each migration it did not
+		// read as recorded still goes through applyMigration, which judges the table again under
+		// the key before it applies anything, so a version another runner recorded in between is
+		// still found there.
 		if recorded[migration.Version] {
 			continue
 		}

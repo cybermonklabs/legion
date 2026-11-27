@@ -2,25 +2,13 @@ package store
 
 import (
 	"context"
-	"net/url"
 	"sync/atomic"
 	"testing"
 	"testing/fstest"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
-
-// appliedCheckStatement is the statement a runner sends once for each migration it judges on its
-// way to applying it (pgmigrate.RecheckRecorded, through applyMigrationOnce or
-// applyNonTransactionalMigration), each inside a locked transaction of its own. Counting it
-// counts those transactions. Its text must match what pgmigrate sends byte for byte; a change
-// there without a change here would read as zero judgments and pass this test for the wrong
-// reason, so the first migrate below, which applies every migration, holds the text to the
-// runner's own: it must count one judgment per migration applied.
-const appliedCheckStatement = `select name, checksum, applied_checksum from "schema_migrations" where version = $1::bigint`
 
 // countingStatements counts, on every connection of a pool, the queries whose text is one of its
 // own.
@@ -38,40 +26,19 @@ func (c *countingStatements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d
 
 func (c *countingStatements) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-// openCountingStore opens a database of its own and a pool to it, built as openIsolatedStoreWithPool
-// builds its own, whose connections count the queries of one text.
-func openCountingStore(t *testing.T, text string) (*Store, *countingStatements) {
-	t.Helper()
-	ctx := context.Background()
-	baseURL, err := url.Parse(testDatabaseURL(t))
-	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
-	}
-	adminURL := *baseURL
-	adminURL.Path = "/postgres"
-	config, err := pgxpool.ParseConfig(testdb.DatabaseOn(t, adminURL.String(), "dispatch_test"))
-	if err != nil {
-		t.Fatalf("parse the isolated database's URL: %v", err)
-	}
-	counter := &countingStatements{text: text}
-	config.AfterConnect = scanTimestampsInUTC
-	config.ConnConfig.Tracer = counter
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		t.Fatalf("open the isolated pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return &Store{Pool: NewPool(pool)}, counter
+// countingPool is openIsolatedStoreWithPool's configure for a pool whose connections count the
+// queries of one text.
+func countingPool(counter *countingStatements) func(*pgxpool.Config) {
+	return func(config *pgxpool.Config) { config.ConnConfig.Tracer = counter }
 }
 
 // A boot judges and applies what its prepare did not read as recorded, and nothing else. The
 // prepare reads every row of schema_migrations and judges each against the whole set, in one
 // transaction under the runner's advisory key (prepareVersionTable, pgmigrate.ReconcileRecorded);
-// a migration that judgment read as recorded is applied, so the runner opens no transaction of its
-// own for it. Before this, a boot of an already-migrated database opened one locked transaction
-// per migration of the whole history - 340 of them on a Dispatch database of 2026-11-27, on every
-// boot of every process, and 339 times over in the dispatch-memory suite, which starts a server
-// per measured window.
+// a migration that judgment read as recorded is applied, so the runner takes no locked
+// transaction or connection of its own for it. Before this, a boot of an already-migrated
+// database took one for every migration of the set, on every boot of every process, and 339
+// times over in the dispatch-memory suite, which starts a server per measured window.
 //
 // The three migrates below are the three cases: an empty database, where every migration is
 // applied and judged; the same set again, where nothing is; and a set with one migration more,
@@ -83,7 +50,8 @@ func openCountingStore(t *testing.T, text string) (*Store, *countingStatements) 
 func TestABootJudgesOnlyTheMigrationsItsPrepareDidNotReadAsRecorded(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	store, judged := openCountingStore(t, appliedCheckStatement)
+	judged := &countingStatements{text: appliedCheck}
+	store := openIsolatedStoreWithPool(t, countingPool(judged))
 	set := fstest.MapFS{
 		"migrations/0001_a.up.sql": {Data: []byte("create table a (id int)")},
 		"migrations/0002_b.up.sql": {Data: []byte("create table b (id int)")},
@@ -96,7 +64,7 @@ func TestABootJudgesOnlyTheMigrationsItsPrepareDidNotReadAsRecorded(t *testing.T
 		t.Fatalf("the first migrate: %v", err)
 	}
 	if got := judged.count.Load(); got != int64(len(set)) {
-		t.Fatalf("the first migrate judged %d migrations; want one for each of the %d it applied: the statement this test counts is not the one the runner sends, so the count below proves nothing", got, len(set))
+		t.Fatalf("the first migrate judged %d migrations; want one for each of the %d it applied: appliedCheck is not the statement the runner sends, so the counts below prove nothing", got, len(set))
 	}
 	if got := recordedVersionCount(t, store); got != len(set) {
 		t.Fatalf("schema_migrations holds %d rows after the first migrate; want %d", got, len(set))

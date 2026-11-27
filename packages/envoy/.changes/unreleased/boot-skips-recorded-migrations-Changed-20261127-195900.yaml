@@ -1,16 +1,17 @@
 kind: Changed
 body: |-
-  A Dispatch boot applies no migration its own prepare has already read as recorded, so it opens
-  one locked transaction for the version table and then one for each migration it applies, where
-  before it opened one for every migration of the whole history. The prepare reads every row of
-  `schema_migrations` and judges each against the whole set, in one transaction under the runner's
-  advisory key, and answers the versions it read; a migration that judgment read as recorded is
-  applied, and a transaction of its own for it would only read its row again. Every migration the
-  prepare did not read as recorded still goes through the same path as before: its own locked
-  transaction, which judges the whole table again before it applies anything, so a version another
-  runner recorded between the prepare and that moment is still found and nothing is applied twice.
-  On a database carrying the 340 migrations of 2026-11-27 this takes a restart from 341 locked
-  transactions to one, and a deployment's boot from 341 to one plus the migrations it brings.
+  A Dispatch boot applies no migration its own prepare has already read as recorded, so it takes
+  one locked transaction for the version table and then one locked transaction or connection for
+  each migration it applies, where before it took one for every migration of the set. The prepare
+  reads every row of `schema_migrations` and judges each against the whole set, in one transaction
+  under the runner's advisory key, and answers the versions it read; a migration that judgment
+  read as recorded is applied, and a transaction of its own for it would only read its row again.
+  Every migration the prepare did not read as recorded still goes through the same path as before:
+  its own locked transaction, or its own locked connection for a non-transactional one, which
+  judges the whole table again before it applies anything, so a version another runner recorded
+  between the prepare and that moment is still found and nothing is applied twice. A restart of a
+  migrated database now does the version table's work and nothing else, and a deployment's boot
+  that work plus the migrations the release brings.
 time: 2026-11-27T19:59:00Z
 custom:
     Issue: boot-skips-recorded-migrations
