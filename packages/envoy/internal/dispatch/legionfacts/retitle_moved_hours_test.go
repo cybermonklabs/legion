@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/evals/evalfixture"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -37,9 +38,9 @@ func TestARetitleMovesPartOfAClosedRootsWorkToTheClosedChildItNames(t *testing.T
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 	for _, shape := range []struct {
 		name string
-		spec legiontest.Spec
+		spec legionseed.Spec
 	}{
-		{"the rig's history, two of three trees unobserved", legiontest.Spec{Project: "LEGION", Trees: 3, Unobserved: 2, Now: now}},
+		{"the rig's history, two of three trees unobserved", legionseed.Spec{Project: "LEGION", Trees: 3, Unobserved: 2, Now: now}},
 		{"the evals fixture's history", evalfixture.LegionSpec("LEGK", 16, now, 0)},
 	} {
 		t.Run(shape.name, func(t *testing.T) {
@@ -77,7 +78,7 @@ func TestARetitleMovesPartOfAClosedRootsWorkToTheClosedChildItNames(t *testing.T
 					}
 				}
 
-				session := sessionOf(t, legiontest.SessionActor("architect", move.root))
+				session := sessionOf(t, legionseed.SessionActor("architect", move.root))
 				touched := []string{move.root, child}
 				if move.onChild {
 					writeTitledEvent(t, run, session, implemented, child, run.at)

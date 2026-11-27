@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -147,7 +148,7 @@ func TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject(t *testing.T) {
 	// Two trees, so a read of one tree's issues covers one tree and leaves the other unread. Each
 	// tree's sessions file an issue of every class beside the architect's children (Spec.Filings):
 	// one into the tree, one outside every tree and one by the controller.
-	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Trees: 2, AwaitingChildren: true, Filings: true})
+	fixture := legiontest.Seed(t, database.Pool, legionseed.Spec{Trees: 2, AwaitingChildren: true, Filings: true})
 	now := fixture.To
 	// The first tree: Seed writes each tree's root, that tree's children and then the issues its
 	// sessions filed, so the history's first issues per tree are the first tree's.
@@ -246,7 +247,7 @@ func TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject(t *testing.T) {
 // of two trees, an issue no Legion role worked among them, which has facts in neither.
 func TestTheFactsOfTheWantedIssuesAreTheirFactsAmongEveryIssue(t *testing.T) {
 	database := storetest.Open(t)
-	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Trees: 2})
+	fixture := legiontest.Seed(t, database.Pool, legionseed.Spec{Trees: 2})
 	population, err := ReadProject(t.Context(), database.Pool, fixture.Project, fixture.To)
 	if err != nil {
 		t.Fatalf("read the project: %v", err)

@@ -14,7 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
@@ -525,7 +525,7 @@ func TestAPassOverDeliveryInputWithNoProjectSucceeds(t *testing.T) {
 	r.pass(t)
 	r.exec(t, "make the store's first project", `insert into projects (key, name, default_assignee) values ('DEPLOY', 'Deploys', 'alice')`)
 	apply := "Apply"
-	putSources(t, r.database.Pool, "DEPLOY", []string{}, deliverytest.SourceOf(delivery.DeliverySettings{
+	putSources(t, r.database.Pool, "DEPLOY", []string{}, deliveryseed.SourceOf(delivery.DeliverySettings{
 		DeployWorkflowPath: ".github/workflows/deploy.yml", ProductionJobNames: []string{"production / apply"},
 		ProductionApplyStepName: &apply, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 	}, new("acme/deploy")))
@@ -934,8 +934,8 @@ func (r *refresherRig) seedSources(t *testing.T) {
 		values ('OMEGA-1', 'OMEGA', 1, 'Omega work', 'in_progress', '00000001', $1, '{"kind":"system","id":"sources-test"}', $2)`,
 		omegaApp, sourcesDay.AddDate(0, 0, -1))
 	authors := []string{"dev-ana"}
-	putSources(t, pool, "ALPHA", authors, deliverytest.SourceOf(ruleOfJob(alphaJob), nil), deliverytest.SourceOf(ruleOfJob(opsJob), new(alphaOps)))
-	putSources(t, pool, "OMEGA", authors, deliverytest.SourceOf(ruleOfJob(omegaJob), nil), eventsSource)
+	putSources(t, pool, "ALPHA", authors, deliveryseed.SourceOf(ruleOfJob(alphaJob), nil), deliveryseed.SourceOf(ruleOfJob(opsJob), new(alphaOps)))
+	putSources(t, pool, "OMEGA", authors, deliveryseed.SourceOf(ruleOfJob(omegaJob), nil), eventsSource)
 	putProjectSettings(t, pool, delivery.ProjectSettingsInput{Project: "DELTA", Delivery: false, Sources: []delivery.SourceInput{eventsSource}})
 	at := func(hour int) time.Time { return sourcesDay.Add(time.Duration(hour) * time.Hour) }
 	r.deployRun(t, alphaApp, 1001, at(10), alphaJob)
@@ -1041,8 +1041,8 @@ func TestASpanBuildsAKeptRepositorysZeroRowsUnderItsRecordedRule(t *testing.T) {
 			pool, authors := r.database.Pool, []string{"dev-ana"}
 			stage := ruleOfJob(stageJob)
 			stage.StagingE2EJobName = new(e2eJob)
-			alpha := []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob(alphaJob), nil), deliverytest.SourceOf(ruleOfJob(opsJob), new(alphaOps))}
-			putSources(t, pool, "ALPHA", authors, append(slices.Clone(alpha), deliverytest.SourceOf(stage, new(alphaStage)))...)
+			alpha := []delivery.SourceInput{deliveryseed.SourceOf(ruleOfJob(alphaJob), nil), deliveryseed.SourceOf(ruleOfJob(opsJob), new(alphaOps))}
+			putSources(t, pool, "ALPHA", authors, append(slices.Clone(alpha), deliveryseed.SourceOf(stage, new(alphaStage)))...)
 			r.settle(t)
 			if n := r.count(t, `select count(*) from eval_days_rules where repo = $1 and kept_since is null`, alphaStage); n != 1 {
 				t.Fatalf("%s's rule is recorded with no start %d times, want once", alphaStage, n)

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
@@ -87,7 +88,7 @@ func rangeQuery(from, to, compareFrom, compareTo time.Time) string {
 func TestAnEvalsPageOverDaysTheWalkHasNotBuiltGetsNoNumberUntilItHas(t *testing.T) {
 	t.Parallel()
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
-	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 30})
+	fixture := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{Seed: 2916, OneProject: true, Days: 30})
 	end := fixture.To.Add(-time.Minute)
 	today := measures.Midnight(end)
 	walked := today.AddDate(0, 0, -12)

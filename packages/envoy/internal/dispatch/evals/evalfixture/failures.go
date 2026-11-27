@@ -19,7 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
-	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents/signals"
@@ -40,7 +40,7 @@ import (
 // The Failures mode's names: the population's one author, the person who flags a deploy, the
 // actor of the check results, the system that posts the second project's deploys and its failure,
 // and the first run id, the ids rising with creation as GitHub's do and standing clear of the
-// Attribution mode's and deliverytest's.
+// Attribution mode's and deliveryseed's.
 const (
 	failuresAuthor   = "dev-failures"
 	failuresFirstRun = 9_000_000_001
@@ -762,7 +762,7 @@ func (o failureOracle) measures(project string, deploys []FailureDeploy, failure
 // event and then its row naming that event, the issue's last_seq at its last event. An issue held
 // already is the fixture's where its title is, and was written whole with it; one of another title
 // refuses the load. The events are dated in the fixture's past, so, where the database has the
-// keyword fill, the statement that writes them nulls the fill's stored reach (legiontest's write
+// keyword fill, the statement that writes them nulls the fill's stored reach (legionseed's write
 // says why).
 func writeFailureIssue(ctx context.Context, pool *store.Pool, issue failureIssue, keywordFill bool) error {
 	tx, err := pool.Begin(ctx)
@@ -794,7 +794,7 @@ func writeFailureIssue(ctx context.Context, pool *store.Pool, issue failureIssue
 	if err != nil {
 		return fmt.Errorf("write the issue %s: %w", issue.key, err)
 	}
-	var seeded []legiontest.SeededIssueEvent
+	var seeded []legionseed.SeededIssueEvent
 	if issue.link != "" {
 		if _, err := tx.Exec(ctx, `insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'url')`, issue.key, issue.link); err != nil {
 			return fmt.Errorf("link %s to %s: %w", issue.key, issue.link, err)
@@ -805,7 +805,7 @@ func writeFailureIssue(ctx context.Context, pool *store.Pool, issue failureIssue
 		if issue.link != "" {
 			links = append(links, map[string]string{"url": issue.link, "kind": "url"})
 		}
-		seeded = append(seeded, legiontest.SeededIssueEvent{
+		seeded = append(seeded, legionseed.SeededIssueEvent{
 			Type: "issue.created", Actor: failuresFlagger, At: issue.created,
 			Payload: map[string]any{
 				"key": issue.key, "project": issue.project, "title": issue.title, "labels": issue.labels, "external_links": links,
@@ -822,7 +822,7 @@ func writeFailureIssue(ctx context.Context, pool *store.Pool, issue failureIssue
 		}
 	}
 	for _, result := range issue.results {
-		seeded = append(seeded, legiontest.SeededIssueEvent{
+		seeded = append(seeded, legionseed.SeededIssueEvent{
 			Type: "result.recorded", Actor: failuresTester, At: result.at,
 			Payload: model.CheckResultEventPayload{
 				ResultID: result.id(issue.project), Issue: issue.key, CheckIssue: issue.key, CheckArtifactID: artifact,
@@ -831,7 +831,7 @@ func writeFailureIssue(ctx context.Context, pool *store.Pool, issue failureIssue
 			},
 		})
 	}
-	if err := legiontest.WriteIssueEvents(ctx, tx, issue.key, seeded, keywordFill); err != nil {
+	if err := legionseed.WriteIssueEvents(ctx, tx, issue.key, seeded, keywordFill); err != nil {
 		return err
 	}
 	tester, err := json.Marshal(failuresTester)

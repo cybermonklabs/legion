@@ -13,7 +13,7 @@
 //   - INFRA's delivery history: 5,402 pull requests over three repositories, a fifth of them
 //     rework, and over the last 200 days 20 deploy runs a day of 8 jobs and 60 pull-request runs
 //     a day of 40 jobs, ten times as many runs under TenTimes (delivery.go);
-//   - nine smaller projects, each the Legion history evalfixture writes (legiontest's);
+//   - nine smaller projects, each the Legion history evalfixture writes (legionseed's);
 //   - 2,800,000 readings of INFRA's 20 logged evals, in measured_at order, through the registry's
 //     own register write and readings write (readings.go), over the whole UTC days from the later
 //     of evals.MeasuredAtFloor (2025-01-01) and the day 730 days before Now's, to the end of the

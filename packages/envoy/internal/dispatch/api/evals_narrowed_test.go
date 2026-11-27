@@ -16,7 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -67,7 +67,7 @@ type narrowedEvalsRig struct {
 	served   *server
 	database *store.Store
 	registry *evals.Store
-	fixture  deliverytest.Fixture
+	fixture  deliveryseed.Fixture
 	legion   string
 	now      time.Time
 	today    time.Time
@@ -130,7 +130,7 @@ func (r *narrowedEvalsRig) atRead(t *testing.T, entries []evals.Entry, window ev
 }
 
 // seedFailures turns on the failure measures of the rig's delivery project from 20 days before
-// today, its settings saved again as the fixture saved them (deliverytest.SaveRules) with every
+// today, its settings saved again as the fixture saved them (deliveryseed.SaveRules) with every
 // failure source, and writes its record: a GitHub deploy row of each production apply of the
 // deploy repository that completed from that day on, shipping the pull requests it ships first
 // (delivery.ContainingRun), and on every third of them a failure of each signal in turn, every
@@ -322,7 +322,7 @@ func TestANarrowedReadWithNoFacetEqualsTheStoredNumber(t *testing.T) {
 // differs from every pull request's, with the minutes of each of that author's deployed pull
 // requests, sorted: merge to its first shipping apply's completion, as the day builders time it
 // (measures.MergeToProductionDay), over the fixture's own record of the applies.
-func authorWhoseMedianDiffers(t *testing.T, fixture deliverytest.Fixture, window evals.Range) (string, []float64) {
+func authorWhoseMedianDiffers(t *testing.T, fixture deliveryseed.Fixture, window evals.Range) (string, []float64) {
 	t.Helper()
 	minutes := func(author string) []float64 {
 		var all []float64

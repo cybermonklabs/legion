@@ -19,9 +19,11 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
@@ -851,7 +853,7 @@ func readGoldenLegionWindows(t *testing.T) []goldenLegionWindow {
 // deliverytest's (DELIV, whose issues every pull request names, and DELIVX, which holds none) over
 // days of history, and the legiontest history legion/metrics' golden files were recorded over
 // (GOLDEN). It answers the delivery fixture and the golden windows.
-func seedEvalHistories(t *testing.T, database *store.Store, deps Deps, days int) (deliverytest.Fixture, []goldenLegionWindow) {
+func seedEvalHistories(t *testing.T, database *store.Store, deps Deps, days int) (deliveryseed.Fixture, []goldenLegionWindow) {
 	t.Helper()
 	return seedEvalHistoriesAs(t, database, deps, days, false)
 }
@@ -859,21 +861,21 @@ func seedEvalHistories(t *testing.T, database *store.Store, deps Deps, days int)
 // seedEvalHistoriesByIssue is seedEvalHistories with the delivery history's attribution inputs left
 // unread before the refresh (leaveAttributionInputsUnread), so every pull request counts for DELIV,
 // the project of the issue its row names: the history of a test whose oracle is that issue.
-func seedEvalHistoriesByIssue(t *testing.T, database *store.Store, deps Deps, days int) (deliverytest.Fixture, []goldenLegionWindow) {
+func seedEvalHistoriesByIssue(t *testing.T, database *store.Store, deps Deps, days int) (deliveryseed.Fixture, []goldenLegionWindow) {
 	t.Helper()
 	return seedEvalHistoriesAs(t, database, deps, days, true)
 }
 
 // seedEvalHistoriesAs is seedEvalHistories, and with byIssue seedEvalHistoriesByIssue.
-func seedEvalHistoriesAs(t *testing.T, database *store.Store, deps Deps, days int, byIssue bool) (deliverytest.Fixture, []goldenLegionWindow) {
+func seedEvalHistoriesAs(t *testing.T, database *store.Store, deps Deps, days int, byIssue bool) (deliveryseed.Fixture, []goldenLegionWindow) {
 	t.Helper()
-	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: days})
+	fixture := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{Seed: 2916, OneProject: true, Days: days})
 	if byIssue {
 		leaveAttributionInputsUnread(t, database.Pool)
 	}
 	windows := readGoldenLegionWindows(t)
 	spec := windows[0].Spec
-	history := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: spec.Project, Trees: spec.Trees, Now: spec.Now})
+	history := legiontest.Seed(t, database.Pool, legionseed.Spec{Project: spec.Project, Trees: spec.Trees, Now: spec.Now})
 	storeLegionFacts(t, database, history.Project, spec.Now)
 	end := spec.Now
 	if fixture.To.After(end) {

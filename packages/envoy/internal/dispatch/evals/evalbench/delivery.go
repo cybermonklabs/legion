@@ -18,8 +18,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// A project's delivery history at INFRA's size, in deliverytest's shape at INFRA's stated rate:
-// deliverytest writes about nineteen pull requests a day and runs of four and ten jobs, and one
+// A project's delivery history at INFRA's size, in deliveryseed's shape at INFRA's stated rate:
+// deliveryseed writes about nineteen pull requests a day and runs of four and ten jobs, and one
 // database holds one of its histories, so it cannot hold this one. The pull requests are spread
 // over the last runDays days, as the runs are, so every deploy ships the pull requests merged since
 // the one before it, as in production. Containment (delivery/containment.go) ships a pull request of
@@ -68,7 +68,7 @@ type checkStage struct {
 	runs   float64
 }
 
-// checkStages are the PR-checks workflow's 39 jobs besides the roll-up: deliverytest's nine and
+// checkStages are the PR-checks workflow's 39 jobs besides the roll-up: deliveryseed's nine and
 // thirty shards of the test suite, so a run holds 40 jobs.
 var checkStages = func() []checkStage {
 	stages := []checkStage{

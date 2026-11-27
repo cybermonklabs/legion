@@ -12,7 +12,9 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/config"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // edgeProject is the one project this package's edge listeners serve.
@@ -73,5 +75,47 @@ func TestTheEdgeRefusesToStartWithoutTheStream(t *testing.T) {
 	started.waitHealthy(t)
 	if output := started.Output.String(); strings.Contains(output, "role lane subscribed") || !strings.Contains(output, "role lane not subscribed") {
 		t.Fatalf("the edge listener opened a role lane, or did not say it opened none:\n%s", output)
+	}
+}
+
+// Serial (listenerTestParallelism): it changes something the whole process shares: it calls
+// t.Setenv.
+//
+// Check l16 of dispatch://INFRA-3589 (R18) at the edge's start: an edge listener whose machine id
+// is a fully qualified host name takes the grant natsgrant.Edge builds for that id, and its start
+// names every inbox under the prefix that grant subscribes, the id spelled as its durable spells it
+// (bus.ListenerSpelling), each dot as %2E. The start connects as a user holding that grant, on a
+// server with no stream. Its read of the stream is answered on its inbox, so the start ends naming
+// the missing stream: a reply under any other prefix would be a subscription the server refuses.
+// An id with a space is refused naming edge mode, since its spelling, a hyphen, is another id's.
+func TestADottedEdgeMachineIDStartsUnderItsSpelledPrefix(t *testing.T) {
+	const (
+		machineID = "host.example.internal"
+		prefix    = "_INBOX_envoy_edge_host%2Eexample%2Einternal"
+	)
+	edge, err := newEdgeGrant(machineID, []string{edgeProject}, metrics.New())
+	if err != nil {
+		t.Fatalf("newEdgeGrant(%q, [%s]): %v", machineID, edgeProject, err)
+	}
+	grant, err := natsgrant.Edge(machineID, []string{edgeProject})
+	if err != nil {
+		t.Fatalf("natsgrant.Edge(%q, [%s]): %v", machineID, edgeProject, err)
+	}
+	if edge.inboxPrefix != prefix || grant.Subscribe[0] != prefix+".>" {
+		t.Fatalf("the start's inbox prefix is %q and the grant subscribes %q, want %q under both", edge.inboxPrefix, grant.Subscribe[0], prefix)
+	}
+	seed, public := testnats.User(t)
+	_, uri := testnats.StartConfig(t, testnats.GrantedUsersConfig(testnats.StaticUser{NKey: public, Publish: grant.Publish, Subscribe: grant.Subscribe}), []string{"-js"}, false)
+	t.Setenv(bus.NkeySeedEnvVar, seed)
+	client, err := connectListenerBus(config.Service{NATSURLs: []string{uri}}, edge, newNATSStart(listenerCredentialWait))
+	if err == nil {
+		client.Close()
+		t.Fatal("the edge's start connected on a server with no stream")
+	}
+	if want := "the server holds no " + bus.Stream + " stream"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("the edge's start ended with %q, want it to name the missing stream (%q): its read was not answered under %s", err, want, prefix)
+	}
+	if refused, err := newEdgeGrant("host example", []string{edgeProject}, metrics.New()); err == nil || refused != nil || !strings.Contains(err.Error(), "edge mode") {
+		t.Fatalf("newEdgeGrant(host example, [%s]) = %v, %v; want no grant and a refusal naming edge mode", edgeProject, refused, err)
 	}
 }

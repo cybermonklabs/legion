@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 )
 
@@ -54,7 +54,7 @@ func (r *refresherRig) seedFailureProjects(t *testing.T) {
 func (r *refresherRig) putFailures(t *testing.T, project, job string, sources []string, since time.Time, extra ...delivery.SourceInput) {
 	t.Helper()
 	input := delivery.ProjectSettingsInput{
-		Project: project, Delivery: true, Sources: append([]delivery.SourceInput{deliverytest.SourceOf(ruleOfJob(job), nil)}, extra...),
+		Project: project, Delivery: true, Sources: append([]delivery.SourceInput{deliveryseed.SourceOf(ruleOfJob(job), nil)}, extra...),
 		PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{}, FailureSources: sources,
 	}
 	if len(sources) > 0 {
@@ -584,19 +584,19 @@ func TestAFailureCountsForEachProjectItsDeployCountsForUnderThePublishedDefaults
 
 	allFailureSources := []string{delivery.FailureSourceCheckResults}
 	putProjectSettings(t, pool, delivery.ProjectSettingsInput{
-		Project: "ALPHA", Delivery: true, Sources: []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob(alphaJob), new(shared))},
+		Project: "ALPHA", Delivery: true, Sources: []delivery.SourceInput{deliveryseed.SourceOf(ruleOfJob(alphaJob), new(shared))},
 		PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{}, FailureSources: allFailureSources, FailuresMeasuredSince: &failureDay,
 	})
 	putProjectSettings(t, pool, delivery.ProjectSettingsInput{
-		Project: "BETA", Delivery: true, Sources: []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob("beta / apply"), new(other))},
+		Project: "BETA", Delivery: true, Sources: []delivery.SourceInput{deliveryseed.SourceOf(ruleOfJob("beta / apply"), new(other))},
 		PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{}, FailureSources: allFailureSources, FailuresMeasuredSince: &failureDay,
 	})
 	putProjectSettings(t, pool, delivery.ProjectSettingsInput{
-		Project: "OMEGA", Delivery: true, Sources: []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob(omegaJob), new(omegaApp))},
+		Project: "OMEGA", Delivery: true, Sources: []delivery.SourceInput{deliveryseed.SourceOf(ruleOfJob(omegaJob), new(omegaApp))},
 		PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{}, FailureSources: allFailureSources, FailuresMeasuredSince: &failureDay,
 	})
 	putProjectSettings(t, pool, delivery.ProjectSettingsInput{
-		Project: "PIER", Delivery: true, Sources: []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob("pier / apply"), new(pierRepo))},
+		Project: "PIER", Delivery: true, Sources: []delivery.SourceInput{deliveryseed.SourceOf(ruleOfJob("pier / apply"), new(pierRepo))},
 		PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{}, FailureSources: allFailureSources, FailuresMeasuredSince: &failureDay,
 	})
 
@@ -701,11 +701,11 @@ func TestTheFailureRowsOfAMovedProjectAreWrittenUnderThePublishedDefaults(t *tes
 	r.exec(t, "add PIER-1", `insert into issues (key, project_key, number, title, status, rank, repo, created_by, created_at)
 		values ('PIER-1', 'PIER', 1, 'Pier work', 'in_progress', '00000001', null, '{"kind":"system","id":"failures-test"}', $1)`, failureDay.AddDate(0, 0, -10))
 	putProjectSettings(t, pool, delivery.ProjectSettingsInput{
-		Project: "ALPHA", Delivery: true, Sources: []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob(alphaJob), new(alphaApp))},
+		Project: "ALPHA", Delivery: true, Sources: []delivery.SourceInput{deliveryseed.SourceOf(ruleOfJob(alphaJob), new(alphaApp))},
 		PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{}, FailureSources: []string{delivery.FailureSourceCheckResults}, FailuresMeasuredSince: &failureDay,
 	})
 	putProjectSettings(t, pool, delivery.ProjectSettingsInput{
-		Project: "PIER", Delivery: true, Sources: []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob("pier / apply"), new(pierRepo))},
+		Project: "PIER", Delivery: true, Sources: []delivery.SourceInput{deliveryseed.SourceOf(ruleOfJob("pier / apply"), new(pierRepo))},
 		PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{}, FailureSources: []string{delivery.FailureSourceCheckResults}, FailuresMeasuredSince: &failureDay,
 	})
 	if err := delivery.UpsertPullRequest(ctx, pool, delivery.DeliveryPullRequest{

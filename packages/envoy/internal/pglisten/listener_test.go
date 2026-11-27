@@ -16,7 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -495,7 +495,7 @@ func TestTheListenerHearsTheTriggersItListensFor(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee, default_repo) values ('LIVE', 'Live', 'alice', 'acme/widgets')`); err != nil {
 		t.Fatalf("insert the project: %v", err)
 	}
-	if _, err := deliverytest.SaveSettings(ctx, database.Pool, delivery.ProjectSettingsInput{
+	if _, err := deliveryseed.SaveSettings(ctx, database.Pool, delivery.ProjectSettingsInput{
 		Project: "LIVE", Delivery: true, PopulationAuthors: []string{"octocat"},
 		Sources: []delivery.SourceInput{{
 			Kind: delivery.SourceKindGitHubWorkflow, DeployWorkflowPath: new(".github/workflows/deploy.yml"),

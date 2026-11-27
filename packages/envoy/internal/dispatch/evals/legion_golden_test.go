@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
@@ -218,7 +219,7 @@ func seedGoldenLegionHistory(t *testing.T, r rig) ([]goldenReports, string, Legi
 
 	ctx := t.Context()
 	pool := r.database.Pool
-	fixture := legiontest.Seed(t, pool, legiontest.Spec{Project: spec.Project, Trees: spec.Trees, Now: spec.Now})
+	fixture := legiontest.Seed(t, pool, legionseed.Spec{Project: spec.Project, Trees: spec.Trees, Now: spec.Now})
 	project := fixture.Project
 	rows, filings, err := legionfacts.ComputeProject(ctx, pool, project, spec.Now)
 	if err != nil {

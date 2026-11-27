@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
@@ -19,7 +20,7 @@ func TestADaysPartOfAWalksDeployRunsIsTheDaysOwnRead(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	ctx, pool := t.Context(), r.database.Pool
-	fixture := deliverytest.Seed(t, pool, deliverytest.Spec{Days: 5})
+	fixture := deliverytest.Seed(t, pool, deliveryseed.Spec{Days: 5})
 	settings := deployRule(t, pool, fixture.DeployRepo)
 	applies, err := delivery.ReadApplyRows(ctx, pool, settings, fixture.From)
 	if err != nil {
@@ -58,7 +59,7 @@ func TestAReadOfSeveralDaysAnswersEachDaysOwnReads(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	ctx, pool := t.Context(), r.database.Pool
-	fixture := deliverytest.Seed(t, pool, deliverytest.Spec{Days: 8})
+	fixture := deliverytest.Seed(t, pool, deliveryseed.Spec{Days: 8})
 	settings := deployRule(t, pool, fixture.DeployRepo)
 	projects, err := delivery.ListProjectSettings(ctx, pool)
 	if err != nil {

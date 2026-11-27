@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
@@ -33,10 +33,10 @@ func failuresAt(day, hour int) time.Time {
 }
 
 // saveProjectDelivery saves input through delivery.PutProjectSettings, in a transaction of its own
-// (deliverytest.SaveSettings).
+// (deliveryseed.SaveSettings).
 func saveProjectDelivery(t *testing.T, pool *store.Pool, input delivery.ProjectSettingsInput) {
 	t.Helper()
-	if _, err := deliverytest.SaveSettings(t.Context(), pool, input, model.Actor{Kind: "system", ID: "test"}); err != nil {
+	if _, err := deliveryseed.SaveSettings(t.Context(), pool, input, model.Actor{Kind: "system", ID: "test"}); err != nil {
 		t.Fatalf("save the delivery settings of %s: %v", input.Project, err)
 	}
 }

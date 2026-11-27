@@ -5,7 +5,6 @@ package api
 import (
 	"crypto/sha256"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"runtime"
@@ -420,9 +419,10 @@ func TestTheMentionSenderClaimModel(t *testing.T) {
 			cmLapsePeriods, model.DeliveryClaimLapse, mentionClaimRefresh)
 	}
 	// The sender logs every lost answer and failed read at ERROR, which the model makes by the
-	// thousand.
+	// thousand. A handler that is never enabled drops each record before slog builds it; a text
+	// handler writing to io.Discard formatted every one first.
 	logs := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	slog.SetDefault(slog.New(slog.DiscardHandler))
 	t.Cleanup(func() { slog.SetDefault(logs) })
 	type modelRun struct {
 		v       cmVariant

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -129,7 +130,7 @@ func listByID(t *testing.T, list any) map[string]map[string]any {
 
 // fixtureShips is, for each deploy run of the fixture, the pull requests it ships first by the
 // fixture's own containment (delivery.ContainingRun over every pull request and every apply).
-func fixtureShips(fixture deliverytest.Fixture) map[int64][]delivery.DeliveryPullRequest {
+func fixtureShips(fixture deliveryseed.Fixture) map[int64][]delivery.DeliveryPullRequest {
 	ships := map[int64][]delivery.DeliveryPullRequest{}
 	for _, pr := range fixture.PullRequests {
 		if apply := delivery.ContainingRun(pr, fixture.DeployRepo, fixture.Applies); apply != nil {
@@ -217,7 +218,7 @@ func checkProjectTimelinePages(t *testing.T, pages []map[string]any, limit int, 
 // the refresher publishes it, which the test publishes as the refresher's page does.
 func TestTheProjectTimelinePagesNewestFirstAndHoldsTheBaseAnswer(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
-	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2918, Days: 30, OneProject: true})
+	fixture := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{Seed: 2918, Days: 30, OneProject: true})
 	// INFRA-2916's attribution rule (attributionListOf) holds an issue to the repository its chain
 	// names, and these issues name none while their pull requests are in all three repositories,
 	// one issue's in several: with the stored inputs cleared, as deliverytest's OneProject says, each
@@ -294,7 +295,7 @@ func TestTheProjectTimelinePagesNewestFirstAndHoldsTheBaseAnswer(t *testing.T) {
 // not on DELIVX's.
 func TestTheProjectTimelineCountsTheProjectsRowsByR27(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, Days: 40})
+	fixture := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{Seed: 2916, Days: 40})
 	projects := []string{fixture.Project, fixture.SecondProject}
 	issueProject := map[string]string{}
 	for project, keys := range fixture.Issues {
@@ -511,7 +512,7 @@ func TestTheProjectTimelineCountsTheProjectsRowsByR27(t *testing.T) {
 			}
 		}
 	})
-	// The deploy repository is the one DELIV's deploy source reads (deliverytest.SaveRules).
+	// The deploy repository is the one DELIV's deploy source reads (deliveryseed.SaveRules).
 	t.Run("a deploy that ships no pull request counts for the project whose deploy source reads its repository", func(t *testing.T) {
 		for _, id := range shipNone {
 			if !slices.Contains(gotRuns[fixture.Project], id) || slices.Contains(gotRuns[fixture.SecondProject], id) {
@@ -865,7 +866,7 @@ func nextProjectTimelineFrame(t *testing.T, conn *fakeLiveConn, sub string) any 
 // once the limit reached the total.
 func TestTheProjectTimelineViewGrowsWithItsLimit(t *testing.T) {
 	rig := newHubRig(t, nil)
-	fixture := deliverytest.Seed(t, rig.database.Pool, deliverytest.Spec{Seed: 2918, Days: 70, OneProject: true})
+	fixture := deliverytest.Seed(t, rig.database.Pool, deliveryseed.Spec{Seed: 2918, Days: 70, OneProject: true})
 	// INFRA-2916's attribution rule (attributionListOf) holds an issue to the repository its chain
 	// names, and these issues name none: read by the issue alone, every pull request counts for DELIV.
 	leaveAttributionInputsUnread(t, rig.database.Pool)

@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
@@ -112,7 +113,7 @@ func mustString(t *testing.T, raw json.RawMessage) string {
 func TestTheFailingJobsItemsAreThePipelinesFailingJobs(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 14})
+	fixture := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{Seed: 2916, OneProject: true, Days: 14})
 	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, fixture.To.Add(-time.Minute))
 
 	// A pull-request checks run that failed a job, ending the window one second past the 24 hours
@@ -237,7 +238,7 @@ func TestTwoRepositoriesFailingJobsOfOneNameAreTwoRows(t *testing.T) {
 func TestTheSlowestJobsItemsAreThePipelinesSlowestJobs(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 14})
+	fixture := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{Seed: 2916, OneProject: true, Days: 14})
 	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, fixture.To.Add(-time.Minute))
 	// The Pipeline's seven days ending on the history's eleventh, and the items' range of the
 	// same days.
@@ -434,7 +435,7 @@ func TestOneEvalItemsAnswerReadsItsRowsFromOneSnapshot(t *testing.T) {
 // end and failed 23 hours before it, and early started in the range and failed before the 24 hours
 // before end. Each failed a job of a name no other run holds.
 type failingRuns struct {
-	fixture         deliverytest.Fixture
+	fixture         deliveryseed.Fixture
 	from, end       time.Time
 	straddle, early delivery.DeliveryRun
 }
@@ -456,7 +457,7 @@ func (f failingRuns) query() string {
 // beside it, and the day rows the refresher builds of them all.
 func seedFailingRuns(t *testing.T, database *store.Store, deps Deps) failingRuns {
 	t.Helper()
-	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2918, OneProject: true, Days: 14})
+	fixture := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{Seed: 2918, OneProject: true, Days: 14})
 	end := measures.Midnight(fixture.To).AddDate(0, 0, -2).Add(10 * time.Hour)
 	f := failingRuns{fixture: fixture, from: end.AddDate(0, 0, -7), end: end}
 	number := projectPullRequest(t, fixture, fixture.DeployRepo)
@@ -468,7 +469,7 @@ func seedFailingRuns(t *testing.T, database *store.Store, deps Deps) failingRuns
 
 // projectPullRequest is the number of a pull request of repo in fixture that names an issue of
 // fixture's project, so a run of its checks counts for that project.
-func projectPullRequest(t *testing.T, fixture deliverytest.Fixture, repo string) int {
+func projectPullRequest(t *testing.T, fixture deliveryseed.Fixture, repo string) int {
 	t.Helper()
 	index := slices.IndexFunc(fixture.PullRequests, func(pr delivery.DeliveryPullRequest) bool {
 		return pr.Repo == repo && pr.IssueKey != nil && slices.Contains(fixture.Issues[fixture.Project], *pr.IssueKey)
@@ -604,7 +605,7 @@ func TestAJobNameTwoRepositoriesFailAnswersARowOfEach(t *testing.T) {
 	fixture := f.fixture
 	second := fixture.Settings
 	second.DeployRepo = fixture.Repos[1]
-	if _, err := deliverytest.SaveRules(t.Context(), database.Pool, fixture.Project, fixture.Settings, second); err != nil {
+	if _, err := deliveryseed.SaveRules(t.Context(), database.Pool, fixture.Project, fixture.Settings, second); err != nil {
 		t.Fatalf("save %s's second deploy source, %s: %v", fixture.Project, second.DeployRepo, err)
 	}
 	// INFRA-2916's attribution rule (attributionListOf) counts a pull request for its issue's project

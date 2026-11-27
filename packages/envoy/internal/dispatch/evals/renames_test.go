@@ -9,7 +9,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -103,12 +105,12 @@ func TestARenamedRepositorysRowsAreStoredAndReadUnderItsNewName(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool
-	deliveries := deliverytest.Seed(t, pool, deliverytest.Spec{Days: 5})
-	legion := legiontest.Seed(t, pool, legiontest.Spec{Trees: 6, Now: deliverytest.DefaultNow})
+	deliveries := deliverytest.Seed(t, pool, deliveryseed.Spec{Days: 5})
+	legion := legiontest.Seed(t, pool, legionseed.Spec{Trees: 6, Now: deliveryseed.DefaultNow})
 	const legionRepo = "acme/legion"
 	r.exec(t, "give the Legion roots a repository", `update issues set repo = $2 where project_key = $1 and parent_key is null`,
 		legion.Project, legionRepo)
-	rows, filings, err := legionfacts.ComputeProject(ctx, pool, legion.Project, deliverytest.DefaultNow)
+	rows, filings, err := legionfacts.ComputeProject(ctx, pool, legion.Project, deliveryseed.DefaultNow)
 	if err != nil {
 		t.Fatalf("compute the facts of %s: %v", legion.Project, err)
 	}
@@ -277,7 +279,7 @@ func TestARenamedSourceRepositoryOfAMixedCaseDestinationIsReadAsOneRepository(t 
 	early := sourcesDay.AddDate(0, 0, -3)
 	r.exec(t, "the project", `insert into projects (key, name, default_assignee, next_number) values ('ALPHA', 'Alpha', 'alice', 1)`)
 	putSources(t, pool, "ALPHA", []string{"dev-ana"},
-		deliverytest.SourceOf(ruleOfJob(opsJob), new(alphaOps)), deliverytest.SourceOf(ruleOfJob(opsJob), new(coreRepo)))
+		deliveryseed.SourceOf(ruleOfJob(opsJob), new(alphaOps)), deliveryseed.SourceOf(ruleOfJob(opsJob), new(coreRepo)))
 	r.deployRun(t, coreSpelled, 5001, early.Add(10*time.Hour), opsJob)
 	r.deployRun(t, alphaOps, 2001, sourcesDay.Add(10*time.Hour), opsJob)
 	r.deployRun(t, coreSpelled, 5002, sourcesDay.Add(11*time.Hour), opsJob)

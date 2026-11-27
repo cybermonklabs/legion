@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 )
 
 // freshnessJSON is freshness as an answer writes it, for a failure's message.
@@ -105,7 +105,7 @@ func TestTheDeliveryEvalsAnswerCarriesTheProjectsFreshness(t *testing.T) {
 	// bookkeeping; each source's is then set outright.
 	gadgets := widgets
 	gadgets.DeployRepo = "acme/gadgets"
-	if _, err := deliverytest.SaveRules(ctx, pool, deliveryRuleProject, widgets, gadgets); err != nil {
+	if _, err := deliveryseed.SaveRules(ctx, pool, deliveryRuleProject, widgets, gadgets); err != nil {
 		t.Fatalf("save the two sources: %v", err)
 	}
 	bookkeeping := func(repo string, event, reconcile *time.Time, lastError *string) {

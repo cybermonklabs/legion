@@ -36,9 +36,9 @@ import { integerSetting, type StallLimitsLog } from "@legion/pi-shared/stall-lim
  *
  * Why this runs inside the turn. The daemon reads a prompt's outcome from Oh My Pi's
  * `prompt_result`, which the host writes at the first `agent_end` it marks `yielded`
- * (`modes/rpc/rpc-prompt-results.ts:159-170` at v18.18.6-sami.20261127-010836). A `session_stop`
+ * (`modes/rpc/rpc-prompt-results.ts:159-170` at v18.18.6-sami.20261127-055727). A `session_stop`
  * handler that answers a continuation makes the host end the run with `willContinue`, which it
- * marks as not yielded (`session/agent-session.ts:6493-6494, 7096-7102`), so the prompt stays open
+ * marks as not yielded (`session/agent-session.ts:6481-6482, 7084-7090`), so the prompt stays open
  * across every rung and its result is the last rung's. The host stops waiting for a
  * `session_stop` handler at 30 s without aborting it (`extensibility/extensions/runner.ts:152,
  * 1983-1988, 2030`), so each wait is at most `LONGEST_RUNG_WAIT_MS`, and once `SETTLE_BUDGET_MS`
@@ -51,10 +51,10 @@ import { integerSetting, type StallLimitsLog } from "@legion/pi-shared/stall-lim
  * both keep the refused text (`session/compact-modes.ts:40-57`). The summary covers the newest
  * turn group too, through a `session_before_compact` handler registered at the ladder's first
  * compaction. Oh My Pi has no way to remove a handler, and with one registered it runs no
- * background compaction (`session/session-maintenance.ts:2988-2992, 3104, 3359`), so a pane that
+ * background compaction (`session/session-maintenance.ts:2386-2390, 2483, 2719`), so a pane that
  * has climbed to this rung once compacts its sessions in the foreground from then on. A
  * compaction with nothing to compact rejects, and the host resumes the turn it aborted
- * (`session-maintenance.ts:2108-2115, 2428-2437`); that resumed turn is the rung's request. Any
+ * (`session-maintenance.ts:1506-1513, 1826-1835`); that resumed turn is the rung's request. Any
  * other failure resumes nothing, so the ladder starts a turn from inside the session (below).
  *
  * Why each rung's request reaches OpenAI. After a `cyber_policy` refusal Oh My Pi holds every call
@@ -62,15 +62,15 @@ import { integerSetting, type StallLimitsLog } from "@legion/pi-shared/stall-lim
  * session (`session/cyber-policy-closure.ts:9-11, 81-96, 131`); a continuation is inside input, and
  * a call it makes is held with no request sent. So each rung first sends one hidden message marked
  * `origin: "outside"`, which ends the hold before the message is queued
- * (`session/agent-session.ts:12675-12686`), and the compaction is asked for with the same origin
- * (`:9415-9419`). Deciding to retry is this plugin's, on the operator's behalf, with the settings
+ * (`session/agent-session.ts:12654-12665`), and the compaction is asked for with the same origin
+ * (`:9394-9398`). Deciding to retry is this plugin's, on the operator's behalf, with the settings
  * below. That message and the continuation's own text are taken out of every request again
  * (`CyberPolicyLadder.request`), and so is each refused reply, so the plain retry sends what the
  * refused request sent.
  *
  * Two turns end with no `session_stop` and so get no ladder: a refused reply that carries tool
- * calls, and a turn that ends while a background job's result is due (`agent-session.ts:6452-6456,
- * 6489-6492`). Their refusal reaches the daemon as before.
+ * calls, and a turn that ends while a background job's result is due (`agent-session.ts:6440-6444,
+ * 6477-6480`). Their refusal reaches the daemon as before.
  */
 
 /** The four rungs, in the order the ladder climbs them. */
@@ -104,15 +104,15 @@ const CYBER_POLICY_RETRY_MESSAGE = {
 } as const;
 
 /** The continuation text of every rung but the second. The host needs a text to continue the turn
- * (`agent-session.ts:7143-7168`); this one is taken out of every request again, and it says what a
+ * (`agent-session.ts:7131-7156`); this one is taken out of every request again, and it says what a
  * model would need to read if it ever were sent. */
 export const CYBER_POLICY_CONTINUE = "Continue the task from where the refused request left off.";
 
-/** The host's `customType` for a `session_stop` continuation (`agent-session.ts:7158-7166`). */
+/** The host's `customType` for a `session_stop` continuation (`agent-session.ts:7146-7154`). */
 const SESSION_STOP_CONTINUATION = "session-stop-continuation";
 
 /** The name of the host's rejection of a compaction with nothing to compact, after which it resumes
- * the turn it aborted (`ManualCompactionNoOpError`, `session/session-maintenance.ts:467-472`). */
+ * the turn it aborted (`ManualCompactionNoOpError`, `session/session-maintenance.ts:447-452`). */
 const NOTHING_TO_COMPACT = "ManualCompactionNoOpError";
 
 /** The name of the host's rejection of a compaction someone stopped, an interrupt among them
@@ -218,7 +218,7 @@ export interface CyberPolicyLadder<Context extends CyberPolicyLadderContext> {
   ) => Promise<readonly unknown[] | undefined>;
   /** `turn_end`: a reply the provider gave ends the pass, so the next refusal starts a new one,
    * and so does an abort. The ladder's own compaction aborts its turn with the agent disconnected
-   * (`session/session-maintenance.ts:2000-2001`), so that abort sends no `turn_end`. */
+   * (`session/session-maintenance.ts:1398-1399`), so that abort sends no `turn_end`. */
   readonly turnEnded: (message: AgentEndMessage | undefined) => void;
   /** The pane moved to another session: whatever pass ran was the old session's, and a compaction
    * it started answers nothing of the new one's. */
@@ -297,7 +297,7 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
   };
 
   /** Input from outside the session, sent before each rung: it ends the host's hold for that
-   * rung's request (`session/agent-session.ts:12675-12686`). */
+   * rung's request (`session/agent-session.ts:12654-12665`). */
   const endHold = (): void =>
     deps.sendMessage(CYBER_POLICY_RETRY_MESSAGE, {
       deliverAs: "nextTurn",
@@ -338,7 +338,7 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
     const started = pass;
     // The synchronous part of the host's compaction aborts the agent, so the request this hook was
     // called for is never sent; the host resumes the turn once the summary is committed, or at
-    // once when there is nothing to compact (`session/session-maintenance.ts:1999-2006, 2428-2437`).
+    // once when there is nothing to compact (`session/session-maintenance.ts:1397-1404, 1826-1835`).
     compact({ origin: "outside", mode: "soft" }).then(
       () => {
         if (started !== pass) return;

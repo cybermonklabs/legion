@@ -17,7 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -1369,7 +1369,7 @@ func (r *refresherRig) queue(t *testing.T) map[string]bool {
 // those days' pr-open-to-merge rows of the main project with plain SQL, as a process that queues
 // nothing would: the triggers queue each of them for the rebuild to build again. It answers the
 // rebuild's queue then.
-func (r *refresherRig) writeDuringRebuild(t *testing.T, deliveries deliverytest.Fixture) map[string]bool {
+func (r *refresherRig) writeDuringRebuild(t *testing.T, deliveries deliveryseed.Fixture) map[string]bool {
 	t.Helper()
 	main := deliveries.Project
 	r.corruptDays(t, main)

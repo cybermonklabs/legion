@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/multitracer"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -35,7 +36,7 @@ const settingsApplyStep = "terraform apply"
 
 // newSettingsRig is a refresher over a database of its own loaded with deliverytest's history of
 // five days (newSettingsHistory) and settled by its passes, each walking batch days.
-func newSettingsRig(t *testing.T, batch int) (*refresherRig, deliverytest.Fixture) {
+func newSettingsRig(t *testing.T, batch int) (*refresherRig, deliveryseed.Fixture) {
 	t.Helper()
 	r, deliveries := newSettingsHistory(t, batch)
 	r.settle(t)
@@ -45,7 +46,7 @@ func newSettingsRig(t *testing.T, batch int) (*refresherRig, deliverytest.Fixtur
 // newSettingsRigByIssue is newSettingsRig with the history's attribution inputs left unread before
 // it settles (leaveInputsUnread), so the issue each row names is its attribution: the rig of a test
 // whose oracle is the issue deliverytest names each pull request after.
-func newSettingsRigByIssue(t *testing.T, batch int) (*refresherRig, deliverytest.Fixture) {
+func newSettingsRigByIssue(t *testing.T, batch int) (*refresherRig, deliveryseed.Fixture) {
 	t.Helper()
 	r, deliveries := newSettingsHistory(t, batch)
 	r.leaveInputsUnread(t)
@@ -57,11 +58,11 @@ func newSettingsRigByIssue(t *testing.T, batch int) (*refresherRig, deliverytest
 // of five days, whose passes each walk batch days, and none run yet. Every production job that
 // succeeded records an apply step, settingsApplyStep, which succeeded but on the runs whose id ends
 // in 3, where it was skipped; no setting names the step, so each job counts by its own conclusion.
-func newSettingsHistory(t *testing.T, batch int) (*refresherRig, deliverytest.Fixture) {
+func newSettingsHistory(t *testing.T, batch int) (*refresherRig, deliveryseed.Fixture) {
 	t.Helper()
 	r := newRefresherRig(t)
 	r.batch = batch
-	deliveries := deliverytest.Seed(t, r.database.Pool, deliverytest.Spec{Days: 5})
+	deliveries := deliverytest.Seed(t, r.database.Pool, deliveryseed.Spec{Days: 5})
 	r.exec(t, "record the production jobs' apply step", `
 		update delivery_run_jobs
 		set apply_step = $2, apply_step_conclusion = case when run_id % 10 = 3 then 'skipped' else 'success' end
@@ -98,13 +99,13 @@ func (r *refresherRig) putSettings(t *testing.T, settings delivery.DeliverySetti
 		main = new(settings.DeployRepo)
 	}
 	// The first source is the one settings move; every later one keeps its repository.
-	sources := []delivery.SourceInput{deliverytest.SourceOf(settings, main)}
+	sources := []delivery.SourceInput{deliveryseed.SourceOf(settings, main)}
 	for i, source := range held.Sources {
 		switch {
 		case source.Kind == delivery.SourceKindEvents:
 			sources = append(sources, eventsSource)
 		case i > 0 && source.Repo != nil && (main == nil || !strings.EqualFold(*source.Repo, *main)):
-			sources = append(sources, deliverytest.SourceOf(settings, source.Repo))
+			sources = append(sources, deliveryseed.SourceOf(settings, source.Repo))
 		}
 	}
 	// A save that changes nothing is not made: delivery.PutProjectSettings moves every kept source's
@@ -127,11 +128,11 @@ func sameSource(stored delivery.DeploySource, input delivery.SourceInput) bool {
 // readAlso saves fixture's project's settings with one GitHub source more for each of repos, each
 // naming it under the fixture's rule, so the pass keeps each as a source repository and builds its
 // rows.
-func readAlso(t *testing.T, r *refresherRig, fixture deliverytest.Fixture, repos ...string) {
+func readAlso(t *testing.T, r *refresherRig, fixture deliveryseed.Fixture, repos ...string) {
 	t.Helper()
-	sources := []delivery.SourceInput{deliverytest.SourceOf(fixture.Settings, nil)}
+	sources := []delivery.SourceInput{deliveryseed.SourceOf(fixture.Settings, nil)}
 	for _, repo := range repos {
-		sources = append(sources, deliverytest.SourceOf(fixture.Settings, new(repo)))
+		sources = append(sources, deliveryseed.SourceOf(fixture.Settings, new(repo)))
 	}
 	putSources(t, r.database.Pool, fixture.Project, fixture.Settings.PopulationAuthors, sources...)
 }
@@ -1131,7 +1132,7 @@ func (r *refresherRig) copyRunsBefore(t *testing.T, from, to string, kind delive
 func TestAProductionRuleChangeRewritesEachRepositoryThatHoldsDeploys(t *testing.T) {
 	t.Parallel()
 	rigs := make([]*refresherRig, 2)
-	var deliveries deliverytest.Fixture
+	var deliveries deliveryseed.Fixture
 	for i := range rigs {
 		rigs[i], deliveries = newSettingsRig(t, walkBatch)
 		// Only source repositories are kept (dispatch://INFRA-978, D1): the project's sources read
@@ -1225,7 +1226,7 @@ func TestAProductionRuleChangeDuringTheFirstWalkRewritesWhatAWholeWalkWrites(t *
 func TestAPageWriteAfterARewriteOfEveryDayKeepsTheZeroRowsOfARepositoryItDidNotRewrite(t *testing.T) {
 	t.Parallel()
 	rigs := make([]*refresherRig, 2)
-	var deliveries deliverytest.Fixture
+	var deliveries deliveryseed.Fixture
 	for i := range rigs {
 		rigs[i], deliveries = newSettingsRig(t, walkBatch)
 		readAlso(t, rigs[i], deliveries, deliveries.Repos[2])
@@ -1339,7 +1340,7 @@ var ruleNoRunJobs = []string{"production-release / apply-v3", "production-releas
 // ruleSecondJob and those of its fourth day recording ruleSecondStep, walked whole again: a rule
 // that names ruleSecondJob beside the first name moves the verdicts of the second day's runs alone,
 // and each apply step those of the runs whose jobs record it alone.
-func newRuleChangeRig(t *testing.T) (*refresherRig, deliverytest.Fixture) {
+func newRuleChangeRig(t *testing.T) (*refresherRig, deliveryseed.Fixture) {
 	t.Helper()
 	r, deliveries := newSettingsRig(t, walkBatch)
 	second, fourth := deliveries.From.AddDate(0, 0, 1), deliveries.From.AddDate(0, 0, 3)
@@ -1546,10 +1547,10 @@ func TestASeededSeriesOfProductionRuleChangesRewritesWhatAWholeWalkWrites(t *tes
 func TestAProductionRuleThatShipsAnEarlierPullRequestFirstRewritesTheDaysUpToTheOldFirstDay(t *testing.T) {
 	t.Parallel()
 	rigs := make([]*refresherRig, 2)
-	var deliveries deliverytest.Fixture
+	var deliveries deliveryseed.Fixture
 	for i := range rigs {
 		rigs[i] = newRefresherRig(t)
-		deliveries = deliverytest.Seed(t, rigs[i].database.Pool, deliverytest.Spec{Days: 5})
+		deliveries = deliverytest.Seed(t, rigs[i].database.Pool, deliveryseed.Spec{Days: 5})
 		rigs[i].leaveInputsUnread(t)
 		none := deliveries.Settings
 		none.ProductionJobNames = []string{"production-release / apply-v0"}
@@ -1606,7 +1607,7 @@ func TestAStagingGateRenamedToAJobSomePushRunsHoldRewritesWhatAWholeWalkWrites(t
 	t.Parallel()
 	const legacy, renamed = "staging-e2e / legacy", "staging-e2e / run-v2"
 	rigs := make([]*refresherRig, 2)
-	var deliveries deliverytest.Fixture
+	var deliveries deliveryseed.Fixture
 	for i := range rigs {
 		rigs[i], deliveries = newSettingsRig(t, walkBatch)
 		rigs[i].exec(t, "name the staging gate's jobs anew", `
@@ -1659,7 +1660,7 @@ func TestAStagingGateRenamedToAJobSomePushRunsHoldRewritesWhatAWholeWalkWrites(t
 func TestAParallelFoldOfTheStoredFiguresWritesWhatOneWorkerWrites(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
-	deliveries := deliverytest.Seed(t, r.database.Pool, deliverytest.Spec{Days: 30})
+	deliveries := deliverytest.Seed(t, r.database.Pool, deliveryseed.Spec{Days: 30})
 	r.settle(t)
 	ctx, project := t.Context(), deliveries.Project
 	scope, folded, err := readFigureScope(ctx, r.database.Pool, r.build, project)
@@ -2029,7 +2030,7 @@ type spanChange struct {
 //
 // B's pull request is one of the deploy repository that names an issue of the main project, which
 // it counts for through that issue whatever repository is the project's default.
-func spanChanges(deliveries deliverytest.Fixture, first time.Time) []spanChange {
+func spanChanges(deliveries deliveryseed.Fixture, first time.Time) []spanChange {
 	var early *delivery.DeliveryPullRequest
 	for i, pr := range deliveries.PullRequests {
 		if early == nil && pr.Repo == deliveries.DeployRepo && namesIssueOf(deliveries, pr) && pr.MergedAt != nil && pr.CreatedAt != nil && !pr.Partial &&
@@ -2220,7 +2221,7 @@ func (m *memberWrites) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryE
 func TestARebuiltSpansMembersPastTheBoundGoInSeveralStatements(t *testing.T) {
 	t.Parallel()
 	const unmapped, copies = "acme/unmapped", 3000
-	crowd := func(t *testing.T, r *refresherRig, deliveries deliverytest.Fixture) {
+	crowd := func(t *testing.T, r *refresherRig, deliveries deliveryseed.Fixture) {
 		t.Helper()
 		crowdLastDay(t, r, deliveries, copies)
 	}
@@ -2268,14 +2269,14 @@ func TestARebuiltSpansMembersPastTheBoundGoInSeveralStatements(t *testing.T) {
 
 // namesIssueOf reports whether pr names an issue of deliveries' main project, which it counts for
 // through that issue whatever repository is the project's default.
-func namesIssueOf(deliveries deliverytest.Fixture, pr delivery.DeliveryPullRequest) bool {
+func namesIssueOf(deliveries deliveryseed.Fixture, pr delivery.DeliveryPullRequest) bool {
 	return pr.IssueKey != nil && slices.Contains(deliveries.Issues[deliveries.Project], *pr.IssueKey)
 }
 
 // crowdLastDay merges copies more pull requests of the deploy repository on the history's last
 // day, each a copy of one merged that day that names an issue of the main project (namesIssueOf),
 // and answers that one.
-func crowdLastDay(t *testing.T, r *refresherRig, deliveries deliverytest.Fixture, copies int) delivery.DeliveryPullRequest {
+func crowdLastDay(t *testing.T, r *refresherRig, deliveries deliveryseed.Fixture, copies int) delivery.DeliveryPullRequest {
 	t.Helper()
 	var template *delivery.DeliveryPullRequest
 	last := deliveries.To.AddDate(0, 0, -1)
@@ -2593,7 +2594,7 @@ const earlyFirstRun, earlyFailedRun, earlyNextRun = 9000001, 9000002, 9000003
 // after them a deploy that reached production (earlyNextRun), each a copy of the history's first
 // deploy that did, and answers the first of those two days: the start of the repository's
 // history, which the deploy that failed holds once the first one's run is gone.
-func (r *refresherRig) earlyDeploys(t *testing.T, deliveries deliverytest.Fixture) time.Time {
+func (r *refresherRig) earlyDeploys(t *testing.T, deliveries deliveryseed.Fixture) time.Time {
 	t.Helper()
 	if len(deliveries.Applies) == 0 {
 		t.Fatal("the history holds no deploy that reached production")
@@ -2614,7 +2615,7 @@ func (r *refresherRig) earlyDeploys(t *testing.T, deliveries deliverytest.Fixtur
 // early deploy does, for the repository's owner key (owners.go, R15): the main project reads its
 // rows, the deploy repository being its default, and the deploys' move between days moves no
 // owner's first input day, as one through an issue would move the project's own.
-func (r *refresherRig) mergeBeforeHistory(t *testing.T, deliveries deliverytest.Fixture, early time.Time) delivery.DeliveryPullRequest {
+func (r *refresherRig) mergeBeforeHistory(t *testing.T, deliveries deliveryseed.Fixture, early time.Time) delivery.DeliveryPullRequest {
 	t.Helper()
 	index := slices.IndexFunc(deliveries.PullRequests, func(pr delivery.DeliveryPullRequest) bool {
 		return pr.Repo == deliveries.DeployRepo && pr.IssueKey == nil && pr.MergedAt != nil && pr.CreatedAt != nil && !pr.Partial &&
@@ -2651,7 +2652,7 @@ const earlyShipsRun, earlyShippedPR = 9000004, 90001
 // and before the deploy of the day after: the first apply to complete that GitHub created after the
 // pull request merged, so it ships that pull request, under the repository's plain owner key
 // (dispatch://INFRA-2916 R15), as the first early deploy ships the one merged before the history.
-func (r *refresherRig) earlyShipper(t *testing.T, deliveries deliverytest.Fixture) {
+func (r *refresherRig) earlyShipper(t *testing.T, deliveries deliveryseed.Fixture) {
 	t.Helper()
 	repo := deliveries.DeployRepo
 	var created time.Time
@@ -2708,7 +2709,7 @@ func (r *refresherRig) earlyShipper(t *testing.T, deliveries deliverytest.Fixtur
 // (dispatch://INFRA-978, plan T19 path 1); the first case holds it under R12.
 func TestARunsRemovalRewritesTheDayOfTheDeployThatShipsItsPullRequestsNext(t *testing.T) {
 	t.Parallel()
-	remove := func(t *testing.T, r *refresherRig, deliveries deliverytest.Fixture) {
+	remove := func(t *testing.T, r *refresherRig, deliveries deliveryseed.Fixture) {
 		t.Helper()
 		r.exec(t, "delete the first deploy's jobs", `delete from delivery_run_jobs where repo = $1 and run_id = $2`, deliveries.DeployRepo, earlyFirstRun)
 		r.exec(t, "delete the first deploy's run", `delete from delivery_runs where repo = $1 and run_id = $2`, deliveries.DeployRepo, earlyFirstRun)
@@ -2723,7 +2724,7 @@ func TestARunsRemovalRewritesTheDayOfTheDeployThatShipsItsPullRequestsNext(t *te
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			prepare := func(r *refresherRig, deliveries deliverytest.Fixture) time.Time {
+			prepare := func(r *refresherRig, deliveries deliveryseed.Fixture) time.Time {
 				early := r.earlyDeploys(t, deliveries)
 				r.mergeBeforeHistory(t, deliveries, early)
 				if c.shipper {
@@ -2977,7 +2978,7 @@ func TestARuleChangeOfOneRepositoryRewritesThatRepositorysRowsAlone(t *testing.T
 	}
 	widened := ruleOfJob(opsJob)
 	widened.ProductionJobNames = []string{opsJob, alphaJob}
-	putSources(t, r.database.Pool, "ALPHA", []string{"dev-ana"}, deliverytest.SourceOf(ruleOfJob(alphaJob), nil), deliverytest.SourceOf(widened, new(alphaOps)))
+	putSources(t, r.database.Pool, "ALPHA", []string{"dev-ana"}, deliveryseed.SourceOf(ruleOfJob(alphaJob), nil), deliveryseed.SourceOf(widened, new(alphaOps)))
 	r.pass(t)
 	if got := r.deploysOn(t, "ALPHA", sourcesDay); got.n != 3 {
 		t.Errorf("ALPHA counts %d deploys after acme/alpha-ops' rule names alphaJob, want 3: 1001, 2001 and 2002", got.n)
@@ -3126,30 +3127,30 @@ func TestAReadDuringARuleRebuildReadsTheOldRuleWhole(t *testing.T) {
 	const unmapped = "acme/unmapped"
 	for _, change := range []struct {
 		name    string
-		prepare func(t *testing.T, r *refresherRig, deliveries deliverytest.Fixture)
-		save    func(t *testing.T, r *refresherRig, deliveries deliverytest.Fixture)
+		prepare func(t *testing.T, r *refresherRig, deliveries deliveryseed.Fixture)
+		save    func(t *testing.T, r *refresherRig, deliveries deliveryseed.Fixture)
 	}{
-		{name: "the production apply step named", save: func(t *testing.T, r *refresherRig, deliveries deliverytest.Fixture) {
+		{name: "the production apply step named", save: func(t *testing.T, r *refresherRig, deliveries deliveryseed.Fixture) {
 			t.Helper()
 			settings := deliveries.Settings
 			settings.ProductionApplyStepName = new(settingsApplyStep)
 			r.putSettings(t, settings, alice)
 		}},
-		{name: "a rule change whose project moves too", save: func(t *testing.T, r *refresherRig, deliveries deliverytest.Fixture) {
+		{name: "a rule change whose project moves too", save: func(t *testing.T, r *refresherRig, deliveries deliveryseed.Fixture) {
 			t.Helper()
 			settings := deliveries.Settings
 			settings.ProductionApplyStepName = new(settingsApplyStep)
 			putProjectSettings(t, r.database.Pool, delivery.ProjectSettingsInput{
 				Project: deliveries.Project, Delivery: false, Sources: []delivery.SourceInput{eventsSource},
 			})
-			putSources(t, r.database.Pool, deliveries.SecondProject, settings.PopulationAuthors, deliverytest.SourceOf(settings, new(deliveries.DeployRepo)))
+			putSources(t, r.database.Pool, deliveries.SecondProject, settings.PopulationAuthors, deliveryseed.SourceOf(settings, new(deliveries.DeployRepo)))
 		}},
 		{name: "a repository's first rule",
-			prepare: func(t *testing.T, r *refresherRig, deliveries deliverytest.Fixture) {
+			prepare: func(t *testing.T, r *refresherRig, deliveries deliveryseed.Fixture) {
 				t.Helper()
 				r.copyRuns(t, deliveries.DeployRepo, unmapped, delivery.DeliveryRunKindDeploy)
 			},
-			save: func(t *testing.T, r *refresherRig, deliveries deliverytest.Fixture) {
+			save: func(t *testing.T, r *refresherRig, deliveries deliveryseed.Fixture) {
 				t.Helper()
 				readAlso(t, r, deliveries, unmapped)
 			}},

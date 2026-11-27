@@ -21,6 +21,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
@@ -121,7 +122,7 @@ const (
 func TestTheFirstPaintsReadsReadNoEventsAndScanNoIssues(t *testing.T) {
 	log := &paintStatements{}
 	_, database, deps, served := newRegisteredTestServer(t, testServerOptions{tracer: log})
-	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2918, OneProject: true, Days: 30})
+	fixture := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{Seed: 2918, OneProject: true, Days: 30})
 	project := fixture.Project
 	now := fixture.To.Add(-time.Minute)
 	const failedJob = "paint / failed"
