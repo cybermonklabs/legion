@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"time"
@@ -47,9 +48,10 @@ func timedAnswersReads(latency *sessionanswers.Latency, handler http.HandlerFunc
 // At a cut the window counts from the cut (decision 12 of INFRA-4620's plan): since defaults to
 // the cut less 72 hours, and a since older than the cut less 7 days is refused. A since later
 // than the cut answers no items, since nothing after the cut exists at it, so an agent host's own
-// poll under a token that carries a cut is answered and not refused. The answer leaves out the
-// question of each item's ask whose wording at the cut no record gives (sessionAnswersAtTheCut),
-// read for the items the answer gives, once max_chars has cut them.
+// poll under a token that carries a cut is answered and not refused. If publication evidence is
+// missing for an event that names this session, the answer leaves out items and total together.
+// Otherwise the answer leaves out the question of each item's ask whose wording at the cut no
+// record gives (sessionAnswersAtTheCut), after max_chars has cut the list.
 func (s *server) listSessionAnswers(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -79,6 +81,11 @@ func (s *server) listSessionAnswers(w http.ResponseWriter, r *http.Request) {
 	items := []model.SessionAnswer{}
 	if !since.After(now) {
 		if items, err = sessionanswers.List(r.Context(), s.deps.Store.Pool, session, since); err != nil {
+			if errors.Is(err, sessionanswers.ErrPublicationAtCutUnknown) {
+				leaveOut(r.Context(), "/items", "/total")
+				WriteJSON(w, http.StatusOK, model.SessionAnswersResponse{SessionID: session, Since: since})
+				return
+			}
 			s.writeHandlerError(w, err)
 			return
 		}

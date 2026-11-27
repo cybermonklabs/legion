@@ -1462,6 +1462,44 @@ describe("readSessionAnswers under a token that carries a cut", () => {
     expect(reloaded.text).toContain(`Question: left out at ${CUT}`);
   });
 
+  test("a named omission neither shows another cut's list nor overwrites its cache", async () => {
+    const root = stateDir();
+    const session = newSession();
+    const dispatch = dispatchAt();
+    const later = "2026-10-27T11:30:00.000000Z";
+    const missing = { session_id: session, since: "2026-10-24T11:30:00Z" };
+    let respond = atCut;
+    const { calls, fetchImpl } = fakeDispatchFetch({ handler: () => respond() });
+    const options = { session, dispatch, env: envAt(root), fetchImpl, now: () => NOW };
+
+    expect((await readSessionAnswers(options)).text).toContain(unworded.text);
+    const file = cacheFile(root, session);
+    const before = readFileSync(file, "utf8");
+    expect(JSON.parse(before).as_of).toBe(CUT);
+    const omission = (absent: string) =>
+      Response.json(missing, {
+        headers: {
+          [DISPATCH_AS_OF_HEADER]: later,
+          [DISPATCH_AS_OF_ABSENT_HEADER]: absent,
+        },
+      });
+    // A nested pointer alone cannot explain missing list members. Keep the ordinary bad-list
+    // behavior, including its cache fallback and error text.
+    respond = () => omission("/items/*/ask/question");
+    const malformed = await readSessionAnswers(options);
+    expect(malformed.source).toBe("cache");
+    expect(malformed.reason).toBe("Dispatch answered with something that is not an answers list");
+
+    respond = () => omission("/items,/total");
+    expect(await readSessionAnswers(options)).toEqual({
+      text: `${SESSION_ANSWERS_MARKER}\n\nThe list was left out at ${later}. Do not use an earlier list as the answer at this cut.`,
+      source: "omitted",
+    });
+    expect(calls).toHaveLength(4); // Two for the first cut, then one per read at the later cut.
+    expect(calls.at(-1)?.url.searchParams.has("since")).toBe(false);
+    expect(readFileSync(file, "utf8")).toBe(before);
+  });
+
   test("an answers.json that names no cut still renders, its left-out question as left out by Dispatch", async () => {
     const root = stateDir();
     const session = newSession();

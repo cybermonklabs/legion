@@ -9,7 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
 // TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
@@ -54,6 +57,73 @@ func TestAQueuedDeliveryIsListedAsASentOneIs(t *testing.T) {
 				t.Fatalf("a %s delivery listed %#v, want message %s", state, items[0], messageID)
 			}
 		})
+	}
+}
+
+// The real cut statement can use the same destination index as the present read, but with
+// both bounds of the window. A marker needs no item lookups, even when the log is busy.
+func TestTheCutAnswersReadBoundsPublicationEvidenceByTopicAndWindow(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	ctx := t.Context()
+	const session = "session-reader"
+	topic := contracts.LegacyAgentSubject(session)
+	cut := asof.CutAt(time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC))
+	since := cut.Time().Add(-72 * time.Hour)
+	// The target topic has rows just outside both bounds. The window itself contains many
+	// other sessions' events. Only one unconfirmed event matches both index keys.
+	if _, err := database.Pool.Exec(ctx, `
+		insert into events (type, actor, payload, notify, created_at, published_destinations, seq)
+		select 'message.created', '{"kind":"user","id":"alice"}', '{}', false,
+		       case when n < 3000 then $1::timestamptz - interval '1 microsecond'
+		            when n < 6000 then $2::timestamptz + interval '1 microsecond'
+		            else $1::timestamptz end,
+		       array[case when n < 6000 or n = 6000 then $3::text else $3 || '-other-' || n % 80 end], 0
+		from generate_series(0, 17999) n
+	`, since, cut.Time(), topic); err != nil {
+		t.Fatalf("seed the window and surrounding events: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `analyze events`); err != nil {
+		t.Fatalf("analyze events: %v", err)
+	}
+	bound, err := asof.Bind(cutQuery, cut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, _ := explaintest.AnalyzedPlan(t, ctx, database.Pool, bound, session, since, topic, cut.Time())
+	const index = "events_person_words_destinations"
+	scans := 0
+	for _, node := range explaintest.Nodes(t, plan) {
+		if node.Index == index && node.Loops > 0 {
+			scans++
+			if node.Loops != 1 || node.Rows != 1 ||
+				!strings.Contains(node.IndexCond, "published_destinations @>") ||
+				!strings.Contains(node.IndexCond, "created_at >=") ||
+				!strings.Contains(node.IndexCond, "created_at <=") {
+				t.Errorf("destination branch did not read one matching row under both bounds: %+v", node)
+			}
+		}
+		switch node.Relation {
+		case "message_deliveries", "comment_deliveries", "asks", "comments", "messages":
+			if node.Loops != 0 {
+				t.Errorf("the omitted answer still read %s (%g loops)", node.Relation, node.Loops)
+			}
+		}
+	}
+	if scans != 1 {
+		t.Fatalf("the cut should scan %s once, got %d:\n%s", index, scans, plan)
+	}
+
+	// A resolution that is not a decline is not S1 evidence, even on the exact topic.
+	if _, err := database.Pool.Exec(ctx, `
+		update events set type = 'ask.resolved', payload = '{"resolution":{"kind":"retracted"}}'
+		where created_at = $1 and published_destinations @> array[$2::text]
+	`, since, topic); err != nil {
+		t.Fatalf("replace the one qualifying event with a retraction: %v", err)
+	}
+	items, err := List(asof.WithCut(ctx, cut), database.Pool, session, since)
+	if err != nil || items == nil || len(items) != 0 {
+		t.Fatalf("the retraction and out-of-window events should give an empty list, got %#v, %v", items, err)
 	}
 }
 

@@ -316,6 +316,24 @@ describe("each read command with and without --as-of", () => {
     }
   });
 
+  test("answers prints a named omission at the effective cut rather than a false empty list", async () => {
+    const requested = "2026-11-10T13:00:00Z";
+    const past = await standIn.run([...READ_FORMS.answers, "--as-of", requested], {
+      whoamiCut: CUT,
+      omitSessionAnswers: true,
+    });
+    expect(past.code).toBe(0);
+    expect(callsAtCutProblems(past, CUT)).toEqual([]);
+    expect(leftOutParts(past.stdout, CUT)).toEqual([
+      "the session's answer count",
+      "the session's answers list",
+    ]);
+    expect(body(past.stdout)).toEqual([
+      `People's answers for this session were left out at ${CUT}.`,
+    ]);
+    expect(past.stdout).not.toContain(requested);
+  });
+
   // Dispatch reads `as_of` with Go's RFC 3339 parse, which takes spellings `Date.parse` does not:
   // a comma before the fraction of a second is one. The window counts from the cut the answer
   // names in `Dispatch-As-Of`, so every spelling of one time Dispatch reads holds the same items.

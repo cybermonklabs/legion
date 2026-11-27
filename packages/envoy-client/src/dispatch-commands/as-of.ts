@@ -105,6 +105,8 @@ export const ABSENT_FIELD_WORDS: Readonly<Record<string, string>> = {
   waiting_on_person: "the person an ask waits on by its project's default",
   "approval/documents": "the documents of each approval request",
   question: "the question of each ask whose wording a restore changed",
+  "/items": "the session's answers list",
+  "/total": "the session's answer count",
   question_tree: "the question tree of each ask whose wording a restore changed",
   options: "the options of each ask whose wording a restore changed",
   multiple: "whether each ask whose wording a restore changed takes several options",
@@ -182,6 +184,11 @@ export class ReadCut implements AsOfRead {
 
   absent(pointers: readonly string[]): void {
     for (const pointer of pointers) this.#absent.add(pointer);
+  }
+
+  /** Whether an answer named this exact member absent. */
+  leftOut(pointer: string): boolean {
+    return this.#absent.has(pointer);
   }
 
   /** The cut's instant in epoch milliseconds, read from the cut an answer named in

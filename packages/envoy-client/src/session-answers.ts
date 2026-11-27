@@ -336,6 +336,26 @@ export function sessionAnswersFailureLine(reason: string): string {
   return `${FAILURE_MARKER}${reason.replace(/\s+/g, " ").trim()}); run \`dispatch answers\`.]`;
 }
 
+/** Only an explicit cut answer can omit the list and count. Missing, unnamed members in a 200
+ *  do not make it an answer. */
+export function sessionAnswersWereLeftOut(
+  response: unknown,
+  cut: { leftOut(pointer: string): boolean }
+): boolean {
+  return (
+    cut.leftOut("/items") &&
+    cut.leftOut("/total") &&
+    typeof response === "object" &&
+    response !== null &&
+    "session_id" in response &&
+    typeof response.session_id === "string" &&
+    "since" in response &&
+    typeof response.since === "string" &&
+    !("items" in response) &&
+    !("total" in response)
+  );
+}
+
 /** The last list read for a session from one Dispatch, as memory and `answers.json` keep it. */
 export interface SessionAnswersCache {
   /** The Dispatch URL the list was read from: only a read of that URL carries it. */
@@ -354,6 +374,7 @@ export interface SessionAnswersCache {
 type ReadOutcome =
   | { readonly cache: SessionAnswersCache }
   | { readonly failure: string }
+  | { readonly omittedAt: string }
   /** Dispatch answered that it has no answers route (`isNoAnswersRoute`). */
   | { readonly noRoute: true };
 
@@ -383,8 +404,8 @@ interface SessionAnswersState {
  *  `envoy-config.ts`'s kept command outcomes do, because Oh My Pi loads each extension instance
  *  (a subagent's included) as a fresh module, and the parent and every subagent share one read
  *  and one cache per session and Dispatch URL. Its shape (`SessionAnswersState`) is its contract
- *  across bundles: a change to it takes a new key (`.v4`). */
-const STATE_KEY: unique symbol = Symbol.for("legion.pi-envoy.session-answers.v3");
+ *  across bundles: a change to it takes a new key. */
+const STATE_KEY: unique symbol = Symbol.for("legion.pi-envoy.session-answers.v4");
 const processGlobal = globalThis as typeof globalThis & {
   [STATE_KEY]?: SessionAnswersState;
 };
@@ -457,16 +478,17 @@ export interface ReadSessionAnswersOptions {
 }
 
 export interface SessionAnswersRead {
-  /** The message to carry: the list, the list as last read, or the failure line; undefined when
-   *  there is nothing to show, Dispatch has no answers route, or Dispatch is not configured. */
+  /** The message to carry: the list, the list as last read, a notice that Dispatch left it out at
+   *  a cut, or the failure line. Undefined when there is nothing to show. */
   readonly text: string | undefined;
   /** `fresh`: this request's read answered. `cache`: it did not, and the last list read stands
    *  in. `failure`: it did not and no list read has an item inside the 72 hours, so `text` is the
    *  failure line. `unavailable`: Dispatch answered that it has no answers route
    *  (`isNoAnswersRoute`, or that answer's 5-minute back-off) and no list read has an item inside
    *  the 72 hours, so the request carries nothing: the failure line would send the agent to
-   *  `dispatch answers`, which that Dispatch refuses too. `off`: nothing configures Dispatch. */
-  readonly source: "fresh" | "cache" | "failure" | "unavailable" | "off";
+   *  `dispatch answers`, which that Dispatch refuses too. `omitted`: Dispatch named the list
+   *  and count absent at a cut. `off`: nothing configures Dispatch. */
+  readonly source: "fresh" | "cache" | "failure" | "unavailable" | "omitted" | "off";
   /** When the list shown was read (`fresh` and `cache`). */
   readonly readAt?: string;
   /** `sessionAnswersWords` of every item Dispatch sent inside the 72-hour window the list was
@@ -562,6 +584,7 @@ async function settleWithin<T>(
  * the read asks once more, at once, as that answer was answered: with no `since` at a cut, by
  * this host's clock at none. That second answer is the read's own: it is the same read in flight,
  * under the same 10 s, and when it fails the read fails.
+ * An explicit omission at the cut carries no cached list, and writes no cache.
  */
 export async function readSessionAnswers(
   options: ReadSessionAnswersOptions
@@ -662,18 +685,24 @@ export async function readSessionAnswers(
         },
         cut
       );
-      return { response, asOf: cut.cut, atCut };
+      return { response, cut, atCut };
     };
     // The read asks as the list read before was answered: at a cut where it kept one. An answer
     // whose having a cut differs (a token's first read, or a session whose token now reads the
     // present) answered the wrong window, so the read asks once more, at once, as that answer was
     // answered.
     const started = ask(current.cache?.as_of !== undefined)
-      .then((answer) =>
-        answer.atCut === (answer.asOf !== undefined) ? answer : ask(answer.asOf !== undefined)
-      )
+      .then((answer) => {
+        const atCut = answer.cut.cut !== undefined;
+        return answer.atCut === atCut ? answer : ask(atCut);
+      })
       .then(
-        ({ response, asOf }): ReadOutcome => {
+        ({ response, cut }): ReadOutcome => {
+          const asOf = cut.cut;
+          if (asOf !== undefined && sessionAnswersWereLeftOut(response, cut)) {
+            current.noRouteReported = false;
+            return { omittedAt: asOf };
+          }
           // A 200 whose body is no answers list (a proxy's page, another service on the URL) is a
           // failed read, never a cache: rendering it would throw on the request path.
           if (!Array.isArray(response?.items) || typeof response.total !== "number") {
@@ -726,6 +755,12 @@ export async function readSessionAnswers(
   }
   if ("noRoute" in outcome) return noRoute();
   if ("failure" in outcome) return carry(current.cache, outcome.failure);
+  if ("omittedAt" in outcome) {
+    return {
+      text: `${SESSION_ANSWERS_MARKER}\n\nThe list was ${leftOutWords(outcome.omittedAt)}. Do not use an earlier list as the answer at this cut.`,
+      source: "omitted",
+    };
+  }
   const at = windowEnd(outcome.cache.as_of, now);
   return {
     text: renderSessionAnswers(outcome.cache.items, {

@@ -28,6 +28,9 @@ const (
 	reasonNoEvent = "No event records this field."
 	// E, for a delivery attempt.
 	reasonDeliveryState = "No receipt event or reply event gives the time of the state of this delivery attempt."
+	// E, for a session's answers.
+	reasonSessionPublication = "An event in the window names the session's topic, but the outbox did not settle it by the cut. " +
+		"No event records when the outbox reached that topic."
 	// E, for the block that a reply names.
 	reasonReplyBlock = "The item that holds this block changed after the cut. Dispatch keeps no record of the blocks of the item at the cut."
 	// E, for the place of an anchored block.
@@ -155,7 +158,9 @@ var AbsentFields = map[string][]AbsentField{
 		{"/*/snoozed_until", reasonNoEvent},
 	}, askFields("/*"), routeReachFields("/*/thread"), commentFields("/*/thread/replies/*")),
 	"GET /api/v1/agents/{session_id}/answers": {
+		{"/items", reasonSessionPublication},
 		{"/items/*/ask/question", reasonAskWording},
+		{"/total", reasonSessionPublication},
 	},
 
 	// A document gives the id of an approval request's ask and no wording. A version's markdown,

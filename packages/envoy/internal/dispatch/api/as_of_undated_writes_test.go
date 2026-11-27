@@ -276,7 +276,8 @@ func TestAnAsksWordingARestoreChangedIsNamedAbsentAtTheCut(t *testing.T) {
 	// session among them. This server runs no outbox, so the answer is marked delivered as the
 	// outbox marks it.
 	if tag, err := database.Pool.Exec(context.Background(), `
-		update events set published_destinations = array[$2::text] where type = 'ask.answered' and payload->>'id' = $1
+		update events set published_destinations = array[$2::text], published_at = now()
+		where type = 'ask.answered' and payload->>'id' = $1
 	`, ask.ID, contracts.LegacyAgentSubject(asOfAgentSession)); err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("mark the answer delivered to the asking session: %s, %v", tag, err)
 	}

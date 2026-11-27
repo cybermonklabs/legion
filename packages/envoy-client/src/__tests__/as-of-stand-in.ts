@@ -725,6 +725,8 @@ export interface StandInOptions {
   /** The answer in place of the world's to a call of kind "answers" read at a cut, where it gives
    *  one: a refusal. */
   readonly refuseAtCut?: () => Response | undefined;
+  /** Dispatch cannot confirm publication of an event to this session by the cut. */
+  readonly omitSessionAnswers?: boolean;
 }
 
 /** What one run of the command did: its exit, its output and the requests it made, in order. */
@@ -792,7 +794,15 @@ export function startAsOfStandIn(name: string): AsOfStandIn {
       const when: When = acknowledged
         ? { ms: cutTime(cut), cut }
         : { ms: Date.now(), cut: undefined };
-      const answered = answerFor(route, params, url.searchParams, when);
+      const answered =
+        acknowledged &&
+        options.omitSessionAnswers === true &&
+        route === "GET /api/v1/agents/{session_id}/answers"
+          ? {
+              body: { session_id: SESSION, since: iso(when.ms - 72 * HOUR) },
+              absent: ["/items", "/total"],
+            }
+          : answerFor(route, params, url.searchParams, when);
       if (answered === undefined) {
         return refusal(404, "NOT_FOUND", `the stand-in holds nothing at ${route}`);
       }

@@ -1,16 +1,15 @@
-import type {
-  InboxRow,
-  MyReplyRow,
-  SessionAnswersResponse,
-  WhoamiResponse,
-} from "@legion/contracts";
+import type { InboxRow, MyReplyRow, WhoamiResponse } from "@legion/contracts";
 import { awaitsDecision, inboxThreadRow, serviceSubjectLabel } from "@legion/contracts";
 import { actorText, deletedMark, editedMark } from "../actor-text";
 import { textHead } from "../ask-answer";
 import { type CredentialPendingRow, DispatchServiceError } from "../dispatch-http";
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "../dispatch-owner";
 import { messageFor } from "../errors";
-import { isNoAnswersRoute, renderSessionAnswersList } from "../session-answers";
+import {
+  isNoAnswersRoute,
+  renderSessionAnswersList,
+  sessionAnswersWereLeftOut,
+} from "../session-answers";
 import { LEFT_OUT, leftOutAt, leftOutWords, type ReadTime, readTime } from "./as-of";
 import type { DispatchToolResult, ReadingContext, SessionContext } from "./context";
 import { dispatchAnswered, refusalWithCode } from "./failures";
@@ -26,21 +25,27 @@ export async function answersCommand(
   const { configUrl, input, newClient: dispatchClient, reading } = context;
   const sessionId = input.sessionId?.trim();
   if (!sessionId) throw new Error("host session id is required for dispatch answers");
-  let response: SessionAnswersResponse;
-  try {
-    response = await dispatchClient().sessionAnswers(sessionId, {}, reading.cut);
-  } catch (error) {
-    if (isNoAnswersRoute(error)) {
-      throw new Error(
-        `This Dispatch (${configUrl}) has no answers route yet: its build is older than the answers route.`
-      );
-    }
-    throw error;
+  const cut = reading.cut;
+  const response = await dispatchClient()
+    .sessionAnswers(sessionId, {}, cut)
+    .catch((error: unknown) => {
+      if (isNoAnswersRoute(error)) {
+        throw new Error(
+          `This Dispatch (${configUrl}) has no answers route yet: its build is older than the answers route.`
+        );
+      }
+      throw error;
+    });
+  if (cut !== undefined && sessionAnswersWereLeftOut(response, cut)) {
+    return {
+      text: `People's answers for this session were ${leftOutWords(cut.asOf)}.`,
+      details: { session: sessionId, since: response.since },
+    };
   }
   // At a cut the window is the 72 hours before it, as the server reads it (decision 12 of
   // dispatch://INFRA-4620): nothing the list prints counts from this machine's clock.
   return {
-    text: renderSessionAnswersList(response.items ?? [], readTime(reading.cut)),
+    text: renderSessionAnswersList(response.items ?? [], readTime(cut)),
     details: { session: sessionId, since: response.since, total: response.total },
   };
 }

@@ -12,6 +12,7 @@ package sessionanswers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -42,7 +44,7 @@ const ownsAsk = `((a.author->>'kind' = 'session' and a.author->>'id' = $1) is tr
 //     a message) and ask.resolved, of which the list takes the declines alone (an ask a person
 //     chose not to answer) - created since the window's start, whose published_destinations hold
 //     the session's topic: the outbox's own record of each topic it published the event to
-//     (outbox.publishDestination), so the list holds what the follower, author and session routes
+//     (outbox.recordBatch), so the list holds what the follower, author and session routes
 //     delivered, and never what an issue's role: route delivered to a role topic, which names no
 //     session. On a database of production's size and shape it finds them through the partial
 //     GIN index events_person_words_destinations: it holds a person's events of these five types
@@ -105,15 +107,45 @@ const ownsAsk = `((a.author->>'kind' = 'session' and a.author->>'id' = $1) is tr
 // so the actor check runs on those few rows: with it inside the scan, the planner ANDs in
 // events_person_words_with_declines, whose predicate the check implies, and reads every entry of
 // that index for each ask.
-const query = `
-	with reached_by_destination as (
-		select e.type, e.payload->>'id' as id, e.payload->'resolution' as resolution
+const destinationColumns = `select e.type, e.payload->>'id' as id, e.payload->'resolution' as resolution`
+
+const destinationPredicate = `
 		from events e
 		where e.actor->>'kind' = 'user'
 		  and e.type in ` + model.PersonWordsEventTypesSQL + `
 		  and e.created_at >= $2
-		  and e.published_destinations @> array[$3::text]
-	), mentioned as (
+		  and e.published_destinations @> array[$3::text]`
+
+const query = `
+	with reached_by_destination as (
+		` + destinationColumns + destinationPredicate + `
+	), ` + itemSources + itemRows + itemOrder
+
+// The events shadow supplies the upper created_at bound. The outbox stops changing destinations
+// once it sets published_at, but nothing dates a particular destination before settlement.
+// Read that evidence and the item list in one snapshot. The materialized destination branch
+// holds only matching events, not the window's events for other sessions.
+const cutQuery = `
+	with destination_events as materialized (
+		` + destinationColumns + `, e.published_at` + destinationPredicate + `
+		  and (e.type <> 'ask.resolved' or (e.payload->'resolution')->>'kind' = '` + model.AskResolutionDeclined + `')
+	), publication as materialized (
+		select exists (
+			select 1 from destination_events where (published_at <= $4::timestamptz) is not true
+		) as uncertain
+	), reached_by_destination as (
+		select type, id, resolution from destination_events where published_at <= $4::timestamptz
+	), ` + itemSources + `, answer_items as (` + itemRows + `
+	)
+	select * from answer_items where not (select uncertain from publication)
+	union all
+	select '` + publicationUnknownKind + `', '', $4::timestamptz, null, null, null,
+	       null, null, null, null, false,
+	       null, null, null, null, null, null, null,
+	       false, false, false, false, false
+	from publication where uncertain` + itemOrder
+
+const itemSources = `mentioned as (
 		select cd.comment_id::text as id
 		from comment_deliveries cd
 		where cd.session_id = $1 and cd.state in ` + model.DeliveryTakenStatesSQL + ` and cd.created_at >= $2 - interval '1 hour'
@@ -150,7 +182,9 @@ const query = `
 		from message_deliveries md
 		where md.session_id = $1 and md.state in ` + model.DeliveryTakenStatesSQL + `
 		  and md.created_at >= $2 - interval '1 hour'
-	)
+	)`
+
+const itemRows = `
 	select 'answer' as kind, a.id::text as id, (a.answer->>'at')::timestamptz as at,
 	       null::timestamptz as edited_at, null::timestamptz as deleted_at, null::jsonb as deleted_by,
 	       null::jsonb as author, null::text as body, null::text as dispatch_words, a.answer,
@@ -210,7 +244,15 @@ const query = `
 	left join issues i on i.key = a.issue_key
 	left join artifacts ar on ar.id = a.artifact_id
 	where (x.resolution->>'at')::timestamptz >= $2
-	order by at desc, id desc`
+	`
+
+const itemOrder = ` order by at desc, id desc`
+
+// ErrPublicationAtCutUnknown means an event in the window names the session's topic, but
+// the outbox's settlement does not confirm its publication by the cut. No items are returned.
+var ErrPublicationAtCutUnknown = errors.New("session answers publication at the cut is unknown")
+
+const publicationUnknownKind = "publication_unknown"
 
 // List lists what people wrote that Dispatch delivered to session since since, newest first by
 // time, then by id descending: an ask's current answer, a comment or a message at its current
@@ -230,7 +272,14 @@ const query = `
 // to its followers; the session route, the claimant route and a credit on the issue's primary
 // document each deliver some of them to sessions that do not own the ask.
 func List(ctx context.Context, pool *store.Pool, session string, since time.Time) ([]model.SessionAnswer, error) {
-	rows, err := pool.Query(ctx, query, session, since, contracts.LegacyAgentSubject(session))
+	topic := contracts.LegacyAgentSubject(session)
+	var rows pgx.Rows
+	var err error
+	if cut, atCut := asof.CutFrom(ctx); atCut {
+		rows, err = pool.Query(ctx, cutQuery, session, since, topic, cut.Time())
+	} else {
+		rows, err = pool.Query(ctx, query, session, since, topic)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read session %q answers: %w", session, err)
 	}
@@ -264,6 +313,9 @@ func scan(row pgx.Row, session string) (model.SessionAnswer, error) {
 		&mentioned, &inCommentThread, &onDocument, &repliesToSession, &owns,
 	); err != nil {
 		return model.SessionAnswer{}, err
+	}
+	if item.Kind == publicationUnknownKind {
+		return model.SessionAnswer{}, ErrPublicationAtCutUnknown
 	}
 	// The mark of a deleted post, as every other read of one carries it: the time in UTC and
 	// the actor that deleted it, from the one decode that stands behind them all.

@@ -586,9 +586,20 @@ export type CutlessRead = Omit<AsOfRead, "asOf"> & { readonly asOf?: never };
  */
 export class AnswerCut implements AsOfRead {
   #cut: string | undefined;
+  #absent: readonly string[] | undefined;
 
   answeredAt(cut: string): void {
     this.#cut = cut;
+    this.#absent = undefined;
+  }
+
+  absent(pointers: readonly string[]): void {
+    this.#absent = pointers;
+  }
+
+  /** Whether the answer named this exact member absent. */
+  leftOut(pointer: string): boolean {
+    return this.#absent?.includes(pointer) === true;
   }
 
   get cut(): string | undefined {
@@ -1756,8 +1767,9 @@ export class DispatchClient {
    *  session since `since` (72 hours ago when unset), newest first. With `maxChars` the server
    *  stops after the item whose text takes the running sum of text lengths past it, so the body
    *  stays about that size plus one item. `signal` aborts the request beside the client's own
-   *  deadline, so a caller with a shorter deadline of its own does not leave it running. A server
-   *  older than the route answers 404. */
+   *  deadline, so a caller with a shorter deadline of its own does not leave it running. At a
+   *  cut the answer can omit `items` and `total` together and names both in `read.absent`.
+   *  A server older than the route answers 404. */
   async sessionAnswers(
     sessionID: string,
     options: {
@@ -1766,7 +1778,10 @@ export class DispatchClient {
       readonly signal?: AbortSignal;
     } = {},
     read: AsOfRead = {}
-  ): Promise<SessionAnswersResponse> {
+  ): Promise<
+    Omit<SessionAnswersResponse, "items" | "total"> &
+      Partial<Pick<SessionAnswersResponse, "items" | "total">>
+  > {
     return this.#read(
       ["api", "v1", "agents", sessionID, "answers"],
       {
