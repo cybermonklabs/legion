@@ -281,9 +281,10 @@ export function useSettleRefusal(reference: string): Error | undefined {
 
 /**
  * The settle of the proposed node `reference` names, under the issue `key`: one keyed write
- * per press, which the act that makes it shows refused itself (`inline`), so the shell's
- * indicator names it only while it is out, and the settles of one node go in press order. A 5xx
- * is made again under its key, so the write stays out while it is tried again.
+ * per press, whose refusal the node's row shows (`SettleRefusal`, from `SettleRefusals`), so the
+ * write is `inline` and the shell's indicator names it only while it is out, and the settles of one
+ * node go in press order. A 5xx is made again under its key, so the write stays out while it is
+ * tried again.
  *
  * From the press until the read of the outline that tells of its landing has ended, or its
  * refusal, the node's settle is waited on (`SettleLandings`): `useSettleWaits` answers true for
