@@ -104,7 +104,7 @@ func seededEvent(issueKey string, seq int, kind, payload string, at time.Time) [
 // seededIssuePayload is the payload of an issue event: the status the issue stands in after it,
 // and the fields the write changed, where it names any. A status write's `issue.updated` names
 // `status` in `changed`, which is what the second fault's lateral reads to say when an issue was
-// moved into `backlog` or `icebox` and by whom (priorityBacklogQuery).
+// moved into `backlog` or `icebox` and by whom (backlogMoveLateral).
 func seededIssuePayload(t testing.TB, status string, changed ...string) string {
 	t.Helper()
 	fields := map[string]any{"status": status}
@@ -167,4 +167,18 @@ func seededIssueKey(project string, number int) string {
 // the order its indexes run and a page of it is the rows the seed meant to be on it.
 func seededRank(index int) string {
 	return fmt.Sprintf("%08d", index)
+}
+
+// issuesLastEventAtFillMigration is the migration that fills each issue's newest-event pair
+// (last_event_at, last_event_at_seq) from its event of last_seq, skipping each row another
+// transaction holds.
+const issuesLastEventAtFillMigration = "20261125144002_issues_last_event_at_backfill.up.sql"
+
+// fillNewestEventPairs runs that migration's file on database as the runner applies it
+// (applyStoreMigration), so a test runs the fill as a deployment does rather than a copy of it. A
+// corpus written by COPY holds the pair null, as a deployment's rows do before the migration
+// runs; a corpus that runs this stands as a deployment does after it.
+func fillNewestEventPairs(t *testing.T, database *store.Store) {
+	t.Helper()
+	applyStoreMigration(t, database, issuesLastEventAtFillMigration)
 }
