@@ -210,8 +210,8 @@ func (e *Engine) copyMoveAfterFix(ctx context.Context, tx pgx.Tx, issue record.I
 	switch {
 	case err != nil || fix == nil || fix.State != record.FixEnded:
 		return moveTo, nil, err
-	case fix.MoveCarried:
-		return "", nil, nil
+	// CONTROL (fb8-ctl-4): the mark that one start carries each fix's move is not read, so a
+	// later start moves the copy again by what the clock and the record say.
 	case moveTo != "":
 		return moveTo, fix, nil
 	case fix.EndHead == "" || fix.EndHead == fix.Head:
