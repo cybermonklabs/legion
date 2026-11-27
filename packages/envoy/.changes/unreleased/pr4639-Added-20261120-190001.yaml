@@ -16,10 +16,11 @@ body: |-
   A search at a past time reads the text that each item had at that time, from the keyword table
   of past text. It is `409 AS_OF_SEARCH_NOT_FILLED` until the fill of that table reaches the cut.
 
-  Check results at a cut use the digest of the saved version. If the block index holds a
-  different digest for that same saved version, Dispatch leaves out `sha256` and
-  `check_words_moved` and names them in `Dispatch-As-Of-Absent`. It still gives the check's
-  changed version.
+  Check results at a cut give a check's `sha256`, and whether the words of each of its results
+  moved (`check_words_moved`), only where the block index holds the saved version at the cut now
+  and the same digest for that check. Everywhere else, a later version in the block index
+  included, Dispatch leaves out both and names them in `Dispatch-As-Of-Absent`. It still gives
+  the check's changed version.
 
   Dispatch now serves reads at a past time to a read-only token that carries a cut, which #4557's
   entry "Dispatch puts every GET route of its route table in a read class" says it refuses until
