@@ -1,4 +1,4 @@
-import { type MutationKey, useQuery } from "@tanstack/react-query";
+import { type MutationKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createContext,
   type ReactNode,
@@ -22,12 +22,12 @@ import {
   sameStatement,
 } from "../conversation/send-request";
 import { type AgentText, useAgentText } from "../refs/AgentName";
-import { EVENT_FRESH } from "../refs/reference-target";
+import { commentQuery, EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import type { TreeNode } from "./issue-tree";
 import { isStatement } from "./issue-tree";
-import { issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
+import { issueMessagesQuery } from "./useIssueTree";
 
 /**
  * Where the reader writes on the issue page (R16): the one line at the foot
@@ -212,11 +212,11 @@ export function OutlineWriterProvider({
     () => store.get(sendKey)?.request.statement
   );
   const agentText = useAgentText();
+  const queryClient = useQueryClient();
   // The reads the outline is drawn from, under the keys it reads them by and kept fresh as it
   // keeps them (`reference-target.ts`'s `EVENT_FRESH`), so a reply's target costs no request of its
   // own, and a window focus past the app's 30 s `staleTime` reads none of them again.
   const asks = useQuery({ ...issueAskThreadsQuery(issueKey), ...EVENT_FRESH });
-  const comments = useQuery({ ...issueCommentsQuery(issueKey), ...EVENT_FRESH });
   const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH });
   // The animation frame `focus()` is waiting on, if any: a new `focus()` cancels the earlier one
   // before scheduling its own, and unmounting the provider cancels it so no frame of an unmounted
@@ -231,6 +231,14 @@ export function OutlineWriterProvider({
     },
     []
   );
+  // What the writer's functions read of those reads and of the names, as it stands when one is
+  // called: the writer is every row's, so a function that closed over an answer made a new writer
+  // for each answer of a read, and every row drew again for it.
+  const latest = useRef({ agentText, asks: asks.data, messages: messages.data });
+  latest.current = { agentText, asks: asks.data, messages: messages.data };
+  // Each press that sets the line, counted, so a Reply whose comment is still being read sets
+  // nothing once the reader has pressed something else.
+  const presses = useRef(0);
   const focus = useCallback(() => {
     if (focusFrame.current !== undefined) cancelAnimationFrame(focusFrame.current);
     // The field that is drawn: the line keeps its write field mounted, hidden, while it edits a
@@ -254,6 +262,8 @@ export function OutlineWriterProvider({
       // the one the line shows until Dispatch decides it, and the redirect below reads only a
       // send that was refused or none (`held-sends.ts`'s `redirectedReplyTarget`).
       if (store.sendingNow(sendKey)) return;
+      presses.current += 1;
+      const press = presses.current;
       // A send Dispatch refused keeps the line on its target, whatever the Reply is on: its
       // statement (`keptOnStatement`), or the entry its reply answers (`keptOnReply`, and
       // `redirectedReplyTarget` below). The caret goes back into the line on that target.
@@ -278,14 +288,32 @@ export function OutlineWriterProvider({
         focus();
         return;
       }
-      const target = replyTargetOf(item, issueKey, comments.data, messages.data, agentText);
-      setAnswer(undefined);
-      setEditing(undefined);
-      setStatement(undefined);
-      setReply(redirectedReplyTarget(store, sendKey, target));
-      focus();
+      const set = (comment: Pick<Comment, "author" | "mentions"> | undefined) => {
+        if (press !== presses.current || store.sendingNow(sendKey)) return;
+        const { agentText, messages } = latest.current;
+        const target = replyTargetOf(item, issueKey, comment, messages, agentText);
+        setAnswer(undefined);
+        setEditing(undefined);
+        setStatement(undefined);
+        setReply(redirectedReplyTarget(store, sendKey, target));
+        focus();
+      };
+      // A reply to a person's comment starts with the mentions that comment made, which the tree
+      // read does not answer: the comment's own read does (`GET /api/v1/comments/{id}`), read as
+      // the reader presses Reply, and the line is set once it answers. A failed read sets it with
+      // none. A reply to a session's comment mentions that session and reads nothing.
+      if (item.kind !== "comment" || item.author.kind === "session") {
+        set(undefined);
+        return;
+      }
+      void queryClient
+        .fetchQuery({ ...commentQuery(item.id), staleTime: EVENT_FRESH.staleTime })
+        .then(
+          (read) => set(read.comment),
+          () => set(undefined)
+        );
     },
-    [agentText, comments.data, focus, issueKey, messages.data, sendKey, setReply, store]
+    [focus, issueKey, queryClient, sendKey, setReply, store]
   );
   const answering = useCallback((node: TreeNode): AnswerTarget | undefined => {
     const item = conversationItem(node);
@@ -302,6 +330,7 @@ export function OutlineWriterProvider({
       // A send Dispatch refused keeps the line on its target, and the caret stays where it is.
       const line = { setAnswer, setEditing, setReply, setStatement };
       if (keptOnTarget(store.get(sendKey)?.request, line)) return;
+      presses.current += 1;
       setReply(null);
       setEditing(undefined);
       setStatement(undefined);
@@ -313,11 +342,12 @@ export function OutlineWriterProvider({
     (node: TreeNode) => {
       if (store.sendingNow(sendKey)) return;
       const target = answering(node);
-      const recorded = (asks.data ?? []).find((ask) => ask.id === target?.askId)?.answer;
+      const recorded = (latest.current.asks ?? []).find((ask) => ask.id === target?.askId)?.answer;
       if (target === undefined || recorded === null || recorded === undefined) return;
       const line = { setAnswer, setEditing, setReply, setStatement };
       if (keptOnTarget(store.get(sendKey)?.request, line)) return;
       const offered = new Set((node.options ?? []).map((option) => option.label));
+      presses.current += 1;
       setReply(null);
       setEditing(undefined);
       setStatement(undefined);
@@ -327,7 +357,7 @@ export function OutlineWriterProvider({
         selected: (recorded.selected ?? []).filter((label) => offered.has(label)),
       });
     },
-    [answering, asks.data, sendKey, setReply, store]
+    [answering, sendKey, setReply, store]
   );
   const pick = useCallback(
     (node: TreeNode, label: string) => {
@@ -336,6 +366,7 @@ export function OutlineWriterProvider({
       if (target === undefined) return;
       const line = { setAnswer, setEditing, setReply, setStatement };
       if (keptOnTarget(store.get(sendKey)?.request, line)) return;
+      presses.current += 1;
       setReply(null);
       setEditing(undefined);
       setStatement(undefined);
@@ -355,6 +386,7 @@ export function OutlineWriterProvider({
     // may have been delivered (`SendMovedError`). Where the issue keeps a draft of the reader's
     // own, the composer carries nothing, and the refusal keeps its target. The guard above has
     // run, so a send still out is never moved.
+    presses.current += 1;
     setReply(null);
     setAnswer(undefined);
     setEditing(undefined);
@@ -379,6 +411,7 @@ export function OutlineWriterProvider({
         focus();
         return;
       }
+      presses.current += 1;
       setReply(null);
       setAnswer(undefined);
       setStatement(undefined);
@@ -631,15 +664,16 @@ function slugOfBlockNodeId(nodeId: string): string | undefined {
 /**
  * What the line quotes when the reader replies to `item`: its author, its words and the address
  * of its row. A reply to an agent's comment starts with a mention of that agent, and a reply to
- * a person's comment with the mentions that comment made, so the reply reaches whoever the
- * comment did; a reply in a message thread aimed at a session keeps that thread's delivery. A
- * session it mentions is named as the page names an author (`AgentText.author`): by its title,
- * the one its write stamped where the registry holds none, and never by its id (part G's R7).
+ * a person's comment with the mentions that comment made (`comment`, its own read), so the reply
+ * reaches whoever the comment did; a reply in a message thread aimed at a session keeps that
+ * thread's delivery. A session it mentions is named as the page names an author
+ * (`AgentText.author`): by its title, the one its write stamped where the registry holds none,
+ * and never by its id.
  */
 function replyTargetOf(
   item: ReplyItem,
   issueKey: string,
-  comments: readonly Comment[] | undefined,
+  comment: Pick<Comment, "author" | "mentions"> | undefined,
   messages: readonly MessageRead[] | undefined,
   text: Pick<AgentText, "author">
 ): ReplyTarget {
@@ -662,7 +696,6 @@ function replyTargetOf(
       ...(delivery === undefined ? {} : { thread: delivery }),
     };
   }
-  const comment = (comments ?? []).find((one) => one.id === item.id);
   const author = comment?.author ?? item.author;
   const targets =
     author.kind === "session"

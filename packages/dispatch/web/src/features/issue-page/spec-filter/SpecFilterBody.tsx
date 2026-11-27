@@ -87,8 +87,13 @@ import { treeContext } from "../tree-drafts";
 import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import { outOfCounts } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
-import { issueTreeQuery, useBlocksRunning, useTreeRead, viewQuery } from "../tree-read/tree-read";
-import { useLastAnswer } from "../useIssueTree";
+import {
+  issueTreeQuery,
+  useBlocksRunning,
+  useLastAnswer,
+  useTreeRead,
+  viewQuery,
+} from "../tree-read/tree-read";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { abortOnReaderAct, nodeEditable, type OnEditing, useNodeEditing } from "../useNodeEditing";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
@@ -266,8 +271,10 @@ export function SpecFilterBody({
   // reads it by (`ViewReadProvider`). A change of the issue marks the view stale and reads it
   // again with its answer kept (`subscribeTreeFreshness`); a new load, a Keep, a Change, a Settle
   // and a lens pick that lands drop it (`dropViews`), and the column then draws the answer it
-  // last held (`useLastAnswer`) until the next one lands. A read again that fails keeps its
-  // answer, which leaves the body an answer to draw too.
+  // last held (`useLastAnswer`) until the next one lands. That answer is this load's alone: on a
+  // return to the issue the page's tree holds no view of the earlier visit (`useIssueTree.ts`,
+  // `loadEnded`), so the column's first render keeps none of it. A read again that fails keeps
+  // its answer, which leaves the body an answer to draw too.
   const specRead = useQuery(treeRead(specQuery));
   const held = useLastAnswer(root.views?.spec);
   const decisions = useMemo(

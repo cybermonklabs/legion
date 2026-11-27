@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -136,11 +137,13 @@ func TestTheStateRouteRefusesAnUnclaimedCopyNamingTheAskItsOpeningLineNames(t *t
 
 // askBlockCopy is an issue whose spec holds the `:::ask` block q1, which settlement has indexed
 // as an ask, and a copy of the spec's text uploaded as a second document of the same issue
-// (uploadAskBlockCopy): the handler and the store that hold them, the issue's key, the ask's id
-// and its dispatch address, the copy, and the store address of the copy's block node q1.
+// (uploadAskBlockCopy): the handler, the store and the document service that hold them, the
+// issue's key, the ask's id and its dispatch address, the copy, and the store address of the
+// copy's block node q1.
 type askBlockCopy struct {
 	handler           http.Handler
 	database          *store.Store
+	documents         *docs.Service
 	issue, askID, ask string
 	document          model.Artifact
 	blockNode         string
@@ -151,7 +154,7 @@ type askBlockCopy struct {
 // a second document of the same issue, as sessionActor.
 func uploadAskBlockCopy(t *testing.T, title string) askBlockCopy {
 	t.Helper()
-	handler, database := blockAskHandler(t)
+	handler, database, documents := blockAskHandlerWithDocuments(t)
 	const question = "Ship the cache this week?"
 	issue, askID := seedBlockAsk(t, handler, title, "q1",
 		":::ask{#q1 urgency=\"med\" multiple=\"false\"}\n"+question+"\n\n- Ship: Now.\n- Hold: Later.\n:::\n", question)
@@ -164,7 +167,7 @@ func uploadAskBlockCopy(t *testing.T, title string) askBlockCopy {
 	}
 	copied := decodeBody[artifactUploadResponse](t, uploaded).Artifact
 	return askBlockCopy{
-		handler: handler, database: database,
+		handler: handler, database: database, documents: documents,
 		issue: issue.Key, askID: askID, ask: "dispatch://" + issue.Key + "/ask/" + askID,
 		document: copied, blockNode: refs.BlockAddress(copied.RefKey, "q1"),
 	}

@@ -1165,21 +1165,25 @@ test("a question is given by its first sentence whole, past 100 characters", () 
 });
 
 // R5: where a statement's words changed after the tie that names the decision its run is headed
-// by, it carries Changed since: the tie's far end's `changed_at` is later than the tie's
-// `created_at`, read as the instants they name, and a time that cannot be read is no change. A
-// decision that names a statement in two of its blocks holds two ties to it, and the statement
+// by, it carries Changed since: the tie's own `changed_since_tie`, which the server reads. The
+// tie's far end's `changed_at` decides nothing: the read answers it null on a decision's links,
+// and a time there later than the tie's `created_at` makes no change of a tie the server says is
+// unchanged.
+// A decision that names a statement in two of its blocks holds two ties to it, and the statement
 // changed since that decision only where it changed after both. Only the head's tie decides it,
 // never that of a decision that only informed the statement, and the answered question a
 // statement hangs under has no tie, so a run it heads never says it.
 test("a statement changed after the tie of the decision heading its run, and only that tie, carries Changed since", () => {
-  const tie = (block: string, created: string, changed: string | null) => {
+  const tie = (block: string, changed: boolean, changedAt: string | null = null) => {
     const made = shaped(statementRef(block));
-    return { ...made, created_at: created, to: { ...made.to, changed_at: changed } };
+    return {
+      ...made,
+      changed_since_tie: changed,
+      created_at: "2026-11-14T10:00:00Z",
+      to: { ...made.to, changed_at: changedAt },
+    };
   };
-  const before = "2026-11-14T09:00:00Z";
-  const tied = "2026-11-14T10:00:00Z";
   const after = "2026-11-14T11:00:00Z";
-  const later = "2026-11-14T12:00:00Z";
   const groups = bodyOf(
     issueTree([
       answeredAsk("ask-1", { text: "Keep it whole." }, [statement("r6")]),
@@ -1191,25 +1195,26 @@ test("a statement changed after the tie of the decision heading its run, and onl
         decision: {
           kind: "agent",
           links: [
-            tie("r1", tied, after),
-            tie("r2", tied, before),
-            tie("r3", "yesterday", after),
-            tie("r4", tied, "not a time"),
-            // Named in two of its blocks: changed after the first tie and before the second.
-            tie("r5", tied, after),
-            { ...tie("r5", later, after), from_block: "d1-again" },
-            tie("r7", tied, null),
+            tie("r1", true),
+            tie("r2", false),
+            // A far end's time after the tie's, of a tie the server says is unchanged.
+            tie("r3", false, after),
+            tie("r4", false),
+            // Named in two of its blocks: changed after the first tie and not after the second.
+            tie("r5", true),
+            { ...tie("r5", false), from_block: "d1-again" },
+            tie("r7", false),
           ],
         },
       }),
       // A decision that only informs r2, which changed after this decision's tie to it.
-      decision("d2", { decision: { kind: "agent", links: [tie("r2", tied, after)] } }),
+      decision("d2", { decision: { kind: "agent", links: [tie("r2", true)] } }),
       // An agent's decision that only informs r6, which changed after its tie, under the
       // answered question that heads r6's run.
-      decision("d3", { decision: { kind: "agent", links: [tie("r6", tied, after)] } }),
+      decision("d3", { decision: { kind: "agent", links: [tie("r6", true)] } }),
       // The person's own decision for the question r6 hangs under, changed after its tie.
       decision("d4", {
-        decision: { asks: ["ask-1"], kind: "person", links: [tie("r6", tied, after)] },
+        decision: { asks: ["ask-1"], kind: "person", links: [tie("r6", true)] },
       }),
     ]
   );

@@ -15,7 +15,7 @@ import (
 
 // The two marking rules this test sets side by side: the build of rule 1 that INFRA-1149's parent
 // fill ships, which the test stands in for with a Service that applies rule 1
-// (Service.markingRule), and the build of rule 2 that this branch ships (refs.BlockIndexMarkingRule).
+// (Service.markingRule), and the build of rule 2 this release ships (refs.BlockIndexMarkingRule).
 const (
 	markingRuleOne = 1
 	markingRuleTwo = 2
@@ -34,21 +34,6 @@ func statedBy(t *testing.T, database *store.Store, document string) (version, ru
 	return version, rule
 }
 
-// markedAt is the time of the mark document's row holds (store_owed_at), the zero time for none.
-func markedAt(t *testing.T, database *store.Store, document string) time.Time {
-	t.Helper()
-	var at *time.Time
-	if err := database.Pool.QueryRow(context.Background(), `
-		select store_owed_at from document_block_versions where artifact_id = $1
-	`, document).Scan(&at); err != nil {
-		t.Fatalf("read the mark of %s: %v", document, err)
-	}
-	if at == nil {
-		return time.Time{}
-	}
-	return *at
-}
-
 // cursorRule is the marking rule the block_index_event_cursors row of the build of commit records,
 // and the event id it stands at.
 func cursorRule(t *testing.T, database *store.Store, commit string) (rule int, event int64) {
@@ -63,7 +48,7 @@ func cursorRule(t *testing.T, database *store.Store, commit string) (rule int, e
 
 // ruleOneBuild is the stand-in for a build of marking rule 1 on database: the document service
 // blockIndexService serves, applying rule 1 where it indexes, marks and clears. A pass of it writes
-// the facts this branch's pass writes; each case below puts them back as a build of rule 1 left
+// the facts this build's pass writes; each case below puts them back as a build of rule 1 left
 // them where it needs the absence of one.
 func ruleOneBuild(t *testing.T) (*store.Store, *Service) {
 	t.Helper()
@@ -89,7 +74,7 @@ func ruleOneBuild(t *testing.T) (*store.Store, *Service) {
 //     above that horizon.
 //
 // The stand-in for a build of rule 1 is a Service that applies rule 1 (Service.markingRule). Its
-// pass writes every fact this branch's pass does, so the first case deletes the facts rule 2 owes
+// pass writes every fact this build's pass does, so the first case deletes the facts rule 2 owes
 // before the tick, as asTheReleaseBeforeLeftIt does for the ranks and texts, and the case fails
 // where one of them is still absent after rule 2's drain.
 func TestRule2MarksWhatRule1IndexedAndClearsOnlyItsOwnMarks(t *testing.T) {
@@ -268,9 +253,9 @@ func TestRule2MarksWhatRule1IndexedAndClearsOnlyItsOwnMarks(t *testing.T) {
 			t.Errorf("the backfill of rule %d left %s at %s, want its mark of rule %d raised to rule %d",
 				markingRuleTwo, document, row, markingRuleOne, markingRuleTwo)
 		}
-		if at := markedAt(t, database, document); !at.Equal(wrote) {
-			t.Errorf("the backfill of rule %d left the mark of %s dated %s, want the time of the mark it raised, %s",
-				markingRuleTwo, document, at.Format(time.RFC3339Nano), wrote.Format(time.RFC3339Nano))
+		if at, _ := backfillMark(t, database, document); at == nil || !at.Equal(wrote) {
+			t.Errorf("the backfill of rule %d left the mark of %s dated %v, want the time of the mark it raised, %s",
+				markingRuleTwo, document, at, wrote.Format(time.RFC3339Nano))
 		}
 	})
 

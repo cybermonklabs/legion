@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -96,8 +97,7 @@ func Recorded(state string, answer *model.AskAnswer, resolution *model.AskResolu
 // answered_by and decided_by, and the resolution as a value - and retracts each of those the node
 // holds that the change takes away. It then writes the asks row from what it appended, in the same
 // transaction: state, and answer and resolution where the change states them. The node is the
-// record and the row its projection, which every reader of an ask's state but a reading's check
-// of its ask (docs' askAnswers) and the decisions step's count still reads.
+// record and the row its projection.
 //
 // The node holds the answer only once the row names it (asks.node_kind): a row a process of the
 // release before wrote names none until the boot step's backfill states the whole row on the node
@@ -520,4 +520,141 @@ func AnswerKinds() []string {
 	kinds := append(slices.Clone(answerValueKinds[:]), answerRelationKinds[:]...)
 	slices.Sort(kinds)
 	return kinds
+}
+
+// NodeAnswerTuples is the read of the answer the node of an ask holds as it stands now, as SQL a
+// statement splices in: the newest tuple of each fact of AnswerKinds out of the node of the ask
+// whose id, as text, the SQL expression id names, a value by its kind and a relation by its far
+// end (graphstore.CurrentTupleRead), as t.kind, t.to_kind, t.to_id and t.asserted, which the
+// caller's `where asserted` cuts to the facts that stand. A fact of a kind a reader does not read
+// is left by it, as Read leaves one. It is the one reading of the node's answer in SQL, which
+// every statement that reads the answer off the node shares: every read of NodeAnswerColumn (api's
+// ask reads among them), docs' text routes and writes (askNodeAnswers), the answers a session was
+// delivered (sessionanswers' nodeAnswer), and the replay's check of the answers it serves,
+// through NodeAnswerTuplesIn (loadtest's servedAnswersQuery).
+func NodeAnswerTuples(id string) string {
+	return NodeAnswerTuplesIn(`graph_tuples`, id)
+}
+
+// NodeAnswerTuplesIn is NodeAnswerTuples over table, graph_tuples under the name the calling
+// statement gives it (graphstore.CurrentTupleReadIn): the replay's check of the answers it serves
+// reads public.graph_tuples, since every statement of loadtest names the schema of each table it
+// reads (loadtest's servedAnswersQuery). table is a constant of the caller's own text, never a
+// request's value, as id is.
+func NodeAnswerTuplesIn(table, id string) string {
+	return graphstore.CurrentTupleReadIn(table,
+		`t.kind, t.to_kind, case when t.to_kind = '`+graphstore.KindValue+`' then '' else t.to_id end`,
+		`t.kind, t.to_kind, t.to_id, t.asserted`,
+		`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = `+id+` and t.kind in (`+answerKindsList+`)`)
+}
+
+// answerKindsList is AnswerKinds as the SQL list NodeAnswerTuplesIn reads, each quoted, built once:
+// every ask read that selects NodeAnswerColumn splices it in.
+var answerKindsList = `'` + strings.Join(AnswerKinds(), `', '`) + `'`
+
+// NodeAnswer is what an ask's node holds of its answer state, read off the facts of AnswerKinds
+// that stand on it (Read): the answer state, "" where the node holds none; the answer's words,
+// the options it selects, its time and the person who gave it (answered_by), each nil or "" where
+// the node holds none; and the resolution, nil for none. decided_by names the person answered_by
+// names (answerFacts), so it is read as nothing more. It is the one decoder of the node's answer,
+// which every reader of it in Go shares (R3).
+//
+// Named says the ask's row names the node (asks.node_kind), which its reader reads beside the
+// facts. Settle states an answer on the node only once the row names it, so the row of an ask a
+// process of the release before wrote, until the boot step's backfill marks it, and of an ask
+// whose relations are past the store's bound (graphstore.AskFacts) is its answer's only record,
+// and every read of such an ask reads its answer off the row (ApplyTo).
+type NodeAnswer struct {
+	Named      bool
+	State      string
+	Answer     *string
+	Selected   []string
+	AnsweredAt *time.Time
+	AnsweredBy string
+	Resolution *model.AskResolution
+}
+
+// Read takes value, the far end of one fact of kind that stands on the node - the value itself
+// for a value kind, the person for a relation - into the answer, and refuses one that does not
+// decode as Settle encodes it, with ErrNodeAnswerUnreadable: an answer state none of the three, a
+// selection that is no list of labels (SelectedValue), an answered_at that is no time
+// (AnsweredAtValue), or a resolution that is no resolution (ResolutionValue). A fact of a kind the
+// answer does not read (IsAnswerKind) is left.
+func (n *NodeAnswer) Read(kind, value string) error {
+	switch kind {
+	case graphstore.TupleAnswerState:
+		switch value {
+		case StateOpen, StateAnswered, StateResolved:
+			n.State = value
+		default:
+			return fmt.Errorf("%w: answer_state holds %q, which is none of open, answered and resolved", ErrNodeAnswerUnreadable, value)
+		}
+	case graphstore.TupleAnswer:
+		n.Answer = &value
+	case graphstore.TupleSelected:
+		selected := []string{}
+		if err := json.Unmarshal([]byte(value), &selected); err != nil {
+			return fmt.Errorf("%w: selected holds %q, which is no list of labels: %w", ErrNodeAnswerUnreadable, value, err)
+		}
+		n.Selected = selected
+	case graphstore.TupleAnsweredAt:
+		at, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			return fmt.Errorf("%w: answered_at holds %q, which is no time: %w", ErrNodeAnswerUnreadable, value, err)
+		}
+		n.AnsweredAt = &at
+	case graphstore.TupleAnsweredBy:
+		n.AnsweredBy = value
+	case graphstore.TupleResolution:
+		var resolution model.AskResolution
+		if err := json.Unmarshal([]byte(value), &resolution); err != nil {
+			return fmt.Errorf("%w: resolution holds %q, which is no resolution: %w", ErrNodeAnswerUnreadable, value, err)
+		}
+		n.Resolution = &resolution
+	}
+	return nil
+}
+
+// ApplyTo lays n over ask, read from its row, as every read of an ask shows its answer state and
+// answer (R3), in the shape the row projects them in (migration 0007's asks_answer_state_check
+// and asks_resolution_state_check): the answer state the node holds, open where it holds none - an
+// ask no settlement has written (Settle); its answer on an answered ask alone, with its words,
+// selection, time and person; and its resolution on a resolved ask alone. The node holds no act
+// (model.AskAnswer.Act), so the answer carries the row's where the node holds the row's answer
+// (Gave), and none otherwise. A row that names no node (Named) is left as it reads, its answer's
+// only record. api's ask reads and docs' text routes both read an ask's answer through it.
+func (n NodeAnswer) ApplyTo(ask *model.Ask) {
+	if !n.Named {
+		return
+	}
+	row := ask.Answer
+	ask.State, ask.Answer, ask.Resolution = StateOpen, nil, nil
+	if n.State != "" {
+		ask.State = n.State
+	}
+	switch ask.State {
+	case StateAnswered:
+		answer := &model.AskAnswer{Selected: append([]string{}, n.Selected...), Text: n.Answer, User: n.AnsweredBy}
+		if n.AnsweredAt != nil {
+			answer.At = *n.AnsweredAt
+		}
+		if row != nil && n.Gave(*row) {
+			answer.Act = row.Act
+		}
+		ask.Answer = answer
+	case StateResolved:
+		ask.Resolution = n.Resolution
+	}
+}
+
+// Gave reports whether the node holds answer, an answer an ask's row holds: the node holds an
+// answered time equal to answer's, and its answered_by names the person node Settle points
+// answered_by at for answer (AnswererOf), none for a person the store cannot key. It is the one
+// test of whether the node holds a row's answer, so every reader that asks it applies one rule to
+// the login: ApplyTo, which carries the row's act onto the node's answer where it holds; the
+// answers a session was delivered, which carry it so on the node's answer their statement decodes
+// (sessionanswers' scan); and docs' writes on a fleet of one build, which keep the row where an
+// answered row's node does not hold its answer (keptFromItsNode).
+func (n NodeAnswer) Gave(answer model.AskAnswer) bool {
+	return n.AnsweredAt != nil && n.AnsweredAt.Equal(answer.At) && n.AnsweredBy == AnswererOf(answer)
 }

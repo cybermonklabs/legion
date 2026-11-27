@@ -162,7 +162,6 @@ function Rows({ isClosed = false, nodes }: { isClosed?: boolean; nodes: readonly
     <TreeRows
       artifacts={new Map()}
       context={new Set()}
-      editing={undefined}
       focused={focused}
       isClosed={isClosed}
       onFocus={(row) => setFocused(row)}

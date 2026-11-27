@@ -114,7 +114,7 @@ const KindVersion = "version"
 // The supertags a version and a query carry (the root's R21 list): a version of a document is a
 // document version, and a version of a query node is a query version; a document that a query
 // replaces becomes a query node (QueryNode). `document version` is seeded with the closed list
-// (20261109051232); `query` and `query version` are this child's
+// (20261109051232); `query` and `query version` are the issue-tree spec's
 // (20261123174750_issue_tree_query_supertags).
 const (
 	SupertagDocumentVersion = "document version"
@@ -298,11 +298,7 @@ func AttributeFacts(tuples []Tuple, node Node) []Tuple {
 			}
 			value = string(encoded)
 		}
-		tuples = append(tuples, Tuple{
-			FromKind: node.Kind, FromID: node.ID, Kind: name,
-			ToKind: KindValue, ToID: value,
-			At: node.MadeAt, Who: node.MadeBy, SourceEvent: node.SourceEvent, Asserted: true,
-		})
+		tuples = append(tuples, valueTupleOf(node, name, value))
 	}
 	return tuples
 }

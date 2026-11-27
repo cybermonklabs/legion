@@ -250,7 +250,7 @@ const opener = (id: string) => `:::ask{#${id} state="answered" answer="Ship it."
 /**
  * One row of `packages/envoy/internal/dispatch/pmdoc/testdata/ask-block-scanner.json`, the one
  * corpus of the two hand-written block scanners: `readAskBlocks` here (read through
- * `askOpenerLines`) and Go's `refs.questionBlocks`, whose test reads the same file. `lines` is a
+ * `askOpenerLines`) and Go's `pmdoc.QuestionBlocks`, whose test reads the same file. `lines` is a
  * document, `ids` the ids of the ask blocks that open in it, `why` the rule the row holds.
  */
 interface AskBlockScannerRow {
@@ -351,35 +351,48 @@ test.each([
   { name: "a surrogate", written: "&#xD800;&#57343;", read: "\uFFFD\uFFFD" },
   { name: "a code point past U+10FFFF", written: "&#x110000;&#99999999999;", read: "\uFFFD\uFFFD" },
 ])("askOpenerAttributes reads $name in a value", ({ written, read }) => {
-  expect(askOpenerAttributes(`:::ask{#a answer="${written}"}`).get("answer")).toBe(read);
+  expect(askOpenerAttributes(`:::ask{#a answer="${written}"}`)?.answer).toBe(read);
 });
 
 test("askOpenerAttributes reads every quoted attribute of an opener, whatever its id's spelling", () => {
-  const attributes = askOpenerAttributes(
+  const ask = askOpenerAttributes(
     ':::ask{#q state="answered" answered_by="bob" answered_at="2026-11-18T12:05:00Z" selected="[&#x22;REST&#x22;]" answer="Plain &#x22;HTTP&#x22;.&#xA;Next." copied_from="c-1" copied_from_document="CORE-1/spec"}'
   );
-  expect(Object.fromEntries(attributes)).toEqual({
+  expect(ask).toEqual({
+    block_id: "q",
     state: "answered",
     answered_by: "bob",
     answered_at: "2026-11-18T12:05:00Z",
-    selected: '["REST"]',
+    selected: ["REST"],
     answer: 'Plain "HTTP".\nNext.',
     copied_from: "c-1",
     copied_from_document: "CORE-1/spec",
   });
-  // An id written in quotes is an attribute like the others.
-  expect(askOpenerAttributes(':::ask{id="a&#xA;b" state="open"}').get("id")).toBe("a\nb");
+  // An id written in quotes is read back as the other attributes are.
+  expect(askOpenerAttributes(':::ask{id="a&#xA;b" state="open"}')).toEqual({
+    block_id: "a\nb",
+    state: "open",
+  });
 });
 
 test("askOpenerAttributes reads a name written twice as its last value, and no attribute off a line with no braces", () => {
-  expect(askOpenerAttributes(':::ask{#a state="open" state="answered"}').get("state")).toBe(
-    "answered"
+  expect(askOpenerAttributes(':::ask{#a state="open" state="answered"}')?.state).toBe("answered");
+  expect(askOpenerAttributes(':::ask state="open"')).toBeUndefined();
+  expect(askOpenerAttributes("")).toBeUndefined();
+  // A name that every object inherits is no attribute of an ask, and the ask read holds none.
+  expect(askOpenerAttributes(':::ask{#a __proto__="x" constructor="y"}')).toEqual({
+    block_id: "a",
+  });
+  expect(Object.hasOwn(askOpenerAttributes(':::ask{#a state="open"}') ?? {}, "constructor")).toBe(
+    false
   );
-  expect(askOpenerAttributes(':::ask state="open"').size).toBe(0);
-  expect(askOpenerAttributes("").size).toBe(0);
-  // A name that every object inherits is an entry like any other.
-  expect(askOpenerAttributes(':::ask{#a __proto__="x" constructor="y"}').get("__proto__")).toBe(
-    "x"
-  );
-  expect(askOpenerAttributes(':::ask{#a state="open"}').get("constructor")).toBeUndefined();
+});
+
+// An opening line is text a document's writer controls, so its `state` is read only where it is
+// one of the three states an ask holds, and any other string reads as no state.
+test("askOpenerAttributes reads a state only where it is open, answered or resolved", () => {
+  for (const state of ["open", "answered", "resolved"] as const) {
+    expect(askOpenerAttributes(`:::ask{#a state="${state}"}`)).toEqual({ block_id: "a", state });
+  }
+  expect(askOpenerAttributes(':::ask{#a state="bogus"}')).toEqual({ block_id: "a" });
 });

@@ -294,11 +294,8 @@ func TestTheAnchorBlockBackfillTakesTheRowThenTheTuple(t *testing.T) {
 	seedServiceText(t, service, artifactID, "Introduction.\n\nTarget passage.\n")
 	commentID := insertAnchoredComment(t, service, artifactID, "Target passage")
 	database := service.store
-	var refKey string
+	refKey := refKeyOf(t, database, artifactID)
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `select ref_key from artifacts where id = $1::uuid`, artifactID).Scan(&refKey); err != nil {
-			return err
-		}
 		node, _ := graphstore.CommentFacts(nil, commentID, model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(), graphstore.NoEvent, "", "", "DOC", nil)
 		if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
 			return err
@@ -349,7 +346,7 @@ func TestTheAnchorBlockBackfillTakesTheRowThenTheTuple(t *testing.T) {
 }
 
 // The anchor refresh states a comment's anchored_in in the store's lock order (T17b of
-// this branch's plan): inside the settlement's transaction, after the document owner's
+// the issue-tree plan): inside the settlement's transaction, after the document owner's
 // lock, which the settlement takes first (lockArtifactOwner), the update of the comments row it
 // refreshes, then that comment's comment.anchor_refreshed, and then the tuple that event causes.
 // The comment's anchor names its block and stands orphaned though its mark is in the document, so
@@ -370,11 +367,8 @@ func TestTheAnchorRefreshTakesTheOwnerRowTheRowTheEventThenTheTuple(t *testing.T
 	if err != nil {
 		t.Fatalf("resolve the target block: %v", err)
 	}
-	var refKey string
+	refKey := refKeyOf(t, database, artifactID)
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `select ref_key from artifacts where id = $1::uuid`, artifactID).Scan(&refKey); err != nil {
-			return err
-		}
 		node, _ := graphstore.CommentFacts(nil, commentID, model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(), graphstore.NoEvent, "", "", "DOC", nil)
 		if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
 			return err

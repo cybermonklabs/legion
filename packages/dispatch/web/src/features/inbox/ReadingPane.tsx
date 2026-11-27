@@ -50,6 +50,9 @@ function subjectOf(ask: InboxRow): PaneSubject {
 export interface ReadingPaneProps {
   /** The reader's own answer landed; the list selects the next row. */
   onAnswered: (askId: string) => void;
+  /** The reader's own Assign to me from the head started, or has stopped being in flight or
+   *  refused (`ReadingPaneHead`). */
+  onAssignWrite: (askId: string, live: boolean) => void;
   /** The head's Snooze write is in flight or refused, or has stopped being either: the Inbox
    *  keeps a live row listed, which is what keeps this column on it long enough for a refusal
    *  to be read. */
@@ -63,6 +66,7 @@ export interface ReadingPaneProps {
 interface PaneFlowProps {
   ask: InboxRow;
   onAnswered: (askId: string) => void;
+  onAssignWrite: (askId: string, live: boolean) => void;
   onSnoozeLive: (askId: string, live: boolean) => void;
   viewer: string | undefined;
 }
@@ -85,7 +89,13 @@ function QuestionCard({ ask, onAnswered }: Pick<PaneFlowProps, "ask" | "onAnswer
 
 /** An anchored question, and a question in no document: the card the Inbox has always drawn,
  *  under the head's own controls. */
-function CardBody({ ask, onAnswered, onSnoozeLive, viewer }: PaneFlowProps): ReactNode {
+function CardBody({
+  ask,
+  onAnswered,
+  onAssignWrite,
+  onSnoozeLive,
+  viewer,
+}: PaneFlowProps): ReactNode {
   return (
     <PaneFrame
       head={
@@ -94,6 +104,7 @@ function CardBody({ ask, onAnswered, onSnoozeLive, viewer }: PaneFlowProps): Rea
           ask={ask}
           key={ask.id}
           onAnswered={onAnswered}
+          onAssignWrite={onAssignWrite}
           onNextChange={undefined}
           onSkipToAnswer={undefined}
           onSnoozeLive={onSnoozeLive}
@@ -143,6 +154,7 @@ function ApprovalBody({
   artifactId,
   ask,
   onAnswered,
+  onAssignWrite,
   onSnoozeLive,
   viewer,
 }: PaneFlowProps & { approval: AskApproval; artifactId: string }): ReactNode {
@@ -362,6 +374,7 @@ function ApprovalBody({
           ask={ask}
           key={ask.id}
           onAnswered={onAnswered}
+          onAssignWrite={onAssignWrite}
           onNextChange={marked ? nextChange : undefined}
           onSkipToAnswer={undefined}
           onSnoozeLive={onSnoozeLive}
@@ -384,6 +397,7 @@ function DecisionBody({
   ask,
   blockId,
   onAnswered,
+  onAssignWrite,
   onSnoozeLive,
   viewer,
 }: PaneFlowProps & { artifactId: string; blockId: string }): ReactNode {
@@ -399,6 +413,7 @@ function DecisionBody({
           ask={ask}
           key={ask.id}
           onAnswered={onAnswered}
+          onAssignWrite={onAssignWrite}
           onNextChange={undefined}
           onSkipToAnswer={document.showsDocument ? document.skipToBlock : undefined}
           onSnoozeLive={onSnoozeLive}
@@ -430,6 +445,7 @@ function DecisionBody({
  */
 export function ReadingPane({
   onAnswered,
+  onAssignWrite,
   onSnoozeLive,
   row,
   viewer,
@@ -439,7 +455,7 @@ export function ReadingPane({
   }
   const ask = row.ask;
   const subject = subjectOf(ask);
-  const flow = { ask, onAnswered, onSnoozeLive, viewer };
+  const flow = { ask, onAnswered, onAssignWrite, onSnoozeLive, viewer };
   if (subject.kind === "approval") {
     return <ApprovalBody {...flow} approval={subject.approval} artifactId={subject.artifactId} />;
   }

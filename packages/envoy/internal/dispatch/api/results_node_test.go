@@ -172,9 +172,11 @@ func requireTheRowIsTheNode(t *testing.T, database *store.Store, row resultNodeR
 			row.ID, node.supertag, node.state, node.visibility, node.project, resultKind, project)
 	}
 	want := map[string]string{
-		"verdict": row.Verdict, "surface": row.Surface, "run": row.Run, "observed": row.Observed, "commit": row.CommitSHA,
-		"role": row.Role, "failed": fmt.Sprint(row.Failed), "skipped": fmt.Sprint(row.Skipped), "excluded": fmt.Sprint(row.Excluded),
-		"negative_control": row.NegativeControl, "check_version": fmt.Sprint(row.CheckVersion), "check_sha256": row.CheckSHA256,
+		graphstore.AttributeVerdict: row.Verdict, graphstore.AttributeSurface: row.Surface, graphstore.AttributeRun: row.Run,
+		graphstore.AttributeObserved: row.Observed, graphstore.AttributeCommit: row.CommitSHA, graphstore.AttributeRole: row.Role,
+		graphstore.AttributeFailed: fmt.Sprint(row.Failed), graphstore.AttributeSkipped: fmt.Sprint(row.Skipped),
+		graphstore.AttributeExcluded: fmt.Sprint(row.Excluded), graphstore.AttributeNegativeControl: row.NegativeControl,
+		graphstore.AttributeCheckVersion: fmt.Sprint(row.CheckVersion), graphstore.AttributeCheckSHA256: row.CheckSHA256,
 	}
 	for _, name := range resultValueNames {
 		if got, held := node.values[name]; !held || got != want[name] {
@@ -243,12 +245,12 @@ func censusKindOf(t *testing.T, report *graphcensus.StoreReport, name string) gr
 			return kind
 		}
 	}
-	t.Fatalf("the store census reads no kind %s: the check_results rows are no projection it holds the store to", name)
+	t.Fatalf("the store census reads no kind %s", name)
 	return graphcensus.KindReport{}
 }
 
-// resultCensus takes the store census, as `envoy-dispatch census --store` takes it.
-func resultCensus(t *testing.T, database *store.Store) *graphcensus.StoreReport {
+// storeCensus takes the store census, as `envoy-dispatch census --store` takes it.
+func storeCensus(t *testing.T, database *store.Store) *graphcensus.StoreReport {
 	t.Helper()
 	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
 	if err != nil {
@@ -261,7 +263,7 @@ func resultCensus(t *testing.T, database *store.Store) *graphcensus.StoreReport 
 // reads rows rows and retractions retraction rows and no difference in either direction.
 func requireTheResultCensusAgrees(t *testing.T, what string, database *store.Store, rows, retractions int64) {
 	t.Helper()
-	report := resultCensus(t, database)
+	report := storeCensus(t, database)
 	for name, want := range map[string]int64{resultCheckProjection: rows, resultRetractionKind: retractions} {
 		kind := censusKindOf(t, report, name)
 		if kind.Rows != want || kind.Nodes != want || kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
@@ -305,9 +307,8 @@ func TestARecordedResultIsANodeWithItsTuples(t *testing.T) {
 		t.Fatalf("the second upload of verification.md is %s version %d, want version 2 of %s",
 			reworded.Artifact.ID, reworded.Version.Number, verification.Artifact.ID)
 	}
-	var room string
-	if err := database.Pool.QueryRow(ctx, `select room::text from document_rooms where artifact_id = $1::uuid`, verification.Artifact.ID).Scan(&room); err != nil || room != tree {
-		t.Fatalf("verification.md is edited in room %q (%v), want the issue's tree %s", room, err, tree)
+	if room, _ := documentRoomOf(t, database.Pool, verification.Artifact.ID); room != tree {
+		t.Fatalf("verification.md is edited in room %q, want the issue's tree %s", room, tree)
 	}
 	first := uploadImage(t, handler, issue.Key, "first-shot.png", "the first screenshot")
 	second := uploadImage(t, handler, issue.Key, "second-shot.png", "the second screenshot")
@@ -469,7 +470,7 @@ func TestARecordedResultIsANodeWithItsTuples(t *testing.T) {
 		"dispatch://"+earlier.Key+"/artifact/"+earlierShot.Artifact.Slug+"),").Scan(&old.ID); err != nil {
 		t.Fatalf("write the row an earlier release wrote: %v", err)
 	}
-	report := resultCensus(t, database)
+	report := storeCensus(t, database)
 	kind := censusKindOf(t, report, resultCheckProjection)
 	wantAt := resultKind + " " + old.ID
 	if kind.RowDifferences != 1 || len(kind.ReportedRows) != 1 || kind.ReportedRows[0].At != wantAt ||
@@ -713,9 +714,9 @@ func writeThroughTheRoom(t *testing.T, handler http.Handler, documents *docs.Ser
 func requireRevisedVersion(t *testing.T, database *store.Store, what, artifactID, refKey string, number int, event int64) {
 	t.Helper()
 	ctx := context.Background()
-	if supertag, held := versionDefinition(t, database, refKey, number); supertag != graphstore.SupertagQueryVersion || definitionHeld(held) != fmt.Sprint(graphstore.QueryDefinitionVersion) {
+	if supertag, held := versionDefinition(t, database, refKey, number); supertag != graphstore.SupertagQueryVersion || valueOrNone(held) != fmt.Sprint(graphstore.QueryDefinitionVersion) {
 		t.Errorf("%s: version %d of %s is a %s holding definition_version %s, want a query version holding %d",
-			what, number, refKey, supertag, definitionHeld(held), graphstore.QueryDefinitionVersion)
+			what, number, refKey, supertag, valueOrNone(held), graphstore.QueryDefinitionVersion)
 	}
 	var cause int64
 	if err := database.Pool.QueryRow(ctx, `select source_event from graph_nodes where kind = $1 and id = $2`,

@@ -130,33 +130,21 @@ type anchorRow struct {
 // fact it states carries the sentinel and is written by the run (backfillActor).
 func backfillAnchoredIn(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: anchorProjectionKind}
-	after := zeroUUID
-	for {
-		rows, err := database.Pool.Query(ctx, owedAnchorRowsStatement, after, backfillBatch)
-		if err != nil {
-			return done, fmt.Errorf("read the comments whose anchor block their node does not state: %w", err)
-		}
-		batch, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (anchorRow, error) {
+	if err := walkBatches(ctx, database, owedAnchorRowsStatement, "the comments whose anchor block their node does not state", zeroUUID,
+		func(row pgx.CollectableRow) (anchorRow, error) {
 			var comment anchorRow
 			err := row.Scan(&comment.id, &comment.issue, &comment.artifact)
 			return comment, err
-		})
-		if err != nil {
-			return done, fmt.Errorf("read the comments whose anchor block their node does not state: %w", err)
-		}
-		if len(batch) == 0 {
-			break
-		}
-		after = batch[len(batch)-1].id
-		levelled, tuples, err := writeAnchorBatch(ctx, database, batch)
-		if err != nil {
-			return done, err
-		}
-		done.Rows += levelled
-		done.Tuples += tuples
-		if len(batch) < backfillBatch {
-			break
-		}
+		}, func(comment anchorRow) string { return comment.id }, func(batch []anchorRow) error {
+			levelled, tuples, err := writeAnchorBatch(ctx, database, batch)
+			if err != nil {
+				return err
+			}
+			done.Rows += levelled
+			done.Tuples += tuples
+			return nil
+		}); err != nil {
+		return done, err
 	}
 	if err := database.Pool.QueryRow(ctx, `select count(*) `+owedAnchoredIn).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the comments whose anchor block their node does not state: %w", err)

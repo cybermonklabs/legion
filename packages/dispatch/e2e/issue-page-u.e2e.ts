@@ -3,11 +3,6 @@
 
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import type { IssueDetails, IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
-import {
-  lookupOf,
-  restatesAnswer,
-} from "../web/src/features/issue-page/decision-nodes/decision-nodes";
-import { decisionNodeChanges } from "../web/src/features/issue-page/decision-review";
 import { chipName } from "../web/src/features/issue-page/first-line";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
@@ -51,6 +46,7 @@ import {
   decisionsPartRows,
   decisionsPartsDrawn,
   decisionsRows,
+  reviewFlag,
 } from "./issue-page-q";
 import { drawnRowReadings, fixtureSeed, keyedRows, seedKeys, steadily } from "./issue-page-t";
 import { restatesAnAnswer } from "./issue-page-t-rows";
@@ -116,7 +112,8 @@ import { asUser } from "./users";
  * (`seedPagedDecisions`, `e2e/issue-page-u.ts`), opens them with `gotoIssue` (`e2e/issue-page.ts`
  * holds both), and reads them through `nodeRow`, `rowOf`, `drawnRows` and `unfoldEveryBranch`
  * (`e2e/issue-page-g.ts`), `pickPreset` (`e2e/issue-page-i.ts`), `waitingCount`
- * (`e2e/issue-page-p.ts`), the readers of the Decisions view (`e2e/issue-page-q.ts`),
+ * (`e2e/issue-page-p.ts`), the readers of the Decisions view and of its control's flag
+ * (`e2e/issue-page-q.ts`),
  * `watchApiRequests` (`e2e/traffic.ts`), the helpers of `e2e/issue-page-t.ts`, part T's
  * `conversationFirstPage` (`e2e/issue-page-t-scale.ts`), the reads of the tree read the rows share
  * with the seeds (`e2e/issue-layout-seed-support.ts`) and the rows' own (`e2e/issue-page-u.ts`).
@@ -126,7 +123,10 @@ import { asUser } from "./users";
  * The rows are six of the Verification document's browser checks, by their titles:
  *
  * 1. `c-decisions`: "every decision the page draws is a node with the review state the model
- *    holds", on `seedDecisionsFilter` and `seedReviewList`.
+ *    holds", on `seedDecisionsFilter` and `seedReviewList`. Its expected state words and
+ *    header count are read from the server's raw reads and from what the seed wrote
+ *    (`restating`), never through the page's own classifiers (`restatesAnswer`,
+ *    `decisionNodeChanges`).
  * 2. `c-keep-change`: "Keep and Change act on the decision node", on `seedReviewList`.
  * 3. `c-one-component`: "the Decisions view draws the one card and the one ask body", on
  *    `seedReviewList` and `seedDecisionsFilter`. Dashboard's part (dispatch://INFRA-5702), which
@@ -140,8 +140,14 @@ import { asUser } from "./users";
  * 6. The row INFRA-1196's architect asked over a paged tree read: "every decision of a paged
  *    issue is in its part, the header's count and the Spec column", on `seedPagedDecisions`,
  *    whose Conversation read pages before its answered question, the decision under it and a
- *    decision that waits. Its control is U's code at `776d9d85`, which draws the parts from
- *    Conversation's root. Its step (4) asserts that the decision that waits, past
+ *    decision that waits; the decision that settles the spec's open question stands on that
+ *    page. Its control is U's code at `776d9d85`, which draws the parts from Conversation's
+ *    root. Its step (2) asserts that, before Decisions is pressed, the header's count, the
+ *    Decisions filter's count and its to-review flag each read a number and "+", the flag
+ *    against a control of its own (`IssuePresets.tsx` with only the flag's "+" dropped). Every
+ *    value it expects is read from the server's raw reads or is what the seed wrote, never
+ *    from the page's own classifiers (`restatesAnswer`, `decisionNodeChanges`). Its step (4)
+ *    asserts that the decision that waits, past
  *    Conversation's first page, draws Keep and Change in the review list, that alice's Change
  *    on it anchors to the decision node's own document and block at `occurrence` 0, and that
  *    once the page has read again it reads "Changed by" alice among her own decisions, out of
@@ -250,6 +256,15 @@ async function waitingOnYou(page: Page): Promise<string | null> {
   return text.startsWith(PROPERTY_LABELS.waiting_on_you) ? text : null;
 }
 
+/** The words the Decisions control's to-review flag draws, its number and a "+" where the read
+ *  it is counted from names a next page, and null where the page draws no flag. Each caller
+ *  polls it, never once. */
+async function reviewFlagWords(page: Page): Promise<string | null> {
+  // Every caller polls this read, which asks again until the flag settles: one answer, one try.
+  const [words] = await reviewFlag(page).allTextContents();
+  return words === undefined ? null : words.replace(/\s+/g, " ").trim();
+}
+
 /** What the header's count draws for `waiting` things that wait on alice. */
 function waitingWords(waiting: number): string | null {
   return waiting === 0 ? null : `${PROPERTY_LABELS.waiting_on_you} (${waiting})`;
@@ -310,6 +325,10 @@ interface RowOneWanted {
   readonly kept: string | null;
   /** The rows each part holds, by the ids they carry. */
   readonly parts: Readonly<Record<DecisionsPart, readonly string[]>>;
+  /** The decision nodes the seed wrote that only restate a person's answer, by the ids their
+   *  rows would carry (INFRA-1196's decisions 513 and 521): the decision it wrote with `from_ask`
+   *  that shapes nothing the answered question did not shape. The page draws no row for each. */
+  readonly restating: readonly string[];
 }
 
 /** What the page sent of the decisions: reads of the decisions route, of a document's blocks, and
@@ -368,30 +387,51 @@ function decisionNames(
   return [idOf(node.id), node.id, ...(ask === undefined ? [] : [ask.id])];
 }
 
-/** The decisions of the tree read that wait for alice's review, as the header counts them: a
- *  decision node of this issue the read answers as waiting, not replaced, in the model's decision
- *  it carries (`decision`), that a `shaped` tie binds to a statement of this issue, and that no
- *  Change hangs under. */
-function decisionsWaitingOnAlice(answer: IssueTreeRead): number {
-  const nodes = new Map((answer.nodes ?? []).map((node) => [node.id, node]));
-  const changes = decisionNodeChanges(answer);
+/** Whether the read `answer` hangs a comment under decision node `node`, by the comment node's
+ *  `parent`: the Change the row sent on it. The rows' seeds write no other comment under a
+ *  decision (`seedWholeIssue`'s one anchored comment is on a statement's words), so a comment the
+ *  read hangs under a decision is a Change, and the expectation reads it off the raw read and
+ *  never through the page's own rule (`decisionNodeChanges`). */
+function hasCommentUnder(answer: IssueTreeRead, node: IssueTreeNode): boolean {
+  return (answer.nodes ?? []).some(
+    (one) => one.supertag === "comment" && one.parent?.id === node.id
+  );
+}
+
+/** Whether a `decided_by` tuple of `answer` names a person as who decided `node`: that person's
+ *  decision, as the page reads a `person` end (`tree-drafts.ts`' `deciderOf`), which waits for no
+ *  review (INFRA-1196's decision 516). */
+function decidedByAPerson(answer: IssueTreeRead, node: IssueTreeNode): boolean {
+  return (answer.tuples ?? []).some(
+    (tuple) =>
+      tuple.kind === "decided_by" && tuple.from.id === node.id && tuple.to.kind === "person"
+  );
+}
+
+/** The decisions of `answer` that wait for alice's review, as the header counts them and the
+ *  review list draws them (R35), read from the server's own members: each decision node of this
+ *  issue that the read answers as its own rather than as context, as waiting and not replaced, in
+ *  the model's decision it carries (`decision`), that no person decided (`decidedByAPerson`),
+ *  that the read hangs no comment under (`hasCommentUnder`: the Change a row sends), and that a
+ *  `shaped` tie binds to a statement of this issue: one of `ties` (`tiesToStatements`), read from
+ *  `answer` itself where it holds the statements, as the tree read does, and else from the Spec
+ *  view's read, as for the Decisions view's read, which holds none. */
+function decisionsWaitingOnAlice(
+  answer: IssueTreeRead,
+  ties: readonly { readonly from: IssueTreeNode }[]
+): IssueTreeNode[] {
+  const tied = new Set(ties.map(({ from }) => from.id));
   return (answer.nodes ?? []).filter(
     (node) =>
       node.supertag === "decision" &&
       node.issue === undefined &&
+      node.role !== "context" &&
       node.decision?.waiting_review === true &&
       node.decision.replaced !== true &&
-      !changes.has(node.id) &&
-      (answer.tuples ?? []).some((tuple) => {
-        const to = nodes.get(tuple.to.id);
-        return (
-          tuple.kind === "shaped" &&
-          tuple.from.id === node.id &&
-          to?.supertag === "requirement" &&
-          to.issue === undefined
-        );
-      })
-  ).length;
+      !hasCommentUnder(answer, node) &&
+      !decidedByAPerson(answer, node) &&
+      tied.has(node.id)
+  );
 }
 
 /** Each filter as the rows fixture (`fixtureSeed`) records it: the keys of its rows (`seedKeys`,
@@ -472,17 +512,18 @@ async function readRowOne(
     requirement: (block) => blockRowId(key, answer, "requirement", block),
   });
   // Each decision node of the Decisions view's read, but one that restates a person's answer
-  // (INFRA-1196's decision 513), which the view draws no row for, by the page's one rule
-  // (`restatesAnswer`) over that read.
+  // (INFRA-1196's decision 513), which the view draws no row for: the seed names it
+  // (`RowOneWanted.restating`), the decision it wrote with `from_ask` that shapes nothing the
+  // answered question did not shape. Each state word is the server's own members of the node
+  // (`reviewWordOf`), never the page's rule for what restates an answer.
   const view = await readTree(key, "decisions");
-  const viewNodes = view.nodes ?? [];
-  const lookup = lookupOf(view, reads);
+  const restating = new Set(wanted.restating);
   const states = Object.fromEntries(
-    viewNodes.flatMap((node) =>
+    (view.nodes ?? []).flatMap((node) =>
       node.supertag === "decision" &&
       node.issue === undefined &&
       node.role !== "context" &&
-      !restatesAnswer(node, lookup)
+      !restating.has(decisionRowId(node))
         ? [[decisionRowId(node), reviewWordOf(node)]]
         : []
     )
@@ -564,7 +605,7 @@ async function readRowOne(
     .poll(() => waitingOnYou(page), {
       message: "the header's count of what waits counts the decisions that wait for alice's review",
     })
-    .toBe(waitingWords(asks + decisionsWaitingOnAlice(answer)));
+    .toBe(waitingWords(asks + decisionsWaitingOnAlice(answer, ties).length));
 
   // (1), a second load: the Decisions view opened at its own address sends no request to the
   // decisions route either.
@@ -673,8 +714,10 @@ function rowOneSeed<S extends SeededIssue>(
  *  decision, `D(1)`, settles the answered ask (`from_ask`), which the tree places it under: it is
  *  the old decisions document's section that restates the person's answer, and the person's
  *  decision is the answered ask itself (INFRA-1196's decision 513), so the page draws no row for
- *  it, and it stands in no part, in no count and in no entry of the Spec column. On
- *  `seedReviewList` the parts are the ones the Decisions view's review-list row asserts. */
+ *  it, and it stands in no part, in no count and in no entry of the Spec column; the row names
+ *  it from what the seed wrote (`restating`), not from the page's rule. On `seedReviewList`,
+ *  which writes no `from_ask`, `restating` is empty and the parts are the ones the Decisions
+ *  view's review-list row asserts. */
 const ROW_ONE_SEEDS = [
   rowOneSeed("seedDecisionsFilter", seedDecisionsFilter, (seeded, names) => {
     const block = (index: number) => seeded.decisions[index] ?? "";
@@ -706,6 +749,7 @@ const ROW_ONE_SEEDS = [
         review: [D(5), D(0)],
         yours: [D(4), declined, names.ask(seeded.optionedAskId), answered],
       },
+      restating: [D(1)],
     };
   }),
   rowOneSeed("seedReviewList", seedReviewList, (seeded, names) => ({
@@ -718,6 +762,7 @@ const ROW_ONE_SEEDS = [
       review: [names.decision(seeded.tiedNewer), names.decision(seeded.tiedOlder)],
       yours: [],
     },
+    restating: [],
   })),
 ];
 
@@ -1615,49 +1660,9 @@ test("a decision another person made stands under Decided by others @owed", asyn
  *  names a next page: a number and "+" (part T's R15, by INFRA-1196's architect at 13:20Z). */
 const WAITING_SO_FAR = new RegExp(`^${PROPERTY_LABELS.waiting_on_you} \\(\\d+\\+\\)$`);
 
-/** A filter's count while the read it is counted from names a next page: a number and "+". */
+/** A filter's count, and the Decisions control's to-review flag, while the read it is counted
+ *  from names a next page: a number and "+". */
 const COUNTED_SO_FAR = /^\d+\+$/;
-
-/** Whether a `decided_by` tuple of `answer` names a person as who decided `node`: that person's
- *  decision, as the page reads a `person` end (`tree-drafts.ts`' `deciderOf`), which waits for no
- *  review (INFRA-1196's decision 516). */
-function decidedByAPerson(answer: IssueTreeRead, node: IssueTreeNode): boolean {
-  return (answer.tuples ?? []).some(
-    (tuple) =>
-      tuple.kind === "decided_by" && tuple.from.id === node.id && tuple.to.kind === "person"
-  );
-}
-
-/**
- * The decisions of the Decisions view's read `view` that wait for alice's review, as the header
- * counts them and the review list draws them (R35): each decision node of this issue that is no
- * restatement of a person's answer (`restatesAnswer`), that the read answers as waiting and not
- * replaced, that no person decided (`decidedByAPerson`) and no Change hangs under
- * (`decisionNodeChanges`), and that a `shaped` tie binds to a statement of this issue. The
- * Decisions view's read holds no statement, so the ties are read from the Spec view's read
- * `spec`, which holds each decision whose tie names one of its statements (`tiesToStatements`).
- */
-function waitingInView(
-  view: IssueTreeRead,
-  spec: IssueTreeRead,
-  reads: TreeIdReads
-): IssueTreeNode[] {
-  const tied = new Set(tiesToStatements(spec, reads).map(({ from }) => from.id));
-  const lookup = lookupOf(view, reads);
-  const changes = decisionNodeChanges(view);
-  return (view.nodes ?? []).filter(
-    (node) =>
-      node.supertag === "decision" &&
-      node.issue === undefined &&
-      node.role !== "context" &&
-      node.decision?.waiting_review === true &&
-      node.decision.replaced !== true &&
-      !restatesAnswer(node, lookup) &&
-      !changes.has(node.id) &&
-      !decidedByAPerson(view, node) &&
-      tied.has(node.id)
-  );
-}
 
 /** One entry of the Decisions view: its node in the view's read, the id its row carries, and the
  *  part it stands in. */
@@ -1670,17 +1675,18 @@ interface ViewEntry {
 /**
  * Each decision and each answered question of the Decisions view's read `view`, with the part it
  * stands in by R2's rules: a decision that waits for alice's review in the review list
- * (`waitingInView`); an agent's decision no tie binds to a statement, a replaced one among them,
- * at the foot; and a question a person answered, which is that person's decision, under Your
- * decisions where alice answered it and under Decided by others where another person did. A
- * decision that restates a person's answer is no entry (`restatesAnswer`). A decision in none of
- * those parts - one a person kept, changed or decided - is one this row reads no part for, and it
- * fails the row, named.
+ * (`decisionsWaitingOnAlice`, its ties read from the Spec view's read `spec`, which holds each
+ * decision whose tie names one of its statements, as `view` holds no statement); an agent's
+ * decision no tie binds to a statement, a replaced one among them, at the foot; and a question a
+ * person answered, which is that person's decision, under Your decisions where alice answered it
+ * and under Decided by others where another person did. A decision in none of those parts - one
+ * a person kept, changed or decided - is one this row reads no part for, and it fails the row,
+ * named.
  */
 function viewEntries(view: IssueTreeRead, spec: IssueTreeRead, reads: TreeIdReads): ViewEntry[] {
-  const waiting = new Set(waitingInView(view, spec, reads).map((node) => node.id));
-  const tied = new Set(tiesToStatements(spec, reads).map(({ from }) => from.id));
-  const lookup = lookupOf(view, reads);
+  const ties = tiesToStatements(spec, reads);
+  const waiting = new Set(decisionsWaitingOnAlice(view, ties).map((node) => node.id));
+  const tied = new Set(ties.map(({ from }) => from.id));
   return (view.nodes ?? []).flatMap((node): ViewEntry[] => {
     if (node.issue !== undefined || node.role === "context") return [];
     if (node.supertag === "ask") {
@@ -1689,7 +1695,7 @@ function viewEntries(view: IssueTreeRead, spec: IssueTreeRead, reads: TreeIdRead
       const part = ask.answer?.user === "alice" ? "yours" : "others";
       return [{ id: askRowId(reads, ask.id), node, part }];
     }
-    if (node.supertag !== "decision" || restatesAnswer(node, lookup)) return [];
+    if (node.supertag !== "decision") return [];
     const id = decisionRowId(node);
     if (waiting.has(node.id)) return [{ id, node, part: "review" }];
     if (!tied.has(node.id) && !decidedByAPerson(view, node)) return [{ id, node, part: "agents" }];
@@ -1705,19 +1711,28 @@ function viewEntries(view: IssueTreeRead, spec: IssueTreeRead, reads: TreeIdRead
 // nodes landed, since the seed's paging is measured only where a browser runs the row. The read
 // answers the issue's conversation first, in the order it was written, so the open questions the
 // seed writes before the answered one fill the first page, and every block of the spec, each
-// statement and each decision, stands past it: the header's count before Decisions counts the
-// open questions, which wait on alice, and reads "+" for the pages not read yet. The Decisions
-// view's read holds those questions on one page, so once it has answered the header counts them
-// with every decision that waits, with no "+". Every value the row expects is read from the
-// reads - the Decisions view's, the Spec view's, the issue read and the asks read - and none from
-// the seed's constants. Its control is U's code at 776d9d85, which draws the parts from
-// Conversation's root. Its step (4), on the decision past the first page that waits for review,
-// has two controls of its own: `DecisionActions.tsx` as at cc5b97fe, which finds its decision in
-// the outline read alone, which holds no node of that decision, so the row draws neither Keep
-// nor Change and the step's first assertion fails; and the Changes read from Conversation's read
-// alone (`decisions-entries.ts`' `changesOf` and `waiting.ts`' `waitingOnReader` as at cc5b97fe),
-// which holds no Change on that decision, so it stays in the review list and the step's "Changed
-// by" assertion fails.
+// statement and each decision but the one under the open question (`from_ask`, which stands it
+// right after that question), stands past it. So the header's count before Decisions counts the
+// open questions, which wait on alice, and that decision, which waits for her review, and reads
+// "+" for the pages not read yet; so does the Decisions filter's count, and so does its
+// "to review" flag, which the page draws from that decision alone while only Conversation's
+// first page is read. The Decisions view's read holds the questions on one page, so once it has
+// answered the header counts them with every decision that waits, with no "+". Every value the
+// row expects is read from the server's raw reads - a node's `decision` members, its `decided_by`
+// tuples and the comments the read hangs under it in the Decisions view's read, the `shaped`
+// ties of the Spec view's, the issue read and the asks read; it calls none of the page's own
+// classifiers (`restatesAnswer`, `decisionNodeChanges`, `inReviewList`), so a bug in one moves
+// the page and not the row's expectation. Its control is U's code at 776d9d85, which draws the
+// parts from Conversation's root. Step (2)'s poll before Decisions is pressed has a control of
+// its own: `IssuePresets.tsx`' `Signal` with only the flag's "+" dropped, which leaves the
+// header's count and the filter's count with their "+", so the poll fails on the flag alone. Its
+// step (4), on the decision past the first page that waits for review, has two controls of its
+// own: `DecisionActions.tsx` as at cc5b97fe, which finds its decision in the outline read alone,
+// which holds no node of that decision, so the row draws neither Keep nor Change and the step's
+// first assertion fails; and the Changes read from Conversation's read alone
+// (`decisions-entries.ts`' `changesOf` and `waiting.ts`' `waitingOnReader` as at cc5b97fe), which
+// holds no Change on that decision, so it stays in the review list and the step's "Changed by"
+// assertion fails.
 // SLOW(>=2s): a seeded issue whose spec holds twenty open questions of some 10,000 characters
 // each, Conversation's read of it read page by page, its Decisions and Spec views each pressed and
 // read until they hold still, and a Change waited on until the page's reads redraw the Decisions
@@ -1765,9 +1780,9 @@ test("every decision of a paged issue is in its part, the header's count and the
     const firstNodes = first.nodes ?? [];
     const wholeNodes = conversation.whole.nodes ?? [];
     const pageQuestions = firstNodes.filter((node) => seeded.pageQuestions.includes(node.id));
-    const firstDecision = wholeNodes.findIndex(
-      (node) => node.supertag === "decision" && (node.block_id ?? node.id) === seeded.firstBlock
-    );
+    const isFirstDecision = (node: IssueTreeNode) =>
+      node.supertag === "decision" && (node.block_id ?? node.id) === seeded.firstBlock;
+    const firstDecision = wholeNodes.findIndex(isFirstDecision);
     console.log(
       `PAGED-ROW ${key}: Conversation's first page holds ${firstNodes.length} nodes, ` +
         `${pageQuestions.length} of the ${seeded.pageQuestions.length} long open questions ` +
@@ -1785,23 +1800,31 @@ test("every decision of a paged issue is in its part, the header's count and the
       },
       "the seed did not page: Conversation's first page names a cursor and holds none of the three nodes the read holds past it"
     ).toEqual({ cursor: true, missing: [], onTheFirstPage: [] });
+    expect(
+      firstNodes.some(isFirstDecision),
+      "the seed's first decision, which settles the open question and waits for review, is on Conversation's first page, so the to-review flag is drawn before Decisions is pressed"
+    ).toBe(true);
 
-    // (2), before Decisions is pressed: the header's count of what waits for alice is counted
-    // from Conversation's read, which names a next page, so it reads a number and "+", and so
-    // does the Decisions filter's own count (part T's R15).
+    // (2), before Decisions is pressed: the header's count of what waits for alice, the Decisions
+    // filter's own count and its to-review flag are counted from Conversation's read, which names
+    // a next page, so each reads a number and "+" (part T's R15). The flag is drawn because the
+    // decision the seed stood under the open question (`seeded.firstBlock`) is on that page and
+    // waits for review.
     await expect
       .poll(
         async () => ({
           decisions: ((await presetCount(page, "decisions").textContent()) ?? "").trim(),
+          flag: await reviewFlagWords(page),
           header: await waitingOnYou(page),
         }),
         {
           message:
-            "while Conversation's read names a next page, the header's count and the Decisions filter's count each read a number and +",
+            "while Conversation's read names a next page, the header's count, the Decisions filter's count and its to-review flag each read a number and +",
         }
       )
       .toEqual({
         decisions: expect.stringMatching(COUNTED_SO_FAR),
+        flag: expect.stringMatching(COUNTED_SO_FAR),
         header: expect.stringMatching(WAITING_SO_FAR),
       });
 
@@ -1816,10 +1839,11 @@ test("every decision of a paged issue is in its part, the header's count and the
       readTree(key, "spec"),
     ]);
     owedUnless(decisionNodesGate(whole, held));
+    const specTies = tiesToStatements(spec, reads);
     /** What waits for alice as the header counts it over `answer`, a read of the Decisions view:
      *  each question that waits on her and each decision of `answer` that waits for her review. */
     const waitingOnAlice = (answer: IssueTreeRead) =>
-      asksWaitingOnAlice(reads.issue) + waitingInView(answer, spec, reads).length;
+      asksWaitingOnAlice(reads.issue) + decisionsWaitingOnAlice(answer, specTies).length;
     const entries = viewEntries(view, spec, reads);
     expect(
       paged.flatMap(({ name, of }) => (entries.some(({ node }) => of(node)) ? [] : [name])),

@@ -37,6 +37,7 @@ import {
 import { expectOpeningLanded, focusThePage } from "./issue-page-g";
 import { withIssuePage } from "./issue-page-option";
 import { expect, type Locator, type Page, type Route, test } from "./test";
+import { expectLoadSettled, watchApiRequests } from "./traffic";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
@@ -597,18 +598,25 @@ test("the view row's controls are toggles with an address each, one line at ever
       ["c", "conversation"],
     ] as const) {
       await focusThePage(page);
+      const reads = watchApiRequests(page);
       await page.keyboard.press("t");
       await page.keyboard.press(second);
       await expect(page, `t ${second} did not open ${PRESET_NAMES[view]}`).toHaveURL(
         addressOf(key, view)
       );
       await expect(presetToggle(page, view)).toHaveAttribute("aria-pressed", "true");
+      // The view the chord opened reads what it draws and then puts the focus on a row of its
+      // own, after the address has changed; the next `focusThePage` leaves the focus for the page
+      // once that is done, or the landing takes it back.
+      await expectLoadSettled(reads);
     }
     // A chord on the view that is on turns it off: `t s` twice comes back to Conversation.
     await focusThePage(page);
+    const specReads = watchApiRequests(page);
     await page.keyboard.press("t");
     await page.keyboard.press("s");
     await expect(page).toHaveURL(addressOf(key, "spec"));
+    await expectLoadSettled(specReads);
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("s");

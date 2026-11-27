@@ -65,7 +65,7 @@ func (s *server) resolveAnchor(ctx context.Context, tx pgx.Tx, owner owner, inpu
 	// An issue's tree artifact is read as a document (R8): its own fragment of the room holds the
 	// blocks written into the issue rather than into a document, and a comment on one of them
 	// stands under that block (R31).
-	if artifact.Kind != "doc" && artifact.Kind != "tree" {
+	if !readsAsDocument(artifact) {
 		return nil, "", nil, errorf(http.StatusBadRequest, "NOT_DOCUMENT", "anchors require a document artifact")
 	}
 

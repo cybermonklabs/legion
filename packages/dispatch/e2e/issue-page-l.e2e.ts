@@ -1707,12 +1707,12 @@ async function commentOnStatement(
     `the box's placeholder on ${one.what} is not the statement's own`
   ).toHaveAttribute("placeholder", CONTROL_LABELS.statement_placeholder);
   const writes = watchWrites(page, "POST", `/api/v1/issues/${seeded.key}/comments`);
-  // The page's read of the issue's comments that holds the new one: the read the outline and each
-  // view draw a comment from.
+  // The page's tree read that holds the new comment: the read the outline and each view draw a
+  // comment from.
   const read = page.waitForResponse(
     async (response) =>
       response.request().method() === "GET" &&
-      new URL(response.url()).pathname === `/api/v1/issues/${seeded.key}/comments` &&
+      new URL(response.url()).pathname === `/api/v1/issues/${seeded.key}/tree` &&
       (await response.text().catch(() => "")).includes(one.words)
   );
   await page.keyboard.type(one.words);

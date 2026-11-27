@@ -3,7 +3,7 @@
 // issues it waits on (needs, which the request may also name blocked_by), the issue of its project
 // it repeats (duplicate_of) and the ask, comment or message it was filed out of (filed_from). Each
 // is a tuple out of the issue's node, which the write appends in its own transaction, caused by
-// the issue's own event, once that event is appended (stateIssueRelations); issues.parent_key and
+// the issue's own event, once that event is appended (queueIssueRelations); issues.parent_key and
 // the issue_links rows, which project child_of and needs, are written before that event in the
 // same transaction. No row projects duplicate_of or filed_from, so the issue read reads both off
 // the store (issueDuplicateOfColumn, issueFiledFromColumn).
@@ -81,7 +81,8 @@ func resolveIssueWaits(needs, blockedBy *[]string) (issueWaits, bool, error) {
 	if needs == nil {
 		waits.member, waits.code, named = blockedByMember, codeBlockedByInput, blockedBy
 	}
-	if needs != nil && blockedBy != nil && !slices.Equal(onceEach(*needs), onceEach(*blockedBy)) {
+	targets := onceEach(*named)
+	if needs != nil && blockedBy != nil && !slices.Equal(targets, onceEach(*blockedBy)) {
 		return issueWaits{}, true, errorf(http.StatusBadRequest, codeNeedsInput,
 			"needs [%s] and blocked_by [%s] name different issues: a request that names both names the same issues in each",
 			strings.Join(*needs, ", "), strings.Join(*blockedBy, ", "))
@@ -89,7 +90,7 @@ func resolveIssueWaits(needs, blockedBy *[]string) (issueWaits, bool, error) {
 	if len(*named) > contracts.MaxIssueBlockers {
 		return issueWaits{}, true, countExceededError(waits.code, waits.member, len(*named), contracts.MaxIssueBlockers)
 	}
-	waits.targets = onceEach(*named)
+	waits.targets = targets
 	return waits, true, nil
 }
 
@@ -314,7 +315,7 @@ func readFiledFromItem(ctx context.Context, q queryer, project string, ref text.
 		// comments never reads it (graphcensus' readCommentRows): no node, no fact and no stamp,
 		// and the old comments arm answers both of its edges. The issue's filed_from still names
 		// it, as it names any item.
-		anchor, owner := derefString(row.anchor), derefString(row.owner)
+		anchor, owner := deref(row.anchor), deref(row.owner)
 		if !graphstore.AddressFits(anchor) || !graphstore.AddressFits(owner) {
 			return item, true, nil
 		}
@@ -357,13 +358,6 @@ func filedFromCommentEvent(ctx context.Context, q queryer, row filedFromRow, id 
 		return 0, fmt.Errorf("read the event that stored the comment filed_from names: %w", err)
 	}
 	return event, nil
-}
-
-func derefString(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return *value
 }
 
 // stateFiledFromNode states the node of the item a write's filed_from names where the store held
@@ -447,11 +441,7 @@ func (f issueRelationFacts) issue() string {
 
 // heads is the nodes the facts state relations out of, whose head rows they move.
 func (f issueRelationFacts) heads() []graphstore.NodeKey {
-	keys := make([]graphstore.NodeKey, 0, len(f.claims)+len(f.tuples))
-	for _, claim := range f.claims {
-		keys = append(keys, graphstore.NodeKey{Kind: claim.FromKind, ID: claim.FromID})
-	}
-	return append(keys, graphstore.HeadsOf(nil, f.tuples)...)
+	return append(graphstore.HeadsOfClaims(f.claims), graphstore.HeadsOf(nil, f.tuples)...)
 }
 
 // strandedWords answers the retraction, dated at, of each part_of out of issue child's node to a
@@ -533,13 +523,13 @@ func conversationItemIssue(ctx context.Context, q queryer, kind, id string) (str
 	}
 	var issue *string
 	err := q.QueryRow(ctx, statement, id).Scan(&issue)
-	if errors.Is(err, pgx.ErrNoRows) || issue == nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("read the issue the %s is on: %w", kind, err)
 	}
-	return *issue, nil
+	return deref(issue), nil
 }
 
 // issueDuplicateOfColumn is the key the duplicate_of tuple of the issue aliased `i` names now, null

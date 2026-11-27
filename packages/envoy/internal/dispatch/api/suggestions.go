@@ -385,9 +385,7 @@ func (s *server) runRelatedCheck(
 		neighbourhood := s.startIssueNeighbourhood(bounded, input.source)
 		// Collect even when the text search returns early. This runs before cancel and
 		// waits only on the deadline both reads already share.
-		defer func() {
-			neighbourhood.fill(bounded, allowance, suggestions)
-		}()
+		defer neighbourhood.fill(bounded, allowance, suggestions)
 	}
 	notMade := func(reason, text string) (*model.Suggestions, relatedRecord) {
 		suggestions.Outcome, suggestions.Missing = relatedNotMade, text

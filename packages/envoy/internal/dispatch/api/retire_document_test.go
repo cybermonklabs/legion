@@ -270,16 +270,12 @@ func TestACommentsMarkOnARetiredDocumentIsRefusedAsItsEditIs(t *testing.T) {
 // written. A comment's mark on the spec, the room's document that stands, lands.
 func TestACommentsMarkOnARetiredDocumentOfAnIssueRoomIsRefusedAndTheSpecsLands(t *testing.T) {
 	handler, database := blockIndexHandler(t)
-	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", "The spec's words.\n")
 	verification := uploadIssueDocument(t, handler, issue.Key, "verification.md", "The check the retirement keeps.\n")
 	var rooms []string
 	for _, document := range []string{issue.PrimaryArtifactID, verification.ID} {
-		var room string
-		if err := database.Pool.QueryRow(ctx, `select room::text from document_rooms where artifact_id = $1`, document).Scan(&room); err != nil {
-			t.Fatalf("read the room of %s: %v, want the issue born converted with %s a fragment of its room", document, err, document)
-		}
+		room, _ := documentRoomOf(t, database.Pool, document)
 		rooms = append(rooms, room)
 	}
 	if rooms[0] != rooms[1] {

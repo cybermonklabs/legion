@@ -1,6 +1,6 @@
 package api
 
-//ci:builds packages/envoy ./cmd/dispatch blockTypeSupertagBoot builds envoy-dispatch, which TestTheTupleArmReadsABlocksTypeFromItsNode boots over four databases for the boot step of this issue's spec R26
+//ci:builds packages/envoy ./cmd/dispatch blockTypeSupertagBoot builds envoy-dispatch, which TestTheTupleArmReadsABlocksTypeFromItsNode boots over four databases for the boot step of R26 of the issue-tree spec
 //ci:reads packages/envoy/internal/dispatch/**/*.go !**/*_test.go blockTypeSupertagScan walks internal/dispatch and reads every non-test file as text
 
 import (
@@ -248,13 +248,11 @@ func blockTypeSupertagWaitStep(t *testing.T, process *cmdtest.Process) {
 }
 
 // blockTypeSupertagAnnounce writes the announcement of another build than the one the test boots,
-// listing tupleKinds, which is what the step reads of the fleet before it (this issue's spec R26).
+// listing tupleKinds, which is what the step reads of the fleet before it (R26 of the issue-tree
+// spec).
 func blockTypeSupertagAnnounce(t *testing.T, database *store.Store, tupleKinds []string) {
 	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(),
-		`insert into server_build_announcements (commit, tuple_kinds) values ($1, $2)`, blockTypeSupertagEarlier, tupleKinds); err != nil {
-		t.Fatalf("announce another build listing %v: %v", tupleKinds, err)
-	}
+	rollbackAnnounce(t, database, blockTypeSupertagEarlier, tupleKinds)
 }
 
 // blockTypeSupertagSetRow sets the type of the document_blocks row of the node address to typ,
@@ -335,7 +333,7 @@ func blockTypeSupertagPlan(t *testing.T, database *store.Store, name, types, arg
 }
 
 // The tuple arm of graph_edges reads a block's type from the block's node, where it read it from
-// document_blocks.type (this issue's spec R26): block_pointer_targets reads the type of a
+// document_blocks.type (R26 of the issue-tree spec): block_pointer_targets reads the type of a
 // pointer's source and block_node_listed the type of its target, and a step of every boot moves
 // both onto the node's supertag in four databases, each as a deployment meets it.
 func TestTheTupleArmReadsABlocksTypeFromItsNode(t *testing.T) {
@@ -387,12 +385,10 @@ func TestTheTupleArmReadsABlocksTypeFromItsNode(t *testing.T) {
 			if blockTypeSupertagReadsRow(t, database, name) {
 				t.Errorf("%s reads document_blocks after the boot step:\n%s\nserver log:\n%s", name, blockTypeSupertagFunction(t, database, name), boot)
 			}
-			t.Logf("%s after the boot step reads document_blocks: %t\n%s", name, blockTypeSupertagReadsRow(t, database, name), blockTypeSupertagFunction(t, database, name))
 		}
 		if !blockTypeSupertagReadsRow(t, database, "block_ref_listed") {
 			t.Errorf("block_ref_listed does not name document_blocks, which it keeps the row for:\n%s", blockTypeSupertagFunction(t, database, "block_ref_listed"))
 		}
-		t.Logf("block_ref_listed reads document_blocks: %t\n%s", blockTypeSupertagReadsRow(t, database, "block_ref_listed"), blockTypeSupertagFunction(t, database, "block_ref_listed"))
 
 		handler, _, deps := newTestServer(t, testServerOptions{store: database})
 		issue := blockTypeSupertagSeed(t, handler, database, deps, "TYPEB")
@@ -530,7 +526,7 @@ func blockTypeSupertagScan(t *testing.T, name string, source []byte) []string {
 }
 
 // blockTypeSupertagRequireNoBlockRead proves that no read selects block nodes by the supertag
-// block (this issue's spec R26): every read that finds block nodes selects them by their kind,
+// block (R26 of the issue-tree spec): every read that finds block nodes selects them by their kind,
 // refs.BlockNodeKind. It scans the Go source of internal/dispatch for a read that compares a
 // supertag with block, through refs.BlockSupertag or the literal, and finds none; the same scan
 // over a copy of one file with such a read planted finds it, and both readings go into the log.

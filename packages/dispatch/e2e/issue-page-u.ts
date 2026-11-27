@@ -111,7 +111,8 @@ import type { ApiRequests } from "./traffic";
  *   its decisions: the read answers the issue's conversation first, in the order it was written,
  *   and twenty open questions of its spec, written before the question alice answers, weigh more
  *   than a page of the read holds, so that question, the decision under it and a decision that
- *   waits stand past that page.
+ *   waits stand past that page, and the decision that settles the spec's open question, which
+ *   stands under that question, is on it.
  */
 
 /** The nodes the read of issue `key`'s view `view` answers, every page its cursor names. */
@@ -681,9 +682,9 @@ export async function writeFootDecisions(key: string): Promise<string[]> {
 }
 
 /** The decisions `seedPagedDecisions` writes in the spec beside its six statements and its open
- *  questions, by block id: the agent's decision tied to the first statement, the agent's decision
- *  tied to the second statement, and the agent's decision under the answered question, tied to
- *  the sixth. */
+ *  questions, by block id: the agent's decision tied to the first statement, which settles the
+ *  spec's open question (`from_ask`), the agent's decision tied to the second statement, and the
+ *  agent's decision under the answered question, tied to the sixth. */
 const PAGED_BLOCKS = {
   first: "d-first-statement",
   underAsk: "d-under-question",
@@ -719,9 +720,11 @@ export interface PagedDecisionsSeed {
    *  fifth statements (`answeredQuestionBlock`), a person's decision past Conversation's first
    *  page. */
   readonly answeredAskId: string;
-  /** The agent's decision tied to the first statement, which waits for alice's review, written
-   *  before the answered question and past Conversation's first page as every block of the spec
-   *  is, as row 6's `PAGED-ROW` line says. */
+  /** The agent's decision tied to the first statement that settles the spec's open question
+   *  (`from_ask`, a question nobody answered, so it restates no answer), which waits for alice's
+   *  review. Its `from_ask` stands it under that question, conversation of the issue made before
+   *  every other question, so it is on Conversation's first page, where the page draws the
+   *  Decisions control's to-review flag from it before any view is pressed. */
   readonly firstBlock: string;
   readonly key: string;
   /** The open questions written before the answered one (`PAGE_QUESTIONS`), by ask id, which
@@ -766,13 +769,14 @@ async function awaitTreeBlocks(key: string, blocks: readonly string[]): Promise<
 /**
  * An issue whose Conversation read pages before its decisions, for row 6. The spec is alice's:
  * six statements and an open question, which waits on her as the issue's assignee
- * (`specDocument`). The planner then writes `PAGE_QUESTIONS` open questions of
- * `PAGE_QUESTION_WORDS`, which wait on her too, and the seed waits until each is an ask
- * (`awaitBlockAsks`). Only then does the planner write a decision tied to the first statement and
- * the question whose answer shaped the third to the fifth statements (`answeredQuestionBlock`),
- * which alice answers (`PAGED_ANSWER`); then a decision tied to the second statement, and a
- * decision under the answered question (`from_ask`) tied to the sixth, which the question did
- * not shape.
+ * (`specDocument`) and which the seed waits until it is an ask (`awaitBlockAsk`), so it was made
+ * before every question written after it. The planner then writes `PAGE_QUESTIONS` open
+ * questions of `PAGE_QUESTION_WORDS`, which wait on her too, and the seed waits until each is an
+ * ask (`awaitBlockAsks`). Only then does the planner write a decision tied to the first statement
+ * that settles the open question (`from_ask`) and the question whose answer shaped the third to
+ * the fifth statements (`answeredQuestionBlock`), which alice answers (`PAGED_ANSWER`); then a
+ * decision tied to the second statement, and a decision under the answered question
+ * (`from_ask`) tied to the sixth, which the question did not shape.
  *
  * Why the answered question, the decision under it and the second decision fall past the first
  * page of Conversation's read: the read walks each node before its children, and a node's
@@ -783,8 +787,11 @@ async function awaitTreeBlocks(key: string, blocks: readonly string[]): Promise<
  * blocks, the first its question (`refs.AskParts`, `issue_tree_kinds.go`' `kindOrder`), so each
  * open question's words stand there twice, some 140 KB a question on the page's read and some
  * 2.8 MB for the twenty, past the 2,000,000 bytes a page holds (`issueTreePageBytes`): the page
- * ends among them. The decisions are blocks of the spec, after the asks. The Decisions view takes
- * an ask's own node and no block of it (`docs/query_record.go`' `decisionsTakes`), so it holds
+ * ends among them. The decisions are blocks of the spec, after the asks, but for the first: its
+ * `from_ask` stands it under the open question, the first of the asks, so it is on the first page
+ * and makes the Decisions control draw its to-review flag before any view is pressed. The
+ * Decisions view takes an ask's own node and no block of it (`docs/query_record.go`'
+ * `decisionsTakes`), so it holds
  * each question's words once, some 1.4 MB for the twenty on the page's read, and answers one
  * page, as the Spec view does, which takes no ask (`graphstore.QueryTakes`). Answers once the
  * tree read holds a node of each decision written (`awaitTreeBlocks`).
@@ -800,6 +807,10 @@ export async function seedPagedDecisions(): Promise<PagedDecisionsSeed> {
   const { key } = issue;
   const spec = issue.primary_artifact_id ?? "";
   await patchIssue(key, { assignee: "alice" });
+  // The spec's own open question is an ask before any question of the first page is written, so
+  // it was made first and stands first among the asks of Conversation's read.
+  const openAskId = await awaitBlockAsk(key, OPEN_QUESTION_BLOCK_ID);
+  const openAsk = `dispatch://${key}/ask/${openAskId}`;
   const ref = (index: number) => specBlockRef(key, requirementBlockId(index));
   const questionBlocks = Array.from(
     { length: PAGE_QUESTIONS },
@@ -831,8 +842,8 @@ export async function seedPagedDecisions(): Promise<PagedDecisionsSeed> {
     pagedDecision(
       PAGED_BLOCKS.first,
       "Draw the first statement first",
-      `shaped="${ref(1)}"`,
-      `Shapes ${ref(1)}.`
+      `shaped="${ref(1)}" from_ask="${openAsk}"`,
+      `Decided in ${openAsk}. Shapes ${ref(1)}.`
     ),
     "## Past the first page",
     answeredQuestionBlock(key),
@@ -864,7 +875,6 @@ export async function seedPagedDecisions(): Promise<PagedDecisionsSeed> {
     { ops: [{ after: "end", markdown: `${afterTheAnswer.join("\n\n")}\n`, op: "insert" }] },
     asPlanner
   );
-  await awaitBlockAsk(key, OPEN_QUESTION_BLOCK_ID);
   await awaitTreeBlocks(key, Object.values(PAGED_BLOCKS));
   return {
     answeredAskId,

@@ -177,7 +177,7 @@ func (s *server) referenceTargets(r *http.Request, who model.Actor, trees *displ
 // resolveBlockTargets writes, in place, the node each document block of named resolves to for
 // who: the far end of its address's moved_to tuples first, then the same block in its document's
 // room, then the address itself (refs.ReadableFarEnds, block_moved_to), as every reader of a
-// reference resolves one (T17 of this branch's plan). So a reference to a block of a document
+// reference resolves one (graphstore.MovedTo). So a reference to a block of a document
 // converted into its issue's room, written at the document's own address, names the block the
 // room's index keeps under the room's tree, and its name and its text are read there. A block who
 // may not see is reached through no address: the statement binds the block predicate for who, so
@@ -358,7 +358,7 @@ func (s *server) blockTrees(ctx context.Context, who model.Actor, answers []mode
 // opens the typed block included.
 //
 // In the markdown a document stores, which gives every typed block its id, the cut reads back as
-// a rendering of the block's content does (blockContent), and it is the same bytes except in
+// a rendering of the block's content does, and it is the same bytes except in
 // lines that read as nothing or as the same text: an escape that keeps a line from closing the
 // block, the blank line of an empty code block, the blank lines a rendering writes for the empty
 // paragraph an ask holds ahead of a list. One shape reads otherwise. In a footnote definition, a

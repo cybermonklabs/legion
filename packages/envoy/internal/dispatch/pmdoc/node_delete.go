@@ -39,18 +39,27 @@ func (d ValidDocument) DeleteNodeText(taken map[string]bool) (*Node, error) {
 
 // deleteTakenText takes the text of each block of taken out of parent's content, in place, at
 // every depth, lifting out what each holds that the delete does not take (liftedText), and reports
-// whether it changed parent. A block it keeps whose content it changed is held to keptText.
+// whether it changed parent. A block it keeps whose content it changed is held to keptText. It
+// builds parent's new content only from the first child it changes, so a parent it leaves as it
+// was costs no copy of its content.
 func deleteTakenText(parent *Node, taken map[string]bool) (bool, error) {
+	var children []*Node
 	changed := false
-	children := make([]*Node, 0, len(parent.Children))
-	inList := parent.Type == "bullet_list" || parent.Type == "ordered_list"
-	for _, child := range parent.Children {
+	change := func(index int) {
+		if !changed {
+			changed = true
+			children = append(make([]*Node, 0, len(parent.Children)), parent.Children[:index]...)
+		}
+	}
+	inList := isList(parent)
+	for index, child := range parent.Children {
 		if isInlineNodeType(child.Type) {
-			children = append(children, child)
+			if changed {
+				children = append(children, child)
+			}
 			continue
 		}
-		if id, _ := child.Attrs[BlockIDAttr].(string); id != "" && taken[id] {
-			changed = true
+		if id := blockIDOf(child); id != "" && taken[id] {
 			lifted, err := liftedText(child, taken)
 			if err != nil {
 				return false, err
@@ -58,6 +67,7 @@ func deleteTakenText(parent *Node, taken map[string]bool) (bool, error) {
 			if inList {
 				lifted = asListItems(lifted)
 			}
+			change(index)
 			children = append(children, lifted...)
 			continue
 		}
@@ -65,8 +75,10 @@ func deleteTakenText(parent *Node, taken map[string]bool) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		changed = changed || moved
-		if kept {
+		if moved {
+			change(index)
+		}
+		if kept && changed {
 			children = append(children, child)
 		}
 	}
@@ -87,7 +99,7 @@ func liftedText(block *Node, taken map[string]bool) ([]*Node, error) {
 		if isInlineNodeType(child.Type) {
 			continue
 		}
-		if id, _ := child.Attrs[BlockIDAttr].(string); id != "" && taken[id] {
+		if id := blockIDOf(child); id != "" && taken[id] {
 			held, err := liftedText(child, taken)
 			if err != nil {
 				return nil, err
@@ -103,7 +115,7 @@ func liftedText(block *Node, taken map[string]bool) ([]*Node, error) {
 			lifted = append(lifted, child)
 		}
 	}
-	if len(lifted) > 0 && (block.Type == "bullet_list" || block.Type == "ordered_list") {
+	if len(lifted) > 0 && isList(block) {
 		return []*Node{{Type: block.Type, Attrs: listAttrs(block), Children: asListItems(lifted)}}, nil
 	}
 	return lifted, nil

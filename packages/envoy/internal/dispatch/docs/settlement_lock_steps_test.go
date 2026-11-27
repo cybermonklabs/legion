@@ -41,7 +41,7 @@ import (
 //     writes no version: the copy's copied_from, stated as a claim at the sentinel (claimCopies);
 //   - a settlement that versions an ask block whose question a person emptied: the block index, the
 //     artifact.version and what the index stated, the block.invalid that flags the block, and the
-//     reason on the ask's node under the version's event (stateInvalidReasons);
+//     reason on the ask's node under the version's event (asks.PlanInvalidReasons);
 //   - a settlement that versions a decision a session wrote into the live document: the block
 //     index's nodes with the node of the session that wrote it in one statement (the typed-node
 //     pass planned into the block index, refs.PlanBlocks), its rows, and the decision's tie rows,
@@ -249,14 +249,14 @@ func (r *docsWriterRig) settledCopy(t *testing.T, ctx context.Context) docsWrite
 // settlement, a person left with an empty question: the block fails the strict read, the
 // settlement writes its `invalid` attribute into the live tree (block.invalid) and versions the
 // document, and states the reason on the ask's node under the version's event
-// (stateInvalidReasons). The block index's node and row, the version's event and its tuples are
+// (asks.PlanInvalidReasons). The block index's node and row, the version's event and its tuples are
 // the first writes of their tables, so each is held as its table; the block.invalid and the
 // reason come after a write of theirs and are held by their gates.
 func (r *docsWriterRig) settledInvalidAsk() docsWriter {
 	// ask is the ask whose block the run under way empties, which its gate names.
 	var ask string
 	return docsWriter{
-		name: "stateInvalidReasons",
+		name: "PlanInvalidReasons",
 		steps: []docsStep{
 			r.ownerStep(), settlementFenceStep(), docsBlockNodesStep(),
 			docsBlockRowsAt("delete from document_blocks"),
@@ -279,7 +279,7 @@ func (r *docsWriterRig) settledInvalidAsk() docsWriter {
 					return err
 				}
 				if _, held, err := graphstore.CurrentValue(ctx, r.database.Pool, graphstore.KindAsk, flagged, "invalid"); err != nil || !held {
-					return fmt.Errorf("the node of ask %s holds no invalid value (%v): stateInvalidReasons stated none", flagged, err)
+					return fmt.Errorf("the node of ask %s holds no invalid value (%v): PlanInvalidReasons stated none", flagged, err)
 				}
 				return nil
 			}}

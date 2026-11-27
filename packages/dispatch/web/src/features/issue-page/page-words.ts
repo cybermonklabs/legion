@@ -35,9 +35,11 @@
  * - from `../refs/actor`, `ASK_RESOLUTION_WORDS`, the words a closed question is drawn in, and
  *   `isViewer`, whether an actor is the signed-in person;
  * - from `../refs/post-marks`, `POST_MARK_WORDS`, the words a deleted post's line and an edited
- *   post's mark say on every surface.
+ *   post's mark say on every surface;
+ * - from `../issue/owed-coverage-line`, `OWED_COVERAGE_LINE`, the test of the coverage read's
+ *   line for a document still being indexed, which today's Spec tab reads too.
  *
- * The last three are the module's links to files today's pages use.
+ * The last four are the module's links to files today's pages use.
  *
  * Each table here is joined with the words of each open part of the page. A part keeps its new
  * words in its own file, `page-words-<letter>.ts`. `joinWords` from `./page-words-parts` makes
@@ -68,6 +70,7 @@ import {
 } from "@legion/contracts";
 
 import type { Actor, IssueCoverage } from "../../api/types";
+import { OWED_COVERAGE_LINE } from "../issue/owed-coverage-line";
 import { issueStatuses, statusLabel, statusText } from "../project/board-model";
 import { ASK_RESOLUTION_WORDS, isViewer } from "../refs/actor";
 import { POST_MARK_WORDS } from "../refs/post-marks";
@@ -642,14 +645,6 @@ export function coverageGapKind(line: string): GapKind | undefined {
 }
 
 /**
- * The line the coverage read writes for a document of the issue that owes its block index, in
- * place of every missing check and plan task while it does (the server's `owedGap`): `<file
- * name> version <n> is still being indexed; its coverage shows once that ends.`.
- */
-const OWED_COVERAGE_LINE =
-  /^\S.* version \d+ is still being indexed; its coverage shows once that ends\.$/u;
-
-/**
  * What the page draws for one line of the coverage read (`IssueCoverage.gaps`), where it draws
  * one: the sentence of the gap the line names (`coverageGapKind`, `GAP_LINES`), and for the line
  * of a document still being indexed, the line's own words. While a document owes its block
@@ -668,16 +663,12 @@ export function coverageLineWords(line: string): string | undefined {
  * What the page draws for the coverage read's own lines (`IssueCoverage.gaps`) that name no gap of
  * a requirement - a requirement's gap is drawn on the requirement, from its own gaps - each in the
  * words `coverageLineWords` draws it in, where it draws any. Today that is the line of each
- * document still being indexed, which says why no requirement is drawn as lacking a check: the
- * outline draws these in the body of each statement (`TreeNode.coverageNotes`). Today's Spec tab
- * draws the same lines with words of its own (`SpecRequirements`), since no file today's pages
- * load imports this one.
+ * document still being indexed (`OWED_COVERAGE_LINE`), drawn in its own words, which says why no
+ * requirement is drawn as lacking a check: the outline draws these in the body of each statement
+ * (`TreeNode.coverageNotes`), and today's Spec tab draws the same lines (`SpecRequirements`).
  */
 export function coverageNotes(coverage: IssueCoverage | undefined): string[] {
-  return (coverage?.gaps ?? []).flatMap((line) => {
-    const words = coverageGapKind(line) === undefined ? coverageLineWords(line) : undefined;
-    return words === undefined ? [] : [words];
-  });
+  return (coverage?.gaps ?? []).filter((line) => OWED_COVERAGE_LINE.test(line));
 }
 
 /** The noun a progress count is written with: `1/1 item`, `3/7 items` of the spec's checklist
@@ -711,8 +702,8 @@ export const STATE_LINES = joinWords("STATE_LINES", {
     "Its subscription covers other issues and documents too, so it cannot be unsubscribed from this one alone.",
   /** What the outline says over its rows, on load as much as later, of each read they come from
    *  that stands failed, beside that read's Retry (`outline-reads.ts`): the names the rows cite,
-   *  which checks serve each statement, the checks' results, the questions, the comments and the
-   *  messages; the issue's decisions are nodes of the tree read, whose own failed line says so.
+   *  which checks serve each statement, the checks' results, the questions and the messages; the
+   *  issue's decisions and comments are nodes of the tree read, whose own failed line says so.
    *  The spec's, the plan's and the verification document's lines, last, are what the Plan and
    *  the Verification views say of a tree read refused before it first answered, each named by
    *  the part the document whose blocks the view waits on plays (`PlanFilterBody`,
@@ -721,7 +712,6 @@ export const STATE_LINES = joinWords("STATE_LINES", {
   coverage_unreadable: "Could not load which checks serve each statement.",
   results_unreadable: "Could not load the checks' results.",
   asks_unreadable: "Could not load the questions.",
-  comments_unreadable: "Could not load the comments.",
   messages_unreadable: "Could not load the messages.",
   spec_unreadable: "Could not load the spec.",
   plan_unreadable: "Could not load the plan.",

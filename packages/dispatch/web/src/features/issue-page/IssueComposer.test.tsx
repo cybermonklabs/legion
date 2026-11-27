@@ -225,9 +225,11 @@ function stub<T extends { mockRestore: () => void }>(spy: T): T {
   return spy;
 }
 
-/** The issue's comments read, which a saved edit reads again; and the search the reference
+/** The issue's whole comments list, which the box reads none of; a comment's own read, which a
+ *  Reply and the write line make of the comment a reply answers; and the search the reference
  *  picker's `#` door reads. */
 let commentsRead: Mock<typeof api.listComments>;
+let commentRead: Mock<typeof api.getComment>;
 let searchRead: Mock<typeof api.search>;
 
 beforeAll(async () => {
@@ -246,6 +248,7 @@ beforeEach(() => {
   // behind the reference picker and an edit's blocks, which the box hosts.
   const answered = answerBoxReads(reads);
   commentsRead = answered.commentsRead;
+  commentRead = answered.commentRead;
   searchRead = answered.searchRead;
   restores.push(answered.restore);
 });
@@ -1215,14 +1218,15 @@ test("an edit saves the comment's words", async () => {
   expect(kinds()).toEqual([]);
   expect(within(composerBox()).getByRole("button", { name: CONTROL_LABELS.save })).toBeTruthy();
 
-  const readsBefore = commentsRead.mock.calls.length;
+  // The edit line names the comment's author from the outline's tree, and reads no whole comments
+  // list as it opens or once it saves: the outline draws the comment again from the tree read,
+  // which the edit's event reads again.
   await user.keyboard("{Control>}a{/Control}My better words{Enter}");
   await waitFor(() =>
     expect(editComment).toHaveBeenCalledWith("comment-2", { body: "My better words" }, keyedAttempt)
   );
   await waitFor(() => expect(page.writer().editing).toBeUndefined());
-  // The outline draws the comment again from the read that answers after the save.
-  expect(commentsRead.mock.calls.length).toBeGreaterThan(readsBefore);
+  expect(commentsRead, "the edit line read the issue's whole comments list").not.toHaveBeenCalled();
   await waitFor(() => expect(focusedRowId()).toBe("comment-2"));
 });
 
@@ -1943,7 +1947,7 @@ test("a stopped reply let go with the target line's control is sent under a new 
 
 // A comment or a message its author deleted takes no reply (`409 POST_DELETED`), and its row
 // offers no Reply, so the box answers one only where the delete came while it was open. The box
-// reads the post as the outline's comments read holds it now (`MentionComposer`'s `replyParent`),
+// reads the post as the comment's own read holds it now (`MentionComposer`'s `replyParent`),
 // so Send refuses the reply before it goes, in the page's one sentence that says so and where the
 // box sends the draft instead (`COMPOSER_ANSWER_WORDS.deleted_reply`), which names the box's
 // control that writes on the issue, on a line under the box that Send's refusal names; neither
@@ -1957,10 +1961,18 @@ test("a reply open when its comment is deleted is refused before Send, and a pre
   await page.press(user, "comment-1", "r");
   await waitFor(() => expect(targetWords()).toBe(replyingTo("bob", "comment")));
   await waitFor(() => expect(writeField()).toHaveFocus());
+  // The line reads the comment its reply answers alone, under the key the Reply read it by, and
+  // never the issue's whole comments list.
+  expect(commentRead.mock.calls.map(([id]) => id)).toEqual(["comment-1"]);
+  expect(
+    commentsRead,
+    "the write line read the issue's whole comments list"
+  ).not.toHaveBeenCalled();
   await user.keyboard("Ship it.");
 
-  // bob deletes his comment: the comments read answers it with the marks of his delete, and the
-  // outline draws its row as the deleted line from that same read.
+  // bob deletes his comment: the comment's own read answers it with the marks of his delete, as
+  // the feed reads it again on the delete (`api/event-refresh.ts`), and the outline draws its row
+  // as the deleted line.
   const deletedAt = "2026-11-05T12:00:00Z";
   reads.comments = [
     commentRecord("comment-1", BOB, "", { deleted_at: deletedAt, deleted_by: BOB }),
@@ -1975,7 +1987,7 @@ test("a reply open when its comment is deleted is refused before Send, and a pre
         : child
     ),
   });
-  await act(() => page.client.invalidateQueries({ queryKey: ["comments", KEY] }));
+  await act(() => page.client.invalidateQueries({ queryKey: ["comment", "comment-1"] }));
 
   const refused = COMPOSER_ANSWER_WORDS.deleted_reply.comment;
   expect(refused).toContain(`press ${CONTROL_LABELS.write_on_issue} `);
@@ -2929,7 +2941,7 @@ test("every string the box draws, in each of its states, is a word or sentence o
       child.id === "comment-1" ? { ...child, deletedAt: hour(4), deletedBy: BOB } : child
     ),
   });
-  await act(() => page.client.invalidateQueries({ queryKey: ["comments", KEY] }));
+  await act(() => page.client.invalidateQueries({ queryKey: ["comment", "comment-1"] }));
   await drawn(COMPOSER_ANSWER_WORDS.deleted_reply.comment);
   found.push(...unlisted("a reply to a deleted comment"));
   cleanup();

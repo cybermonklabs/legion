@@ -2,12 +2,13 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
 import { api, issueStateRequest } from "../../api/client";
-import { issueAsksQuery, userStateQuery } from "../../api/queries";
+import { issueAskThreadsQuery, userStateQuery } from "../../api/queries";
 import type { UserState } from "../../api/types";
 import { stateForIssue } from "../issue/pins";
 import { useDwell } from "../shell/useDwell";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
-import { issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
+import { outlineQuery } from "./tree-read/tree-read";
+import { issueMessagesQuery } from "./useIssueTree";
 
 /**
  * The issue's read mark, and the only writer of it (`user_issue_state.last_read_seq`, which the
@@ -44,12 +45,17 @@ export function IssueReadMark({ issueKey }: { issueKey: string }): ReactNode {
   // rows never drawn. An answer held is enough: a refetch that fails keeps the rows the outline
   // drew. The outline makes these reads and keeps them fresh, so the mark's mount asks for none
   // of them again (`refetchOnMount: false`), and one the outline is already making is that same
-  // request, under the same key, not a second one.
-  const asks = useQuery({ ...issueAsksQuery(issueKey), refetchOnMount: false });
-  const comments = useQuery({ ...issueCommentsQuery(issueKey), refetchOnMount: false });
+  // request, under the same key, not a second one. The comments are the tree read's own nodes
+  // (`decision-review.ts`' `treeComments`): its answer as the page holds it - Conversation's, or
+  // Graph's in Graph - watched and never sent, since the outline sends it.
+  const asks = useQuery({ ...issueAskThreadsQuery(issueKey), refetchOnMount: false });
+  const conversation = useQuery({ ...outlineQuery(issueKey, "conversation"), enabled: false });
+  const graph = useQuery({ ...outlineQuery(issueKey, "graph"), enabled: false });
   const messages = useQuery({ ...issueMessagesQuery(issueKey), refetchOnMount: false });
   const outlineHeld =
-    asks.data !== undefined && comments.data !== undefined && messages.data !== undefined;
+    asks.data !== undefined &&
+    (conversation.data ?? graph.data) !== undefined &&
+    messages.data !== undefined;
   const [readThrough, setReadThrough] = useState<{
     readonly issueKey: string;
     readonly seq: number;

@@ -218,8 +218,8 @@ func renderStepTreeMismatch(t *testing.T, rig *renderRig, service *Service) {
 	spec, refKey := writeMismatchedSpec(t, database, service, "MISS-1", other)
 	address := "version " + refKey + "@v1"
 	approval := approveThroughTheRoute(t, service, spec, 1, "alice")
-	if approval.ContentSHA256 == nil || *approval.ContentSHA256 != renderSum(other) {
-		t.Fatalf("alice's approval of %s@v1 through the approval route = %+v; want it pinning the stored markdown's %s", refKey, approval, renderSum(other))
+	if approval.ContentSHA256 == nil || *approval.ContentSHA256 != reviewTextHash(other) {
+		t.Fatalf("alice's approval of %s@v1 through the approval route = %+v; want it pinning the stored markdown's %s", refKey, approval, reviewTextHash(other))
 	}
 	if err := service.settleOwedNow(ctx, spec, time.Now().Add(roomWait(t))); err != nil {
 		t.Fatalf("settle %s: %v", refKey, err)
@@ -323,8 +323,7 @@ func renderStepTreeMismatch(t *testing.T, rig *renderRig, service *Service) {
 // renderStepCarryOfACarry: the reason a carry of a carry writes (R14). MISS-3's spec, a query
 // version's document, writes version 1 through the real version write, which indexes it in its own
 // transaction, and alice approves it. Version 2 is an upload of version 1's text, written as
-// storeArtifact writes one (ReplaceText with the token of the version it replaces, QueueVersion,
-// IndexDocumentReferences, CarryUploadedApproval): the replacement changes nothing, so the upload
+// storeArtifact writes one (uploadVersion): the replacement changes nothing, so the upload
 // writes no tree and leaves version 2's blocks to the reconciliation, its row with no time, and
 // CarryUploadedApproval carries alice's approval to version 2 by the restore, pinning the stored
 // markdown's digest. The reconciliation's pass then states version 2, whose render is its stored
@@ -335,72 +334,24 @@ func renderStepCarryOfACarry(t *testing.T, rig *renderRig, service *Service) {
 	ctx := context.Background()
 	database := rig.database
 	seedMismatchIssues(t, database)
-	alice := model.Actor{Kind: "user", ID: "alice"}
-	var spec, refKey string
-	if err := database.Pool.QueryRow(ctx, `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ('MISS-3', 'MISS', 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}')
-		returning id::text, ref_key`).Scan(&spec, &refKey); err != nil {
-		t.Fatalf("create the spec of MISS-3: %v", err)
-	}
-	writeQueryNode(t, database, "MISS", "MISS-3", "spec", graphstore.QuerySpec)
+	spec, refKey := createSpecOf(t, database, "MISS-3")
 	seedServiceText(t, service, spec, "The words the person approved.\n")
 	writeVersionThroughTheRealPath(t, service, spec, "The first version")
 	settle(t, database, spec)
 	first := storedVersionMarkdown(t, database, spec, 1)
 	approveStoredVersion(t, database, spec, 1, "alice")
 
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the upload of %s: %v", refKey, err)
-	}
-	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
-	defer ledger.Discard()
-	precondition, err := replacementPrecondition(joined, service, spec)
-	if err != nil {
-		t.Fatalf("read the token of %s: %v", refKey, err)
-	}
-	stored, err := service.ReplaceText(joined, spec, first, alice, precondition)
-	if err != nil {
-		t.Fatalf("replace the text of %s: %v", refKey, err)
-	}
-	version, err := ledger.QueueVersion(ctx, spec, stored, []model.Actor{alice}, nil)
-	if err != nil {
-		t.Fatalf("queue the upload's version of %s: %v", refKey, err)
-	}
-	ledger.WroteVersion(spec, version, stored)
-	_, stated, err := service.IndexDocumentReferences(joined, spec, version.Number, stored)
-	if err != nil {
-		t.Fatalf("index the upload's version of %s: %v", refKey, err)
-	}
-	owner, err := ReadVersionOwner(joined, tx, spec)
-	if err != nil {
-		t.Fatalf("read the owner of the upload's version of %s: %v", refKey, err)
-	}
-	node, err := WriteVersionNode(joined, tx, owner, version.Number, alice, version.CreatedAt)
-	if err != nil {
-		t.Fatalf("write the node of the upload's version of %s: %v", refKey, err)
-	}
-	if err := CarryUploadedApproval(joined, tx, service.events, spec, version.Number, stored, nil, RecordCarry{}, service.serverURL); err != nil {
-		t.Fatalf("carry the approval of %s to the upload's version: %v", refKey, err)
-	}
-	if err := causeInWritePhase(joined, tx, graphstore.Joined(stated, node), graphstore.NoEvent); err != nil {
-		t.Fatalf("append what the upload of %s stated: %v", refKey, err)
-	}
-	if err := ledger.Commit(ctx); err != nil {
-		t.Fatalf("commit the upload of %s: %v", refKey, err)
-	}
-	if version.Number != 2 || stored != first {
-		t.Fatalf("the upload wrote version %d of %s storing %q, want version 2 storing version 1's %q", version.Number, refKey, stored, first)
+	number, stored := uploadVersion(t, database, service, spec, first)
+	if number != 2 || stored != first {
+		t.Fatalf("the upload wrote version %d of %s storing %q, want version 2 storing version 1's %q", number, refKey, stored, first)
 	}
 	if row := readRenderRow(t, database, spec, 2); row.at != nil {
 		t.Fatalf("version 2 of %s holds a time before its pass", refKey)
 	}
 	uploaded, err := NewestReview(ctx, database.Pool, spec)
 	if err != nil || uploaded == nil || uploaded.Version != 2 || uploaded.Reason == nil || *uploaded.Reason != restoredReason(1, 1) ||
-		uploaded.ContentSHA256 == nil || *uploaded.ContentSHA256 != renderSum(first) {
-		t.Fatalf("the upload of version 2 of %s carried %+v (%v), want %q pinning the stored markdown's %s", refKey, uploaded, err, restoredReason(1, 1), renderSum(first))
+		uploaded.ContentSHA256 == nil || *uploaded.ContentSHA256 != reviewTextHash(first) {
+		t.Fatalf("the upload of version 2 of %s carried %+v (%v), want %q pinning the stored markdown's %s", refKey, uploaded, err, restoredReason(1, 1), reviewTextHash(first))
 	}
 
 	drainOwed(t, database, service)

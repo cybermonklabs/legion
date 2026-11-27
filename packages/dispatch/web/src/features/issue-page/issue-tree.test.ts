@@ -67,6 +67,8 @@ import { treeRows } from "./tree-fold";
 import { decisionBehind, nodesInOrder } from "./tree-keys";
 import {
   treeNode as answerNode,
+  postMarks,
+  treeAnchor,
   treeAnswer,
   treeParent,
   treeTuple,
@@ -478,8 +480,9 @@ function thread(id: string, createdAt: string): MessageRead {
 
 /** A case's issue as the earlier reads hold it, with what the tree read answers beside them. */
 interface Fixture extends IssueTreeReads {
-  /** The issue's comments, each of which the tree read answers as a node, and which the reads
-   *  carry as the comments read, which says what each one's author did to it. */
+  /** The issue's comments, each of which the tree read answers as a node with its anchor, and
+   *  with the marks its author's corrections leave, as a correction writes them into the answer
+   *  the cache holds (`api/corrected-post.ts`). */
   readonly comments?: readonly (Comment & Pick<CommentWithTrees, "body_tree">)[];
   /** The blocks of each document of the issue, whose typed blocks the tree read answers. */
   readonly documents?: readonly {
@@ -711,10 +714,12 @@ function answered(fixture: Fixture): IssueTreeReads {
         : undefined);
     written.push({
       node: answerNode(comment.id, "comment", parent ?? key, {
+        ...(comment.anchor === null ? {} : { anchor: treeAnchor(comment.anchor) }),
         author: [comment.author],
         made_at: comment.created_at,
         text: comment.body,
         ...(comment.body_tree === undefined ? {} : { text_tree: comment.body_tree }),
+        ...postMarks(comment),
       }),
     });
   }
@@ -789,7 +794,6 @@ function answered(fixture: Fixture): IssueTreeReads {
   );
   return {
     ...reads,
-    ...(comments === undefined ? {} : { comments }),
     ...(messages === undefined ? {} : { messages }),
     tree: treeAnswer(walk, [...tuples, ...(tied ?? [])], { issue: key }),
   };
@@ -1207,6 +1211,38 @@ test("a needs chip of a block the read sent no words for is named by its kind's 
     { answered: true, gone: false, label: "needs", name: NODE_TYPE_NAMES.plan_task, ref: ruled },
     { answered: true, gone: false, label: "needs", name: "", ref: foreign },
     { answered: false, gone: false, label: "needs", name: "", ref: unread },
+  ]);
+});
+
+// R10: a plan task's `needs` names an issue beside the tasks it waits on, an item kind the
+// attribute declares (`items: ["issue"]` in `pmdoc/schema/blocks.json`). The tree read's node
+// attributes are read under the item kinds a pointer of the page names, an issue among them
+// (`tree-nodes.ts`' `POINTER_ITEMS`), as the Plan tab and the document's drawing read them: read
+// under none, a value naming an issue is no value the server holds, it parses to nothing, and
+// the task drew no needs chip at all, the task's as well as the issue's.
+test("a needs that names an issue draws a needs chip of the issue beside the task's", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const task = `dispatch://${KEY}/artifact/plan-md#b-t0`;
+  const issue = "dispatch://CORE-2";
+  const root = treeOf({
+    documents: [
+      {
+        artifactId: plan.id,
+        blocks: [block("t0", "plan_task"), block("t1", "plan_task", { needs: `${task} ${issue}` })],
+      },
+    ],
+    issue: issueDetails([spec, plan]),
+  });
+
+  expect(
+    nodeOf(root, blockNodeId("plan-md", "t1"))?.chips.map((chip) => ({
+      label: chip.label,
+      ref: chip.ref,
+    }))
+  ).toEqual([
+    { label: "needs", ref: task },
+    { label: "needs", ref: issue },
   ]);
 });
 

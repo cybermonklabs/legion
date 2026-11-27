@@ -21,7 +21,7 @@ import (
 )
 
 // TestEveryVersionRowIsTheProjectionOfAVersionNode holds every insert of an artifact_versions row to
-// R16 of the issue-tree spec (T2b of its plan): the row is the projection of a version node,
+// R16 of the issue-tree spec: the row is the projection of a version node,
 // `<ref_key>@v<number>`, supertag `document version`, part_of its document's node, with its number
 // and its time as values, written in the row's own transaction and caused by the event of the
 // write. Each site is driven through its route: an issue's spec at the create (api's createIssue),
@@ -42,15 +42,11 @@ import (
 func TestEveryVersionRowIsTheProjectionOfAVersionNode(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
-		"key": "VER", "name": "Versions",
-	}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create the project: status=%d body=%s", response.Code, response.Body.String())
-	}
+	createTestProject(t, handler, "VER")
 	const key = "VER-1"
-	refused := func(what string, response interface{ Result() *http.Response }) {
+	refused := func(what string, response *httptest.ResponseRecorder) {
 		t.Helper()
-		if code := response.Result().StatusCode; code < http.StatusInternalServerError {
+		if code := response.Code; code < http.StatusInternalServerError {
 			t.Fatalf("%s refused at its commit answered %d, want a 5xx", what, code)
 		}
 	}
@@ -128,17 +124,13 @@ func TestEveryVersionRowIsTheProjectionOfAVersionNode(t *testing.T) {
 	requireStoreCensusZero(t, database, "after the image uploads")
 
 	// A named version, which the document service writes (writeVersionTx).
-	name := func() *http.Response {
+	name := func() *httptest.ResponseRecorder {
 		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+notes.ID+"/versions",
-			map[string]string{"summary": "named"}, "alice").Result()
+			map[string]string{"summary": "named"}, "alice")
 	}
-	refuseCommits(t, database, "artifact_versions", func() {
-		if code := name().StatusCode; code < http.StatusInternalServerError {
-			t.Fatalf("the named version refused at its commit answered %d, want a 5xx", code)
-		}
-	})
+	refuseCommits(t, database, "artifact_versions", func() { refused("the named version", name()) })
 	requireNoVersion(t, database, key+"/notes-md", 3)
-	if code := name().StatusCode; code != http.StatusCreated {
+	if code := name().Code; code != http.StatusCreated {
 		t.Fatalf("name the notes' version: status=%d", code)
 	}
 	requireVersionNode(t, database, notes.ID, 3, graphstore.SupertagDocumentVersion, versionEvent(t, database, notes.ID, 3))
@@ -231,7 +223,7 @@ func TestEveryVersionRowIsTheProjectionOfAVersionNode(t *testing.T) {
 	}
 	requireVersionNode(t, database, notes.ID, 5, graphstore.SupertagQueryVersion, graphstore.NoEvent)
 	requireDefinitionVersion(t, database, notes.RefKey, 5, "")
-	if code := name().StatusCode; code != http.StatusCreated {
+	if code := name().Code; code != http.StatusCreated {
 		t.Fatalf("name the query's version: status=%d", code)
 	}
 	requireVersionNode(t, database, notes.ID, 6, graphstore.SupertagQueryVersion, versionEvent(t, database, notes.ID, 6))
@@ -258,20 +250,12 @@ func versionDefinition(t *testing.T, database *store.Store, refKey string, numbe
 	return supertag, held
 }
 
-// definitionHeld is a definition_version as a failure prints it: none where the node holds none.
-func definitionHeld(held *string) string {
-	if held == nil {
-		return "none"
-	}
-	return *held
-}
-
 // requireDefinitionVersion fails unless the node of version number of the document at refKey holds
 // the definition_version want, none where want is empty.
 func requireDefinitionVersion(t *testing.T, database *store.Store, refKey string, number int, want string) {
 	t.Helper()
 	_, held := versionDefinition(t, database, refKey, number)
-	if got, wanted := definitionHeld(held), cmp.Or(want, "none"); got != wanted {
+	if got, wanted := valueOrNone(held), cmp.Or(want, "none"); got != wanted {
 		t.Errorf("the version %s holds definition_version %s, want %s", graphstore.VersionID(refKey, number), got, wanted)
 	}
 }
@@ -293,9 +277,9 @@ func requireVersionNode(t *testing.T, database *store.Store, artifactID string, 
 		       coalesce((select array_agg(t.to_kind || ':' || t.to_id order by t.seq) from graph_tuples t
 		                 where t.from_kind = $3 and t.from_id = n.id and t.kind = $4), '{}'),
 		       (select t.to_id from graph_tuples t where t.from_kind = $3 and t.from_id = n.id and t.kind = $5
-		        and t.to_kind = 'value' order by t.seq desc limit 1),
+		        and t.to_kind = $7 order by t.seq desc limit 1),
 		       (select t.to_id from graph_tuples t where t.from_kind = $3 and t.from_id = n.id and t.kind = $6
-		        and t.to_kind = 'value' order by t.seq desc limit 1),
+		        and t.to_kind = $7 order by t.seq desc limit 1),
 		       coalesce((select array_agg(distinct t.source_event) from graph_tuples t
 		                 where t.from_kind = $3 and t.from_id = n.id), '{}')
 		from artifact_versions v
@@ -303,7 +287,7 @@ func requireVersionNode(t *testing.T, database *store.Store, artifactID string, 
 		left join graph_nodes n on n.kind = $3 and n.id = a.ref_key || '@v' || v.number
 		where v.artifact_id = $1::uuid and v.number = $2
 	`, artifactID, number, graphstore.KindVersion, graphstore.TuplePartOf, graphstore.AttributeNumber,
-		graphstore.AttributeCreatedAt).Scan(&refKey, &createdAt, &nodeSupertag, &madeAt, &partOf, &numberValue,
+		graphstore.AttributeCreatedAt, graphstore.KindValue).Scan(&refKey, &createdAt, &nodeSupertag, &madeAt, &partOf, &numberValue,
 		&createdValue, &causes); err != nil {
 		t.Fatalf("read version %d of %s and its node: %v", number, artifactID, err)
 	}

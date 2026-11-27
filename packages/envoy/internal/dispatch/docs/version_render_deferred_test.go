@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // The steps of TestTheTreeRendersAPostCutoverVersionFromItsTuples that hold R15's deferred version
@@ -22,8 +23,9 @@ import (
 // reads no total, since every step runs on the one database, whose earlier steps leave rows of
 // their own in each class.
 
-// itemList is a bullet list of items items: one block for the list and one for each item's
-// paragraph, so deferredItems of them are more blocks than a write indexes in its own request.
+// itemList is a bullet list of items items: one block for the list, and for each item the list
+// item and its paragraph, 1 + 2*items blocks (deferredBlocks), so deferredItems of them are more
+// blocks than a write indexes in its own request.
 func itemList(items int) string { return strings.Repeat("- x\n", items) }
 
 // uploadVersion writes the next version of the document spec as the upload route writes one (api's
@@ -167,9 +169,9 @@ func renderStepDeferred(t *testing.T, rig *renderRig, service *Service) {
 	}
 	stored := storedVersionMarkdown(t, database, spec, 1)
 	approval := approveThroughTheRoute(t, service, spec, 1, "alice")
-	if approval.ContentSHA256 == nil || *approval.ContentSHA256 != renderSum(stored) || approval.EventSeq == nil {
+	if approval.ContentSHA256 == nil || *approval.ContentSHA256 != reviewTextHash(stored) || approval.EventSeq == nil {
 		t.Fatalf("alice's approval of %s@v1 through the approval route = %+v; want it pinning the stored markdown's %s, with the seq of its artifact.approved",
-			refKey, approval, renderSum(stored))
+			refKey, approval, reviewTextHash(stored))
 	}
 	if newest, err := NewestReview(ctx, database.Pool, spec); err != nil || newest == nil || newest.ID != approval.ID {
 		t.Fatalf("the newest review of %s after alice's approval = %+v (%v), want her approval %s", refKey, newest, err, approval.ID)
@@ -255,7 +257,7 @@ func raceWithAnUnclassifiedUpdate(t *testing.T, service *Service, serverURL, doc
 			holder.Rollback(ctx)
 		}
 	}
-	t.Cleanup(releaseRoom)
+	testcleanup.Add(t, releaseRoom)
 	if err := lockDocumentRoom(ctx, holder, room); err != nil {
 		t.Fatalf("take the advisory lock of the room %s: %v", room, err)
 	}
@@ -267,7 +269,7 @@ func raceWithAnUnclassifiedUpdate(t *testing.T, service *Service, serverURL, doc
 			replica.mu.Unlock()
 		}
 	}
-	t.Cleanup(releaseReplica)
+	testcleanup.Add(t, releaseReplica)
 
 	if _, err := browser.Send(writeParagraph(browser.Doc, fragment, "The browser's words.")); err != nil {
 		t.Fatalf("type the browser's paragraph into the room %s: %v", room, err)
@@ -372,7 +374,7 @@ func renderStepRaceOfADocument(t *testing.T, rig *renderRig, service *Service, s
 	if err := service.settleOwedNow(ctx, spec, time.Now().Add(roomWait(t))); err != nil {
 		t.Fatalf("settle %s: %v", refKey, err)
 	}
-	if number := newestVersionNumber(t, database, spec); number != 3 {
+	if number := savedVersion(t, database, spec); number != 3 {
 		t.Errorf("the settlement of %s wrote version %d, want version 3 with the browser's paragraph", refKey, number)
 	}
 	drainOwed(t, database, service)
@@ -399,10 +401,7 @@ func renderStepRaceOfARoom(t *testing.T, rig *renderRig, service *Service, serve
 	database := rig.database
 	room := createIssueRoom(t, database, 4)
 	writeRoomQueryNodes(t, database, room)
-	var refKey string
-	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, room.spec).Scan(&refKey); err != nil {
-		t.Fatalf("read the ref_key of the spec of %s: %v", room.issue, err)
-	}
+	refKey := refKeyOf(t, database, room.spec)
 	if number, _ := uploadVersion(t, database, service, room.spec, itemList(deferredItems)); number != 2 {
 		t.Fatalf("the upload over %s wrote version %d, want 2", refKey, number)
 	}
@@ -435,7 +434,7 @@ func renderStepRaceOfARoom(t *testing.T, rig *renderRig, service *Service, serve
 	if err := service.settleOwedNow(ctx, room.tree, time.Now().Add(roomWait(t))); err != nil {
 		t.Fatalf("settle the room of %s: %v", room.issue, err)
 	}
-	if number := newestVersionNumber(t, database, room.spec); number != 4 {
+	if number := savedVersion(t, database, room.spec); number != 4 {
 		t.Errorf("the settlement of the room of %s wrote version %d of its spec, want version 4 with the browser's paragraph", room.issue, number)
 	}
 	drainOwed(t, database, service)

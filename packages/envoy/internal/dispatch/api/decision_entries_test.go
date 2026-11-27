@@ -1307,7 +1307,10 @@ func TestTheTextADocumentReadPrintsHoldsNoServerOwnedAskAttributeAndUploadsBackU
 	answerDecisionBlock(t, handler, askID, "bob", []string{"REST"}, "Plain HTTP until a client streams.", nil)
 	settleIssue(t, documents, issue.Key)
 	artifactID := readDecisionDocument(t, database, issue.Key, "asks-md").id
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", nil, "alice")
+	// The text as `dispatch doc-read` reads it, under `Dispatch-Asks: 1` (textRead); a reader
+	// without the header is served the form kept for one release (ask_blocks_test.go's
+	// TestTheTextRoutesServeAReaderOfAsksNoAskAttributeAndEveryOtherReaderTheKeptForm).
+	response := textRead(t, handler, "/api/v1/artifacts/"+artifactID+"/text", true)
 	if response.Code != http.StatusOK {
 		t.Fatalf("read the text of asks.md: status=%d body=%s", response.Code, response.Body.String())
 	}

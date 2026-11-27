@@ -494,7 +494,7 @@ func refuseSpecWriterOfDocuments(ctx context.Context, q queryer, writer specWrit
 // supertag block alone.
 var specWriterNodeDocuments = map[string]string{
 	"criterion":               specDocumentName,
-	"requirement":             specDocumentName,
+	requirementBlockType:      specDocumentName,
 	graphstore.BlockTypeCheck: verificationDocumentName,
 }
 

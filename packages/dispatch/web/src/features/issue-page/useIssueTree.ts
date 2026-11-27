@@ -1,4 +1,4 @@
-import { hashKey, queryOptions, useQueries, useQuery } from "@tanstack/react-query";
+import { hashKey, queryOptions, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useRef } from "react";
 
 import { api } from "../../api/client";
@@ -29,10 +29,11 @@ import { treeRead } from "./spec-filter/tree-read";
 import { askState } from "./tree-drafts";
 import { holdsPlanTask } from "./tree-read/tree-nodes";
 import {
-  TREE_VIEWS,
+  loadEnded,
   type TreeAnswer,
   type TreeRead,
-  type TreeView,
+  useDecisionsView,
+  useLastAnswer,
   useTreeRead,
   viewQuery,
 } from "./tree-read/tree-read";
@@ -154,24 +155,6 @@ const NO_TARGET_NAMING: Omit<PublishedReferences, "asked"> = {
 const NO_REFS: readonly string[] = [];
 
 /**
- * The last value given other than undefined: the one given while there is one, and the last one
- * given before while undefined is. The batched names read keeps by it the set of addresses it
- * was last given while the gate that holds it back is shut (`useIssueTree`'s `askedFor`). It
- * keeps a set of addresses and never a names answer: a correction's marks are written into the
- * answer the cache holds (`markCorrectedPost`), and a ref holding the answer itself would go on
- * drawing it as it was kept, a deleted post's words among them, so the answer is read from the
- * cache under the set it was last answered for (`useLastAnswered`). The Spec view's column
- * (`spec-filter/SpecFilterBody.tsx`) keeps by it the last answer of its view read, which a Keep
- * or a Change drops, until the next one lands. The ref is written during render only with the
- * value given in that render, so it never stands over a newer one.
- */
-export function useLastAnswer<T>(value: T | undefined): T | undefined {
-  const last = useRef(value);
-  if (value !== undefined) last.current = value;
-  return last.current;
-}
-
-/**
  * The set of addresses a names read answered last: `refs` while its read under them holds an
  * answer (`answered`), and the set it last held one for while its read under a new set is out or
  * has failed. The page draws that set's answer as the cache holds it now, through an observer
@@ -189,14 +172,6 @@ function useLastAnswered(refs: readonly string[], answered: boolean): readonly s
   return last.current;
 }
 
-/** The issue's comments as the tree reads them (`listComments`), under the key the feed's rules
- *  refresh (`["comments", key]`); a view of the same read takes its key from here. */
-export const issueCommentsQuery = (key: string) =>
-  queryOptions({
-    queryKey: ["comments", key],
-    queryFn: () => api.listComments(key),
-  });
-
 /** The issue's messages as the tree reads them (`listIssueMessages`), under the key the feed's
  *  rules refresh (`["issue-messages", key]`); a view of the same read takes its key from here. */
 export const issueMessagesQuery = (key: string) =>
@@ -211,7 +186,6 @@ export const issueMessagesQuery = (key: string) =>
  *  compile until it is named. */
 const TREE_INPUTS: Readonly<Record<Exclude<keyof IssueTreeReads, "tree">, true>> = {
   asks: true,
-  comments: true,
   coverage: true,
   holdsPlanTask: true,
   issue: true,
@@ -292,18 +266,21 @@ export function viewTree(reads: IssueTreeReads, view: TreeAnswer): TreeNode {
  * of the pages read so far is one of its nodes, with its review state, and a person's comment
  * the read hangs under a decision is a change they asked of it (`decision-review.ts`), so no
  * decisions read is made.
- * Beside it stand the reads that tell what the answer does not: the coverage, results,
- * comments, messages and the reader's login. Details' pins and the new page's margin share the
- * outline's asks read with each ask's thread (`issueAskThreadsQuery`). The login says which
- * open questions wait on the reader (`IssueTreeReads.viewer`).
+ * Beside it stand the reads that tell what the answer does not: the coverage, results, messages
+ * and the reader's login. Details' pins and the new page's margin share the outline's asks read
+ * with each ask's thread (`issueAskThreadsQuery`). The comments are the answer's own: each
+ * comment node carries its anchor and its author's marks (`decision-review.ts`'
+ * `treeComments`), so no comments read is made. The login says which open questions wait on the
+ * reader (`IssueTreeReads.viewer`).
  *
  * Each filter's view read (`viewQuery`), the decisions view among them, is watched here and
  * never sent: `ViewReadProvider` (`tree-read/view-read.tsx`) reads a view the first time its
  * filter is on, and whatever it holds is set on the issue's node (`TreeNode.views`), which
  * `presetView` and `filterSignals` draw a filter from, its rows and its count, and the Decisions
  * filter its decisions and the tree it is drawn over, which its view read builds as each
- * filter's does (`viewTree`, `decisions-entries.ts`' `useDecisionsTree`). The root keeps its
- * identity while neither the tree nor a held view changes.
+ * filter's does (`viewTree`, `decisions-entries.ts`' `useDecisionsTree`). The decisions view is
+ * the answer the page holds of it (`useDecisionsView`), as every reader of it reads it. The root
+ * keeps its identity while neither the tree nor a held view changes.
  *
  * The names come last and all at once: the tree is built, every address its chips name and its
  * words cite is read in one batched request (`referenceTargetsQuery`; a tree holding more
@@ -325,7 +302,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // again, though nothing it holds had changed.
   //
   // Of the feed's rules (`api/event-refresh.ts`), these refresh the reads the tree is built from:
-  // `["comments", key]` on a comment event and on a document's upload or new version;
+  // the tree read and its views on every event of the issue, a comment's among them;
   // `["asks", key]` on an ask event, a reply on an ask, a review of a document and a block
   // repaired or found invalid; `["issue-messages", key]` on a message event;
   // `["issue", key, "coverage"]` on a document's upload or new version and on the block index
@@ -347,14 +324,6 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const coverage = useQuery({ ...issueCoverageQuery(key), ...EVENT_FRESH });
   const results = useQuery({ ...issueResultsQuery(key), ...EVENT_FRESH });
   const asks = useQuery({ ...issueAskThreadsQuery(key), ...EVENT_FRESH });
-  // Under the keys the margin, the history and the focused row's facts read too, so a reader
-  // opening the panel after the tree finds them answered rather than read a second time. The
-  // tree read answers each comment as a node, so the model reads from the comments only what
-  // their author did to one - deleted it or last edited it - which the tree read answers no mark
-  // of: a deleted comment draws its deleted line, and a deleted Change asks nothing any more
-  // (`decision-review.ts`'s `decisionNodeChanges`). A comment written, a Change among them,
-  // reaches the tree through its write and its event (`subscribeTreeFreshness`).
-  const comments = useQuery({ ...issueCommentsQuery(key), ...EVENT_FRESH });
   // Under the key the history and the margin read too, and one of the reads the names wait on
   // (`answered`); the model reads from it only what its author did to a message - deleted it or
   // last edited it - since the tree read answers each message as a node with no such mark.
@@ -364,18 +333,24 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const who = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH });
   const viewer = who.data?.login;
   // Each filter's view read, watched by an observer that sends nothing (`treeRead`) and holds
-  // whatever `ViewReadProvider` read for the load. Each answer is read by its view, at that view's
-  // place in the list the reads were made from, so the order of `TREE_VIEWS` hands no view
-  // another's answer.
+  // whatever `ViewReadProvider` read for the load. Each answer is read by its filter, at that
+  // filter's place in the list the reads were made from, so the order of `TREE_FILTERS` hands no
+  // filter another's answer, and none while the issue's last load has ended (`loadEnded`): what
+  // the cache keeps then is an earlier visit's, which the next load's reset drops after its first
+  // render, so neither a view's answer nor the tree it builds (`trees`) is drawn from it. The
+  // decisions view is the answer the page holds of it, read by the one rule every reader of it
+  // reads (`useDecisionsView`): this load's alone, and on the Decisions view, while a Keep or a
+  // Change has dropped it, the answer the drop took until the next one lands.
   const viewReads = useQueries({
-    queries: TREE_VIEWS.map((view) => treeRead(viewQuery(key, view))),
+    queries: TREE_FILTERS.map((filter) => treeRead(viewQuery(key, filter))),
   });
-  const viewOf = (view: TreeView): TreeAnswer | undefined =>
-    viewReads[TREE_VIEWS.indexOf(view)].data;
+  const ended = loadEnded(useQueryClient(), key);
+  const viewOf = (filter: TreeFilter): TreeAnswer | undefined =>
+    ended ? undefined : viewReads[TREE_FILTERS.indexOf(filter)].data;
   const spec = viewOf("spec");
   const verification = viewOf("verification");
   const plan = viewOf("plan");
-  const decisions = viewOf("decisions");
+  const decisions = useDecisionsView(key).answer;
   const views = useMemo((): TreeViews | undefined => {
     const held: { -readonly [K in keyof TreeViews]: TreeViews[K] } = {
       ...(decisions === undefined ? {} : { decisions }),
@@ -396,7 +371,6 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const reads = useMemo<IssueTreeReads>(
     () => ({
       asks: asks.data,
-      comments: comments.data,
       coverage: coverage.data,
       holdsPlanTask: planTaskHeld,
       issue,
@@ -407,7 +381,6 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     }),
     [
       asks.data,
-      comments.data,
       coverage.data,
       issue,
       messages.data,
@@ -420,8 +393,9 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const unnamed = useMemo(() => builtTree(reads), [reads]);
   const refs = useMemo(() => treeReferences(unnamed, asks.data), [unnamed, asks.data]);
   // One request for every name, not one per read that landed. Each of these reads adds to the
-  // tree as it arrives - the tree read every node, the asks an answer - so asking while any is
-  // still out would ask for the addresses known so far and ask again for the rest: measured on
+  // tree as it arrives - the tree read every node and every comment, the asks an answer - so
+  // asking while any is still out would ask for the addresses known so far and ask again for the
+  // rest: measured on
   // this pod, that cost the first load two reads and sometimes three, where the design is "the
   // names come last and all at once" (above) and the first load's budget is 40 requests. The
   // reader's login is one of the reads this gate waits on: it adds no node, but the tree is
@@ -432,7 +406,6 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const answered =
     !read.pending &&
     !asks.isPending &&
-    !comments.isPending &&
     !coverage.isPending &&
     !messages.isPending &&
     !results.isPending &&
@@ -593,7 +566,14 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   );
 }
 
-/** Keep the view's placement and metadata, adding only outline context the view omitted. */
+/**
+ * Keep the view's placement and metadata, adding only outline context the view omitted: each
+ * node and tuple of `outline` the view's answer lacks. A filter drawn off the tree this builds
+ * reads which of its nodes are the view read's own from that read's answer itself
+ * (`presets.ts`' `presetView`, `ownNodes`), so a decision or a question of Conversation's pages
+ * held so far that the view's answer does not hold is no row, count or part of the Decisions
+ * view, and every other view's tree keeps the outline's nodes in the walk's order.
+ */
 function viewWithContext(answer: TreeAnswer, outline: TreeAnswer | undefined): TreeAnswer {
   if (outline === undefined) return answer;
   const nodes = new Set(answer.nodes?.map(({ id, kind }) => `${kind}:${id}`));

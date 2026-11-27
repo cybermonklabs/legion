@@ -90,15 +90,15 @@ func seedReleaseBeforeIssue(t *testing.T, ctx context.Context, database *store.S
 		}
 		tuples := []graphstore.Tuple{
 			graphstore.ArtifactPartOf(document, key, alice, at),
-			tuple("block", heading, graphstore.TuplePartOf, graphstore.KindArtifact, document),
-			tuple("block", heading, graphstore.AttributeText, graphstore.KindValue, "# Heading"),
-			tuple("block", heading, "rank", graphstore.KindValue, "a"),
-			tuple("block", check, graphstore.TuplePartOf, "block", heading),
-			tuple("block", check, graphstore.AttributeText, graphstore.KindValue, ":::check{#c1}\nA check\n:::"),
-			tuple("block", check, "rank", graphstore.KindValue, "a"),
+			tuple(refs.BlockNodeKind, heading, graphstore.TuplePartOf, graphstore.KindArtifact, document),
+			tuple(refs.BlockNodeKind, heading, graphstore.AttributeText, graphstore.KindValue, "# Heading"),
+			tuple(refs.BlockNodeKind, heading, refs.AttributeRank, graphstore.KindValue, "a"),
+			tuple(refs.BlockNodeKind, check, graphstore.TuplePartOf, refs.BlockNodeKind, heading),
+			tuple(refs.BlockNodeKind, check, graphstore.AttributeText, graphstore.KindValue, ":::check{#c1}\nA check\n:::"),
+			tuple(refs.BlockNodeKind, check, refs.AttributeRank, graphstore.KindValue, "a"),
 			tuple(graphstore.KindComment, comment, graphstore.TupleAnchoredTo, graphstore.KindArtifact, document),
-			tuple(graphstore.KindResult, result, graphstore.TuplePartOf, "block", check),
-			tuple(graphstore.KindResult, result, graphstore.TupleResultOf, "block", check),
+			tuple(graphstore.KindResult, result, graphstore.TuplePartOf, refs.BlockNodeKind, check),
+			tuple(graphstore.KindResult, result, graphstore.TupleResultOf, refs.BlockNodeKind, check),
 			tuple(graphstore.KindResult, result, graphstore.AttributeVerdict, graphstore.KindValue, "pass"),
 		}
 		return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
@@ -135,7 +135,7 @@ func requireHeadsMarkedAndEqual(t *testing.T, ctx context.Context, database *sto
 		}
 		t.Logf("the census kind %s reads %d rows against %d the store gives, %d and %d differences",
 			kind.Kind, kind.Rows, kind.Nodes, kind.RowDifferences, kind.NodeDifferences)
-		for _, found := range append(kind.ReportedRows, kind.ReportedNodes...) {
+		for _, found := range differencesOf(kind) {
 			t.Errorf("after the backfill the census kind issue_head_node reads %d difference(s) at %s (%s)",
 				kind.RowDifferences+kind.NodeDifferences, found.At, found.Cause)
 		}
@@ -187,11 +187,7 @@ func TestTheHeadProjectionBackfillReadsZero(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, releaseBeforeHeadingText, headBackfillIssues[0]+"/spec-md#h", "# Heading, again"); err != nil {
 		t.Fatalf("append a tuple of %s as the release before: %v", headBackfillIssues[0], err)
 	}
-	var marked int
-	if err := database.Pool.QueryRow(ctx, `select count(*) from issue_head_marks where issue_key = $1`, headBackfillIssues[0]).Scan(&marked); err != nil {
-		t.Fatalf("read the mark of %s: %v", headBackfillIssues[0], err)
-	}
-	if marked != 0 {
+	if _, marked := headMark(t, ctx, database, headBackfillIssues[0]); marked {
 		t.Errorf("the mark of %s stands after a write of the release before", headBackfillIssues[0])
 	}
 	if _, err := Backfill(ctx, database, io.Discard); err != nil {
@@ -356,14 +352,11 @@ func holdFillBesideAWrite(t *testing.T, ctx context.Context, database *store.Sto
 	if !waited {
 		t.Errorf("the write of the release before on %s did not wait for the fill %s, which held the issue's head fill lock", key, name)
 	}
-	var marked int
-	if err := database.Pool.QueryRow(ctx, `select count(*) from issue_head_marks where issue_key = $1`, key).Scan(&marked); err != nil {
-		t.Fatalf("read the mark of %s: %v", key, err)
-	}
-	if marked != 0 {
+	_, marked := headMark(t, ctx, database, key)
+	if marked {
 		t.Errorf("the mark of %s stands after a write of the release before beside the fill %s, over the row of %s the write changed", key, name, heading)
 	}
-	t.Logf("the fill %s of %s beside a write of the release before: the write waited %t, and %d mark names the issue after both", name, key, waited, marked)
+	t.Logf("the fill %s of %s beside a write of the release before: the write waited %t, and a mark names the issue after both: %t", name, key, waited, marked)
 	if _, _, err := FillIssueHeads(ctx, database, HeadFillBatch); err != nil {
 		t.Fatalf("fill %s again: %v", key, err)
 	}

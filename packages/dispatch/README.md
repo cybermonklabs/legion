@@ -801,21 +801,23 @@ a run that reaches the end writes `all <n> assertions passed` as the one line on
 cut short fails a reader that reads that line.
 
 `e2e/acceptance/seed-corpus.sh` writes the corpus the issue-tree upgrade checks
-read, through the API of the release before this branch: the server `e2e/acceptance/lib-baseline.sh`
+read, through the API of the release before: the server `e2e/acceptance/lib-baseline.sh`
 builds from `BASELINE_SHA` and boots, so every row of it is one that release's own writers left.
-It writes a project of eight issues. The first holds a spec, a `verification.md`, a `plan.md` and
+It writes a project of nine issues. The first holds a spec, a `verification.md`, a `plan.md` and
 a `notes.md`, each of three versions and each holding the shapes the tree census reads (headings
 followed by paragraphs, a nested list, a list whose last item is empty, a callout holding a code
 block and a table, and a quote holding a list), beside requirements, checks, plan tasks, one image
 upload, comments that cite blocks, messages, asks and recorded results; the second is its child.
 Five more serve the render boundary's two counts and the conversion's dry run: one approved at its
 newest versions, one whose approval a later version supersedes, one approved and then asked for
-changes, one closed, and one holding a spec alone. The last has the size of the largest issue
+changes, one closed, and one holding a spec alone. The eighth has the size of the largest issue
 measured, the memory experiment's measurement: 10,842 blocks over 243 documents, 34 comments,
-34 messages and no ask. It
+34 messages and no ask. The ninth holds the role documents of `LARGEST_ISSUE`, read from the
+deployment `DISPATCH_URL` names, with every reference to that issue naming the ninth instead;
+the conversion's dry run measures it. It
 prints each issue it writes and each count with the time it was taken, the boundary's two counts
 (`pre_cutover_versions` and `standing_approvals`) among them, stops the server, keeps the database,
-and ends with `PASS: seed-corpus.sh complete 5 sections`. Its inputs:
+and ends with `PASS: seed-corpus.sh complete 6 sections`. Its inputs:
 
 - `DATABASE_URL`, an empty database on this machine, which the run refuses when it holds a table;
 - `PROJECT`, the project it creates (`CORE`, as the checks name it);
@@ -825,8 +827,11 @@ and ends with `PASS: seed-corpus.sh complete 5 sections`. Its inputs:
 - `BASELINE_SHA`, `BASELINE_BINARY`, `BASELINE_EXTRA_ENV` and `LEGION_WORKSPACE`, as the head
   comment of `lib-baseline.sh` states them;
 - `CORPUS_LARGE_BLOCKS`, `CORPUS_LARGE_DOCUMENTS`, `CORPUS_LARGE_COMMENTS`,
-  `CORPUS_LARGE_MESSAGES` and `CORPUS_LARGE_ASKS`, optional, the size of the last issue, each
-  defaulting to the measured one, so a quick run can ask for less.
+  `CORPUS_LARGE_MESSAGES` and `CORPUS_LARGE_ASKS`, optional, the size of the eighth issue, each
+  defaulting to the measured one, so a quick run can ask for less;
+- `LARGEST_ISSUE`, the key of the issue whose role documents the ninth issue holds;
+- `DISPATCH_URL` and `DISPATCH_TOKEN_FILE`, the deployment that issue is read from and a file
+  holding its bearer token, which the run uses for reads alone.
 
 At the measured size a run took under three minutes in a Legion pod, the baseline's build
 included. Sourced after `lib.sh` and `lib-tree.sh` instead, it gives a driver its writers,
@@ -836,6 +841,7 @@ included. Sourced after `lib.sh` and `lib-tree.sh` instead, it gives a driver it
 createdb -h 127.0.0.1 -p 5433 -U legion_test infra_1253_corpus
 DATABASE_URL=postgres://legion_test@127.0.0.1:5433/infra_1253_corpus?sslmode=disable \
   PROJECT=CORE DEV_SIGNIN_LOGIN=alice DISPATCH_TOKEN=e2e-token BASELINE_SHA=<commit> \
+  LARGEST_ISSUE=<issue key> DISPATCH_URL=<deployment URL> DISPATCH_TOKEN_FILE=<token file> \
   bash packages/dispatch/e2e/acceptance/seed-corpus.sh
 ```
 
@@ -879,13 +885,15 @@ after `lib.sh` and, for a driver over rows an earlier release wrote, after `lib-
 holds what they share, so no driver copies it: the request as the agent or as the person
 (`tree_send`, `tree_person_send`, and `tree_want`, whose failure names the request), the dev
 sign-in and the project create that names that person as its default assignee, the tree read
-(`GET /api/v1/issues/{key}/tree` with `view`, `v` and `cursor`), the `dispatch` client and the
-stamped `envoy-dispatch`, the boot of this head's server over the baseline's database with the
-test settings that hold the conversion step (`tree_boot_head`), the store backfill
-(`tree_run_backfill`, which runs `envoy-dispatch backfill-graph-store` until a boot step runs it
-at every boot), the waits for the backfill and for this head's build announcement, each polled
-every 2 s for at most 300 s, and the conversion (`envoy-dispatch convert-issues`). Its head comment
-names the variables each function reads.
+(`GET /api/v1/issues/{key}/tree` with `view`, `v` and `cursor`) and every page of it, the
+`dispatch` client and the stamped `envoy-dispatch`, the boot of this head's server over the
+baseline's database with the test settings that hold the conversion step (`tree_boot_head`), the
+waits for the boot's store backfill and for this head's build announcement, each polled every 2 s
+for at most 300 s, the conversion (`envoy-dispatch convert-issues`) and what it left, the reset of
+the upgrade database, which refuses, naming the driver, any address but this machine's
+(`loopback_database_url`), the checks of an issue key and a uuid, a node's tuples and its move,
+the person's edit, and the socket peer the issue-room drivers write with, the Bun program
+`e2e/acceptance/issue-room-peer.ts`. Its head comment names the variables each function reads.
 
 `e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`: it
 measures which of our listed addresses a machine reaches over the path given to a person from

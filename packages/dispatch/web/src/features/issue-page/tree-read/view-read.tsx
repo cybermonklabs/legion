@@ -1,3 +1,4 @@
+import { itemFromSearch } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
@@ -8,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useLocation } from "react-router-dom";
 
 import type { IssueDetails } from "../../../api/types";
 import { QueryError } from "../../../components/QueryError";
@@ -59,11 +61,16 @@ import {
  * On Spec it also sends Conversation's read from 1024 px up, where the Contents pane beside the
  * view reads it (R13): Spec's own readers watch that read and send nothing (`useTreeRead`), since
  * Spec's view read holds the memo and the statements the view draws, and below 1024 px the Outline
- * sheet sends it as it opens (`useStartOutlineRead`). Once sent it is held for the load.
+ * sheet sends it as it opens (`useStartOutlineRead`), or the address does where it names an ask
+ * or a comment beside the view (`?ask=`, `?comment=`): that item is a node of Conversation's
+ * read alone, and the view draws a row for it. Once sent it is held for the load.
  *
  * The page mounts the stage once for each issue it opens (`IssueOutlinePage`'s `key`), so a mount
  * here is a load: it drops whatever view a past load of the issue held, so no load draws a view
- * older than its own tree. It holds the subscription that keeps the tree and its views fresh
+ * older than its own tree. That drop is an effect, after the page's first render, so the load's
+ * end, as the stage goes, marks the issue's views an earlier visit's (`resetViews`' answer):
+ * until the next load's drop no reader takes their answers (`loadEnded`), on that load's first
+ * render either. It holds the subscription that keeps the tree and its views fresh
  * (`subscribeTreeFreshness`), which holds them while a write of the issue is out: at the write's
  * settle, with the live feed up, only what the hold owes is asked for, and nothing for a write
  * Dispatch refused; with the feed down, every view is, so the open one is read again and draws
@@ -91,18 +98,22 @@ export function ViewReadProvider({
     [conversation, key]
   );
   // Whether the views of a past load are dropped. No view is read before then: a view read as the
-  // stage mounts would be dropped by that reset and read a second time.
+  // stage mounts would be dropped by that reset and read a second time. The reset's answer ends
+  // the load as the stage goes.
   const [dropped, setDropped] = useState(false);
   useEffect(() => {
-    resetViews(queryClient, key);
+    const end = resetViews(queryClient, key);
     setDropped(true);
+    return end;
   }, [key, queryClient]);
   useEffect(() => subscribeTreeFreshness(queryClient, key), [key, queryClient]);
   const paned = useMediaQuery(CONTENTS_PANE_QUERY);
+  const { search } = useLocation();
+  const namesItem = itemFromSearch(search)?.id !== undefined;
   const startOutline = useStartOutlineRead(key);
   useEffect(() => {
-    if (preset === "spec" && paned) startOutline();
-  }, [paned, preset, startOutline]);
+    if (preset === "spec" && (paned || namesItem)) startOutline();
+  }, [namesItem, paned, preset, startOutline]);
   return (
     <>
       {dropped &&

@@ -93,7 +93,7 @@ import {
   viewKey,
   viewQuery,
 } from "../tree-read/tree-read";
-import { issueCommentsQuery, issueMessagesQuery } from "../useIssueTree";
+import { issueMessagesQuery } from "../useIssueTree";
 import type { OnEditing } from "../useNodeEditing";
 import { check, checkNode, result } from "../verification-filter/verification-fixtures";
 import { SpecFilterBody } from "./SpecFilterBody";
@@ -1224,19 +1224,23 @@ test("a cell whose group is headed by its question draws the question's first se
   }
 });
 
-/** `ref`'s tie as `shaped` makes it, made at `created`, whose far end - the statement - last
- *  changed at `changed`. */
-function tieChangedAt(ref: string, created: string, changed: string | null): DecisionLink {
+/** `ref`'s tie as `shaped` makes it, which the decision's links say the statement changed after
+ *  (`changed`), with its far end's `changed_at` as `changedAt`. */
+function tieChanged(ref: string, changed: boolean, changedAt: string | null = null): DecisionLink {
   const tie = shaped(ref);
-  return { ...tie, created_at: created, to: { ...tie.to, changed_at: changed } };
+  return {
+    ...tie,
+    changed_since_tie: changed,
+    created_at: "2026-11-14T10:00:00Z",
+    to: { ...tie.to, changed_at: changedAt },
+  };
 }
 
 // R5: where a statement's words changed after the tie that names its decision, its because line
-// says "Changed since": the tie's far end's `changed_at` is later than the tie's `created_at`,
-// both as the decision's links in the Spec view read answer them, read as the times they name. A
-// statement the decision named after its last change says nothing of it, and so does r3, whose
-// two times would order the other way read as text: its far end changed 0.12 s past the second,
-// before the tie made 0.123456 s past it, though "…00.12Z" sorts after "…00.123456Z".
+// says "Changed since": the tie's own `changed_since_tie`, as the decision's links in the Spec
+// view read answer it. A statement the server says is unchanged since its tie says nothing of it,
+// r3 too, whose far end carries a `changed_at` after the tie's `created_at`: the page reads no
+// time of its own for it.
 test("a statement changed after its tie says Changed since", () => {
   const { read, view } = drawBody(
     issueTree([statement("r1"), statement("r2"), statement("r3"), decisionNode("d1")]),
@@ -1245,13 +1249,9 @@ test("a statement changed after its tie says Changed since", () => {
         decision: {
           kind: "agent",
           links: [
-            tieChangedAt(statementRef("r1"), "2026-11-14T10:00:00Z", "2026-11-15T08:00:00Z"),
-            tieChangedAt(statementRef("r2"), "2026-11-14T10:00:00Z", "2026-11-14T09:00:00Z"),
-            tieChangedAt(
-              statementRef("r3"),
-              "2026-11-14T10:00:00.123456Z",
-              "2026-11-14T10:00:00.12Z"
-            ),
+            tieChanged(statementRef("r1"), true),
+            tieChanged(statementRef("r2"), false),
+            tieChanged(statementRef("r3"), false, "2026-11-15T08:00:00Z"),
           ],
         },
       }),
@@ -1456,14 +1456,13 @@ function answerThreadsTree(statements: readonly string[] = []) {
 
 /** `client` holding every read the page's tree is built from, answered: the issue holds two
  *  threads of comments and nothing else, as the outline's own cases seed them
- *  (`IssueTree.test.tsx`'s `seedBodyReads`), and the tree read holds them as nodes
+ *  (`IssueTree.test.tsx`'s `seedBodyReads`), which the tree read holds as nodes
  *  (`threadsTree`). Who is reading is each case's own. */
 function holdTreeReads(client: QueryClient): void {
   client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
   client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
   client.setQueryData(viewKey(KEY, "spec"), treeAnswer([]));
   client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
-  client.setQueryData(issueCommentsQuery(KEY).queryKey, [...TWO_THREADS]);
   client.setQueryData(issueMessagesQuery(KEY).queryKey, []);
   client.setQueryData(outlineQuery(KEY, "conversation").queryKey, threadsTree());
 }
@@ -1533,7 +1532,6 @@ test("with Conversation's read out, the statements line's Retry sends the refuse
   client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
   client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
   client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
-  client.setQueryData(["comments", KEY], TWO_THREADS);
   client.setQueryData(["issue-messages", KEY], []);
   // Conversation's read never answers; the Spec view read is refused, and then answers when the
   // case says.
@@ -1566,6 +1564,83 @@ test("with Conversation's read out, the statements line's Retry sends the refuse
     );
   } finally {
     view.unmount();
+    names.mockRestore();
+    trees.mockRestore();
+  }
+});
+
+// The reset each load of the issue makes of its views (`ViewReadProvider`), on Spec as on
+// Decisions: no load draws a view older than its own tree. An earlier visit of the issue on Spec
+// read the Spec view while a decision since removed stood beside statement r1, and the cache keeps
+// that answer as the reader comes back to the issue on Spec, with this load's read of the view
+// out. No reader takes the earlier visit's answer (`useIssueTree.ts`' `viewOf`, `useTreeRead`,
+// `loadEnded`), on the load's first render either, so the column's first render draws no cell of
+// that decision, and none is drawn while the read is out.
+test("on a return to the issue on Spec, the column's first render draws no cell of the earlier visit's Spec view answer", async () => {
+  const issue = issueDetails();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(["whoami"], { kind: "user", login: READER });
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead(["r1"]));
+  client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
+  client.setQueryData(["issue-messages", KEY], []);
+  // The Spec view read of the earlier visit: statement r1, and beside it an agent's decision.
+  const earlierAnswer = specViewAnswer([
+    answerNode("r1", "requirement", {
+      document: { artifact_id: "artifact-spec", position: 0, slug: SPEC_SLUG },
+      role: "query",
+    }),
+    decision("removed", { decision: { kind: "agent", links: [shaped(statementRef("r1"))] } }),
+  ]);
+  let earlierVisit = true;
+  // Conversation's read never answers; the Spec view read answers on the earlier visit, and this
+  // load's never does.
+  const trees = spyOn(api, "getIssueTree").mockImplementation((_key, query = {}) =>
+    query.view === "spec" && earlierVisit
+      ? Promise.resolve(earlierAnswer)
+      : Promise.withResolvers<never>().promise
+  );
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const cell = "[data-spec-cell][data-decision-id]";
+  /** Whether `nodes` holds a cell of the earlier visit's decision, or an element around one. */
+  const holdsCell = (nodes: NodeList): boolean =>
+    [...nodes].some(
+      (one) => one instanceof Element && (one.matches(cell) || one.querySelector(cell) !== null)
+    );
+  try {
+    const earlier = drawStage("", { client, issue, preset: "spec" });
+    await waitFor(() =>
+      expect(
+        earlier.container.querySelector(cell),
+        "the earlier visit drew no cell of its decision"
+      ).not.toBeNull()
+    );
+    earlier.unmount();
+    earlierVisit = false;
+
+    // Every element the return's renders put on the page or took off it, its first render's
+    // among them, which the load's reset redraws before `render` hands the page back.
+    const drawn = new MutationObserver(() => {});
+    drawn.observe(document.body, { childList: true, subtree: true });
+    const view = drawStage("", { client, issue, preset: "spec" });
+    const records = drawn.takeRecords();
+    drawn.disconnect();
+    try {
+      expect(
+        records.some((record) => holdsCell(record.addedNodes) || holdsCell(record.removedNodes)),
+        "the column's first render on the return drew the earlier visit's decision"
+      ).toBe(false);
+      await act(() => Bun.sleep(20));
+      expect(
+        view.container.querySelector(cell),
+        "the column drew the earlier visit's decision while this load's read is out"
+      ).toBeNull();
+    } finally {
+      view.unmount();
+    }
+  } finally {
     names.mockRestore();
     trees.mockRestore();
   }
@@ -1749,7 +1824,6 @@ test("a names line that stands again in the Spec view for a refusal it counted i
   );
   const threads = (comments: typeof cited) =>
     treeAnswer([treeNode(KEY, "issue", null), ...comments.map((one) => commentNode(one))]);
-  client.setQueryData(issueCommentsQuery(KEY).queryKey, cited);
   client.setQueryData(outlineQuery(KEY, "conversation").queryKey, threads(cited));
   const trees = answerThreadsTree();
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: READER });
@@ -1760,7 +1834,6 @@ test("a names line that stands again in the Spec view for a refusal it counted i
     await waitFor(() => alertSaying(view, STATE_LINES.names_unreadable));
     const fewer = cited.filter((comment) => comment.id !== "reply-b");
     await act(async () => {
-      client.setQueryData(issueCommentsQuery(KEY).queryKey, fewer);
       client.setQueryData(outlineQuery(KEY, "conversation").queryKey, threads(fewer));
     });
     await waitFor(() =>
@@ -1771,7 +1844,6 @@ test("a names line that stands again in the Spec view for a refusal it counted i
     );
     names.mockReturnValueOnce(new Promise<never>(() => {}) as never);
     await act(async () => {
-      client.setQueryData(issueCommentsQuery(KEY).queryKey, cited);
       client.setQueryData(outlineQuery(KEY, "conversation").queryKey, threads(cited));
     });
     const words = await waitFor(() => view.getByText(STATE_LINES.names_unreadable));

@@ -1,16 +1,22 @@
 import { isIdPrefix, itemFromSearch } from "@legion/contracts";
-import { notifyManager, type QueryKey, useQueryClient } from "@tanstack/react-query";
+import { notifyManager, type QueryKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
 
 import { ambiguousItems } from "../../api/client";
-import type { Ask, Comment, IssueDetails, MessageRead } from "../../api/types";
+import type { Ask, AskThread, Comment, IssueDetails, MessageRead } from "../../api/types";
 import {
   type ItemLanding,
   type ItemRoute,
   isItemRoute,
   useItemLanding,
 } from "../issue/useItemLanding";
-import { askQuery, commentQuery, messageQuery, referencesQuery } from "../refs/reference-target";
+import {
+  askQuery,
+  commentQuery,
+  EVENT_FRESH,
+  messageQuery,
+  referencesQuery,
+} from "../refs/reference-target";
 import { type IssueRoute, parseIssuePath } from "../refs/routes";
 import { prefixReference } from "../refs/text-references";
 import {
@@ -200,13 +206,72 @@ export type AddressFallback =
     };
 
 /** The reads of the issue's conversation the tree's turns come from, as the page holds them:
- *  each undefined until it has answered. */
+ *  each undefined until it has answered. The asks carry their threads, the comments under each
+ *  (`AskThread.replies`). */
 export interface ConversationReads {
-  readonly asks: readonly Pick<Ask, "id" | "kind">[] | undefined;
-  readonly comments:
-    | readonly Pick<Comment, "answers" | "ask_id" | "author" | "id" | "reply_to">[]
+  readonly asks:
+    | readonly (Pick<Ask, "id" | "kind"> & {
+        readonly thread?: Pick<AskThread, "replies">;
+      })[]
     | undefined;
   readonly messages: readonly MessageRead[] | undefined;
+}
+
+/** What the agents-only rule and the walk to a drawn ancestor read of a comment
+ *  (`agentsOnlyIds`, `agentsOnlyAncestor`). */
+type ThreadComment = Pick<Comment, "answers" | "ask_id" | "author" | "id" | "reply_to">;
+
+/**
+ * The comments of the thread the comment `id` stands in, which tell whether only agents wrote in
+ * it (`agentsOnlyItem`), read when an address names a comment the tree holds no node of: the
+ * comment's own read (`GET /api/v1/comments/{id}`, `commentQuery`) is watched passively here,
+ * since `useItemLanding` sends it under the same key, so one read serves both and no second
+ * observer restarts a failed read; where the answered comment is a reply, its thread head's read
+ * is sent the same way, since the server stores a reply's `reply_to` as its thread's head
+ * (`agents-only.ts`); and where it was written under an ask, that ask's thread comes from the
+ * asks read the page holds. `deciding` holds while the comment has answered and the head's read
+ * or the asks read is still out, so the address waits before taking the landing's answer.
+ */
+function useCommentThread(
+  id: string | undefined,
+  issueKey: string,
+  asks: ConversationReads["asks"]
+): { readonly comments: readonly ThreadComment[] | undefined; readonly deciding: boolean } {
+  const own = useQuery({ ...commentQuery(id), enabled: false });
+  const comment =
+    id !== undefined && own.data?.comment.issue_key === issueKey ? own.data.comment : undefined;
+  const head =
+    comment !== undefined &&
+    comment.ask_id === null &&
+    comment.reply_to !== null &&
+    comment.reply_to !== id
+      ? comment.reply_to
+      : undefined;
+  const headRead = useQuery({ ...commentQuery(head), ...EVENT_FRESH, enabled: head !== undefined });
+  return useMemo(() => {
+    if (comment === undefined) return { comments: undefined, deciding: false };
+    if (comment.ask_id !== null) {
+      if (asks === undefined) return { comments: undefined, deciding: true };
+      const replies = asks.find((ask) => ask.id === comment.ask_id)?.thread?.replies ?? [];
+      return { comments: [comment, ...replies], deciding: false };
+    }
+    if (head === undefined) {
+      return { comments: [comment, ...(own.data?.replies ?? [])], deciding: false };
+    }
+    if (headRead.isPending) return { comments: undefined, deciding: true };
+    const thread = headRead.data;
+    return {
+      comments:
+        thread === undefined
+          ? undefined
+          : [
+              thread.comment,
+              ...(thread.replies ?? []).filter((one) => one.id !== comment.id),
+              comment,
+            ],
+      deciding: false,
+    };
+  }, [asks, comment, head, headRead.data, headRead.isPending, own.data?.replies]);
 }
 
 /**
@@ -268,8 +333,11 @@ interface Following {
  * An ask, a comment or a message of the outline (`outlineItemRoute`) is told from the
  * conversation's reads where it is a turn of a thread only agents wrote in, as the tree leaves
  * it out (`agentsOnlyItem`, with the asks the tree draws its nodes from: the issue's open asks
- * and the asks read), and lands on its nearest drawn ancestor (`agents-only`). Every other item
- * is read as the old page reads one (`useItemLanding`), and nothing is read for an item the tree
+ * and the asks read), and lands on its nearest drawn ancestor (`agents-only`). A comment's thread
+ * is read for it then, as its own read and its thread head's (`useCommentThread`), and nothing
+ * else of the item is decided until those answer; a message's is the messages read's. Every
+ * other item is read as the old page reads one (`useItemLanding`), whose read of a comment is
+ * the one its thread was told from, and nothing is read for an item the tree
  * holds, or held earlier in the following. Its `turn` - an item of this issue beside no
  * document, whose page is the outline - draws the outline as it stands, which lands on the node
  * once a read draws it. A read that runs again holds no answer, so its landing is pending again
@@ -332,24 +400,25 @@ export function useAddressFallback({
       ? item
       : undefined;
   const unheldId = unheld?.id;
-  const { asks, comments, messages } = reads;
+  const { asks, messages } = reads;
   const openAsks = issue.open_asks;
+  // A comment written with its whole id: its thread, which says whether only agents wrote in it.
+  const commentId = unheld?.kind === "comment" && !isIdPrefix(unheld.id) ? unheld.id : undefined;
+  const { comments: thread, deciding } = useCommentThread(commentId, issue.key, asks);
   const agentsOnly = useMemo(
     () =>
-      unheldId === undefined
+      unheldId === undefined || deciding
         ? undefined
-        : agentsOnlyItem({ id: unheldId, kind: "item" }, comments, messages, [
+        : agentsOnlyItem({ id: unheldId, kind: "item" }, thread, messages, [
             ...(openAsks ?? []),
             ...(asks ?? []),
           ]),
-    [asks, comments, messages, openAsks, unheldId]
+    [asks, deciding, messages, openAsks, thread, unheldId]
   );
   const ancestor = useMemo(
     () =>
-      agentsOnly === undefined
-        ? undefined
-        : agentsOnlyAncestor(root, agentsOnly, comments, messages),
-    [agentsOnly, comments, messages, root]
+      agentsOnly === undefined ? undefined : agentsOnlyAncestor(root, agentsOnly, thread, messages),
+    [agentsOnly, messages, root, thread]
   );
   const found = before?.found === true || reveal !== undefined || agentsOnly !== undefined;
   // The issue's own route reads nothing: the landing reads an item only where it falls back.
@@ -370,8 +439,9 @@ export function useAddressFallback({
   const failures = state?.errorUpdateCount ?? 0;
   const failedBefore = before?.failedBefore ?? (readKey === undefined ? undefined : failures);
   const refused = landing?.kind === "pending" ? ambiguousItems(state?.error) : undefined;
-  const settled: Following["settled"] =
-    refused !== undefined
+  const settled: Following["settled"] = deciding
+    ? before?.settled
+    : refused !== undefined
       ? { candidates: refused, kind: "ambiguous" }
       : landing?.kind === "pending"
         ? before?.settled
@@ -403,7 +473,9 @@ export function useAddressFallback({
   }
   if (found) return undefined;
   if (absent) return { kind: "absent", target: named };
-  if (read === undefined || settled === undefined || settled.kind === "turn") return undefined;
+  if (read === undefined || deciding || settled === undefined || settled.kind === "turn") {
+    return undefined;
+  }
   return {
     failure: failures - (failedBefore ?? failures),
     kind: "landing",

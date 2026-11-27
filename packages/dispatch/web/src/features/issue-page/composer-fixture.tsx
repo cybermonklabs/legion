@@ -349,7 +349,6 @@ export function drawBoxPage(
   root: TreeNode = outline()
 ): BoxPage {
   client.setQueryData(["asks", KEY, "thread"], reads.asks);
-  client.setQueryData(["comments", KEY], reads.comments);
   client.setQueryData(["issue-messages", KEY], []);
   client.setQueryData(["agents"], [plannerAgent()]);
   const held: { writer?: OutlineWriter } = {};
@@ -388,10 +387,16 @@ export function drawBoxPage(
 
 /** Answers every read the box and the writer make, and the reads behind the reference picker and
  *  an edit's blocks, which the box hosts, from `reads` as they stand when each read is made.
- *  Answers the comments read and the search the picker's `#` door reads, for a test to read, and
- *  what puts every read back. */
+ *  Answers the issue's whole comments list, which the new page reads none of, a comment's own
+ *  read, which a Reply and the write line make of the comment a reply answers, and the search the
+ *  picker's `#` door reads, for a test to read, and what puts every read back. */
 export function answerBoxReads(reads: BoxReads) {
   const commentsRead = spyOn(api, "listComments").mockImplementation(async () => reads.comments);
+  const commentRead = spyOn(api, "getComment").mockImplementation(async (id) => {
+    const comment = reads.comments.find((one) => one.id === id);
+    if (comment === undefined) throw new Error(`the reads hold no comment ${id}`);
+    return { comment, replies: [] } as never;
+  });
   const searchRead = spyOn(api, "search").mockResolvedValue(searchResponse([]));
   const others = [
     spyOn(api, "listIssueAskThreads").mockImplementation(async () => reads.asks as never),
@@ -407,9 +412,10 @@ export function answerBoxReads(reads: BoxReads) {
     })),
   ];
   return {
+    commentRead,
     commentsRead,
     restore: () => {
-      for (const spy of [commentsRead, searchRead, ...others]) spy.mockRestore();
+      for (const spy of [commentsRead, commentRead, searchRead, ...others]) spy.mockRestore();
     },
     searchRead,
   };

@@ -49,6 +49,10 @@ const (
 	// catchUpReplaced: the stored history is no longer the one the room holds a prefix of
 	// (historyReplaced), so no row can bring it up to date: the room is closed and reloaded.
 	catchUpReplaced
+	// catchUpMoved: the room's document moved into its issue's room (document_rooms), so the room
+	// takes nothing more (ErrRoomMoved): it is closed, and its browsers connect again, which
+	// resolves the document to the issue's room.
+	catchUpMoved
 	// catchUpGone: the room no longer holds the instance asked about, or none at all.
 	catchUpGone
 )
@@ -63,7 +67,7 @@ const catchUpStatement = `
 	with bounds as (
 		select coalesce(min(version), 0) as low,
 		       coalesce((select ceiling from doc_checkpoints where artifact_id = $1), max(version), 0) as high,
-		       (select moved.room::text from document_rooms moved where moved.artifact_id = $1) as moved
+		       ` + movedRoomSQL + ` as moved
 		from doc_updates where artifact_id = $1
 	)
 	select bounds.low, bounds.high, bounds.moved, stored.version, stored.update
@@ -124,9 +128,10 @@ func readCatchUp(ctx context.Context, q Queryer, room string, through int64) (lo
 // instance runs at a time (roomInstance.catchUp); the caller holds the document's advisory lock
 // only when it already did (a settlement, reading through its own transaction), and the follower
 // (roomCatchUps) never takes it while it holds that mutex. A history that is no longer the one the
-// instance holds a prefix of is reported, not applied (catchUpReplaced): the caller closes the
-// room. A batch that cannot be merged, applied or broadcast fails the room, which reloads from
-// the store, and is returned as the error.
+// instance holds a prefix of is reported, not applied (catchUpReplaced), and so is a document that
+// moved into its issue's room (catchUpMoved): the caller closes the room. A batch that cannot be
+// merged, applied or broadcast fails the room, which reloads from the store, and is returned as
+// the error.
 //
 // After a batch the document must have nothing pending: every row past the cursor was applied,
 // and each depends only on rows before it, so an item left waiting for a missing dependency is a
@@ -150,10 +155,10 @@ func (s *Service) catchUpRoom(ctx context.Context, q Queryer, room string, live 
 	if err != nil {
 		return 0, err
 	}
-	// A room whose document moved into its issue's room takes nothing more (ErrRoomMoved), and is
-	// closed as one whose history was replaced is: its browsers connect again, and their admission
-	// resolves the document to the issue's room.
-	if moved || storedHistoryReplaced(through, low, high) {
+	if moved {
+		return catchUpMoved, nil
+	}
+	if storedHistoryReplaced(through, low, high) {
 		return catchUpReplaced, nil
 	}
 	versions := make([]int64, 0, len(rows))
@@ -466,9 +471,10 @@ func (c *roomCatchUps) woke(ctx context.Context) {
 }
 
 // catchUp is one catch-up of room's resident instance on the lane (catchUpRoom, read through the
-// pool), and what follows from it: a replaced history closes the room (closeReplaced), and a
-// catch-up that reached no verdict is tried again later (armRetry). A room with no instance
-// resident has nothing to catch up, but one still loading is looked for again shortly.
+// pool), and what follows from it: a replaced history closes the room (closeReplaced), and so does
+// a document that moved into its issue's room (closeMovedRoom), and a catch-up that reached no
+// verdict is tried again later (armRetry). A room with no instance resident has nothing to catch
+// up, but one still loading is looked for again shortly.
 func (c *roomCatchUps) catchUp(ctx context.Context, room string) {
 	service := c.service
 	live := service.srv.GetDoc(room)
@@ -488,6 +494,13 @@ func (c *roomCatchUps) catchUp(ctx context.Context, room string) {
 		c.armRetry(room)
 	case outcome == catchUpReplaced:
 		c.closeReplaced(ctx, room, live)
+	case outcome == catchUpMoved:
+		// A document_rooms row, once written, is never moved or removed (targetOf), so the verdict
+		// needs no read under the document's lock, as a replaced history's does (closeReplaced):
+		// the room is closed as the move's own notice closes it (documentRoomsMoved), and a room
+		// whose close fails is read again after the next LISTEN (recheckMovedRooms).
+		c.settled(room)
+		service.closeMovedRoom(ctx, room)
 	default:
 		c.settled(room)
 	}

@@ -105,7 +105,7 @@ type componentRow struct {
 // r-view-end contract). It walks the rows in their primary key's order, one batch a transaction
 // (writeComponentBatch).
 func backfillComponents(ctx context.Context, database *store.Store) (KindBackfill, error) {
-	done := KindBackfill{Kind: "component"}
+	done := KindBackfill{Kind: graphstore.KindComponent}
 	var afterProject, afterID string
 	for {
 		rows, err := database.Pool.Query(ctx, componentRowsStatement, afterProject, afterID, backfillBatch)

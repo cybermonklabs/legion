@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { Actor } from "../../api/types";
@@ -16,10 +16,10 @@ import {
   type OutlineLook,
   type OutlineNames,
 } from "../conversation/MentionComposer";
-import { type StatementAnchor, sameStatement, saveCommentEdit } from "../conversation/send-request";
+import { type StatementAnchor, sameStatement } from "../conversation/send-request";
 import { AgentName, type AgentStateWords } from "../refs/AgentName";
 import type { RefPickerWords } from "../refs/ref-picker";
-import { EVENT_FRESH } from "../refs/reference-target";
+import { commentQuery, EVENT_FRESH } from "../refs/reference-target";
 import { useMediaQuery } from "../shell/useDialog";
 import { FOOT_HEIGHT_PROPERTY, HEADER_SCROLLS_QUERY } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
@@ -44,7 +44,7 @@ import {
 } from "./page-words";
 import { TAB_STOP_ROW } from "./tree-focus";
 import { nodesInOrder } from "./tree-keys";
-import { issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
+import { issueMessagesQuery } from "./useIssueTree";
 
 /** The kinds the line writes, as its chips before Send, in this order: a comment, which is on at
  *  first, and a question, which is an ask of the issue with no options (R2). A later part adds a
@@ -317,6 +317,7 @@ export function IssueComposer({
           editing={writer.editing}
           issueKey={issueKey}
           place={place}
+          tree={tree}
           writer={writer}
         />
       )}
@@ -400,11 +401,17 @@ function WriteLine({
   writer: OutlineWriter;
 }): ReactNode {
   const { reply, statement } = writer;
-  // The issue's comments and messages as the outline reads them, under its keys and kept fresh as
-  // it keeps them (`OutlineWriterProvider`), so they cost no request of their own: the post a reply
-  // answers as it stands now, which tells the composer a post its author deleted while the line
-  // was open (`MentionComposer`'s `replyParent`).
-  const comments = useQuery({ ...issueCommentsQuery(issueKey), ...EVENT_FRESH });
+  // The comment a reply answers, read alone (`GET /api/v1/comments/{id}`) under the key the Reply
+  // that aimed the line read it by (`OutlineWriterProvider`), and the issue's messages as the
+  // outline reads them, each kept fresh as the outline keeps its reads: the post a reply answers
+  // as it stands now, which tells the composer a post its author deleted while the line was open
+  // (`MentionComposer`'s `replyParent`). No line reads the issue's whole comments list.
+  const replied = reply?.parentKind === "comment" ? reply.id : undefined;
+  const comment = useQuery({
+    ...commentQuery(replied),
+    ...EVENT_FRESH,
+    enabled: replied !== undefined,
+  });
   const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH });
   // A statement's comment carries the statement's document, its whole words and its row alone,
   // never the author a Reply aimed the line with, so a send held over a refusal or a reload
@@ -521,7 +528,11 @@ function WriteLine({
       onSent={() => finish(writer, place, { to: aim?.landsOn ?? "newest", under })}
       outline={look}
       owner={owner}
-      replyParent={replyParentOf(reply, comments.data ?? [], messages.data ?? [])}
+      replyParent={replyParentOf(
+        reply,
+        comment.data === undefined ? [] : [comment.data.comment],
+        messages.data ?? []
+      )}
       replyTo={reply}
     />
   );
@@ -555,24 +566,30 @@ function drawnTargets(root: TreeNode): {
 }
 
 /** The reader's own comment, edited in the line: its words in the box, Save writes them back,
- *  and the outline draws the comment again from the read that answers after and takes the
- *  reader back to its row. */
+ *  and the outline draws the comment again from the tree read, which the edit's event reads
+ *  again (`api/event-refresh.ts`), and takes the reader back to its row. */
 function EditLine({
   editing,
   issueKey,
   place,
+  tree,
   writer,
 }: {
   editing: { readonly body: string; readonly id: string };
   issueKey: string;
   place: LinePlace;
+  tree: TreeNode | undefined;
   writer: OutlineWriter;
 }): ReactNode {
-  const queryClient = useQueryClient();
-  // The comment's author, which the target line names it by, from the read the outline is drawn
-  // from.
-  const comments = useQuery(issueCommentsQuery(issueKey));
-  const author = comments.data?.find((one) => one.id === editing.id)?.author;
+  // The comment's author, which the target line names it by, from the outline's tree the reader
+  // pressed Edit in: the tree read's node of the comment.
+  const author = useMemo(
+    () =>
+      tree === undefined
+        ? undefined
+        : nodesInOrder(tree).find((node) => conversationItem(node)?.id === editing.id)?.author,
+    [editing.id, tree]
+  );
   const owner = useMemo(() => ({ issueKey, kind: "issue" as const }), [issueKey]);
   const mutationKey = useMemo(
     () => [...writer.sendKey, "edit", editing.id],
@@ -608,11 +625,6 @@ function EditLine({
       onSent={back}
       outline={look}
       owner={owner}
-      saveEdit={async (id, body, carried, bounds) => {
-        const saved = await saveCommentEdit(id, body, carried, bounds);
-        await queryClient.invalidateQueries({ queryKey: issueCommentsQuery(issueKey).queryKey });
-        return saved;
-      }}
     />
   );
 }

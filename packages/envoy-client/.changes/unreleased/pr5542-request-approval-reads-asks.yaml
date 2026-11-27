@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    `dispatch request-approval` judges each ask block of the document by the server's ask: a block's own ask by the ask itself, and a copy by its source's state in the live text's `asks`. The `state` a stored version records on a block's opening line decides nothing there: an answered ask is no open block while the latest version has not yet settled its answer, and an open ask is open whatever that line holds. Against a Dispatch of the release before, which answers no `asks`, the command still reads the state the latest version records on the block's opening line, and still refuses a block that version shows open although its ask is answered, until the version that holds the answer. The confirmation it prints says that a person's answer, resolve or decline writes one version, and that an approval carries across it when it is that version's whole change.
+time: 2026-11-26T03:00:04Z
+custom:
+    Issue: pr5542

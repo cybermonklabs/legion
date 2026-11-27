@@ -430,11 +430,12 @@ test("an inline link keeps its line and grows its hit box without covering its n
     { ask_id: ask.id, body: "Still measuring." },
     { actor: { id: "e2e-session", kind: "session" }, as: "agent" }
   );
-  // An open ask's question renders in full on the Inbox, so it is where a body with a wrapped
-  // link, two stacked links and two links on consecutive lines can be measured. A generous hit
-  // box would reach the words beside the first, the link below the stacked pair's upper one, and
-  // the text of the line above the last. A question reads a single newline as a space, so the
-  // last pair is split by a hard break.
+  // An open ask's question renders in full in the Inbox's card - on a phone, the card of the
+  // reading view its row opens - so it is where a body with a wrapped link, two stacked links and
+  // two links on consecutive lines can be measured. A generous hit box would reach the words
+  // beside the first, the link below the stacked pair's upper one, and the text of the line above
+  // the last. A question reads a single newline as a space, so the last pair is split by a hard
+  // break.
   const bodyAsk = await createAsk(
     issue.key,
     {
@@ -632,11 +633,13 @@ test("an inline link keeps its line and grows its hit box without covering its n
       .toBe("Upper line");
 
     await navigateInApp(page, "/");
-    const card = page.getByTestId(`ask-${bodyAsk.id}`);
+    // On a phone the Inbox lists short rows: the question's card is in the reading view its row
+    // opens, in place of the list, and the measurement reads the links there.
+    const card = await askCard(page, bodyAsk.id);
     await expect(card.getByRole("link", { name: "Second choice" })).toBeVisible();
 
-    const measured = await page.evaluate(() => {
-      const links = [...document.querySelectorAll("main a")];
+    const measured = await card.evaluate((cardElement) => {
+      const links = [...cardElement.querySelectorAll("a")];
       const named = (text: string) =>
         links.find((link) => (link.textContent ?? "").startsWith(text));
       const wrapped = named("handbook for the deployment gate");
@@ -857,9 +860,9 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
     await expect.soft(artifactLink.locator("[title]")).toHaveAttribute("title", longName);
 
     // The long name belongs to a project document, whose ask nobody holds: the cleared filter
-    // is where the Inbox lists it. From 1280 px the owner link is on the short row and again
-    // in the reading column's head (INFRA-575), so each is read where it belongs: the name on
-    // the row of the list, the author chip on the question's own card.
+    // is where the Inbox lists it. The owner link is on the short row and again in the head of
+    // the pane the row opens (INFRA-575, INFRA-5200), so each is read where it belongs: the
+    // name on the row of the list, the author chip on the question's own card.
     await navigateInApp(page, "/?assignee=everyone");
     const inboxOwner = inboxList(page).locator("[data-inbox-owner]", { hasText: longName });
     await expectEllipsis(inboxOwner);

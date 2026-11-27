@@ -120,11 +120,11 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 	return response
 }
 
-// One approval request on a document with no request open costs at most twenty-three round trips,
+// One approval request on a document with no request open costs at most twenty-two round trips,
 // counted as the issue read's are (roundTrips): one for each statement it runs on its own and one
 // for each batch, whatever that batch holds. The budget is a ceiling, and the enumeration below
-// is where it goes today: the first eight read the coverage the answer reports, before the
-// request's transaction opens (approvalCoverage); the thirteen after them are the transaction
+// is where it goes today: the first seven read the coverage the answer reports, on the pool before
+// the request's transaction opens (approvalCoverage); the thirteen after them are the transaction
 // itself, and all but two of those are reads: this route's writes are queued and sent as one
 // batch before the commit, which is what holds its transaction id to its database work
 // (INFRA-636). The last two store the display trees of the texts it wrote, after the commit. In
@@ -133,42 +133,42 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //  1. the artifact row the coverage is read for (loadArtifact);
 //  2. a batch of 3: that artifact's versions, its latest review and its open approval request
 //     (loadArtifactRow, queueArtifactDetails);
-//  3. refs.TurnJITOff (`set local jit = off`, issueCoverageOverTuplesAndOwedGaps);
-//  4. a batch of 2: the issue's spec and whether it has a plan, and the documents that owe their
-//     block index with their gap lines (queueOwedDocumentGaps);
-//  5. the head cut of the tuple log (docs.WalkIssueTree's refs.HeadCut);
-//  6. the issue's conversation items, of which there are none (refs.ConversationNodes);
-//  7. the recursive subtree walk under the issue (refs.TreeSubtrees);
-//  8. the issue's ancestor chain and view mark (docs.readViewChain); this spec marks no
+//  3. a batch of 2: the issue's spec and whether it has a plan, and the documents that owe their
+//     block index with their gap lines (issueCoverageOverTuplesAndOwedGaps,
+//     queueOwedDocumentGaps);
+//  4. the head cut of the tuple log (docs.WalkIssueTree's refs.HeadCut);
+//  5. the issue's conversation items, of which there are none (refs.ConversationNodes);
+//  6. the recursive subtree walk under the issue (refs.TreeSubtrees);
+//  7. the issue's ancestor chain and view mark (docs.readViewChain); this spec marks no
 //     requirement, so readTreeRequirements returns without loading block nodes and the coverage
 //     asks nothing further - no descendant walk and no count of what serves each requirement;
-//  9. begin, the request's own transaction;
-//  10. the artifact row (loadArtifact);
-//  11. a batch of 3: that artifact's versions, its latest review and its open approval request
+//  8. begin, the request's own transaction;
+//  9. the artifact row (loadArtifact);
+//  10. a batch of 3: that artifact's versions, its latest review and its open approval request
 //     (loadArtifactRow, queueArtifactDetails);
-//  12. a batch of 2: the owning issue's owner lock, and in the statement after it the row that
+//  11. a batch of 2: the owning issue's owner lock, and in the statement after it the row that
 //     lock guards (requireOpenOwner, through store.LockOwnerAndRead). The lock assigns no
 //     transaction id, and the read is a statement of its own because a statement's snapshot is
 //     taken before it waits;
-//  13. the document's settled version number (settledVersionNumber);
-//  14. a batch of 4: the approval before the write - the latest review and the open request
+//  12. the document's settled version number (settledVersionNumber);
+//  13. a batch of 4: the approval before the write - the latest review and the open request
 //     (attachApproval's queueApprovals) - the transaction's now(), which dates the new ask's node
 //     and is the default its row's created_at takes, and the head's cut of the tuple log, whose
 //     seq the new ask's node pins as the store revision the request was taken at
 //     (requestArtifactApproval, refs.QueueHeadCut);
-//  15. the open approval ask naming this document, which there is none of
+//  14. the open approval ask naming this document, which there is none of
 //     (docs.OpenApprovalAskForDocuments);
-//  16. the person this request reaches, which the answer names (askWaitingOnPerson, the one rule
+//  15. the person this request reaches, which the answer names (askWaitingOnPerson, the one rule
 //     every read of that person shares), read over the owner before the ask's row is queued;
-//  17. the latest approved review the request carries (docs.LatestApprovedReview); the new ask's
+//  16. the latest approved review the request carries (docs.LatestApprovedReview); the new ask's
 //     id is drawn in the process (openApprovalAsk), its time and its store revision were read in
-//     14, and the ref_key that spells the version node its approves tuple names was read with the
-//     document's row in 10, so none of them costs a round trip;
-//  18. the question's references as they stand, which the replacement is planned against
+//     13, and the ref_key that spells the version node its approves tuple names was read with the
+//     document's row in 9, so none of them costs a round trip;
+//  17. the question's references as they stand, which the replacement is planned against
 //     (queueNewAskReferences, through refs.PlanReplace);
-//  19. the ask's block state, read for its parts' plan (refs.PlanAskParts, through
+//  18. the ask's block state, read for its parts' plan (refs.PlanAskParts, through
 //     refs.ReadItemIndex);
-//  20. a batch of 24: the whole write phase, sent back to back - the ask's node, in its
+//  19. a batch of 24: the whole write phase, sent back to back - the ask's node, in its
 //     document's project, which costs no read of its own since the document was read with its
 //     project, and its author's (graphstore.AskFacts), in the four statements of the store's
 //     node write (graphstore.QueueNodes: the read of the supertags the nodes are typed by, the
@@ -186,10 +186,10 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //     followed_by stated under that ask.opened in the statement after it, and the head rows of the
 //     node the follow names (asks.PlanFollowNewAsk, which reads nothing for an ask this request
 //     creates);
-//  21. commit;
-//  22. the display trees of the texts the ask.opened event carries - its question and both option
+//  20. commit;
+//  21. the display trees of the texts the ask.opened event carries - its question and both option
 //     labels - stored in one statement by the publish path (storeEventDisplayTrees);
-//  23. the display tree of the question the request wrote, stored by the route itself, which the
+//  22. the display tree of the question the request wrote, stored by the route itself, which the
 //     table already holds from the statement before it (`on conflict do nothing`): the route
 //     stores what it wrote whether or not the event it published carried the same text.
 //
@@ -200,11 +200,11 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 // ever ask for that document, and the read is not made. A request whose summary writes a `#`
 // pays it once for the two of them.
 //
-// The transaction takes its transaction id at the first statement of 20 and gives it up at 21;
+// The transaction takes its transaction id at the first statement of 19 and gives it up at 20;
 // the per-route window test measures that window, and this test bounds what the route sends
 // around it. The one-phase route sent thirty-seven, its write statements each a round trip of
 // its own between the reads.
-func TestApprovalRequestsCostAtMostTwentyThreeRoundTrips(t *testing.T) {
+func TestApprovalRequestsCostAtMostTwentyTwoRoundTrips(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	counter := &roundTrips{}
@@ -229,8 +229,8 @@ func TestApprovalRequestsCostAtMostTwentyThreeRoundTrips(t *testing.T) {
 	// A ceiling, not an equality: the round trips are counted through helpers several other
 	// requests share, so an exact count reds this row for a change that sends one round trip
 	// fewer and costs nothing. What the name states is the cost bound, and the enumeration above
-	// says where the twenty-three go.
-	const ceiling = 23
+	// says where the twenty-two go.
+	const ceiling = 22
 	if len(counted) > ceiling {
 		t.Fatalf("the approval request made %d round trips, want at most %d:\n%s",
 			len(counted), ceiling, strings.Join(roundTripLines(counted), "\n"))
