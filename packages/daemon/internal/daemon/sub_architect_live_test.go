@@ -119,6 +119,7 @@ type subArchitectLive struct {
 // TestEveryChildThatStartsRunsUnderItsOwnArchitectLive drives the seven steps of the proof
 // against one booted daemon.
 func TestEveryChildThatStartsRunsUnderItsOwnArchitectLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newSubArchitectLive(t)
 	r.step("release", r.releaseStep)

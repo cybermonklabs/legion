@@ -958,6 +958,10 @@ func loopTestDBAt(t *testing.T) (*pgxpool.Pool, string) {
 	if _, err := admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
 		t.Fatalf("create the test database: %v", err)
 	}
+	if _, err := admin.Exec(ctx, testdb.WithoutJIT(name)); err != nil {
+		_, _ = admin.Exec(ctx, "drop database "+name+" with (force)")
+		t.Fatalf("turn JIT off on the test database: %v", err)
+	}
 	u, err := url.Parse(loopTestPG(t))
 	if err != nil {
 		t.Fatal(err)

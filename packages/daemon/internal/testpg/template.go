@@ -83,6 +83,9 @@ func Clone(t testing.TB, prefix string) string {
 		t.Fatalf("clone %s from the template: %v", name, err)
 	}
 	t.Cleanup(func() { dropInBackground(name) })
+	if _, err := shared.admin.Exec(context.Background(), testdb.WithoutJIT(name)); err != nil {
+		t.Fatalf("turn JIT off on the clone %s: %v", name, err)
+	}
 	return clone
 }
 
@@ -238,6 +241,9 @@ func prepare(dsn string) error {
 		return fmt.Errorf("create the template database: %w", err)
 	}
 	shared.template = name
+	if _, err := admin.Exec(ctx, testdb.WithoutJIT(name)); err != nil {
+		return fmt.Errorf("turn JIT off on the template database: %w", err)
+	}
 	st, err := store.Open(ctx, templateURL)
 	if err != nil {
 		return fmt.Errorf("open the template database: %w", err)

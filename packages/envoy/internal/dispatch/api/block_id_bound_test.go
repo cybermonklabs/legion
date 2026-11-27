@@ -223,6 +223,7 @@ func TestARebuildFromMarkdownHoldingABlockIDPastTheBoundIsWritten(t *testing.T) 
 // and the others are, and no write fails, with a 500 or on an index key past its limit
 // (SQLSTATE 54000).
 func TestASuggestionWritingABlockIDPastTheBoundIsAccepted(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	_, handler, database := browserDocumentService(t)
@@ -449,6 +450,7 @@ func TestALongNamedDocumentIsReadByItsOwnReference(t *testing.T) {
 // anchor is, each anchored to that block, and the document's blocks count both against it. No
 // write fails on an index key past its limit (SQLSTATE 54000).
 func TestAnAnchorInsideABlockWhoseIDIsPastTheBoundIsWritten(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	documentService, handler, _ := browserDocumentService(t)

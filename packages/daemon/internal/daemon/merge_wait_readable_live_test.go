@@ -129,6 +129,9 @@ type mergeWaitReadableLive struct {
 // approval that follows it, the two issues the same state carries no wait for at all, and the
 // answer that ends the wait.
 func TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive(t *testing.T) {
+	// Not parallel: a live proof on the one NATS server LEGION_E2E_NATS_URL names: it creates the stream
+	// ENVOY_NOTIFICATIONS there and writes the file LEGION_E2E_DAEMON_LOG names, which a proof beside it
+	// would share, and its steps watch liveSettle's 3 s for what must not happen.
 	r := newMergeWaitReadableLive(t)
 	r.step("merge-wait-appears", r.mergeWaitAppears)
 	r.step("a-confirming-read-moves-the-stamp", r.aConfirmingReadMovesTheStamp)

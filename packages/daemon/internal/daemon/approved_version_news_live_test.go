@@ -205,6 +205,9 @@ func (tree *versionNewsTree) steps() []record.DesignStep {
 // `root-issues`, and the last against a second daemon, on a configuration and a database of its
 // own, gating nothing.
 func TestAnApprovedVersionReachesItsHolderLive(t *testing.T) {
+	// Not parallel: a live proof on the one NATS server LEGION_E2E_NATS_URL names: it creates the stream
+	// ENVOY_NOTIFICATIONS there and writes the file LEGION_E2E_DAEMON_LOG names, which a proof beside it
+	// would share, and its steps watch liveSettle's 3 s for what must not happen.
 	r := newVersionNewsLive(t)
 	r.boot("root-issues", config.DesignGateRootIssues.Steps(), liveRepo, r.rootIssuesFixture)
 	r.run(versionNewsA2, r.a2)
