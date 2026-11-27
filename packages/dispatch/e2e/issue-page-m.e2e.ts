@@ -5424,7 +5424,7 @@ test("what references the focused row names each task that serves it by the task
       };
     },
     async (page, seeded) => {
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expect(tree(page)).toBeVisible();
       const facts = await focusedRowFacts(page, seeded.statement);
       const references = facts.locator("[data-node-references]");
@@ -5552,7 +5552,7 @@ test("what references the focused row names a task whose block opens with long a
       return { key: issue.key, statement: blockNode(spec.slug, "r-served") };
     },
     async (page, seeded) => {
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expect(tree(page)).toBeVisible();
       const facts = await focusedRowFacts(page, seeded.statement);
       const references = facts.locator("[data-node-references]");
@@ -5639,7 +5639,7 @@ test("what references the focused row names a code block that quotes it by the f
       };
     },
     async (page, seeded) => {
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expect(tree(page)).toBeVisible();
       const facts = await focusedRowFacts(page, seeded.task);
       const references = facts.locator("[data-node-references]");
