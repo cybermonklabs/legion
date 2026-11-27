@@ -187,14 +187,10 @@ itself, whose tests import its sources by relative path.
   set in a `beforeAll` and cleared in the matching `afterAll`, as `setNatsConnectForTests` and
   `resetNatsConnectForTests` in `packages/pi-envoy/extensions/envoy.ts` are.
 
-- A suite that runs jj or git takes its isolation from `versionControlEnvironment`
-  (`@legion/test-fixtures/version-control-environment`): a home of the suite's own with a jj
-  configuration file in it, no git configuration at all (`GIT_CONFIG_GLOBAL=/dev/null`,
-  `GIT_CONFIG_NOSYSTEM=1`), no credential prompt, and the identity jj commits as. So neither the
-  developer's `~/.jjconfig.toml`, nor their `~/.gitconfig`, nor the system gitconfig decides a
-  result. A suite whose code under test starts jj with the process's own environment puts those
-  names on `process.env` itself, and hands `versionControlNames` to `restoreEnvironment` so the next
-  file finds its own again.
+- A suite that runs jj or git takes its isolation from `versionControlEnvironment` (`@legion/test-fixtures/version-control-environment`): a home of the suite's own with a jj configuration file in it, no git configuration at all (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`), no credential prompt, and the identity jj commits as.
+  So neither the developer's `~/.jjconfig.toml`, nor their `~/.gitconfig`, nor the system gitconfig decides a result.
+  In an issue pod the `git` first on `PATH` is Legion's wrapper, whose pre-push hook clears a push that can only write to a local path, such as a row's push to a bare repository under its own directory, so the fixture carries no shared leak check and a suite whose rows push only to such a path names none.
+  A suite whose code under test starts jj with the process's own environment puts those names on `process.env` itself, and hands `versionControlNames` to `restoreEnvironment` so the next file finds its own again.
 
 - Take a port from the kernel: bind port 0, read back the port the listener reports, and hold that
   listener from the moment it binds, so nothing else on the machine can take the port between the
