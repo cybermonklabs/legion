@@ -67,8 +67,12 @@ type CloseWait struct {
 	// Production is what the production term waits for, read only from a check of the issue's
 	// generation at its newest merge: "" for nothing, or one of the Production values.
 	Production string
-	// Defects is the id of each reported defect, or request, that holds the close.
+	// Defects is the id of each reported defect that holds the close.
 	Defects []string
+	// Requests is the id of each open request for new work (DefectKindRequest) that holds the
+	// close, listed apart from the defects: a request is no defect of the change, and the wait names
+	// it as a request.
+	Requests []string
 	// OpenChange says that an open next change of the issue holds the close.
 	OpenChange bool
 }

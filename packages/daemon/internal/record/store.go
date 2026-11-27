@@ -716,6 +716,17 @@ func (s *Postgres) PutMergeSnapshot(ctx context.Context, tx pgx.Tx, issue string
 	return false, nil
 }
 
+// ConfirmNeverMerged records that a person confirmed the work of issue key never merged.
+func (s *Postgres) ConfirmNeverMerged(ctx context.Context, tx pgx.Tx, key string) error {
+	return nil
+}
+
+// ConsumeNeverMergedConfirmation takes issue key's confirmation that its work never merged, and
+// answers whether one stood.
+func (s *Postgres) ConsumeNeverMergedConfirmation(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
+	return false, nil
+}
+
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
 	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, coalesce(entry_from, ''), entry_given_task, entry_given_entry, entry_given_generation, reviewed_head, step_task, step_place from phases
 		where issue = $1 order by role`, issue)

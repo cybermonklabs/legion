@@ -3303,3 +3303,90 @@ func TestAClearKeepsTheMergeOfARowItDeletes(t *testing.T) {
 		}
 	})
 }
+
+// A person's confirmation that an issue's work never merged allows one rerun: the first consume
+// takes it, and a second answers false. A write of the issue's whole record keeps it. Positive
+// merge evidence takes it, a snapshot that stands and an older merge refused beside one alike, and
+// so does each clear of a generation. After each of those a new confirmation is taken again, so a
+// case that answered false read a flag the write took, not a flag that was never set. A
+// confirmation of an issue the record holds no row of is refused.
+func TestTheConfirmationIsUsedOnce(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	at := time.Date(2026, 11, 24, 8, 0, 0, 0, time.UTC)
+	merge := Merge{Number: 41, Head: strings.Repeat("a", 40), SHA: strings.Repeat("b", 40), Base: "main", Repo: "acme/widgets", MergedAt: at}
+	consume := func(t *testing.T, key string) bool {
+		t.Helper()
+		var taken bool
+		inTx(t, st, func(tx pgx.Tx) {
+			var err error
+			taken, err = records.ConsumeNeverMergedConfirmation(ctx, tx, key)
+			must(t, err)
+		})
+		return taken
+	}
+	confirm := func(t *testing.T, key string) {
+		t.Helper()
+		inTx(t, st, func(tx pgx.Tx) { must(t, records.ConfirmNeverMerged(ctx, tx, key)) })
+	}
+	for i, tc := range []struct {
+		name string
+		// seed runs before the confirmation, write after it.
+		seed, write func(tx pgx.Tx, issue Issue) error
+		kept        bool
+	}{
+		{name: "no write between", kept: true},
+		{name: "a PutIssue of its whole record", kept: true, write: func(tx pgx.Tx, issue Issue) error {
+			issue.Rank = "00099U"
+			return records.PutIssue(ctx, tx, issue)
+		}},
+		{name: "a PutMergeSnapshot", write: func(tx pgx.Tx, issue Issue) error {
+			_, err := records.PutMergeSnapshot(ctx, tx, issue.Key, merge)
+			return err
+		}},
+		{name: "a PutMergeSnapshot of an older merge beside a snapshot that stands", seed: func(tx pgx.Tx, issue Issue) error {
+			_, err := records.PutMergeSnapshot(ctx, tx, issue.Key, merge)
+			return err
+		}, write: func(tx pgx.Tx, issue Issue) error {
+			older := merge
+			older.Number, older.MergedAt = 40, at.Add(-time.Hour)
+			_, err := records.PutMergeSnapshot(ctx, tx, issue.Key, older)
+			return err
+		}},
+		{name: "ClearGeneration", write: func(tx pgx.Tx, issue Issue) error { return records.ClearGeneration(ctx, tx, issue.Key, at) }},
+		{name: "ClearTreeGeneration", write: func(tx pgx.Tx, issue Issue) error { return records.ClearTreeGeneration(ctx, tx, issue.Tree, at) }},
+		{name: "ClearChangeGeneration", write: func(tx pgx.Tx, issue Issue) error { return records.ClearChangeGeneration(ctx, tx, issue.Key, at) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := issueFixture(fmt.Sprintf("ACME-%d", i+1))
+			issue.Project, issue.Tree, issue.Parent, issue.Phase, issue.Status = "ACME", issue.Key, nil, phase.Done, "done"
+			inTx(t, st, func(tx pgx.Tx) {
+				must(t, records.PutIssue(ctx, tx, issue))
+				if tc.seed != nil {
+					must(t, tc.seed(tx, issue))
+				}
+			})
+			confirm(t, issue.Key)
+			if tc.write != nil {
+				inTx(t, st, func(tx pgx.Tx) { must(t, tc.write(tx, issue)) })
+			}
+			if got := consume(t, issue.Key); got != tc.kept {
+				t.Fatalf("the first consume after %s = %t, want %t", tc.name, got, tc.kept)
+			}
+			if consume(t, issue.Key) {
+				t.Fatalf("a second consume after %s took a confirmation, want none: one confirmation allows one rerun", tc.name)
+			}
+			confirm(t, issue.Key)
+			if !consume(t, issue.Key) {
+				t.Fatalf("a confirmation after %s was not taken, so the flag is never set", tc.name)
+			}
+		})
+	}
+	t.Run("an issue with no record", func(t *testing.T) {
+		err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return records.ConfirmNeverMerged(ctx, tx, "ACME-999") })
+		if err == nil {
+			t.Fatal("the confirmation of an issue with no record = nil, want it refused")
+		}
+	})
+}
