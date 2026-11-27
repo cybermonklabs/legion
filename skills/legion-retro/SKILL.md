@@ -32,6 +32,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request, and the thread of each plan task in `plan.md`.
    Also read the tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) where it has a tester step.
    Read the GitHub review of the last worker step's head where it has a reviewer step.
+   A step of a role of the deployment writes no handoff: `dispatch steps --issue <issue>` shows how its runs ended.
    A pass must stand at the last worker step's head for every `before_merge` check, and the body's `Checks` block carries each.
 
    - A check carrying `ci_check` is CI's: its derived result is the pass it needs (`skill://legion-worker/references/ci-checks.md`).

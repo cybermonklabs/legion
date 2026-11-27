@@ -58,7 +58,7 @@ A release refused with a code below writes nothing: release the rest again witho
   When it names a role, write one `after_merge` check for the production check in each child's Verification document, with its spec and while the child is open, because a closed issue refuses every new document.
   Under `Production check: off`, write none.
 
-- A role token is `legion-<project>-<key>-<role>` with the daemon's project and the key lower-cased: `legion-acme-legion-41-architect`.
+- A role token (`legion-acme-legion-41-architect`) comes from your addressing line or `roleToken` (`@legion/contracts`): never type one.
 
 ## Reviewing a child's spec
 
