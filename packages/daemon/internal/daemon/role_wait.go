@@ -1,0 +1,351 @@
+package daemon
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wait"
+)
+
+// roleNameBound is how long after its claim's ready a launched session may still be without its
+// role's Envoy name. A pane takes the name after its ready answers: at its first turn, or, when no
+// turn comes, once the plugin's first-turn bound has passed, DEFAULT_CLAIM_FIRST_TURN_BOUND_MS, 30
+// seconds (packages/pi-shared/src/claim-first-turn-bound.ts; the comment of ClaimSession,
+// packages/pi-legion/src/claim-session.ts). So a publish the listener refuses because no session
+// holds the role (notify.ErrNoHolder), while the claim has said it is ready and has started no turn
+// since, is the name not taken yet rather than the role taking nothing: the row runs again at the
+// end of this bound and does not climb its backoff (roleWaiting.awaitsName,
+// dispatch://INFRA-4131/spec#b-r-wait-ready). From the bound on, even with no turn, a refusal is
+// the role taking nothing, which climbs the backoff and is logged at Error after 30 minutes
+// (roleWaiting.tookNothing).
+const roleNameBound = 30 * time.Second
+
+// waitLoggedAfter is how long a row waits for its role, or for an event of the daemon's own,
+// before its wait is logged a second time: the one line above Info the wait writes between its
+// start and its end (settle's logWait, dispatch://INFRA-4131/spec#b-r-logged-once).
+const waitLoggedAfter = 30 * time.Minute
+
+// The lines of a wait (settle's logWait, and the ends of a wait: waitEnded, waitsEndedOnCommit):
+// the 30-minute line of a role that said it was ready and took nothing, a fault nothing else
+// shows, at Error; the 30-minute line of every other wait, at WARN; and the end of the wait, at
+// Info, whether the row's run or a delete of the row ended it.
+const (
+	roleTookNothingLine = "outbox row's role is ready and took nothing for 30 minutes"
+	waitedLongLine      = "outbox row has waited 30 minutes"
+	waitEndedLine       = "outbox row's wait ended"
+)
+
+// roleWaiting is the wait of a row that publishes to one role, or to the controller topic, and
+// waits for that role to take it (dispatch://INFRA-4131/spec#b-r-wait-ready and #b-r-capped): what
+// the row's run read of the role's claim and what the listener answered, which decide when the row
+// runs again (roleWaitNext), what it waits for (record.OutboxWait.WaitFor) and how its wait is
+// logged (logWait). Every executor of a kind that waits for its role (record.OutboxKind.WaitsForRole)
+// returns one, through roleWait, for each answer of the listener that keeps its row.
+type roleWaiting struct {
+	// topic is the topic the row publishes to, and token the claim it is held to
+	// (outbox.heldTopic): the claim a role topic names, or the project's controller claim for the
+	// controller topic under `controller: daemon`.
+	topic string
+	token claim.Token
+	// held is whether topic is held to a claim of this daemon at all. It is false for the
+	// controller topic under `controller: operator`, the operator's own controller's, which no
+	// claim this daemon records can say is ready.
+	held bool
+	// view is the role's claim as the run read it (outbox.supervisedClaim), the zero view where
+	// this daemon supervises none.
+	view supervise.ClaimView
+	// published is whether this run's publish reached the listener, and answer the listener's
+	// refusal of it, nil where it did not refuse or the run did not publish. The gate's own
+	// refusal of a claim that records a session it does not hold (unheldSession) reached no
+	// listener, so it is neither.
+	published bool
+	answer    error
+	// err is the wait itself, a wait.ErrWaiting, as the executor words it.
+	err error
+}
+
+func (w roleWaiting) Error() string { return w.err.Error() }
+
+func (w roleWaiting) Unwrap() error { return w.err }
+
+// roleWait is the role wait (roleWaiting) of a row that publishes to topic, whose role's claim the
+// run read as view, and whose publish answered answer: the publish's error, nil where the run made
+// no publish. waiting is the wait itself (a wait.ErrWaiting) as the executor words it, which the
+// role wait unwraps to, so settle and every reader of the error still read it as that wait.
+func (r *outbox) roleWait(topic string, view supervise.ClaimView, answer, waiting error) error {
+	token, held := r.heldTopic(topic)
+	w := roleWaiting{topic: topic, token: token, held: held, view: view, err: waiting}
+	var unheld unheldSession
+	if answer != nil && !errors.As(answer, &unheld) {
+		w.published, w.answer = true, answer
+	}
+	return w
+}
+
+// refusedReady is whether this run's publish was refused while the role's claim said it was ready
+// (supervise.SaidReady), the claim being one of this daemon's.
+func (w roleWaiting) refusedReady() bool {
+	return w.held && w.answer != nil && supervise.SaidReady(w.view.State)
+}
+
+// turnSinceReady is whether the claim has started a turn since its last ready: a turn start that
+// is not before the ready (supervise.Claim.LastTurnStart, LastReady).
+func (w roleWaiting) turnSinceReady() bool {
+	return !w.view.LastTurnStart.Before(w.view.LastReady)
+}
+
+// awaitsName is whether the refusal is the ready session not holding its role's name yet
+// (roleNameBound): the listener answered that no session holds the role, while the claim said it
+// was ready, has started no turn since, and now is still inside the bound after that ready. Such a
+// row runs again at the bound's end, its step not raised, and waits for any change of the claim, a
+// turn start among them (dispatch://INFRA-4131/spec#b-r-wait-ready).
+func (w roleWaiting) awaitsName(now time.Time) bool {
+	return w.refusedReady() && errors.Is(w.answer, notify.ErrNoHolder) && !w.turnSinceReady() &&
+		now.Before(w.view.LastReady.Add(roleNameBound))
+}
+
+// tookNothing is whether the refusal is a ready role taking nothing, the fault the 30-minute line
+// logs at Error (dispatch://INFRA-4131/spec#b-r-logged-once): this run's publish was refused while
+// the claim said it was ready, and either a turn has started since that ready, or now is at or past
+// roleNameBound after it, when even a session given no turn has taken its role's name.
+func (w roleWaiting) tookNothing(now time.Time) bool {
+	return w.refusedReady() && (w.turnSinceReady() || !now.Before(w.view.LastReady.Add(roleNameBound)))
+}
+
+// waitsFor is the key of what the row waits for (record.OutboxWait.WaitFor), whose event makes it
+// due at once (record.Store.ExpediteWaits): the claim's ready alone for a refusal while the claim
+// said it was ready, so a turn start or another change of a busy session does not cut the row's
+// backoff short (record.WaitForReady); any change of the claim, its ready among them, while the
+// claim has not said it is ready, the run published nothing, or the ready session has not taken its
+// role's name yet (record.WaitForClaim); and nothing for a topic held to no claim of this daemon,
+// whose wait no event of this daemon ends.
+func (w roleWaiting) waitsFor(now time.Time) string {
+	switch {
+	case !w.held:
+		return ""
+	case w.refusedReady() && !w.awaitsName(now):
+		return record.WaitForReady(w.token)
+	default:
+		return record.WaitForClaim(w.token)
+	}
+}
+
+// eventWaiting is the wait of a row for an event this daemon records itself
+// (dispatch://INFRA-4131/spec#b-r-wait-event): key names the event (record.WaitForClaim and the
+// other builders of a key), the write that records it makes the row due at once
+// (record.Store.ExpediteWaits), and the row waits on the capped backoff until then (roleWaitNext).
+type eventWaiting struct {
+	key string
+	// err is the wait itself, a wait.ErrWaiting, as the executor words it.
+	err error
+}
+
+func (w eventWaiting) Error() string { return w.err.Error() }
+
+func (w eventWaiting) Unwrap() error { return w.err }
+
+// eventWait is the event wait (eventWaiting) of a row that waits for the event key names. waiting
+// is the wait itself (a wait.ErrWaiting) as the executor words it, which the event wait unwraps to,
+// so settle and every reader of the error still read it as that wait.
+func eventWait(key string, waiting error) error {
+	return eventWaiting{key: key, err: waiting}
+}
+
+// listenerRefused is whether err is the listener's refusal of a role publish that can keep its row:
+// no session holds the role (notify.ErrNoHolder) or its holder is unresponsive
+// (notify.ErrHolderUnresponsive), the holder did not confirm it (notify.ErrNotDelivered), does not
+// advertise its delivery mode (notify.ErrRefusedByHolder), or the listener's own NATS grant denied
+// the forward (notify.ErrPublishDenied). The gate's own refusal (unheldSession) is no answer of the
+// listener's, and nor is a failure to reach the listener or to read its answer, a store read or a
+// Dispatch read: those stay the row's failures.
+func listenerRefused(err error) bool {
+	var unheld unheldSession
+	if err == nil || errors.As(err, &unheld) {
+		return false
+	}
+	var notDelivered notify.ErrNotDelivered
+	var refused notify.ErrRefusedByHolder
+	var denied notify.ErrPublishDenied
+	return errors.Is(err, notify.ErrNoHolder) || errors.Is(err, notify.ErrHolderUnresponsive) ||
+		errors.As(err, &notDelivered) || errors.As(err, &refused) || errors.As(err, &denied)
+}
+
+// roleWaitRun is whether the run of a row of kind that ended in err is a wait of R1, R2 or R6
+// (dispatch://INFRA-4131/spec#b-r-wait-ready, #b-r-capped and #b-r-wait-event): its run returned a
+// role wait or an event wait, or its kind waits for its role (record.OutboxKind.WaitsForRole) and
+// its run waited or met the listener's refusal. Such a row runs again on the capped backoff of its
+// own wait (roleWaitNext), and is logged by its wait rather than by its attempts (logWait). Every
+// other run keeps the outbox's backoff (record.RetryBackoff) and its lines.
+func roleWaitRun(kind record.OutboxKind, err error) bool {
+	var role roleWaiting
+	var event eventWaiting
+	if errors.As(err, &role) || errors.As(err, &event) {
+		return true
+	}
+	return kind.WaitsForRole() && (errors.Is(err, wait.ErrWaiting) || listenerRefused(err))
+}
+
+// roleWaitNext is when row runs again after a run that ended in cause, a wait of roleWaitRun's, at
+// now, and the wait it keeps from then on (dispatch://INFRA-4131/spec#b-r-capped): the row waits
+// record.RoleWaitBackoff of its wait's step, and the step goes up by one. A role wait that read a
+// ready other than the one the step counts from (record.OutboxWait.WaitReady) starts the step again
+// from 0, so a relaunch's ready restarts the backoff even where the ready's own release of the row
+// was lost to a restart; and a ready session that has not taken its role's name yet runs again at
+// roleNameBound after its ready, its step not raised (roleWaiting.awaitsName). The key of what the
+// row waits for is the wait's own (roleWaiting.waitsFor, eventWaiting's key), and none for any
+// other wait. The moment the wait started and its 30-minute line are settle's (logWait), and the
+// launch the row last published to is kept as the row holds it. A GitHub rate limit and a wait
+// that names its moment still decide over this moment (retry).
+func roleWaitNext(row record.OutboxRow, cause error, now time.Time) (time.Time, record.OutboxWait) {
+	next := row.Wait
+	next.WaitFor = ""
+	var role roleWaiting
+	var event eventWaiting
+	switch {
+	case errors.As(cause, &role):
+		// The store keeps a moment to the microsecond, so the ready the step counts from is
+		// compared at that grain.
+		if !role.view.LastReady.Truncate(time.Microsecond).Equal(next.WaitReady.Truncate(time.Microsecond)) {
+			next.WaitStep, next.WaitReady = 0, role.view.LastReady
+		}
+		next.WaitFor = role.waitsFor(now)
+		if role.awaitsName(now) {
+			return role.view.LastReady.Add(roleNameBound), next
+		}
+	case errors.As(cause, &event):
+		next.WaitFor = event.key
+	}
+	at := now.Add(record.RoleWaitBackoff(next.WaitStep))
+	next.WaitStep++
+	return at, next
+}
+
+// logWait logs one run of row that ended in err, a wait of roleWaitRun's, by the row's wait rather
+// than by its attempts (dispatch://INFRA-4131/spec#b-r-logged-once), and answers the wait the row
+// keeps from this run on. The first run that waits writes one Info line, `outbox row waits`, and
+// starts the wait (record.OutboxWait.WaitSince). The first run at or after waitLoggedAfter from
+// that start writes one line more and marks it written (WaitLogged): at Error, roleTookNothingLine,
+// where this run's publish was refused while the claim said it was ready and the role has had its
+// chance to take it (roleWaiting.tookNothing), and at WARN, waitedLongLine, for every other wait: a
+// claim that has not said it is ready, a ready session that has not taken its role's name yet, a
+// topic held to no claim of this daemon, an event. The level is read at that run, since the line is
+// written once. Every other run writes `outbox row waits` at Debug. Each line names the row's
+// issue, its kind, its attempts, the role or the event it waits for, and the listener's answer to
+// this run's publish where there is one. Both marks are on the row, so a daemon restarted in the
+// wait writes neither line again.
+func (r *outbox) logWait(ctx context.Context, row record.OutboxRow, err error, kept string) record.OutboxWait {
+	now := r.now().UTC()
+	next := row.Wait
+	fields := append([]any{"row", row.ID, "kind", row.Kind, "issue", row.Issue, "attempts", row.Attempts}, waitFields(err)...)
+	fields = append(fields, "error", kept)
+	var role roleWaiting
+	switch {
+	case next.WaitSince.IsZero():
+		next.WaitSince = now
+		r.log.Log(ctx, slog.LevelInfo, "outbox row waits", fields...)
+	case !next.WaitLogged && !now.Before(next.WaitSince.Add(waitLoggedAfter)):
+		next.WaitLogged = true
+		fields = append(fields, "waited", now.Sub(next.WaitSince).String())
+		if errors.As(err, &role) && role.tookNothing(now) {
+			r.log.Log(ctx, slog.LevelError, roleTookNothingLine, fields...)
+		} else {
+			r.log.Log(ctx, slog.LevelWarn, waitedLongLine, fields...)
+		}
+	default:
+		r.log.Log(ctx, slog.LevelDebug, "outbox row waits", fields...)
+	}
+	return next
+}
+
+// waitFields is what a wait's lines name of what err waits for: the claim of a role wait, or its
+// topic where that is held to no claim of this daemon, with the listener's answer to the run's
+// publish where there is one, kept as the row keeps a far side's text; the key of an event wait;
+// and nothing for any other wait, whose error says what it waits for.
+func waitFields(err error) []any {
+	var role roleWaiting
+	var event eventWaiting
+	switch {
+	case errors.As(err, &role):
+		fields := []any{"topic", role.topic}
+		if role.held {
+			fields = []any{"role", string(role.token)}
+		}
+		if role.answer != nil {
+			fields = append(fields, "answer", storetext.FarSideError(role.answer.Error()))
+		}
+		return fields
+	case errors.As(err, &event):
+		return []any{"event", event.key}
+	}
+	return nil
+}
+
+// waitEndedOnCommit logs, once the transaction of ctx commits, that the wait of row ended with
+// the row (waitEnded), where the row was waiting: the run that finishes the row, delivered or not
+// (outbox.finish, finishRefused).
+func (r *outbox) waitEndedOnCommit(ctx context.Context, row record.OutboxRow) {
+	if row.Wait.WaitSince.IsZero() {
+		return
+	}
+	store.OnCommit(ctx, func() {
+		waitEnded(r.log, record.WaitingRow{ID: row.ID, Kind: row.Kind, Issue: row.Issue, Attempts: row.Attempts,
+			WaitSince: row.Wait.WaitSince}, r.now(), "its run")
+	})
+}
+
+// waitsEndedOnCommit logs, once the transaction of ctx commits, that the wait of each of rows
+// ended (waitEnded): rows a delete took out of the outbox without running them, by is what deleted
+// them, and now is the moment of the delete. A row that was not waiting (record.WaitingRow's
+// WaitSince zero) ended no wait and logs nothing. A delete made outside a commit scope has no
+// commit to wait for, so its lines are written at once.
+func waitsEndedOnCommit(ctx context.Context, log *slog.Logger, rows []record.WaitingRow, by string, now time.Time) {
+	var waited []record.WaitingRow
+	for _, row := range rows {
+		if !row.WaitSince.IsZero() {
+			waited = append(waited, row)
+		}
+	}
+	if len(waited) == 0 {
+		return
+	}
+	ended := func() {
+		for _, row := range waited {
+			waitEnded(log, row, now, by)
+		}
+	}
+	if !store.CommitScoped(ctx) {
+		ended()
+		return
+	}
+	store.OnCommit(ctx, ended)
+}
+
+// waitEnded is the one line that a row's wait ended, at Info (dispatch://INFRA-4131/spec#b-r-logged-once):
+// the row, its kind and issue, its attempts, how long it waited from the start of its wait to now,
+// and by what it ended: its run, or the delete that took it out of the outbox.
+func waitEnded(log *slog.Logger, row record.WaitingRow, now time.Time, by string) {
+	if log == nil {
+		log = slog.Default()
+	}
+	log.Info(waitEndedLine, "row", row.ID, "kind", row.Kind, "issue", row.Issue, "attempts", row.Attempts,
+		"waited", now.Sub(row.WaitSince).String(), "endedBy", by)
+}
+
+// droppedStarts is the wake's starts the cancel or the decline of a release deleted
+// (store.ReleaseCancelled.DroppedStarts), as the rows whose waits waitsEndedOnCommit ends.
+func droppedStarts(starts []store.DroppedStart) []record.WaitingRow {
+	rows := make([]record.WaitingRow, len(starts))
+	for i, start := range starts {
+		rows[i] = record.WaitingRow{ID: start.ID, Kind: record.OutboxKind(start.Kind), Issue: start.Issue,
+			Attempts: start.Attempts, WaitSince: start.WaitSince}
+	}
+	return rows
+}

@@ -178,14 +178,16 @@ func (r *outbox) rehold(ctx context.Context, data []byte) error {
 // later notice to that architect behind the fence. A holder only unresponsive — its session past
 // the listener's live window and still inside its gone horizon — holds the role yet, so its notice
 // is kept whole: no copy is spent and no slot of the re-hold schedule with it, and the row waits
-// (wait.ErrWaiting), tried again on the outbox's backoff until the session's heartbeats land,
-// which is what reaches a session stalled under box load once it answers again
-// (dispatch://INFRA-392). That answer is logged as the wait it is, naming the holder and the
-// state the listener reported it in: a session that will answer for itself is no failure of the
-// row's, so it costs no error line per attempt, where a publish that did fail still costs one.
-// A role no session holds is held for its architect while that architect's claim can hold it
-// again, and finishes undelivered once nobody will. Any other failure is the row's, retried on
-// its backoff.
+// for its architect (roleWait), tried again on the capped backoff of a role wait until the
+// session's heartbeats land, which is what reaches a session stalled under box load once it
+// answers again (dispatch://INFRA-392, dispatch://INFRA-4131/spec#b-r-capped). A forward the
+// listener could not make at all (504 `delivery_failed`) waits the same way, since the next
+// attempt can make it. Each is logged as the wait it is (settle's logWait), naming the architect
+// and the listener's answer: a wait costs no error line per attempt, where a publish that did fail
+// still costs one. A role no session holds is held for its architect while that architect's claim
+// can hold it again (errNoticeWaits, a role wait too), and finishes undelivered once nobody will.
+// Any other failure, a publish that reached no answer of the listener's, is the row's, retried on
+// the outbox's backoff.
 func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, payload record.Notice,
 	tree treeSnapshot, architect claim.Token, published error,
 ) error {
@@ -238,8 +240,17 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "reason", denied.Message)
 		return nil
 	case errors.Is(published, notify.ErrHolderUnresponsive):
-		return wait.Errorf("the notice for %s waits for its architect %s, whose session the listener reports %s: %w",
-			row.Issue, architect, notify.StateUnresponsive, published)
+		return r.roleWait(notify.RoleTopicPrefix+string(architect), r.supervisedClaim(architect), published,
+			wait.Errorf("the notice for %s waits for its architect %s, whose session the listener reports %s: %w",
+				row.Issue, architect, notify.StateUnresponsive, published))
+	case errors.As(published, &notDelivered):
+		// The listener could not forward the notice at all (`delivery_failed`): no live holder to
+		// forward to, a read that failed or ran out of time, a forward not shown to reach the
+		// server. It is no notice held for an architect that holds no role (errNoticeWaits), and the
+		// row keeps its own place: no copy is queued, as for `receipt_timeout`.
+		return r.roleWait(notify.RoleTopicPrefix+string(architect), r.supervisedClaim(architect), published,
+			wait.Errorf("the notice for %s waits for its architect %s, to whom the listener could not forward it: %w",
+				row.Issue, architect, published))
 	case !errors.Is(published, notify.ErrNoHolder):
 		return fmt.Errorf("publish notice for %s to its architect %s: %w", row.Issue, architect, published)
 	}
@@ -254,7 +265,8 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "because", ended)
 		return nil
 	}
-	return fmt.Errorf("%w: %s holds no role for %s: %w", errNoticeWaits, architect, row.Issue, published)
+	return r.roleWait(notify.RoleTopicPrefix+string(architect), r.supervisedClaim(architect), published,
+		fmt.Errorf("%w: %s holds no role for %s: %w", errNoticeWaits, architect, row.Issue, published))
 }
 
 // noticePublished is the one line a notice the listener took writes: its kind, its issue, its row

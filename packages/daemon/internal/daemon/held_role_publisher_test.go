@@ -166,14 +166,15 @@ func TestTheControllerTopicIsHeldOnlyToTheDaemonsOwnController(t *testing.T) {
 // the role's holder while the other claim's process lives under it (as after a rollback). So the
 // forget waits until the listener no longer does (supervise's mayForget, review round 16 of
 // #4220): while it names the session the forget is refused and the claim's role messages are not
-// published, and the gate writes its Warn once while two rows of the claim take turns; once the
-// role has no holder the forget goes on, the message is published to the claim's own role, and
-// the gate's Warn record of the claim is gone.
+// published, and the gate writes its line once, at Info, while two rows of the claim take turns
+// (the rows' own waits write the one line above Info, dispatch://INFRA-4131/spec#b-r-logged-once);
+// once the role has no holder the forget goes on, the message is published to the claim's own
+// role, and the gate's record of the line for the claim is gone.
 //
 // The controls (the pull request records the runs): today's forget, mayForget admitting every
 // clear, is admitted while the listener names ses_942 and the role message is published to the
 // role whose holder is ses_942, the process of the claim that holds that session; the gate keyed
-// by row writes its Warn twice.
+// by row writes its line twice.
 func TestAForgetWaitsUntilTheListenerNoLongerNamesTheSharedSession(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -208,9 +209,9 @@ func TestAForgetWaitsUntilTheListenerNoLongerNamesTheSharedSession(t *testing.T)
 	if !strings.Contains(forgot.Error(), "legion claims suspend") {
 		t.Fatalf("the refused forget = %v, want it to name the suspend that stops the process under %s", forgot, shared)
 	}
-	const warned = "outbox: not publishing to a claim that records a session it does not hold"
-	if n := strings.Count(logs.String(), warned); n != 1 {
-		t.Fatalf("the gate wrote its Warn %d times while two rows of %s took turns, want once", n, contained)
+	const logged = "outbox: not publishing to a claim that records a session it does not hold"
+	if lines := loggedLines(t, logs.String(), logged); len(lines) != 1 || lines[0]["level"] != slog.LevelInfo.String() {
+		t.Fatalf("the gate wrote %v while two rows of %s took turns, want one line, at Info", lines, contained)
 	}
 
 	listener.free(string(contained))
@@ -221,8 +222,8 @@ func TestAForgetWaitsUntilTheListenerNoLongerNamesTheSharedSession(t *testing.T)
 	if got, want := publisher.topics(), []string{notify.RoleTopicPrefix + string(contained)}; !slices.Equal(got, want) {
 		t.Fatalf("published to %v once the forget went on, want %v", got, want)
 	}
-	if _, still := runner.unheldWarned.Load(contained); still {
-		t.Fatalf("the gate still records a Warn for %s after its hold passed", contained)
+	if _, still := runner.unheldLogged.Load(contained); still {
+		t.Fatalf("the gate still records a line for %s after its hold passed", contained)
 	}
 }
 

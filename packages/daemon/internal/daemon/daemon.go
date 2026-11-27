@@ -3864,19 +3864,37 @@ func (s projectRecords) EnqueueGatedSteps(ctx context.Context, tx pgx.Tx, publis
 	return s.Store.EnqueueGatedSteps(ctx, tx, publish, nextAt)
 }
 
+// DropCatchUps tells the wake pacing which held catch-ups it deleted, and logs the end of the wait
+// of each one it deleted while it waited (waitsEndedOnCommit), each once the transaction commits.
 func (s projectRecords) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, now time.Time) ([]record.WaitingRow, error) {
 	if !s.ownsKey(record.OutboxKindNotice, issue) {
 		return nil, nil
 	}
 	dropped, err := s.Store.DropCatchUps(ctx, tx, issue, now)
-	if err == nil && len(dropped) != 0 && s.catchUps != nil {
+	if err != nil {
+		return dropped, err
+	}
+	if len(dropped) != 0 && s.catchUps != nil {
 		ids := make([]int64, len(dropped))
 		for i, row := range dropped {
 			ids[i] = row.ID
 		}
 		store.OnCommit(ctx, func() { s.catchUps.drop(ids) })
 	}
-	return dropped, err
+	waitsEndedOnCommit(ctx, s.logger(), dropped, "a newer catch-up of its issue deleted it", now)
+	return dropped, nil
+}
+
+// DropQueuedChanges logs the end of the wait of each changes request it deleted while it waited
+// (waitsEndedOnCommit), once the transaction commits. It takes no key of an issue, so it refuses
+// none: its rows are the ones the clear of a generation of the daemon's own project read.
+func (s projectRecords) DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64) ([]record.WaitingRow, error) {
+	dropped, err := s.Store.DropQueuedChanges(ctx, tx, rows)
+	if err != nil {
+		return dropped, err
+	}
+	waitsEndedOnCommit(ctx, s.logger(), dropped, "the clear of its generation deleted it", time.Now())
+	return dropped, nil
 }
 
 func (s projectRecords) DropUnfencedCheckWakes(ctx context.Context, tx pgx.Tx, issue string) error {

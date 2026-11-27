@@ -144,15 +144,19 @@ func (r *outbox) keptRoleMessageEnded(ctx context.Context, row record.OutboxRow,
 //   - no live session holds the role and the listener kept nothing (notify.ErrNoHolder), the
 //     role's claim records a session it does not hold and nothing was published (the gate's
 //     notify.ErrNoHolder), or a holder the listener calls unresponsive
-//     (notify.ErrHolderUnresponsive): the row is the message's keeper, so it waits
-//     (wait.ErrWaiting), tried again on its backoff, until a session of the role holds it or an
+//     (notify.ErrHolderUnresponsive): the row is the message's keeper, so it waits for its role
+//     (roleWait), tried again on the capped backoff of a role wait
+//     (dispatch://INFRA-4131/spec#b-r-capped), until a session of the role holds it or an
 //     attempt's keptRoleMessageEnded ends the row. A released role's woken session claims the role
 //     a few attempts after the resume launched it, and a role with no claim yet may be started
 //     inside the hour. A refused publish stores nothing, so the one publish a session takes is the
 //     one it is handed, and a retry of a publish whose answer was lost is stored once, under the
 //     row's own key (record.OutboxKey), which every attempt sends;
-//   - every other failure: the error is returned, wrapped with the message's subject, and the row
-//     keeps its retry.
+//   - every other refusal of the listener's (listenerRefused): a holder that did not confirm in
+//     time, one that does not advertise the delivery mode, a forward the listener's own NATS grant
+//     denies: the row waits for its role the same way, since a later attempt can go through;
+//   - every other failure, a publish that reached no answer of the listener's: the error is
+//     returned, wrapped with the message's subject, and the row keeps the outbox's retry.
 //
 // The row is not held for a holder as an architect's notice is held, and it can reach a later
 // session than the one it was written for: for a role nobody claims, the listener hands a kept
@@ -165,24 +169,24 @@ func (r *outbox) keptRoleMessageEnded(ctx context.Context, row record.OutboxRow,
 // and each message names its move back or its phases, so its reader judges which round it was for.
 //
 // Six other executors publish to a role's topic, each with its own rules for what the publisher
-// answers: updateAsk, through publishToRole, ends the row for a topic with no holder and retries
-// every other failure; deliverNotice, an architect's notice, holds the row for
-// a topic with no holder while the owning architect can hold its role again (noticeAnswered);
-// roleMessage ends the row for a topic with no holder, waits for a holder the listener calls
-// unresponsive (notify.ErrHolderUnresponsive), and ends the row for a holder that refuses the
-// delivery mode (notify.ErrRefusedByHolder) or a forward the listener's own NATS grant denies
-// (notify.ErrPublishDenied); mergeQueueRemoval and mergeHoldsChanged, the merger's message of a
-// removal from the merge queue and of a change of the merge holds, hold the row for a topic with
-// no holder and for an unresponsive holder while the merger's claim has neither failed nor
-// retired, and retry every other failure (merge_queue_removal.go, merge_holds.go); and
-// mergeForwardMessage, a message of a merge forward, holds its row the same way while the role's
-// claim has neither failed nor retired and the merge forward still stands at the row's head
-// (merge_forward.go). Those three publish through the deliverHeld they share. Each of those six
-// publishes with keep: false: deliverNotice and the three through deliverHeld hold their own row,
-// and a kept copy beside it would be a second keeper of one message; roleMessage's message is
-// stale by the time a role nobody holds is claimed; and updateAsk's round ends at its bound
-// whether or not the role answers. So whoever changes the rule for a topic with no holder must
-// read all eight executors, not this function alone.
+// answers: updateAsk, through publishToRole, ends the row for a topic with no holder and waits for
+// its role on every other refusal of the listener's; deliverNotice, an architect's notice, holds
+// the row for a topic with no holder while the owning architect can hold its role again
+// (noticeAnswered); roleMessage ends the row for a topic with no holder, waits for a holder the
+// listener calls unresponsive (notify.ErrHolderUnresponsive), and ends the row for a holder that
+// refuses the delivery mode (notify.ErrRefusedByHolder) or a forward the listener's own NATS grant
+// denies (notify.ErrPublishDenied); mergeQueueRemoval and mergeHoldsChanged, the merger's message
+// of a removal from the merge queue and of a change of the merge holds, hold the row for a topic
+// with no holder and for an unresponsive holder while the merger's claim has neither failed nor
+// retired, and wait on every other refusal of the listener's (merge_queue_removal.go,
+// merge_holds.go); and mergeForwardMessage, a message of a merge forward, holds its row the same
+// way while the role's claim has neither failed nor retired and the merge forward still stands at
+// the row's head (merge_forward.go). Those three publish through the deliverHeld they share. Each
+// of those six publishes with keep: false: deliverNotice and the three through deliverHeld hold
+// their own row, and a kept copy beside it would be a second keeper of one message; roleMessage's
+// message is stale by the time a role nobody holds is claimed; and updateAsk's round ends at its
+// bound whether or not the role answers. So whoever changes the rule for a topic with no holder
+// must read all eight executors, not this function alone.
 func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, token claim.Token, m keptRoleMessage) (*keptRoleMessageUndelivered, error) {
 	wake, err := r.claimWakeOf(ctx, token)
 	if err != nil {
@@ -199,7 +203,8 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 	} else if waits {
 		return nil, wait.Errorf("%s waits for its %s's released pod to come back", m.subject, m.role)
 	}
-	keeps, err := r.publishKept(ctx, notify.RoleTopicPrefix+string(token), m.message, m.message, record.OutboxKey(row.ID))
+	topic := notify.RoleTopicPrefix + string(token)
+	keeps, err := r.publishKept(ctx, topic, m.message, m.message, record.OutboxKey(row.ID))
 	switch {
 	case err == nil:
 		if keeps {
@@ -207,7 +212,9 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 		}
 		return nil, nil
 	case errors.Is(err, notify.ErrNoHolder), errors.Is(err, notify.ErrHolderUnresponsive):
-		return nil, wait.Errorf("%s waits for a session to hold its %s's role: %w", m.subject, m.role, err)
+		return nil, r.roleWait(topic, wake.view, err, wait.Errorf("%s waits for a session to hold its %s's role: %w", m.subject, m.role, err))
+	case listenerRefused(err):
+		return nil, r.roleWait(topic, wake.view, err, wait.Errorf("%s waits for its %s to take it: %w", m.subject, m.role, err))
 	}
 	return nil, fmt.Errorf("publish %s to its %s: %w", m.subject, m.role, err)
 }

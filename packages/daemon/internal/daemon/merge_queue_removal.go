@@ -202,11 +202,14 @@ type heldMessage struct {
 // and a released role of another kind while the root's design gate is closed (designGateClosed):
 // such a role is neither woken nor told, and the row waits, since a role the gate holds may not
 // know the gate closed, and woken by this message it would work against the gate. A role whose
-// session holds it is told at once, gate or none, and m.delivered is logged. The three other
-// answers of the confirmed publish route keep the ordinary retry, as they do for a hook prompt: a
-// holder that did not confirm in time (notify.ErrNotDelivered), one that does not advertise the
-// delivery mode (notify.ErrRefusedByHolder), and a forward the listener's own NATS grant denies
-// (notify.ErrPublishDenied).
+// session holds it is told at once, gate or none, and m.delivered is logged. Every other answer
+// of the listener's that refuses the publish keeps the row waiting for its role (roleWait) on the
+// capped backoff of a role wait (dispatch://INFRA-4131/spec#b-r-capped), as it does for a hook
+// prompt: no session holds the role (notify.ErrNoHolder), its holder is unresponsive
+// (notify.ErrHolderUnresponsive), a holder did not confirm in time (notify.ErrNotDelivered), one
+// does not advertise the delivery mode (notify.ErrRefusedByHolder), and a forward the listener's
+// own NATS grant denies (notify.ErrPublishDenied). A publish that reached no answer of the
+// listener's is the row's failure, retried on the outbox's backoff.
 //
 // Each message is for the session of the role's current launch, and the listener's word is the one
 // evidence of who took it: its 200 names the session it stored the message for
@@ -265,7 +268,8 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 		return wait.Errorf("%s waits for its %s's launch %d, which is %s, to register its session: a publish now would reach an earlier launch's session or none",
 			m.what, m.role, launch.Generation, launch.State)
 	}
-	holder, published := r.publishTo(ctx, notify.RoleTopicPrefix+string(m.token), m.message, m.message, record.OutboxKey(row.ID))
+	topic := notify.RoleTopicPrefix + string(m.token)
+	holder, published := r.publishTo(ctx, topic, m.message, m.message, record.OutboxKey(row.ID))
 	switch {
 	case published == nil && holder != "" && launch.Session != "" && !launch.HoldsSession(holder):
 		return wait.Errorf("%s was stored for session %s, which is not %s, the session of its %s's launch %d: it waits for that session to hold the role",
@@ -281,9 +285,12 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 		}
 		return nil
 	case errors.Is(published, notify.ErrNoHolder):
-		return wait.Errorf("%s waits for a session to hold its %s's role: %w", m.what, m.role, published)
+		return r.roleWait(topic, launch, published, wait.Errorf("%s waits for a session to hold its %s's role: %w", m.what, m.role, published))
 	case errors.Is(published, notify.ErrHolderUnresponsive):
-		return wait.Errorf("%s waits for its %s, whose session the listener reports %s: %w", m.what, m.role, notify.StateUnresponsive, published)
+		return r.roleWait(topic, launch, published, wait.Errorf("%s waits for its %s, whose session the listener reports %s: %w",
+			m.what, m.role, notify.StateUnresponsive, published))
+	case listenerRefused(published):
+		return r.roleWait(topic, launch, published, wait.Errorf("%s waits for its %s to take it: %w", m.what, m.role, published))
 	}
 	return fmt.Errorf("publish %s to its %s: %w", m.what, m.role, published)
 }

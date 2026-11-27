@@ -153,9 +153,9 @@ const (
 	// undelivered as a refused one does.
 	keptDenied
 	// keptDeliveryFailed: the listener could not forward the notice at all — the hub down, the
-	// role or session unreadable (notify.ReasonDeliveryFailed) — which is none of the answers the
-	// executor classifies, so the row fails without finishing: its lane retries it on its backoff,
-	// and the run settles it the same way, due again at once (retryRow).
+	// role or session unreadable (notify.ReasonDeliveryFailed) — so the row waits for its
+	// architect without finishing (roleWait): its lane retries it on the capped backoff of a role
+	// wait, and the run settles it the same way, due again at once (retryRow).
 	keptDeliveryFailed
 	// keptModes is how many modes the generator chooses among.
 	keptModes
@@ -887,9 +887,9 @@ type keptRun struct {
 // terminal hook does (claimFailed), and from there through the start row's relaunch of a failed
 // claim and the catch-up the executor finishes because nobody will hold the architect's role again
 // (architectEnded). The denied forward finishes a catch-up undelivered as a refusal does; the
-// failed forward is none of the answers the executor classifies, so its row fails without
-// finishing and is retried: on its backoff in a lane, at once here (retryRow). Each run reports
-// how often each of these fired (keptCounts).
+// failed forward keeps its row waiting for the architect without finishing (roleWait), and it is
+// retried: on the capped backoff of a role wait in a lane, at once here (retryRow). Each run
+// reports how often each of these fired (keptCounts).
 //
 // Three the machinery has are left out. A newer decision on a reference already kept replaces its
 // row (Store.AddParkedDecision), so that reference is told twice by design and "told once per

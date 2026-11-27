@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -1243,7 +1244,9 @@ func TestOutboxRoleMessageKeptForAnUnresponsiveHolder(t *testing.T) {
 // every attempt until another session holds the role, and the listener's own NATS grant denies
 // every forward (403 with no reason) until an operator changes it, as a role with no holder does:
 // the row is done either way, since the message reports a moment that has passed by then. A holder
-// that did not confirm the message in time (504 receipt_timeout or delivery_failed) is retried.
+// that did not confirm the message in time (504 receipt_timeout or delivery_failed) keeps the row
+// waiting for its role (roleWait), retried on the capped backoff of a role wait
+// (dispatch://INFRA-4131/spec#b-r-capped).
 func TestOutboxRoleMessageAnswersOfTheConfirmedPublishRoute(t *testing.T) {
 	t.Parallel()
 	row := mustOutboxRow(t, "LEGION-2", record.RoleMessage{Role: "implementer", Body: "CI settled at head"}, time.Now())
@@ -1264,8 +1267,9 @@ func TestOutboxRoleMessageAnswersOfTheConfirmedPublishRoute(t *testing.T) {
 	for _, reason := range []string{notify.ReasonReceiptTimeout, notify.ReasonDeliveryFailed} {
 		publisher.err = fmt.Errorf("publish notice to notifications.role.implementer: listener returned 504 Gateway Timeout: %w", notify.ErrNotDelivered{Reason: reason, Holder: "ses_impl"})
 		var notDelivered notify.ErrNotDelivered
-		if err := runner.execute(context.Background(), row); !errors.As(err, &notDelivered) || notDelivered.Reason != reason {
-			t.Fatalf("a role message answered %s = %v, want the answer as a failure, retried", reason, err)
+		if err := runner.execute(context.Background(), row); !errors.As(err, &notDelivered) || notDelivered.Reason != reason ||
+			!errors.Is(err, wait.ErrWaiting) || !roleWaitRun(row.Kind, err) {
+			t.Fatalf("a role message answered %s = %v, want the answer kept as a wait for the role, retried", reason, err)
 		}
 	}
 	if got := client.messages; len(got) != 0 {

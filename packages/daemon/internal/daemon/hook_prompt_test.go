@@ -164,8 +164,10 @@ func TestAHookPromptFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound(t *tes
 	keptAfterAnOperatorsResume(t, firedHook, claim.RoleImplementer, firedHook.Message("LEGION-208"))
 }
 
-// The three answers of the confirmed publish route are other failures, and keep the ordinary retry:
-// a holder that did not confirm the prompt in time can take it on the next attempt, a holder that
+// The three answers of the confirmed publish route are other refusals of the listener's, and the
+// row waits for its role on each (roleWait), retried on the capped backoff of a role wait
+// (dispatch://INFRA-4131/spec#b-r-capped) rather than logged as a failure at each attempt: a
+// holder that did not confirm the prompt in time can take it on the next attempt, a holder that
 // does not advertise the delivery mode can be replaced by another session on the role, and a
 // forward the listener's own NATS grant denies goes through once an operator changes that grant.
 // A role with no live holder is a wait while the hour after the row was made runs. Past that hour
@@ -190,8 +192,8 @@ func TestAHookPromptRetriesEveryFailureAndWaitsOutNoHolder(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			publisher.err = fmt.Errorf("publish to the implementer's topic: %w", tc.err)
 			err := runner.execute(ctx, row)
-			if err == nil || !errors.Is(err, tc.err) || errors.Is(err, wait.ErrWaiting) || permanentRefusal(row, err) {
-				t.Fatalf("the hook prompt answered %v = %v, want the answer as a failure, retried", tc.err, err)
+			if err == nil || !errors.Is(err, tc.err) || !errors.Is(err, wait.ErrWaiting) || !roleWaitRun(row.Kind, err) || permanentRefusal(row, err) {
+				t.Fatalf("the hook prompt answered %v = %v, want the answer kept as a wait for the role, retried", tc.err, err)
 			}
 			t.Logf("%s: %v", tc.name, err)
 		})

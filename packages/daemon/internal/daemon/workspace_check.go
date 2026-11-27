@@ -401,7 +401,8 @@ func keptNoticeDecline(issue, pod string, readAt time.Time, work runtime.Workspa
 // keeps its work is asked once, and its role is told once: a read after a turn that finds the same
 // work keeps the decline and tells nobody. Its hold carries the read's sentence as its detail,
 // where a cancel's carries none, and is otherwise recorded as a cancel's is (cancelRelease), as is
-// its line.
+// its line, and as is the end of the wait of each wake's start it deleted while that start waited
+// (waitsEndedOnCommit).
 func (r *outbox) declineRelease(ctx context.Context, issue string, payload record.IssueWorkspaceCheck, readAt time.Time, work runtime.WorkspaceWork, failed error) error {
 	decline, hold, why, err := r.declineFor(ctx, issue, payload, readAt, work, failed)
 	if err != nil {
@@ -414,6 +415,7 @@ func (r *outbox) declineRelease(ctx context.Context, issue string, payload recor
 		if err != nil {
 			return err
 		}
+		waitsEndedOnCommit(ctx, r.log, droppedStarts(declined.DroppedStarts), "the decline of its issue's release deleted it", r.now())
 		if !declined.Declined {
 			store.OnCommit(ctx, func() {
 				r.log.Info("outbox release workspace check finished without acting: the pod's release was over when it declined",

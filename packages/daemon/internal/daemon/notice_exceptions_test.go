@@ -515,8 +515,10 @@ func TestOneNoticePublishIsQueuedAgainOnceFromAnswersAndExceptions(t *testing.T)
 // A listener that confirms a role message before it answers says when it could not forward a
 // notice at all (504 delivery_failed): no live holder to forward to, a read that failed or ran out
 // of time, a forward not shown to reach the server, as while the hub is down. The row is not
-// re-held and spends none of the three copies: it fails and is retried on its backoff as long as
-// the answer lasts, so an outage drops nothing, and goes once the listener can forward it.
+// re-held and spends none of the three copies: it waits for its architect (roleWait) and is
+// retried on the capped backoff of a role wait as long as the answer lasts
+// (dispatch://INFRA-4131/spec#b-r-capped), so an outage drops nothing, and goes once the listener
+// can forward it. It is no notice held for an architect that holds no role (errNoticeWaits).
 func TestANoticeTheListenerCouldNotForwardAtAllIsRetriedWithoutACap(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
@@ -534,8 +536,9 @@ func TestANoticeTheListenerCouldNotForwardAtAllIsRetriedWithoutACap(t *testing.T
 	row.ID = noticeRowID(t, pool)
 	row.LeaseToken = leaseOutboxRow(t, pool, row.ID)
 	var notDelivered notify.ErrNotDelivered
-	if err := runner.execute(context.Background(), row); !errors.As(err, &notDelivered) || notDelivered.Reason != notify.ReasonDeliveryFailed || errors.Is(err, errNoticeWaits) {
-		t.Fatalf("execute = %v, want the listener's delivery_failed answer as a failure", err)
+	if err := runner.execute(context.Background(), row); !errors.As(err, &notDelivered) || notDelivered.Reason != notify.ReasonDeliveryFailed ||
+		errors.Is(err, errNoticeWaits) || !errors.Is(err, wait.ErrWaiting) || !roleWaitRun(row.Kind, err) {
+		t.Fatalf("execute = %v, want the listener's delivery_failed answer kept as a wait for the architect", err)
 	}
 	if _, err := pool.Exec(context.Background(), "update outbox set lease_token = '', lease_until = null where id = $1", row.ID); err != nil {
 		t.Fatalf("release the lease: %v", err)
