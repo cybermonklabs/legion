@@ -264,6 +264,13 @@ type Deps struct {
 	// server no announcement reaches, which register gives a signal of its own, so its streams
 	// read again every goingRunStreamCheck.
 	GoingRunEvents *GoingRunEventSignal
+	// WouldDeliver is the delivery rule the command bar's plan asks whether a row's write would
+	// reach an agent session, which makes the row wait for the person in both modes
+	// (goingRowWaits). routes.BuildAppContext sets it to outbox.WouldDeliver for every process
+	// that serves Dispatch, and this package's test server does too. Nil is a server with no rule,
+	// which cannot tell that a write reaches no session: every row whose write appends an event
+	// waits for the person, as one whose event reaches a session does.
+	WouldDeliver DeliveryRule
 	// Clock is the clock these timers of this package run on: the heartbeat on which a socket
 	// resolves its caller again (whileCallerResolves), the bound on each listener lookup of a
 	// comment's route and mentions (resolveMentionTarget's mentionLookupTimeout), the listener
@@ -398,6 +405,8 @@ type DepsInput struct {
 	GoingRuns *GoingRunSignal
 	// GoingRunEvents is the signal of GoingRunEventsChannel; see Deps.GoingRunEvents.
 	GoingRunEvents *GoingRunEventSignal
+	// WouldDeliver is the command bar's delivery rule; see Deps.WouldDeliver.
+	WouldDeliver DeliveryRule
 	// Clock is the clock the API's timers and the listener client's window run on; see
 	// Deps.Clock. Nil is clock.Real().
 	Clock clock.Clock
@@ -497,6 +506,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		BuildCommit:            input.BuildCommit,
 		GoingRuns:              input.GoingRuns,
 		GoingRunEvents:         input.GoingRunEvents,
+		WouldDeliver:           input.WouldDeliver,
 		Clock:                  input.Clock,
 		ParentStatusRule:       input.ParentStatusRule,
 	}, nil

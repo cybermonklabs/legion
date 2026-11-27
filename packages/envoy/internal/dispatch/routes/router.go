@@ -45,6 +45,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapi"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -284,6 +285,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		BuildCommit:            opts.BuildCommit,
 		GoingRuns:              opts.GoingRuns,
 		GoingRunEvents:         opts.GoingRunEvents,
+		WouldDeliver:           outbox.WouldDeliver,
 		ParentStatusRule:       opts.ParentStatusRule,
 	})
 	if err != nil {

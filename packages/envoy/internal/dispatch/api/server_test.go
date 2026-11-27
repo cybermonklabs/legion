@@ -42,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -457,6 +458,9 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		ParentStatusRule:       ParentStatusRule{on: options.parentStatusRule},
 		ListenerRosterUncached: options.listenerRosterUncached,
 		Clock:                  options.clock,
+		// The command bar's plan reads each row by the outbox's own delivery rule, as every
+		// process that serves Dispatch does (routes.BuildAppContext).
+		WouldDeliver: outbox.WouldDeliver,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

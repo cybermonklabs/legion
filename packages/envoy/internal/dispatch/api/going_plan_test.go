@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/going/agentwire"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -460,6 +461,38 @@ func TestWhatWaitsInEachMode(t *testing.T) {
 			t.Fatalf("after the person's approval the issue's priority is %v, want 1", priority)
 		}
 	})
+}
+
+// TestARowWaitsWhereTheServerHasNoDeliveryRule: a server with no delivery rule (Deps.WouldDeliver
+// nil) cannot tell that a row's event reaches no agent session, so a field change, which
+// Auto-review may let through, waits for the person as one whose event reaches a session does. A
+// server whose rule answers that the event reaches no session, read over the route the row sets,
+// lets it be.
+func TestARowWaitsWhereTheServerHasNoDeliveryRule(t *testing.T) {
+	t.Parallel()
+	issue, route := "DEMO-1", "none"
+	event := &model.Event{Type: "issue.updated", IssueKey: &issue}
+
+	waits, err := (&server{}).goingRowWaits(t.Context(), "dispatch_issue_update", event, &route, nil)
+	if err != nil {
+		t.Fatalf("the waits of a row on a server with no delivery rule: %v", err)
+	}
+	if !slices.Equal(waits, []string{goingWaitsDelivery}) {
+		t.Fatalf("a field change on a server with no delivery rule waits for %v, want %s alone", waits, goingWaitsDelivery)
+	}
+
+	var readOver *string
+	reachesNone := func(_ context.Context, _ *store.Store, _ *events.Broker, _ model.Event, routeSet *string) (bool, error) {
+		readOver = routeSet
+		return false, nil
+	}
+	waits, err = (&server{deps: Deps{WouldDeliver: reachesNone}}).goingRowWaits(t.Context(), "dispatch_issue_update", event, &route, nil)
+	if err != nil {
+		t.Fatalf("the waits of a row whose event the rule says reaches no session: %v", err)
+	}
+	if len(waits) != 0 || readOver != &route {
+		t.Fatalf("a field change whose event the rule says reaches no session waits for %v, read over %v, want nothing, read over the route it sets", waits, readOver)
+	}
 }
 
 // toolReviewPlanName is the tool the review's model call names its rows with (going/agent).

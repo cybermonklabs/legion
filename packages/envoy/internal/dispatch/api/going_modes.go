@@ -5,10 +5,11 @@ package api
 // person's words and the plan's rows (going/agent), and lets through only the rows of the classes
 // goingAutoReviewClasses names that those words ask for, that wait for none of the reasons of
 // goingRowWaits, and whose needed rows it lets through too. In both modes these wait: a row of a
-// class goingClassesThatWait names, a row whose event the outbox would deliver to an agent session
-// (outbox.WouldDeliver) - for a row that sets its issue's route, by the route it sets, where the
-// outbox sends the write's own event - and a row whose issue's claim a session holds, read when the
-// plan shows and again before the row's write (going_plan_run.go).
+// class goingClassesThatWait names, a row whose event would reach an agent session by the
+// server's delivery rule (Deps.WouldDeliver, which a deployment sets to outbox.WouldDeliver), or
+// wherever the server has none - for a row that sets its issue's route, by the route it sets,
+// where the outbox sends the write's own event - and a row whose issue's claim a session holds,
+// read when the plan shows and again before the row's write (going_plan_run.go).
 
 import (
 	"context"
@@ -19,8 +20,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/outbox"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The two modes of a person's setting (user_going_settings.mode) and of a run (going_runs.mode).
@@ -70,12 +72,19 @@ const (
 	goingWaitsClaimed  = "claimed_by_session"
 )
 
+// DeliveryRule reports whether event, were its actor to write it now, would reach an agent
+// session once the outbox publishes it: a session's own subject or a role's topic among its
+// destinations, read over routeSet, the route the write that appends event sets on its issue
+// ("" clears it), nil for a write that sets none. outbox.WouldDeliver is the rule; this package
+// takes it as Deps.WouldDeliver rather than importing the outbox, whose tests import this package.
+type DeliveryRule func(ctx context.Context, database *store.Store, broker *events.Broker, event model.Event, routeSet *string) (bool, error)
+
 // goingRowWaits is why a row of tool waits for the person in both modes: its class, where
 // goingClassesThatWait names it; goingWaitsDelivery where event, the event its write would append
-// (goingRowEvent), would reach an agent session (outbox.WouldDeliver), read over routeSet, the
-// route the write sets on its issue (goingRouteSet), nil for a write that sets none; and
-// goingWaitsClaimed where a session holds the claim of its issue (claim). None for a row
-// Auto-review may let through.
+// (goingRowEvent), would reach an agent session by the server's delivery rule (Deps.WouldDeliver),
+// read over routeSet, the route the write sets on its issue (goingRouteSet), nil for a write that
+// sets none, and for every event where the server has no rule; and goingWaitsClaimed where a
+// session holds the claim of its issue (claim). None for a row Auto-review may let through.
 func (s *server) goingRowWaits(ctx context.Context, tool string, event *model.Event, routeSet *string, claim *goingHolder) ([]string, error) {
 	entry := goingWriteTools[tool]
 	var waits []string
@@ -83,9 +92,14 @@ func (s *server) goingRowWaits(ctx context.Context, tool string, event *model.Ev
 		waits = append(waits, string(entry.Class))
 	}
 	if event != nil {
-		delivers, err := outbox.WouldDeliver(ctx, s.deps.Store, s.deps.Events, *event, routeSet)
-		if err != nil {
-			return nil, err
+		// A server with no rule cannot tell that the event reaches no session, so its row waits
+		// as one whose event does.
+		delivers := true
+		if rule := s.deps.WouldDeliver; rule != nil {
+			var err error
+			if delivers, err = rule(ctx, s.deps.Store, s.deps.Events, *event, routeSet); err != nil {
+				return nil, err
+			}
 		}
 		if delivers {
 			waits = append(waits, goingWaitsDelivery)
@@ -100,9 +114,9 @@ func (s *server) goingRowWaits(ctx context.Context, tool string, event *model.Ev
 // goingRouteSet is the route a write, prepared, sets on its issue, "" for one that clears it, and
 // nil for a write that sets none: an update of an issue (goingIssuePatchRoute) whose body names a
 // route its route takes, none or role:<name> or session:<id> (checkIssueRoute). The outbox sends
-// the write's own event to that route, which it reads once the write is in (outbox.WouldDeliver).
-// A route that does not parse is refused by the write's route with nothing written, so its write
-// is read over the route stored.
+// the write's own event to that route, which it reads once the write is in, so the delivery rule
+// reads the event over it (Deps.WouldDeliver). A route that does not parse is refused by the
+// write's route with nothing written, so its write is read over the route stored.
 func goingRouteSet(prepared goingPrepared) *string {
 	if prepared.route.Method+" "+prepared.route.Pattern != goingIssuePatchRoute {
 		return nil
@@ -115,14 +129,14 @@ func goingRouteSet(prepared goingPrepared) *string {
 }
 
 // goingRowEvent is the event the write of a row of tool, prepared, would append, as far as the
-// outbox reads it to decide where it goes (outbox.WouldDeliver), nil for a tool whose route
-// appends none: its type, the person (login) as its actor, its one owner as the broker appends it -
-// for a document its route names, by its id or a prefix of it or by its slug under its issue or
-// project, the issue that owns it, or the document itself where no issue does; else the issue it
-// is of (shown); else the project its route names - and the members of its payload the outbox's
-// routing reads: the ask or comment it is of, a comment's ask and the comment it replies to, a
-// message's target and the message it answers, the claim it moves, and whether a document's
-// version is named.
+// delivery rule reads it to decide where the outbox sends it (Deps.WouldDeliver), nil for a tool
+// whose route appends none: its type, the person (login) as its actor, its one owner as the
+// broker appends it - for a document its route names, by its id or a prefix of it or by its slug
+// under its issue or project, the issue that owns it, or the document itself where no issue does;
+// else the issue it is of (shown); else the project its route names - and the members of its
+// payload the outbox's routing reads: the ask or comment it is of, a comment's ask and the comment
+// it replies to, a message's target and the message it answers, the claim it moves, and whether a
+// document's version is named.
 func (s *server) goingRowEvent(ctx context.Context, tool string, prepared goingPrepared, shown goingRowShown, login string) (*model.Event, error) {
 	kind := goingWriteTools[tool].Event
 	if kind == goingNoEvent || kind == "" {
