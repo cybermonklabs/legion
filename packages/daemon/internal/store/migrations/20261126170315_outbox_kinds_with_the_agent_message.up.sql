@@ -14,9 +14,11 @@
 -- and Migrate applies 20261124114223 there, below that database's newest, before this file.
 --
 -- This list names every kind the outbox's lanes run (record.LaneKinds): the thirty kinds of the
--- design news's list (20261119203047), pending_basis_seed, reparent_seed, merge_holds_changed and
--- agent_message. It drops the constraint if it exists before adding it, so it is safe on a database
--- at either branch.
+-- design news's list (20261119203047), pending_basis_seed, reparent_seed, merge_holds_changed, the
+-- three state events main's 20261126163320 adds (state_change, state_admission and state_boot) and
+-- agent_message. The merge of main that brought 20261126163320 made this list, 20261124114223's and
+-- 20261126163320's one list, so a database ends on the same list whichever of them it ran last. It
+-- drops the constraint if it exists before adding it, so it is safe on a database at either branch.
 --
 -- This migration was numbered 20261126132542 from this branch's merge of main at 26d8c86dd614 until
 -- its merge of a2ac5fd7aceb brought in 20261126110259, which stands below that version and would
@@ -43,4 +45,4 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
   'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
-  'merge_holds_changed', 'agent_message'));
+  'merge_holds_changed', 'state_change', 'state_admission', 'state_boot', 'agent_message'));

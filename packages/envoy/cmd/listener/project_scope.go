@@ -42,9 +42,10 @@ package main
 //     kept messages of those alone (edgeScope.roles).
 //   - Sends: the target session's token lists one of the token's projects, else the send is
 //     answered as to a missing session (edgeScope.hidesConfirmed).
-//   - Reads: the session list, the registry, the session rows' roles and topics and the Legion
-//     agent routes answer only sessions, roles, topics and agents of the token's projects
-//     (edgeScope), each session shown confirmed by its stored record read from the stream's leader
+//   - Reads: the session list, the registry, the session rows' roles and topics, a session's
+//     successors (shownSuccessors) and the Legion agent routes answer only sessions, roles, topics
+//     and agents of the token's projects (edgeScope), each session shown confirmed by its stored
+//     record read from the stream's leader
 //     (edgeScope.showsConfirmed, session.SessionRegistry.StoredByWriter), so a record the server
 //     wrote at a session's key reads as no session's, and a read that did not answer is the
 //     bus-unavailable 503, whose text names no session (edgeScope.confirmUnanswered); the interest

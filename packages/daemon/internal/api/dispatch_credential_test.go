@@ -31,7 +31,7 @@ func TestTheStateServesTheDaemonsDispatchCredential(t *testing.T) {
 	credential, carried := dispatchCredentialServed(t, body)
 	want := map[string]any{
 		"session": "legion-daemon:LEGION", "transitionLaunches": float64(2),
-		"lastTransitionLaunchAt": "2026-09-22T09:17:03Z", "liveLaunchesWithDispatchToken": float64(3),
+		"lastTransitionLaunchAt": "2126-09-22T09:17:03Z", "liveLaunchesWithDispatchToken": float64(3),
 	}
 	if !carried || len(credential) != len(want) {
 		t.Fatalf("the state %s carries dispatchCredential %v (carried %v), want %v", body, credential, carried, want)
@@ -94,23 +94,21 @@ func TestTheDispatchCredentialIsStrippedBelowItsContract(t *testing.T) {
 		}
 	}
 
-	// At the credential's contract the daemon serves the object. Only entry bands can
-	// still narrow the state. The questions-for-controller band must name its drop.
-	state = carriedState(t)
-	at, narrowings := stateNarrowedStating(t, state, "192.0.2.1:4100", podClaims(memoryContract-1), dispatchCredentialContract)
-	if _, carried := dispatchCredentialServed(t, at); !carried {
+	// A caller at the contract stands below no frozen row, so no line says it dropped
+	// dispatchCredential: the lines it is written are the bands' above it (narrowingsExpected),
+	// and the questions-for-controller entry's band, which is among them, must name its drop. It
+	// reads carriedState, as TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps does.
+	carried := carriedState(t)
+	at, narrowings := stateNarrowedStating(t, carried, "192.0.2.1:4100", podClaims(memoryContract-1), dispatchCredentialContract)
+	if _, served := dispatchCredentialServed(t, at); !served {
 		t.Errorf("a caller stating %d is served no dispatchCredential: %s", dispatchCredentialContract, at)
 	}
-	// A caller stating dispatchCredentialContract stands below each entry's band, gateBasisContract's
-	// (narrowing_test.go reads its line) and the P0 bound's among them, and each band writes its own
-	// line, so the line this test is for is the one that drops dispatchCredential, which no row may
-	// write for this caller.
 	for _, line := range narrowings {
 		if line.Dropped == "dispatchCredential" {
 			t.Errorf("a caller stating %d is told it lost dispatchCredential: %+v", dispatchCredentialContract, narrowings)
 		}
 	}
-	want := narrowingsExpected(state, dispatchCredentialContract)
+	want := narrowingsExpected(carried, dispatchCredentialContract)
 	if !slices.Contains(want, "questionsForController") || slices.Contains(want, "dispatchCredential") {
 		t.Fatalf("a caller stating %d expects narrowing lines %v, want questionsForController but not dispatchCredential",
 			dispatchCredentialContract, want)

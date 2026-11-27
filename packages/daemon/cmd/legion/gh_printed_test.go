@@ -30,6 +30,7 @@ func ghPrinted(err error) string {
 // `-Z<secret>`, `--body <secret>` as one argument), and a header given to gh api without -H. Real
 // gh, refusing each, prints none of it.
 func TestLegionGhNamesAStrayArgumentOrOptionWithoutItsValue(t *testing.T) {
+	t.Parallel()
 	const secret = "ghp_zqtoken0123"
 	pane := map[string]string{"GH_CONFIG_DIR": "/owners/acme", "LEGION_GH_OWNERS_DIR": "/owners"}
 	for name, tc := range map[string]struct {
@@ -62,6 +63,7 @@ func TestLegionGhNamesAStrayArgumentOrOptionWithoutItsValue(t *testing.T) {
 // that URL prints in no part of the line legion gh writes, though the refusal names the key twice
 // (the advice to unset it among them). Real git sets the key.
 func TestLegionGhPrintsNoTokenOfAURLScopedGitConfigKey(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on PATH")
 	}

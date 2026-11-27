@@ -17,6 +17,7 @@ const claimCyberPolicySessionsVersion = 20261126182717
 // was recorded, which names none, drops none, and the list reads back in the order it was
 // recorded. A claim that records none reads back with none, as its machine holds it.
 func TestAClaimsCyberPolicySessionsOutliveEveryWrite(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")
@@ -58,6 +59,7 @@ func TestAClaimsCyberPolicySessionsOutliveEveryWrite(t *testing.T) {
 // hold covers every conversation of the held claim until the retry that ends it records the
 // session it forgets (supervise's forgetSession).
 func TestTheMigrationRecordsTheSessionAnEarlierRetryForgotAfterACyberPolicyRefusal(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, claimCyberPolicySessionsVersion-1)

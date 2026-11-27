@@ -100,10 +100,11 @@ type Dispatch interface {
 
 // Envoy sends the loop's messages through the listener (*notify.HTTPPublisher): an answer to an
 // agent's message in the answering agent's name, and a question forwarded to the running agent on
-// its role topic, which a publisher marks never to be handed off.
+// its role topic, which a publisher marks never to be handed off. Publish answers the session the
+// listener stored the message for (notify.Publisher.Publish), which the loop does not read.
 type Envoy interface {
 	Send(ctx context.Context, m notify.Message) error
-	Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error
+	Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) (string, error)
 }
 
 // Gate keeps the loop and a claim's start off one conversation at once (the daemon's answerGate).

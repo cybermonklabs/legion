@@ -14,16 +14,17 @@ import (
 
 // The copy Dispatch queues itself for a session no store of the listener's holds
 // (internal/dispatch/api's queueForUnknownSession) reaches the daemon of a stopped Legion agent
-// through this listener's give-up: the session is gone, the Legion agent registry names it, and
+// through this listener's delivery: the session is gone, the Legion agent registry names it, and
 // its project answers. The envelope is the one Dispatch publishes, built by the two
 // calls its queuedEnvelope makes (dispatchenvoy.SendInput.EnvelopeMessage, then
 // contracts.AgentSendEnvelope) from the input its listenerSendInput builds for a direct message,
 // and it is published as Dispatch's NATS client publishes it (bus.Client's publish of an
-// envelope on its own topic). The delivery is held for the retry window, here one deferral
-// (oneDeferralWindow), and the give-up then hands it off (offerAgentDeliveryToLegion) in place of
-// its no_holder notice and its wake: the hand-off on the agent's daemon subject carries the
-// queued copy whole, and nothing is given up or woken. So the person's message is answered by the
-// daemon about a window after it was queued, rather than waiting for a run that never comes.
+// envelope on its own topic). Its first delivery waits once for the agent wait, here aloneWindow
+// (ENVOY_UNPLACEABLE_RETRY_WINDOW), sent back with no line logged, and its next delivery, which
+// still finds no record, is decided (decideNoRecordAgentMessage): it is handed off
+// (offerAgentDeliveryToLegion) in place of its wake, the hand-off on the agent's daemon subject
+// carries the queued copy whole, and nothing is woken. So the person's message is answered by the
+// daemon about one wait after it was queued, rather than waiting for a run that never comes.
 func TestDispatchsQueuedCopyForAStoppedLegionAgentIsHandedToItsDaemonAtTheGiveUp(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -68,7 +69,7 @@ func TestDispatchsQueuedCopyForAStoppedLegionAgentIsHandedToItsDaemonAtTheGiveUp
 	}
 
 	cfg := harness.config
-	cfg.unplaceableRetryWindow = oneDeferralWindow
+	cfg.unplaceableRetryWindow = aloneWindow
 	cfg.handoff = &legionHandoff{
 		client: cfg.client, registry: cfg.registry, sessions: cfg.sessions,
 		agents: newLegionAgentRegistry(agents), logger: logging.NewWithWriter("test", harness.logs),
@@ -98,14 +99,14 @@ func TestDispatchsQueuedCopyForAStoppedLegionAgentIsHandedToItsDaemonAtTheGiveUp
 	}
 
 	logs := harness.logs.String()
-	if deferrals := recordsFor(deliveryRecords(t, logs, "listener agent delivery deferred"), target); len(deferrals) != 1 {
-		t.Fatalf("%d deferrals of the queued copy, want the one its window buys before the give-up:\n%s", len(deferrals), logs)
+	if got := counterValue(t, metricsBody(t, harness), nakedCounter); got != 1 {
+		t.Fatalf("%s = %d, want 1: the one wait's send-back before the hand-off, and no other:\n%s", nakedCounter, got, logs)
 	}
 	if handedOff := recordsFor(deliveryRecords(t, logs, "listener agent handed off to its legion daemon"), target); len(handedOff) != 1 || handedOff[0].EventID != item.EventID {
 		t.Fatalf("want one hand-off line for the queued copy %s, got %#v:\n%s", item.EventID, handedOff, logs)
 	}
-	if giveUps := recordsFor(deliveryRecords(t, logs, "listener agent delivery given up"), target); len(giveUps) != 0 {
-		t.Fatalf("the queued copy was given up as well as handed off:\n%s", logs)
+	if reports := recordsFor(deliveryRecords(t, logs, "listener agent wake reported"), target); len(reports) != 0 {
+		t.Fatalf("the queued copy's wake was reported as well as the copy handed off:\n%s", logs)
 	}
 	if notice, err := run.exceptions.NextMsg(time.Second); err == nil {
 		t.Fatalf("a delivery exception was published for the queued copy in place of nothing: %s", notice.Data)

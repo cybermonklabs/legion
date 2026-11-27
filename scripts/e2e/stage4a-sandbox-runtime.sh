@@ -359,14 +359,15 @@ fi
 
 begin plugins
 # The stale-plugin-install checkpoint's own pack of this checkout's two plugins, through
-# lib/pack-plugin.sh as every other proof that installs a branch-built plugin packs: it points
-# each manifest at its dist bundle exactly as the release does (scripts/pi-plugin-prepack.sh
-# refuses to pack the committed manifest's own source-path omp.extensions), runs `bun pm pack`
-# with the prepack's build report on stderr, restores the committed manifest on every exit of its
-# own, and prints the tarball's path alone. The checkpoint's negative control names the published
-# pi-legion@9.6.1 by exact version with no pack of its own: the daemon-rendered install script
-# resolves that version to @sjawhar/pi-legion@9.6.1 and bun fetches it from the registry inside
-# the pod. Failing here fails the run before anything is created in the namespace.
+# lib/pack-plugin.sh as every other proof that installs a branch-built plugin packs: it points a
+# staged copy of each manifest at its dist bundle exactly as the release does
+# (scripts/pi-plugin-prepack.sh refuses to pack the committed manifest's own source-path
+# omp.extensions), runs `bun pm pack` in that copy with the prepack's build report on stderr,
+# writes nothing in the checkout, and prints the tarball's path alone. The checkpoint's negative
+# control names the published pi-legion@9.6.1 by exact version with no pack of its own: the
+# daemon-rendered install script resolves that version to @sjawhar/pi-legion@9.6.1 and bun fetches
+# it from the registry inside the pod. Failing here fails the run before anything is created in
+# the namespace.
 plugins_dir="$work/plugins"
 pi_envoy_version=$(jq -r .version "$root/packages/pi-envoy/package.json") || fail "reading packages/pi-envoy/package.json's version failed"
 pi_legion_version=$(jq -r .version "$root/packages/pi-legion/package.json") || fail "reading packages/pi-legion/package.json's version failed"

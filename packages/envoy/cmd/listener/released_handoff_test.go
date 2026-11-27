@@ -23,9 +23,10 @@ import (
 // its daemon on notifications.legion.<project>.agents.<session>, and raises no wake report for a
 // message it handed off, on every path a message reaches the hand-off by: a send to its session, a
 // role publish, a send Dispatch marked with its role (a message and a picker mention of the role),
-// and the give-up of a copy Dispatch put on its agent subject (a person's reply in a thread it
-// wrote in). Each test's control is the same message for a target the registry does not name,
-// which is kept or stored as before the hand-off existed and raises the wake.
+// and the decision on a copy Dispatch put on its agent subject (a person's reply in a thread it
+// wrote in, decideNoRecordAgentMessage). Each test's control is the same message for a target the
+// registry does not name, which is kept, stored or woken as before the hand-off existed and raises
+// the wake.
 //
 // The registry's entry carries no `released` any more. Each test writes the released agent's entry
 // as the daemon of 043f9c67 wrote the entry of a claim idle release suspended (putReleasedEntry):
@@ -213,9 +214,11 @@ func TestReleasedRolesMarkedSendIsHandedToItsDaemonAndRaisesNoWake(t *testing.T)
 
 // A person's reply in a comment thread a released agent wrote in, which Dispatch puts on that
 // agent's subject: the agent left an interest row naming this listener and no session entry, so
-// its delivery finds the session gone and gives it up, and the give-up hands it to the agent's
-// daemon in place of its no_holder notice and its wake. The control, a session the registry does
-// not name in the same shape, is given up with its no_holder notice and its wake.
+// its delivery finds no record of the session. The reply is a core message, which takes no wait,
+// so that delivery decides it (decideNoRecordAgentMessage) and hands it to the agent's daemon in
+// place of its wake. The control, a session the registry does not name in the same shape, reports
+// its wake (`listener agent wake reported`) and, as every message on an agent subject, publishes
+// no delivery exception.
 func TestReleasedAgentsThreadReplyIsHandedToItsDaemonAndRaisesNoWake(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const released, unnamed = "ses_released_thread", "ses_unnamed_thread"
@@ -255,9 +258,9 @@ func TestReleasedAgentsThreadReplyIsHandedToItsDaemonAndRaisesNoWake(t *testing.
 		handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
 		return item, probe
 	}
-	givenUp := func(sessionID string) int {
+	wakeLines := func(sessionID string) int {
 		count := 0
-		for _, record := range deliveryRecords(t, harness.logs.String(), "listener agent delivery given up") {
+		for _, record := range deliveryRecords(t, harness.logs.String(), "listener agent wake reported") {
 			if record.SessionID == sessionID {
 				count++
 			}
@@ -277,15 +280,17 @@ func TestReleasedAgentsThreadReplyIsHandedToItsDaemonAndRaisesNoWake(t *testing.
 	if exception, err := probe.NextMsg(500 * time.Millisecond); err == nil {
 		t.Fatalf("the reply handed off raised the exception %s, want none", exception.Data)
 	}
-	if count := givenUp(released); count != 0 {
-		t.Fatalf("%d lines give the reply to %s up, want none: it was handed off:\n%s", count, released, harness.logs.String())
+	if count := wakeLines(released); count != 0 {
+		t.Fatalf("%d lines report the wake of %s, want none: the reply was handed off:\n%s", count, released, harness.logs.String())
 	}
 	requireNoWake(t, wakes, wakeKindAgent, released)
 
-	item, probe = reply(unnamed)
-	assertDeliveryException(t, probe, item, "no_holder")
-	if count := givenUp(unnamed); count != 1 {
-		t.Fatalf("control: %d lines give the reply to %s up, want one:\n%s", count, unnamed, harness.logs.String())
+	_, probe = reply(unnamed)
+	if exception, err := probe.NextMsg(500 * time.Millisecond); err == nil {
+		t.Fatalf("control: the reply to %s raised the exception %s, want none: a message on an agent subject raises no exception", unnamed, exception.Data)
+	}
+	if count := wakeLines(unnamed); count != 1 {
+		t.Fatalf("control: %d lines report the wake of %s, want one:\n%s", count, unnamed, harness.logs.String())
 	}
 	awaitWake(t, wakes, wakeKindAgent, unnamed)
 	if count, _ := handoffs(t, harness.client, unnamed); count != 0 {

@@ -7,7 +7,7 @@
  * is a stand-in that serves the socket's wire and the broker's token exchange on one origin
  * (`@legion/envoy-client/test/relay-socket-stand-in`).
  */
-import { afterEach, expect, setDefaultTimeout, test } from "bun:test"
+import { afterEach, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { writeFileSync } from "node:fs"
 import * as path from "node:path"
 import { readEnvoyConfig } from "@legion/envoy-client/envoy-config"
@@ -22,11 +22,12 @@ import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { ModEvent } from "../hooks/mod-protocol"
 import { startAgentStream } from "../src/agent-stream-runner"
-import { dialChannelInbound } from "../src/channel-connection"
+import { channelReopener, dialChannelInbound } from "../src/channel-connection"
 import { startCodexAgentStream } from "../src/codex/codex-agent-stream"
 import { startChannelSession } from "../src/envoy-channel-server"
 import type { ModLink } from "../src/mod-link"
 import { SessionIdentity } from "../src/session-identity"
+import { gatedStderr } from "../src/stop-gates"
 import {
   FakeNotifier,
   noInterest,
@@ -187,6 +188,92 @@ test("trades refused before the session starts are said on stderr once, and the 
     "this session's relay socket has no token: the secrets broker refused the trade (fixture); the session starts once a trade succeeds",
   ])
 }, 30_000)
+
+// The relay socket of a session whose stop has begun (R24 of dispatch://INFRA-3589) opens no
+// socket again: a close the listener sends after the stop began closes the connection for good,
+// rather than opening an upgrade under the stopping session's token.
+test("a relay socket dialled with the session's stop reading opens no socket again once the stop has begun", async () => {
+  const server = startRelaySocketStandIn()
+  started.push(() => server.stop())
+  const settings = await relaySettings(server)
+  const { inbound } = settings
+  if ("off" in inbound) throw new Error(`inbound is off: ${inbound.off}`)
+  let stopping = false
+  const dialled = await dialChannelInbound(
+    inbound,
+    settings.url,
+    () => SESSION,
+    "claude-envoy-channel-test",
+    () => undefined,
+    undefined,
+    AbortSignal.timeout(10_000),
+    () => stopping,
+  )
+  started.push(() => dialled.connection.close())
+
+  stopping = true
+  server.close(1012, "listener_stopping")
+  await waitFor(async () => dialled.connection.isClosed(), "the relay socket closed for good")
+
+  expect(server.upgrades.map((upgrade) => [upgrade.session, upgrade.status])).toEqual([
+    [SESSION, 101],
+  ])
+})
+
+// A relay socket a reopen opened (`channelReopener`) holds the server's stop reading and writes
+// its lines through the server's tell gate, for its whole life: once the stop has begun, a close
+// from the listener opens no socket again and its line is dropped. The row's first close comes
+// with no stop begun, so its line is written and the socket opens again: the control of the
+// absence after the stop.
+test("a reopened relay socket opens no socket again and writes nothing on stderr once the server's stop has begun", async () => {
+  const server = startRelaySocketStandIn()
+  started.push(() => server.stop())
+  const settings = await relaySettings(server)
+  const { inbound } = settings
+  if ("off" in inbound) throw new Error(`inbound is off: ${inbound.off}`)
+  let stopping = false
+  const serverStderr = gatedStderr(() => stopping)
+  const written: string[] = []
+  const stderr = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+    written.push(String(chunk))
+    return true
+  })
+  try {
+    const reopen = channelReopener({
+      inbound,
+      listenerUrl: settings.url,
+      session: () => SESSION,
+      name: "claude-envoy-channel-test",
+      signal: new AbortController().signal,
+      stopping: () => stopping,
+      warn: (text) => serverStderr(`envoy-channel: ${text}\n`),
+      swapKeeper: () => undefined,
+      admitting: (follow) => follow,
+      useConnection: () => undefined,
+    })
+    const reopened = await reopen(() => undefined)
+    started.push(() => reopened.connection.close())
+
+    server.close(1012, "listener_stopping")
+    await waitFor(
+      async () => server.upgrades.length === 2 && server.sockets(SESSION) === 1,
+      "the relay socket opened again",
+    )
+    const beforeStop = written.filter((line) => line.startsWith("envoy-channel:"))
+    expect(beforeStop).toContainEqual(
+      expect.stringContaining(`the listener's relay socket for ${SESSION} closed (`),
+    )
+
+    stopping = true
+    server.close(1012, "listener_stopping")
+    await waitFor(async () => reopened.connection.isClosed(), "the relay socket closed for good")
+
+    expect(server.upgrades).toHaveLength(2)
+    expect(written.filter((line) => line.startsWith("envoy-channel:"))).toEqual(beforeStop)
+  } finally {
+    stderr.mockRestore()
+  }
+})
 
 /** The notices the server wrote for itself under `heading`: the one write that names no event. */
 function notices(notifier: FakeNotifier, heading: string): string[] {

@@ -12,6 +12,7 @@ import {
   type ArmName,
   answerOf,
   answersPath,
+  FILE_NOTE,
   type FreshCase,
   type FreshDeps,
   FreshError,
@@ -123,22 +124,15 @@ function document(name: string, markdown: string, requestedVersion: number): Rep
 }
 
 describe("the two shapes of the prompt", () => {
-  /** The sentences the `with` shape adds, which are the whole of the difference. */
-  const FILE_SENTENCE = " One file sits in the directory you are started in";
-  const ENDS = "Whether you read it is yours to decide.";
-
-  test("differ by the sentence about the file and by no other word", async () => {
+  test("differ by the file note alone, which names the file", async () => {
     const row = caseRow("case-0");
     const documents = [document("spec.md", "# The spec\n\nIt says what it does.", 3)];
     const withFile = await promptOf(row, documents, "The issue", "with");
     const without = await promptOf(row, documents, "The issue", "without");
-    expect(withFile).toContain("past-decisions.md");
+    expect(FILE_NOTE).toContain("past-decisions.md");
+    expect(withFile).toContain(` ${FILE_NOTE}`);
+    expect(withFile.replace(` ${FILE_NOTE}`, "")).toBe(without);
     expect(without).not.toContain("past-decisions.md");
-    expect(without).toContain("Nothing of the record is reachable from this machine");
-    const opens = withFile.indexOf(FILE_SENTENCE);
-    const closes = withFile.indexOf(ENDS) + ENDS.length;
-    expect(opens).toBeGreaterThan(0);
-    expect(withFile.slice(0, opens) + withFile.slice(closes)).toBe(without);
   });
 });
 

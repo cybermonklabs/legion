@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/ghroute/ghroutetest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
@@ -45,6 +46,7 @@ const ghOwnSource = "gh*.go"
 // runs it, with the saved help's stand-in gh, whose own output the help read never prints, and
 // must exit 2 with the canary on neither stdout nor stderr and stderr naming the row's words.
 func TestNoRefusalPathPrintsACanary(t *testing.T) {
+	t.Parallel()
 	paths, own := ghroutetest.RequireCanaryRows(t, ghOwnSource, ghCanaryRows, ghPrinted, "ghCanaryRows")
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
@@ -52,7 +54,7 @@ func TestNoRefusalPathPrintsACanary(t *testing.T) {
 		t.Fatal(err)
 	}
 	stub := filepath.Join(t.TempDir(), "gh")
-	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"printf 'gh ran %s\\n' \"$*\"\nexit 0\n"), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte(ghStandInPrefix(help)+"printf 'gh ran %s\\n' \"$*\"\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	pane := map[string]string{
@@ -117,5 +119,6 @@ var ghFormattedValues = map[string]string{
 // as an fmt.Errorf("%q", arg) of an argument, fails here naming its function and its argument. A
 // source holding no such place at all is refused: the walk would have read nothing.
 func TestNoRefusalFormatsAPersonsValueItself(t *testing.T) {
+	t.Parallel()
 	ghroutetest.RequireReviewed(t, ghroutetest.FormatSites(ghroutetest.SourceCalls(t, ghOwnSource)), ghFormattedValues, "ghFormattedValues")
 }

@@ -15,6 +15,7 @@ const holdsDecisionVersion = 20261126183426
 // which writes its state, its reply and its wake, leaves both as they were received. A question
 // recorded before the columns existed reads neither, and so does one received without a decision.
 func TestAQuestionHoldsTheDecisionItWasReceivedWith(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, holdsDecisionVersion-1)

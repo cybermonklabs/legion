@@ -56,8 +56,8 @@ export function resultFacts(result: CheckResult): NodeFact[] {
   // "Up to date" means both halves: at the commit the work stands at, and against the words the
   // result proved. A check reworded since the result ran keeps the first and loses the second,
   // so the result is out of date whatever its commit is (`check_words_moved`, which
-  // `tree-drafts.ts`'s `checkState` reads for the same reason), and that is read before where its
-  // commit stands. The server reads both per result (`results_comparison.go`).
+  // `statement-rules.ts`'s `checkState` reads for the same reason), and that is read before where
+  // its commit stands. The server reads both per result (`results_comparison.go`).
   const stands =
     result.check_words_moved === true
       ? NODE_STATE_WORDS.check.older

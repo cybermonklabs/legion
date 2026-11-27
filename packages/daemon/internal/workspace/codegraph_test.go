@@ -1,5 +1,7 @@
 package workspace
 
+//ci:reads packages/daemon/internal/prompts/roles/**/*.md TestTheRolePromptsCheckTheLeaseTheWarmUpHolds reads the four role parts that tell a role to check the warm-up's lease
+
 import (
 	"bytes"
 	"context"
@@ -193,7 +195,8 @@ func TestWarmCodegraphIndexNeverFailsWhenTheCliIsMissing(t *testing.T) {
 // TestWarmCodegraphIndexGivesCodegraphNoSecretLikeVariable proves the correctness/security finding
 // directly: a provisioning caller's own process environment may hold a one-shot GitHub token or
 // other secret (GH_TOKEN here, standing in for any of them), and codegraph must never see it —
-// only what codegraphEnvironment passes (DO_NOT_TRACK=1, and PATH, HOME and TMPDIR when the caller
+// only what codegraphEnvironment passes (DO_NOT_TRACK=1, CODEGRAPH_PARSE_WORKERS,
+// CODEGRAPH_NO_WAL_DEFER=1, and PATH, HOME and TMPDIR when the caller
 // sets them), and on its command line only its subcommand's arguments: any local user can read a
 // process's argv in /proc/<pid>/cmdline.
 func TestWarmCodegraphIndexGivesCodegraphNoSecretLikeVariable(t *testing.T) {
@@ -342,13 +345,13 @@ func TestWarmCodegraphIndexInitializesAnUntrackedCodegraphDirectoryAgainstTheRea
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, err := runCodegraph(context.Background(), clock.Real(), procgroup.NoReaper, codegraphPath, dir, "status", "--json")
+	status, err := runCodegraph(context.Background(), clock.Real(), procgroup.NoReaper, true, codegraphPath, dir, "status", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	initialized, complete := codegraphStatus(status.stdout)
-	if !initialized || !complete {
-		t.Fatalf("status after warming = %q, want initialized and complete", status.stdout)
+	initialized, current := codegraphStatus(status.stdout)
+	if !initialized || !current {
+		t.Fatalf("status after warming = %q, want initialized and current", status.stdout)
 	}
 }
 
@@ -411,12 +414,14 @@ esac
 	}
 }
 
-// TestWarmCodegraphIndexJudgesAnEmptyLockByItsAge: CodeGraph creates `.codegraph/codegraph.lock`
-// before it writes the builder's PID into it, so a build that has only just started shows an
-// empty lock. A fresh empty lock is held, and warming skips the repair rather than start a second
-// writer beside that build. One older than codegraphEmptyLockGrace is what a builder that died
-// between the create and the write leaves behind: stale, so the repair runs. So is one dated
-// further than the grace into the future, which no starting build wrote.
+// TestWarmCodegraphIndexJudgesAnEmptyLockByItsAge: CodeGraph 1.6.4's FileLock hard-links into
+// place a lock that already holds the builder's PID, but where that link fails it falls back to
+// creating `.codegraph/codegraph.lock` before it writes the PID into it, so a build that has only
+// just started on that path shows an empty lock. A fresh empty lock is held, and warming skips the
+// repair rather than start a second writer beside that build. One older than
+// codegraphEmptyLockGrace is what a builder that died between the create and the write leaves
+// behind: stale, so the repair runs. So is one dated further than the grace into the future,
+// which no starting build wrote.
 func TestWarmCodegraphIndexJudgesAnEmptyLockByItsAge(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -1141,6 +1146,7 @@ func TestWarmCodegraphIndexLogsOneSuccessLine(t *testing.T) {
 		}
 	})
 	t.Run("an init that failed: no line", func(t *testing.T) {
+		noStopSettle(t)
 		dir := t.TempDir()
 		binDir := t.TempDir()
 		script := `#!/bin/sh
@@ -1160,19 +1166,20 @@ esac
 		if success.MatchString(stderr) {
 			t.Fatalf("a warm-up whose init failed logged a success line:\n%s", stderr)
 		}
-		if want := "[legion] codegraph init failed for " + dir + " (exit 1): no database could be created\n"; !strings.Contains(stderr, want) {
+		if want := "[legion] codegraph init failed for " + dir + " (exit 1; the next warm-up builds once more): no database could be created\n"; !strings.Contains(stderr, want) {
 			t.Fatalf("stderr lacks the failure line %q:\n%s", want, stderr)
 		}
 	})
 }
 
-// TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing: CodeGraph 1.5.0 dies
-// of the warm-up's own SIGTERM rather than exiting, and the kernel's out-of-memory kill ends one the
-// same way, so a signal's death is an ordinary end for a codegraph. A `status` so ended answered
-// nothing, and the warm-up falls back to the directory as for a `status` that exited non-zero: on a
-// workspace whose `.codegraph/` was there, `index`. A build so ended logs the signal and what it
-// printed; one the warm-up's own bound ended logs that it timed out, since the same build would
-// time out again. Read as a status, each was `exit -1`.
+// TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing: a signal ends a
+// CodeGraph 1.6.4 build at once — `codegraph init` killed mid-build by SIGTERM, the warm-up's own,
+// exits in 0.03 s (exit 143), and by SIGKILL in 0.02 s (exit 137) — and the kernel's out-of-memory
+// kill ends one the same way, so a signal's death is an ordinary end for a codegraph. A `status`
+// so ended answered nothing, and the warm-up falls back to the directory as for a `status` that
+// exited non-zero: on a workspace whose `.codegraph/` was there, `index`. A build so ended logs the
+// signal and what it printed; one the warm-up's own bound ended logs that it timed out, since the
+// same build would time out again. Read as a status, each was `exit -1`.
 func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t *testing.T) {
 	fake := func(t *testing.T, callLog, cases string) {
 		t.Helper()
@@ -1201,6 +1208,7 @@ func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t
 		}
 	})
 	t.Run("a build a signal ended: the signal named", func(t *testing.T) {
+		noStopSettle(t)
 		callLog := filepath.Join(t.TempDir(), "calls.log")
 		dir := t.TempDir()
 		fake(t, callLog, "status) echo '{\"initialized\":false}' ;;\ninit) echo 'parsing 512 files' >&2; kill -KILL $$ ;;\n")
@@ -1244,6 +1252,7 @@ func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t
 		r.reached("the build's shell to be gone with its pipes still held", "gone")
 		r.endTheBound()
 		r.mark("release")
+		r.settle()
 		r.answered("was ended by signal: killed: parsing 512 files")
 	})
 }
@@ -1285,7 +1294,10 @@ func newBoundRow(t *testing.T, fake func(t *testing.T, callLog, cases string), s
 			r.reached("the stub's child to leave once released", "left")
 		}
 	})
-	go func() { defer close(r.done); warmCodegraphIndexOn(ctx, r.c, procgroup.NoReaper, r.dir, time.Now()) }()
+	go func() {
+		defer close(r.done)
+		warmCodegraphIndexOn(ctx, r.c, procgroup.NoReaper, true, r.dir, time.Now())
+	}()
 	return r
 }
 
@@ -1311,6 +1323,18 @@ func (r *boundRow) endTheBound() {
 	r.c.Advance(codegraphTimeout)
 }
 
+// settle waits for the warm-up's wait for its context after a build a signal ended
+// (codegraphStopSettle) to be armed on the fake clock and moves the clock past it: the row's
+// context runs on, as a build no stop ended leaves it.
+func (r *boundRow) settle() {
+	r.t.Helper()
+	at := r.c.Now().Add(codegraphStopSettle)
+	testwait.Until(r.t, "the warm-up's wait for its context after the build's signal", func() (struct{}, bool) {
+		return struct{}{}, slices.Contains(r.c.Armed(), at)
+	})
+	r.c.Advance(codegraphStopSettle)
+}
+
 // answered waits for the warm-up to return and wants its stderr to carry the line of the build's
 // end, which ends in end.
 func (r *boundRow) answered(end string) {
@@ -1324,32 +1348,77 @@ func (r *boundRow) answered(end string) {
 
 // TestNextCodegraphStep table-tests the pure decision warmCodegraphIndexOn runs on: a parsed
 // status decides outright (its `initialized:false` always means init, even when `.codegraph/`
-// exists); dirExists is consulted only when status failed or didn't parse; and a live lock
-// always wins over an index repair.
+// exists; an initialized index needs nothing only while it is current, `"complete"` and built by
+// the CLI version that reports it or with no builtWithVersion, which a build that indexed no file
+// leaves, so a complete one another version built gets an index repair); dirExists is consulted
+// only when status failed or didn't parse; a live lock always wins over an index repair, of
+// either kind; and a record of the last warm-up build that holds (held: that build died, under
+// the image's CodeGraph and the cap, in this workspace) wins over every build, an init as much as
+// an index repair.
 func TestNextCodegraphStep(t *testing.T) {
 	for _, tc := range []struct {
-		name                string
-		dirExists, lockLive bool
-		statusExitCode      int
-		statusStdout        string
-		want                codegraphStep
+		name                      string
+		dirExists, lockLive, held bool
+		statusExitCode            int
+		statusStdout              string
+		want                      codegraphStep
 	}{
-		{"status valid, not initialized, no directory: init", false, false, 0, `{"initialized":false}`, codegraphStepInit},
-		{"status valid, not initialized, directory exists: init (untracked .codegraph)", true, false, 0, `{"initialized":false}`, codegraphStepInit},
-		{"status valid, complete: none", true, false, 0, `{"initialized":true,"index":{"state":"complete"}}`, codegraphStepNone},
-		{"status valid, complete, lock live: none (complete wins, lock irrelevant)", true, true, 0, `{"initialized":true,"index":{"state":"complete"}}`, codegraphStepNone},
-		{"status valid, partial, no live lock: index", true, false, 0, `{"initialized":true,"index":{"state":"indexing"}}`, codegraphStepIndex},
-		{"status valid, partial, live lock: none", true, true, 0, `{"initialized":true,"index":{"state":"indexing"}}`, codegraphStepNone},
-		{"status failed, directory exists, no live lock: index", true, false, 1, ``, codegraphStepIndex},
-		{"status failed, directory exists, live lock: none", true, true, 1, ``, codegraphStepNone},
-		{"status failed, no directory: init", false, false, 1, ``, codegraphStepInit},
-		{"status unparseable, directory exists: index", true, false, 0, `not json`, codegraphStepIndex},
-		{"status unparseable, no directory: init", false, false, 0, `not json`, codegraphStepInit},
+		{"status valid, not initialized, no directory: init", false, false, false, 0, `{"initialized":false}`, codegraphStepInit},
+		{"status valid, not initialized, directory exists: init (untracked .codegraph)", true, false, false, 0, `{"initialized":false}`, codegraphStepInit},
+		{"status valid, complete: none", true, false, false, 0, `{"initialized":true,"index":{"state":"complete"}}`, codegraphStepNone},
+		{"status valid, complete, lock live: none (complete wins, lock irrelevant)", true, true, false, 0, `{"initialized":true,"index":{"state":"complete"}}`, codegraphStepNone},
+		{"status valid, partial, no live lock: index", true, false, false, 0, `{"initialized":true,"index":{"state":"indexing"}}`, codegraphStepIndex},
+		{"status valid, partial, live lock: none", true, true, false, 0, `{"initialized":true,"index":{"state":"indexing"}}`, codegraphStepNone},
+		{"status valid, complete, built by another version, no live lock: index", true, false, false, 0, `{"initialized":true,"version":"1.6.4","index":{"state":"complete","builtWithVersion":"1.5.0","reindexRecommended":false}}`, codegraphStepIndex},
+		{"status valid, complete, built by another version, live lock: none", true, true, false, 0, `{"initialized":true,"version":"1.6.4","index":{"state":"complete","builtWithVersion":"1.5.0","reindexRecommended":false}}`, codegraphStepNone},
+		{"status valid, complete, built by this version: none", true, false, false, 0, `{"initialized":true,"version":"1.6.4","index":{"state":"complete","builtWithVersion":"1.6.4","reindexRecommended":false}}`, codegraphStepNone},
+		{"status valid, complete, builtWithVersion null (a build that indexed no file), version set: none", true, false, false, 0, `{"initialized":true,"version":"1.6.4","index":{"state":"complete","builtWithVersion":null}}`, codegraphStepNone},
+		{"status failed, directory exists, no live lock: index", true, false, false, 1, ``, codegraphStepIndex},
+		{"status failed, directory exists, live lock: none", true, true, false, 1, ``, codegraphStepNone},
+		{"status failed, no directory: init", false, false, false, 1, ``, codegraphStepInit},
+		{"status unparseable, directory exists: index", true, false, false, 0, `not json`, codegraphStepIndex},
+		{"status unparseable, no directory: init", false, false, false, 0, `not json`, codegraphStepInit},
+		{"record holds, status valid, not initialized: none (no init)", true, false, true, 0, `{"initialized":false}`, codegraphStepNone},
+		{"record holds, status valid, partial, no live lock: none (no repair)", true, false, true, 0, `{"initialized":true,"index":{"state":"indexing"}}`, codegraphStepNone},
+		{"record holds, status valid, complete: none", true, false, true, 0, `{"initialized":true,"index":{"state":"complete"}}`, codegraphStepNone},
+		{"record holds, status valid, complete, built by another version: none (no repair)", true, false, true, 0, `{"initialized":true,"version":"1.6.4","index":{"state":"complete","builtWithVersion":"1.5.0","reindexRecommended":false}}`, codegraphStepNone},
+		{"record holds, status failed, directory exists: none (no repair)", true, false, true, 1, ``, codegraphStepNone},
+		{"record holds, status unparseable, no directory: none (no init)", false, false, true, 0, `not json`, codegraphStepNone},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := nextCodegraphStep(tc.dirExists, tc.lockLive, tc.statusExitCode, tc.statusStdout); got != tc.want {
-				t.Fatalf("nextCodegraphStep(%v, %v, %d, %q) = %v, want %v", tc.dirExists, tc.lockLive, tc.statusExitCode, tc.statusStdout, got, tc.want)
+			if got := nextCodegraphStep(tc.dirExists, tc.lockLive, tc.held, tc.statusExitCode, tc.statusStdout); got != tc.want {
+				t.Fatalf("nextCodegraphStep(%v, %v, %v, %d, %q) = %v, want %v", tc.dirExists, tc.lockLive, tc.held, tc.statusExitCode, tc.statusStdout, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestTheRolePromptsCheckTheLeaseTheWarmUpHolds: a role's `status` during the warm-up's build makes
+// that build fail, so each prompt has the role check this lease, by its name and its age, before it
+// calls CodeGraph. A renamed lease or a changed stale age would leave the prompts checking the
+// wrong thing. The `2>/dev/null` keeps a missing lease silent, since both finds print the path in
+// their error.
+func TestTheRolePromptsCheckTheLeaseTheWarmUpHolds(t *testing.T) {
+	check := ".codegraph/" + warmLeaseName + " -mmin -1 2>/dev/null"
+	for _, part := range []string{
+		filepath.Join("..", "prompts", "roles", "core", "common.md"),
+		filepath.Join("..", "prompts", "roles", "merger.md"),
+		filepath.Join("..", "prompts", "roles", "architect.md"),
+		filepath.Join("..", "prompts", "roles", "architect-root.md"),
+	} {
+		body, err := os.ReadFile(part)
+		if err != nil {
+			t.Fatalf("read %s: %v", part, err)
+		}
+		text := strings.Join(strings.Fields(string(body)), " ")
+		if n := strings.Count(text, check); n != 1 {
+			t.Errorf("%s holds %q %d times, want once: the prompt must check the lease the warm-up holds", part, check, n)
+		}
+	}
+	if warmLeaseStale != time.Minute {
+		t.Errorf("warmLeaseStale is %s: `find -mmin -1` reads a file as fresh for under one minute, so the prompts' check and the lease's staleness must agree", warmLeaseStale)
+	}
+	if warmLeaseHeartbeat >= warmLeaseStale {
+		t.Errorf("warmLeaseHeartbeat is %s and warmLeaseStale is %s: a holder must refresh its lease before another process reads it as stale", warmLeaseHeartbeat, warmLeaseStale)
 	}
 }

@@ -53,15 +53,16 @@ func (s *server) mayQueueForUnknownSession(
 // answers as a send to a stopped session does - queued, with the envelope it stored, or with
 // none and duplicate when the stream already held it.
 //
-// The listener's delivery of that copy finds no record of the session and gives it up after its
-// retry window with the agent wake, which brings a released Legion pod back. For a stopped Legion
-// agent whose project answers, an agent whose idle pod the daemon released among them, the
-// give-up hands the copy to the agent's daemon in place of the notice and the wake
-// (offerAgentDeliveryToLegion in packages/envoy/cmd/listener/legion_handoff.go). The session reads
-// the copy from its consumer when it registers again under its id, since that consumer starts at
-// the first message stored on the subject that the session has not acknowledged. A repeat under the
-// same key - the delivery sweep resuming an attempt whose sender died between this publish and its
-// settle, or a Retry in the same mode - is the duplicate the stream reports, not a second copy.
+// The listener's delivery of that copy finds no record of the session, waits once for its agent
+// wait and then reports the agent wake, which brings a released Legion pod back. For a stopped
+// Legion agent whose project answers, an agent whose idle pod the daemon released among them, the
+// delivery hands the copy to the agent's daemon after that wait, in place of the wake
+// (decideNoRecordAgentMessage and offerAgentDeliveryToLegion in packages/envoy/cmd/listener). The
+// session reads the copy from its consumer when it registers again under its id, since that
+// consumer starts at the first message stored on the subject that the session has not
+// acknowledged. A repeat under the same key - the delivery sweep resuming an attempt whose sender
+// died between this publish and its settle, or a Retry in the same mode - is the duplicate the
+// stream reports, not a second copy.
 //
 // A publish that fails queues nothing: the attempt then settles failed with failure and the
 // publish's own error, so the person can retry it.

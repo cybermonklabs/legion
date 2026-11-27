@@ -171,11 +171,12 @@ func (a *Answer) guardEnv(configDir string) []string {
 	env := make([]string, 0, len(base)+len(ghSettings)+4)
 	// The last entry of a name is the one exec reads, so the daemon's PATH is the last one seen.
 	path := ""
+	keeps := guardKeeps(base)
 	for _, pair := range base {
 		switch name, value, _ := strings.Cut(pair, "="); {
 		case name == "PATH":
 			path = value
-		case guardKeeps(name):
+		case keeps(name, value):
 			env = append(env, pair)
 		}
 	}
@@ -192,9 +193,11 @@ func (a *Answer) guardEnv(configDir string) []string {
 	return append(env, "PATH="+a.toolPath()+path, "GH_CONFIG_DIR="+configDir)
 }
 
-// guardKeeps is whether the leak guard's children keep the name of the daemon's environment
-// (Answer.guardEnv). The guard's gh reads carry the App's token through GH_CONFIG_DIR, so it keeps
-// what a program carrying a GitHub token keeps (leakguard.TokenChildKeeps), each for what reads it:
+// guardKeeps is which entries of environ, the daemon's own environment, the leak guard's children
+// keep (Answer.guardEnv), each by its name and its value. The guard's gh reads carry the App's
+// token through GH_CONFIG_DIR, a gh directory's token (leakguard.DirectoryToken), so it keeps what
+// a program carrying that token keeps (leakguard.TokenChildKeeps), which leaves out a proxy
+// variable that names the secrets broker's airlock, each for what reads it:
 //
 //   - PATH, on which the guard finds the askpass program and every child's program (leakguard's
 //     noAnswer and program), and the check its shell, git and engine; Answer.guardEnv puts the
@@ -229,8 +232,9 @@ func (a *Answer) guardEnv(configDir string) []string {
 // GIT_CONFIG_PARAMETERS); PUBLIC_LEAK_CHECK_REPO_NAMES and PUBLIC_LEAK_CHECK_INTERNAL, which the
 // guard sets for no check (leakguard's package doc); and LEGION_GH_OWNERS_DIR, which the guard
 // reads only of a read `legion gh` refused, while this tool's reads run the real gh.
-func guardKeeps(name string) bool {
-	return leakguard.TokenChildKeeps(name) || guardNames[name]
+func guardKeeps(environ []string) func(name, value string) bool {
+	tokenChild := leakguard.TokenChildKeeps(environ, leakguard.DirectoryToken)
+	return func(name, value string) bool { return tokenChild(name, value) || guardNames[name] }
 }
 
 // guardNames are the whole names guardKeeps keeps beside leakguard.TokenChildKeeps' own.

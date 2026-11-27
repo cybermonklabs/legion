@@ -21,8 +21,8 @@ type JobReport struct {
 	Tests          []TestOutcome
 }
 
-// CitationFault is one check that CI refuses at a commit (R48): the check, where its block is, the
-// rule it breaks and a Detail that begins with the rule.
+// CitationFault is one check that CI refuses at a commit (R48): the check, the position of its
+// document, the rule it breaks and a Detail that begins with the rule.
 type CitationFault struct {
 	Check        string
 	Pos          Position

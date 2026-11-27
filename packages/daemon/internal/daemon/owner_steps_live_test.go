@@ -8,7 +8,7 @@
 //
 // Nothing of the plan's path is stood in for. Dispatch is the real server this checkout builds
 // (startHandoffDispatch), on a database of its own on LEGION_TEST_PG_DSN's server. The daemon is the
-// whole daemon (run, through startDaemonWithin) with dispatch_url at that server, so register_plan
+// whole daemon (run, through startDaemonLogging) with dispatch_url at that server, so register_plan
 // reads the plan's version from Dispatch with the daemon's own client, and each step record goes
 // through the daemon's outbox to the real route. The issues walk as the package's whole-daemon tests
 // of an owner's plan walk them (ownerStepsRig, owner_steps_rig_test.go): each fact of GitHub reaches
@@ -278,8 +278,10 @@ func (l *ownerStepsLive) stepsRead(issue, task string, steps []string) {
 	}
 }
 
-// taskLinesHold says whether out, what `dispatch steps --issue <issue>` printed, is exactly the runs
-// of want, each of task, ended with its result and with an agent, under a header of one task.
+// taskLinesHold says whether out, what `dispatch steps --issue <issue>` printed, holds a header of
+// one task and exactly the runs of want, each of task, ended with its result and with an agent. The
+// line of the task's needs and planned steps before its runs is no run, and parseSteps passes it
+// over.
 func taskLinesHold(issue, out, task string, want []stepWant) error {
 	printed, err := parseSteps(issue, out)
 	if err != nil {

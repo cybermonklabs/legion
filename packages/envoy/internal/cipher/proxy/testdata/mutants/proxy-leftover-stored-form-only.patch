@@ -1,0 +1,18 @@
+# proxy-leftover-stored-form-only: the leftover scan reads a release's placeholder alone, the prefix
+# and 32 letters and digits, and not a minted capability's (the prefix, its kind's word and a
+# hyphen, then the 32), so a minted placeholder left after the swap goes upstream.
+# must fail: TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxy/leftover.go
++++ b/packages/envoy/internal/cipher/proxy/leftover.go
+@@ -144,7 +144,8 @@
+ 	for word < placeholder.MaxMintedWord && opening+word < len(text) && 'a' <= text[opening+word] && text[opening+word] <= 'z' {
+ 		word++
+ 	}
+-	if word > 0 && opening+word < len(text) && text[opening+word] == '-' {
++	// MUTANT: a minted kind's word is not read, so only a release's placeholder is one.
++	if false && word > 0 && opening+word < len(text) && text[opening+word] == '-' {
+ 		opening += word + 1
+ 	}
+ 	end := opening + placeholder.Length

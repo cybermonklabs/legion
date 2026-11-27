@@ -195,7 +195,7 @@ func TestBrokerTokenBindsEveryWriteRouteToTheSessionItNames(t *testing.T) {
 			return `{"target_session":"` + target + `","source_session":"` + s + `","message":"a message of the rig"}`
 		}},
 		{name: "messages/publish", path: "/v1/messages/publish", body: func(s string) string {
-			return `{"topic":"notifications.github.rig","source_session":"` + s + `","message":"a message of the rig"}`
+			return `{"topic":"notifications.team.rig","source_session":"` + s + `","message":"a message of the rig"}`
 		}},
 	}
 
@@ -442,9 +442,10 @@ var v1Walk = []struct {
 	{http.MethodPost, "/v1/messages/send", "/v1/messages/send",
 		`{"target_session":"<session>","source_session":"<session>","message":"a message of the walk"}`},
 	{http.MethodPost, "/v1/messages/publish", "/v1/messages/publish",
-		`{"topic":"notifications.github.rig","source_session":"<session>","message":"a message of the walk"}`},
+		`{"topic":"notifications.team.rig","source_session":"<session>","message":"a message of the walk"}`},
 	{http.MethodDelete, "/v1/sessions/<session>", "/v1/sessions/", ""},
 	{http.MethodGet, "/v1/sessions/<session>/relay", relaySocketPattern, ""},
+	{http.MethodGet, "/v1/sessions/<session>/successors", sessionSuccessorsPattern, ""},
 	{http.MethodGet, "/v1", "/v1", ""},
 	{http.MethodGet, "/v1/no-such-route", "/v1/", ""},
 }

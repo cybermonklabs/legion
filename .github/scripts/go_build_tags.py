@@ -74,18 +74,17 @@ def platforms(module: Path) -> tuple:
     return frozenset(o for o, _ in pairs) | EXTRA_OS, frozenset(a for _, a in pairs) | EXTRA_ARCH
 
 
-def constraint_names(path: Path) -> set:
-    """The names a Go file's build constraint lines use, `//go:build` and `// +build` alike, read
-    from the file's header as go/build's parseFileHeader reads it: a byte-order mark aside, each
-    line trimmed, line comments and `/* */` comments passed over (a constraint line inside a
-    block comment is none), up to the first text that is no comment."""
-    names, in_block = set(), False
+def constraint_lines(path: Path) -> list:
+    """The build-constraint expressions in path's header, as go/build's parseFileHeader reads them:
+    a byte-order mark aside, each line trimmed, line comments and block comments passed over, and
+    the first text that is no comment ending the header."""
+    lines, in_block = [], False
     for raw in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
         line = raw.strip()
         if not in_block:
             found = CONSTRAINT_LINE.match(line)
             if found:
-                names |= set(NAME.findall(found.group(1) or ""))
+                lines.append(found.group(1) or "")
         while line:
             if in_block:
                 end = line.find("*/")
@@ -97,8 +96,14 @@ def constraint_names(path: Path) -> set:
             elif line.startswith("/*"):
                 in_block, line = True, line[2:].strip()
             else:
-                return names
-    return names
+                return lines
+    return lines
+
+
+def constraint_names(path: Path) -> set:
+    """The names a Go file's build constraint lines use, `//go:build` and `// +build` alike, read
+    through constraint_lines so every caller has the same header parser."""
+    return {name for line in constraint_lines(path) for name in NAME.findall(line)}
 
 
 def is_tag(name: str, known: tuple) -> bool:

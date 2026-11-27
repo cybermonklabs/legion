@@ -70,20 +70,24 @@ assert_review_round_handoff LEG-1 2
   try {
     seen = readFileSync(checked, "utf8").trim();
   } catch {}
-  return { code: result.exitCode, stderr: stderr.trim(), seen };
+  return { code: result.exitCode, stderr: stderr.trim(), seen, reads: readFileSync(reads, "utf8") };
 }
 
 describe("assert_review_round_handoff", () => {
   test("waits for the reviewer's completion that comes after the round ended", () => {
-    const { code, stderr, seen } = run(3);
+    const { code, stderr, seen, reads } = run(3);
     expect(stderr).toBe("");
     expect(code).toBe(0);
     expect(seen).toBe("LEG-1 reviewer reviewing 2 h-1");
+    // Four reads until the completion shows, then the one of the record.
+    expect(reads).toBe("5");
   });
 
   test("checks the record at once when the completion came first", () => {
-    const { code, seen } = run(0);
+    const { code, seen, reads } = run(0);
     expect(code).toBe(0);
     expect(seen).toBe("LEG-1 reviewer reviewing 2 h-1");
+    // One read that finds the completion, then the one of the record.
+    expect(reads).toBe("2");
   });
 });

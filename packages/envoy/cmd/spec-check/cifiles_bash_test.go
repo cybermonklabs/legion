@@ -89,7 +89,7 @@ func TestCIFilesThatCompareNamesEachComparisonThatBashRuns(t *testing.T) {
 	t.Parallel()
 	bash, err := exec.LookPath("bash")
 	if err != nil {
-		t.Skipf("bash is not on PATH, so no script can run in it: %v", err)
+		skipOutsideCI(t, fmt.Sprintf("bash is not on PATH, so no script can run in it: %v", err))
 	}
 	began := time.Now()
 	var files []bashFile
@@ -189,7 +189,7 @@ func TestCIFilesThatCompareNamesEachComparisonOfTheEarlierBashCorpus(t *testing.
 	t.Parallel()
 	bash, err := exec.LookPath("bash")
 	if err != nil {
-		t.Skipf("bash is not on PATH, so no script can run in it: %v", err)
+		skipOutsideCI(t, fmt.Sprintf("bash is not on PATH, so no script can run in it: %v", err))
 	}
 	began := time.Now()
 	var files []bashFile
@@ -360,7 +360,7 @@ func TestFirstArgumentsRunsEachScriptInItsOwnShell(t *testing.T) {
 	t.Parallel()
 	bash, err := exec.LookPath("bash")
 	if err != nil {
-		t.Skipf("bash is not on PATH, so no script can run in it: %v", err)
+		skipOutsideCI(t, fmt.Sprintf("bash is not on PATH, so no script can run in it: %v", err))
 	}
 	scripts := []string{"batch_variable=set; export batch_exported=set; batch_function() { :; }; alias batch_alias=:; set -f; trap : USR1; cd bin"}
 	want := [][]string{nil}
@@ -415,7 +415,7 @@ func TestFirstArgumentsLetsAFileAndABackgroundProcessOutliveTheirScript(t *testi
 	t.Parallel()
 	bash, err := exec.LookPath("bash")
 	if err != nil {
-		t.Skipf("bash is not on PATH, so no script can run in it: %v", err)
+		skipOutsideCI(t, fmt.Sprintf("bash is not on PATH, so no script can run in it: %v", err))
 	}
 	scripts := []string{`: >"kept-$$"
 (for ((i = 0; i < 6000; i++)); do [[ -e begun-$$ ]] && break; sleep 0.01; done; spec-check background; : >"called-$$") &`}
@@ -453,7 +453,7 @@ func TestFirstArgumentsGivesEachScriptEmptyStandardInput(t *testing.T) {
 	t.Parallel()
 	bash, err := exec.LookPath("bash")
 	if err != nil {
-		t.Skipf("bash is not on PATH, so no script can run in it: %v", err)
+		skipOutsideCI(t, fmt.Sprintf("bash is not on PATH, so no script can run in it: %v", err))
 	}
 	scripts := []string{`if IFS= read -r line; then spec-check compare; else spec-check tree; fi`}
 	want := [][]string{{"tree"}}

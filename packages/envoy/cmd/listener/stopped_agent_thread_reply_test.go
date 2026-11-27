@@ -19,11 +19,11 @@ import (
 // through, and that row outlives its session entry, so this is the shape every stopped phase
 // worker is in: interest here, no session record.
 //
-// On that shape session.HandleAgentMessage takes its interest path and finds the session gone
-// (internal/session/handler.go), which it answers as it answers a session no interest names: the
-// message is held for the retry window and then given up, and the give-up offers the hand-off
-// before its no_holder notice and its wake (unplaceableAgentDelivery). The message here is a core
-// one, which nothing redelivers, so its first delivery is that give-up.
+// On that shape session.HandleAgentMessage answers AgentNoRecord (internal/session/handler.go), as
+// it answers a session no interest names: the message waits once for the agent wait and is then
+// decided, and the decision offers the hand-off before it reports any wake
+// (decideNoRecordAgentMessage). The message here is a core one, which takes no wait, so its first
+// delivery is that decision.
 //
 // Before, the interest path answered the same shape session.ErrNoSessionRecord and the
 // delivery_failed exception, for as long as the interest row stood. Measured on the live proof at

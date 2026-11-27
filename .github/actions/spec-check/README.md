@@ -15,19 +15,67 @@ Add a new item next to the item it belongs with, never at the end of a list unle
 The command takes every rule from the package `packages/envoy/internal/dispatch/specgraph`.
 
 - **Which entries are spec files.**
-  A spec file is a regular file whose name ends in `.md`, directly in the directory.
-  The Dispatch server reads `.dispatch/architecture` by the same rule, from the package `packages/envoy/internal/dispatch/architecture/notes`.
+  A spec file is a regular file whose name ends in `.yaml`, directly in the directory (`specgraph.IsFile`).
+  Each other entry gives a warning (see [Warnings](#warnings)), and the command reads no text of it.
 
 - **The size of each spec file.**
   The command refuses the tree when a spec file is larger than 1 MiB (1048576 bytes).
   In that case, the command parses no spec file.
 
-- **The blocks.**
-  A statement is a `requirement` block, a check a `check` block, and the files also hold `component` and `term` blocks.
-  The command refuses a spec file that is not UTF-8 or holds a NUL byte, an attribute that a block does not take, a line that opens no block, a block with no closing line, a block inside a block, text outside a block other than headings and blank lines, a heading that names code, and a claim of more than one line or more than one sentence.
+- **The form of a file.**
+  A spec file holds one or more nodes, one YAML document for each node.
+  A document starts with a line that is exactly `---`, and its `type` is `requirement` (a statement), `check`, `component` (a component or, with `kind: interface`, an interface) or `term`.
+  The command reads each document with the YAML library `gopkg.in/yaml.v3`.
+  It checks the data of each document against one JSON Schema, `packages/envoy/internal/dispatch/specgraph/schema/spec-node.schema.json`, which gives the keys of each kind of node, their types, the keys that a node must have and the values that a key takes.
+  Each fault of the form gives one line, with one of these rules:
+
+  - `bad-yaml`: the YAML library cannot read the document, for example text that is not UTF-8, a control character or one key written two times, or the data has a key that is not a string.
+
+  - `no-node`: the file holds no document.
+
+  - `schema`: the data breaks the schema, with the place in the data as a JSON pointer and the message of the validator, for example `schema: node: additional properties 'surprise' not allowed`.
+
+  - `not-printed`: the file is not exactly the documents that `specgraph`'s `Print` writes for its nodes, at the first line that differs.
+    A key in another order, a comment, an anchor or an alias, a tag, a flow list, a block scalar, another indentation, other quotes, a space at the end of a line, a carriage return and a byte order mark each give this rule, so one node has one form in git.
+    The line shows the text of that line in the file and the text that print writes there, each in Go's quotes, so an invisible change shows, and it names what differs, for example `not-printed: line 4 is "kind: behavior \n", and print writes "kind: behavior\n" there (a space at the end of the line); spec-check print writes each node in that form`.
+    The command counts lines as the YAML library does, so a carriage return, U+0085, U+2028 and U+2029 each end a line too.
+    The printed form is the one form that each YAML library reads alike, and another form can read as two texts in two libraries, so the `compare` subcommand makes no comparison of a file that is not in it, and its line names `spec-check print`.
+
+  - `bad-time-limit`: a time limit that is not a positive Go duration.
+
+- **How `spec-check print` writes the files.**
+  `spec-check print` writes the documents in the form that the command reads back.
+  The printer double-quotes each text that a YAML 1.1 or YAML 1.2 library reads, as a plain value, as another type than a string, such as `=`, `<<`, `yes`, `0x_` or `2026-11-16 10:00:00 Z`, so each standard library reads the same strings.
+  On a system that gives no `flock`, `spec-check print` refuses to write, because it locks the directory with `flock` for each run, and the line says to run print on Linux or macOS.
+  `spec-check print` changes all of its files or none, also when it is killed: it builds a new directory beside the spec directory, named `.<name>.spec-check-print-<number>`, and puts it in the place of the spec directory with one call.
+  The new directory holds a second name of each spec file that the run does not change, or a copy of it with its mode where the system refuses that name, for example for a file of another user under `fs.protected_hardlinks`.
+  A file system that cannot exchange two directories refuses that call, and `spec-check print` then writes nothing and names the reason and the way out.
+  After the exchange, `spec-check print` moves each entry that is no spec file, such as a README, a subdirectory or a link, back into the spec directory with a rename that refuses an existing name.
+  A file system that has no such rename (`invalid argument`, as a gVisor volume answers for `RENAME_NOREPLACE` while it exchanges two directories) gets a move that refuses the name another way: a second name and a removal for a file or a link, and else taking the name itself, an empty directory for a directory and a new file for a file, which the system refuses where an entry has the name, and renaming over what it took.
+  `spec-check print` tries that move in the new directory before the exchange, so a system that refuses it too refuses the run with nothing changed, and the line names the refusal.
+  For a spec directory that comes from the layers of a container image (overlayfs, `invalid cross-device link`), the line says to put a copy of the directory in its place in the container, `cp -a <dir> <dir>.copy && rm -rf <dir> && mv <dir>.copy <dir>`, or to mount the checkout into the container.
+  For a spec directory that is itself a mount point (`device or resource busy`), the line says to mount a directory above it instead, such as the checkout.
+  For a file system that does not exchange two directories (`invalid argument` on Linux, `operation not supported` on macOS), the line says to run print on a checkout on a local file system.
+  `spec-check print` needs write permission on the directory above the spec directory, where it builds the new directory, and it refuses before any change when the process may not write there, with a line that says what to change, or, for a spec directory that is a mount point, to mount a directory above it.
+  It gives the new directory the owner and the group of the spec directory, each file that it writes the mode, and the owner and the group, of the file of that name that it replaces, and a new file mode 0644 and the owner and the group of the spec directory, each owner and group as far as the process may give them: a run as root gives both, so a run as root over a bind-mounted checkout leaves the checkout's user its files; another gives its own user, which each entry that it makes already has, and any group that it belongs to, so a member of the spec directory's group keeps the group its access, and what it may give neither of, the entry keeps from the writer, as git does.
+  Where the system refuses what the process may give, the line names what was asked for and the way out: a run as root that asked for an owner is told to run print as the owner of that entry; a run as root that asked for the group alone, for an entry that root already owns, is told to run print as a user in that group; a run as a user, which asked only for a group that it belongs to, is told to run print as root.
+
+- **What a killed run of `spec-check print` leaves.**
+  A run that is killed can leave the directory that it built beside the spec directory, or the old spec directory, and its record, `.<name>.spec-check-print-<number>.texts`, which `git status` shows; the next run of `spec-check print` on the spec directory removes it, or moves the entries that are no spec files back into the spec directory, and says so.
+  From the old spec directory it removes a spec file only where the record holds its text, the text that the killed run read, or where it is a second name of a file of the spec directory.
+  Where another program made or changed an entry there, or changed a spec file while print ran, or the system refused print's move or removal of one, print keeps that directory beside the spec directory under a new name, names it and each cause with its entries in its line, and exits 1, so that a person compares the entries with the spec directory; where the system refuses that name, the directory keeps its name and its record, and the next run keeps the change the same way.
+  A kill inside such a move can leave an entry that holds nothing, an empty file or an empty directory, at the name that the move took, and an empty directory of a kept name beside the spec directory: the next run finishes that move and removes that directory, since neither holds anything.
+  A process whose working directory was the spec directory before a run keeps the old directory, which the run removes, so it changes to the spec directory again to see the new files.
+  A run of `spec-check print` changes only the nodes that it names, so it refuses a file where another node is not in its printed form, and the line names each node of that file, by its whole id, to print it whole.
+  Each command reads the spec directory through one open directory, so a read while print runs reads the files as they were or as the run leaves them.
+  The limits of `spec-check print`:
+  a stop between the exchange and the last move leaves the entries that print does not own, such as a README, beside the spec directory until the next run puts them back;
+  two long ids that differ only in their middle look alike in a line that cuts them;
+  print writes each file that it changes as a new file, so a hard link to the old file outside the spec directory keeps the old text;
+  an id over 131,072 bytes cannot be one argument, and a top-level id over 250 bytes makes a file name that the system refuses.
 
 - **Every rule of `specgraph.Validate`.**
-  These rules include ids (one id on two nodes, an id that is not words of lower-case ASCII letters and digits joined by single hyphens, or that has a word that states a position), a parent or a relation to a node that the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves, a check without its parts, a component purpose of more than one sentence, and a name of code in a text, a term's name included.
+  These rules include ids (one id on two nodes, or an id that has a word that states a position), a parent or a relation to a node that the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves, a text with no letter or digit, a claim or a component purpose of more than one sentence, and a name of code in a text, a term's name included.
   The rule on a name of code reads a word by its shape alone, so it also refuses a plain word or a product name of that shape: a slash between two ASCII letters (`I/O`, `and/or`, `client/server`, `https://example.com/docs`, but not `https://example.com/2024` or `https://10.0.0.1/api`), small ASCII letters and then an ASCII capital and a small letter in a word of ASCII letters and digits only (`mmHg` and `ownCloud`, but not `mmHg-based` or `véloCity`), a small word, a dot and a capital (`works.Then`), a file ending (`Three.js`, `https://bun.sh`), and the form of a Go test's name (`TestFlight`).
   Of the words of such a shape, only the product names that the rule lists, such as `Node.js`, pass.
   Say such a word in other words, for example "input and output" or "the client and the server".
@@ -71,7 +119,7 @@ A caller sets `allow-empty: true` only while it has no spec file, and reads `cou
 The check step exits with the status of the command.
 A status other than 0 fails the step and the job.
 Each line that the command prints about the directory or an entry of it names the directory by its absolute path.
-`<counts>` below is `<n> statements, <n> checks, <n> components, <n> interfaces, <n> terms`, each noun in the singular for one, where `<n> components` counts the components other than interfaces and `<n> interfaces` counts the components with `kind="interface"`.
+`<counts>` below is `<n> statements, <n> checks, <n> components, <n> interfaces, <n> terms`, each noun in the singular for one, where `<n> components` counts the components other than interfaces and `<n> interfaces` counts the components with `kind: interface`.
 
 - **Exit 0: the tree is valid.**
   The log holds the line `spec-check: <directory>: <counts>; the tree is valid`.
@@ -82,6 +130,7 @@ Each line that the command prints about the directory or an entry of it names th
 
 - **Exit 1: the tree is refused.**
   The log holds one line for each problem, `spec-check: <directory>/<file>:<line>: <node>: <rule>: <detail>`, which names the file, the line and the id of the node.
+  A node id, or another value of a file, that is longer than 100 bytes shows as its first and its last 50 bytes, with `…` between them.
   Then it holds the line `spec-check: <directory>: <counts>; the tree is refused`.
   A spec file that is larger than 1 MiB gives the line `spec-check: file too large: <directory>/<file> is <n> bytes (limit 1048576)` in place of the problem lines.
   In that case, each count is 0, because the command parses no spec file.
@@ -98,7 +147,8 @@ Each line that the command prints about the directory or an entry of it names th
 ## Warnings
 
 An entry of the directory that is not a spec file gives a warning line, `spec-check: warning: <path>: not a spec file (<kind>); the importer passes over it`.
-Examples are `notes.txt`, a subdirectory and a symbolic link.
+For a file, such as `notes.txt` or a spec file of the old `*.md` form, the line also says what a spec file is: `spec-check: warning: <path>: not a spec file (file): a spec file is a *.yaml file, which spec-check print writes; the importer passes over it`.
+Other examples are a subdirectory and a symbolic link.
 A warning fails nothing.
 
 ## What the runner reads from the check's lines

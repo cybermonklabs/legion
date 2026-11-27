@@ -2,12 +2,43 @@ package specgraph
 
 import "slices"
 
-// The Detail of each rule of Compare.
+// approvalKind is one kind of problem of a comparison with the approved spec, an index of
+// approvalKinds: a rule of Compare, or bad-approved-document, which versionText gives for a
+// document of the approved spec and relationFault for a relation of one.
+type approvalKind int
+
+// The kinds of problem of a comparison with the approved spec. numApprovalKinds counts them, so
+// each new kind is a place of approvalKinds, which ProblemKinds lists, and the table test of the
+// lines that print a problem (cmd/spec-check) fails until it has a row.
 const (
-	detailUnapprovedID   = "unapproved-id: the approved spec never held this id"
-	detailUnapprovedText = "unapproved-text: the approved spec never held this text"
-	detailRemovedID      = "removed-id: the approved spec removed this id and never held this text for it"
+	unapprovedID approvalKind = iota
+	unapprovedText
+	removedID
+	approvedNodeCount
+	approvedOtherNode
+	approvedNotAnID
+	approvedNotPrinted
+	approvedNoNode
+	approvedOtherKind
+	numApprovalKinds
 )
+
+// approvalKinds is the format of the Detail of each kind of problem of a comparison with the
+// approved spec, which begins with its rule: Compare's rules, and bad-approved-document for a
+// document of no node or of two, of a node with another id, with a value at an id place that is
+// not an id, or not as Print writes its node, and for a relation that names no node of the
+// approved spec or a node of a kind that it may not name.
+var approvalKinds = [numApprovalKinds]string{
+	unapprovedID:       "unapproved-id: the approved spec never held this id",
+	unapprovedText:     "unapproved-text: the approved spec never held this text",
+	removedID:          "removed-id: the approved spec removed this id and never held this text for it",
+	approvedNodeCount:  "bad-approved-document: the document holds %d nodes, not one",
+	approvedOtherNode:  "bad-approved-document: the document is of node %s, not %s",
+	approvedNotAnID:    "bad-approved-document: %s %s is no id",
+	approvedNotPrinted: "bad-approved-document: the document is not as Print writes it",
+	approvedNoNode:     "bad-approved-document: %s %s names no node of the approved spec",
+	approvedOtherKind:  "bad-approved-document: %s %s names %s, not %s",
+}
 
 // Holding is which approved text of a node the files hold: Present when they hold one, Version its
 // number, and Current when it is the node's current text.
@@ -37,7 +68,7 @@ type Comparison struct {
 }
 
 // Compare compares the spec files at one commit with the approved spec (R2). A node's text is its
-// Digest, and an approved version's is the Digest of its block's node, so a move to another file or
+// Digest, and an approved version's is the Digest of its document's node, so a move to another file or
 // another order changes no text. Each problem names the node with its file and line, sorted as
 // Validate sorts them:
 //
@@ -62,32 +93,33 @@ func Compare(files Tree, a Approved) Comparison {
 		texts[id] = map[string]int{}
 		for _, v := range n.Versions {
 			if text, problems := versionText(id, v); len(problems) == 0 {
-				digest := nodesOf(text)[0].node.Digest()
+				digest := Nodes(text)[0].Digest()
 				texts[id][digest] = max(texts[id][digest], v.Version)
 			}
 		}
 	}
-	for _, f := range nodesOf(files) {
-		approved, held := a.Nodes[f.id]
-		version, approvedText := texts[f.id][f.node.Digest()]
+	for _, f := range Nodes(files) {
+		id := f.NodeID()
+		approved, held := a.Nodes[id]
+		version, approvedText := texts[id][f.Digest()]
 		detail := ""
 		switch {
 		case !held:
-			detail = detailUnapprovedID
+			detail = approvalKinds[unapprovedID]
 		case !approvedText && approved.Removed:
-			detail = detailRemovedID
+			detail = approvalKinds[removedID]
 		case !approvedText:
-			detail = detailUnapprovedText
+			detail = approvalKinds[unapprovedText]
 		case approved.Removed:
 			// The files still hold a text of a removed node; it holds no current text.
-			if !slices.Contains(c.Removed, f.id) {
-				c.Removed = append(c.Removed, f.id)
+			if !slices.Contains(c.Removed, id) {
+				c.Removed = append(c.Removed, id)
 			}
-		case !c.Holds[f.id].Present:
-			c.Holds[f.id] = Holding{Present: true, Version: version, Current: version == approved.Versions[len(approved.Versions)-1].Version}
+		case !c.Holds[id].Present:
+			c.Holds[id] = Holding{Present: true, Version: version, Current: version == approved.Versions[len(approved.Versions)-1].Version}
 		}
 		if detail != "" {
-			c.Problems = append(c.Problems, idProblem(f.pos, f.id, detail))
+			c.Problems = append(c.Problems, idProblem(f.NodePos(), id, detail))
 		}
 	}
 	SortProblems(c.Problems)

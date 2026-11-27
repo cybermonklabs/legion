@@ -507,11 +507,11 @@ func TestHandOffToLegionLeavesTheseAsTheyWere(t *testing.T) {
 // The counterpart of TestAMessageToAStoppedAgentWhoseInterestNamesThisListenerIsHandedToItsDaemon
 // (stopped_agent_thread_reply_test.go): the same interest-path miss - a stored row naming this
 // listener, no session entry behind it - for a session the Legion agent registry does not hold is
-// answered exactly as it is with no hand-off, the give-up of a session with no record
-// (unplaceableAgentDelivery): nothing is handed off, the no_holder exception goes out and the
-// agent wake is reported. Every session that is not a Legion agent's is in this shape, which is
-// why the hand-off is offered and not assumed: what it does not take keeps the answer it has
-// without it.
+// answered exactly as it is with no hand-off: the decision on a message to a session with no
+// record (decideNoRecordAgentMessage) offers the hand-off, which takes nothing, and then reports
+// the agent wake (`listener agent wake reported`), with no delivery exception and no failed
+// delivery. Every session that is not a Legion agent's is in this shape, which is why the hand-off
+// is offered and not assumed: what it does not take keeps the answer it has without it.
 func TestAnInterestPathMissForASessionTheLegionRegistryDoesNotHoldIsGivenUpAsWithoutTheHandoff(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -546,9 +546,9 @@ func TestAnInterestPathMissForASessionTheLegionRegistryDoesNotHoldIsGivenUpAsWit
 	}, nil); err != nil {
 		t.Fatalf("record the interest row the stopped session left: %v", err)
 	}
-	// No session entry is written: the delivery finds the session gone, as it does for the
-	// stopped Legion agent. The message is a core one, which nothing redelivers, so it is given up
-	// on this first delivery.
+	// No session entry is written: the delivery finds no record of the session, as it does for the
+	// stopped Legion agent. The message is a core one, which nothing redelivers, so it takes no
+	// wait and is decided on this first delivery.
 
 	item := envelopeFor(contracts.AgentTopicPrefix+sessionID, "dispatch-17", "dispatch")
 	probe, err := harness.client.Conn.SubscribeSync("notifications.envoy.exceptions." + item.Topic)
@@ -559,15 +559,17 @@ func TestAnInterestPathMissForASessionTheLegionRegistryDoesNotHoldIsGivenUpAsWit
 
 	handler(&nats.Msg{Data: marshalListenerEnvelope(t, item)})
 
-	assertDeliveryException(t, probe, item, "no_holder")
-	if records := deliveryRecords(t, harness.logs.String(), "listener agent delivery given up"); len(records) != 1 || records[0].SessionID != sessionID {
-		t.Fatalf("%d lines report the delivery given up, want one naming %s:\n%s", len(records), sessionID, harness.logs.String())
+	if exception, err := probe.NextMsg(500 * time.Millisecond); err == nil {
+		t.Fatalf("the message raised the delivery exception %s, want none: a message on an agent subject raises no exception", exception.Data)
 	}
-	if failures := deliveryRecords(t, harness.logs.String(), "listener agent delivery failed"); len(failures) != 0 {
-		t.Fatalf("%d lines fail the delivery as delivery_failed, want none: a session with no record is unplaceable whatever its interest row names:\n%s", len(failures), harness.logs.String())
+	if records := deliveryRecords(t, harness.logs.String(), "listener agent wake reported"); len(records) != 1 || records[0].SessionID != sessionID || records[0].EventID != item.EventID {
+		t.Fatalf("%d lines report the wake, want one naming %s and event %s:\n%s", len(records), sessionID, item.EventID, harness.logs.String())
+	}
+	if got := counterValue(t, metricsBody(t, harness), deliveredSeries("failed")); got != -1 {
+		t.Fatalf("%s = %d, want no series at all: a session with no record is woken, never failed, whatever its interest row names:\n%s", deliveredSeries("failed"), got, harness.logs.String())
 	}
 	if woken := agentWakesFor(t, wakes, sessionID, 5*time.Second, 500*time.Millisecond); woken != 1 {
-		t.Fatalf("%d agent wakes were reported for %s, want one beside the give-up:\n%s", woken, sessionID, harness.logs.String())
+		t.Fatalf("%d agent wakes were reported for %s, want the one its decision reported:\n%s", woken, sessionID, harness.logs.String())
 	}
 	if count, data := handoffs(t, harness.client, sessionID); count != 0 {
 		t.Fatalf("the stream holds %d hand-offs for %s, want none: the registry names no such agent; the last: %s", count, sessionID, data)

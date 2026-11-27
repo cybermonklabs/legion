@@ -855,7 +855,7 @@ func (l *Loop) deliverForward(ctx context.Context, q store.AnswerQuestion, origi
 	}
 	payload.Text = text.String()
 	summary := fmt.Sprintf("A question for the %s of %s from %s", q.Role, q.Issue, origin.Asker)
-	err = l.cfg.Envoy.Publish(ctx, notify.RoleTopicPrefix+string(q.Token), summary, payload, answerDedupePrefix+q.ID)
+	_, err = l.cfg.Envoy.Publish(ctx, notify.RoleTopicPrefix+string(q.Token), summary, payload, answerDedupePrefix+q.ID)
 	if errors.Is(err, notify.ErrNoHolder) {
 		l.cfg.Log.Info("answers: the forwarded question waits until the agent holds its role", "question", q.ID, "token", q.Token)
 		return nil

@@ -100,7 +100,7 @@ type legionHandedOff struct {
 // An agent whose issue pod the daemon released because it was idle is handed off as any other
 // stopped agent is: its daemon decides what its message does, and whether it wakes the agent. So
 // every route raises its wake report only when nothing was handed off (sendHandler,
-// roleSend.noHolder, handOffOrKeepRoleSend, unplaceableAgentDelivery): a wake raised beside a
+// roleSend.noHolder, handOffOrKeepRoleSend, decideNoRecordAgentMessage): a wake raised beside a
 // hand-off would resume a released agent before its daemon decided. An agent that is not released
 // needs no wake report for a handed-off message either, since the daemon acts on one only for a
 // claim of its own that is released (listenerWake in packages/daemon/internal/workflow).
@@ -293,39 +293,42 @@ func (h *legionHandoff) answeringAgent(ctx context.Context, target legionHandoff
 	return &entry, nil
 }
 
-// legionHandoffGiveUpWindow bounds one hand-off the agent-subject give-up makes
-// (offerAgentDeliveryToLegion): its registry reads and its publish, retries of an id still in
-// process included. A publish takes milliseconds and each send is bounded by the bus's own
-// publish bound, so a window well inside the consumer's ack wait (consumerAckWait) leaves the
-// NAK room to ask for the redelivery before the server would send the message again by itself.
+// legionHandoffGiveUpWindow bounds one hand-off the agent-subject delivery's decision makes
+// (decideNoRecordAgentMessage, offerAgentDeliveryToLegion): its registry reads and its publish,
+// retries of an id still in process included. A publish takes milliseconds and each send is
+// bounded by the bus's own publish bound, so a window well inside the consumer's ack wait
+// (consumerAckWait) leaves the NAK room to ask for the redelivery before the server would send the
+// message again by itself.
 // It is a variable so that a test can shorten it
 // (TestTheAgentSubjectGiveUpStopsAtItsWindowWhileItsHandoffIsStillInProcess).
 var legionHandoffGiveUpWindow = 10 * time.Second
 
 // offerAgentDeliveryToLegion offers one agent-subject delivery this listener found no session
 // record for to the stopped Legion agent's daemon, and reports whether that offer was the
-// message's whole outcome. The unplaceable path's give-up reaches it once its deferrals are spent
-// (unplaceableAgentDelivery), and so does a session whose interest row names this listener and
-// outlives the session entry it was written beside, which is the shape every Legion agent that
-// ran here leaves behind: session.HandleAgentMessage answers its gone record as it answers a
-// session no interest names. It records the outcome and finalizes the message itself for the two
-// answers it owns, so one line, one counter and one disposal serve the give-up:
+// message's whole outcome. The decision on a message with no record reaches it
+// (decideNoRecordAgentMessage): once the message's one wait is spent, at once when it has no wait
+// to take, and at the stream's last delivery after a read of the record that did not answer. A
+// session whose interest row names this listener and outlives the session entry it was written
+// beside, which is the shape every Legion agent that ran here leaves behind, reaches it the same
+// way: session.HandleAgentMessage answers its gone record AgentNoRecord, as it answers a session
+// no interest names. It records the outcome and finalizes the message itself for the two answers
+// it owns, so one line, one counter and one disposal serve the decision:
 //
 //   - a hand-off that was published is the whole answer: handed_off, the dedupe key recorded and
 //     the message ACKed, with no exception - the daemon answers it from the agent's own
 //     conversation. Its line says whether the stream already held that hand-off (duplicate),
 //     as another listener's durable that handed off the same message first leaves it;
 //   - a hand-off whose publish failed is NAKed and tried again rather than answered, since the
-//     give-up's own answer would publish the very notice the hand-off replaces. Its attempt-cache
+//     decision's own answer would report the very wake the hand-off replaces. Its attempt-cache
 //     entry is cleared with it, or the redelivery this NAK asks for is swallowed as an
 //     attempt-dedupe skip before the handler runs again.
 //
 // It answers false when nothing was handed off - no registry entry for the session, a project
 // that does not answer, a session that is not gone, a message that opted out, a registry that
 // could not be read (handOffToLegion) - having recorded nothing and finalized nothing, and the
-// caller answers exactly as it did before the hand-off existed.
+// caller reports the session's wake (reportNoRecordWake).
 //
-// The give-up answers no request, so the hand-off takes a context of its own,
+// The decision answers no request, so the hand-off takes a context of its own,
 // legionHandoffGiveUpWindow, rather than none: its publish is made again for as long as a
 // clustered stream refuses it as still in process under an earlier attempt
 // (publishPastInProcess), and a refusal that outlives the window is a hand-off that failed, NAKed
