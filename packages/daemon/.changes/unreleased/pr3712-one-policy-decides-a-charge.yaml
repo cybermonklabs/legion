@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  One policy decides whether a claim's failure charges a budget, over one closed set of outcomes,
+  and every charge site asks it (`supervise.Charges`, over `runtime.Outcomes`): the outcomes a
+  take's working-copy adoption, a take or a turn that did not start within its bound, a turn's
+  report, a process that died or did not launch, and the registration and reconnect deadlines
+  produce. A provider error that a turn's report names charges nothing, and the provider-error
+  ladder decides its task.

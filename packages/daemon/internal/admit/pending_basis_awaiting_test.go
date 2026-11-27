@@ -222,7 +222,7 @@ func TestAPendingBasisMeetsARootWaitingOnAPerson(t *testing.T) {
 			}
 			admission.ReleaseCatchUp("LEGION-208")
 			tick(t, pool, admission, "tick-2")
-			resumes := architectResumes(t, pool)
+			resumes := architectResumes(t, pool, config.DesignGateRootIssues)
 			if len(resumes) != 1 {
 				t.Fatalf("architect starts = %q, want one resume", resumes)
 			}
@@ -275,7 +275,7 @@ func TestAPendingBasisMeetsARootWaitingOnAPerson(t *testing.T) {
 				}
 				admission.ReleaseCatchUp("LEGION-208")
 				tick(t, pool, admission, "tick-2")
-				resumes := architectResumes(t, pool)
+				resumes := architectResumes(t, pool, config.DesignGateRootIssues)
 				if len(resumes) != 1 {
 					t.Fatalf("architect starts = %q, want one resume", resumes)
 				}
@@ -295,7 +295,7 @@ func TestAPendingBasisMeetsARootWaitingOnAPerson(t *testing.T) {
 
 			// The resolve answers the wait as closed, and the pass that applied it resumes the
 			// root on the row it kept.
-			resumes := architectResumes(t, pool)
+			resumes := architectResumes(t, pool, config.DesignGateRootIssues)
 			if root := issue(t, pool, "LEGION-208"); root.Awaiting != nil || root.Phase != phase.Admitted || len(resumes) != 1 {
 				t.Fatalf("the root after its architect resolved its request = %s (awaiting %+v) with architect starts %q, want it resumed at admitted",
 					root.Phase, root.Awaiting, resumes)

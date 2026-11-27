@@ -72,11 +72,16 @@ func idleRoot() pods.IdleView {
 func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name  string
-		view  pods.IdleView
-		image bool
-		want  IdleHold
-		roles []claim.Role
+		name string
+		view pods.IdleView
+		// image is whether the pod runs the configured image, and drifted whether it was built
+		// from a repository the issue's record has left. A row that sets neither reads a pod on
+		// the configured image and on the repository the record holds, which is every pod of a
+		// deployment nothing has changed under.
+		image   bool
+		drifted bool
+		want    IdleHold
+		roles   []claim.Role
 	}{
 		{
 			name: "every condition holds", view: idleChild(), image: true, want: IdleHoldNone,
@@ -161,6 +166,20 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 		},
 		{
 			name: "the pod does not run the configured image", view: idleChild(), image: false, want: IdleHoldImage,
+		},
+		{
+			// Dispatch moved the issue, the daemon's record followed it, and the pod still
+			// running is a clone of the repository the issue has left. The pod is the update
+			// round's to replace with a pod of the repository the record holds, not a release's
+			// to take.
+			name: "the pod was built from a repository the issue has left", view: idleChild(),
+			image: true, drifted: true, want: IdleHoldRepository,
+		},
+		{
+			// The image is read first, as the rule reads it: a pod behind on both is one hold
+			// and the first one named.
+			name: "a pod behind on its image and on its repository", view: idleChild(),
+			image: false, drifted: true, want: IdleHoldImage,
 		},
 		{
 			name:  "a live claim speaks an older plugin contract",
@@ -451,7 +470,7 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := IdleRelease(tc.view, idleNow, idlePeriod, tc.image, idleContract, api.TaskTakeContract(), nil)
+			got := IdleRelease(tc.view, idleNow, idlePeriod, tc.image, tc.drifted, idleContract, api.TaskTakeContract(), nil)
 			if got.OldPlugin != nil {
 				t.Fatalf("the decision names the old plugin %+v, want none where no role's launch installs no plugin", *got.OldPlugin)
 			}
@@ -494,12 +513,13 @@ func oldPluginChild() pods.IdleView {
 func claudeImplementer(role claim.Role) bool { return role == claim.RoleImplementer }
 
 // A Claude Code role whose plugin takes no task is released out of a pod behind the configured
-// image at once, past the image, the contract and the round that hold every other such pod, and
-// at the end of its turn when it is in one; every other condition holds it as it holds any pod.
-// A pod already on the configured image is kept and names the claim, which is what the daemon
-// logs. The rows below the release are the controls: a role whose launch installs a plugin, a
-// Claude Code role at the contract that takes tasks, and one still launching, whose recorded
-// contract is its last process's, are each held as any pod behind its image is.
+// image at once, past the image, the repository, the contract and the round that hold every other
+// such pod, and at the end of its turn when it is in one; every other condition holds it as it
+// holds any pod. A pod already on the configured image is kept and names the claim, which is what
+// the daemon logs, whether or not it was built from a repository the issue's record has left. The
+// rows below the release are the controls: a role whose launch installs a plugin, a Claude Code
+// role at the contract that takes tasks, and one still launching, whose recorded contract is its
+// last process's, are each held as any pod behind its image is.
 func TestTheIdleRuleReleasesAnOldPluginsPodOntoTheConfiguredImage(t *testing.T) {
 	t.Parallel()
 	old := pods.IdleClaim{Role: claim.RoleImplementer, PluginContract: api.TaskTakeContract() - 1}
@@ -507,8 +527,10 @@ func TestTheIdleRuleReleasesAnOldPluginsPodOntoTheConfiguredImage(t *testing.T) 
 		name  string
 		view  pods.IdleView
 		image bool
-		fixed func(claim.Role) bool
-		want  IdleHold
+		// drifted is whether the pod was built from a repository the issue's record has left.
+		drifted bool
+		fixed   func(claim.Role) bool
+		want    IdleHold
 		// named is whether the decision names the old plugin's claim.
 		named bool
 	}{
@@ -519,6 +541,14 @@ func TestTheIdleRuleReleasesAnOldPluginsPodOntoTheConfiguredImage(t *testing.T) 
 		{
 			name: "on the configured image", view: oldPluginChild(), image: true,
 			fixed: claudeImplementer, want: IdleHoldPluginContract, named: true,
+		},
+		{
+			name: "behind the image and built from a repository the issue has left", view: oldPluginChild(),
+			drifted: true, fixed: claudeImplementer, want: IdleHoldNone, named: true,
+		},
+		{
+			name: "on the configured image and built from a repository the issue has left", view: oldPluginChild(),
+			image: true, drifted: true, fixed: claudeImplementer, want: IdleHoldPluginContract, named: true,
 		},
 		{
 			name:  "in a turn",
@@ -577,7 +607,7 @@ func TestTheIdleRuleReleasesAnOldPluginsPodOntoTheConfiguredImage(t *testing.T) 
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := IdleRelease(tc.view, idleNow, idlePeriod, tc.image, api.TaskTakeContract(), api.TaskTakeContract(), tc.fixed)
+			got := IdleRelease(tc.view, idleNow, idlePeriod, tc.image, tc.drifted, api.TaskTakeContract(), api.TaskTakeContract(), tc.fixed)
 			if got.Hold != tc.want {
 				t.Fatalf("hold = %s, want %s", got.Hold, tc.want)
 			}
@@ -637,7 +667,7 @@ func TestTheIdleRuleReleasesNoPodOfAnIssueAnotherProjectRecords(t *testing.T) {
 
 	var decided IdleDecision
 	marked, err := st.ReleaseIdleIssue(ctx, "legion", issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
-		decided = IdleRelease(view, now, idlePeriod, true, idleContract, api.TaskTakeContract(), nil)
+		decided = IdleRelease(view, now, idlePeriod, true, false, idleContract, api.TaskTakeContract(), nil)
 		if !decided.Release {
 			return store.IdleReleaseMark{}, nil
 		}

@@ -633,14 +633,15 @@ func adoptedTooLate(m *Machine, ctx context.Context, ev Event) error {
 // made (the delivery is left unsaved, and settle writes it again).
 func (m *Machine) refusedAdoption(ctx context.Context, request RequestTake, err error) error {
 	p := m.claim.Pending
-	// The line that names this failure, and for a charged one the words its charge puts before
-	// the far side's text ("" for a failure charged nothing).
-	msg, charge := "supervise: the adoption of the working copy was lost to the transport; the take is refused and the task waits", ""
+	// The outcome this failure is, and the line that names it. Whether it charges is the policy's
+	// (Charges): a refused adoption does, and an identity the daemon could not mint or a transport
+	// that lost the call does not.
+	o, msg := runtime.OutcomeTransportLost, "supervise: the adoption of the working copy was lost to the transport; the take is refused and the task waits"
 	switch {
 	case errors.Is(err, runtime.ErrAdoptRefused):
-		msg, charge = "supervise: the shim refused to adopt the working copy; the take is refused", "the working copy was not adopted: "
+		o, msg = runtime.OutcomeAdoptionRefused, "supervise: the shim refused to adopt the working copy; the take is refused"
 	case errors.Is(err, runtime.ErrIdentityUnavailable):
-		msg = "supervise: the role's GitHub App identity could not be minted; the take is refused and the task waits"
+		o, msg = runtime.OutcomeIdentityUnavailable, "supervise: the role's GitHub App identity could not be minted; the take is refused and the task waits"
 	}
 	p.SendFailures++
 	p.LastSendFailureAt = m.deps.Clock.Now()
@@ -651,8 +652,8 @@ func (m *Machine) refusedAdoption(ctx context.Context, request RequestTake, err 
 	}
 	m.claim.recordTake(request, TakeRefused)
 	m.answer(request, TakeAnswer{Outcome: TakeOutcomeRefused, Hold: HoldAdoption})
-	if charge != "" {
-		return m.chargePrompt(ctx, WaitAdoption, charge+p.LastSendError)
+	if Charges(o) {
+		return m.chargePrompt(ctx, o, WaitAdoption, "the working copy was not adopted: "+p.LastSendError)
 	}
 	return m.persist(ctx)
 }
@@ -789,14 +790,19 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 // that does not hold it, or whose store does not answer, has its task wait. Then a root
 // architect's task of a run, held while its root
 // has no architect to hear it and narrowed to what it still names once the root hears
-// (currentRootTask), and retired when that leaves it naming nothing. Last, for a task that adopts
+// (currentRootTask), and retired when that leaves it naming nothing; a resume task (Delivery.Resume)
+// is written from the record there, or, on a daemon that wires no answer to RootHears, on its own,
+// since the text it was queued with holds no resume. Last, for a task that adopts
 // the working copy the issue's roles share, another role of the issue in a turn, or holding an
 // accepted take whose turn has not ended (issueInTurn), and then a merge forward of the issue owed
 // to a role and not landed (mergeForwardOwed), which refuses the take in-turn whatever role takes,
 // the asked role's own included: the merge is a role message and no take, so between two of its
 // runs, or before its first run starts, no role of the issue is in a turn, and an adoption then
 // would leave an empty commit on the merge in progress. A take that adopts nothing never reads it.
-// A read of it that fails decides nothing, and the take is undecided (undecided).
+// A read of it that fails decides nothing, and the take is undecided (undecided). Once no hold
+// stands, a phase worker's task has its working copy line written again from the repository its
+// process works (currentWorkingCopy), so a take is answered naming the workspace of the process
+// that takes it; an answer that fails leaves the take undecided too.
 //
 // This daemon queues no ask of an update round as a task: it publishes the ask to the role's
 // Envoy topic (record.UpdateAsk). A task under an `update:` delivery id (updateTaskPrefix) is one
@@ -881,6 +887,17 @@ func (m *Machine) takeable(ctx context.Context, owed bool) (hold string, dropped
 		if !taken {
 			return "", true, m.queueRelaunch(ctx)
 		}
+	} else if len(p.Resume) > 0 {
+		// A resume task is written at its take, wherever that take is decided: one on a daemon
+		// that wires no answer to RootHears is still written from the record first
+		// (currentRootTask), since the text it was queued with holds no resume (Delivery.Resume).
+		taken, err := m.currentRootTask(ctx)
+		if err != nil {
+			return "", !taken, err
+		}
+		if !taken {
+			return "", true, m.queueRelaunch(ctx)
+		}
 	}
 	if other, inTurn := m.adoptionWaits(); inTurn {
 		m.log.Info("supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share",
@@ -897,6 +914,9 @@ func (m *Machine) takeable(ctx context.Context, owed bool) (hold string, dropped
 				"task", p.Number, "issue", m.claim.Issue, "asked", asked)
 			return HoldInTurn, false, nil
 		}
+	}
+	if err := m.currentWorkingCopy(ctx); err != nil {
+		return "", false, err
 	}
 	return "", false, nil
 }

@@ -159,12 +159,14 @@ func loggingEngine(logged *bytes.Buffer) *Engine {
 }
 
 // tasksQueued is every supervise start row of issue that carries a task, oldest first: the rows
-// whose delivery queues a task on the claim, and so writes its value.
+// whose delivery queues a task on the claim, and so writes its value. A start that carries the
+// wait it answers carries its task too, though no text: the take renders it from the record
+// (record.SuperviseRequest.Awaiting).
 func tasksQueued(t *testing.T, pool *pgxpool.Pool, issue string) []record.SuperviseRequest {
 	t.Helper()
 	var tasks []record.SuperviseRequest
 	for _, start := range superviseRowsOf(t, pool, issue, "start") {
-		if start.Task != "" {
+		if start.Task != "" || start.Awaiting != nil {
 			tasks = append(tasks, start)
 		}
 	}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
@@ -290,19 +291,22 @@ type TurnPastBound struct {
 // PodUpdateOpen opens, or keeps open, an update round over this claim: the process holding it is
 // about to be replaced, and the role is asked first to do the steps of its update message
 // (UpdateTask) and answer ready_for_update. Round is the round's identity and kind in one string
-// (Claim.UpdateRound), and Reasons the drift the daemon read of the pod it runs in.
+// (Claim.UpdateRound), Reasons the drift the daemon read of the pod it runs in, and Repository
+// the repository that pod was built from, whatever drift opened the round, the zero Repository
+// where the pod named none (Claim.UpdateRepository).
 //
 // The daemon's sweep posts it to every claim of the round at every tick while the round is open,
-// so the action is idempotent: the first post of a round records the round, its reasons and its
-// clock, and each later post of the same round changes nothing. The round's terms are fixed when
-// it opens, so the ask a role reads and the record an operator reads name the same reasons. The
-// machine asks the role nothing: the sweep enqueues the round's ask to the role's own Envoy topic
-// (record.UpdateAsk), and the outbox marks it on the claim once it reached a session
-// (Machine.PublishUpdateAsk).
+// so the action is idempotent: the first post of a round records the round, its reasons, its
+// repository and its clock, and each later post of the same round changes nothing. The round's
+// terms are fixed when it opens, so the ask a role reads and the record an operator reads name
+// the same reasons. The machine asks the role nothing: the sweep enqueues the round's ask to the
+// role's own Envoy topic (record.UpdateAsk), and the outbox marks it on the claim once it reached
+// a session (Machine.PublishUpdateAsk).
 type PodUpdateOpen struct {
-	Claim   claim.Token
-	Round   string
-	Reasons string
+	Claim      claim.Token
+	Round      string
+	Reasons    string
+	Repository ghrepo.Repository
 }
 
 // UpdateTask is the text a pod's update round asks each role with. round is the round, which the
@@ -354,10 +358,11 @@ type PodUpdateOpen struct {
 // replacement the daemon makes. That keep has one exception, and the text names it where it holds
 // (GPT-6.1 Sol's non-blocking point on #5285 at 0259f8af): a round over a drift that breaks the
 // pod (runtime.Breaks: its recorded reasons open on runtime.BreakingDrift, today a drift of the
-// pod's service account or of its exchange identity) replaces the pod whatever the read finds and
-// tells the issue's architect what it took, so its ask promises no keep. A pod whose disk is a
-// kept volume that the issue's next pod mounts is no exception: R7 keeps it as it keeps any other
-// pod, so the text says that the keep holds there too.
+// pod's service account, of its exchange identity or of its repository, the last since a
+// repository correction breaks the pod, internal/daemon's repositoryReason) replaces the pod
+// whatever the read finds and tells the issue's architect what it took, so its ask promises no
+// keep. A pod whose disk is a kept volume that the issue's next pod mounts is no exception: R7
+// keeps it as it keeps any other pod, so the text says that the keep holds there too.
 //
 // The text is built in pieces, and reasons goes in a piece of its own. A reason is the JSON the
 // daemon read of a pod (internal/runtime/sandbox's shapeValue), so a reason can hold a quote
@@ -803,6 +808,10 @@ type RequestDeliver struct {
 	// is what holds those rows until the delivery tells them (Delivery.Kept). Empty for a task
 	// that names none.
 	Kept []byte
+	// Resume is the wait a resume task answers (record.SuperviseRequest.Awaiting, encoded JSON),
+	// carried onto the delivery, whose text is rendered from it at each send (Delivery.Resume).
+	// Empty for every other task.
+	Resume []byte
 	// News is what the task carries of news of the approved design, as the start that queued it
 	// read it from the record (record.DeliveryNews, encoded JSON), carried onto the delivery and
 	// persisted with it, since the delivery's accepted take is what credits it as taken
@@ -2585,21 +2594,23 @@ func bootInterval(m *Machine, ctx context.Context, _ Event) error {
 
 // registrationDeadline is a process that has had its boot intervals and whose agent never became
 // ready — it never registered, or registered and never said it was ready. Without a held
-// suspension, it is retired, counted and relaunched (retireNeverReady). A relaunch the tree
-// lifecycle refuses is checked before the retirement, so the process is kept and the deadline
-// tried again at the probe interval, as one whose stop fails is. A suspension that holds (an
-// operator's or the controller's) retained through a rule-resuming launch instead completes here:
-// no ready will arrive to run it, and relaunching would drop that hold. The retirement's stop
-// records what it ended as the deadline's (endNeverReady, letGo) — what its agent never did is no
-// turn, so a record comes only of background work the process reported — and the relaunch that
-// follows lets nothing more go.
+// suspension, it is retired, counted and relaunched under OutcomeNeverRegistered, whose charge is
+// the policy's (retireNeverReady, relaunchAfterFailure, Charges). A relaunch the tree lifecycle
+// refuses is checked before the retirement, so the process is kept and the deadline tried again at
+// the probe interval, as one whose stop fails is: that check asks whether the tree may launch at
+// all, which is no outcome question. A suspension that holds (an operator's or the controller's)
+// retained through a rule-resuming launch instead completes here: no ready will arrive to run it,
+// and relaunching would drop that hold. The retirement's stop records what it ended as the
+// deadline's (endNeverReady, letGo) — what its agent never did is no turn, so a record comes only
+// of background work the process reported — and the relaunch that follows lets nothing more go.
 //
-// The deadline of a process of a claim that records a session and no file is charged nothing
-// where endUncharged says so: a process an earlier release started, whose registration the fence
-// refused, and a start that had Oh My Pi resume the session by its id and never registered as it.
-// Its process is retired all the same, and relaunched through launch, which charges no launch
-// failure and waits no backoff, in place of relaunchAfterFailure. An agent that registered as the
-// session records its file, so its deadline is charged as every other one is.
+// The deadline of a process of a claim that records a session and no file names an outcome of its
+// own where that process is one an earlier release started, whose registration the fence refused,
+// or a start that had Oh My Pi resume the session by its id and never registered as it
+// (endOutcome), and the policy charges neither (Charges). Its process is retired all the same, and
+// relaunched through relaunchAfterFailure under that outcome, which counts no launch failure,
+// records no pending cause and waits no backoff. An agent that registered as the session records
+// its file, so its deadline is named and charged as every other one is.
 func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 	if m.held != nil && m.held.By.Holds() {
 		return m.suspendHeld(ctx)
@@ -2612,7 +2623,7 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 		whose:     "agent " + never,
 		never:     never,
 		line:      "supervise: the agent " + never + "; retired its process",
-		cause:     CauseNeverRegistered,
+		outcome:   runtime.OutcomeNeverRegistered,
 		uncharged: "the registration deadline",
 	})
 }
@@ -2620,30 +2631,33 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 // neverReady is what one deadline retires a process for, whose agent never became ready to the
 // daemon (retireNeverReady): whose names the claim's process in the errors ("agent never
 // registered"), never is what its agent never did as its end records it (endNeverReady), line is
-// the Warn line of the retirement, cause the charged launch failure, and before a step of the
-// deadline's own between the relaunch's check and the stop, nil for none. uncharged names the end
-// for endUncharged, which charges nothing for it where it says so; "" is a deadline whose end is
-// charged always: the reconnect deadline, of a claim a daemon restart restored ready, idle or
-// working, whose agent registered as its session, and register clears the mark endUncharged reads
-// (Claim.AgentResumeGeneration) in the write that records the session's file.
+// the Warn line of the retirement, outcome the end the deadline names (runtime.OutcomeNeverRegistered,
+// runtime.OutcomeNeverReconnected), which the policy charges a launch failure (Charges), and before
+// a step of the deadline's own between the relaunch's check and the stop, nil for none. uncharged
+// names the end for endOutcome, which names an outcome of its own for it where the process is one
+// an earlier release started or a resume by the session's id, and the policy charges neither; ""
+// is a deadline whose end is named as it is always: the reconnect deadline, of a claim a daemon
+// restart restored ready, idle or working, whose agent registered as its session, and register
+// clears the mark endOutcome reads (Claim.AgentResumeGeneration) in the write that records the
+// session's file.
 type neverReady struct {
 	whose     string
 	never     string
 	line      string
-	cause     FailureCause
+	outcome   runtime.Outcome
 	before    func(context.Context) error
 	uncharged string
 }
 
 // retireNeverReady is the sequence the registration deadline and the reconnect deadline share
 // (registrationDeadline, reconnectDeadline): the process is probed, and one found gone takes the
-// death path (probe). One found alive is retired and relaunched with a charged launch failure:
-// the relaunch the tree lifecycle would refuse is checked first (checkLaunch), the deadline's own
-// step runs (neverReady.before), the stop records what it ended as the deadline's (endNeverReady,
-// letGo), and the relaunch that follows lets nothing more go. A deadline that names its end
-// (neverReady.uncharged) asks endUncharged after the stop, and an end it answers true for is
-// relaunched through launch, charged nothing, in place of relaunchAfterFailure. A refused check,
-// a failed step and a stop the runtime refuses each keep the process, and the deadline is tried
+// death path (probe). One found alive is retired and relaunched through relaunchAfterFailure under
+// the outcome its deadline names: the relaunch the tree lifecycle would refuse is checked first
+// (checkLaunch), the deadline's own step runs (neverReady.before), the stop records what it ended
+// as the deadline's (endNeverReady, letGo), and the relaunch that follows lets nothing more go. A
+// deadline that names its end (neverReady.uncharged) asks endOutcome after the stop, and an end
+// the policy charges nothing for is relaunched counting no launch failure. A refused check, a
+// failed step and a stop the runtime refuses each keep the process, and the deadline is tried
 // again at the probe interval.
 func (m *Machine) retireNeverReady(ctx context.Context, r neverReady) error {
 	return m.probe(ctx, func(ctx context.Context) error {
@@ -2660,22 +2674,28 @@ func (m *Machine) retireNeverReady(ctx context.Context, r neverReady) error {
 			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
 			return fmt.Errorf("retire %s, whose %s: suspend: %w", m.claim.Token, r.whose, err)
 		}
-		if r.uncharged != "" && m.endUncharged(r.uncharged) {
-			// An end charged nothing counts against no budget, so its line names none.
-			m.log.Warn(r.line, "incarnation", incarnation)
-			return m.launch(ctx, noEnd)
+		o := r.outcome
+		if r.uncharged != "" {
+			o = m.endOutcome(r.outcome, r.uncharged)
 		}
 		// The line names the claim (the machine's logger carries it), what its agent never did
 		// (neverReady.line), and the launch this retirement counts against its budget
 		// (relaunchAfterFailure counts it next), so a controller whose role claim waits out its
-		// registration deadline shows in the daemon's log as that, attempt by attempt.
-		m.log.Warn(r.line, "incarnation", incarnation,
-			"launchFailure", m.claim.Budgets.LaunchFailures+1, "limit", m.deps.Limits.LaunchFailures)
-		// A launch retired at its deadline is charged a launch failure, so it is an end of the
-		// session's launch (SessionRun, dispatch://INFRA-2045 R1): the registration deadline's,
-		// and the reconnect deadline's of a shim that never came back (reconnectDeadline).
-		m.sessionEnded("its " + r.whose)
-		return m.relaunchAfterFailure(ctx, r.cause, noEnd, nil)
+		// registration deadline shows in the daemon's log as that, attempt by attempt. An end the
+		// policy charges nothing counts against no budget, so its line names none.
+		args := []any{"incarnation", incarnation}
+		if Charges(o) {
+			args = append(args, "launchFailure", m.claim.Budgets.LaunchFailures+1, "limit", m.deps.Limits.LaunchFailures)
+		}
+		m.log.Warn(r.line, args...)
+		// A launch retired at its deadline that the policy charges a launch failure is an end of
+		// the session's launch (SessionRun, dispatch://INFRA-2045 R1): the registration deadline's,
+		// and the reconnect deadline's of a shim that never came back (reconnectDeadline). An end it
+		// charges nothing (endOutcome) is not, as a death the policy charges nothing is not (died).
+		if Charges(o) {
+			m.sessionEnded("its " + r.whose)
+		}
+		return m.relaunchAfterFailure(ctx, o, noEnd, nil)
 	}, TimerRegistration, m.deps.Timeouts.Probe)
 }
 
@@ -3350,8 +3370,9 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // and the reasons the post carries, as the store keeps them, as every event's text is (Handle: the
 // reasons quote what the runtime read of the pod, so the claim the operator's answers read holds
 // the reasons the store holds), and clears what an earlier round left: the ask it published, the
-// signal it got, the head that signal reported, and the notice it wrote. The same round again
-// changes nothing, its reasons included: the round's terms are fixed when it opens
+// signal it got, the head that signal reported, and the notice it wrote. The repository the post
+// carries is recorded beside the reasons (Claim.UpdateRepository). The same round again changes
+// nothing, its reasons and its repository included: the round's terms are fixed when it opens
 // (dispatch://INFRA-2981 R9), so the ask the sweep publishes and the record an operator reads name
 // the same reasons for one round id, however the drift the sweep reads moves while the round runs.
 //
@@ -3397,6 +3418,7 @@ func openPodUpdate(m *Machine, ctx context.Context, ev Event) error {
 	opened := m.deps.Clock.Now()
 	m.clearUpdate()
 	m.claim.UpdateRound, m.claim.UpdateReasons, m.claim.UpdateOpenedAt = open.Round, open.Reasons, &opened
+	m.claim.UpdateRepository = open.Repository
 	if err := m.persist(ctx); err != nil {
 		return err
 	}
@@ -3564,6 +3586,7 @@ func (m *Machine) endCurrentPluginRound(ctx context.Context) error {
 // restart each leave it exactly as it is.
 func (m *Machine) clearUpdate() {
 	m.claim.UpdateRound, m.claim.UpdateReasons, m.claim.UpdateHead = "", "", ""
+	m.claim.UpdateRepository = ghrepo.Repository{}
 	m.claim.UpdateOpenedAt, m.claim.UpdateTaskedAt = nil, nil
 	m.claim.UpdateSignalledAt, m.claim.UpdateToldAt = nil, nil
 	m.claim.UpdateLeftRound = ""

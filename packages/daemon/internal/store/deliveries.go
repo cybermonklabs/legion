@@ -48,6 +48,10 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		return fmt.Errorf("put delivery %s on %s: task number %d does not fit a bigint", d.ID, token, d.Number)
 	}
 	kept, news, carried := keptDecisions(d.Kept), designNews(d.News), designNews(d.Carried)
+	resume, err := resumeColumn(d)
+	if err != nil {
+		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)
+	}
 	unconfirmed := d.ConfirmedAt.IsZero()
 	if unconfirmed {
 		if err := putBackARetakenConfirmation(ctx, tx, token, d.ID, kept); err != nil {
@@ -57,13 +61,13 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 	if err := settleDesignNews(ctx, tx, token, d, carried); err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
+	_, err = tx.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
 		phase, generation, entry, number, origin, taken_text, turn_started, take_told, check_look, check_opened_at,
 		queued_at, confirmed_at, interrupted, out_of_memory,
 		send_failures, last_send_failure_at, last_send_error, kept_decisions,
-		provider_error_retries, provider_error_note, design_news, carried_news, carried_ran, news_only, round_named)
+		provider_error_retries, provider_error_note, resume, design_news, carried_news, carried_ran, news_only, round_named)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-		coalesce($21::jsonb, '{}'::jsonb), $22, $23, $24::jsonb, $25::jsonb, $26, $27, $28)
+		coalesce($21::jsonb, '{}'::jsonb), $22, $23, $24::jsonb, $25::jsonb, $26::jsonb, $27, $28, $29)
 		on conflict (claim_token) do update set delivery_id = excluded.delivery_id,
 		task = excluded.task, phase = excluded.phase, generation = excluded.generation,
 		entry = excluded.entry, number = excluded.number, origin = excluded.origin,
@@ -75,7 +79,7 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		last_send_failure_at = excluded.last_send_failure_at, last_send_error = excluded.last_send_error,
 		kept_decisions = excluded.kept_decisions,
 		provider_error_retries = excluded.provider_error_retries,
-		provider_error_note = excluded.provider_error_note, design_news = excluded.design_news,
+		provider_error_note = excluded.provider_error_note, resume = excluded.resume, design_news = excluded.design_news,
 		carried_news = excluded.carried_news, carried_ran = excluded.carried_ran, news_only = excluded.news_only,
 		round_named = excluded.round_named`,
 		string(token), d.ID, d.Task, string(d.Phase), int64(d.Generation), d.Entry,
@@ -83,7 +87,7 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt,
 		instant(d.ConfirmedAt), d.Interrupted, d.OutOfMemory,
 		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, kept,
-		d.ProviderErrorRetries, d.ProviderErrorNote, news, carried, d.Ran, d.NewsOnly, d.RoundNamed,
+		d.ProviderErrorRetries, d.ProviderErrorNote, resume, news, carried, d.Ran, d.NewsOnly, d.RoundNamed,
 	)
 	if err != nil {
 		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)

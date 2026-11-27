@@ -394,6 +394,44 @@ func TestAProcessThatDiesWhileItsSuspensionWaitsIsSuspendedNotRelaunched(t *test
 	h.wantCalls("Suspend", 1)
 }
 
+// A prompt retirement while a suspension is held is that suspension's stop: the process is alive,
+// so a stop the runtime refuses leaves the claim holding its process and still holding the
+// suspension, retried at the probe interval, rather than marked suspended over a process that
+// still runs. Nothing is charged — here the retirement would be the claim's last, which would fail
+// it. The charge at the prompt-failure limit is R5's second bound: the daemon's suspension was
+// held for the report of a run the daemon gave the take, the report put the take back to await
+// its own turn, and no turn started within the bound (TestAPutBackLeavesHeldWorkToTheTakesTurnOrTheSecondBound).
+func TestAPromptRetirementWhileASuspensionIsHeldRunsTheHeldStop(t *testing.T) {
+	h := waitsHarness(t, currentPlugin, func(d *Deps) {
+		d.Limits = Limits{LaunchFailures: 3, PromptFailures: 1, PromptRetires: 1}
+	})
+	h.manualTakes()
+	h.reach(StateReady)
+	number := h.takeOf("implement the plan")
+	h.must(StreamTurnStart{Claim: h.token})
+	daemonSuspensionHeld.hold(h)
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	h.wantState(StateIdle)
+	h.reportOf(h.worker.sequence+1, 0)
+	if p := h.pending(); p.Number != number || !p.awaitsStart() {
+		t.Fatalf("after the report of the run given the take the claim holds %+v, want task %d's take awaiting its turn again", p, number)
+	}
+	h.rt.FailSuspend(errBoom)
+
+	h.advance(turnStartBound)
+
+	if c := h.claim(); !c.SuspensionHeld || c.Locator == nil {
+		t.Fatalf("after the refused stop the claim is %+v, want its process kept and the suspension still held", c)
+	}
+	h.wantCalls("Suspend", 1)
+	h.rt.FailSuspend(nil)
+	h.advance(testProbe)
+	h.wantState(StateSuspended)
+	h.wantCalls("Suspend", 2)
+	h.wantCalls("Resume", 0)
+	h.wantBudgets(Budgets{})
+}
+
 // Only a held suspension lets a row end in suspended without naming that state. A row that
 // suspends a claim holding none — idle with a phase's task waiting, whose suspension would retire
 // that task, or ready — is reported, not let through silently; the same row ending a held

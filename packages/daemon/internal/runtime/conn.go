@@ -11,11 +11,12 @@ import (
 // ErrAdoptRefused is the agent's shim answering AdoptWorkingCopy with `ok: false`: the working
 // copy could not be given the role's App identity — a jj wedged on a stale lock, a metaedit that
 // failed, the shim's own command timeout. AdoptWorkingCopy wraps it for a refusal and for nothing
-// else, and the supervisor charges it to the claim's prompt budget. It is the far side's own
-// answer about this workspace, so asking again in a minute changes nothing by itself, and an
-// unbounded retry is a silent stop: the task is never delivered, nothing fails, and the claim
-// waits for hours with no one told (INFRA-1480, where two planning tasks were held 31 and 33
-// hours by a stale lock). Charged, the claim runs out of budget and fails, which the workflow
+// else, and the supervisor charges it to the claim's prompt budget, as
+// runtime.OutcomeAdoptionRefused, which the one policy charges (supervise.Charges). It is the far
+// side's own answer about this workspace, so asking again in a minute changes nothing by itself,
+// and an unbounded retry is a silent stop: the task is never delivered, nothing fails, and the
+// claim waits for hours with no one told (INFRA-1480, where two planning tasks were held 31 and
+// 33 hours by a stale lock). Charged, the claim runs out of budget and fails, which the workflow
 // reports.
 //
 // What is not this, and is charged nothing because it is no answer about the workspace: no answer
@@ -30,9 +31,10 @@ var ErrAdoptRefused = errors.New("runtime: the shim refused to adopt the working
 
 // ErrIdentityUnavailable is the daemon failing to mint the role's GitHub App identity for the
 // working copy it is about to adopt: supervise's Machine.adopt wraps it around the error its
-// Identity dep gave, and around nothing else. Like a lost frame it is charged nothing — the token
-// is minted daemon-side, before any frame leaves, so the failure is no answer about this
-// workspace or this agent — and the delivery waits for the next hello, sweep, turn end or ready.
+// Identity dep gave, and around nothing else. Like a lost frame it is charged nothing
+// (supervise.OutcomeIdentityUnavailable) — the token is minted daemon-side, before any frame
+// leaves, so the failure is no answer about this workspace or this agent — and the delivery waits
+// for the next hello, sweep, turn end or ready.
 //
 // It is a sentinel of its own rather than one more unnamed uncharged failure because the
 // supervisor's log is where an operator diagnoses a send that never lands, and these two are

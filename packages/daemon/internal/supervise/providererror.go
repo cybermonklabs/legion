@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // A turn that ends in a provider error does not finish its task (dispatch://INFRA-956 R2). The
@@ -75,10 +76,10 @@ func promptRetryDelay(attempt int) time.Duration {
 // providerErrored is a task's turn reported over with a provider error (reportedTask). The task
 // is kept whatever the decision: it is taken back under its number, its take gone (ladderStep) and
 // the claim's TaskTaken kept. This is also the path for a take that Oh My Pi drops with
-// codeCostCap before a turn starts. No prompt budget is charged. A charge could retire or fail
-// every claim in a provider outage, and R2 forbids an attempt limit. The claim
-// counts its own run of such turns instead, and a turn that ends with no error puts that run back
-// to zero (turnOutcome).
+// codeCostCap before a turn starts. No prompt budget is charged: the policy waives
+// runtime.OutcomeProviderError (Charges), since a charge could retire or fail every claim in a
+// provider outage, and R2 forbids an attempt limit. The claim counts its own run of such turns
+// instead, and a turn that ends with no error puts that run back to zero (turnOutcome).
 //
 // What the take told goes back to untold with it (ladderStep, giveBackTake), so the task's next
 // accepted take carries the abandoned session's sentence, the record of the last let-go, or both,
@@ -183,16 +184,23 @@ type providerErrorTurn struct {
 // providerErrorTurnEnded is what every turn that ended in a provider error does, whatever ran it
 // (providerErrored, unpromptedTurnEnded), so that both kinds make the claim's one run: the error
 // classified once from the status and the class alone (classifyProviderError), one more turn in
-// the run, the warning line, the notice at providerErrorRunTold (tellOfProviderErrors), and, for
-// an error that cannot clear, t.fail, the claim's failure under the word that classification
-// gives, which holds the issue for its architect. It answers the cause, and whether it failed the
-// claim, which it marks for the turn-outcome answer (Machine.turnOutcomeFailed); what a turn whose
-// error can clear does next is its caller's.
+// the run, the warning line, the notice at providerErrorRunTold (tellOfProviderErrors), then the
+// charge of runtime.OutcomeProviderError, which the one policy waives for both kinds
+// (chargePrompt, Charges), and, for an error that cannot clear, t.fail, the claim's failure under
+// the word that classification gives, which holds the issue for its architect. It answers the
+// cause, and whether it failed the claim, which it marks for the turn-outcome answer
+// (Machine.turnOutcomeFailed); what a turn whose error can clear does next is its caller's.
 func (m *Machine) providerErrorTurnEnded(ctx context.Context, t providerErrorTurn) (string, bool, error) {
 	class := classifyProviderError(t.status, t.code)
 	m.claim.ProviderErrorRun++
 	m.log.Warn(t.line, append(t.attrs, "httpStatus", t.status, "model", t.model, "providerErrorRun", m.claim.ProviderErrorRun)...)
 	m.tellOfProviderErrors(t.model, class.cause, t.next)
+	// The site names the outcome and the policy charges it nothing (Charges): what bounds a run
+	// of these turns, the take's and one that ran none of the daemon's tasks alike, is the claim's
+	// own count above, never the prompt budget.
+	if err := m.chargePrompt(ctx, runtime.OutcomeProviderError, "", class.cause); err != nil {
+		return class.cause, false, err
+	}
 	if class.fails == "" {
 		return class.cause, false, nil
 	}
@@ -369,7 +377,8 @@ type providerErrorClass struct {
 //
 // The error fails the claim for a cyber-policy refusal (codeCyberPolicy), whatever its status,
 // under CauseCyberPolicy, and for a client error, 400 to 499, that is neither a credential (401
-// or 403) nor an outage (httpoutage.Is), under CauseProviderError. A malformed request is the
+// or 403) nor an outage (httpoutage.Is), under the cause derived from
+// runtime.OutcomeProviderError (failureCause: CauseProviderError). A malformed request is the
 // case the second exists for. Every other error writes the task's value again for the worker to
 // take:
 //
@@ -392,11 +401,14 @@ type providerErrorClass struct {
 // A cyber-policy refusal is the one class that decides alone. Giving the task again on the ladder
 // is what Oh My Pi's hold exists to stop, and the ladder cannot stop it itself: each take starts a
 // turn from input outside the session, which ends that hold, and the session's content goes to
-// OpenAI again. So the claim fails under a word of its own (CauseCyberPolicy), and no retry of the
-// daemon's own launches its agent again (Claim.HeldForCyberPolicy): the architect gets the issue,
-// and the retry it or a person decides starts the agent in a new session (freshSession), which
-// holds none of the refused content. What this decides is the turn whose report arrived: the one
-// take that can race past that report is codeCyberPolicy's to state.
+// OpenAI again. So the claim fails under a word of its own (CauseCyberPolicy), the one cause taken
+// from Oh My Pi's class rather than derived from an outcome (failureCause): the turn's outcome is
+// runtime.OutcomeProviderError all the same, which the policy charges nothing
+// (providerErrorTurnEnded). No retry of the daemon's own launches its agent again
+// (Claim.HeldForCyberPolicy): the architect gets the issue, and the retry it or a person decides
+// starts the agent in a new session (freshSession), which holds none of the refused content. What
+// this decides is the turn whose report arrived: the one take that can race past that report is
+// codeCyberPolicy's to state.
 func classifyProviderError(status int, code string) providerErrorClass {
 	withStatus := func(what string) string {
 		if status == 0 {
@@ -419,7 +431,7 @@ func classifyProviderError(status int, code string) providerErrorClass {
 		return class
 	}
 	if status >= 400 && status <= 499 {
-		class.fails = CauseProviderError
+		class.fails = failureCause(runtime.OutcomeProviderError)
 	}
 	return class
 }

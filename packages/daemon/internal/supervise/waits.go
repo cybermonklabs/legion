@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // R5's two waits (dispatch://INFRA-2811). The daemon charges a worker only in a state it sees
@@ -280,7 +281,7 @@ func takeBoundOver(m *Machine, ctx context.Context, _ Event) error {
 			"task", p.Number, "epoch", now.revision.Epoch, "revision", now.revision.Revision, "bound", m.deps.Timeouts.Take)
 		return m.writeValue(ctx, TaskValueUnseen)
 	}
-	return m.chargePrompt(ctx, WaitTake, fmt.Sprintf("%s: the worker reported seeing task %d at revision %d and asked no take of it within %s",
+	return m.chargePrompt(ctx, runtime.OutcomeNoTurnStarted, WaitTake, fmt.Sprintf("%s: the worker reported seeing task %d at revision %d and asked no take of it within %s",
 		WaitTake, p.Number, now.revision.Revision, m.deps.Timeouts.Take))
 }
 
@@ -308,7 +309,7 @@ func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 	return m.settleThenAfterTurn(ctx, func() error {
 		m.log.Warn("supervise: no turn started within the second bound after the accepted take; the worker is charged and the task taken back",
 			"task", number, "takenAt", takenAt, "bound", m.deps.Timeouts.TurnStart)
-		if err := m.chargePrompt(ctx, WaitTurnStart, fmt.Sprintf("%s: the take of task %d was accepted and no turn started within %s",
+		if err := m.chargePrompt(ctx, runtime.OutcomeNoTurnStarted, WaitTurnStart, fmt.Sprintf("%s: the take of task %d was accepted and no turn started within %s",
 			WaitTurnStart, number, m.deps.Timeouts.TurnStart)); err != nil {
 			return err
 		}

@@ -573,10 +573,10 @@ func reconnectDeadline(m *Machine, ctx context.Context, _ Event) error {
 		return err
 	}
 	never := neverReady{
-		whose: "shim never reconnected",
-		never: "never said hello to the daemon that started",
-		line:  "supervise: the shim never reconnected after the daemon started; retired its process",
-		cause: CauseNeverReconnected,
+		whose:   "shim never reconnected",
+		never:   "never said hello to the daemon that started",
+		line:    "supervise: the shim never reconnected after the daemon started; retired its process",
+		outcome: runtime.OutcomeNeverReconnected,
 	}
 	why := "the shim never reconnected after the daemon started"
 	if m.connSeen == viewClosed {

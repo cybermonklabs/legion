@@ -389,8 +389,8 @@ type launch struct {
 	// of the kind its labels name (podKindOf).
 	roles []claim.Role
 	// workspace is the launchers' working directory (podKind.prepare): an issue pod's workspace,
-	// which workspace-init provisions on the issue's volume (workspace.Location under TreeRoot), or
-	// the root of the controller's own volume, TreeRoot.
+	// which workspace-init provisions on the issue's volume (WorkspaceDir), or the root of
+	// the controller's own volume, TreeRoot.
 	workspace string
 	// secrets are the claim's launch credentials, each reaching the agent as a `<NAME>_FILE`
 	// pointer into its generation's private directory: the boot token, the spec's but the providers

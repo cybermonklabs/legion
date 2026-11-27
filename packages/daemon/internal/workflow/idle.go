@@ -28,6 +28,16 @@ const (
 	// IdleHoldImage: the pod runs an image other than the one the configuration names, or its
 	// image could not be read at all.
 	IdleHoldImage
+	// IdleHoldRepository: the pod was built from a repository the issue's record no longer
+	// holds, because Dispatch moved the issue and the daemon's record followed it
+	// (record.Store.CorrectIssueRepository). Such a pod is a replacement's to take and never a
+	// release's: every role in it works a clone of the repository the issue has left, and the
+	// update round replaces it with a pod of the repository the record holds. It is the image
+	// hold's neighbour for that reason — a pod already behind is a relaunch's to replace, not a
+	// release's to take — and the one release that passes over the image hold passes over it
+	// too: a pod a role of the old plugin holds off the configured image (IdleRelease), whose
+	// update round that role cannot answer.
+	IdleHoldRepository
 	// IdleHoldPluginContract: a live claim of the pod speaks a plugin contract other than the
 	// daemon's current one.
 	IdleHoldPluginContract
@@ -176,6 +186,7 @@ var idleHoldNames = map[IdleHold]string{
 	IdleHoldTreeNotLive:    "tree_not_live",
 	IdleHoldAwaitingPerson: "awaiting_person",
 	IdleHoldImage:          "image",
+	IdleHoldRepository:     "repository",
 	IdleHoldPluginContract: "plugin_contract",
 	IdleHoldUpdateRound:    "update_round",
 	IdleHoldInTurn:         "in_turn",
@@ -287,9 +298,18 @@ func (d IdleDecision) TurnsOnKeptVolume() bool {
 //     has come waits only for the pass that resumes it on its slot and qualifies, and the children of a root that waits on a
 //     person qualify whatever their root is waiting for;
 //
-//   - the pod runs the image the configuration names, and each live claim speaks this daemon's
-//     plugin contract: a released pod comes back as a fresh pod on the configured image, so a pod
-//     already behind is a relaunch's to replace, not a release's to save;
+//   - the pod runs the image the configuration names: a released pod comes back as a fresh pod on
+//     the configured image, so a pod already behind is a relaunch's to replace, not a release's to
+//     take;
+//
+//   - the pod was built from the repository the issue's record holds now (repositoryDrifted,
+//     which the daemon reads of the pod itself against that record). A correction of the
+//     repository in Dispatch leaves the pod a clone of the repository the issue has left, and
+//     the update round that replaces it opens on a later sweep. The pod is replaced rather than
+//     released, as a pod on an image this daemon does not serve is;
+//
+//   - each live claim speaks this daemon's plugin contract: a pod with a claim behind on it is a
+//     relaunch's to replace as well, not a release's to take;
 //
 //   - no update round of the pod is open on a live claim of it (sjawhar/legion#2538, read from
 //     supervise.Claim.UpdateRound with supervise.IsPodRound, the predicate Claim.InPodRound()
@@ -342,9 +362,9 @@ func (d IdleDecision) TurnsOnKeptVolume() bool {
 // opens over its pod asks it a task it cannot take, so that round ends only at its bound, with the
 // worker idle until then (pod_update_grace_minutes). What moves its plugin is a pod built from the
 // configured image, which a release brings (dispatch://INFRA-2811, decision 18). So a pod holding
-// such a claim that does not run the configured image is released past the three conditions that
-// keep a pod behind for a relaunch or a round to replace
-// (IdleHoldImage, IdleHoldPluginContract, IdleHoldUpdateRound), and at once rather than after
+// such a claim that does not run the configured image is released past the four conditions that
+// keep a pod behind for a relaunch or a round to replace (IdleHoldImage, IdleHoldRepository,
+// IdleHoldPluginContract, IdleHoldUpdateRound), and at once rather than after
 // the idle period (IdleHoldNotIdle), the release's workspace check reading the workspace first as
 // every release's does, so a pod whose work origin does not hold is kept with it
 // (IdleHoldUnpushedWork) rather than released. A release that check lets through loses no work,
@@ -355,12 +375,15 @@ func (d IdleDecision) TurnsOnKeptVolume() bool {
 // the configured image is kept (IdleHoldPluginContract):
 // the pod that replaced it would bring the same plugin back, and a deployment that has not moved
 // its image would release it again at every tick. Either decision names the claim (OldPlugin),
-// and the second is what the daemon logs as an error. fixedPlugin nil is no role's launch
-// installing no plugin, which is every daemon whose runtime is not Kubernetes. takeContract is
-// the contract at which a worker takes its task (the daemon's api.TaskTakeContract), passed apart
-// from contract, the daemon's own: a later contract entry raises the daemon's contract and leaves
-// the take contract where it is.
-func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfiguredImage bool, contract, takeContract int, fixedPlugin func(claim.Role) bool) IdleDecision {
+// and the second is what the daemon logs as an error. A pod off the configured image that was
+// also built from a repository the issue's record has left is released all the same: the round
+// that correction opens asks the worker a task it cannot take, as the image's round does, and the
+// pod the release brings back is built from the repository the record holds. fixedPlugin nil is no
+// role's launch installing no plugin, which is every daemon whose runtime is not Kubernetes.
+// takeContract is the contract at which a worker takes its task (the daemon's
+// api.TaskTakeContract), passed apart from contract, the daemon's own: a later contract entry
+// raises the daemon's contract and leaves the take contract where it is.
+func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfiguredImage, repositoryDrifted bool, contract, takeContract int, fixedPlugin func(claim.Role) bool) IdleDecision {
 	if !view.Found {
 		return IdleDecision{Hold: IdleHoldNoPod}
 	}
@@ -394,7 +417,7 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	case old != nil && onConfiguredImage:
 		return IdleDecision{Hold: IdleHoldPluginContract, OldPlugin: old}
 	case old == nil:
-		if hold := behindHold(view, onConfiguredImage, contract); hold != IdleHoldNone {
+		if hold := behindHold(view, onConfiguredImage, repositoryDrifted, contract); hold != IdleHoldNone {
 			return IdleDecision{Hold: hold}
 		}
 	}
@@ -442,12 +465,15 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 
 // behindHold is the hold of a pod that is behind for a relaunch or a round to replace, rather
 // than a release to save, IdleHoldNone where it is not: the image it runs is not the configured
-// one, a live claim of it speaks a plugin contract other than this daemon's, or an update round
-// of the pod is open on a live claim of it (IdleRelease, which passes over all three for the
-// old plugin).
-func behindHold(view pods.IdleView, onConfiguredImage bool, contract int) IdleHold {
+// one, it was built from a repository the issue's record has left, a live claim of it speaks a
+// plugin contract other than this daemon's, or an update round of the pod is open on a live claim
+// of it (IdleRelease, which passes over all four for the old plugin).
+func behindHold(view pods.IdleView, onConfiguredImage, repositoryDrifted bool, contract int) IdleHold {
 	if !onConfiguredImage {
 		return IdleHoldImage
+	}
+	if repositoryDrifted {
+		return IdleHoldRepository
 	}
 	for _, c := range view.Claims {
 		if c.Live() && c.PluginContract != contract {

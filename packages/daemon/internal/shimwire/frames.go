@@ -758,12 +758,12 @@ type NegotiateProtocol struct {
 // Response is OMP's answer to a request, carrying the request's own id. Data is the answer's
 // payload, left raw because its shape belongs to the command (worker-rpc.ts:369-377).
 //
-// Code is Oh My Pi's class of a refusal: a refused request's error response carries it at the
-// top level, right after Error (`RpcResponse` in packages/coding-agent/src/modes/rpc/rpc-types.ts
-// of cybermonklabs/oh-my-pi at the pinned tag); for a `prompt` or `abort_and_prompt`, which the
-// daemon sends none of, its one value is `session_busy` (docs/rpc.md there). Nothing in the
-// daemon reads it; it is modelled so the frame survives this package whole, as every other
-// member is.
+// Code is Oh My Pi's class of a refusal, where it gives one, and "" where it gives none: a refused
+// request's error response carries it at the top level, right after Error (`RpcResponse` in
+// packages/coding-agent/src/modes/rpc/rpc-types.ts of cybermonklabs/oh-my-pi at the pinned tag);
+// for a `prompt` or `abort_and_prompt`, which the daemon sends none of, its one value is
+// `session_busy` (docs/rpc.md there). Nothing in the daemon reads it; it is modelled so the frame
+// survives this package whole, as every other member is.
 type Response struct {
 	ID      string          `json:"id"`
 	Command string          `json:"command"`

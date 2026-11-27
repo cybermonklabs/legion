@@ -46,6 +46,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -389,7 +390,7 @@ func (r *handoffRecordsLive) a3Accepted() {
 // handoffs moved to Dispatch, is refused at the tester's completion 403
 // HANDOFF_SESSION_MISMATCH; the tester reads it with `dispatch handoff-read`, writes it again
 // under its own session, and completes; and the reviewer the pass starts is told that record in
-// its task, the version its command reads.
+// its task, the version its command reads, with the command that reads the phase's newest version.
 func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 	t := r.t
 	tester := r.claimant(claim.RoleTester, r.a7, "ses_a7_tester")
@@ -442,9 +443,16 @@ func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 
 	reviewer := r.claimant(claim.RoleReviewer, r.a7, "ses_a7_reviewer")
 	task := reviewer.awaitTask()
-	want := handoffLine(r.a7, "test", rewritten.version)
-	if !strings.Contains(task.Text, want) {
-		t.Fatalf("the reviewer took %q, want it to name %q", task.Text, want)
+	// The task names the record as an agent reads it: the command that reads the version the
+	// daemon accepted (handoffLine), the same command with no --version, which reads the newest, and
+	// that a newer version is a correction. internal/workflow holds the line's words
+	// (TestTheHandoffLineExtractIsTheSentenceTheTaskWrites), so this proof reads what it names.
+	read := fmt.Sprintf("dispatch handoff-read --issue %s --phase test", r.a7)
+	pinned := handoffLine(r.a7, "test", rewritten.version)
+	newest := slices.ContainsFunc(strings.Split(task.Text, read)[1:], func(rest string) bool { return !strings.HasPrefix(rest, " --version") })
+	if !strings.Contains(task.Text, pinned) || !newest || !strings.Contains(task.Text, "correction") {
+		t.Fatalf("the reviewer took %q, want it to name %q, %q with no --version, and a newer version as a correction",
+			task.Text, pinned, read)
 	}
 	r.note("the reviewer's worker took: %q", task.Text)
 	meta, _ = r.read(reviewer.session, r.a7, "test", "--version", strconv.Itoa(rewritten.version))
@@ -1032,10 +1040,12 @@ func holdsAll(text string, parts []string) bool {
 	return true
 }
 
-// handoffLine is the part of a task that names the handoff of word on key at version (workflow's
-// task).
+// handoffLine is the part of a task's handoff line that names the handoff of word on key at
+// version: the command that reads the version the daemon accepted (workflow's task). It is that
+// command and not the line's words, which internal/workflow holds
+// (TestTheHandoffLineExtractIsTheSentenceTheTaskWrites), so a proof reads what a task names.
 func handoffLine(key, word string, version int) string {
-	return fmt.Sprintf("Handoff: %s version %d (dispatch handoff-read --issue %s --phase %s --version %d).", word, version, key, word, version)
+	return fmt.Sprintf("dispatch handoff-read --issue %s --phase %s --version %d", key, word, version)
 }
 
 // complete posts a completion for this claim with a grant minted for it now, as the `legion`

@@ -158,13 +158,27 @@ type Delivery struct {
 	// makes of what the task still names of this claim's tree (Deps.RootTask). Empty for a task
 	// that names none.
 	Kept []byte
+	// Resume marks the task as the resume task of a root a person answered, and is what its text is
+	// rendered from at every take decided of it (takeable, Deps.RootTask, the daemon's rootTask):
+	// the wait the start answers (record.SuperviseRequest.Awaiting, encoded JSON), opaque here as
+	// Kept is. The resume text is not written when the task is queued, because a person can review
+	// the document again before any take of it, and the issue's own record no longer holds that wait
+	// once the root has resumed, so the delivery carries it, and every rewrite of the delivery keeps
+	// it. Until the first take decided of it writes that text, the task's text is only the news its
+	// start carries, whose own text (News) is empty, or empty where the start carries no news. A
+	// take answered again after a take-back renders it again. Resume is empty for every other task,
+	// and for a held task a daemon of an earlier release queued, which is taken as the text it
+	// holds.
+	Resume []byte
 	// News is what the task carries of news of the approved design (record.DeliveryNews, encoded
 	// JSON): the start's own text, each item it tells and each opening it carries. It is opaque here
 	// as Kept is, and carried and persisted with the delivery. It is rewritten, with the task text,
 	// at every take decided of the task (takeable), by the one render that writes both
-	// (Deps.DesignNews, and Deps.RootTask where a root architect's task is narrowed), so the news a
-	// delivery holds is exactly what its text names: no writer keeps one beside a text it did not
-	// render with it. Empty for a task that carries none, which no take asks about.
+	// (Deps.DesignNews, and Deps.RootTask where a root architect's task is narrowed, and at every
+	// take decided of a resume task, whose text RootTask writes from the record with this news
+	// rendered after it), so the news a delivery holds is exactly what its text names: no writer
+	// keeps one beside a text it did not render with it. Empty for a task that carries none, which
+	// no take asks about.
 	News []byte
 	// Carried is the copy of News that the text of this task's accepted take carried, and, on a
 	// taken delivery whose take's turn has started (turn_started), its credit: what its audiences
@@ -696,7 +710,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 		id = rand.Text()
 	}
 	d := Delivery{ID: id, Task: request.Task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
-		News: request.News, NewsOnly: request.NewsOnly, Entry: request.Entry, CheckLook: request.CheckLook,
+		Resume: request.Resume, News: request.News, NewsOnly: request.NewsOnly, Entry: request.Entry, CheckLook: request.CheckLook,
 		QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed, Number: m.claim.TaskWritten + 1, Origin: originOf(request)}
 	// The claim records the row, the entry, its handshake and the number only once the store has
 	// them with the delivery: a write that failed leaves the row undelivered, the entry ungiven and
@@ -860,6 +874,11 @@ func (m *Machine) currentRootTask(ctx context.Context) (bool, error) {
 	if err := m.rewritePending(ctx, task, kept, news); err != nil {
 		return false, err
 	}
+	if len(p.Resume) > 0 {
+		m.log.Info("supervise: the resume task is written from the record as it stands at this take",
+			"task", p.Number, "delivery", p.ID, "issue", m.claim.Issue, "run", p.Generation)
+		return true, nil
+	}
 	m.log.Info("supervise: a decision this held task named is owed to another tree now; the task is taken without it",
 		"task", p.Number, "delivery", p.ID, "issue", m.claim.Issue, "run", p.Generation)
 	return true, nil
@@ -867,12 +886,12 @@ func (m *Machine) currentRootTask(ctx context.Context) (bool, error) {
 
 // rewritePending writes the pending delivery back with task as its text, and kept and news as the
 // decisions and the news it carries, then holds that delivery in memory: the one persist-and-swap
-// of a held task read again at its take (currentRootTask, currentNews), each of which keeps its own
-// rule for when to rewrite and when to drop. Its callers render the task's text and its news
-// together, so news is always what task names. The write comes first, so a restart reads the task
-// the take that follows answers, and a failed write leaves memory as the record holds it. The id
-// and the number stay: a take names the number, and the record answers it with whatever the task
-// says at that take (accept), so a rendering needs no id of its own.
+// of a held task read again at its take (currentRootTask, currentNews, currentWorkingCopy), each of
+// which keeps its own rule for when to rewrite and when to drop. Its callers render the task's text
+// and its news together, so news is always what task names. The write comes first, so a restart
+// reads the task the take that follows answers, and a failed write leaves memory as the record
+// holds it. The id and the number stay: a take names the number, and the record answers it with
+// whatever the task says at that take (accept), so a rendering needs no id of its own.
 func (m *Machine) rewritePending(ctx context.Context, task string, kept, news []byte) error {
 	next := *m.claim.Pending
 	next.Task, next.Kept, next.News = task, kept, news
@@ -905,9 +924,16 @@ func (m *Machine) rewritePending(ctx context.Context, task string, kept, news []
 // untold record of the last let-go (queueRelaunch). The rewritten task is persisted before it is
 // taken, so a restart reads the task this take answered. A task that carries no news is never
 // asked about, and every task holds where nothing answers (Deps.DesignNews nil).
+//
+// Nor is a resume task (Delivery.Resume) asked here: the start queued it with no text of its own,
+// so the news it carries follows an empty text, and a render of that alone would answer a take with
+// the news and without the resume, or read a resume whose news no longer stands as a task with
+// nothing to say. Every take decided of it renders its text from the record first
+// (currentRootTask, Deps.RootTask), and the news after that text in the same answer, so the one
+// render of its news is there.
 func (m *Machine) currentNews(ctx context.Context) (bool, error) {
 	p := m.claim.Pending
-	if m.deps.DesignNews == nil || len(p.News) == 0 {
+	if m.deps.DesignNews == nil || len(p.News) == 0 || len(p.Resume) > 0 {
 		return true, nil
 	}
 	task, news, err := m.deps.DesignNews(ctx, m.claim, *p)
@@ -1201,6 +1227,45 @@ func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (state runti
 		return runtime.ConnState{}, false
 	}
 	return state, true
+}
+
+// currentWorkingCopy writes a phase worker's held task back to the working copy the process that
+// takes it works (Deps.WorkingCopy): its working copy line, which the start that queued it composed
+// from the issue's record then, written again from the repository the claim's process was launched
+// on (Claim.WorkingRepository). The two can differ: a correction of the issue's repository can land
+// between the start and the take (the claim held the task behind a turn, a hold, a launch), and it
+// moves the record at once and the process only at its next launch, a tmux pane's or the relaunch
+// into the pod its update round builds. The line names the workspace the agent that reads it is
+// in, and a relaunch moves it. It is asked at every take decided of the task (takeable), so no
+// accepted take of a worker's task, the first or one after a take-back or a relaunch, is answered
+// with the line its start was composed with. Only a task that names a phase is asked: a worker's
+// task is a task of a phase, and a task of news alone (NewsOnly) holds none of the phase's text.
+// The daemon's answer (its workingCopy) reads no record: what can fail is its decoding of the news
+// the task holds, which fails the same way at every take while the task holds that news. An answer
+// that fails accepts no take: the task stays pending, untaken and charged nothing, so no take is
+// answered with a line its process does not work in and none without one.
+//
+// A task the answer leaves as it is is taken as it is. One it rewrites is persisted before the take
+// is answered, so a restart reads the task this take answered. The id and the number stay
+// (rewritePending): a take names the number, and a take accepted is answered from the record.
+func (m *Machine) currentWorkingCopy(ctx context.Context) error {
+	p := m.claim.Pending
+	if m.deps.WorkingCopy == nil || p.Phase == "" || p.NewsOnly {
+		return nil
+	}
+	task, news, err := m.deps.WorkingCopy(ctx, m.claim, *p)
+	if err != nil {
+		return fmt.Errorf("write again the working copy line of the task held for %s: %w", m.claim.Token, err)
+	}
+	if task == p.Task && bytes.Equal(news, p.News) {
+		return nil
+	}
+	if err := m.rewritePending(ctx, task, p.Kept, news); err != nil {
+		return err
+	}
+	m.log.Info("supervise: the working copy this task names was written again for the process that takes it; the take is answered naming the workspace that process works",
+		"task", p.Number, "delivery", p.ID, "issue", m.claim.Issue)
+	return nil
 }
 
 // adopts is whether a take of d hands the claim's working copy the role's App identity first

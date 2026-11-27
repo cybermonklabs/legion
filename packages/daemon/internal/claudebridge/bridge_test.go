@@ -1404,6 +1404,9 @@ func TestUnknownRequestsAreRefusedByName(t *testing.T) {
 	if !strings.Contains(frame["error"].(string), "does not support steer") {
 		t.Errorf("the refusal is %q", frame["error"])
 	}
+	if code, coded := frame["code"]; coded {
+		t.Errorf("the refusal of a command the bridge does not support carries code %v, want none: it is no busy answer", code)
+	}
 }
 
 // The bridge's exit status is Claude Code's, and the shim closing the bridge's input ends it. The

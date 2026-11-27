@@ -374,9 +374,11 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes, m.claim.TurnOutcomeMark = n
 // (RequestTurnOutcome.Code), whatever its status — fails the claim at once, under
 // CauseProviderError or CauseCyberPolicy, so the workflow holds the issue for its architect, and
 // the answer's failed says so (HandleTurnOutcome); the take's task, where the report is of its
-// turn, is taken back first (takeBackAndFail). A refusal that can clear, or whose report carries
-// no status and no such class, fails nothing: the take's task goes on the ladder, and any other
-// turn's refusal is counted and nothing more. A current plugin names a provider error
+// turn, is taken back first (takeBackAndFail). The plugin's reminders end then too: the daemon
+// answers their owed check that a failed claim owes nothing (api's claimOwed), which drops every
+// reminder. A refusal that can clear, or whose report carries no status and no such class, fails
+// nothing: the take's task goes on the ladder, any other turn's refusal is counted and nothing
+// more, and the reminders keep their pace. A current plugin names a provider error
 // beside every refused turn (claudebridge's turnEnded, pi-legion's turn-outcome); a plugin from
 // before the task's number names the refused outcome and its status (RequestTurnOutcome's
 // refusedByProvider and status). The window's run of refused turns counts every refused report,
