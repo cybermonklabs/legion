@@ -3,14 +3,16 @@
  * inside a checkout's daemon module, which is how it reaches the daemon's internal packages. The
  * rig asks it rather than restating the daemon: a change to the daemon reaches the rig by
  * construction. The exceptions are `daemon-pane.go`'s own copies of the daemon's table of the
- * handoff words, its resolution of the real gh, its join and write of a system prompt and the
- * architect's `production_check` sentence, which the program carries because one program runs
- * against each label's checkout of the daemon module, and an older one names them otherwise or
- * lacks them; each one's comment says so. `workerPane` builds a pane's whole environment over it
- * (a phase worker's, an architect's or the daemon-launched controller's), and `composeRolePrompt`
- * the prompt a launch of any role starts with, the interactive controller's included.
+ * handoff words, its resolution of the real gh and its join and write of a system prompt, which
+ * the program carries because one program runs against each label's checkout of the daemon
+ * module, and an older one names them otherwise or lacks them; each one's comment says so. For the
+ * same reason the program calls the daemon's `ProductionCheckFragment` only through a second
+ * overlay file, added where the module declares that function (`declaresProductionCheck`).
+ * `workerPane` builds a pane's whole environment over it (a phase worker's, an architect's or the
+ * daemon-launched controller's), and `composeRolePrompt` the prompt a launch of any role starts
+ * with, the interactive controller's included.
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { LegionRole } from "@legion/contracts";
@@ -23,14 +25,46 @@ export const DAEMON_MODULE = path.resolve(import.meta.dir, "../../../daemon");
 
 const PROGRAM = path.join(import.meta.dir, "daemon-pane.go");
 
+/** The overlay file that sets daemon-pane.go's `productionCheckFragment` to the module's own
+ * `daemon.ProductionCheckFragment`. */
+const PRODUCTION_CHECK_HOOK = `package main
+
+import "github.com/sjawhar/legion/daemon/internal/daemon"
+
+func init() { productionCheckFragment = daemon.ProductionCheckFragment }
+`;
+
+/** Whether the daemon in `module` tells an architect its project's `production_check`: whether a
+ * Go file of its package daemon that is no test declares `ProductionCheckFragment`, which the
+ * daemon appends to every architect's addressing. A daemon older than that function tells no
+ * architect the sentence, and daemon-pane.go would not build there with a call of it. The answer
+ * comes from the daemon's code, never from the text of the role prompts it composes. */
+export function declaresProductionCheck(module: string): boolean {
+  const pkg = path.join(module, "internal", "daemon");
+  return readdirSync(pkg).some(
+    (name) =>
+      name.endsWith(".go") &&
+      !name.endsWith("_test.go") &&
+      /^func ProductionCheckFragment\(/m.test(readFileSync(path.join(pkg, name), "utf8"))
+  );
+}
+
 /** Runs daemon-pane.go in `module` with `args`, `input` on its stdin (the caller's own stdin when
- * there is none), and returns its stdout. */
+ * there is none), and returns its stdout. The program is the package's main.go, and where the
+ * module declares `ProductionCheckFragment` (`declaresProductionCheck`), PRODUCTION_CHECK_HOOK is
+ * a second file of the package. */
 export function runDaemonPane(module: string, args: readonly string[], input?: string): string {
   const scratch = mkdtempSync(path.join(os.tmpdir(), "daemon-pane-"));
   try {
     const overlay = path.join(scratch, "overlay.json");
-    const main = path.join(module, "cmd", "daemon-pane", "main.go");
-    writeFileSync(overlay, JSON.stringify({ Replace: { [main]: PROGRAM } }));
+    const program = path.join(module, "cmd", "daemon-pane");
+    const replace: Record<string, string> = { [path.join(program, "main.go")]: PROGRAM };
+    if (declaresProductionCheck(module)) {
+      const hook = path.join(scratch, "production_check.go");
+      writeFileSync(hook, PRODUCTION_CHECK_HOOK);
+      replace[path.join(program, "production_check.go")] = hook;
+    }
+    writeFileSync(overlay, JSON.stringify({ Replace: replace }));
     const result = Bun.spawnSync(["go", "run", "-overlay", overlay, "./cmd/daemon-pane", ...args], {
       cwd: module,
       stdin: input === undefined ? "inherit" : new TextEncoder().encode(input),
@@ -65,9 +99,10 @@ export type PromptBackend = "omp" | "claude";
  * `prompt`): the role's parts, the backend's part (`backend`, Oh My Pi by default, which has
  * none), a blank line, then its addressing: a worker's and an architect's for the rig's repository,
  * after which the architect of a tree's root is told the design gate steps and every architect the
- * `production_check` line; the controller's is the design gate steps and its reach. Byte for byte
- * as the daemon writes the prompt file. The claim is the rig's: its issue is the root of its tree,
- * or a child under that root. */
+ * `production_check` line, where the module's daemon declares one (`declaresProductionCheck`); the
+ * controller's is the design gate steps and its reach. Byte for byte as the daemon writes the
+ * prompt file. The claim is the rig's: its issue is the root of its tree, or a child under that
+ * root. */
 export function composeRolePrompt(
   module: string,
   role: LaunchRole,

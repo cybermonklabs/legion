@@ -11,15 +11,43 @@ import path from "node:path";
 import { isLegionRole } from "@legion/contracts";
 import { workerPane } from "./daemon-pane";
 import { buildGitWorld, defaultBranch, stageJob, translateCommits } from "./git-world";
-import { parseHeldoutFile, parseSkillUseFile, World } from "./heldout-case";
+import {
+  HELDOUT_ROLES,
+  heldoutGaps,
+  legionAgents,
+  legionPartition,
+  parseHeldoutFile,
+  parseSkillUseFile,
+  skillUseGaps,
+  World,
+} from "./heldout-case";
 
-export function loadCase(file: string, set: string, id: string) {
+/** The case file `file` in the shape of `set`; throws when the file holds another set. */
+function loadCaseFile(file: string, set: string) {
   const text = readFileSync(file, "utf8");
   const input = set === "skilluse" ? parseSkillUseFile(text) : parseHeldoutFile(text);
   if (input.set !== set) throw new Error(`${file} holds ${input.set}, not ${set}`);
-  const found = input.cases.find((entry) => entry.id === id);
+  return input;
+}
+
+export function loadCase(file: string, set: string, id: string) {
+  const found = loadCaseFile(file, set).cases.find((entry) => entry.id === id);
   if (!found) throw new Error(`${file} has no ${set} case ${id}`);
   return found;
+}
+
+/** What a batch of case `id` checks before its first run: the case parses and is in `file`, and
+ * the gaps of the whole file, which the batch refuses to start on. A held-out set's gaps are
+ * heldoutGaps and a skill-use set's skillUseGaps, counted as `heldout-case.ts gaps` counts them,
+ * against this checkout's agents and Legion skill partition. A development set holds a few cases
+ * and no population, so it has none. */
+export function batchGaps(file: string, set: string, id: string): string[] {
+  const input = loadCaseFile(file, set);
+  if (!input.cases.some((entry) => entry.id === id))
+    throw new Error(`${file} has no ${set} case ${id}`);
+  if (input.set === "skilluse") return skillUseGaps(legionPartition(), input.cases);
+  if (input.set === "heldout") return heldoutGaps(HELDOUT_ROLES, legionAgents(), input.cases);
+  return [];
 }
 
 interface Route {
@@ -345,8 +373,15 @@ if (import.meta.main) {
   const [mode, ...args] = Bun.argv.slice(2);
   const [a, b, c, d] = args;
   if (mode === "prepare" && a && b && c && d && args.length === 4) prepareCase(a, b, c, d);
-  else if (mode === "check" && a && b && c && args.length === 3) loadCase(a, b, c);
-  else if (mode === "stage" && a && b && args.length <= 3)
+  else if (mode === "check" && a && b && c && args.length === 3) {
+    // Each gap on stderr, as `heldout-case.ts gaps` writes one, then the refusal.
+    const gaps = batchGaps(a, b, c);
+    for (const gap of gaps) console.error(`${a}: ${gap}`);
+    if (gaps.length > 0) {
+      console.error(`${a}: the ${b} batch does not start while the file has a gap`);
+      process.exit(1);
+    }
+  } else if (mode === "stage" && a && b && args.length <= 3)
     console.log(JSON.stringify(stageJob(a, b, c)));
   else if (mode === "order" && a && b && c) console.log(armOrder(a, b, args.slice(2)).join("\n"));
   else if (mode === "pane" && args.length === 8 && a && b && c && d) {

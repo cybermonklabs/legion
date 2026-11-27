@@ -27,7 +27,8 @@
 //	                         architect's prompt ends with the design gate steps of a deployment
 //	                         that sets no `gates.design`, and every architect's with the
 //	                         `production_check` sentence of a project that sets none, as such a
-//	                         launch's does
+//	                         launch's does, where the module's daemon tells an architect that
+//	                         sentence at all (productionCheckFragment)
 package main
 
 import (
@@ -385,15 +386,18 @@ func firstBytes(path string, n int) ([]byte, error) {
 	return head[:read], nil
 }
 
-// productionCheckSentence is daemon.ProductionCheckFragment for a project that sets no
-// `production_check`, which the config reads as the tester: the last sentence of every
-// architect's addressing. It is this program's own copy, since the function is newer than a
-// checkout the rig may name, and rolePrompt appends it only where the checkout's own architect
-// prompts read the line (productionCheckMarker), as its daemon tells it only then.
-const (
-	productionCheckSentence = "Production check: " + string(claim.RoleTester) + "."
-	productionCheckMarker   = "Production check: off"
-)
+// productionCheckFragment is the module's own daemon.ProductionCheckFragment, the sentence the
+// daemon appends to every architect's addressing (workerSpawnSpec), or nil where the module's
+// package daemon declares no such function: that daemon tells no architect the sentence. The
+// program is built against each label's checkout of the daemon module, and one older than the
+// function would not build with a call of it here, so daemon-pane.ts sets it from an overlay file
+// it adds only where the module declares the function (PRODUCTION_CHECK_HOOK,
+// declaresProductionCheck).
+var productionCheckFragment func(claim.Role) string
+
+// rigProductionCheck is the `production_check` of the rig's project, which sets none: the config
+// reads that as the tester (config.Project.ProductionCheck).
+const rigProductionCheck = claim.RoleTester
 
 // rolePrompt is the system prompt a launch l starts with, composed as the daemon composes it: for
 // the controller (controllerSpawnSpec, and `legion controller start` for the interactive launch)
@@ -403,7 +407,8 @@ const (
 // role's parts (prompts.Compose), then its addressing for the rig's repository
 // (daemon.AddressingFragment), which for the architect of a tree's root ends with the design gate
 // steps, as workerSpawnSpec appends them, and for every architect with the `production_check`
-// sentence. After the parts of either comes the prompt part of the backend the role runs on
+// sentence of the rig's project, where the module's daemon has one (productionCheckFragment).
+// After the parts of either comes the prompt part of the backend the role runs on
 // (runtime.Backends, prompts.Composer.Part), none for Oh My Pi. It is the prompt of a deployment
 // with no instructions file and no experiment, the role prompts snapshotted under stateDir, the
 // parts concatenated with the newlines that end them dropped, a blank line, then the addressing.
@@ -458,8 +463,8 @@ func rolePrompt(stateDir string, l launch) (string, error) {
 		if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
 			addressing += " " + daemon.DesignGateFragment(steps)
 		}
-		if c.Role == claim.RoleArchitect && strings.Contains(body.String(), productionCheckMarker) {
-			addressing += " " + productionCheckSentence
+		if c.Role == claim.RoleArchitect && productionCheckFragment != nil {
+			addressing += " " + productionCheckFragment(rigProductionCheck)
 		}
 	}
 	return strings.TrimRight(body.String(), "\n") + "\n\n" + addressing, nil

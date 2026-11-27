@@ -5,7 +5,13 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptAssignments } from "../../../../scripts/e2e/lib/script-functions";
-import { composeRolePrompt, DAEMON_MODULE, RIG_GH_TOKEN, workerPane } from "./daemon-pane";
+import {
+  composeRolePrompt,
+  DAEMON_MODULE,
+  declaresProductionCheck,
+  RIG_GH_TOKEN,
+  workerPane,
+} from "./daemon-pane";
 
 // Every row below asks the daemon's own functions for a pane environment or a role's prompt, which
 // `go run` compiles and runs, so a host with no go runs none of them.
@@ -421,6 +427,86 @@ test.skipIf(skip)(
     expect(prompt).toContain("; the architect above you is `");
     expect(prompt).not.toContain("Design gate steps: ");
     expect(prompt).toMatch(/ Production check: tester\.$/);
+  },
+  600_000
+);
+
+// The daemon appends its production check sentence to every architect's addressing, whatever the
+// architect's role text says. The rig takes that from the daemon's code (declaresProductionCheck),
+// never from the text it composes. This checkout's architect parts do not hold `Production check:
+// off`, the phrase the rig once read as the sign of that sentence.
+test.skipIf(skip)(
+  "tells every architect the daemon's production check sentence, though its role text lacks the phrase",
+  () => {
+    expect(declaresProductionCheck(DAEMON_MODULE)).toBe(true);
+    for (const [position, parts] of [
+      [
+        "root",
+        concatenated("roles/architect-root.md", "go/architect-root.md", "go/architect-common.md"),
+      ],
+      ["child", concatenated("roles/architect.md", "go/architect.md", "go/architect-common.md")],
+    ] as const) {
+      expect(parts).not.toContain("Production check: off");
+      const prompt = composeRolePrompt(DAEMON_MODULE, "architect", position);
+      expect(prompt.startsWith(`${parts}\n\nLegion addressing: `)).toBe(true);
+      expect(prompt).toMatch(/ Production check: tester\.$/);
+    }
+  },
+  600_000
+);
+
+// A label's daemon older than ProductionCheckFragment tells no architect the sentence, and the
+// program must build against it. Such a daemon is this module with that function taken out of
+// specs.go by a `go -overlay` replacement: the function renamed, so that nothing exports it, and
+// its one call gone. daemon-pane.ts reads the declaration from the Go files of the module's
+// package daemon that are not tests, finds none there, and so builds daemon-pane.go alone, as
+// this row does.
+test.skipIf(skip)(
+  "tells no architect the production check where the daemon declares no ProductionCheckFragment",
+  () => {
+    const specs = path.join("internal", "daemon", "specs.go");
+    const older = readFileSync(path.join(DAEMON_MODULE, specs), "utf8")
+      .replace(/^func ProductionCheckFragment\(/m, "func productionCheckFragmentLeftOut(")
+      .replace('addressing += " " + ProductionCheckFragment(s.productionCheck)', "");
+    expect(older).not.toContain("ProductionCheckFragment(");
+    const module = path.join(rig, "older-daemon");
+    mkdirSync(path.join(module, "internal", "daemon"), { recursive: true });
+    writeFileSync(path.join(module, specs), older);
+    // A test of the package may declare the function: the daemon is not built from its tests.
+    writeFileSync(
+      path.join(module, "internal", "daemon", "specs_test.go"),
+      'package daemon\n\nfunc ProductionCheckFragment() string { return "" }\n'
+    );
+    expect(declaresProductionCheck(module)).toBe(false);
+
+    const overlay = path.join(module, "overlay.json");
+    writeFileSync(
+      overlay,
+      JSON.stringify({
+        Replace: {
+          [path.join(DAEMON_MODULE, "cmd", "daemon-pane", "main.go")]: path.join(
+            import.meta.dir,
+            "daemon-pane.go"
+          ),
+          [path.join(DAEMON_MODULE, specs)]: path.join(module, specs),
+        },
+      })
+    );
+    for (const position of ["root", "child"] as const) {
+      const run = Bun.spawnSync(
+        ["go", "run", "-overlay", overlay, "./cmd/daemon-pane", "prompt", "architect", position],
+        { cwd: DAEMON_MODULE, stdout: "pipe", stderr: "pipe" }
+      );
+      expect({ position, code: run.exitCode, stderr: run.stderr.toString() }).toEqual({
+        position,
+        code: 0,
+        stderr: "",
+      });
+      // The prompt is this daemon's, but for the sentence.
+      expect(`${run.stdout.toString()} Production check: tester.`).toBe(
+        composeRolePrompt(DAEMON_MODULE, "architect", position)
+      );
+    }
   },
   600_000
 );

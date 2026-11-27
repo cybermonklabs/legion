@@ -21,6 +21,16 @@ import { rowWaits } from "../../../../scripts/e2e/lib/row-waits";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { caseGateway, metadataIdentity } from "./case-gateway";
 import { armOrder, loadCase } from "./case-world";
+import {
+  HELDOUT_ROLES,
+  type HeldoutCase,
+  legionAgents,
+  legionPartition,
+  POPULATION_KINDS,
+  parseHeldoutFile,
+  parseSkillUseFile,
+  type SkillUseCase,
+} from "./heldout-case";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
 // takes longer than bun's 5 s default (the eight-turn conversation took 11 s), so each test gets
@@ -1907,6 +1917,155 @@ describe.skipIf(withoutCaseTools)("lane R dry world builders", () => {
     expect(readFileSync(path.join(dir, "prompt.txt"), "utf8")).toContain(
       'task(agent="plan-reviewer")'
     );
+  });
+});
+
+// A batch of a held-out or a skill-use set counts the gaps of the whole file (heldoutGaps,
+// skillUseGaps) before it starts anything, and refuses to start while one is named. A development
+// set keeps the one check that its case is in the file. Each set below is cloned from the
+// committed examples, as heldout-case.test.ts clones them.
+describe("a case batch's check of its set", () => {
+  let agents: string[] = [];
+  let partition: string[] = [];
+  beforeAll(() => {
+    agents = legionAgents();
+    partition = legionPartition();
+  });
+
+  /** A held-out file with no gap: every role's S, B and E case, every agent's A case, and Q1..Q4
+   * and D1, each cloned from the example's S or B case with fresh trace ids, as the file must
+   * hold them. A production-check case is cloned from the B case, whose rubric lines are that
+   * role's, and an A case's traces carry its report. */
+  function fullHeldout(): HeldoutCase[] {
+    const { cases } = parseHeldoutFile(readFileSync(heldoutExample, "utf8"));
+    const success = cases.find((each) => each.kind === "S");
+    const blocked = cases.find((each) => each.kind === "B");
+    if (success === undefined || blocked === undefined) throw new Error("the example lost a case");
+    const clone = (from: HeldoutCase, id: string, fields: Partial<HeldoutCase>): HeldoutCase => {
+      const copy: HeldoutCase = { ...structuredClone(from), id, ...fields };
+      if (copy.kind !== "S" && copy.kind !== "B") delete copy.plantedOmission;
+      for (const trace of [copy.traces.good, copy.traces.bad]) {
+        if (trace === undefined) continue;
+        trace.id = crypto.randomUUID();
+        if (copy.kind === "A") trace.agentReport = "The plan is ready.";
+      }
+      return copy;
+    };
+    return [
+      ...HELDOUT_ROLES.flatMap((role) => {
+        const own = role === "production-check" ? blocked : success;
+        return [
+          clone(own, `S-${role}`, { role, kind: "S" }),
+          clone(blocked, `B-${role}`, { role }),
+          clone(own, `E-${role}`, { role, kind: "E" }),
+        ];
+      }),
+      ...agents.map((agent) => clone(success, `A-${agent}`, { kind: "A", agent })),
+      ...POPULATION_KINDS.map((kind) => clone(success, kind, { kind })),
+    ];
+  }
+
+  /** A skill-use file with no gap: a need and a near-miss case in a Legion pane for every skill of
+   * the partition and dispatch-first, and dispatch-first's two in a plain Envoy session, which
+   * names no role and has no daemon, each cloned from the example's need case. */
+  function fullSkillUse(): SkillUseCase[] {
+    const [need] = parseSkillUseFile(readFileSync(skilluseExample, "utf8")).cases;
+    if (need === undefined) throw new Error("the example lost its case");
+    const clone = (id: string, fields: Partial<SkillUseCase>): SkillUseCase => {
+      const copy: SkillUseCase = { ...structuredClone(need), id, ...fields };
+      if (copy.kind !== "need") delete copy.withheldControl;
+      if (copy.session !== "legion") {
+        delete copy.role;
+        copy.world.daemon = null;
+      }
+      return copy;
+    };
+    return [
+      ...[...partition, "dispatch-first"].flatMap((skill) => [
+        clone(`need-${skill}`, { skill }),
+        clone(`near-miss-${skill}`, { skill, kind: "near-miss" }),
+      ]),
+      clone("plain-need", { skill: "dispatch-first", session: "plain-envoy" }),
+      clone("plain-near-miss", {
+        skill: "dispatch-first",
+        session: "plain-envoy",
+        kind: "near-miss",
+      }),
+    ];
+  }
+
+  /** `rig.sh batch <set> <id> 1 base` on a case file of `cases`, in a work directory of its own,
+   * and what the batch put in that directory, which rig.sh makes as it starts. No profile is
+   * built for `base`, so a batch that passes its check stops at its label. */
+  function batch(set: string, cases: unknown[], id: string) {
+    const dir = freshDir(`batch-${set}`);
+    const file = path.join(dir, "cases.json");
+    writeFileSync(file, JSON.stringify({ version: 1, set, cases }));
+    const work = path.join(dir, "work");
+    const result = childSpawn(
+      ["bash", path.join(import.meta.dir, "rig.sh"), "batch", set, id, "1", "base"],
+      { SKILL_SCENARIOS_WORK: work, SKILL_SCENARIOS_CASES: file, SKILL_SCENARIOS_SEED: "rig-seed" }
+    );
+    return {
+      code: result.exitCode,
+      stderr: result.stderr.toString(),
+      file,
+      made: readdirSync(work),
+    };
+  }
+
+  const noProfile =
+    "skill-scenarios: no profile for label base: run `rig.sh profile base <checkout>` first\n";
+
+  // Catches: a batch that checks only that its case parses and is in the file, and so starts a
+  // held-out comparison on a set that lacks a role's case or a case's planted omission.
+  test("refuses a held-out set with a gap, naming each gap, and makes nothing", () => {
+    const cases = fullHeldout()
+      .filter((each) => each.id !== "S-reviewer")
+      .map((each) => {
+        if (each.id === "B-tester") delete each.plantedOmission;
+        return each;
+      });
+    const { code, stderr, file, made } = batch("heldout", cases, "S-planner");
+    expect({ code, stderr, made }).toEqual({
+      code: 1,
+      stderr: [
+        `${file}: role reviewer: no S case`,
+        `${file}: case B-tester: no plantedOmission`,
+        `${file}: the heldout batch does not start while the file has a gap`,
+        "",
+      ].join("\n"),
+      made: [],
+    });
+  });
+
+  // Catches: the same batch on a skill-use set that lacks a skill's near-miss case.
+  test("refuses a skill-use set with a gap, naming each gap, and makes nothing", () => {
+    const cases = fullSkillUse().filter((each) => each.id !== "near-miss-legion-retro");
+    const { code, stderr, file, made } = batch("skilluse", cases, "need-legion-retro");
+    expect({ code, stderr, made }).toEqual({
+      code: 1,
+      stderr: [
+        `${file}: skill legion-retro: no near-miss case`,
+        `${file}: the skilluse batch does not start while the file has a gap`,
+        "",
+      ].join("\n"),
+      made: [],
+    });
+  });
+
+  // The control of the two rows above: a full set of either kind passes the check, and so does a
+  // development set, whatever cases it lacks. Each batch goes on to its label.
+  test("passes a held-out and a skill-use set with no gap, and a development set with gaps", () => {
+    const { cases: examples } = parseHeldoutFile(readFileSync(heldoutExample, "utf8"));
+    for (const [set, cases, id] of [
+      ["heldout", fullHeldout(), "S-planner"],
+      ["skilluse", fullSkillUse(), "need-legion-retro"],
+      ["devcase", examples, "P05"],
+    ] as const) {
+      const { code, stderr } = batch(set, [...cases], id);
+      expect({ set, code, stderr }).toEqual({ set, code: 1, stderr: noProfile });
+    }
   });
 });
 

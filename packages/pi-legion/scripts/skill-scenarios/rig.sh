@@ -12,7 +12,8 @@
 #                                                  label (SKILL_SCENARIOS_PARALLEL at once), and
 #                                                  stops the services
 #   rig.sh batch <heldout|skilluse|devcase> <case id> <pairs> <label>...
-#                                                  run locked cases from SKILL_SCENARIOS_CASES
+#                                                  run locked cases from SKILL_SCENARIOS_CASES;
+#                                                  refused on a heldout or skilluse file with a gap
 #   rig.sh <heldout|skilluse|devcase> <case id> <label>...
 #                                                  shorthand for one pair
 #   rig.sh case-world <heldout|skilluse|devcase> <case id> <empty directory>
@@ -73,6 +74,9 @@
 # includes the grading key). The dry run reads the T0 examples. The role gets the case time in
 # SKILL_SCENARIOS_CLOCK and its task; clock.txt is that time and clock-real.txt the wall-clock
 # instant at launch. Logs use the real clock and the outcome puts them on the case timeline.
+# A heldout or skilluse batch runs heldoutGaps or skillUseGaps (heldout-case.ts) over the whole
+# file before it starts anything, and refuses to start while one names a gap, naming each gap. A
+# devcase batch checks only that its case is in the file.
 # D1 gets $TMPDIR/stage-a and stage-b at the default branch's head and a local stage-job recorder.
 # A case world names commits and no files (git-world.ts): each commit's tree holds CHANGES.md, a
 # line for it and each commit under it, and, at each commit off the default branch's first-parent
@@ -1941,6 +1945,8 @@ cmd_case_batch() {
   [[ $pairs =~ ^[1-9][0-9]*$ ]] || fail "case batch needs a positive pair count"
   seed=${SKILL_SCENARIOS_SEED:?set SKILL_SCENARIOS_SEED for case comparisons}
   file=$(case_input) || exit 1
+  # The case must be in the file, and a heldout or skilluse file must have no gap (heldoutGaps or
+  # skillUseGaps over the whole file): case-world.ts names each gap, and the batch starts nothing.
   bun "$here/case-world.ts" check "$file" "$scenario" "$id"
   local -A seen=()
   case_tag=$(printf '%s' "$id" | sha256sum | cut -c1-12)
