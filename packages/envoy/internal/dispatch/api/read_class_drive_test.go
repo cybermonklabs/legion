@@ -92,7 +92,7 @@ var readRowDrives = map[string]rowDrive{
 		target:    "/api/v1/projects/$relatedProject/related?title=Drive+every+row&text=The+issue+page+lists+every+open+ask",
 		statement: statementOf(`\btext_lexemes\s+as\s*\(`),
 	},
-	"GET /api/v1/settings/repo-projects": {target: "/api/v1/settings/repo-projects", statement: statementOf(`\bfrom\s+repo_projects\s+order\s+by\s+repo\b`)},
+	"GET /api/v1/settings/repo-projects": {target: "/api/v1/settings/repo-projects", statement: statementOf(`\bfrom\s+repo_projects\s+where\b.*\border\s+by\s+repo\b`)},
 	// The handler asks GitHub; its one statement is the GitHub client's read of the rate limit
 	// GitHub last answered, which it reads before it asks.
 	"GET /api/v1/github/app-installation/{owner}/{repo}": {target: "/api/v1/github/app-installation/acme/widgets",
