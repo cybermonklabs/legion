@@ -70,10 +70,11 @@
 # (unread_named), appears in a step's, an action's or a script's command only where this tree
 # writes one: what an interpreter OWN_INTERPRETERS gives `.py` runs, the filter `jq -f` reads, a
 # command word whose `#!` line names an interpreter OWN_INTERPRETERS gives its suffix, which no
-# file of a suffix NO_HASHBANG names is, and an argument of a program UNREAD_ARGUMENTS names,
-# none of which runs a file it names; any other place, after any wrapper, as any program's
-# argument, as a redirect's file or in the text of a shell's `-c`, is refused by name
-# (the reading set and unread_uses below; dispatch://INFRA-1545, rounds 37, 38 and 68). One named
+# file of a suffix NO_HASHBANG names is, the command an `xargs` runs among them, and an argument
+# of a program UNREAD_ARGUMENTS names, none of which runs a file it names; any other place, after
+# any wrapper, as any other program's argument, as a redirect's file or in the text of a shell's
+# `-c`, is refused by name (the reading set and unread_uses below; dispatch://INFRA-1545, rounds
+# 37, 38 and 68, and the forward merge of main's #5583). One named
 # through a pattern is read as the reach under item 1 reads a pattern, at a run's target or where
 # its literal text holds `.github/`, and passes in any other form, as `cd .github/scripts && cat
 # zz-x.p?` does: a stated limit (THE REACH OF THIS CHECK ENDS below).
@@ -8044,6 +8045,32 @@ def unread_file(word: str, elsewhere: bool) -> list[str]:
     return []
 
 
+def xargs_command(reduced: list[str]) -> tuple[int, str | None]:
+    """Where the command an `xargs` runs begins among `reduced`, the xargs command's words as
+    reduce_words leaves them, and the placeholder its `-I`, `-i` or `--replace` sets, or None.
+    Its options are read past, each of `-I`, `-n`, `-L`, `-P`, `-d`, `-a`, `-E` and `-s` with the
+    word it takes. The one reading of xargs's options: unnamed_runs reads the command xargs runs
+    from here, and unread_uses that command's word (dispatch://INFRA-1545, round 37, and the
+    forward merge of main's #5583)."""
+    placeholder = None
+    at = 1
+    while at < len(reduced) and reduced[at].startswith("-"):
+        word = reduced[at]
+        if word in ("-I", "-n", "-L", "-P", "-d", "-a", "-E", "-s"):
+            placeholder = reduced[at + 1] if word == "-I" and at + 1 < len(reduced) else (
+                placeholder)
+            at += 2
+            continue
+        if word.startswith("--replace"):
+            placeholder = word.partition("=")[2] or "{}"
+        elif word.startswith("-i"):
+            placeholder = word[2:] or "{}"
+        elif word.startswith("-I"):
+            placeholder = word[2:]
+        at += 1
+    return at, placeholder
+
+
 def unread_place(words: list[str], at: int | None, start: int, files: list[str],
                  maybe: str | None) -> str | None:
     """Where the word at `at` of a command's words, naming `files` or maybe one ending as
@@ -8051,8 +8078,9 @@ def unread_place(words: list[str], at: int | None, start: int, files: list[str],
     (unread_uses; dispatch://INFRA-1545, round 38). `start` is where the command reduce_words
     reads begins, and `at` None a file a redirect names. The places: an argument of an interpreter
     OWN_INTERPRETERS gives `.py`, a `.py` or a `.pyc`; the filter `jq -f` or `--from-file` reads, a
-    `.jq`; a command word, a file whose `#!` line names an interpreter OWN_INTERPRETERS gives its
-    suffix; and an argument of a program of UNREAD_ARGUMENTS, which runs no file it names. Every
+    `.jq`; a command word, the command an `xargs` runs among them (unread_uses), a file whose `#!`
+    line names an interpreter OWN_INTERPRETERS gives its suffix; and an argument of a program of
+    UNREAD_ARGUMENTS, which runs no file it names. Every
     other place is named. A file of a suffix NO_HASHBANG names is no command word: a command word
     runs a file through its `#!` line, and its compiler cannot read that line. Until round 68 a
     `.go` there was told to open with a `#!` line naming its own interpreter
@@ -8095,7 +8123,14 @@ def unread_uses(text: str, first_line: int, action: str | None, elsewhere: bool,
     text, or a working directory the step runs in (`elsewhere`), moves where a literal path is
     read from (unread_file). A word that is a run's target, the command word of a command
     commands_read reads as one, or what a shell, `.` or `source` runs, is read with the patterns
-    it holds (run_globs); any other word as it is written (dispatch://INFRA-1545, round 38)."""
+    it holds (run_globs); any other word as it is written (dispatch://INFRA-1545, round 38). The
+    command an `xargs` runs, behind xargs's options (xargs_command) and the wrappers and
+    assignments reduce_words reads past, is a command word too: xargs runs it on the words it
+    reads, through its `#!` line, as a shell runs a command word, so a file there is read as one
+    there is, and a word between xargs and it as one in the words before its command. Until the
+    forward merge of main's #5583, whose document-service legs write `… | xargs -r env GODEBUG=…
+    RACE_MEM_LIMIT_KB=… ../../.github/scripts/race_memory.py go test …`, such a file was read as
+    an argument of `xargs`."""
     scanner = CallScanner(first_line)
     commands = scanner.scan(text)
     elsewhere = elsewhere or any(reduce_words(command.words)[0][:1] in (["cd"], ["pushd"])
@@ -8107,6 +8142,10 @@ def unread_uses(text: str, first_line: int, action: str | None, elsewhere: bool,
         words = command.words
         reduced = reduce_words(words)[0]
         start = len(words) - len(reduced)
+        if reduced and program_name(reduced[0]) == "xargs":
+            handed = reduce_words(reduced[xargs_command(reduced)[0]:])[0]
+            if handed:
+                start = len(words) - len(handed)
         for at, word in [*enumerate(words), *((None, word) for word in command.redirected)]:
             value = (word.partition("=")[2]
                      if "=" in word and (word.startswith("-") or ASSIGNMENT.match(word))
@@ -9284,22 +9323,7 @@ def unnamed_runs(path: str, loops: Loops, sees_fetching: bool,
                         does = f"runs `find` with `{word}`"
                         break
         elif head == "xargs":
-            placeholder = None
-            at = 1
-            while at < len(reduced) and reduced[at].startswith("-"):
-                word = reduced[at]
-                if word in ("-I", "-n", "-L", "-P", "-d", "-a", "-E", "-s"):
-                    placeholder = reduced[at + 1] if word == "-I" and at + 1 < len(reduced) else (
-                        placeholder)
-                    at += 2
-                    continue
-                if word.startswith("--replace"):
-                    placeholder = word.partition("=")[2] or "{}"
-                elif word.startswith("-i"):
-                    placeholder = word[2:] or "{}"
-                elif word.startswith("-I"):
-                    placeholder = word[2:]
-                at += 1
+            at, placeholder = xargs_command(reduced)
             does, why = "runs `xargs`", handed(reduced[at:], placeholder, "each word it reads")
         elif head in INTERPRETERS | {".", "source"} and not expansions_in(reduced[0]):
             kind, target = shell_operand(reduced)

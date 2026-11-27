@@ -15656,6 +15656,51 @@ for line in "32	python3 runs it" "33	a command word whose first line names pytho
 done
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 10)"
 
+# The command an `xargs` runs is one of those places, a command word (unread_uses): xargs runs it
+# on the words it reads, through its `#!` line, as a shell runs a command word. Main's #5583 split
+# the document service's race step into legs that write `… | xargs -r env GODEBUG=…
+# RACE_MEM_LIMIT_KB=… ../../.github/scripts/race_memory.py go test …`, and until the forward merge
+# of that change the gate read the program there as an argument of `xargs` and refused it. So a
+# literal `.py` whose first line names python3 passes behind `xargs -r env A=b`, one with no `#!`
+# line is refused there as the command word it is, and the same xargs handed a path built from
+# data is still refused at the run (unnamed_runs reads what xargs runs, through the same
+# xargs_command) and at the assignment that builds it.
+echo "case: a program xargs runs behind env is read as a command word, and a built path there is refused"
+root=$(fixture xargs-command-word)
+printf '%s\nprint("quiet")\n' '#!/usr/bin/env python3' > "$root/.github/scripts/zz-wrap.py"
+printf 'print("plain")\n' > "$root/.github/scripts/zz-plain.py"
+chmod +x "$root/.github/scripts/zz-wrap.py"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Hand the program to xargs behind env
+        run: |
+          set -o pipefail
+          printf '%s\n' a b | xargs -r env A=b C=d .github/scripts/zz-wrap.py --each
+      - name: Hand a built path to xargs behind env
+        run: |
+          tool=.github/scripts/zz-wrap.py
+          printf '%s\n' a b | xargs -r env A=b "$tool" --each
+      - name: Hand a program with no first line to xargs behind env
+        run: printf '%s\n' a b | xargs -r env A=b .github/scripts/zz-plain.py --each
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "passes the literal program whose first line names python3, run by xargs behind env" \
+  "$(is "$(contains "$out" "step 'Hand the program to xargs behind env'")" false)"
+check "refuses the built path xargs runs, at the run" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=14::step 'Hand a built path to xargs behind env' of job 'build' runs .xargs., which runs .\$tool., whose last path element is an expansion, so this check cannot name the script that runs there")"
+check "and at the assignment that builds it" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=13::step 'Hand a built path to xargs behind env' of job 'build' writes .tool=.github/scripts/zz-wrap.py. in the words before its command, a variable's value or a wrapper's argument, and it names .github/scripts/zz-wrap.py")"
+check "refuses the program with no first line as the command word xargs runs" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=16::step 'Hand a program with no first line to xargs behind env' of job 'build' writes ..github/scripts/zz-plain.py. as a command word that does not open with a .#!. line naming its own interpreter, and it names .github/scripts/zz-plain.py")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 3)"
+
 # W17. Six glob shapes the Spec draft's review drove past the gate at bd06b2a2, each exit 0 under
 # a one-minute key (dispatch://INFRA-1545, round 38): a glob or a brace expansion in a run's
 # target names the file that runs from the names the file system holds as the step runs, as a

@@ -46,6 +46,8 @@
 # EXCLUDED, a run that changes a file of the tree, but those its mode writes (the PUSH_WORKFLOWS
 # workflows, generate's output and its .inputs file), fails naming each, as one does that cannot
 # read the tree through git, and the header's run recipe runs the check, or says why it stops.
+# The tie entry that go-test-reads.sh writes for each read (tie_entry) holds every path that the
+# read's glob selects.
 #
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, the gate of that job and two excluded
@@ -2925,6 +2927,29 @@ for pair in refs/heads/main=true refs/heads/Main=false refs/heads/MAIN=false ref
   : >"$work/ref-output"
   GITHUB_REF=$ref GITHUB_OUTPUT="$work/ref-output" bash -c "$held_run" 2>/dev/null || true
   check "$ref: writes is_main=$want" "$(is "$(cat "$work/ref-output")" "is_main=$want")"
+done
+
+echo "case: the tie entry of a read holds every path that the read's glob selects"
+# go-test-reads.sh writes each read of a test's closure as a tie entry (tie_entry): a glob with no
+# wildcard as it is, and otherwise the directory before its first wildcard part, with * for the
+# files directly in it when that part is the last one and holds no ** and no [ class, and ** for
+# its whole tree else. workflow_paths reads ** as any run of characters, / included, and copies a
+# [ class into its regex, where a class such as [^x] matches / too. So a last part that holds **
+# or a class beside other text (a/b**, a/**.go, a/b[^x]c) selects files below a's subdirectories
+# too, and its entry is a/**. A glob whose first part holds a wildcard has no directory before it,
+# and no entry.
+entries=$(cd "$script_dir" && PYTHONDONTWRITEBYTECODE=1 python3 -c '
+import sys
+
+import ci_filter_coverage as c
+
+for glob in sys.argv[1:]:
+    print(f"{glob} -> {c.tie_entry(glob)}")
+' a/b.go 'a/*' 'a/**' 'a/*.go' 'a/b?.go' 'a/b**' 'a/**.go' 'a/b[^x]c' 'a/*/c.go' 'a/b*/c' 'a/b/**/c' '*.go' '**/x.go' 2>&1) ||
+  entries="the engine gives no tie entries: $entries"
+for pair in 'a/b.go -> a/b.go' 'a/* -> a/*' 'a/** -> a/**' 'a/*.go -> a/*' 'a/b?.go -> a/*' 'a/b** -> a/**' \
+  'a/**.go -> a/**' 'a/b[^x]c -> a/**' 'a/*/c.go -> a/**' 'a/b*/c -> a/**' 'a/b/**/c -> a/b/**' '*.go -> None' '**/x.go -> None'; do
+  check "${pair% -> *}: its entry is ${pair#* -> }" "$(is "$(grep -cxF -- "$pair" <<<"$entries" || true)" 1)"
 done
 
 echo "case: a job named for a required check holding the re-run term"
@@ -6413,7 +6438,7 @@ typo=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["envoy-go-ty
 out=$(envoy_legs_held "$typo")
 check "is refused" "$(contains "$out" '^RAISED: ')"
 check "names the key and the jobs whose legs run" \
-  "$(contains "$out" "its keys are elsewhere, envoy-go, envoy-go-race, envoy-go-typo, twice, unlisted, and the jobs whose legs run are envoy-go")"
+  "$(contains "$out" "its keys are elsewhere, envoy-go, envoy-go-race, envoy-go-race-api, envoy-go-race-docs, envoy-go-typo, twice, unlisted, and the jobs whose legs run are envoy-go")"
 
 echo "case: an envoy go-legs.yaml entry without unlisted"
 nohome=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); del e["unlisted"]; print(json.dumps(e))' "$real_envoy")
@@ -6437,10 +6462,17 @@ check "names the counted race package twice must name" \
   "$(contains "$out" "its twice names nothing, and the race legs' packages whose skips the unit legs count (packages/envoy/scripts/database-skips.sh's table) are internal/cipher/natscallout")"
 
 echo "case: a package other jobs run dropped from elsewhere"
-dropped=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); del e["elsewhere"]["internal/dispatch/api"]; print(json.dumps(e))' "$real_envoy")
+dropped=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); del e["elsewhere"]["internal/integration"]; print(json.dumps(e))' "$real_envoy")
 out=$(envoy_legs_held "$dropped")
 check "is refused" "$(contains "$out" '^RAISED: ')"
-check "names the packages other jobs' steps are built to run" "$(contains "$out" "and the packages other jobs' steps are built here to run are .*'internal/dispatch/api': 'envoy-go-race-api'")"
+check "names the packages other jobs' steps are built to run" "$(contains "$out" "and the packages other jobs' steps are built here to run are .*'internal/integration': 'envoy-go-natslive'")"
+
+echo "case: a single-package race job's legs that run another package"
+strayed=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["envoy-go-race-api"]["3"] = [{"internal/dispatch/docs": 3}]; print(json.dumps(e))' "$real_envoy")
+out=$(envoy_legs_held "$strayed")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the job, what its legs run and the one package it is for" \
+  "$(contains "$out" "its envoy-go-race-api legs run internal/dispatch/api, internal/dispatch/docs, and ENVOY_RACE_LANE's envoy-go-race-api is internal/dispatch/api")"
 
 # The race lane's trees, on a fixture holding the directory of each package envoy-go-race names:
 # on main the race step ran each tree as ./<tree>/..., so a package added under one ran raced with
