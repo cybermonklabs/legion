@@ -348,14 +348,17 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		}
 		childrenWaitChildren = issue.ChildrenWait.Children
 	}
-	// Nine columns are named nowhere in the update set, so a copy of the issue read before a
+	// Thirteen columns are named nowhere in the update set, so a copy of the issue read before a
 	// write of any of them never writes the stored value back: repo, default_branch and
-	// github_repo; handout_seq, declared_seq and declared_at, which are StartHandout's,
-	// TakeInThrough's, Declare's and ClearDeclared's alone; moved_at, which is MarkIssueMoved's;
-	// released_for_wait_at, which is ReleaseSlotForWait's, ClearReleasedForWait's and
-	// ReleaseTreeSlots's; and members_owed, which is OweMembers's and ClearMembersOwed's. For the
-	// repository that is what lets a correction stand: an observation prepared before it carries
-	// the old repository and writes none of it, and a correction has a writer of its own,
+	// github_repo; repo_before and repo_corrected_at, which are CorrectIssueRepository's alone;
+	// repo_change_pending and repo_change_reason, which are NoteIssueRepositoryChange's and which
+	// CorrectIssueRepository clears; handout_seq, declared_seq and declared_at, which are
+	// StartHandout's, TakeInThrough's, Declare's and ClearDeclared's alone; moved_at, which is
+	// MarkIssueMoved's; released_for_wait_at, which is ReleaseSlotForWait's, ClearReleasedForWait's
+	// and ReleaseTreeSlots's; and members_owed, which is OweMembers's and ClearMembersOwed's. For
+	// the repository that is what lets a correction stand: an observation prepared before it
+	// carries the old repository and writes none of it, so it neither writes over repo_before nor
+	// restores a pending change the correction cleared, and a correction has a writer of its own,
 	// CorrectIssueRepository, beside which this release's rename pass writes a configured rename's
 	// new name (RenameIssueRepository). For the movement it is what keeps it safe, since every
 	// write site that marks one holds a copy of the issue read before its own fact and records the
