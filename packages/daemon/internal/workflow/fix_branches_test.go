@@ -448,21 +448,24 @@ func TestALeaveQueuesDeletionAfterItsLastOldStartEnds(t *testing.T) {
 	}
 }
 
-// A task in its merge has every branch of its fixes queued for deletion already, so a leave of its
-// issue queues no second deletion: the move into the retro queued the deletion of every branch of
-// its fixes (queueTaskEnd, StartHeldRetro), and no fix opens after that move (a failure there goes
-// to the merger, TestAFailureInTheRetroGoesToTheMerger). On a task whose one step is the
-// implementation, a check fails at its end and fix 1 ends with commits; CI passes, the retro
-// starts, which queues the deletion through fix 1, and its completion starts the merger; a failure
-// at the head while the merge runs opens no fix. Then a person parks the issue: its leave ends the
-// task with its run, as every leave does (endTaskWithLeave), so the settle holds the merge's start
-// over and ends it, and the deletion queued at the retro is still the only one.
+// A task in its merge has every branch of its fixes queued for deletion already, and a leave of its
+// issue queues that same deletion once more: the move into the retro queued the deletion of every
+// branch of its fixes (queueTaskEnd, StartHeldRetro), no fix opens after that move (a failure there
+// goes to the merger, TestAFailureInTheRetroGoesToTheMerger), and the leave ends the task with its
+// run (endTaskWithLeave), so the settle holds the merge's start over, ends it, and queues the
+// deletion the leave asked for. Both rows name the same branches, through fix 1, so the second
+// deletes what the first deleted and no branch stays for either.
+//
+// On a task whose one step is the implementation, a check fails at its end and fix 1 ends with
+// commits; CI passes, the retro starts, which queues the deletion through fix 1, and its completion
+// starts the merger; a failure at the head while the merge runs opens no fix. Then a person parks
+// the issue.
 //
 // What this does not reach is queueDeletesAfterOldRuns' skip, the branch that queues nothing while
 // a start of the task is still open: no state these tests reach keeps such a start open, and that
 // branch's log line is printed 0 times over the whole package, where the deletion's own line is
 // printed 21 times in the same run. Its header says so and claims nothing of what the skip leaves.
-func TestALeaveOfATaskInItsMergeQueuesNoSecondDeletion(t *testing.T) {
+func TestALeaveOfATaskInItsMergeQueuesItsDeletionAgain(t *testing.T) {
 	r := newFixRig(t, returnEngine(), []string{"implementer"})
 	r.at(fixHead, jobRunning("k-ci"))
 	r.move(TriggerImplementationReady, "", record.PhaseRow{})
@@ -483,7 +486,7 @@ func TestALeaveOfATaskInItsMergeQueuesNoSecondDeletion(t *testing.T) {
 
 	assertStrings(t, "the merge's run after the leave", outboxStrings(t, r.pool,
 		`select run from step_starts where issue = $1 and kind = '`+string(record.PlaceMerge)+`'`, "LEGION-208"), []string{"ended"})
-	assertStrings(t, "the deletions after the leave", r.deletions(), []string{"1 a through 1"})
+	assertStrings(t, "the deletions after the leave", r.deletions(), []string{"1 a through 1", "1 a through 1"})
 }
 
 // testerWaitReasons is the reason of each phase-finished notice of LEGION-208's tester whose testing

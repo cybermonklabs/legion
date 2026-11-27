@@ -297,7 +297,9 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 // fact's settle has ended every open start of that task at the generation that asked. The old
 // generation's agent can push until its own start ends, so dropFixWay asks for the deletion and
 // queues none. Where a start of that task is still open, this queues nothing and says so, and the
-// next leave or new generation of the task asks again.
+// next leave or new generation of the task asks again. A deletion the task's own end queued
+// already (queueTaskEnd) is queued again here, naming the same branches, which the second row
+// deletes as the first did (TestALeaveOfATaskInItsMergeQueuesItsDeletionAgain).
 //
 // No state these tests reach keeps such a start open: a leave ends its issue's task with its run
 // (leave, endTaskWithLeave), so the settle that follows it holds every run of the issue over
