@@ -184,7 +184,7 @@ func (r *waitRig) changeMerges(key string, number int, merge, head string) {
 	seedIssue(r.t, r.pool, issue)
 	seedPhase(r.t, r.pool, record.PhaseRow{Issue: key, Role: claim.RoleMerger, Claim: "change-merger", HandoffCommit: head})
 	seedPR(r.t, r.pool, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: waitRepo, Number: number, Branch: claim.IssueBranch(key),
-		Base: "main", HeadSHA: head, Generation: int64(issue.Generation), Failing: []string{}})
+		Base: "main", HeadSHA: head, Failing: []string{}})
 	r.fact(intake.PullRequestMerged{Repo: waitRepo, Number: number, MergeSHA: merge, HeadSHA: head, MergedAt: r.now})
 }
 
@@ -329,7 +329,7 @@ func TestANextChangeOfARootLeavesEachOtherMemberAsItIs(t *testing.T) {
 	rig.seedChild(done, phase.Done, "done")
 	seedPhase(t, rig.pool, record.PhaseRow{Issue: waitChild, Role: claim.RoleImplementer, Claim: "child-implementer", EntryTask: "implement it", Entry: 1})
 	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: waitChild, Repo: waitRepo, Number: waitChildNumber,
-		Branch: claim.IssueBranch(waitChild), Base: "main", HeadSHA: headTwo, Generation: waitGeneration, Failing: []string{}})
+		Branch: claim.IssueBranch(waitChild), Base: "main", HeadSHA: headTwo, Failing: []string{}})
 	approvedGate(t, rig, waitChild)
 	st := openStore(t, rig)
 	for _, key := range []string{waitChild, done} {
@@ -894,7 +894,7 @@ func TestAPassWhileTheNextChangeIsOpenClosesNothing(t *testing.T) {
 	rig.started(waitRoot, changeGeneration, 1)
 	rig.standIn(waitRoot, phase.Reviewing, "needs_review")
 	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: waitRoot, Repo: waitRepo, Number: 44, Branch: claim.IssueBranch(waitRoot),
-		Base: "main", HeadSHA: headTwo, Generation: changeGeneration, Failing: []string{}})
+		Base: "main", HeadSHA: headTwo, Failing: []string{}})
 	rig.seedCheck(waitRoot, changeGeneration, waitRootMerge, record.CheckRecorded)
 
 	rig.readAt(waitRoot, changeGeneration, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))

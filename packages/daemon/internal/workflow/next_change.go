@@ -297,14 +297,17 @@ func (e *Engine) changeDue(issue record.Issue, view closeView) (time.Time, bool)
 }
 
 // changeOpenedNoPullRequest says whether the issue's open change has opened no pull request of
-// its own generation: the record holds none, or the one it holds is of a generation before the
-// change (record.PullRequest.Generation).
+// its own: the record holds none, or the one it holds is the merged pull request the change
+// follows (the merge snapshot's, Issue.Merge). The change's start deletes every row that is not
+// open (record.Store.ClearChangeGeneration), so a row the record holds after it is one the
+// change's branch opened, in whatever state. record.PullRequest.Generation is not read: it is the
+// CI settlement's generation, which names no generation of the issue.
 func (e *Engine) changeOpenedNoPullRequest(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
 	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil || pr == nil {
 		return true, err
 	}
-	return pr.Generation < int64(issue.NextChange), nil
+	return pr.State == record.PullRequestMerged && pr.Number == issue.Merge.Number, nil
 }
 
 // changeResolved says whether each reason the issue's open change carries is resolved (D7, B08):

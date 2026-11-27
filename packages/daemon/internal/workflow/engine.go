@@ -723,7 +723,7 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 		// The owning architect's done on a child whose work merged is set back like any other
 		// session's write, and the child's close is judged, since its checks decide it (D16, door 7).
 		if fact.Status == record.DoneStatus && closesByChecks(issue) {
-			return true, e.architectsDoneSetBack(ctx, tx, issue.Key)
+			return true, e.architectsDoneSetBack(ctx, tx, issue.Key, fact.ActorSession)
 		}
 		return true, nil
 	}

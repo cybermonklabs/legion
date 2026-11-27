@@ -1060,15 +1060,27 @@ func closesByChecks(issue record.Issue) bool {
 	return issue.Merge.Merged() && !claim.IsTreeRoot(issue.Key, issue.Tree)
 }
 
-// architectsDoneSetBack tells the owning architect that its done on issue, a merged child, was set
-// back, and judges the child's close, which its checks decide.
-func (e *Engine) architectsDoneSetBack(ctx context.Context, tx pgx.Tx, key string) error {
+// architectsDoneSetBack tells the architect whose session wrote done on issue, a merged child, that
+// the done was set back, and judges the child's close, which its checks decide. The notice is told
+// on that architect's own issue (record.Store.ArchitectIssueOfSession), whose notices reach it: the
+// child's own notices reach the child's own architect while it holds its role, which is not the
+// writer where an architect above the child wrote the done. A session that holds no architect claim
+// of the tree is named to the architect that the child's notices reach.
+func (e *Engine) architectsDoneSetBack(ctx context.Context, tx pgx.Tx, key, session string) error {
 	issue, err := e.store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
 		return err
 	}
-	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "close-waits", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
-		"The daemon set your done on %s back. Its pull request merged, so its checks or a person close it. Read what its close waits for in close-wait.md.", issue.Key)}); err != nil {
+	writer, held, err := e.store.ArchitectIssueOfSession(ctx, tx, issue.Tree, session)
+	if err != nil {
+		return err
+	}
+	told, set := issue.Key, fmt.Sprintf("Session %s set %s to done, and the daemon set it back.", session, issue.Key)
+	if held {
+		told, set = writer, fmt.Sprintf("The daemon set your done on %s back.", issue.Key)
+	}
+	if err := e.notice(ctx, tx, told, record.Notice{Kind: "close-waits", Role: claim.RoleArchitect,
+		Reason: set + " Its pull request merged, so its checks or a person close it. Read what its close waits for in close-wait.md."}); err != nil {
 		return err
 	}
 	return e.judgeClose(ctx, tx, *issue)
