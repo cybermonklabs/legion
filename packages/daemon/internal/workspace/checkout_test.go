@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 )
 
 // cutShortCheckoutTools is testTools with a jj that intercepts `sparse reset`: it records whether
@@ -25,7 +27,7 @@ func cutShortCheckoutTools(t *testing.T, record, partial string) map[string]stri
 		"  exit 137\n" +
 		";; esac\n" +
 		"exec '" + tools["jj"] + "' \"$@\"\n"
-	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(wrapper, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	tools["jj"] = wrapper
@@ -78,6 +80,22 @@ func (r *checkoutObserverRunner) Run(ctx context.Context, command Command) (Resu
 	return r.inner.Run(ctx, command)
 }
 
+// checkoutRunner routes `jj sparse reset` to checkout and every other command to inner, so a test
+// can swap the checkout binary without touching recordingRunner's private fields.
+type checkoutRunner struct {
+	inner    Runner
+	checkout Runner
+}
+
+func (r *checkoutRunner) Timeout() time.Duration { return r.inner.Timeout() }
+
+func (r *checkoutRunner) Run(ctx context.Context, command Command) (Result, error) {
+	if isCheckout(command.Argv) {
+		return r.checkout.Run(ctx, command)
+	}
+	return r.inner.Run(ctx, command)
+}
+
 // R3-3: a tmux-runtime provision (FromGitHub) whose first checkout was cut short after writing
 // half of the tree and half of one file's bytes clears the partial working copy and redoes the
 // checkout whole on the next provision.
@@ -106,10 +124,10 @@ func TestProvisionRedoesACheckoutThatWasCutShort(t *testing.T) {
 		}
 	}
 	record := filepath.Join(t.TempDir(), "marker.txt")
-	run.runner = NewRunner(testTimeout, cutShortCheckoutTools(t, record, partial))
+	first := &checkoutRunner{inner: run, checkout: NewRunner(testTimeout, cutShortCheckoutTools(t, record, partial))}
 
 	req := provisionRequest(t)
-	if _, err := Provision(context.Background(), run, req); err == nil {
+	if _, err := Provision(context.Background(), first, req); err == nil {
 		t.Fatal("first Provision succeeded despite cut-short checkout stand-in")
 	}
 	recorded, err := os.ReadFile(record)
@@ -121,7 +139,6 @@ func TestProvisionRedoesACheckoutThatWasCutShort(t *testing.T) {
 	}
 
 	// Second provision with the real jj must clear the half-written working copy and check out whole.
-	run.runner = NewRunner(testTimeout, testTools(t))
 	working, err := Provision(context.Background(), run, req)
 	if err != nil {
 		t.Fatalf("second Provision: %v", err)
