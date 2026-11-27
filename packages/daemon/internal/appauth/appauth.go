@@ -1040,26 +1040,52 @@ func (m *Manager) listInstallations(ctx context.Context, jwt string) (listed []L
 			Account struct {
 				Login string `json:"login"`
 			} `json:"account"`
-			Permissions map[string]string `json:"permissions"`
-			SuspendedAt *string           `json:"suspended_at"`
+			Permissions map[string]any `json:"permissions"`
+			SuspendedAt *string        `json:"suspended_at"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
 			return nil, "", fmt.Errorf("GitHub App installation discovery returned an invalid response")
 		}
 		for _, installation := range payload {
 			id, err := installationID(installation.ID)
+			if installation.SuspendedAt != nil {
+				// A suspended installation serves nothing, so nothing GitHub lists of it fails the
+				// listing, as discovery skipped it before reading it: one with an id is listed,
+				// its account possibly empty, for the rate reading's line, and one with none,
+				// which no line could name, is left out.
+				if err == nil {
+					listed = append(listed, ListedInstallation{ID: id, Owner: installation.Account.Login, Suspended: true, Permissions: accessNamed(installation.Permissions)})
+				}
+				continue
+			}
 			if err != nil || installation.Account.Login == "" {
 				return nil, "", fmt.Errorf("GitHub App installation discovery returned an invalid installation account")
 			}
 			if slug == "" {
 				slug = installation.AppSlug
 			}
-			listed = append(listed, ListedInstallation{ID: id, Owner: installation.Account.Login, Suspended: installation.SuspendedAt != nil, Permissions: installation.Permissions})
+			listed = append(listed, ListedInstallation{ID: id, Owner: installation.Account.Login, Permissions: accessNamed(installation.Permissions)})
 		}
 		if len(payload) < 100 {
 			return listed, slug, nil
 		}
 	}
+}
+
+// accessNamed is each permission of listed whose value is an access GitHub names as text ("read",
+// "write", "admin"), the one kind it documents: a value of any other kind, which a later GitHub may
+// list, is left out rather than fail the listing of every installation of the App.
+func accessNamed(listed map[string]any) map[string]string {
+	if listed == nil {
+		return nil
+	}
+	permissions := make(map[string]string, len(listed))
+	for permission, access := range listed {
+		if text, ok := access.(string); ok {
+			permissions[permission] = text
+		}
+	}
+	return permissions
 }
 
 func installationID(raw json.RawMessage) (string, error) {

@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/sjawhar/envoy/githubrate"
@@ -101,11 +103,15 @@ type rateApp struct {
 
 // rateKept is what the reading keeps of one installation an App listed, from one pass to the next:
 // the first repository the installation listed, zero until it is listed, whose answer the core
-// counter is read from; and each counter's reset as the last reading that read that counter found
-// it, kept while later readings of the installation fail, which schedules the passes before them.
+// counter is read from; each counter's reset as the last reading that read that counter found
+// it, kept while later readings of the installation fail, which schedules the passes before them;
+// and the owner and permissions the App's last list gave it, which the line of a pass whose list
+// GitHub refuses still names.
 type rateKept struct {
 	repository    ghrepo.Repository
 	core, graphQL rateReset
+	owner         string
+	permissions   map[string]string
 }
 
 // rateReset is one counter's reset as the reading holds it, zero where none is known or the one
@@ -152,8 +158,19 @@ type rateReader struct {
 	// a test moves it.
 	now func() time.Time
 	// installations is what the reading keeps of each installation, by App id and then
-	// installation id: only those the App's last list that GitHub answered held.
+	// installation id: only those the App's last list that GitHub answered held. slugs is the slug
+	// each App's last list named it by.
 	installations map[string]map[string]rateKept
+	slugs         map[string]string
+}
+
+// rateTarget is one installation a pass reads: the App that listed it, the slug and the count of
+// installations that App's list gave, and the installation as listed.
+type rateTarget struct {
+	app          rateApp
+	slug         string
+	listed       int
+	installation appauth.ListedInstallation
 }
 
 // newRateReader is the reading of configured's Apps through apps, counting on counter, the
@@ -164,7 +181,7 @@ func newRateReader(apps rateApps, counter *githubrate.Counter, configured config
 		log.Warn("github rate reading: the host's name cannot be read, so each line names no process", "error", err)
 	}
 	r := &rateReader{apps: apps, counter: counter, project: project, process: process, githubAPI: githubAPI, log: log,
-		readBound: rateReadBound, after: time.After, now: time.Now, installations: map[string]map[string]rateKept{}}
+		readBound: rateReadBound, after: time.After, now: time.Now, installations: map[string]map[string]rateKept{}, slugs: map[string]string{}}
 	byRole := map[appauth.AppRole]config.GitHubApp{appauth.Implement: configured.Implement, appauth.Review: configured.Review}
 	seen := map[string]bool{}
 	// Every role holding a key is taken before any role on token_command, so a key either role of
@@ -235,22 +252,25 @@ func (r *rateReader) heldResets(now time.Time) []time.Time {
 	return resets
 }
 
-// pass writes one line for each installation each keyed App lists, the installations in a
-// counter's last minute first by the resets the reading holds of them, and keeps what the next
-// pass needs. An installation whose mint or read fails has its line all the same, carrying the
-// failure, so a pass writes as many lines as each list held; such a reading keeps the resets the
-// installation's last readings read. An App whose list GitHub refuses, or lists no installation,
-// writes one line naming no installation and carrying the refusal or the empty list: a pass that
-// wrote nothing for it would be silent for an App the daemon holds a key for, with nothing to tell
-// a refused list from a reading never taken. A refused list keeps what the reading held of the
-// App's installations, and marks each reset among them that is in its last minute, as a failed
-// reading does, so a list that keeps failing there schedules no pass at once after pass; a list
-// GitHub answered keeps only the installations it holds. Each list, and each installation's mint
-// and reads, has readBound of its own, so a stalled call cannot stop every later reading. A pass
-// the daemon's stop cuts short writes nothing more: that stop is not GitHub's failure. Every call
-// counts as callerRateReading's.
+// pass lists every keyed App's installations, then writes one line for each installation listed,
+// reading first, across every App, the installations in a counter's last minute by the resets the
+// reading holds of them, the soonest reset first, then the rest in the order the Apps listed them,
+// and keeps what the next pass needs. Listing every App before reading any one keeps an App's
+// last-minute reading from waiting on every installation of the Apps before it. An installation
+// whose mint or read fails has its line all the same, carrying the failure, so a pass writes as
+// many lines as each list held; such a reading keeps the resets the installation's last readings
+// read. A list GitHub refuses writes the lines of the installations the reading holds of the App
+// (refusedList); a list naming no installation writes one line naming none and carrying the empty
+// list: a pass that wrote nothing for an App the daemon holds a key for would be silent, with
+// nothing to tell a refused or empty list from a reading never taken. A list GitHub answered keeps
+// only the installations it holds. Each list, and each installation's mint and reads, has
+// readBound of its own, so a stalled call cannot stop every later reading. A pass the daemon's stop
+// cuts short writes nothing more: that stop is not GitHub's failure. Every call counts as
+// callerRateReading's.
 func (r *rateReader) pass(ctx context.Context) {
 	ctx = githubrate.WithCaller(ctx, callerRateReading)
+	var targets []rateTarget
+	kept := map[string]map[string]rateKept{}
 	for _, app := range r.keyed {
 		if ctx.Err() != nil {
 			return
@@ -262,45 +282,87 @@ func (r *rateReader) pass(ctx context.Context) {
 			return
 		}
 		if err != nil {
-			at := r.now()
-			for id, kept := range r.installations[app.id] {
-				kept.core, kept.graphQL = kept.core.readAt(time.Time{}, at), kept.graphQL.readAt(time.Time{}, at)
-				r.installations[app.id][id] = kept
-			}
-			r.write(githubrate.Reading{AppID: app.id, Error: fmt.Sprintf("list the %s App's installations: %v", app.role, err)})
+			r.refusedList(app, err)
 			continue
 		}
+		r.slugs[app.id] = listed.Slug
 		if len(listed.Installations) == 0 {
 			delete(r.installations, app.id)
 			r.write(githubrate.Reading{AppID: app.id, AppSlug: listed.Slug, Error: "GET /app/installations listed no installation of the App"})
 			continue
 		}
-		held := r.installations[app.id]
-		now := r.now()
-		var lastMinute, rest []appauth.ListedInstallation
+		kept[app.id] = make(map[string]rateKept, len(listed.Installations))
 		for _, installation := range listed.Installations {
-			if githubrate.InLastMinute(now, held[installation.ID].core.at, held[installation.ID].graphQL.at) {
-				lastMinute = append(lastMinute, installation)
-			} else {
-				rest = append(rest, installation)
+			targets = append(targets, rateTarget{app: app, slug: listed.Slug, listed: len(listed.Installations), installation: installation})
+		}
+	}
+	now := r.now()
+	soonest := func(target rateTarget) (time.Time, bool) {
+		held := r.installations[target.app.id][target.installation.ID]
+		var first time.Time
+		for _, reset := range []time.Time{held.core.at, held.graphQL.at} {
+			if githubrate.InLastMinute(now, reset) && (first.IsZero() || reset.Before(first)) {
+				first = reset
 			}
 		}
-		kept := make(map[string]rateKept, len(listed.Installations))
-		for _, installation := range append(lastMinute, rest...) {
-			if ctx.Err() != nil {
-				return
-			}
-			state := held[installation.ID]
-			reading := r.readInstallation(ctx, app, installation, &state)
-			if ctx.Err() != nil {
-				return
-			}
-			kept[installation.ID] = state
-			reading.AppID, reading.AppSlug, reading.Owner, reading.InstallationID = app.id, listed.Slug, installation.Owner, installation.ID
-			reading.Installations, reading.Permissions = len(listed.Installations), installation.Permissions
-			r.write(reading)
+		return first, !first.IsZero()
+	}
+	slices.SortStableFunc(targets, func(a, b rateTarget) int {
+		aReset, aLast := soonest(a)
+		bReset, bLast := soonest(b)
+		switch {
+		case aLast && bLast:
+			return aReset.Compare(bReset)
+		case aLast:
+			return -1
+		case bLast:
+			return 1
+		default:
+			return 0
 		}
-		r.installations[app.id] = kept
+	})
+	for _, target := range targets {
+		if ctx.Err() != nil {
+			return
+		}
+		installation := target.installation
+		state := r.installations[target.app.id][installation.ID]
+		reading := r.readInstallation(ctx, target.app, installation, &state)
+		if ctx.Err() != nil {
+			return
+		}
+		state.owner, state.permissions = installation.Owner, installation.Permissions
+		kept[target.app.id][installation.ID] = state
+		reading.AppID, reading.AppSlug, reading.Owner, reading.InstallationID = target.app.id, target.slug, installation.Owner, installation.ID
+		reading.Installations, reading.Permissions = target.listed, installation.Permissions
+		r.write(reading)
+	}
+	maps.Copy(r.installations, kept)
+}
+
+// refusedList writes the lines of a pass whose list of app's installations GitHub refused with
+// err: one error line for each installation the reading holds of the App, in the order of their
+// ids, with the owner, the permissions and the count the App's last list gave, and before_reset
+// from the resets the reading knows of that installation, so an owner whose list fails in a last
+// minute still has a line for that minute; and the one line naming no installation for an App the
+// reading holds none of. What the reading held of the App is kept, each reset among it that is in
+// its last minute marked tried, as a failed reading marks it, so a list that keeps failing there
+// schedules no pass at once after pass.
+func (r *rateReader) refusedList(app rateApp, err error) {
+	refusal := fmt.Sprintf("list the %s App's installations: %v", app.role, err)
+	held := r.installations[app.id]
+	if len(held) == 0 {
+		r.write(githubrate.Reading{AppID: app.id, AppSlug: r.slugs[app.id], Error: refusal})
+		return
+	}
+	at := r.now()
+	for _, id := range slices.Sorted(maps.Keys(held)) {
+		kept := held[id]
+		beforeReset := githubrate.InLastMinute(at, kept.core.at, kept.graphQL.at)
+		kept.core, kept.graphQL = kept.core.readAt(time.Time{}, at), kept.graphQL.readAt(time.Time{}, at)
+		held[id] = kept
+		r.write(githubrate.Reading{AppID: app.id, AppSlug: r.slugs[app.id], Owner: kept.owner, InstallationID: id,
+			Installations: len(held), Permissions: kept.permissions, BeforeReset: beforeReset, Error: refusal})
 	}
 }
 
@@ -348,10 +410,14 @@ func (r *rateReader) readInstallation(ctx context.Context, app rateApp, installa
 
 // readCounters is readInstallation's reads: the counters as far as GitHub answered them, a core
 // counter read before the GraphQL read failed among them, and the failure. An installation GitHub
-// lists as suspended is read no further, since GitHub mints no token of it.
+// lists as suspended is read no further, since GitHub mints no token of it, and neither is one a
+// secondary limit holds (secondaryHeld), before any call and between its calls.
 func (r *rateReader) readCounters(ctx context.Context, app rateApp, installation appauth.ListedInstallation, state *rateKept) (core, graphQL githubrate.Bucket, err error) {
 	if installation.Suspended {
 		return core, graphQL, errors.New("GitHub lists the installation as suspended, and mints no token of a suspended installation")
+	}
+	if err := r.secondaryHeld(installation.ID); err != nil {
+		return core, graphQL, err
 	}
 	lease, err := r.apps.ReadToken(ctx, app.role, installation.Owner)
 	if err != nil {
@@ -360,7 +426,10 @@ func (r *rateReader) readCounters(ctx context.Context, app rateApp, installation
 	if lease.Installation != installation.ID {
 		return core, graphQL, fmt.Errorf("the %s App's read token on %s is of installation %q, not of the installation GitHub lists", app.role, installation.Owner, lease.Installation)
 	}
-	if core, err = r.core(ctx, lease.Token, state); err != nil {
+	if core, err = r.core(ctx, installation.ID, lease.Token, state); err != nil {
+		return core, graphQL, err
+	}
+	if err := r.secondaryHeld(installation.ID); err != nil {
 		return core, graphQL, err
 	}
 	var limits json.RawMessage
@@ -373,6 +442,23 @@ func (r *rateReader) readCounters(ctx context.Context, app rateApp, installation
 	return core, graphQL, nil
 }
 
+// secondaryHeld is the error of a secondary limit that holds installation's calls on the reading's
+// clock, and nil when none does. GitHub asks a client to send nothing while a secondary limit
+// holds, and warns that it may ban an integration that goes on. The limit is the one the daemon's
+// Counter noted from GitHub's own answer to one of the installation's tokens, whichever of the
+// daemon's calls met it (githubrate.Counter.SecondaryUntil), so one another program met is not
+// seen here. A primary limit is not one: its refusal still names the spent counter, which is what
+// the reading reads.
+func (r *rateReader) secondaryHeld(installation string) error {
+	if r.counter == nil {
+		return nil
+	}
+	if until := r.counter.SecondaryUntil(installation); until.After(r.now()) {
+		return fmt.Errorf("a GitHub secondary rate limit holds installation %s until %s, as GitHub answered this daemon; nothing was sent", installation, until.UTC().Format(time.RFC3339))
+	}
+	return nil
+}
+
 // core is the installation's REST core counter, read with token, as the headers of
 // GET /repos/OWNER/REPO/actions/workflows?per_page=1 on its first repository name it, whatever
 // GitHub answered the read with: a refusal at the limit names the counter as any answer does, and
@@ -381,7 +467,9 @@ func (r *rateReader) readCounters(ctx context.Context, app rateApp, installation
 // name that is no repository's, a body that is no JSON), the counter is read from the listing's
 // own answer instead, which is a core call's too, as Dispatch reads it. A repository GitHub
 // answers 404 is the installation's no longer, and is forgotten for the next pass to list another.
-func (r *rateReader) core(ctx context.Context, token string, state *rateKept) (githubrate.Bucket, error) {
+// The workflows read after a listing is not sent where the listing met a secondary limit of the
+// installation (secondaryHeld).
+func (r *rateReader) core(ctx context.Context, installation, token string, state *rateKept) (githubrate.Bucket, error) {
 	if state.repository.IsZero() {
 		repository, answered, err := r.firstRepository(ctx, token)
 		if err != nil {
@@ -391,6 +479,9 @@ func (r *rateReader) core(ctx context.Context, token string, state *rateKept) (g
 			return githubrate.Bucket{}, fmt.Errorf("read the installation's first repository: %w", err)
 		}
 		state.repository = repository
+		if err := r.secondaryHeld(installation); err != nil {
+			return githubrate.Bucket{}, err
+		}
 	}
 	repository := state.repository
 	headers, err := githubrest.Client{Token: token, API: githubrest.RepositoryAPI(r.githubAPI, repository)}.GetHeaders(ctx, "/actions/workflows?per_page=1", nil)

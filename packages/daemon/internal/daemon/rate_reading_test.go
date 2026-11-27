@@ -37,8 +37,10 @@ type rateInstallation struct {
 	// id, owner and repository are the installation's id, its account and the first repository
 	// it lists.
 	id, owner, repository string
-	// refused answers the installation's token request 403.
-	refused bool
+	// refused answers the installation's token request 403, with refusalBody as its body when it
+	// is set.
+	refused     bool
+	refusalBody string
 	// coreAhead is how long after the stand-in's start the installation's core counter resets,
 	// zero for five minutes: more than the last minute, so a pass taken at the start schedules the
 	// next one BeforeReset before the reset.
@@ -49,8 +51,10 @@ type rateInstallation struct {
 	// listingBody, when set, is the body GitHub answers the repository listing with, 200 and the
 	// installation's core counter in its headers: a listing that names no repository to read.
 	listingBody string
-	// bareWorkflows answers the workflows read with no rate-limit header at all.
-	bareWorkflows bool
+	// bareWorkflows answers the workflows read with no rate-limit header at all, and
+	// secondaryWorkflows with GitHub's secondary limit: a 403 naming it, with requests remaining
+	// and a Retry-After of an hour.
+	bareWorkflows, secondaryWorkflows bool
 	// rateLimit is the status GET /rate_limit answers with, zero for 200; noGraphQL answers it
 	// without resources.graphql.
 	rateLimit int
@@ -205,6 +209,10 @@ func rateStandInFor(t *testing.T, listed map[string][]rateInstallation) *rateGit
 			}
 			if installation.refused {
 				w.WriteHeader(http.StatusForbidden)
+				if installation.refusalBody != "" {
+					fmt.Fprint(w, installation.refusalBody)
+					return
+				}
 				fmt.Fprint(w, `{"message":"Resource not accessible by integration"}`)
 				return
 			}
@@ -324,6 +332,11 @@ func (g *rateGitHub) answer(t *testing.T, w http.ResponseWriter, r *http.Request
 		switch {
 		case installation.bareWorkflows:
 			fmt.Fprint(w, `{"total_count":0,"workflows":[]}`)
+		case installation.secondaryWorkflows:
+			w.Header().Set("Retry-After", "3600")
+			w.Header().Set("X-RateLimit-Remaining", "4000")
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`)
 		case installation.workflows != 0:
 			spentRefusal(w, installation.workflows, reset)
 		default:
@@ -835,7 +848,7 @@ func TestRateReadingKeepsAnInstallationsKnownResetsWhileItsReadingFails(t *testi
 			failing.bareWorkflows = true
 			github.list("1", failing)
 		}, []string{"77"}, true},
-		{"the App's list fails", func(github *rateGitHub) { github.refuseLists(http.StatusInternalServerError) }, []string{""}, true},
+		{"the App's list fails", func(github *rateGitHub) { github.refuseLists(http.StatusInternalServerError) }, []string{"77"}, true},
 		{"it is no longer listed", func(github *rateGitHub) {
 			github.list("1", rateInstallation{id: "78", owner: "initech", repository: "initech/gadgets", refused: true})
 		}, []string{"78"}, false},
@@ -886,6 +899,157 @@ func TestRateReadingReadsTheInstallationsInTheirLastMinuteFirst(t *testing.T) {
 	checkReadLine(t, github, passes[1][1], acme)
 	if !passes[1][0].BeforeReset || passes[1][1].BeforeReset {
 		t.Errorf("the second pass's lines say before_reset %t for 78 and %t for 77, want true and false", passes[1][0].BeforeReset, passes[1][1].BeforeReset)
+	}
+}
+
+// The installations in a counter's last minute come first across every App the daemon reads, not
+// within each App, and among them the one whose reset comes soonest: a pass lists every App before
+// it reads any installation. App 1's 77 resets 90 s after the first pass and its 78 five minutes
+// after; App 2's 87 resets 80 s after. The second pass, due 45 s before 87's reset, reads 87, then
+// 77, both in their last minute, then 78.
+func TestRateReadingReadsTheLastMinuteOfEveryAppFirstBySoonestReset(t *testing.T) {
+	acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets", coreAhead: 90 * time.Second}
+	initech := rateInstallation{id: "78", owner: "initech", repository: "initech/gadgets"}
+	globex := rateInstallation{id: "87", owner: "globex", repository: "globex/gizmos", coreAhead: 80 * time.Second}
+	github := rateStandInFor(t, map[string][]rateInstallation{"1": {acme, initech}, "2": {globex}})
+	rig := newRateRig(t, github, config.GitHubApps{
+		Implement: config.GitHubApp{AppID: "1", PrivateKey: github.key},
+		Review:    config.GitHubApp{AppID: "2", PrivateKey: github.key},
+	})
+
+	dues, passes := rig.passes(t, 2, nil)
+
+	checkDueAt(t, "the second pass", dues[0], github.coreReset(globex).Add(-githubrate.BeforeReset))
+	if ids := lineIDs(passes[0]); !slices.Equal(ids, []string{"77", "78", "87"}) {
+		t.Errorf("the first pass read %v, want each App's list in order, 77, 78, then 87", ids)
+	}
+	if ids := lineIDs(passes[1]); !slices.Equal(ids, []string{"87", "77", "78"}) {
+		t.Fatalf("the second pass read %v, want 87 and 77, in their last minute by soonest reset, then 78", ids)
+	}
+	for n, installation := range []rateInstallation{globex, acme, initech} {
+		checkReadLine(t, github, passes[1][n], installation)
+	}
+	if !passes[1][0].BeforeReset || !passes[1][1].BeforeReset || passes[1][2].BeforeReset {
+		t.Errorf("the second pass's lines say before_reset %t, %t and %t, want true, true and false",
+			passes[1][0].BeforeReset, passes[1][1].BeforeReset, passes[1][2].BeforeReset)
+	}
+}
+
+// A refused list writes one error line for each installation the reading holds of the App, with
+// its owner, its id, the permissions and the count the App's last list gave, and before_reset from
+// the resets it knows of that installation, so an owner whose list fails in a last minute still
+// has a line for the hour. An App the reading holds no installation of, its first list refused,
+// has the one line naming no installation.
+func TestRateReadingWritesALineForEachHeldInstallationOfARefusedList(t *testing.T) {
+	t.Run("installations held", func(t *testing.T) {
+		acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets", coreAhead: 70 * time.Second,
+			permissions: map[string]string{"contents": "write", "metadata": "read"}}
+		initech := rateInstallation{id: "78", owner: "initech", repository: "initech/gadgets", permissions: map[string]string{"metadata": "read"}}
+		github := rateStandIn(t, acme, initech)
+		app := config.GitHubApp{AppID: "1", PrivateKey: github.key}
+		rig := newRateRig(t, github, config.GitHubApps{Implement: app, Review: app})
+
+		_, passes := rig.passes(t, 2, func(int) { github.refuseLists(http.StatusInternalServerError) })
+
+		if !slices.Equal(lineIDs(passes[1]), []string{"77", "78"}) {
+			t.Fatalf("the refused list's pass wrote lines for %v, want 77 and 78", lineIDs(passes[1]))
+		}
+		for n, installation := range []rateInstallation{acme, initech} {
+			line := passes[1][n]
+			checkErrorLineAt(t, line, "list the implement App's installations", installation.id == "77")
+			if line.AppID != "1" || line.AppSlug != "example-implement" || line.Owner != installation.owner || line.Installations != 2 ||
+				!maps.Equal(line.Permissions, installation.permissions) {
+				t.Errorf("installation %s's line = %+v, want App 1 example-implement, owner %s, installations 2 and permissions %v",
+					installation.id, line, installation.owner, installation.permissions)
+			}
+		}
+	})
+	t.Run("none held", func(t *testing.T) {
+		github := rateStandIn(t, rateInstallation{id: "77", owner: "acme", repository: "acme/widgets"})
+		github.refuseLists(http.StatusInternalServerError)
+		app := config.GitHubApp{AppID: "1", PrivateKey: github.key}
+		rig := newRateRig(t, github, config.GitHubApps{Implement: app, Review: app})
+
+		_, passes := rig.passes(t, 1, nil)
+
+		if len(passes[0]) != 1 || passes[0][0].InstallationID != "" || passes[0][0].Owner != "" {
+			t.Fatalf("the pass wrote %+v, want the one line of the App, naming no installation", passes[0])
+		}
+		checkErrorLine(t, passes[0][0], "list the implement App's installations")
+	})
+}
+
+// A GitHub refusal whose body is long reaches the line's error bounded, as every line's error is
+// (githubrate.Write): here a token request answered 403 with 64 KiB of body.
+func TestRateReadingBoundsTheErrorOfALongRefusal(t *testing.T) {
+	long := `{"message":"` + strings.Repeat("x", 64<<10) + `"}`
+	acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets", refused: true, refusalBody: long}
+	github := rateStandIn(t, acme)
+	app := config.GitHubApp{AppID: "1", PrivateKey: github.key}
+	rig := newRateRig(t, github, config.GitHubApps{Implement: app, Review: app})
+
+	_, passes := rig.passes(t, 1, nil)
+
+	if len(passes[0]) != 1 {
+		t.Fatalf("the pass wrote %d lines, want one", len(passes[0]))
+	}
+	checkErrorLine(t, passes[0][0], "403")
+	if size := len(passes[0][0].Error); size > githubrate.ErrorLimit {
+		t.Errorf("the line's error is %d bytes, want at most githubrate.ErrorLimit, %d", size, githubrate.ErrorLimit)
+	}
+}
+
+// A secondary limit GitHub answered one of an installation's tokens with holds that installation's
+// reading until the end GitHub asked for: GitHub asks a client to send nothing while one holds,
+// and warns that it may ban an integration that goes on. acme's workflows read is answered with
+// the secondary limit and an hour's Retry-After at every read, so its first line carries the
+// refusal and its GraphQL read is not sent, its second pass sends nothing and its line says the
+// limit holds, and a pass after the hour sends the workflows read again. initech, which met no
+// limit, is read at every pass.
+func TestRateReadingSendsNothingForAnInstallationASecondaryLimitHolds(t *testing.T) {
+	acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets", secondaryWorkflows: true}
+	initech := rateInstallation{id: "78", owner: "initech", repository: "initech/gadgets"}
+	github := rateStandIn(t, acme, initech)
+	app := config.GitHubApp{AppID: "1", PrivateKey: github.key}
+	rig := newRateRig(t, github, config.GitHubApps{Implement: app, Review: app})
+	const workflows = "/repos/acme/widgets/actions/workflows"
+	var sentByThePass []int
+
+	_, passes := rig.passes(t, 3, func(next int) {
+		sentByThePass = append(sentByThePass, github.callsTo("77", workflows))
+		if next == 3 {
+			// Past the hour the limit asked for, on the reading's clock.
+			rig.clock.set(time.Now().Add(2 * time.Hour))
+		}
+	})
+
+	if !slices.Equal(sentByThePass, []int{1, 1}) {
+		t.Errorf("acme's workflows reads after the first two passes = %v, want 1 and 1: nothing sent while the limit holds", sentByThePass)
+	}
+	if sent := github.callsTo("77", workflows); sent != 2 {
+		t.Errorf("acme's workflows read was sent %d times, want twice: the first pass and the pass after the hold", sent)
+	}
+	if sent := github.callsTo("77", "/rate_limit"); sent != 0 {
+		t.Errorf("acme's GET /rate_limit was sent %d times, want never: each pass that read acme met the limit first", sent)
+	}
+	for n, pass := range passes {
+		byID := map[string]rateLine{}
+		for _, line := range pass {
+			byID[line.InstallationID] = line
+		}
+		if len(pass) != 2 || len(byID) != 2 {
+			t.Fatalf("pass %d wrote lines for %v, want one for 77 and one for 78", n+1, lineIDs(pass))
+		}
+		if n < 2 {
+			// The third pass's clock is hours past the stand-in's resets, which it reads as a
+			// reading that spans two windows.
+			checkReadLine(t, github, byID["78"], initech)
+		}
+		want := "403"
+		if n == 1 {
+			want = "secondary rate limit holds installation 77"
+		}
+		checkErrorLine(t, byID["77"], want)
 	}
 }
 
@@ -1267,10 +1431,10 @@ func TestRateReadingSchedulesNoSecondPassForASampledResetThatDrifts(t *testing.T
 // pass at once: whether the installation's reading fails or the App's list does, the pass marks
 // each reset it holds that is in its last minute, so a try that keeps failing costs no pass after
 // pass until the reset. acme's first reading holds its core reset 70 s ahead, the second pass is
-// due BeforeReset before it and fails, and the third is due an Interval after the second. The
-// installation's failed line says before_reset, since it was taken in the last minute of a reset
-// the reading knows of it, so the hour shows a last-minute try that read nothing; the App's line,
-// which names no installation, does not.
+// due BeforeReset before it and fails, and the third is due an Interval after the second. acme's
+// failed line, its own or the one a refused list writes for each installation held, says
+// before_reset, since it was taken in the last minute of a reset the reading knows of it, so the
+// hour shows a last-minute try that read nothing.
 func TestRateReadingSchedulesNoPassAtOnceAfterAFailedTryInALastMinute(t *testing.T) {
 	acme := rateInstallation{id: "77", owner: "acme", repository: "acme/widgets", coreAhead: 70 * time.Second}
 	for _, tc := range []struct {
@@ -1284,7 +1448,7 @@ func TestRateReadingSchedulesNoPassAtOnceAfterAFailedTryInALastMinute(t *testing
 			failing.bareWorkflows = true
 			github.list("1", failing)
 		}, "core counter", true},
-		{"the App's list fails", func(github *rateGitHub) { github.refuseLists(http.StatusInternalServerError) }, "list the implement App's installations", false},
+		{"the App's list fails", func(github *rateGitHub) { github.refuseLists(http.StatusInternalServerError) }, "list the implement App's installations", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			github := rateStandIn(t, acme)

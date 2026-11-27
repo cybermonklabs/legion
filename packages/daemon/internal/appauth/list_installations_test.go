@@ -72,6 +72,71 @@ func TestListInstallationsReadsEveryPageAndKeepsASuspendedInstallation(t *testin
 	}
 }
 
+// listingManager is a key-mode Manager whose GitHub lists the App's installations as listing, one
+// page of them, and answers nothing else.
+func listingManager(t *testing.T, listing string) *Manager {
+	t.Helper()
+	_, key := testAppKey(t)
+	server := githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations" {
+			githubtest.Unexpected(t, w, r)
+			return
+		}
+		fmt.Fprint(w, listing)
+	}})
+	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "12345", PrivateKey: key}}, Options{BaseURL: server.URL, HTTPClient: server.Client()})
+	t.Cleanup(tokens.Close)
+	return tokens
+}
+
+// A suspended installation never fails the listing, whatever GitHub lists of it: one with no
+// account is listed with no owner, for the rate reading to write its line, and one with no id,
+// which no line could name, is left out alone. Discovery keeps every suspended installation out,
+// as it did before, so the owners installed are acme's alone.
+func TestASuspendedInstallationWithNoAccountOrNoIdFailsNoListing(t *testing.T) {
+	tokens := listingManager(t, fmt.Sprintf(`[
+		{"id":101,"app_slug":"example-app","account":{"login":"acme"},"permissions":{"contents":"read"},"suspended_at":null},
+		{"id":102,"account":null,"permissions":{"metadata":"read"},"suspended_at":%q},
+		{"account":{"login":"ghost"},"suspended_at":%q}
+	]`, suspendedSince, suspendedSince))
+
+	listed, err := tokens.ListInstallations(context.Background(), Implement)
+	if err != nil {
+		t.Fatalf("ListInstallations: %v", err)
+	}
+	want := []ListedInstallation{
+		{ID: "101", Owner: "acme", Permissions: map[string]string{"contents": "read"}},
+		{ID: "102", Suspended: true, Permissions: map[string]string{"metadata": "read"}},
+	}
+	if !slices.EqualFunc(listed.Installations, want, func(a, b ListedInstallation) bool {
+		return a.ID == b.ID && a.Owner == b.Owner && a.Suspended == b.Suspended && maps.Equal(a.Permissions, b.Permissions)
+	}) {
+		t.Errorf("ListInstallations listed %+v, want %+v", listed.Installations, want)
+	}
+	owners, err := tokens.InstalledOwners(context.Background(), Implement)
+	if err != nil || !slices.Equal(owners, []string{"acme"}) {
+		t.Errorf("InstalledOwners = %v, %v, want acme alone", owners, err)
+	}
+}
+
+// An installation listed with a permission whose value is not a string, one GitHub does not
+// document today, keeps the listing and its other permissions: the value no access names is left
+// out, rather than every installation of the App with it.
+func TestAPermissionThatIsNoStringFailsNoListing(t *testing.T) {
+	tokens := listingManager(t, `[{"id":101,"app_slug":"example-app","account":{"login":"acme"},"permissions":{"contents":"read","some_future_flag":true},"suspended_at":null}]`)
+
+	listed, err := tokens.ListInstallations(context.Background(), Implement)
+	if err != nil || len(listed.Installations) != 1 {
+		t.Fatalf("ListInstallations = %+v, %v, want acme's installation", listed, err)
+	}
+	if got := listed.Installations[0].Permissions; !maps.Equal(got, map[string]string{"contents": "read"}) {
+		t.Errorf("acme's permissions = %v, want contents: read alone", got)
+	}
+	if owners, err := tokens.InstalledOwners(context.Background(), Implement); err != nil || !slices.Equal(owners, []string{"acme"}) {
+		t.Errorf("InstalledOwners = %v, %v, want acme", owners, err)
+	}
+}
+
 // grantOf is the contents access the listing test's nth installation is granted, read or write by
 // turns, so each installation's permissions are its own.
 func grantOf(n int) string {
