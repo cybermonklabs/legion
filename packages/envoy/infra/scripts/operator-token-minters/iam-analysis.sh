@@ -41,8 +41,9 @@ fi
 # permissions on the resource, with service account impersonation: a principal that can mint a
 # holder's token, sign as it, or act as it holds what the holder holds. Written as records to
 # $WORK/analysis.rec: a `row` per binding and identity (identity, role, the resource the binding is
-# made on, the permissions it grants, comma-separated, and `expanded` for a group whose members the
-# analysis lists), and a `chain` per impersonator of a service account holder, through any number
+# made on, the permissions it grants, comma-separated, `expanded` for a group whose members the
+# analysis lists, and the binding's condition expression), and a `chain` per impersonator of a
+# service account holder, through any number
 # of service accounts (the outermost impersonator, its role and where that is granted, the holder's
 # permissions, `expanded`, `designed` for a link the design makes, the holder's role and where it
 # is granted, the holder, and the chain written out). Returns 1 with ANALYZE_ERROR, also for an
@@ -50,17 +51,27 @@ fi
 # not list would read as none.
 #
 # The designed links are a Workload Identity member acting as the account it is bound to (the
-# operator's member as --gsa, the broker's as --broker-account) and the broker minting --gsa's
-# token: its outermost principal is the account it acts as, already judged, so it is no finding.
+# operator's member as --gsa, the broker's as --broker-account): the account being itself, whose
+# outermost principal is that account, already judged, so it is no finding. The broker minting
+# --gsa's token is no designed link: it is a path to the operator identity that no second person
+# approves at the time, so a chain through it is judged as any other (INFRA-840's R16).
+# A refused analysis names what Google requires for it (Policy Analyzer's "Required permissions",
+# read 2026-11-26): cloudasset.assets.analyzeIamPolicy, cloudasset.assets.searchAllResources and
+# cloudasset.assets.searchAllIamPolicies on the scope, iam.roles.get for a custom role
+# (--expand-roles), and Workspace's groups.read to expand a group (--expand-groups); then Google's
+# own first line. The page's serviceusage.services.use is the gcloud path's on a quota project, and
+# the auditor runs with none (its entrypoint refuses one), so the message does not send a reader to
+# grant it.
 analyze() {
   ANALYZE_ERROR=""
   if ! gcloud asset analyze-iam-policy "$3" --full-resource-name="$1" --permissions="$2" \
     --expand-groups --output-group-edges --expand-roles --analyze-service-account-impersonation \
     --show-response --format=json --quiet >"$WORK/analysis.json" 2>"$WORK/analysis.err"; then
-    ANALYZE_ERROR="Policy Analyzer refused the analysis (it needs cloudasset.assets.analyzeIamPolicy on $4): $(first_line "$WORK/analysis.err")"
+    ANALYZE_ERROR="Policy Analyzer refused the analysis (it needs cloudasset.assets.analyzeIamPolicy, cloudasset.assets.searchAllResources and cloudasset.assets.searchAllIamPolicies on $4, iam.roles.get for a custom role, and Google Workspace's groups.read to expand a group): $(first_line "$WORK/analysis.err")"
     return 1
   fi
-  if ! jq -r --arg wi "$WI_MEMBER" --arg gsa "$GSA" --arg bwi "$BROKER_WI_MEMBER" --arg broker "$BROKER" -L "$LIB" -f "$LIB/analysis.jq" \
+  if ! jq -r --arg wi "$WI_MEMBER" --arg gsa "$GSA" --arg bwi "$BROKER_WI_MEMBER" --arg broker "$BROKER" \
+    -L "$LIB" -f "$LIB/analysis.jq" \
     "$WORK/analysis.json" >"$WORK/analysis.rec" 2>"$WORK/analysis.err"; then
     ANALYZE_ERROR="the analysis is not the JSON Policy Analyzer answers: $(first_line "$WORK/analysis.err")"
     return 1
@@ -119,7 +130,8 @@ live_iam() {
   if [ -n "$witness_member" ] && [ "$witness_listed" != 1 ]; then
     unknown "$step" "the analysis does not list $witness_member, which holds a permission on it by design, so it cannot be read as complete"
   fi
-  # A chain record's holder role and holder are in its written-out chain, the sentence's part.
+  # A chain record's holder role and holder are in its written-out chain, the sentence's part; a row
+  # record's seventh field, read here as designed, is its binding's condition.
   while IFS="$US" read -r -u 3 what identity role attached perms how designed _ hattached _ text; do
     if [ "$what" = chain ]; then
       # The outermost impersonator, judged as a holder of what the holder holds; a designed link's
@@ -132,14 +144,14 @@ live_iam() {
           "$role" "$resource" "$(held_list "$check" "$perms")" "$attached"
       continue
     fi
-    iam_verdict "$check" "$identity" "$role" "$attached" "$how"
+    iam_verdict "$check" "$identity" "$role" "$attached" "$how" "$designed"
     [ "$VERDICT" != finding ] ||
       iam_holder "$check" "$identity" "$(held_text "$check" "$perms") on $resource through $role, granted at $attached$NOTE" \
         "$role" "$resource" "$(held_list "$check" "$perms")" "$attached"
   done 3<"$WORK/analysis.rec"
   if unchanged; then
     allowances="$(allowed)"
-    pass "$step" "$holders holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and $chains impersonation chains, each from such a principal or by design${2:+; $2}$([ "$allowances" -eq 0 ] || echo ", beside $allowances that reach the broker's pod fence's residual through the account, each an ALLOWANCE")"
+    pass "$step" "$holders holders listed, each Google's service agent or the one allowed by name, none of them a person or a group, and $chains impersonation chains, each from such a principal or by design${2:+; $2}$([ "$allowances" -eq 0 ] || echo ", beside $allowances that reach the broker's pod fence's residual through the account, each an ALLOWANCE")"
   fi
 }
 # iam_holder CHECK IDENTITY RIGHT ROLE RESOURCE PERMISSIONS ATTACHED: a holder iam_verdict judged a

@@ -177,6 +177,7 @@ LineLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapp
 RELEASE = Path(".github/workflows/release.yaml")
 LISTENER = Path(".github/workflows/release-envoy-listener.yaml")
 INFRA = Path(".github/workflows/release-envoy-infra.yaml")
+AUDITOR = Path(".github/workflows/release-minters-auditor.yaml")
 NOTES_NAMES = Path(".github/workflows/release-notes-names.yaml")
 
 # What makes a job credentialed: one of these scopes, or the deploy key's name anywhere in it, by
@@ -201,7 +202,7 @@ TRIPWIRE = f"{RELEASE_PUSH} no-credential"
 # tag, and nothing else pushes.
 PUSH_COMMAND = "release-push.sh push-tag"
 # The workflows this check reads, in this order: a workflow joins the check here.
-WORKFLOWS = [RELEASE, LISTENER, INFRA, NOTES_NAMES]
+WORKFLOWS = [RELEASE, LISTENER, INFRA, AUDITOR, NOTES_NAMES]
 # A secret other than GITHUB_TOKEN, which a build job must not hold: `secrets.X` or `secrets['X']`
 # for any X but GITHUB_TOKEN, `toJSON(secrets)` (the context and functions are case-insensitive,
 # as are secret names), or a bare `secrets` inside a `${{ … }}` expression (`${{ secrets }}`,

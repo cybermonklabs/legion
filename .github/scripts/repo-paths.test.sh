@@ -53,6 +53,7 @@ echo "case: today's repository, cybermonklabs/legion"
 paths cybermonklabs/legion
 check "exits 0" "$(is "$rc" 0)"
 check "worker_image" "$(is "$(value_of worker_image)" 'ghcr.io/cybermonklabs/legion-worker')"
+check "minters_auditor_image" "$(is "$(value_of minters_auditor_image)" 'ghcr.io/cybermonklabs/legion/minters-auditor')"
 check "envoy_image" "$(is "$(value_of envoy_image)" 'ghcr.io/cybermonklabs/legion/envoy')"
 # shellcheck disable=SC2016 # literal ${VERSION}: Pulumi substitutes it at install time
 check "plugin_download_url" \
@@ -62,7 +63,7 @@ check "docs_site" "$(is "$(value_of docs_site)" 'https://cybermonklabs.github.io
 check "docs_base" "$(is "$(value_of docs_base)" '/legion')"
 check "docs_edit_base" \
   "$(is "$(value_of docs_edit_base)" 'https://github.com/cybermonklabs/legion/edit/main/docs/site/')"
-check "seven keys, no more" "$(is "$(grep -c '' <<< "$out")" 7)"
+check "eight keys, no more" "$(is "$(grep -c '' <<< "$out")" 8)"
 today_out="$out"
 
 echo
@@ -70,6 +71,7 @@ echo "case: another owner and another name, so the table hard-codes neither, acm
 paths acme/widgets
 check "exits 0" "$(is "$rc" 0)"
 check "worker_image" "$(is "$(value_of worker_image)" 'ghcr.io/acme/widgets-worker')"
+check "minters_auditor_image" "$(is "$(value_of minters_auditor_image)" 'ghcr.io/acme/widgets/minters-auditor')"
 check "envoy_image" "$(is "$(value_of envoy_image)" 'ghcr.io/acme/widgets/envoy')"
 # shellcheck disable=SC2016 # literal ${VERSION}: Pulumi substitutes it at install time
 check "plugin_download_url" \
@@ -79,7 +81,7 @@ check "docs_site" "$(is "$(value_of docs_site)" 'https://acme.github.io')"
 check "docs_base" "$(is "$(value_of docs_base)" '/widgets')"
 check "docs_edit_base" \
   "$(is "$(value_of docs_edit_base)" 'https://github.com/acme/widgets/edit/main/docs/site/')"
-check "seven keys, no more" "$(is "$(grep -c '' <<< "$out")" 7)"
+check "eight keys, no more" "$(is "$(grep -c '' <<< "$out")" 8)"
 
 echo
 echo "case: an owner GitHub spells with capitals"
@@ -125,7 +127,7 @@ paths cybermonklabs/legion no_such_key
 check "exits non-zero" "$(is "$rc" 1)"
 check "prints nothing on stdout" "$(is "$out" '')"
 check "names the key" "$(contains "$err" "unknown key 'no_such_key'")"
-check "lists the known keys" "$(contains "$err" 'known keys: worker_image envoy_image')"
+check "lists the known keys" "$(contains "$err" 'known keys: worker_image minters_auditor_image envoy_image')"
 
 paths cybermonklabs/legion docs_base docs_site
 check "two keys at once exit non-zero" "$(is "$rc" 1)"

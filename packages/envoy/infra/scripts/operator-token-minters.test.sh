@@ -25,8 +25,8 @@
 #   - curl answers the GKE Hub API's list of the fleet's memberships, one membership a page, the
 #     locations it could not reach on the first page, so a reader that stops at one page, or reads
 #     `unreachable` from another, misses what the world holds;
-#   - agent-secrets shows a secret's tags as `secret show NAME --json` prints them, or answers as
-#     Secret Manager's NotFound and PermissionDenied are printed.
+#   - gcloud's `secrets describe` answers a broker secret with its tags as its annotations, or as
+#     Secret Manager's NOT_FOUND and PERMISSION_DENIED are printed.
 #
 # Each row resets the world (so each plant is removed after its row), plants one thing, and holds
 # the run to its exit and to the line naming what it planted. A row of a list of rights instead
@@ -60,7 +60,9 @@
 # OPERATOR_MINTERS_SCRIPT names another copy of the script to run them against; a copy keeps the
 # directory operator-token-minters/ beside it, whose parts it sources (the rows files are this
 # test's own, beside it). A row of one plant per item runs up to 8 items at a time, each in a world
-# of its own (each).
+# of its own (each). A run of every row ends by holding reads.json to an inventory, not only a
+# bound: each entry must be a read some run of the check made (unused_reads), so a right the
+# auditor's ClusterRole would grant and no step uses fails the suite.
 # CI runs it in envoy-go-checks (.github/workflows/ci-job-envoy-go-checks.yaml).
 set -euo pipefail
 shopt -s inherit_errexit
@@ -74,6 +76,10 @@ readonly fake_bin="$temporary_dir/bin"
 # world is the world the current row plants in; a row run beside others has one of its own.
 world="$temporary_dir/world"
 mkdir -p "$fake_bin"
+# calls_dir: each process's record of the kubectl reads its runs of the check (or of fence_check,
+# which differs from it only in its contract's digests) made, one file a process (run_only).
+readonly calls_dir="$temporary_dir/kubectl-calls"
+mkdir -p "$calls_dir"
 # Every row asks the reviews in one kubectl call, so a world that answers the nth call its own way
 # (the fake's review-follow-* markers) names a round, not a worker's share of one; row (cy)'s
 # chunked item sets REVIEW_WORKERS itself and wants the same finding.
@@ -95,9 +101,14 @@ readonly relay=relay@example-project.iam.gserviceaccount.com
 readonly relay_res="//iam.googleapis.com/projects/example-project/serviceAccounts/relay@example-project.iam.gserviceaccount.com"
 readonly route_pair=envoy-route/envoy-route-password-reader
 readonly fixture="${OPERATOR_MINTERS_FIXTURE:-$script_dir/testdata/operator-token-minters-report.json}"
+readonly reads="$script_dir/operator-token-minters/reads.json"
 readonly wi_member="serviceAccount:example-project.svc.id.goog[envoy-operator/envoy-operator]"
 readonly control_wi_member="serviceAccount:example-project.svc.id.goog[envoy-operator-control/envoy-operator]"
 readonly broker_wi_member="serviceAccount:example-project.svc.id.goog[secrets-broker/secrets-broker]"
+# The project's Compute Engine service agent, which the reading accepts (principals.sh,
+# service_agent). The base world gives it roles/owner on the organization for one reason: so that
+# every analysis lists a holder without a person. No deployment grants an agent that; do not copy it.
+readonly compute_agent="serviceAccount:service-$number@compute-system.iam.gserviceaccount.com"
 readonly project_res="//cloudresourcemanager.googleapis.com/projects/$project"
 readonly org_res="//cloudresourcemanager.googleapis.com/organizations/$org"
 readonly gsa_res="//iam.googleapis.com/projects/$project/serviceAccounts/$gsa"
@@ -106,6 +117,21 @@ readonly broker_res="//iam.googleapis.com/projects/$project/serviceAccounts/$bro
 readonly sql_res="//sqladmin.googleapis.com/projects/$project/instances/example-instance"
 readonly signing_res="//secretmanager.googleapis.com/projects/$number/secrets/hold-signing-example"
 readonly bucket_res="//storage.googleapis.com/projects/_/buckets/example-state"
+# The renders bucket: its applier (--renders-admin, the witness) and the four writers, each held by
+# its binding's condition to its own object.
+readonly renders_bucket=example-renders
+readonly renders_res="//storage.googleapis.com/projects/_/buckets/$renders_bucket"
+readonly renders_admin=renders-admin@example-project.iam.gserviceaccount.com
+readonly render_writers=(writer-a@example-project.iam.gserviceaccount.com=program-a/object
+  writer-b@example-project.iam.gserviceaccount.com=program-b/object writer-c@example-project.iam.gserviceaccount.com=program-c/object
+  writer-d@example-project.iam.gserviceaccount.com=program-d/object)
+# render_condition OBJECT: the condition that holds a writer's binding to OBJECT alone.
+render_condition() { printf 'resource.name == "projects/_/buckets/%s/objects/%s"' "$renders_bucket" "$1"; }
+# renders_allowances: the allowances --report lists for the renders flags every run passes.
+renders_allowances() {
+  jq -nc --arg admin "$renders_admin" '[{flag: "--renders-admin", value: $admin}] + [$ARGS.positional[] | {flag: "--render-writer", value: .}]' \
+    --args "${render_writers[@]}"
+}
 
 # The fakes, written into $fake_bin.
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-fakes.sh
@@ -142,6 +168,13 @@ iam() {
   shift 2
   edit "$world/iam.json" '. + [{attached: $a, role: $r, members: $ARGS.positional}]' --arg a "$attached" --arg r "$role" --args "$@"
 }
+# iam_if ATTACHED ROLE CONDITION MEMBER...: one IAM binding under a condition expression.
+iam_if() {
+  local attached="$1" role="$2" condition="$3"
+  shift 3
+  edit "$world/iam.json" '. + [{attached: $a, role: $r, condition: {expression: $c}, members: $ARGS.positional}]' \
+    --arg a "$attached" --arg r "$role" --arg c "$condition" --args "$@"
+}
 # unbind ATTACHED ROLE: removes the world's bindings of that role on that resource.
 unbind() { edit "$world/iam.json" 'map(select((.attached == $a and .role == $r) | not))' --arg a "$1" --arg r "$2"; }
 role() { edit "$world/roles.json" '. + {($r): $ARGS.positional}' --arg r "$1" --args "${@:2}"; }
@@ -157,13 +190,17 @@ add_cluster() {
   make_cluster "$1"
 }
 # make_cluster NAME: a cluster's own world (its namespaces, ServiceAccounts and grants) and no
-# entry in the project's list, as a fleet member in another project or outside GKE has.
+# entry in the project's list, as a fleet member in another project or outside GKE has; its pods
+# are kube-system's kube-dns, running on a node, whose ServiceAccount holds no right asked, as every
+# GKE cluster runs kube-system's pods (node_escape's census witness).
 make_cluster() {
   mkdir -p "$world/clusters/$1"
   printf '%s\n' default kube-system gke-managed-system gmp-system apps >"$world/clusters/$1/namespaces"
   jq -n '[{namespace: "kube-system", name: "namespace-controller"}, {namespace: "gke-managed-system", name: "addon-manager"},
           {namespace: "gmp-system", name: "collector"}, {namespace: "default", name: "default"}, {namespace: "apps", name: "deployer"}]' \
     >"$world/clusters/$1/serviceaccounts.json"
+  jq -n '[{metadata: {namespace: "kube-system", name: "kube-dns-5c6f9b8d4-x2k7q"},
+           spec: {serviceAccountName: "kube-dns", nodeName: "node-1"}, status: {phase: "Running"}}]' >"$world/clusters/$1/pods.json"
   echo '[]' >"$world/clusters/$1/grants.json"
   subject_grant "$1" "$(sa_subject kube-system namespace-controller)" create "" namespaces "" "" ""
   subject_grant "$1" "$(sa_subject gke-managed-system addon-manager)" create "" serviceaccounts "" "" ""
@@ -246,11 +283,13 @@ jq --argjson digests "$fence_example_digests" '.objects |= map(if .digest then .
 
 # fence_world: the base world with the broker in dispatch: its ServiceAccount, bound to the broker's
 # Google account through Workload Identity; its pod, which takes the broker's database login, and
-# Dispatch's own, which does not; the example fence (fence_objects) in the render and on the cluster
-# as GKE returns it (each policy with GKE's selector skipping its own namespaces, and the API
-# server's matchPolicy, objectSelector and scope, which the check must read as left out); and the
-# grants the fence answers: comment-delivery's exec, dispatch-measure's exec and legion/worker's
-# port forward in dispatch (row fk plants dispatch-measure's pod patch, which is no credit).
+# Dispatch's own, which takes dispatch-dispatch, each Secret declared by the Secret render, as the
+# dispatch/ and broker/ programs declare them; the example fence (fence_objects) in the render and
+# on the cluster as GKE returns it (each policy with GKE's selector skipping its own namespaces, and
+# the API server's matchPolicy, objectSelector and scope, which the check must read as left out);
+# and the grants the fence answers: comment-delivery's exec, dispatch-measure's exec and
+# legion/worker's port forward in dispatch (row fk plants dispatch-measure's pod patch, which is no
+# credit).
 fence_world() {
   base_world
   edit "$world/clusters/operator-cluster/serviceaccounts.json" '. + [{namespace: "dispatch", name: "envoy-broker", gsa: $b}, {namespace: "dispatch", name: "dispatch"},
@@ -264,6 +303,8 @@ fence_world() {
           {metadata: {namespace: "dispatch", name: "dispatch-6b8f4c-fghij"},
            spec: {serviceAccountName: "dispatch", containers: [{name: "dispatch", envFrom: [{secretRef: {name: "dispatch-dispatch"}}]}]}}]' \
     >"$world/clusters/operator-cluster/pods.json"
+  edit "$world/secret-render.json" '.items += [{apiVersion: "v1", kind: "Secret", type: "Opaque", metadata: {namespace: "dispatch", name: "dispatch-dispatch"}},
+    {apiVersion: "v1", kind: "Secret", type: "Opaque", metadata: {namespace: "dispatch", name: "envoy-broker-db"}}]'
   fence_objects >"$world/fence.json"
   edit "$world/render.json" '.items += $f[0]
     + [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "Role", metadata: {name: "comment-delivery", namespace: "dispatch"},
@@ -317,6 +358,15 @@ readonly container_admin=(
   resourcemanager.projects.get
 )
 
+# broker_secret NAME ADMIN: the broker's view of its secret NAME, stored at human tier with the admin
+# tag ADMIN ("true", or "" for none), as the fake's secrets describe and list answer it.
+broker_secret() {
+  jq -n --arg name "$1" --arg admin "$2" --arg slug "agent-secrets-$(printf '%s' "$1" | tr 'A-Z_' 'a-z-')" '{
+    name: $name, store: "GCP Secret Manager project 123456789012", secret_name: "projects/123456789012/secrets/\($slug)",
+    owner: "owner@example.com", tier: "human", type: "google-service-account", github_owners: "",
+    requesters: "owner@example.com", scopes: "", admin: $admin, max_grant: "1h", default_grant: "", has_value: true,
+    created: "2026-11-17T12:00:00Z", last_changed: "2026-11-17T12:00:00Z", versions: {"1": ["ENABLED"]}}' >"$world/secrets/$1.json"
+}
 build_world() {
   mkdir -p "$world/clusters/operator-cluster" "$world/secrets"
   printf '%s\n' "$project" >"$world/project"
@@ -390,33 +440,50 @@ build_world() {
   role roles/secretmanager.admin secretmanager.secrets.get secretmanager.secrets.getIamPolicy secretmanager.secrets.setIamPolicy \
     secretmanager.versions.access
   role roles/iam.roleAdmin iam.roles.create iam.roles.get iam.roles.list iam.roles.update
+  # Its storage names, and roles/run.serviceAgent's, read with `gcloud iam roles describe` on
+  # 2026-11-26, cut to the names the renders step asks and a few beside them.
+  role roles/storage.admin storage.buckets.get storage.buckets.getIamPolicy storage.buckets.setIamPolicy storage.buckets.update \
+    storage.managedFolders.setIamPolicy storage.objects.create storage.objects.delete storage.objects.get storage.objects.list \
+    storage.objects.update
+  role roles/run.serviceAgent run.services.get storage.buckets.update storage.objects.create storage.objects.delete \
+    storage.objects.update
+  role roles/example.renderWrite storage.objects.create storage.objects.delete
+  role roles/example.folderAdmin storage.managedFolders.get storage.managedFolders.setIamPolicy
 
+  # No person holds anything here: nobody holds the operator identity standing, a person included
+  # (INFRA-840's R16), so every person a row plants is a finding, and row (sp) plants each of the
+  # shapes a person's grant takes. The group cluster-admins holds no binding here either; rows plant
+  # its binding where they need one. No job mints the operator's token either: the broker's
+  # roles/iam.serviceAccountTokenCreator on the operator's account, live and declared, is a finding
+  # (R16 admits no automated job), which row (o) plants. Every analysis must still list a holder, as
+  # a real one always does (an answer listing none reads UNKNOWN), so the organization's
+  # roles/owner is held by a principal the reading accepts: the project's Compute Engine service
+  # agent, Google's own, which nobody signs in as. That grant exists only so this fixture's analyses
+  # list a holder with no person; no deployment grants an agent the organization's roles/owner, and
+  # this is no pattern to copy.
   echo '[]' >"$world/iam.json"
   jq -n '{"group:cluster-admins@example.com": ["user:admin@example.com"]}' >"$world/groups.json"
-  iam "$org_res" roles/owner user:owner@example.com
-  iam "$project_res" roles/container.admin group:cluster-admins@example.com
+  iam "$org_res" roles/owner "$compute_agent"
   iam "$project_res" roles/container.serviceAgent "serviceAccount:service-$number@container-engine-robot.iam.gserviceaccount.com"
-  iam "$project_res" roles/cloudsql.admin user:dba@example.com
   iam "$project_res" roles/viewer "serviceAccount:$ci_gsa"
   iam "$gsa_res" roles/iam.workloadIdentityUser "$wi_member"
-  iam "$gsa_res" roles/iam.serviceAccountTokenCreator "serviceAccount:$broker"
   iam "$control_gsa_res" roles/iam.workloadIdentityUser "$control_wi_member"
   iam "$broker_res" roles/iam.workloadIdentityUser "$broker_wi_member"
   iam "$signing_res" roles/secretmanager.secretAccessor "serviceAccount:$gsa"
-  iam "$bucket_res" roles/storage.objectViewer user:admin@example.com
-
-  local name admin
-  for name in ENVOY_OPERATOR ENVOY_OPERATOR_CONTROL; do
-    admin=""
-    [ "$name" = ENVOY_OPERATOR_CONTROL ] || admin=true
-    jq -n --arg name "$name" --arg admin "$admin" --arg slug "agent-secrets-$(printf '%s' "$name" | tr 'A-Z_' 'a-z-')" '{
-      name: $name, store: "GCP Secret Manager project 123456789012", secret_name: "projects/123456789012/secrets/\($slug)",
-      owner: "owner@example.com", tier: "human", type: "google-service-account", github_owners: "",
-      requesters: "owner@example.com", scopes: "", admin: $admin, max_grant: "1h", default_grant: "", has_value: true,
-      created: "2026-11-17T12:00:00Z", last_changed: "2026-11-17T12:00:00Z", versions: {"1": ["ENABLED"]}}' >"$world/secrets/$name.json"
+  iam "$renders_res" roles/storage.admin "serviceAccount:$renders_admin"
+  local writer
+  for writer in "${render_writers[@]}"; do
+    iam_if "$renders_res" roles/example.renderWrite "$(render_condition "${writer#*=}")" "serviceAccount:${writer%%=*}"
   done
 
-  # The code: the RBAC render and the IAM program's preview, each declaring only what (a) allows.
+  # The broker's secrets under the prefix: the scratch secret ENVOY_OPERATOR_CONTROL alone, so the
+  # admin-tag step finds no ENVOY_OPERATOR and sees the prefix holds the broker's secrets. A secret
+  # that releases the operator's credential is a standing route whatever its tags (INFRA-840's
+  # R16), so the clean world holds none; row (l) stores ENVOY_OPERATOR at each set of tags.
+  broker_secret ENVOY_OPERATOR_CONTROL ""
+
+  # The code: the RBAC render and the IAM program's preview, each declaring only what (a) allows, so
+  # no person and no group; row (sp) declares a person in a preview of its own.
   jq -n --arg gsa "$gsa" '{apiVersion: "v1", kind: "List", items: [
     {apiVersion: "rbac.authorization.k8s.io/v1", kind: "Role", metadata: {name: "envoy-operator-runtime", namespace: "envoy-operator"},
      rules: [{apiGroups: [""], resources: ["serviceaccounts/token"], resourceNames: ["envoy-operator"], verbs: ["create"]},
@@ -432,16 +499,16 @@ build_world() {
     {apiVersion: "rbac.authorization.k8s.io/v1", kind: "RoleBinding", metadata: {name: "sessions", namespace: "legion"},
      roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "Role", name: "sessions"},
      subjects: [{kind: "ServiceAccount", name: "worker", namespace: "legion"}]}]}' >"$world/render.json"
-  jq -n --arg p "$project" --arg gsa "$gsa" --arg broker "$broker" --arg wi "$wi_member" --arg ci "$ci_gsa" '
+  # The Secret render: the broker's database login, --db-secret, as the broker's Secret program
+  # declares it (a render that declares no Secret is UNKNOWN).
+  jq -n '{apiVersion: "v1", kind: "List", items: [{apiVersion: "v1", kind: "Secret", type: "Opaque",
+    metadata: {namespace: "example-db", name: "broker-db-login"}}]}' >"$world/secret-render.json"
+  jq -n --arg p "$project" --arg gsa "$gsa" --arg wi "$wi_member" --arg ci "$ci_gsa" '
     def step($name; $type; $inputs): {op: "same", urn: "urn:pulumi:example::iam::\($type)::\($name)", provider: "example-provider",
                                       newState: {urn: "urn:pulumi:example::iam::\($type)::\($name)", custom: true, type: $type, inputs: $inputs}};
     {steps: [
-      step("admin-container"; "gcp:projects/iAMMember:IAMMember"; {project: $p, role: "roles/container.admin", member: "user:admin@example.com"}),
-      step("admins-container"; "gcp:projects/iAMMember:IAMMember"; {project: $p, role: "roles/container.admin", member: "group:cluster-admins@example.com"}),
       step("operator-workload"; "gcp:serviceaccount/iAMMember:IAMMember";
            {serviceAccountId: "projects/\($p)/serviceAccounts/\($gsa)", role: "roles/iam.workloadIdentityUser", member: $wi}),
-      step("broker-mints-operator"; "gcp:serviceaccount/iAMMember:IAMMember";
-           {serviceAccountId: "projects/\($p)/serviceAccounts/\($gsa)", role: "roles/iam.serviceAccountTokenCreator", member: "serviceAccount:\($broker)"}),
       step("operator-reads-signing-key"; "gcp:secretmanager/secretIamMember:SecretIamMember";
            {project: $p, secretId: "projects/\($p)/secrets/hold-signing-example", role: "roles/secretmanager.secretAccessor", member: "serviceAccount:\($gsa)"}),
       step("ci-uses-a-key"; "gcp:kms/cryptoKeyIAMMember:CryptoKeyIAMMember";
@@ -467,8 +534,11 @@ full_args() {
     --agent-namespace legion --agent-namespace agent-sessions --agent-namespace 'legion-*-sessions' \
     --broker-account "$broker" --broker-workload secrets-broker/secrets-broker \
     --sql-instance example-instance --db-secret example-db/broker-db-login --broker-state gs://example-state/broker \
-    --signing-secret hold-signing-example \
-    --rbac-render "$world/render.json" --iam-preview "$world/preview.json"
+    --signing-secret hold-signing-example --secrets-prefix "projects/$number/secrets/agent-secrets-" \
+    --rbac-render "$world/render.json" --secret-render "$world/secret-render.json" --iam-preview "$world/preview.json" \
+    --renders-bucket "gs://$renders_bucket" --renders-project "$project" --renders-admin "$renders_admin"
+  local writer
+  for writer in "${render_writers[@]}"; do printf '%s\n' --render-writer "$writer"; done
 }
 output=""
 status=0
@@ -494,11 +564,57 @@ args_without() {
   done
   printf '%s\n' "${keep[@]}"
 }
+# verify_kubectl_reads: every fake kubectl read the row made is one the auditor's
+# production ClusterRole can grant, with the source step that issued it.
+verify_kubectl_reads() {
+  local manifest="${OPERATOR_MINTERS_READS:-$reads}" step verb group resource url failure=""
+  [ -r "$manifest" ] || {
+    output+=$'\n'"FAIL: the reads manifest $manifest cannot be read"
+    return 1
+  }
+  while IFS='|' read -r step verb group resource url; do
+    if [ "$step" = UNMAPPED ]; then
+      failure+="FAIL: the fake kubectl made a call its recorder maps to no verb and resource, so reads.json is not checked for it: kubectl $verb"$'\n'
+    elif [ -n "$url" ]; then
+      jq -e --arg step "$step" --arg verb "$verb" --arg url "$url" \
+        'any(.[]; .step == $step and .verb == $verb and .nonResourceURL == $url)' "$manifest" >/dev/null ||
+        failure+="FAIL: recorded kubectl $verb $url is absent from reads.json for $step"$'\n'
+    else
+      jq -e --arg step "$step" --arg verb "$verb" --arg group "$group" --arg resource "$resource" \
+        'any(.[]; .step == $step and .verb == $verb and .apiGroup == $group and .resource == $resource)' "$manifest" >/dev/null ||
+        failure+="FAIL: recorded kubectl $verb $resource is absent from reads.json for $step"$'\n'
+    fi
+  done < <(sort -u "$world/kubectl-calls.tsv" 2>/dev/null || true)
+  [ -z "$failure" ] || { output+=$'\n'"${failure%$'\n'}"; return 1; }
+}
 # run_only ARGS...: the check with ARGS alone; run_script names another copy of the script to run, as
-# a row breaking one of its parts does (run_script=<copy> run).
+# a row breaking one of its parts does (run_script=<copy> run). A run of the check itself (or of
+# fence_check) adds its kubectl reads to calls_dir, which unused_reads holds reads.json to. A read
+# reads.json does not declare fails the row there and then, whatever the check's exit, so a row that
+# wants a finding's exit 1 cannot pass on it; a row that holds the manifest itself to a missing read
+# (expect_reads_failure=true, row rd) reads reads_failed instead.
 run_only() {
-  status=0
+  status=0 reads_failed=false
+  : >"$world/kubectl-calls.tsv"
   output="$(env PATH="$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$temporary_dir" bash "${run_script:-$check}" "$@" 2>&1)" || status=$?
+  case "${run_script:-$check}" in "$check" | "$fence_check") cat "$world/kubectl-calls.tsv" >>"$calls_dir/calls.$BASHPID" ;; esac
+  if ! verify_kubectl_reads; then
+    reads_failed=true
+    [ "${expect_reads_failure:-false}" = true ] || fail "a kubectl read this run made is not one reads.json declares"
+  fi
+}
+# unused_reads MANIFEST CALLS_FILE...: each entry of MANIFEST (reads.json's form) that no call the
+# files record matches as verify_kubectl_reads matches one, a line each as JSON: a read the
+# auditor's ClusterRole would grant that no run of the check made.
+unused_reads() {
+  local manifest="$1"
+  shift
+  sort -u -- "$@" | jq -R -s -c --slurpfile manifest "$manifest" '
+    [split("\n")[] | select(length > 0) | split("|") | {step: .[0], verb: .[1], group: .[2], resource: .[3], url: (.[4] // "")}] as $calls
+    | $manifest[0][] | . as $entry
+    | select(any($calls[]; .step == $entry.step and .verb == $entry.verb
+        and (if $entry.nonResourceURL then .url == $entry.nonResourceURL
+             else .url == "" and .group == $entry.apiGroup and .resource == $entry.resource end)) | not)'
 }
 # plant FILE OLD NEW: FILE with its one OLD made NEW; fails the row when FILE does not hold OLD once,
 # so a plant that missed its line cannot pass as a control.
@@ -535,6 +651,15 @@ want_step_unknown() {
   ! has_prefix "PASS live: $1: " || fail "$3: the step $1 passed"
 }
 want_rbac_unknown() { want_step_unknown "RBAC on operator-cluster" "$1" "$2"; }
+# full_labels FILE: each resource of the report FILE that names a cluster and is not
+# cluster:<project>/<location>/<name>, or that names operator-cluster and is not
+# cluster:example-project/us-central1/operator-cluster, the operator's: none prints nothing
+# (rows zc and z).
+full_labels() {
+  jq -r --arg op "cluster:$project/us-central1/operator-cluster" '
+    [(.findings[], .credited[], .residuals[]) | .resource | select(startswith("cluster:"))]
+    | map(select((test("^cluster:[^/]+/[^/]+/[^/]+$") | not) or (endswith("/operator-cluster") and . != $op))) | unique[]' "$1"
+}
 # --- A list of rights in one world. A row of such a list plants every right of it in one world,
 # each right on a ServiceAccount of its own (plant_rights), or each permission through a role of
 # its own on one member (plant_permissions), and judges the world by one run of the check
@@ -676,4 +801,17 @@ each() {
 . "$script_dir/operator-token-minters/test-rows-fence.sh"
 
 [ "$rows" -gt 0 ] || { echo "FAIL: OPERATOR_MINTERS_TEST_ROWS=${OPERATOR_MINTERS_TEST_ROWS:-} names no row" >&2; exit 1; }
+# reads.json as an inventory: on a run of every row, each entry is a read some run of the check made.
+# A subset of the rows cannot say so, and says it did not check; a run that recorded no call has
+# enumerated nothing, and fails rather than reading as every entry unused or none.
+if [ -n "${OPERATOR_MINTERS_TEST_ROWS:-}" ]; then
+  echo "reads.json inventory: not checked, since OPERATOR_MINTERS_TEST_ROWS runs a subset of the rows"
+else
+  call_files=("$calls_dir"/calls.*)
+  [ -e "${call_files[0]}" ] && [ -n "$(cat -- "${call_files[@]}")" ] ||
+    { echo "FAIL: no run of the check recorded a kubectl read, so reads.json could not be held to them" >&2; exit 1; }
+  unused="$(unused_reads "$reads" "${call_files[@]}")"
+  [ -z "$unused" ] || { printf 'FAIL: reads.json entries no run of the check read:\n%s\n' "$unused" >&2; exit 1; }
+  echo "PASS: every reads.json entry is a read some run of the check made (${#call_files[@]} processes recorded)"
+fi
 echo "all $rows rows passed"

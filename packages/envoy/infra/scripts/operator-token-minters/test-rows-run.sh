@@ -5,21 +5,38 @@
 # refused identity, the admin tag, the report and its fixture, and a copy missing a part. Sourced
 # by the test after its world and helpers; its header says what the fakes model. The rows:
 #
-#   (a)  a world of people, system namespaces and the Workload Identity member alone exits 0, and a
-#        project with the operator's cluster alone prints that it has no other;
+#   (a)  a world where no person holds anything, the system namespaces, Google's service agents and
+#        the Workload Identity member alone exits 0 with no FINDING and no UNKNOWN, and a project with
+#        the operator's cluster alone prints that it has no other;
+#   (sp) a standing person is a finding: a person holding a checked right in IAM (on the operator's
+#        account, on the organization, through an expanded group, on a hold writer's resource, in a
+#        preview) or in RBAC (bound to cluster-admin) is a FINDING naming the person, the right and
+#        where it was granted, and the run exits 1; the same world with those grants removed exits
+#        0; a person bound to a right no review asks is counted among the binding subjects, never as
+#        none; controls: a copy that passes every `user:` member (checks.sh) prints no IAM finding
+#        for them, and a copy that allows an email User subject (principals.sh) prints no RBAC one;
 #   (h)  a permission name missing from roles/container.admin's list fails the run, naming it;
 #   (i)  an empty listing exits 2 with UNKNOWN: agent namespaces holding no ServiceAccount, a Policy
 #        Analyzer answer listing no one, an analysis not fully explored;
 #   (j)  each live step's witness: the operator account's analysis without its Workload Identity
 #        member, and an RBAC read whose cluster-admin binding does not answer, each read UNKNOWN;
 #   (k)  with no identity that may run the live steps, each prints UNKNOWN naming the permission it
-#        needs, and the run exits 2;
-#   (l)  the admin tag: ENVOY_OPERATOR shown without "admin": "true", no such secret, and the scratch
-#        secret ENVOY_OPERATOR_CONTROL at human tier without --admin each exit 1 naming the field;
-#        a session that cannot show it reads UNKNOWN;
+#        needs, and the run exits 2; a refused analysis names the three Cloud Asset permissions
+#        Google requires on the scope and keeps Google's own line, and a copy dropping one fails;
+#   (l)  the admin tag, read from the secret's Secret Manager annotations: ENVOY_OPERATOR at human
+#        tier with --admin is a finding, each release waiting on one person's approval and no second
+#        person's; without the admin annotation, at agent tier, and the scratch secret
+#        ENVOY_OPERATOR_CONTROL at human tier without --admin each exit 1 naming the field; admin
+#        held beside the annotations instead of in them is a finding too (the read's control); no
+#        such secret passes, naming the secret and the secrets the prefix's project lists under it,
+#        and reads UNKNOWN where that project lists none under the prefix (a mistyped prefix beside
+#        the real secret, a project holding none, a prefix naming another project) or the list is
+#        refused; controls: a copy without the list check passes the mistyped prefix, and a copy
+#        listing --project instead passes another project's prefix; a refused describe, and a run
+#        with no --secrets-prefix, read UNKNOWN;
 #   (m)  --report writes run_at, findings, credited and residuals ([] each for a run that credits
-#        nothing; row fa holds their entries), unknown and allowances ([] for a run given none), with
-#        a stubbed UNKNOWN step listed under unknown;
+#        nothing; row fa holds their entries), unknown, allowances ([] for a run given none) and
+#        steps (the step census, row sc), with a stubbed UNKNOWN step listed under unknown;
 #   (v)  the report's findings carry role, resource, permissions and granted_at beside principal
 #        and right, on an IAM finding and on an RBAC finding;
 #   (z)  the fixture testdata/operator-token-minters-report.json is the --report of fence_check (the
@@ -34,6 +51,13 @@
 #        ServiceAccount outside its system namespaces though a binding names a subject there;
 #   (bc) a copy of the script missing output.sh, or missing analysis.jq, prints "UNKNOWN run" naming
 #        it, writes that to --report, and exits 2 before any step runs;
+#   (sc) no part can vanish from a run: a copy with any one part emptied (each step file, library
+#        and jq file) prints "UNKNOWN run" naming it and exits 2 before any step runs; past that
+#        guard (a copy without it), the step census names each step file emptied, "ran and reported
+#        nothing", and one that never ran, and the run does not exit 0; a clean run's --report lists
+#        each step file reported but live: audited clusters, quiet without its flag; control: a copy
+#        without the guard and the census exits 0 with step-admin-tag.sh emptied;
+#   (rl) a role file the permission check cannot read stops the run with an UNKNOWN naming the role;
 #   (cj) --service-agent naming an agent's own Google service account is a usage error, and a run
 #        given --service-agent, --rbac-only-member and --fleet none writes each into --report's
 #        allowances;
@@ -41,16 +65,17 @@
 #        flag's form, or as a file flag's file is printed in neither stdout, stderr nor --report: a
 #        flag that names a thing refuses a value of another form, naming the flag and never its
 #        text, and a file flag's file is named by the flag and its place;
-#   (cp) the list of a guarded namespace's token Secrets is asked in the API server's Table form,
-#        whose response carries no data field, so no Secret's data reaches the box, the run's work
-#        directory or its output;
+#   (cp) the auditor never asks the API server for a Secret, even when a guarded namespace holds
+#        token Secrets that carry data.
+#   (rd) every fake kubectl call is in reads.json with its Kubernetes verb, resource or non-resource
+#        URL and source step; removing get namespaces makes the workload-identity row fail; a row
+#        that wants a finding's exit 1 fails on a read reads.json lacks, never passing on it; and
+#        unused_reads names an entry no call uses (the inventory a run of every row holds
+#        reads.json to);
 #   (cq) a credential of a name flag's form shaped as a credential its issuer marks (a ghp_ token,
 #        a github_pat_ token, an AIza key and a Slack token as --signing-secret, an AWS access key
 #        ID as --secret) is refused too, naming the flag and never the value, and is printed in
 #        neither stdout, stderr nor --report;
-#   (cr) a list of a guarded namespace's token Secrets that kubectl prints without the Table's
-#        columns, as it does when a server or proxy that cannot make the Table answers with the
-#        Secrets whole, reads UNKNOWN for that namespace, and the RBAC step does not pass;
 #   (cs) a cluster whose principals and rights are each more than one argument of a command line
 #        holds is reviewed whole: they reach jq through files and its stdin, never its arguments;
 #   (cv) a part that builds the custom resources' rights or the binding namespaces' rights and
@@ -62,7 +87,8 @@
 #   (db) a pick of the reviews to judge that stops part way (its awk under a 2 KiB file size limit)
 #        reads UNKNOWN naming it, exit 2, and the RBAC step does not pass.
 
-# --- (a) People, the system namespaces and the Workload Identity member alone. ---
+# --- (a) No person holds anything; the system namespaces, Google's service agents and the Workload
+# Identity member alone. ---
 if row a; then
   base_world
   run
@@ -78,7 +104,115 @@ if row a; then
   done
   want_line "PASS live: Workload Identity: the fleet of project $project: 1 membership(s) listed, every location reached: 1 the operator's cluster, 0 read above as clusters of the project, 0 read here, and the fleet holds no scope" \
     "a clean world's fleet"
-  passed "(a) people, the system namespaces and the Workload Identity member alone exit 0, and a project with the operator's cluster alone says so"
+  passed "(a) a world where no person holds anything, the system namespaces, Google's service agents and the Workload Identity member alone exit 0, and a project with the operator's cluster alone says so"
+fi
+
+# --- (sp) A standing person is a finding, in IAM and in RBAC. Each person below holds a right the
+# reading asks about, with no second person approving its use, so each is a standing holder of the
+# operator identity (INFRA-840's R16) and a FINDING names the person, the right and where the right
+# was granted. These are the shapes the base world's people held before R16, each planted here:
+# mallory@ mints the operator's account's token; eve@ owns the organization; admin@ holds
+# roles/container.admin through the group cluster-admins; dba@ writes the broker database's users;
+# reader@ reads the broker program's state; declared@ is given roles/container.admin by a preview.
+# The RBAC side reaches a person by each of k8s_subject's three paths: alice@ is bound to
+# cluster-admin on the operator's cluster (bound_subjects, step-rbac.sh), carol@ to cluster-admin on
+# another cluster of the pool (bound_subjects, step-workload-identity.sh), and bob@ may patch the
+# Deployment envoy-operator by name (named_principal, live_named). The base world's RBAC lost no
+# person to this row, as its IAM did: the only User subjects it binds are the operator's own Google
+# service account and comment-delivery's, both service accounts. ---
+readonly standing_people=(mallory@example.com eve@example.com admin@example.com dba@example.com reader@example.com declared@example.com
+  alice@example.com carol@example.com bob@example.com)
+# standing_people_world: the base world with each standing person planted.
+standing_people_world() {
+  base_world
+  iam "$gsa_res" roles/iam.serviceAccountTokenCreator user:mallory@example.com
+  iam "$org_res" roles/owner user:eve@example.com
+  iam "$project_res" roles/container.admin group:cluster-admins@example.com
+  iam "$project_res" roles/cloudsql.admin user:dba@example.com
+  iam "$bucket_res" roles/storage.objectViewer user:reader@example.com
+  edit "$world/preview.json" '.steps += [{op: "same", urn: "urn:pulumi:example::iam::gcp:projects/iAMMember:IAMMember::declared-container",
+    provider: "example-provider", newState: {urn: "urn:pulumi:example::iam::gcp:projects/iAMMember:IAMMember::declared-container",
+    custom: true, type: "gcp:projects/iAMMember:IAMMember", inputs: {project: $p, role: "roles/container.admin", member: "user:declared@example.com"}}}]' \
+    --arg p "$project"
+  cluster_admin operator-cluster "$(user_subject alice@example.com)"
+  add_cluster other-cluster us-east1
+  cluster_admin other-cluster "$(user_subject carol@example.com)"
+  subject_grant operator-cluster "$(user_subject bob@example.com)" patch apps deployments "" envoy-operator envoy-operator
+}
+# standing_people_problems: each line or report entry the run of standing_people_world must hold
+# that it does not, one a line: a FINDING line for each person, with the right and where it was
+# granted, and a --report finding naming each with a granted_at.
+standing_people_problems() {
+  local want person
+  for want in \
+    "FINDING user:mallory@example.com: iam.serviceAccounts.getAccessToken, iam.serviceAccounts.getOpenIdToken, iam.serviceAccounts.signJwt, iam.serviceAccounts.signBlob, iam.serviceAccounts.implicitDelegation on $gsa_res through roles/iam.serviceAccountTokenCreator, granted at $gsa_res" \
+    "FINDING user:eve@example.com: resourcemanager.organizations.setIamPolicy, iam.roles.update on $org_res through roles/owner, granted at $org_res" \
+    "FINDING user:dba@example.com: cloudsql.users.create, cloudsql.users.update on $sql_res through roles/cloudsql.admin, granted at $project_res" \
+    "FINDING user:reader@example.com: storage.objects.get on $bucket_res through roles/storage.objectViewer, granted at $bucket_res" \
+    "FINDING user:alice@example.com: create serviceaccounts/token envoy-operator in envoy-operator" \
+    "FINDING user:carol@example.com: create namespaces cluster-wide on cluster $project/us-east1/other-cluster"; do
+    has_line "$want" || echo "no line '$want'"
+  done
+  has_prefix "FINDING user:bob@example.com: patch deployments.apps envoy-operator" ||
+    echo "no FINDING of bob@example.com's patch of the Deployment envoy-operator by name"
+  has_prefix "FINDING user:admin@example.com: container.serviceAccounts.createToken" ||
+    echo "no FINDING of admin@example.com's container.serviceAccounts.createToken through the group cluster-admins"
+  has_prefix "FINDING user:declared@example.com: container.serviceAccounts.createToken" ||
+    echo "no FINDING of declared@example.com's container.serviceAccounts.createToken declared by the preview"
+  for person in "${standing_people[@]}"; do
+    jq -e --arg p "user:$person" 'any(.findings[]; .principal == $p and .granted_at != "")' "$temporary_dir/sp-report.json" >/dev/null ||
+      echo "no --report finding of user:$person with where it was granted"
+  done
+}
+if row sp; then
+  standing_people_world
+  run --report "$temporary_dir/sp-report.json"
+  problems="$(standing_people_problems)"
+  [ -z "$problems" ] || fail "a standing person is a finding: ${problems//$'\n'/; }"
+  want_status 1 "a standing person in IAM and in RBAC"
+  ! has_prefix "PASS live: minters of $gsa: " || fail "a standing person: the minters of the operator's account passed"
+  ! has_prefix "PASS live: RBAC on operator-cluster: " || fail "a standing person: the RBAC step passed"
+  # The person inside the group is named by the group's expansion: a stub that drops the expanded
+  # members (as row gp's control does) misses admin@ and nothing else.
+  OPERATOR_MINTERS_GROUP_STUB=drop run --report "$temporary_dir/sp-report.json"
+  problems="$(standing_people_problems)"
+  [[ "$problems" == *"through the group cluster-admins"* && "$problems" != *"mallory@"* && "$problems" != *"alice@"* ]] ||
+    fail "the stub dropping expanded group members read as: ${problems:-nothing}"
+  # The same world with each person's grant removed exits 0.
+  edit "$world/iam.json" 'map(.members -= ($ARGS.positional | map("user:" + .)) | select(.members | length > 0)
+    | select(.members != ["group:cluster-admins@example.com"]))' --args "${standing_people[@]}"
+  edit "$world/preview.json" '.steps |= map(select(.urn | endswith("::declared-container") | not))'
+  edit "$world/clusters/operator-cluster/grants.json" 'map(select(.subject.kind != "User" or ((.subject.name == "alice@example.com" or .subject.name == "bob@example.com") | not)))'
+  edit "$world/clusters/other-cluster/grants.json" 'map(select(.subject != {kind: "User", name: "carol@example.com"}))'
+  run
+  want_status 0 "the standing people's world with their grants removed"
+  [ "$(count_prefix 'FINDING ')" -eq 0 ] || fail "the standing people's world with their grants removed printed a FINDING"
+  # A person bound to a right no review asks is reviewed and counted, never read as no subject.
+  subject_grant operator-cluster "$(user_subject alice@example.com)" get "" configmaps "" legion ""
+  run
+  want_status 0 "a person bound to get configmaps alone"
+  want_text ", 1 binding subjects, and anyone unauthenticated), " "a person bound to get configmaps alone"
+  # Controls: a copy that passes every user: member, as the reading did before R16, prints no IAM
+  # finding for them, and a copy that allows an email User subject prints no RBAC finding for alice@,
+  # carol@ or bob@.
+  copy="$(script_copy person-ok-iam)"
+  plant "$(dirname "$copy")/operator-token-minters/checks.sh" '  case "$member" in' $'  case "$member" in\n    user:*) VERDICT=ok; return ;;'
+  standing_people_world
+  run_script="$copy" run --report "$temporary_dir/sp-report.json"
+  problems="$(standing_people_problems)"
+  [[ "$problems" == *"no line 'FINDING user:mallory@example.com: "* && "$problems" == *"no --report finding of user:eve@example.com "* &&
+    "$problems" == *"through the group cluster-admins"* && "$problems" != *"alice@"* && "$problems" != *"carol@"* && "$problems" != *"bob@"* ]] ||
+    fail "the control copy passing every user: member read as: ${problems:-nothing}"
+  copy="$(script_copy person-ok-rbac)"
+  plant "$(dirname "$copy")/operator-token-minters/principals.sh" '        *) SUBJECT="user:$name" ;;' \
+    $'        *)\n          SUBJECT="user:$name"\n          if [[ "$name" =~ ^[^@/:[:space:]]+@[^@/:[:space:]]+\\.[^@/:[:space:]]+$ ]]; then SUBJECT_OK=true; fi\n          ;;'
+  standing_people_world
+  run_script="$copy" run --report "$temporary_dir/sp-report.json"
+  problems="$(standing_people_problems)"
+  [[ "$problems" == *"no line 'FINDING user:alice@example.com: "* && "$problems" == *"no line 'FINDING user:carol@example.com: "* &&
+    "$problems" == *"bob@example.com's patch"* && "$problems" != *"mallory@"* ]] ||
+    fail "the control copy allowing an email User subject read as: ${problems:-nothing}"
+  passed "(sp) a standing person is a finding, in IAM (the operator's account, the organization, a group, a hold writer, a preview) and in RBAC (the operator's cluster, another cluster of the pool, a right limited by name), naming the right and where it was granted; the same world without the grants exits 0; a bound person is counted; controls: copies passing a user: member or an email User each miss them"
 fi
 
 # --- (h) A permission name roles/container.admin's list does not hold. ---
@@ -133,7 +267,21 @@ if row j; then
   passed "(j) an RBAC read whose cluster-admin binding does not answer reads UNKNOWN"
 fi
 
-# --- (k) No identity that may run the live steps. ---
+# --- (k) No identity that may run the live steps. A refused analysis names the three permissions
+# Google requires on the scope, cloudasset.assets.analyzeIamPolicy, searchAllResources and
+# searchAllIamPolicies, and keeps Google's own line; control: a copy whose message drops
+# searchAllResources fails the row's check. ---
+analyze_names_all() {
+  local step="$1" line needs name
+  line="$(grep -F -- "UNKNOWN $step: Policy Analyzer refused the analysis (it needs " <<<"$output" || true)"
+  [ -n "$line" ] || return 1
+  # What the message says the analysis needs, apart from Google's own line after it.
+  needs="${line#*"(it needs "}" needs="${needs%%"): "*}"
+  for name in cloudasset.assets.analyzeIamPolicy cloudasset.assets.searchAllResources cloudasset.assets.searchAllIamPolicies; do
+    [[ "$needs" == *"$name"* ]] || return 1
+  done
+  [[ "$needs" == *"on organizations/$org"* && "$line" == *"): ERROR: (gcloud.asset.analyze-iam-policy) PERMISSION_DENIED: $2" ]]
+}
 if row k; then
   base_world
   : >"$world/clusters/operator-cluster/refuse-sar"
@@ -143,57 +291,149 @@ if row k; then
   want_text "UNKNOWN live: RBAC on operator-cluster: the API server refused the review (it needs create on subjectaccessreviews, container.subjectAccessReviews.create on GKE)" \
     "a refused review"
   for step in "live: GKE IAM on project $project" "live: minters of $gsa" "live: hold writers: Cloud SQL users of example-instance"; do
-    want_text "UNKNOWN $step: Policy Analyzer refused the analysis (it needs cloudasset.assets.analyzeIamPolicy on organizations/$org)" "a refused analysis"
+    want_text "UNKNOWN $step: Policy Analyzer refused the analysis (it needs cloudasset.assets.analyzeIamPolicy, cloudasset.assets.searchAllResources and cloudasset.assets.searchAllIamPolicies on organizations/$org, iam.roles.get for a custom role, and Google Workspace's groups.read to expand a group): ERROR: (gcloud.asset.analyze-iam-policy) PERMISSION_DENIED: Permission 'cloudasset.assets.analyzeIamPolicy' denied" \
+      "a refused analysis"
   done
   [ "$(count_prefix 'FINDING ')" -eq 0 ] || fail "no identity that may run the live steps: a finding"
   passed "(k) with no identity that may run them, the live steps print UNKNOWN naming the permission, and the run exits 2"
+
+  base_world
+  : >"$world/refuse-analyze-search"
+  run
+  want_status 2 "an analysis refused for searchAllResources"
+  analyze_names_all "live: minters of $gsa" "Caller doesn't have cloudasset.assets.searchAllResources permission on the requested scope" ||
+    fail "the refused analysis does not name each of the three permissions and Google's own line: $(grep -F "UNKNOWN live: minters of $gsa" <<<"$output" || true)"
+  copy="$(script_copy analyze-two-names)"
+  plant "$(dirname "$copy")/operator-token-minters/iam-analysis.sh" 'cloudasset.assets.analyzeIamPolicy, cloudasset.assets.searchAllResources and cloudasset.assets.searchAllIamPolicies on $4' \
+    'cloudasset.assets.analyzeIamPolicy and cloudasset.assets.searchAllIamPolicies on $4'
+  run_script="$copy" run
+  ! analyze_names_all "live: minters of $gsa" "Caller doesn't have cloudasset.assets.searchAllResources permission on the requested scope" ||
+    fail "a copy whose message drops searchAllResources still passed the message check"
+  passed "(k) a refused analysis names analyzeIamPolicy, searchAllResources and searchAllIamPolicies on the scope and keeps Google's line; a copy dropping searchAllResources fails the check"
 fi
 
-# --- (l) The admin tag. ---
+# --- (l) The admin tag, from the secret's annotations. A secret that releases the operator's
+# credential is a standing route whatever its tags: with both, each release waits on one person's
+# approval, the person an agent acts for included, and "An agent's request that is approved by the
+# person the agent acts for has one person in it, not two, so it does not meet this rule either"
+# (INFRA-840's c-operator-grant-door). The base world holds no ENVOY_OPERATOR, so each item that
+# reads one stores it here. ---
+readonly secret_id="projects/$number/secrets/agent-secrets-envoy-operator"
+# What the step says it does not read, beside its PASS and its release finding.
+readonly not_read="who can change the secret's annotations or create it (secretmanager.secrets.update on it, secretmanager.secrets.create on its project) is not read"
+readonly no_route="PASS admin tag of ENVOY_OPERATOR: no such secret $secret_id, and project $number lists 1 secret(s) whose id starts agent-secrets-, so --secrets-prefix names where the broker keeps its secrets: nothing releases the operator's credential through the broker; $not_read"
+admin_tag_row() {
+  local args script="$check"
+  base_world
+  case "$1" in
+    present | no-admin | admin-outside | agent-tier | mistyped | mistyped-control) broker_secret ENVOY_OPERATOR true ;;
+  esac
+  case "$1" in
+    mistyped-control)
+      # The step before the witness: NOT_FOUND read as no route, whatever the list holds.
+      script="$(script_copy "no-witness-$1")"
+      plant "$(dirname "$script")/operator-token-minters/step-admin-tag.sh" '  elif [ "$listed" -eq 0 ]; then' '  elif false; then'
+      ;;
+    other-project-control)
+      script="$(script_copy "list-project-$1")"
+      plant "$(dirname "$script")/operator-token-minters/step-admin-tag.sh" 'gcloud secrets list --project="$prefix_project"' 'gcloud secrets list --project="$PROJECT"'
+      ;;
+  esac
+  case "$1" in
+    present)
+      run
+      want_status 1 "ENVOY_OPERATOR at human tier with --admin"
+      want_line "FINDING secret:ENVOY_OPERATOR: admin is \"true\" and tier is \"human\": each release waits on one person's approval and no second person's, so whoever may ask for it holds the operator identity standing (INFRA-840's R16), an open route until R16's grant door exists; $not_read" \
+        "ENVOY_OPERATOR with both annotations"
+      ! has_prefix "PASS admin tag of ENVOY_OPERATOR: " || fail "ENVOY_OPERATOR with both annotations: the step passed"
+      ;;
+    no-admin)
+      edit "$world/secrets/ENVOY_OPERATOR.json" '.admin = ""'
+      run
+      want_status 1 "ENVOY_OPERATOR without the admin annotation"
+      want_line "FINDING secret:ENVOY_OPERATOR: admin is \"\", not \"true\": without the administrator tag a model judge may decide its release" "no admin annotation"
+      ;;
+    admin-outside)
+      : >"$world/admin-outside-annotations"
+      run
+      want_status 1 "admin held beside the annotations"
+      want_line "FINDING secret:ENVOY_OPERATOR: admin is \"\", not \"true\": without the administrator tag a model judge may decide its release" \
+        "admin held beside the annotations"
+      ;;
+    agent-tier)
+      edit "$world/secrets/ENVOY_OPERATOR.json" '.tier = "agent"'
+      run
+      want_status 1 "ENVOY_OPERATOR at agent tier"
+      want_line "FINDING secret:ENVOY_OPERATOR: tier is \"agent\", not \"human\"" "agent tier"
+      ;;
+    missing)
+      run
+      want_status 0 "no ENVOY_OPERATOR, the prefix holding the scratch secret"
+      want_line "$no_route" "no ENVOY_OPERATOR"
+      ;;
+    mistyped | mistyped-control)
+      # The real secret is there; the prefix misses it by one letter, so describe answers NOT_FOUND
+      # for a secret that exists.
+      run_script="$script" run --secrets-prefix "projects/$number/secrets/agent-secret-"
+      if [ "$1" = mistyped ]; then
+        want_status 2 "a mistyped --secrets-prefix beside the real ENVOY_OPERATOR"
+        want_text "UNKNOWN admin tag of ENVOY_OPERATOR: no such secret projects/$number/secrets/agent-secret-envoy-operator, and project $number lists no secret whose id starts agent-secret-: either the broker keeps no secret there or --secrets-prefix names the wrong place" \
+          "a mistyped --secrets-prefix"
+        ! has_prefix "PASS admin tag of ENVOY_OPERATOR: " || fail "a mistyped --secrets-prefix: the step passed"
+      else
+        want_text "PASS admin tag of ENVOY_OPERATOR: no such secret projects/$number/secrets/agent-secret-envoy-operator" "the copy without the list check"
+      fi
+      ;;
+    empty)
+      rm "$world/secrets/ENVOY_OPERATOR_CONTROL.json"
+      echo other-program-key >"$world/other-secrets"
+      run
+      want_status 2 "a prefix whose project lists no secret under it"
+      want_text "UNKNOWN admin tag of ENVOY_OPERATOR: no such secret $secret_id, and project $number lists no secret whose id starts agent-secrets-" \
+        "a prefix whose project lists no secret under it"
+      ;;
+    other-project | other-project-control)
+      run_script="$script" run --secrets-prefix "projects/999999999999/secrets/agent-secrets-"
+      if [ "$1" = other-project ]; then
+        want_status 2 "a prefix naming another project"
+        want_text "UNKNOWN admin tag of ENVOY_OPERATOR: no such secret projects/999999999999/secrets/agent-secrets-envoy-operator, and project 999999999999 lists no secret whose id starts agent-secrets-" \
+          "a prefix naming another project"
+      else
+        want_text "PASS admin tag of ENVOY_OPERATOR: no such secret projects/999999999999/secrets/agent-secrets-envoy-operator" "the copy listing --project"
+      fi
+      ;;
+    list-refused)
+      : >"$world/refuse-secret-list"
+      run
+      want_status 2 "a refused list of the prefix's secrets"
+      want_text "UNKNOWN admin tag of ENVOY_OPERATOR: no such secret $secret_id, and gcloud secrets list --project=$number was refused (it needs secretmanager.secrets.list on the project)" \
+        "a refused list of the prefix's secrets"
+      ;;
+    control-secret)
+      run --secret ENVOY_OPERATOR_CONTROL
+      want_status 1 "the scratch secret at human tier without --admin"
+      want_line "FINDING secret:ENVOY_OPERATOR_CONTROL: admin is \"\", not \"true\": without the administrator tag a model judge may decide its release" \
+        "the scratch secret"
+      ;;
+    refused)
+      : >"$world/refuse-secret-show"
+      run
+      want_status 2 "a refused describe"
+      want_text "UNKNOWN admin tag of ENVOY_OPERATOR: gcloud secrets describe $secret_id was refused (it needs secretmanager.secrets.get on the secret): ERROR: (gcloud.secrets.describe) PERMISSION_DENIED" \
+        "a refused describe"
+      ;;
+    no-prefix)
+      mapfile -t args < <(args_without --secrets-prefix)
+      run_only "${args[@]}"
+      want_status 2 "no --secrets-prefix"
+      want_text "UNKNOWN admin tag of ENVOY_OPERATOR: no --secrets-prefix" "no --secrets-prefix"
+      ;;
+  esac
+}
 if row l; then
-  base_world
-  edit "$world/secrets/ENVOY_OPERATOR.json" '.admin = ""'
-  run
-  want_status 1 "ENVOY_OPERATOR without the admin tag"
-  want_line "FINDING secret:ENVOY_OPERATOR: admin is \"\", not \"true\": without the administrator tag a model judge may decide its release" "no admin tag"
-  passed "(l) ENVOY_OPERATOR shown without \"admin\": \"true\" exits 1 naming admin"
-
-  base_world
-  edit "$world/secrets/ENVOY_OPERATOR.json" '.tier = "agent"'
-  run
-  want_status 1 "ENVOY_OPERATOR at agent tier"
-  want_line "FINDING secret:ENVOY_OPERATOR: tier is \"agent\", not \"human\"" "agent tier"
-  passed "(l) ENVOY_OPERATOR at agent tier exits 1 naming tier"
-
-  base_world
-  rm "$world/secrets/ENVOY_OPERATOR.json"
-  run
-  want_status 1 "no ENVOY_OPERATOR"
-  want_text "FINDING secret:ENVOY_OPERATOR: no such secret" "no such secret"
-  passed "(l) no secret ENVOY_OPERATOR exits 1"
-
-  base_world
-  rm "$world/secrets/ENVOY_OPERATOR.json"
-  : >"$world/old-words"
-  run
-  want_status 1 "no ENVOY_OPERATOR, in the released agent-secrets' words"
-  want_text "FINDING secret:ENVOY_OPERATOR: no such secret" "no such secret, in the released agent-secrets' words"
-  passed "(l) no secret ENVOY_OPERATOR exits 1 in gRPC's words too, as legion-envoy-v30.43.0 prints them"
-
-  base_world
-  run --secret ENVOY_OPERATOR_CONTROL
-  want_status 1 "the scratch secret at human tier without --admin"
-  want_line "FINDING secret:ENVOY_OPERATOR_CONTROL: admin is \"\", not \"true\": without the administrator tag a model judge may decide its release" \
-    "the scratch secret"
-  passed "(l) the scratch secret ENVOY_OPERATOR_CONTROL at human tier without --admin exits 1 naming admin (the plan's control)"
-
-  base_world
-  : >"$world/refuse-secret-show"
-  run
-  want_status 2 "a session that cannot show the secret"
-  want_text "UNKNOWN admin tag of ENVOY_OPERATOR: agent-secrets secret show ENVOY_OPERATOR --json was refused: agent-secrets secret show: Secret Manager GetSecret answered PermissionDenied" \
-    "a refused show"
-  passed "(l) a session that cannot show the secret's tags reads UNKNOWN naming the refusal"
+  each admin_tag_row present no-admin admin-outside agent-tier missing mistyped mistyped-control empty other-project other-project-control \
+    list-refused control-secret refused no-prefix
+  passed "(l) the admin tag is read from the secret's annotations: ENVOY_OPERATOR at human tier with --admin, a missing admin annotation, admin outside them, agent tier and the scratch secret each exit 1; no secret passes only where the prefix's project lists the broker's secrets, and a mistyped prefix, an empty project, another project and a refused list read UNKNOWN, which copies without that witness miss; a refused describe and no --secrets-prefix read UNKNOWN"
 fi
 
 # --- (m) The report. ---
@@ -212,13 +452,13 @@ if row m; then
   [ "$at" -ge "$((before - 1))" ] && [ "$at" -le "$(date -u +%s)" ] || fail "the report's run_at $run_at is not the run's"
   jq -e --arg p "serviceAccount:$ci_gsa" 'any(.findings[]; .principal == $p and (.right | startswith("container.serviceAccounts.createToken")))' "$report" >/dev/null ||
     fail "the report's findings do not name serviceAccount:$ci_gsa: $(jq -c .findings "$report")"
-  jq -e 'any(.unknown[]?; .step == "admin tag of ENVOY_OPERATOR" and (.reason | contains("PermissionDenied")))' "$report" >/dev/null ||
+  jq -e 'any(.unknown[]?; .step == "admin tag of ENVOY_OPERATOR" and (.reason | contains("PERMISSION_DENIED")))' "$report" >/dev/null ||
     fail "the report's unknown does not list the step 'admin tag of ENVOY_OPERATOR': $(jq -c '.unknown // "absent"' "$report")"
-  jq -e 'keys == ["allowances", "credited", "findings", "residuals", "run_at", "unknown"] and .allowances == [] and .credited == []
+  jq -e --argjson ra "$(renders_allowances)" 'keys == ["allowances", "credited", "findings", "residuals", "run_at", "steps", "unknown"] and .allowances == $ra and .credited == []
     and .residuals == [] and all(.findings[]; keys == ["granted_at", "permissions", "principal", "resource", "right", "role"])
-    and all(.unknown[]; keys == ["reason", "step"])' "$report" >/dev/null ||
-    fail "the report holds other fields than run_at, findings (principal, right, role, resource, permissions, granted_at), an empty credited and residuals, unknown and an empty allowances: $(jq -c . "$report")"
-  passed "(m) --report writes run_at, findings, credited, residuals, unknown and allowances, with the stubbed UNKNOWN step under unknown"
+    and all(.unknown[]; keys == ["reason", "step"]) and (.steps | length) == 11 and all(.steps[]; keys == ["state", "step"])' "$report" >/dev/null ||
+    fail "the report holds other fields than run_at, findings (principal, right, role, resource, permissions, granted_at), an empty credited and residuals, unknown, the renders' allowances and the 11 steps alone: $(jq -c . "$report")"
+  passed "(m) --report writes run_at, findings, credited, residuals, unknown, allowances and steps, with the stubbed UNKNOWN step under unknown"
 fi
 
 # --- (v) The report's parts of each finding, for a reader matching principal and role. ---
@@ -239,9 +479,9 @@ if row v; then
       and .resource == $res and .granted_at == $res and (.permissions | index("container.serviceAccounts.createToken") != null))' "$report" >/dev/null ||
     fail "the IAM finding's parts are not principal, roles/container.admin, $project_res and its permissions: $(jq -c --arg p "serviceAccount:$ci_gsa" '[.findings[] | select(.principal == $p)]' "$report")"
   jq -e 'any(.findings[]; .principal == "system:serviceaccount:legion:worker" and .role == "create pods/exec in envoy-operator"
-      and .resource == "cluster:operator-cluster" and .permissions == ["create pods/exec in envoy-operator"]
+      and .resource == "cluster:example-project/us-central1/operator-cluster" and .permissions == ["create pods/exec in envoy-operator"]
       and (.granted_at | startswith("RBAC: allowed by")))' "$report" >/dev/null ||
-    fail "the RBAC finding's parts are not its label, cluster:operator-cluster and the API server's reason: $(jq -c '[.findings[] | select(.principal == "system:serviceaccount:legion:worker")]' "$report")"
+    fail "the RBAC finding's parts are not its label, cluster:example-project/us-central1/operator-cluster and the API server's reason: $(jq -c '[.findings[] | select(.principal == "system:serviceaccount:legion:worker")]' "$report")"
   passed "(v) the report's findings carry role, resource, permissions and granted_at, on an IAM finding and on an RBAC finding"
 fi
 
@@ -264,6 +504,9 @@ if row z; then
   # An RBAC finding's permissions are its one label, whole, though a guarded label holds a comma.
   split="$(jq -r '.findings[] | select(.granted_at | startswith("RBAC: ")) | select(.permissions != [.role]) | "\(.role): \(.permissions)"' "$temporary_dir/fixture-fresh.json")"
   [ -z "$split" ] || fail "an RBAC finding's permissions are not its label, whole: $split"
+  # Every cluster the report names, a declared finding's and a credit's among them, is named in full.
+  [ -z "$(full_labels "$temporary_dir/fixture-fresh.json")" ] ||
+    fail "the fixture's report names a cluster other than cluster:<project>/<location>/<name>: $(full_labels "$temporary_dir/fixture-fresh.json")"
   if [ "${OPERATOR_MINTERS_WRITE_FIXTURE:-}" = 1 ]; then
     mkdir -p "$(dirname "$fixture")"
     cp "$temporary_dir/fixture-fresh.json" "$fixture"
@@ -344,10 +587,106 @@ if row bc; then
   passed "(bc) a copy missing output.sh or analysis.jq prints UNKNOWN run naming it, reports it, and exits 2"
 fi
 
+# --- (sc) No part of the check can vanish from a run that exits 0. An empty file sources as a
+# clean no-op under set -e, and an empty jq program is `.`: at 042cb479c40 an emptied
+# step-admin-tag.sh, step-code-rbac.sh, step-gke-iam.sh, step-live-iam.sh, step-permission-names.sh,
+# step-workload-identity.sh, step-audited-clusters.sh, node-escape.sh or become-rights.jq each left
+# (a)'s world at exit 0, measured. The guard refuses an empty part before any step runs; the census
+# names a step file that ran and reported nothing, or never ran. ---
+readonly check_parts=(output.sh rights.sh principals.sh checks.sh reviews.sh admission-backends.sh broker-fence.sh iam-analysis.sh node-escape.sh
+  step-permission-names.sh step-code-secrets.sh step-code-rbac.sh step-code-iam.sh step-clusters.sh step-gke-iam.sh step-rbac.sh
+  step-workload-identity.sh step-audited-clusters.sh step-live-iam.sh step-admin-tag.sh analysis.jq become-rights.jq broker-fence.jq
+  broker-fence.json code-iam.jq code-rbac.jq custom.jq custom-rights.jq fleet.jq guard-rights.jq binding-rights.jq rec.jq review-answer.jq
+  review-request.jq webhook-backends.jq)
+readonly step_files=(step-permission-names.sh step-code-secrets.sh step-code-rbac.sh step-code-iam.sh step-clusters.sh step-gke-iam.sh
+  step-rbac.sh step-workload-identity.sh step-audited-clusters.sh step-live-iam.sh step-admin-tag.sh)
+empty_part_row() {
+  local script report="$temporary_dir/sc-$1.json"
+  base_world
+  script="$(script_copy "sc-$1")"
+  : >"$(dirname "$script")/operator-token-minters/$1"
+  run_script="$script" run --report "$report"
+  want_status 2 "a copy whose $1 is empty"
+  want_text "UNKNOWN run: the parts $1 of " "a copy whose $1 is empty"
+  want_text "cannot be read or are empty, so no step runs" "a copy whose $1 is empty"
+  [ "$(count_prefix 'PASS ')" -eq 0 ] || fail "a copy whose $1 is empty ran a step"
+  jq -e --arg p "$1" '.findings == [] and any(.unknown[]; .step == "run" and (.reason | contains($p)))
+    and (.steps | length) == 11 and all(.steps[]; .state == "not run")' "$report" >/dev/null 2>&1 ||
+    fail "a copy whose $1 is empty: the report does not hold the UNKNOWN run and every step not run: $(cat "$report" 2>&1)"
+}
+# census_row ITEM: a copy without the empty-part guard, with the step file ITEM emptied, or (never-ran)
+# with step-admin-tag.sh's line taken out, or (census-off) without the census too and
+# step-admin-tag.sh emptied.
+census_row() {
+  local script lib target="$1"
+  base_world
+  script="$(script_copy "census-$1")"
+  lib="$(dirname "$script")/operator-token-minters"
+  plant "$script" '[ -r "$LIB/$part" ] && [ -s "$LIB/$part" ] ||' '[ -r "$LIB/$part" ] ||'
+  case "$1" in
+    never-ran)
+      target="step-admin-tag.sh"
+      plant "$script" '. "$LIB/step-admin-tag.sh"' ':'
+      plant "$script" 'census_end step-admin-tag.sh' ':'
+      ;;
+    census-off)
+      target="step-admin-tag.sh"
+      : >"$lib/$target"
+      plant "$lib/output.sh" 'census_end() {' 'census_end() { return 0;'
+      plant "$lib/output.sh" 'census_close() {' 'census_close() { return 0;'
+      ;;
+    *) : >"$lib/$1" ;;
+  esac
+  run_script="$script" run
+  case "$1" in
+    census-off)
+      want_status 0 "a copy without the guard and the census, step-admin-tag.sh emptied"
+      [ "$(count_prefix 'UNKNOWN ')" -eq 0 ] || fail "a copy without the guard and the census read UNKNOWN"
+      ;;
+    never-ran)
+      [ "$status" -ne 0 ] || fail "a copy that never runs step-admin-tag.sh exited 0"
+      want_line "UNKNOWN run: the step file step-admin-tag.sh never ran, so what it checks is unread" "a copy that never runs step-admin-tag.sh"
+      ;;
+    *)
+      [ "$status" -ne 0 ] || fail "a copy whose $target is empty exited 0"
+      want_line "UNKNOWN run: the step file $target ran and reported nothing, no PASS, FINDING, UNKNOWN or credit, and gave no reason, so what it checks is unread" \
+        "a copy whose $target is empty"
+      ;;
+  esac
+}
+if row sc; then
+  each empty_part_row "${check_parts[@]}"
+  passed "(sc) a copy with any one of its ${#check_parts[@]} parts empty prints UNKNOWN run naming it, runs no step, reports each step not run, and exits 2"
+  each census_row "${step_files[@]}" never-ran census-off
+  passed "(sc) past the guard, the census names each of the ${#step_files[@]} step files emptied, and one that never ran, and the run does not exit 0; a copy without the census exits 0"
+  base_world
+  run --report "$temporary_dir/sc-clean.json"
+  want_status 0 "a clean run's step census"
+  jq -e '[.steps[] | "\(.step)=\(.state)"] == ([$ARGS.positional[] | if . == "step-audited-clusters.sh" then "\(.)=quiet: no --audited-cluster: the step does not run" else "\(.)=reported" end])' \
+    "$temporary_dir/sc-clean.json" --args "${step_files[@]}" >/dev/null ||
+    fail "a clean run's --report does not list each step file reported: $(jq -c .steps "$temporary_dir/sc-clean.json")"
+  passed "(sc) a clean run's --report lists each step file reported, and live: audited clusters quiet without its flag"
+fi
+
+# --- (rl) A role file the permission check cannot read stops the run with an UNKNOWN naming the
+# role, never a quiet stop or a role read as listing nothing: a copy whose role_listed reads a file
+# that is not there. ---
+if row rl; then
+  base_world
+  copy="$(script_copy role-unread)"
+  plant "$(dirname "$copy")/operator-token-minters/checks.sh" 'ROLE_LISTED["$ROLE_FILE $permission"]=1; done <"$ROLE_FILE"; }' \
+    'ROLE_LISTED["$ROLE_FILE $permission"]=1; done <"$ROLE_FILE.gone"; }'
+  run_script="$copy" run
+  want_status 2 "a role file that cannot be read"
+  want_text "UNKNOWN run: the permissions file of role roles_container.admin (role_perms) could not be read" "a role file that cannot be read"
+  want_text "UNKNOWN run: the run stopped before its end (exit 2)" "a role file that cannot be read"
+  passed "(rl) a role file that cannot be read stops the run with an UNKNOWN naming the role"
+fi
+
 # --- (cj) The allowances: --service-agent names a Google service agent alone, and every allowance a
-# run is given (--service-agent, --rbac-only-member, --fleet none, --credentials-arg, which chooses
-# how each cluster is reached) is written into --report, so a reader can hold each to what was
-# accepted. ---
+# run is given (--service-agent, --rbac-only-member, --fleet none, --renders-admin and each
+# --render-writer, --credentials-arg, which chooses how each cluster is reached) is written into
+# --report, so a reader can hold each to what was accepted. ---
 allowance_row() {
   local report="$temporary_dir/allowances.json"
   base_world
@@ -364,10 +703,10 @@ allowance_row() {
       edit "$world/fleet.json" '.memberships = [.memberships[] | select(.id == "edge")]'
       run --report "$report" --service-agent "service-$number@gcp-sa-cloudbuild.iam.gserviceaccount.com" --rbac-only-member edge --fleet none \
         --credentials-arg=--internal-ip
-      jq -e --arg agent "service-$number@gcp-sa-cloudbuild.iam.gserviceaccount.com" '.allowances == [
-          {flag: "--service-agent", value: $agent}, {flag: "--rbac-only-member", value: "edge"}, {flag: "--fleet", value: "none"},
-          {flag: "--credentials-arg", value: "--internal-ip"}]' "$report" >/dev/null ||
-        fail "the report does not hold the four allowances the run was given: $(jq -c '.allowances // "absent"' "$report")"
+      jq -e --arg agent "service-$number@gcp-sa-cloudbuild.iam.gserviceaccount.com" --argjson ra "$(renders_allowances)" '.allowances == [
+          {flag: "--service-agent", value: $agent}, {flag: "--rbac-only-member", value: "edge"}, {flag: "--fleet", value: "none"}]
+          + $ra + [{flag: "--credentials-arg", value: "--internal-ip"}]' "$report" >/dev/null ||
+        fail "the report does not hold the allowances the run was given: $(jq -c '.allowances // "absent"' "$report")"
       ;;
   esac
 }
@@ -434,44 +773,63 @@ if row co; then
   passed "(co) a text pasted alone, as a name flag's value of another form or as a file flag's file is printed in neither stdout, stderr nor --report"
 fi
 
-# printed_secret_data: whether the run printed a token Secret's data, as the world holds it
-# (SECRET-DATA-CANARY-7f3a) or as the API server sends it, base64 (test-fakes.sh's secret_data_b64).
 printed_secret_data() { has_prefix "SECRET-DATA-CANARY-7f3a" || has_prefix "$(printf '%s' SECRET-DATA-CANARY-7f3a | base64)"; }
 
-# --- (cp) The token Secrets are listed in the Table form: the API server's response to each list
-# carries no data field, and no Secret's data is written to the work directory or printed. The fake
-# kubectl holds each Secret's data, as a real API server does, answers each list with what the API
-# server sends kubectl for it (the Table for the default output; the Secrets whole, data included,
-# for -o json, -o name and -o jsonpath), records each response, and on each later call looks for
-# that data under the run's work directory; this row runs in a temporary directory of its own, so
-# that look sees this run's work directory alone. ---
-if row cp; then
+ # --- (cp) The auditor never asks the API server for a Secret. ---
+ if row cp; then
+   base_world
+   jq -n '[{namespace: "envoy-operator", name: "envoy-operator-token-legacy"}, {namespace: "secrets-broker", name: "secrets-broker-token-legacy"}]' \
+     >"$world/clusters/operator-cluster/token-secrets.json"
+   : >"$world/clusters/operator-cluster/token-secret-data"
+   run
+   want_status 0 "an auditor that does not read Secrets"
+   [ ! -e "$world/clusters/operator-cluster/token-secret-responses" ] ||
+     fail "the auditor asked the API server for token Secrets"
+   [ ! -e "$world/clusters/operator-cluster/secret-data-asked" ] ||
+     fail "the auditor asked the API server for token Secrets whole"
+   ! printed_secret_data || fail "the auditor printed a token Secret's data"
+   passed "(cp) token Secrets present on the API server are never read"
+ fi
+
+# --- (rd) The recorded Kubernetes reads are the declared least privilege, and its inventory: a read
+# reads.json lacks fails the row whatever the check's exit, a row that wants exit 1 included, and
+# an entry no read uses is named by unused_reads, which the run of every row holds reads.json to. ---
+if row rd; then
   base_world
-  # One in each guarded namespace: the shell empties a redirect's file before kubectl runs, so the
-  # list's file in the work directory holds the last namespace's Secrets when later calls look.
-  jq -n '[{namespace: "envoy-operator", name: "envoy-operator-token-legacy"}, {namespace: "secrets-broker", name: "secrets-broker-token-legacy"}]' \
-    >"$world/clusters/operator-cluster/token-secrets.json"
-  : >"$world/clusters/operator-cluster/token-secret-data"
-  own_tmp="$temporary_dir/cp-tmp"
-  mkdir -p "$own_tmp"
-  mapfile -t cp_args < <(full_args)
-  status=0
-  output="$(env PATH="$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$own_tmp" bash "$check" "${cp_args[@]}" 2>&1)" || status=$?
-  cp_failures=""
-  responses="$world/clusters/operator-cluster/token-secret-responses"
-  # One list for each guarded namespace, envoy-operator's and secrets-broker's: a row that read no
-  # response would pass with nothing seen.
-  listed="$(if [ -e "$responses" ]; then wc -l <"$responses"; else echo 0; fi)"
-  [ "$listed" -eq 2 ] || cp_failures+="the API server answered $listed lists of token Secrets, not one for each of the 2 guarded namespaces "
-  data_paths="$(if [ -e "$responses" ]; then jq -r 'paths | select(.[-1] == "data") | map(tostring) | join(".")' "$responses" | sort -u | paste -sd ' '; fi)"
-  [ -z "$data_paths" ] || cp_failures+="the API server's response to the list of token Secrets carried a data field: $data_paths "
-  [ ! -e "$world/clusters/operator-cluster/secret-data-asked" ] ||
-    cp_failures+="the check asked the API server for token Secrets whole, data included: $(tr '\n' ';' <"$world/clusters/operator-cluster/secret-data-asked") "
-  [ ! -e "$world/clusters/operator-cluster/secret-data-in-work" ] ||
-    cp_failures+="a token Secret's data was in the run's work directory: $(sort -u "$world/clusters/operator-cluster/secret-data-in-work" | sed "s|^$own_tmp/||" | tr '\n' ' ') "
-  ! printed_secret_data || cp_failures+="the check printed a token Secret's data "
-  [ -z "$cp_failures" ] || fail "$cp_failures"
-  passed "(cp) the token Secrets of a guarded namespace are listed in the Table form: no response carries a data field, and no Secret's data is kept in the work directory or printed"
+  add_cluster other-cluster us-east1
+  run
+  want_status 0 "every recorded Kubernetes read is declared"
+  [ "$reads_failed" = false ] || fail "every recorded Kubernetes read is declared: the reads failed"
+
+  jq 'del(.[] | select(.step == "step-workload-identity.sh" and .verb == "get" and .apiGroup == "" and .resource == "namespaces"))' \
+    "$reads" >"$temporary_dir/reads-without-namespaces.json"
+  expect_reads_failure=true OPERATOR_MINTERS_READS="$temporary_dir/reads-without-namespaces.json" run
+  [ "$reads_failed" = true ] || fail "a read removed from the manifest did not fail the run's reads"
+  want_text "FAIL: recorded kubectl get namespaces is absent from reads.json for step-workload-identity.sh" \
+    "a missing get namespaces declaration"
+  passed "(rd) each fake kubectl call is declared, and dropping get namespaces fails the workload-identity row"
+
+  # A row that wants a finding's exit 1, under a manifest without subjectaccessreviews: its run
+  # fails the row, rather than its exit 1 reading as the finding's.
+  base_world
+  subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods "" envoy-operator ""
+  jq 'del(.[] | select(.resource == "subjectaccessreviews"))' "$reads" >"$temporary_dir/reads-without-reviews.json"
+  absorbed="$( (OPERATOR_MINTERS_READS="$temporary_dir/reads-without-reviews.json" run
+    want_status 1 "a finding under a manifest without subjectaccessreviews"
+    echo "ROW PASSED") 2>&1 || true)"
+  [[ "$absorbed" != *"ROW PASSED"* ]] && [[ "$absorbed" == *"FAIL: a kubectl read this run made is not one reads.json declares"* ]] &&
+    [[ "$absorbed" == *"FAIL: recorded kubectl create subjectaccessreviews is absent from reads.json for reviews.sh"* ]] ||
+    fail "a row wanting exit 1 passed beside a read reads.json lacks: $absorbed"
+  passed "(rd) a row that wants a finding's exit 1 fails on a read reads.json lacks, naming it"
+
+  # The inventory's own control: an entry no recorded call uses is named, and only it.
+  printf '%s\n' 'reviews.sh|create|authorization.k8s.io|subjectaccessreviews|' 'step-rbac.sh|list||serviceaccounts|' >"$temporary_dir/rd-calls.tsv"
+  jq '[.[] | select(.resource == "subjectaccessreviews" or (.step == "step-rbac.sh" and .resource == "serviceaccounts"))]
+      + [{step: "step-rbac.sh", verb: "list", apiGroup: "", resource: "secrets"}]' "$reads" >"$temporary_dir/reads-with-secrets.json"
+  unused="$(unused_reads "$temporary_dir/reads-with-secrets.json" "$temporary_dir/rd-calls.tsv")"
+  [ "$unused" = '{"step":"step-rbac.sh","verb":"list","apiGroup":"","resource":"secrets"}' ] ||
+    fail "unused_reads named '$unused', not the one entry no call uses (list secrets)"
+  passed "(rd) control: unused_reads names a reads.json entry no recorded call uses, list secrets, and no other"
 fi
 
 # --- (cq) A credential of a name flag's form is refused too when it is shaped as a credential its
@@ -486,32 +844,6 @@ if row cq; then
   passed "(cq) a credential of a name flag's form, shaped as a credential its issuer marks, is refused, naming the flag, and printed in neither stdout, stderr nor --report"
 fi
 
-# --- (cr) The token Secrets' list answered without the Table: the world's API server answers as a
-# server or proxy that cannot make the Table does, with the Secrets whole, data included, and the
-# fake kubectl prints them under NAME and AGE alone, as kubectl 1.36.4 does. Each guarded
-# namespace's list reads UNKNOWN, naming the namespace, the run exits 2, and the RBAC step does not
-# pass. Run by hand, the control is step-rbac.sh's list as it was before this row, with
-# --no-headers and no header check, keeping the first column whatever the columns are: the RBAC
-# step passes, the run exits 0, and the row fails naming that exit. ---
-if row cr; then
-  base_world
-  jq -n '[{namespace: "envoy-operator", name: "envoy-operator-token-legacy"}, {namespace: "secrets-broker", name: "secrets-broker-token-legacy"}]' \
-    >"$world/clusters/operator-cluster/token-secrets.json"
-  : >"$world/clusters/operator-cluster/token-secrets-no-table"
-  # The Secrets hold their data, so the server's answer carries it, as the comment above says.
-  : >"$world/clusters/operator-cluster/token-secret-data"
-  run
-  for ns in envoy-operator secrets-broker; do
-    want_rbac_unknown "the API server's list of token Secrets in $ns came without the Table's columns NAME TYPE DATA AGE, so it was not the Table form: a server that cannot make the Table sends the Secrets whole, data included, which kubectl read though it printed none" \
-      "the list of $ns's token Secrets answered without the Table"
-  done
-  responses="$world/clusters/operator-cluster/token-secret-responses"
-  if [ ! -e "$responses" ] || ! jq -e -s 'any(.[].items[]?; has("data"))' "$responses" >/dev/null; then
-    fail "the world's server sent no token Secret's data, so the row does not hold the case its comment names"
-  fi
-  ! printed_secret_data || fail "the check printed a token Secret's data"
-  passed "(cr) a list of token Secrets that kubectl prints without the Table's columns reads UNKNOWN for its namespace, and the RBAC step does not pass"
-fi
 
 # --- (cs) A cluster whose principals and rights are each more than one argument of a command line
 # holds. Linux refuses an exec whose one argument is longer than MAX_ARG_STRLEN, 128 KiB, which the

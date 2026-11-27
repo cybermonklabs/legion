@@ -1,8 +1,8 @@
 kind: Added
 body: |-
   `infra/scripts/operator-token-minters.sh` has a step `live: Deployment Manager`: Policy Analyzer's
-  holders of `deploymentmanager.deployments.create` and `update` on `--project`, each principal
-  that is not a person a finding naming the route. Deployment Manager creates a deployment's
+  holders of `deploymentmanager.deployments.create` and `update` on `--project`, each but Google's
+  service agents a finding naming the route, a person included. Deployment Manager creates a deployment's
   resources with the credentials of the project's Google APIs service agent, which holds
   `roles/editor` there, so either permission acts as `roles/editor`. The permission names step
   checks both names against `roles/deploymentmanager.editor`, and a refused analysis is UNKNOWN.

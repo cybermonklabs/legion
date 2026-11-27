@@ -306,8 +306,8 @@ judge_reviews() {
 # the User system:serviceaccount:<namespace>:<name> (k8s_subject allows both), is the seed
 # seed:system:serviceaccount:<namespace>:<name>: never a finding itself, but who can become it holds
 # what the role allows it, so judge_grant and judge_chain seed FOUND_SAS or RESIDUAL_SAS from it, as
-# judge_reviews seeds one allowed a right outright. A subject k8s_subject does not allow is itself;
-# any other (a person, a component, the operator's own account) is "", which is not judged.
+# judge_reviews seeds one allowed a right outright. A subject k8s_subject does not allow, a person
+# included, is itself; any other (a component, the operator's own account) is "", which is not judged.
 named_principal() {
   local ns="$2" name="$3"
   NAMED_PRINCIPAL=""
@@ -577,10 +577,10 @@ live_named() {
 }
 # bound_subjects KUBECONFIG: the cluster's binding subjects (the header's "Binding subjects"), added
 # to $WORK/principals.rec when the file does not hold them already: each User subject k8s_subject
-# does not allow, with system:authenticated (system:anonymous with system:unauthenticated), each
-# Group subject that is one of Kubernetes' own (own_group), alone, and each ServiceAccount subject,
-# whether it exists or not, with its groups (a system namespace's as a seed). A person's User
-# subject, a Group subject that is not Kubernetes' own (groups_verdict judges those) and
+# does not allow, a person included, with system:authenticated (system:anonymous with
+# system:unauthenticated), each Group subject that is one of Kubernetes' own (own_group), alone, and
+# each ServiceAccount subject, whether it exists or not, with its groups (a system namespace's as a
+# seed). A Group subject that is not Kubernetes' own (groups_verdict judges those) and
 # system:masters (masters_bindings) are left out. Sets BOUND to how many it added, and BINDINGS_OK to
 # whether $WORK/bindings.json holds this cluster's bindings; returns 1 with BOUND_ERROR when the API
 # server refused the list or answered no list (is_list), or when the list lacks either witness: the
@@ -591,7 +591,7 @@ live_named() {
 # is not whole: without its RoleBindings, binding_rights would ask nothing outside the guarded
 # namespaces and live_named would read no RoleBinding. Its subjects are still added.
 bound_subjects() {
-  local kind ns name label admin_witness="" reader_witness=""
+  local kind ns name label user admin_witness="" reader_witness=""
   # The two witnesses, as jq tests of the bindings' list.
   local admin_test='any(.items[]?; .kind == "ClusterRoleBinding" and .metadata.name == "cluster-admin" and .roleRef.kind == "ClusterRole"
       and .roleRef.name == "cluster-admin" and (.metadata.labels // {})["kubernetes.io/bootstrapping"] == "rbac-defaults")'
@@ -617,7 +617,9 @@ bound_subjects() {
     return 1
   fi
   BINDINGS_OK=true
-  while IFS="$US" read -r label _; do held[$label]=1; done <"$WORK/principals.rec"
+  # held: each label the file holds (the Group and ServiceAccount subjects below are held by it), and
+  # each label with the name the API server knows it by, as a record's first two fields write them.
+  while IFS="$US" read -r label user _; do held[$label]=1 held[$label$US$user]=1; done <"$WORK/principals.rec"
   # The witnesses' record is read first, on its own; a read that fails leaves both empty, which
   # reads as neither witness held.
   {
@@ -643,8 +645,13 @@ bound_subjects() {
       k8s_subject "$kind" "" "$name"
       [ "$SUBJECT_OK" != true ] || continue
       case "$SUBJECT" in system:serviceaccount:*) continue ;; esac
-      [ -z "${held[$SUBJECT]:-}" ] || continue
-      held[$SUBJECT]=1
+      # A User subject is held by its label and the name the API server knows it by, never by its
+      # label alone: an account the file already holds under its email (a ServiceAccount's
+      # iam.gke.io/gcp-service-account annotation, above) and that a binding names by its uniqueId
+      # is one label (k8s_subject) reviewed under each name, since each name's bindings grant their
+      # own rights.
+      [ -z "${held[$SUBJECT$US$name]:-}" ] || continue
+      held[$SUBJECT$US$name]=1
       if [ "$name" = system:anonymous ]; then
         printf '%s\x1f%s\x1fsystem:unauthenticated\n' "$SUBJECT" "$name" >>"$WORK/principals.rec"
       else
@@ -710,16 +717,19 @@ masters_bindings() {
 # `on:<security group>`: Google Groups for RBAC is on, so each gives its Google group's members its
 # rights, which this check neither lists nor judges: UNKNOWN for the cluster, whether one is bound
 # now or not. MODE `own`: a cluster that is no GKE cluster takes its users and groups from its own
-# authenticator: UNKNOWN when a Group is bound, and when a User whose name looks like an email is,
-# since that authenticator, not Google, says who holds the name. MODE `unknown:<why>`: UNKNOWN when
-# a Group is bound.
+# authenticator: UNKNOWN when a Group is bound. A User subject bound there, whatever its name, is
+# reviewed as every User subject is (bound_subjects). MODE `unknown:<why>`: UNKNOWN when a Group is
+# bound. An IAM group is a finding as the group (iam_verdict), where a cluster's Group is UNKNOWN
+# here, and the two differ on purpose: an IAM binding to a group is read with the right it grants,
+# so the group itself can be named holding it, while a cluster that gives a Group its members from
+# Google or its own authenticator is a cluster whose reviews see none of them, so what cannot be
+# made is the whole cluster's reading. Either way the group is named and the run does not pass;
+# with Google Groups for RBAC off a cluster's Group reaches no one, so it is no path to name.
 groups_verdict() {
-  local step="$1" mode="$2" groups="" users=""
+  local step="$1" mode="$2" groups=""
   if [ "$BINDINGS_OK" = true ]; then
     groups="$(jq -r '[.items[]?.subjects[]? | select(.kind == "Group" and ((.name | startswith("system:")) | not)) | .name] | unique | join(", ")' \
       "$WORK/bindings.json")"
-    users="$(jq -r '[.items[]?.subjects[]? | select(.kind == "User" and (.name | test("^[^@/:\\s]+@[^@/:\\s]+\\.[^@/:\\s]+$"))
-      and ((.name | endswith(".gserviceaccount.com")) | not)) | .name] | unique | join(", ")' "$WORK/bindings.json")"
   fi
   case "$mode" in
     off) ;;
@@ -729,8 +739,6 @@ groups_verdict() {
     own)
       [ -z "$groups" ] ||
         unknown "$step" "it takes its users and groups from its own authenticator, not Google, so the Group subjects bound here ($groups) name members this check cannot list"
-      [ -z "$users" ] ||
-        unknown "$step" "it takes its users from its own authenticator, not Google, so the User subjects bound here that look like emails ($users) are not known to be people"
       ;;
     unknown:*)
       [ -z "$groups" ] ||

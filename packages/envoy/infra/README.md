@@ -4870,17 +4870,13 @@ with the new key (`hold release`, or `hold abort` once a command stopped), and o
 reads in step 3 with the leaked key's id and follow step 4 as written.
 
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
-precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the
-shell it runs in and requests no credential. It lists a guarded namespace's token Secrets asking the
-API server for the Table form first, whose rows carry no Secret's data, only each Secret's name, type,
-number of data keys and age beside its metadata, and keeps the names. Two cases still bring a token
-into `kubectl`'s memory, though nothing prints or writes it: a token Secret made by `kubectl apply`
-from a manifest that held its token carries the token in its
-`kubectl.kubernetes.io/last-applied-configuration` annotation, which is metadata; and a server or
-proxy that cannot make the Table answers with the Secrets whole, data included, which the check
-reads as UNKNOWN, since `kubectl` then prints no `TYPE` and `DATA` columns. It lists each
-principal that is not a person and can mint the token of a guarded ServiceAccount (the operator's,
-the secrets broker's, and each
+precondition for the `operator` entry, run again before go-live.
+It runs with the sign-ins of the shell it runs in and requests no credential.
+It never reads a Kubernetes Secret.
+Instead, its `--secret-render` inputs provide the declared namespace, name and type of each Secret
+the Secret programs render, without making a live Secret API request or using a Secret value.
+It lists each principal, person or machine, that can mint the token of a guarded ServiceAccount (the
+operator's, the secrets broker's, and each
 `--guarded` pair), run or enter a pod as one, create or change a custom resource in a guarded
 namespace, write a binding or a webhook or admission policy, have the cluster sign it a client
 certificate for any user, mint the operator's Google service account's token, make a guarded
@@ -4889,25 +4885,49 @@ that fleet or write the namespaces and RBAC its scopes put on the members, make 
 Deployment Manager deployment on the project (Deployment Manager creates a deployment's resources as
 the project's Google APIs service agent, which holds `roles/editor` there), set IAM policy over any
 of these, or write the writer hold's tables beside the broker's routes, whether a role grants the
-right outright or limits it to an object by name, and each principal that can become one of those:
+right outright or limits it to an object by name, and each principal that can become one of those.
+Nobody holds the operator identity standing, a person included: a principal holds it standing when
+it can come to hold it without a second person approving that use at that time
+(INFRA-840's R16), so a
+person is a finding like any other holder, with the right and where it was granted. A principal
+becomes one of those
 through IAM impersonation, reported as the chain, by minting the token of a Google service
 account an RBAC finding names, by impersonating a user who holds GKE's IAM permissions, or in
 Kubernetes by running, entering or minting the token of a ServiceAccount that holds such a right. On
 each cluster of the project, of the pool project and of the pool's fleet it reviews every
-ServiceAccount outside the system namespaces, Kubernetes' own groups, each binding subject that is
-not a person (a person is an email outside `gserviceaccount.com`), and anyone unauthenticated, and
+ServiceAccount outside the system namespaces, Kubernetes' own groups, each binding subject (a
+person's email among them) but the `system:` components and the operator's own Google service
+account, and anyone unauthenticated, and
 reports every binding of `system:masters` but the bootstrap one. Any other Group is no finding while
 GKE's Google Groups for RBAC is off, and reads UNKNOWN where it is on or on a fleet member that is no
-GKE cluster, as an email-shaped User bound there does; a cluster with legacy ABAC or the identity
-service for GKE on, a fleet scope and an empty fleet read UNKNOWN too. A deployment whose pool
-project has no fleet passes `--fleet none`: an empty membership list then passes, and each
+GKE cluster; a cluster with legacy ABAC or the identity
+service for GKE on, a fleet scope, an empty fleet and a GKE Hub API disabled in the pool project
+read UNKNOWN too. A deployment whose pool project has no fleet passes `--fleet none`: an empty
+membership list then passes, and each
 membership listed is a finding. A fleet member that is no GKE cluster reads UNKNOWN, since its own
 cloud may grant beside its RBAC, unless `--rbac-only-member <membership>` says it does not. In the
 IAM steps only GKE's, GKE Hub's and Compute Engine's service agents of the projects the check reads
 (`--project`, the pool project and each fleet member's project) are allowed; another project's
 agent is a finding naming its project number, and another Google service agent the deployment
 needs is named with `--service-agent service-<number>@gcp-sa-<product>.iam.gserviceaccount.com`,
-which takes no other address. Admission power
+which takes no other address. An IAM group holding a checked permission is a finding as the group,
+whatever its members: whoever is added to it holds what it holds with no grant and no second
+person. Each member Policy Analyzer expands is judged besides, so a person in the group is a finding
+by name. The broker's grant to mint the operator's token, `roles/iam.serviceAccountTokenCreator`
+on `--gsa`, is a finding, held by `--broker-account` or by the Workload Identity principal of
+`--broker-workload` alike: the broker is a job that mints with no second person approving that
+use at that time, and no automated job holds the operator identity (INFRA-840's R16). The finding
+says it is an open route until R16's grant door exists (INFRA-840's check `c-operator-grant-door`).
+The broker's own Workload Identity member acting as `--broker-account` is the account being itself
+and stays allowed, the witness of the broker account's own minters step. On another GKE cluster of the pool that
+`gcloud container clusters describe` reads as Standard (a refused describe is UNKNOWN), a
+privileged or hostPath pod reads every token on its node, so a system namespace's ServiceAccount
+that runs a pod on a node is reviewed for every right that cluster's review asks, and for each rule
+of its roles that gives one by name, and a guarded pair's token: each it is allowed is a finding
+(the certificate signing chain only as a whole chain), and a review that ends in an evaluation
+error is UNKNOWN. A list of that cluster's pods that holds no pod is UNKNOWN, since every GKE
+cluster runs kube-system's; on Autopilot, and for an account with no pod on a node, the system
+namespaces stay allowed. Admission power
 outside the admission objects counts too: the backend of a webhook that can match a guarded
 namespace, a policy engine's cluster-scoped resources, and an admission policy's parameter objects;
 a webhook that calls a URL outside the cluster, or a Service of type ExternalName or with no
@@ -4920,7 +4940,10 @@ and only when the renders and the operator's cluster each hold the five `broker-
 their bindings with the reviewed specs `scripts/operator-token-minters/broker-fence.json` holds
 (each spec, or the sha256 of the two workload policies', less what the API server and GKE fill in);
 at least one `envoy-broker-*` pod runs as `envoy-broker`; no pod of `dispatch` named otherwise runs
-as `envoy-broker` or takes `--db-secret`, a token Secret there or a Secret a broker pod takes; and
+as `envoy-broker` or takes `--db-secret`, a guarded pair's token Secret (one the renders declare or
+its ServiceAccount lists in its `secrets`), a Secret a broker pod takes, or a Secret no
+`--secret-render` declares (the check reads no Secret, so such a Secret may hold the broker's
+token: `NO CREDIT` names the pod and the Secret); and
 no webhook, whatever its selectors and rules, calls a Service in `dispatch`, a grant of exec,
 attach or port forward in `dispatch` prints a `CREDIT` line naming its use on the broker's pods
 instead of a finding, and goes into `--report`'s `credited` with the policy and the declared and
@@ -4938,13 +4961,19 @@ IAM right, the hold writers, and whoever can write or delete the fence. A fence 
 otherwise prints `NO CREDIT` naming why and credits nothing; one whose policies, pods or webhooks
 cannot be read, or are answered as no list, is UNKNOWN. It reads code first (`--rbac-render`,
 `--iam-preview`), then the live grants, and exits 0 with nothing found, 1 naming each principal
-and right, or 2 naming each step it could not read, a run that stopped mid-way included. It asks
+and right, or 2 naming each step it could not read, a run that stopped mid-way included. Every part
+of `scripts/operator-token-minters/` must be readable and hold something before any step runs, else
+the run prints `UNKNOWN run` naming the part and exits 2: an empty file sources as a clean no-op,
+and an empty jq program is `.`. Each step file must then print a `PASS`, `FINDING`, `UNKNOWN` or
+credit, or say why it prints nothing (`live: audited clusters` without `--audited-cluster`), else
+`UNKNOWN run` names it, and so does a step file that never ran (the step census). It asks
 a cluster's SubjectAccessReviews in up to `REVIEW_WORKERS` kubectl calls at once (10 unless set),
 never more than the seats that cluster's API server gives the priority level global-default, which
 it reads from the server's `/metrics`, and in one call when it cannot read them. `--report <file>`
 writes the same as JSON, with each credit under `credited`, each `ALLOWANCE` line under
-`residuals`, and each allowance flag the run was given (`--service-agent`, `--rbac-only-member`,
-`--fleet none`, `--credentials-arg`) under `allowances`,
+`residuals`, each allowance flag the run was given (`--service-agent`, `--rbac-only-member`,
+`--fleet none`, `--credentials-arg`) under `allowances`, and each step file with its census state
+(`reported`, `quiet: <why>`, `silent` or `not run`) under `steps`,
 and is deleted when a run starts, so a report is that run's or none. Each flag that names a thing
 (a project, a cluster, a namespace, an account, a secret) is checked for that thing's form before
 any step runs, and a value of another form is a usage error naming the flag, never the value, as is
@@ -4957,7 +4986,246 @@ value of the flag's form that is not so shaped is used, and may be printed, as g
 `ghp_abc` is. A file flag's file is named by the flag and its place (`--rbac-render entry 2`), never
 its path.
 `scripts/operator-token-minters.test.sh` runs every plant and control against a fake `kubectl`,
-`gcloud`, `curl` and `agent-secrets`.
+`gcloud` and `curl`.
+
+**Which right makes a finding.** Any one right a reviewed principal is allowed is a finding, never
+only the full set: each allowed review is judged alone (`operator-token-minters/reviews.sh`,
+`judge_reviews` and `judge_grant`).
+
+- On the operator's cluster, the rights are the table in `operator-token-minters/rights.sh`
+  (`RIGHTS_TABLE`) for each guarded pair. That table includes create `serviceaccounts/token` by the
+  pair's name; impersonation; exec, attach and port forward into pods; create, patch and update of
+  pods and of each workload kind; and reads of Secrets. The guard rights below are added.
+- On every other cluster of the pool, the rights are the guard rights
+  (`operator-token-minters/guard-rights.jq`): create or patch namespaces cluster-wide; the
+  escalation rights (impersonate, escalate or bind roles, write bindings and roles, `nodes/proxy`);
+  and, in each guarded namespace, create or patch of ServiceAccounts, create or patch of pods (each
+  a right of its own), and the writes of roles and RoleBindings. The cluster's custom resources'
+  and admission objects' writes are added.
+- On another cluster of the pool where a guarded namespace exists, the operator's table is added
+  to the guard rights, as on the operator's cluster. The namespace is no finding by itself: the
+  run prints `REVIEWED cluster:<label>: namespace <ns> exists there, …`, and each principal holding
+  one of the rights there is a finding naming it with that cluster's label. The one case the
+  table cannot cover is a node escape. On a cluster that is not GKE Autopilot, a privileged or
+  hostPath pod on a node can read that namespace's ServiceAccount token, and no RBAC review sees
+  it, so that cluster's step is `UNKNOWN`.
+- `serviceaccounts/token` alone is a finding on the operator's cluster only, except under the node
+  escape below.
+- A principal that may create pods in a guarded namespace, and no ServiceAccounts, is a finding on
+  any cluster of the pool.
+- Each right is asked in the guarded namespaces, so a ClusterRoleBinding grants it there, and a
+  RoleBinding in another namespace does not.
+
+Who is reviewed: each ServiceAccount outside the system namespaces (`kube-system`, `gke-*` and
+`gmp-*`), Kubernetes' own groups, anyone unauthenticated, and each binding subject the check does
+not allow. A `system:*` User is an allowed Kubernetes component, never reviewed: every
+`system:`-prefixed User but `system:anonymous`, and `system:serviceaccount:<namespace>:<name>` of a
+namespace outside the system ones, which is reviewed as that ServiceAccount. That name is accepted
+because each way a principal comes to present it is read and reported as the holder: a client
+certificate the cluster signs for any user (the certificate signing chain, row (bj) of
+`operator-token-minters.test.sh`), `impersonate users` cluster-wide (an escalation right on every
+cluster, rows (b) and (an)), and the node escape on a cluster that is not Autopilot (rows (bz) and
+(ne)). A User with no
+`system:` prefix, such as `kube-apiserver` in GKE's own ClusterRoleBinding
+`kube-apiserver-kubelet-api-admin` (to the ClusterRole `kubelet-api-admin`), is reviewed
+and printed on every cluster that binds it: past the `system:` components, the check accepts no
+subject by its name.
+A username is only a name: whoever can have a certificate or token issued with it, through a
+certificate signer and approver or by impersonation, presents it. Accepting it by name would hide
+that holder on every pool cluster. A per-cluster entry in the accepted list also shows a new
+cluster's binding the first time it appears. A person's email is reviewed like any other User,
+and each right it holds is a finding. A ServiceAccount of a system namespace is reviewed only under the node escape: a
+non-operator cluster that `gcloud container clusters describe` reads as GKE Standard, where that
+account has a running pod on a node. A User named by a number is judged as the Google service account whose uniqueId it is. The number is resolved first from the IAM previews' service accounts, then from each named project's service-account list, then by `gcloud iam service-accounts describe`. A number no source resolves is a finding naming the number.
+
+**Labels.** A finding's `resource` names its cluster as `cluster:<project>/<location>/<name>` on
+every cluster, the operator's included. A project can run two clusters of one name in two
+locations, and a bare name would give both the same label.
+
+- On the operator's cluster, the name is `--cluster`. The location is `--location`, which must be
+  that name's location in the project's cluster list, or, without `--location`, that list's. The
+  code steps run before the list is read, so a finding or credit they declare is given the location
+  the list gives; while no location is known, it is `-` (`cluster:<project>/-/<name>`), as when the
+  list names the cluster twice and no `--location` says which.
+- On another cluster of `--project` or the pool project, the location is the one
+  `gcloud container clusters list` gives: the region for a regional cluster, the zone for a zonal
+  one.
+- On a GKE fleet member, the label is the project, location and name of the membership's cluster
+  link.
+- The check compares no label with any list of its own. `live: audited clusters` compares each
+  `--audited-cluster` with those labels' `<project>/<location>/<name>`, exactly.
+
+**The operator's namespace on other clusters.** On every cluster of the pool but `--cluster`, a
+guarded namespace that exists brings the operator's table to that cluster's review, as above. So
+moving the operator's Job to another cluster and leaving `envoy-operator` on the old one keeps
+the old cluster reviewed with the operator's rights on every run. If the old cluster is not GKE
+Autopilot, its step stays `UNKNOWN` until the namespace goes.
+
+### Minter-auditor render inputs
+
+The auditor receives the following objects as immutable render files.
+Each is UTF-8 JSON and is passed unmodified to the named flag.
+
+- `rbac/cluster-grants` is one or more Kubernetes objects.
+  It may be one `List` object, one JSON array of objects, or a stream of JSON objects.
+  The auditor passes it with `--rbac-render`.
+
+- `secrets/dispatch` and `secrets/broker` use the same Kubernetes-object shape and are each passed
+  with `--secret-render`.
+  The auditor reads only objects whose `kind` is `Secret`, and only their
+  `metadata.namespace`, `metadata.name`, `type`, and
+  `metadata.annotations["kubernetes.io/service-account.name"]`.
+  It never reads `data` or `stringData`.
+  A render that holds no JSON document, or declares no Secret, is `UNKNOWN`: a Secret program's
+  render of none cannot be told from a render of nothing. A token Secret without its namespace,
+  name or `kubernetes.io/service-account.name` annotation is `UNKNOWN` too.
+  Each Secret a render declares is one a pod of `dispatch` other than the broker's may take while
+  the broker's pod fence is credited.
+
+- `iam/bootstrap` and `iam/root` are each one JSON object printed by
+  `pulumi preview --json --show-sames`.
+  The object must have the `steps` and `changeSummary` fields that command writes.
+  The auditor passes each file with `--iam-preview`.
+
+**Who could have written them.** The step `live: render writers of gs://<bucket>` asks Policy
+Analyzer, in one query on the bucket, for every holder of `storage.objects.create`,
+`storage.objects.delete`, `storage.objects.update`, `storage.buckets.setIamPolicy`,
+`storage.buckets.update` and `storage.managedFolders.setIamPolicy`: each writes a render, rewrites
+the `commit` and `run_id` metadata the report quotes, changes the bucket's policy or access model
+(with uniform access off, an ACL could grant a write Policy Analyzer does not list), or sets a
+managed folder's policy, which grants object writes under its prefix and is on neither the bucket's
+policy nor its ancestors'. It accepts:
+
+- Google's service agents, as every IAM step (a person, and a group as the group whatever its
+  members, are findings here as in every step);
+- `--renders-admin EMAIL`, the account that applies the bucket, for any of them; the answer
+  must list it, or the step is `UNKNOWN`;
+- each `--render-writer EMAIL=program/object`, only through a binding whose condition is exactly
+  `resource.name == "projects/_/buckets/<bucket>/objects/<program/object>"` (single quotes also
+  match). The title is not read: only the expression limits the grant;
+- for this step alone, the Google service agents of `--renders-project`, the bucket's project:
+  `service-<its number>@` at `gcp-sa-<product>`, `serverless-robot-prod`, `compute-system`,
+  `container-engine-robot` or `dataflow-service-producer-prod`, the number read with
+  `gcloud projects describe`. Its Cloud Run agent holds `roles/run.serviceAgent` there, which
+  carries four of the permissions. Each accepted agent is printed, `ACCEPTED <agent>: <role>,
+  granted at <resource>`. The same agent of another project, and an account of another project
+  whose name is `service-<that number>`, are findings.
+
+Any other holder, a writer's binding without its own object's condition, and a writer under
+another object's condition are each a finding naming it. An empty or refused answer is `UNKNOWN`,
+and so is a project number that cannot be read. The step does not ask
+`resourcemanager.projects.setIamPolicy`. The code step `code: IAM` reads, by the same rule, every
+binding a preview declares on the bucket or on an organization or folder. A grant on the bucket's
+project is read by the live step alone. Renders or previews given without `--renders-bucket`,
+`--renders-project` or `--renders-admin` make the step `UNKNOWN`; with none given, the step does
+not run.
+
+**The admin tag.** The step `admin tag of <--secret>` reads the broker secret as Secret Manager
+holds it: `gcloud secrets describe <--secrets-prefix><slug> --format=json`, where
+`--secrets-prefix` is the broker's own `secrets_prefix` setting
+(`projects/<number>/secrets/<prefix>-`) and the slug is the name lowercased with each underscore a
+hyphen. The broker keeps a secret's tags as its annotations (`cmd/cipher/secret_gcp.go`, `show`).
+Every such secret is a release route that no second person approves, so each is a finding: without
+`admin: "true"` or at a tier other than `human` a model judge may decide a release, and with both
+each release waits on one person's approval, the person an agent acts for included, which is one
+person and not two (INFRA-840's `c-operator-grant-door`): the finding names it an open route until
+R16's grant door exists. No such secret passes, and only once `gcloud secrets list
+--project=<the prefix's project number> --format=json` (every page) lists a secret whose id starts
+with the prefix: a mistyped prefix answers `NOT_FOUND` for a secret that exists, so a project that
+lists none under the prefix is `UNKNOWN`, since it cannot be told from a wrong prefix. The reads need
+`secretmanager.secrets.get` on the secret and `secretmanager.secrets.list` on the prefix's project,
+and no broker. A refused describe or list, and a run with no `--secrets-prefix`, are `UNKNOWN`. The
+step does not read who can change the secret's annotations or create it
+(`secretmanager.secrets.update` on it, `secretmanager.secrets.create` on its project), either of
+which changes how it is released, and its `PASS` and its release finding each say so.
+
+The entrypoint does not check at run time that an object's `commit` is on a branch. The writers
+step is the provenance: each accepted writer applies its program from that program's main only.
+The entrypoint reads each object's description with `gcloud storage objects describe --raw` (the
+API's `metadata` and `generation`; gcloud's default format renames them), fetches the object at
+that generation, and adds `{object, commit, run_id, generation}` for each of the five to the
+report's `renders`.
+
+The image is `ghcr.io/cybermonklabs/legion/minters-auditor`, published as the worker image is:
+`.github/workflows/release-minters-auditor.yaml` builds it on a push to `main`, pushes its
+`sha-<commit>` tag, and attests the pushed digest with GitHub's artifact attestation. Pin the
+digest, and check it with
+`gh attestation verify oci://ghcr.io/cybermonklabs/legion/minters-auditor@sha256:<digest> --repo cybermonklabs/legion --source-ref refs/heads/main --cert-identity https://github.com/cybermonklabs/legion/.github/workflows/release-minters-auditor.yaml@refs/heads/main`.
+Pods pull it by digest with no pull secret, as they pull the worker image, so the package must be
+public; if the first push leaves it private, a package administrator sets it public in the
+package's settings on GitHub.
+
+The image entrypoint takes no argument.
+It builds an authenticated gcloud context for each audited cluster with
+`gcloud container clusters get-credentials` and the gke-gcloud-auth-plugin.
+It uses the pod's Workload Identity credential for every context, including the local cluster,
+because the read ClusterRoles bind the auditor's Google service account rather than the pod token.
+If it cannot build a context, it prints `UNKNOWN` naming that cluster, exits 2, and runs no check.
+It passes each cluster as `--audited-cluster PROJECT/LOCATION/NAME`. Workload Identity maps a
+namespace and ServiceAccount to one identity on every cluster of the pool, so the step
+`live: audited clusters` compares that list with the pool's GKE clusters (the project's and the pool
+project's `gcloud container clusters list`, and each GKE member of the fleet): a pool cluster the
+list leaves out is a finding naming it, and a listed cluster the pool lacks, or a cluster or fleet
+list not read whole, is `UNKNOWN`.
+A cluster being deleted stays in the list until it is gone, so remove it from
+`MINTERS_AUDITOR_CLUSTERS` only after the delete completes, never before. A run in between fails
+closed either way: a finding while the list still holds it and the env does not, and `UNKNOWN`
+while the env still names it and the list does not.
+A non-GKE fleet member remains UNKNOWN: the auditor has no Connect gateway permission, so it cannot
+mistake a member whose cloud authorizers it did not read for an RBAC-only member.
+If the GKE Hub API is disabled in the pool project (HTTP 403 with structured `SERVICE_DISABLED`
+details for `gkehub.googleapis.com`), the fleet step is `UNKNOWN` naming that, with `--fleet none`
+too: Google keeps a disabled service's memberships while the API refuses to list them, and whoever
+holds `serviceusage.services.disable` on the project, which no step reads, can turn it off. Enable
+the API there; `--fleet none` then passes a listing that holds none. Any other Hub error is
+UNKNOWN too.
+
+The Job supplies every deployment-specific value as a pinned environment variable.
+The required scalar variables are `MINTERS_AUDITOR_RENDERS_BUCKET`, `MINTERS_AUDITOR_RENDERS_PROJECT`,
+`MINTERS_AUDITOR_RENDERS_ADMIN`, `MINTERS_AUDITOR_PROJECT`, `MINTERS_AUDITOR_ANALYSIS_SCOPE`,
+`MINTERS_AUDITOR_SECRETS_PREFIX`,
+`MINTERS_AUDITOR_NAMESPACE`, `MINTERS_AUDITOR_SERVICE_ACCOUNT`,
+`MINTERS_AUDITOR_GSA`, `MINTERS_AUDITOR_BROKER_ACCOUNT`,
+`MINTERS_AUDITOR_BROKER_WORKLOAD`, `MINTERS_AUDITOR_SQL_INSTANCE`,
+`MINTERS_AUDITOR_DB_SECRET`, `MINTERS_AUDITOR_BROKER_STATE`,
+`MINTERS_AUDITOR_SIGNING_SECRET`, `MINTERS_AUDITOR_SECRET`,
+`MINTERS_AUDITOR_POOL_PROJECT`, `MINTERS_AUDITOR_FLEET`,
+`MINTERS_AUDITOR_OPERATOR_CLUSTER`, `MINTERS_AUDITOR_OPERATOR_LOCATION`, and
+`MINTERS_AUDITOR_REPORT`.
+The required array variables are `MINTERS_AUDITOR_CLUSTERS`,
+`MINTERS_AUDITOR_AGENT_NAMESPACES`, `MINTERS_AUDITOR_GUARDED_PAIRS`,
+`MINTERS_AUDITOR_RBAC_ONLY_MEMBERS`, `MINTERS_AUDITOR_SERVICE_AGENTS`, and
+`MINTERS_AUDITOR_RENDER_WRITERS`.
+`MINTERS_AUDITOR_CLUSTERS` holds one or more unique JSON objects, one for each GKE cluster of the
+pool, each with only `project`, `location` and `name`; the other array variables hold nonempty JSON
+strings.
+`MINTERS_AUDITOR_RENDER_WRITERS` has exactly four `EMAIL=program/object` entries; the fifth object
+is written by `MINTERS_AUDITOR_RENDERS_ADMIN`.
+`MINTERS_AUDITOR_ANALYSIS_SCOPE` must contain the bucket's project as well as `MINTERS_AUDITOR_PROJECT`.
+The entrypoint refuses an unset or empty scalar, malformed array, malformed or duplicate cluster,
+or invalid array member before making a cloud or cluster call. Before its first cloud call it reads
+`gcloud config get billing/quota_project`: a quota project set in a configuration or by
+`CLOUDSDK_BILLING_QUOTA_PROJECT` would bill each call to that project and need
+`serviceusage.services.use` there, which the auditor's account is not granted, so it is `UNKNOWN`,
+exit 2, and so is a configuration gcloud cannot read.
+
+For example, a non-production Job uses values shaped like:
+
+```text
+MINTERS_AUDITOR_RENDERS_BUCKET=gs://example-renders
+MINTERS_AUDITOR_RENDERS_PROJECT=example-root
+MINTERS_AUDITOR_RENDERS_ADMIN=renders-admin@example-project.iam.gserviceaccount.com
+MINTERS_AUDITOR_SECRETS_PREFIX=projects/000000000000/secrets/agent-secrets-
+MINTERS_AUDITOR_PROJECT=example-project
+MINTERS_AUDITOR_OPERATOR_CLUSTER=example-cluster-a
+MINTERS_AUDITOR_OPERATOR_LOCATION=example-region1
+MINTERS_AUDITOR_CLUSTERS=[{"project":"example-project","location":"example-region1","name":"example-cluster-a"},{"project":"example-project","location":"example-region1","name":"example-cluster-b"},{"project":"example-project","location":"example-region1","name":"example-cluster-c"},{"project":"example-project","location":"example-region1","name":"example-cluster-d"}]
+MINTERS_AUDITOR_AGENT_NAMESPACES=["example-agents"]
+MINTERS_AUDITOR_GUARDED_PAIRS=["example-auditor/example-service-account"]
+MINTERS_AUDITOR_RBAC_ONLY_MEMBERS=[]
+MINTERS_AUDITOR_SERVICE_AGENTS=[]
+MINTERS_AUDITOR_RENDER_WRITERS=["writer-a@example-project.iam.gserviceaccount.com=rbac/cluster-grants","writer-b@example-project.iam.gserviceaccount.com=secrets/dispatch","writer-c@example-project.iam.gserviceaccount.com=secrets/broker","writer-d@example-project.iam.gserviceaccount.com=iam/bootstrap"]
+```
 
 A plugin release builds the sets from Envoy's names at its own commit, so a listener built from a
 later commit that publishes or subscribes to a subject those names lacked needs a hub rendered by

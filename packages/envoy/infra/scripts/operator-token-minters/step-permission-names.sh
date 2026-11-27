@@ -6,7 +6,7 @@
 step="permission names"
 mark
 checked_names=("${CONTAINER_PERMISSIONS[@]}" "${GSA_PERMISSIONS[@]}" "${SQL_PERMISSIONS[@]}" "${FLEET_PERMISSIONS[@]}"
-  "${IAM_WRITE_PERMISSIONS[@]}" "${DEPLOYMENT_MANAGER_PERMISSIONS[@]}" secretmanager.versions.access storage.objects.get)
+  "${IAM_WRITE_PERMISSIONS[@]}" "${DEPLOYMENT_MANAGER_PERMISSIONS[@]}" "${RENDER_PERMISSIONS[@]}" secretmanager.versions.access storage.objects.get)
 declare -A roles_used=()
 for permission in "${checked_names[@]}"; do
   granting_role "$permission"

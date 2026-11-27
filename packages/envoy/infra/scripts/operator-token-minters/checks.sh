@@ -8,7 +8,7 @@
 # the broker's pod fence's residual (step-live-iam.sh): the account and that grant, which each
 # holder's ALLOWANCE names in place of a finding (live_iam).
 declare -A CHECK_STEP=() CHECK_RESOURCE=() CHECK_PERMS=() CHECK_WITNESS=() CHECK_MISSING=() CHECK_RESIDUAL=()
-CHECKS=(gke dm gsa broker sql dbsecret state signing fleet)
+CHECKS=(gke dm gsa broker sql dbsecret state signing fleet renders)
 PROJECT_RES="//cloudresourcemanager.googleapis.com/projects/$PROJECT"
 BUCKET=""
 if [ -n "$BROKER_STATE" ]; then
@@ -70,22 +70,58 @@ CHECK_RESOURCE[fleet]="//cloudresourcemanager.googleapis.com/projects/$POOL_PROJ
 CHECK_PERMS[fleet]="${FLEET_PERMISSIONS[*]}"
 # The pool project's own IAM writers, when it is not --project's, whose are the GKE IAM step's.
 [ -z "$POOL_PROJECT" ] || [ "$POOL_PROJECT" = "$PROJECT" ] || CHECK_PERMS[fleet]+=" resourcemanager.projects.setIamPolicy"
+# Who could have written the renders the code steps read: a holder of a permission that writes an
+# object, rewrites its metadata, or changes the bucket's policy or access model (uniform access off
+# lets an ACL grant a write Policy Analyzer does not list), or a managed folder's policy.
+# --renders-admin holds them all by design and is the witness; each --render-writer is allowed only
+# under its own object's condition; and the Google service agents of --renders-project, which act
+# for their product in that project alone (its Cloud Run agent holds roles/run.serviceAgent there,
+# which carries four of the permissions), are allowed for this check alone, each printed with its
+# role. RENDERS_PROJECT_NUMBER is read by step-code-iam.sh, from the project, never written here.
+RENDERS_BUCKET_NAME="${RENDERS_BUCKET#gs://}" RENDERS_PROJECT_NUMBER=""
+declare -A RENDER_OBJECT=() RENDERS_AGENT_PRINTED=()
+for writer in ${RENDER_WRITERS[@]+"${RENDER_WRITERS[@]}"}; do RENDER_OBJECT["serviceAccount:${writer%%=*}"]="${writer#*=}"; done
+CHECK_STEP[renders]="live: render writers of ${RENDERS_BUCKET:-the renders bucket}"
+CHECK_RESOURCE[renders]="//storage.googleapis.com/projects/_/buckets/$RENDERS_BUCKET_NAME"
+CHECK_PERMS[renders]="${RENDER_PERMISSIONS[*]}"
+CHECK_WITNESS[renders]="serviceAccount:$RENDERS_ADMIN"
+if [ -z "$RENDERS_BUCKET" ]; then
+  CHECK_MISSING[renders]="no --renders-bucket: who could have written the renders and previews the code steps read is not read"
+elif [ -z "$RENDERS_ADMIN" ]; then
+  CHECK_MISSING[renders]="no --renders-admin: the bucket's applier, which the analysis must list, is not named"
+elif [ "${#RENDER_WRITERS[@]}" -eq 0 ]; then
+  CHECK_MISSING[renders]="no --render-writer: the renders' writers are not named"
+elif [ -z "$RENDERS_PROJECT" ]; then
+  CHECK_MISSING[renders]="no --renders-project: the bucket's project, whose own service agents hold its permissions, is not named"
+fi
 if [ -z "$PROJECT" ]; then
   for check in "${CHECKS[@]}"; do CHECK_MISSING[$check]="no --project: the project that runs the operator's cluster is not named"; done
 fi
 [ -n "$BROKER" ] || CHECK_MISSING[broker]=skip
+# With no render or preview given there is nothing whose writers to read.
+[ "$((${#RBAC_RENDERS[@]} + ${#SECRET_RENDERS[@]} + ${#IAM_PREVIEWS[@]}))" -gt 0 ] || CHECK_MISSING[renders]=skip
 
-# iam_verdict CHECK MEMBER ROLE ATTACHED HOW: sets VERDICT to ok (allowed), skip (a group judged by
-# its members) or finding, with NOTE beside a finding. ATTACHED is the resource the binding is
-# made on; HOW is `expanded` for a group the analysis lists the members of, `code` for a member a
-# preview declares (its group, if any, is the live steps' to expand) or empty.
+# iam_verdict CHECK MEMBER ROLE ATTACHED HOW [CONDITION]: sets VERDICT to ok (allowed) or finding,
+# with NOTE beside a finding. ATTACHED is the resource the binding is made on; HOW is `expanded` for
+# a group the analysis lists the members of, `code` for a member a preview declares or empty;
+# CONDITION is the binding's condition expression, empty for none. A `user:` member, a person, is
+# judged as every other holder is: nobody holds the operator identity standing, a person included
+# (INFRA-840's R16, dispatch://INFRA-840/spec#b-r-operator-minters), so no case below allows one. A
+# `group:` member is a finding as the group, whatever its members: the group is the standing path,
+# since whoever is added to it holds what it holds with no grant and no second person, so a group
+# with no member today, or with accepted members alone, is as much a finding as any other. An
+# expanded group's members are judged too, each on its own record (analysis.jq), so a person inside
+# it is a finding by name beside the group's.
 iam_verdict() {
-  local check="$1" member="$2" role="$3" attached="$4" how="$5"
+  local check="$1" member="$2" role="$3" attached="$4" how="$5" condition="${6:-}" object
   VERDICT=finding NOTE=""
   case "$member" in
-    user:*) VERDICT=ok; return ;;
     group:*)
-      if [ "$how" = expanded ] || [ "$how" = code ]; then VERDICT=skip; else NOTE=" (a group whose members the analysis does not list)"; fi
+      case "$how" in
+        expanded) NOTE=" (a group: whoever is added to it holds this, so it is a finding whatever its members; each member is judged too)" ;;
+        code) NOTE=" (a group: whoever is added to it holds this, so it is a finding whatever its members)" ;;
+        *) NOTE=" (a group the analysis lists no member of: an empty group, or one whose members it could not read; a finding either way)" ;;
+      esac
       return
       ;;
   esac
@@ -93,15 +129,40 @@ iam_verdict() {
   NOTE="$AGENT_NOTE"
   case "$check" in
     gsa)
+      # The operator's own Workload Identity member is the account being itself. The broker's
+      # roles/iam.serviceAccountTokenCreator here, by which it mints the secret ENVOY_OPERATOR's
+      # token, is no exception: the broker is a job that can mint with no second person approving
+      # that use at that time, and no automated job holds the operator identity (INFRA-840's R16).
+      # It is an open route until R16's grant door exists (INFRA-840's check c-operator-grant-door,
+      # plan task t-e-55), and the finding says so.
       if [ "$member" = "$WI_MEMBER" ]; then VERDICT=ok; return; fi
       if [ -n "$BROKER" ] && [ "$member" = "serviceAccount:$BROKER" ] && [ "$role" = roles/iam.serviceAccountTokenCreator ] &&
         [[ "$attached" == */serviceAccounts/"$GSA" ]]; then
-        VERDICT=ok
+        NOTE="$NOTE, the secrets broker's minting grant: it mints the operator's token with no second person approving each use, an open route until INFRA-840's grant door exists"
       fi
       ;;
     broker) if [ -n "$BROKER_WI_MEMBER" ] && [ "$member" = "$BROKER_WI_MEMBER" ]; then VERDICT=ok; fi ;;
     signing) if [ "$member" = "serviceAccount:$GSA" ]; then VERDICT=ok; fi ;;
     dm) NOTE="$NOTE, by which Deployment Manager creates a deployment's resources as the project's Google APIs service agent, which holds roles/editor there" ;;
+    renders)
+      if [ "$member" = "serviceAccount:$RENDERS_ADMIN" ]; then
+        VERDICT=ok
+      elif [ -n "$RENDERS_PROJECT_NUMBER" ] &&
+        [[ "$member" =~ ^serviceAccount:service-$RENDERS_PROJECT_NUMBER@(gcp-sa-[a-z0-9-]+|serverless-robot-prod|compute-system|container-engine-robot|dataflow-service-producer-prod)\.iam\.gserviceaccount\.com$ ]]; then
+        VERDICT=ok
+        if [ -z "${RENDERS_AGENT_PRINTED["$member $role $attached"]:-}" ]; then
+          RENDERS_AGENT_PRINTED["$member $role $attached"]=1
+          echo "ACCEPTED $member: $role, granted at $attached, a Google service agent of the renders bucket's project $RENDERS_PROJECT (number $RENDERS_PROJECT_NUMBER), accepted by ${CHECK_STEP[renders]} alone"
+        fi
+      elif [ -n "${RENDER_OBJECT[$member]:-}" ]; then
+        object="projects/_/buckets/$RENDERS_BUCKET_NAME/objects/${RENDER_OBJECT[$member]}"
+        if [ "$condition" = "resource.name == \"$object\"" ] || [ "$condition" = "resource.name == '$object'" ]; then
+          VERDICT=ok
+        else
+          NOTE="$NOTE, a render writer whose binding is not held to writes ${RENDER_OBJECT[$member]} only by the condition resource.name == \"$object\"${condition:+ (its condition: $condition)}"
+        fi
+      fi
+      ;;
   esac
 }
 # held_text CHECK PERMISSIONS_CSV: the check's permissions among PERMISSIONS, in the check's order.
@@ -156,8 +217,9 @@ role_perms() {
 # role_listed PERMISSION: whether the role file ROLE_FILE (role_file, role_perms) lists PERMISSION.
 # Each role file is read into ROLE_LISTED once, every line of it, a last one no line break ends too,
 # so a preview's many bindings of one role start no process. Its callers run it as a condition,
-# where errexit is off, so a file it cannot read stops the run here (exit 2, which on_exit reads as
-# UNKNOWN), never as a role that lists nothing. The cache holds a file as it was when first read,
+# where errexit is off, so a file it cannot read stops the run here, first printing an UNKNOWN
+# naming the role's file (exit 2, which on_exit reads as UNKNOWN too), never reading as a role
+# that lists nothing. The cache holds a file as it was when first read,
 # which is right because each role file is written before it is first read: role_perms writes one
 # only where none exists, and step-code-iam.sh writes every custom role of the previews before its
 # first role_granted.
@@ -166,7 +228,7 @@ role_listed() {
   local permission
   if [ -z "${ROLE_READ[$ROLE_FILE]:-}" ]; then
     { while IFS= read -r permission || [ -n "$permission" ]; do ROLE_LISTED["$ROLE_FILE $permission"]=1; done <"$ROLE_FILE"; } || {
-      echo "operator-token-minters: the role file $ROLE_FILE could not be read" >&2
+      unknown run "the permissions file of role ${ROLE_FILE##*/} (role_perms) could not be read, so whether it lists a permission is unread"
       exit 2
     }
     ROLE_READ[$ROLE_FILE]=1

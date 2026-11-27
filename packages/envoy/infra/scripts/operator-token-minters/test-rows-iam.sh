@@ -14,12 +14,17 @@
 #        --gsa envoy-operator-control@...) each exit 1;
 #   (n)  one holder of each hold-writer right (Cloud SQL users, the database Secret, the broker
 #        program's state, the signing key) is a finding in the report;
-#   (o)  the broker's one binding on the operator's account is allowed only when --broker-account
-#        names it, and a minter of the broker's own account is a finding;
-#   (dd) the broker holding a second role on the operator's account (roles/iam.serviceAccountKeyAdmin
-#        beside roles/iam.serviceAccountTokenCreator) is a finding naming that role;
+#   (o)  the broker's roles/iam.serviceAccountTokenCreator on the operator's account, live and
+#        declared, is a finding naming it an open route until INFRA-840's grant door exists, with
+#        --broker-account or without it, and a chain through it to what the operator's account holds
+#        is a finding too; its controls, a copy that allows that binding and a copy whose analysis
+#        takes the broker's minting as a designed link, miss it; a minter of the broker's own account
+#        is a finding; the same role on the project is a finding granted at the project;
+#   (dd) the broker holding roles/iam.serviceAccountKeyAdmin on the operator's account is a finding
+#        naming that role, as its minting grant is (row o);
 #   (q)  a Policy Analyzer answer longer than a pipe holds (3000 people beside the Workload Identity
-#        member) still finds its witness, and exits 0;
+#        member) still finds its witness: no UNKNOWN says the member is missing, and each person, the
+#        last of the 3000 included, is a finding;
 #   (t)  grade-ci holding roles/container.admin on a GKE fleet member's project (example-grade)
 #        exits 1, since GKE authorizes IAM beside RBAC;
 #   (ad) container.replicationControllers.create and update and container.nodes.proxy, each held on
@@ -63,11 +68,33 @@
 #   (ch) GKE's service agent of a project number the check does not read (999999999999) holding
 #        roles/container.admin exits 1 naming the number; that of a fleet member's project
 #        (example-grade, 222222222222) holding it there exits 0;
+#   (gp) a Policy Analyzer group path expanded to a service account is still a finding naming that
+#        account; a stub that drops expanded members misses it.
+#   (gr) a group holding a checked permission is a finding as the group, whatever its members: with
+#        no member, with an accepted member alone (GKE's service agent), and declared by a preview
+#        while every live step is refused, where the code step names it and does not pass; a copy
+#        that judges a group by its members alone misses the last two (its controls);
+#   (rw) the renders bucket's writers: the applier and the four writers each under its own object's
+#        condition pass; a person, and a person in a group, holding storage.admin there are each a
+#        finding naming the person; another account with storage.admin there, a
+#        writer without its condition or with another object's, an expanded group holding a service
+#        account, and a writer the preview declares without its condition are each a finding naming
+#        it; an answer without the applier, an empty answer and a refused one read UNKNOWN, and so do
+#        renders given without --renders-bucket or without --renders-admin; no render, no step. The
+#        renders project's Cloud Run service agent holding roles/run.serviceAgent is accepted, for
+#        this step alone, and printed with its role; the same agent of another project, and an
+#        account of another project named service-<the renders project's number>, are findings (its
+#        controls); so is a holder of storage.managedFolders.setIamPolicy alone; a run without
+#        --renders-project, or whose project number cannot be read, reads UNKNOWN.
 #   (dm) Deployment Manager acts as the project's Google APIs service agent, which holds roles/editor:
 #        an agent's Google service account holding roles/deploymentmanager.editor on the project
 #        exits 1 naming it and the route, and a copy of the check without the step exits 0 in that
 #        world (the step's control); a role list without deploymentmanager.deployments.update reads
 #        UNKNOWN in the permission names, and a refused analysis UNKNOWN in the step.
+#   (wp) the broker's Workload Identity principal (principal://…/subject/ns/<ns>/sa/<name> of
+#        --broker-workload) holding roles/iam.serviceAccountTokenCreator on the operator's account is
+#        a finding, as the broker's account's grant is (row o), and so are another namespace's
+#        principal holding the same role and the broker's principal holding another role there.
 
 # --- (d) A project-level container.admin held by a CI account, and by an agent's Google service
 # account (the GKE IAM step's control). ---
@@ -134,14 +161,50 @@ if row n; then
   passed "(n) one holder of each hold-writer right is a finding in the report"
 fi
 
-# --- (o) The broker's one binding, and the broker account's own minters. ---
-if row o; then
+# --- (o) The broker's minting grant, and the broker account's own minters. The broker mints the
+# secret ENVOY_OPERATOR's token with no second person approving each use, so its grant on the
+# operator's account is a standing route (INFRA-840's R16 admits no automated job): a finding, an
+# open route until R16's grant door exists. The base world holds no such grant; this row plants it,
+# live and in the preview. ---
+readonly broker_mints="FINDING serviceAccount:$broker: iam.serviceAccounts.getAccessToken, iam.serviceAccounts.getOpenIdToken, iam.serviceAccounts.signJwt, iam.serviceAccounts.signBlob, iam.serviceAccounts.implicitDelegation on $gsa_res through roles/iam.serviceAccountTokenCreator"
+readonly broker_note=", the secrets broker's minting grant: it mints the operator's token with no second person approving each use, an open route until INFRA-840's grant door exists"
+readonly broker_chain="FINDING serviceAccount:$broker: secretmanager.versions.access on $signing_res: serviceAccount:$broker -> impersonates serviceAccount:$gsa (roles/iam.serviceAccountTokenCreator) -> roles/secretmanager.secretAccessor, granted at $signing_res"
+# broker_mints_world: the base world with the broker's minting grant, live and declared.
+broker_mints_world() {
   base_world
+  iam "$gsa_res" roles/iam.serviceAccountTokenCreator "serviceAccount:$broker"
+  edit "$world/preview.json" '.steps += [{op: "same", urn: "urn:pulumi:example::iam::gcp:serviceaccount/iAMMember:IAMMember::broker-mints-operator",
+    provider: "example-provider", newState: {urn: "urn:pulumi:example::iam::gcp:serviceaccount/iAMMember:IAMMember::broker-mints-operator",
+    custom: true, type: "gcp:serviceaccount/iAMMember:IAMMember",
+    inputs: {serviceAccountId: "projects/\($p)/serviceAccounts/\($gsa)", role: "roles/iam.serviceAccountTokenCreator", member: "serviceAccount:\($b)"}}}]' \
+    --arg p "$project" --arg gsa "$gsa" --arg b "$broker"
+}
+if row o; then
+  broker_mints_world
+  run
+  want_status 1 "the broker's minting grant on the operator's account"
+  want_line "$broker_mints, granted at $gsa_res$broker_note" "the broker's minting grant, live"
+  want_line "$broker_mints, declared by urn:pulumi:example::iam::gcp:serviceaccount/iAMMember:IAMMember::broker-mints-operator$broker_note" \
+    "the broker's minting grant, declared"
+  want_text "$broker_chain" "the broker's chain to the signing key the operator's account reads"
   mapfile -t args < <(args_without --broker-account --broker-workload)
   run_only "${args[@]}"
   want_status 1 "the broker's binding without --broker-account"
-  want_text "FINDING serviceAccount:$broker: iam.serviceAccounts.getAccessToken," "the broker's binding without --broker-account"
-  passed "(o) the broker's roles/iam.serviceAccountTokenCreator on the operator's account is a finding unless --broker-account names it"
+  want_line "$broker_mints, granted at $gsa_res" "the broker's binding without --broker-account"
+  # Controls: a copy that allows the broker's binding, as the reading did before R16, and a copy
+  # whose analysis takes the broker's minting as a designed link each miss what they no longer judge.
+  copy="$(script_copy broker-allowed)"
+  plant "$(dirname "$copy")/operator-token-minters/checks.sh" '      if [ "$member" = "$WI_MEMBER" ]; then VERDICT=ok; return; fi' \
+    $'      if [ "$member" = "$WI_MEMBER" ]; then VERDICT=ok; return; fi\n      if [ "$role" = roles/iam.serviceAccountTokenCreator ] && [ "$member" = "serviceAccount:$BROKER" ]; then VERDICT=ok; return; fi'
+  run_script="$copy" run
+  ! has_prefix "$broker_mints" || fail "the copy allowing the broker's binding still found it"
+  copy="$(script_copy broker-designed)"
+  plant "$(dirname "$copy")/operator-token-minters/analysis.jq" '              or ($bwi != "" and $l.id == $bwi and $l.target == $broker);' \
+    $'              or ($bwi != "" and $l.id == $bwi and $l.target == $broker)\n              or ($broker != "" and $l.id == "serviceAccount:\\($broker)" and $l.target == $gsa);'
+  run_script="$copy" run
+  has_prefix "$broker_mints, granted at $gsa_res" || fail "the copy with the designed link lost the broker's own finding"
+  ! has_prefix "$broker_chain" || fail "the copy taking the broker's minting as a designed link still found its chain"
+  passed "(o) the broker's roles/iam.serviceAccountTokenCreator on the operator's account, live and declared, is a finding naming the open route, with --broker-account or without it, and so is its chain to the signing key; copies allowing the binding or taking it as a designed link miss them"
 
   base_world
   iam "$broker_res" roles/iam.serviceAccountTokenCreator "serviceAccount:$worker_gsa"
@@ -158,35 +221,41 @@ if row o; then
   want_text "FINDING serviceAccount:$broker: iam.serviceAccounts.getAccessToken," "the broker minting through another binding"
   # On the operator's own account, so the finding is the operator check's: the broker account's
   # own minters check finds the same binding on the broker account, and a row reading that one
-  # passed with the broker allowed in any role (the o-broker control, 2026-11-21).
-  want_text " on $gsa_res through roles/iam.serviceAccountTokenCreator, granted at $project_res" "the broker minting through another binding"
-  passed "(o) the broker's allowance is its one binding on the operator's account, by name: the same role on the project is a finding"
+  # passed with the broker allowed in any role (the o-broker control, 2026-11-21). Granted at the
+  # project, so the finding names the project, never the operator's account.
+  want_line "$broker_mints, granted at $project_res" "the broker minting through another binding"
+  passed "(o) the broker's minting grant made on the project is a finding granted at the project"
 fi
 
-# --- (dd) The broker's allowance is one role on the operator's account,
-# roles/iam.serviceAccountTokenCreator. A second role of the broker there is a finding. With the
-# allowance taken as any role of the broker, every other row passed (Tester5685, #5685). ---
+# --- (dd) A second role of the broker on the operator's account is a finding naming that role. With
+# the broker allowed any role there, every other row passed (Tester5685, #5685); its minting grant is
+# a finding too now (row o), and this row holds the other role to its own line. ---
 if row dd; then
   base_world
   iam "$gsa_res" roles/iam.serviceAccountKeyAdmin "serviceAccount:$broker"
   run
-  want_status 1 "the broker holding roles/iam.serviceAccountKeyAdmin on the operator's account too"
+  want_status 1 "the broker holding roles/iam.serviceAccountKeyAdmin on the operator's account"
   want_line "FINDING serviceAccount:$broker: iam.serviceAccountKeys.create on $gsa_res through roles/iam.serviceAccountKeyAdmin, granted at $gsa_res" \
-    "the broker holding a second role on the operator's account"
-  passed "(dd) the broker holding a second role on the operator's account, beside its roles/iam.serviceAccountTokenCreator, is a finding naming that role"
+    "the broker holding roles/iam.serviceAccountKeyAdmin on the operator's account"
+  passed "(dd) the broker holding roles/iam.serviceAccountKeyAdmin on the operator's account is a finding naming that role"
 fi
 
 # --- (q) A long answer. Past the 64 KiB a pipe holds, `cut | grep -q` fails under pipefail with
 # SIGPIPE once grep has matched, reading the witness as missing; the check must read the answer
-# whole. ---
+# whole. The 3000 holders are people, each a finding, so the witness is held by the absence of the
+# UNKNOWN that a lost witness prints, and the answer's end by the last person's finding. ---
 if row q; then
   base_world
   mapfile -t people < <(seq -f 'user:person-%04g@example.com' 1 3000)
   iam "$gsa_res" roles/iam.serviceAccountTokenCreator "${people[@]}"
   run
-  want_status 0 "3000 people beside the Workload Identity member"
-  want_text "PASS live: minters of $gsa: 3003 holders listed" "3000 people beside the Workload Identity member"
-  passed "(q) a Policy Analyzer answer longer than a pipe holds still finds its witness"
+  want_status 1 "3000 people beside the Workload Identity member"
+  ! has_prefix "UNKNOWN live: minters of $gsa: the analysis does not list " ||
+    fail "3000 people beside the Workload Identity member: the witness read as missing"
+  want_text "FINDING user:person-3000@example.com: iam.serviceAccounts.getAccessToken" "the last of 3000 people"
+  [ "$(grep -c "^FINDING user:person-[0-9]*@example.com: .* on $gsa_res through roles/iam.serviceAccountTokenCreator, granted at $gsa_res$" <<<"$output")" -eq 3000 ] ||
+    fail "3000 people beside the Workload Identity member: not each of the 3000 is a finding on the operator's account"
+  passed "(q) a Policy Analyzer answer longer than a pipe holds still finds its witness, and names each of its 3000 people"
 fi
 
 # --- (t) IAM on a fleet member's own project. ---
@@ -514,4 +583,284 @@ dm_row() {
 if row dm; then
   each dm_row holder control misspelt unread
   passed "(dm) an agent's Google service account that may make or change a Deployment Manager deployment exits 1 naming it and the route, which a copy without the step misses; a misspelt name and a refused analysis read UNKNOWN"
+fi
+
+# --- (gp) An expanded group member that is a service account is still a finding. ---
+if row gp; then
+  base_world
+  jq -n --arg member "serviceAccount:$worker_gsa" '{"group:cluster-admins@example.com": [$member]}' >"$world/groups.json"
+  iam "$project_res" roles/container.admin group:cluster-admins@example.com
+  run
+  want_status 1 "a service account expanded from a group"
+  want_text "FINDING serviceAccount:$worker_gsa:" "a service account expanded from a group"
+
+  OPERATOR_MINTERS_GROUP_STUB=drop run
+  want_status 1 "a stub that drops expanded group members"
+  ! has_prefix "FINDING serviceAccount:$worker_gsa:" ||
+    fail "the group-members stub still named the expanded service account"
+  passed "(gp) a service account expanded from a group is a finding, which the stub control misses"
+fi
+
+# --- (gr) A group on a standing path is a finding as the group, whatever its members: whoever is
+# added to it holds what it holds with no grant and no second person, so a group with no member
+# today, or whose one member the reading accepts, is the path itself. A preview's group is the code
+# step's finding too, so no group is left to a live step that may not run (every live step refused,
+# as on a host with no sign-in). Controls: a copy that judges an expanded or declared group by its
+# members alone, as the reading did before, misses the accepted and the declared group. ---
+readonly ops_group=group:ops@example.com
+group_row() {
+  local script="$check"
+  base_world
+  case "$1" in
+    *-control)
+      script="$(script_copy "group-by-members-$1")"
+      plant "$(dirname "$script")/operator-token-minters/checks.sh" '      case "$how" in' \
+        $'      if [ "$how" = expanded ] || [ "$how" = code ]; then VERDICT=skip; return; fi\n      case "$how" in'
+      ;;
+  esac
+  case "$1" in
+    empty)
+      edit "$world/groups.json" '. + {($g): []}' --arg g "$ops_group"
+      iam "$gsa_res" roles/iam.serviceAccountTokenCreator "$ops_group"
+      ;;
+    accepted | accepted-control)
+      edit "$world/groups.json" '. + {($g): [$m]}' --arg g "$ops_group" --arg m "serviceAccount:service-$number@container-engine-robot.iam.gserviceaccount.com"
+      iam "$gsa_res" roles/iam.serviceAccountTokenCreator "$ops_group"
+      ;;
+    code | code-control)
+      refuse_live
+      edit "$world/preview.json" '.steps += [{op: "same", urn: "urn:pulumi:example::iam::gcp:serviceaccount/iAMMember:IAMMember::ops",
+        provider: "example-provider", newState: {urn: "urn:pulumi:example::iam::gcp:serviceaccount/iAMMember:IAMMember::ops", custom: true,
+        type: "gcp:serviceaccount/iAMMember:IAMMember",
+        inputs: {serviceAccountId: "projects/\($p)/serviceAccounts/\($gsa)", role: "roles/iam.serviceAccountTokenCreator", member: $g}}}]' \
+        --arg p "$project" --arg gsa "$gsa" --arg g "$ops_group"
+      ;;
+  esac
+  run_script="$script" run
+  local live="FINDING $ops_group: iam.serviceAccounts.getAccessToken, iam.serviceAccounts.getOpenIdToken, iam.serviceAccounts.signJwt, iam.serviceAccounts.signBlob, iam.serviceAccounts.implicitDelegation on $gsa_res through roles/iam.serviceAccountTokenCreator, granted at $gsa_res"
+  local declared="FINDING $ops_group: iam.serviceAccounts.getAccessToken, iam.serviceAccounts.getOpenIdToken, iam.serviceAccounts.signJwt, iam.serviceAccounts.signBlob, iam.serviceAccounts.implicitDelegation on $gsa_res through roles/iam.serviceAccountTokenCreator, declared by urn:pulumi:example::iam::gcp:serviceaccount/iAMMember:IAMMember::ops"
+  case "$1" in
+    empty)
+      want_status 1 "a group with no member minting the operator's token"
+      want_line "$live (a group the analysis lists no member of: an empty group, or one whose members it could not read; a finding either way)" "a group with no member"
+      ;;
+    accepted)
+      want_status 1 "a group whose one member is GKE's service agent"
+      want_line "$live (a group: whoever is added to it holds this, so it is a finding whatever its members; each member is judged too)" \
+        "a group whose one member is GKE's service agent"
+      ! has_prefix "FINDING serviceAccount:service-$number@container-engine-robot" || fail "a group whose one member is GKE's service agent: the agent is a finding"
+      ;;
+    code)
+      want_status 1 "a preview's group minting the operator's token, every live step refused"
+      want_line "$declared (a group: whoever is added to it holds this, so it is a finding whatever its members)" "a preview's group"
+      ! has_prefix "PASS code: IAM: " || fail "a preview's group: the code step passed"
+      ;;
+    accepted-control)
+      want_status 0 "the copy judging a group by its members, on a group of GKE's service agent"
+      ! has_prefix "FINDING $ops_group: " || fail "the copy judging a group by its members still named the group"
+      ;;
+    code-control)
+      want_status 2 "the copy judging a group by its members, on a preview's group"
+      ! has_prefix "FINDING $ops_group: " || fail "the copy judging a group by its members still named the declared group"
+      want_text "PASS code: IAM: " "the copy judging a group by its members, on a preview's group"
+      ;;
+  esac
+}
+if row gr; then
+  each group_row empty accepted code accepted-control code-control
+  passed "(gr) a group holding a checked permission is a finding as the group, with no member, with an accepted member alone, and declared by a preview while every live step is refused; a copy judging a group by its members misses the last two"
+fi
+
+# --- (rw) The renders bucket's writers. ---
+readonly writer_a="${render_writers[0]%%=*}" object_a="${render_writers[0]#*=}" object_b="${render_writers[1]#*=}"
+readonly renders_step="live: render writers of gs://$renders_bucket"
+render_writer_row() {
+  base_world
+  case "$1" in
+    clean)
+      run
+      want_status 0 "the applier and the four conditioned writers"
+      want_text "PASS $renders_step: " "the applier and the four conditioned writers"
+      ;;
+    people)
+      edit "$world/groups.json" '. + {"group:render-admins@example.com": ["user:admin@example.com"]}'
+      iam "$renders_res" roles/storage.admin user:owner@example.com group:render-admins@example.com
+      run
+      want_status 1 "a person, and a person in a group, with roles/storage.admin on the bucket"
+      for person in owner@example.com admin@example.com; do
+        want_line "FINDING user:$person: storage.objects.create, storage.objects.delete, storage.objects.update, storage.buckets.setIamPolicy, storage.buckets.update, storage.managedFolders.setIamPolicy on $renders_res through roles/storage.admin, granted at $renders_res" \
+          "$person with roles/storage.admin on the bucket"
+      done
+      ;;
+    stranger)
+      iam "$renders_res" roles/storage.admin "serviceAccount:$applier"
+      run
+      want_status 1 "another account with roles/storage.admin on the bucket"
+      want_text "FINDING serviceAccount:$applier: storage.objects.create, storage.objects.delete, storage.objects.update, storage.buckets.setIamPolicy, storage.buckets.update, storage.managedFolders.setIamPolicy on $renders_res through roles/storage.admin" \
+        "another account with roles/storage.admin on the bucket"
+      ;;
+    group)
+      edit "$world/groups.json" '. + {"group:render-admins@example.com": ["user:admin@example.com", $m]}' --arg m "serviceAccount:$applier"
+      iam "$renders_res" roles/storage.admin group:render-admins@example.com
+      run
+      want_status 1 "a group holding a service account"
+      want_text "FINDING serviceAccount:$applier: storage.objects.create, storage.objects.delete, storage.objects.update, storage.buckets.setIamPolicy, storage.buckets.update, storage.managedFolders.setIamPolicy on $renders_res" \
+        "a group holding a service account"
+      ;;
+    unconditioned)
+      iam "$renders_res" roles/example.renderWrite "serviceAccount:$writer_a"
+      run
+      want_status 1 "a writer's binding without its condition"
+      want_text "FINDING serviceAccount:$writer_a: storage.objects.create, storage.objects.delete on $renders_res through roles/example.renderWrite, granted at $renders_res, a render writer whose binding is not held to writes $object_a only" \
+        "a writer's binding without its condition"
+      ;;
+    other-object)
+      edit "$world/iam.json" 'map(if .members == [$m] then .condition.expression = $c else . end)' \
+        --arg m "serviceAccount:$writer_a" --arg c "$(render_condition "$object_b")"
+      run
+      want_status 1 "a writer held to another writer's object"
+      want_text "FINDING serviceAccount:$writer_a: " "a writer held to another writer's object"
+      want_text "(its condition: $(render_condition "$object_b"))" "a writer held to another writer's object"
+      ;;
+    single-quoted)
+      edit "$world/iam.json" 'map(if .members == [$m] then .condition.expression = $c else . end)' \
+        --arg m "serviceAccount:$writer_a" --arg c "resource.name == 'projects/_/buckets/$renders_bucket/objects/$object_a'"
+      run
+      want_status 0 "a writer's condition in single quotes"
+      ;;
+    code)
+      edit "$world/preview.json" '.steps += [
+        {op: "same", urn: "urn:pulumi:example::iam::gcp:storage/bucketIAMMember:BucketIAMMember::writer-a", provider: "example-provider",
+         newState: {type: "gcp:storage/bucketIAMMember:BucketIAMMember",
+                    inputs: {bucket: $b, role: "roles/example.renderWrite", member: $m, condition: {expression: $c, title: "writes"}}}},
+        {op: "same", urn: "urn:pulumi:example::iam::gcp:storage/bucketIAMMember:BucketIAMMember::stranger", provider: "example-provider",
+         newState: {type: "gcp:storage/bucketIAMMember:BucketIAMMember",
+                    inputs: {bucket: $b, role: "roles/example.renderWrite", member: $s}}}]' \
+        --arg b "$renders_bucket" --arg m "serviceAccount:$writer_a" --arg c "$(render_condition "$object_a")" --arg s "serviceAccount:$applier"
+      run
+      want_status 1 "a preview declaring a writer the flags do not name"
+      want_text "FINDING serviceAccount:$applier: storage.objects.create, storage.objects.delete on $renders_res through roles/example.renderWrite, declared by urn:pulumi:example::iam::gcp:storage/bucketIAMMember:BucketIAMMember::stranger" \
+        "a preview declaring a writer the flags do not name"
+      ! has_prefix "FINDING serviceAccount:$writer_a:" || fail "the declared writer under its own condition was a finding"
+      ;;
+    no-witness)
+      unbind "$renders_res" roles/storage.admin
+      run
+      want_status 2 "an answer that does not list the applier"
+      want_text "UNKNOWN $renders_step: the analysis does not list serviceAccount:$renders_admin" "an answer that does not list the applier"
+      ;;
+    empty)
+      printf '%s\n' "$renders_res" >"$world/empty-analysis-of"
+      run
+      want_status 2 "an empty answer"
+      want_text "UNKNOWN $renders_step: the analysis lists no holder of storage.objects.create" "an empty answer"
+      ;;
+    refused)
+      printf '%s\n' "$renders_res" >"$world/refuse-analyze-of"
+      run
+      want_status 2 "a refused answer"
+      want_text "UNKNOWN $renders_step: Policy Analyzer refused the analysis" "a refused answer"
+      ;;
+    no-bucket)
+      local args
+      mapfile -t args < <(args_without --renders-bucket)
+      run_only "${args[@]}"
+      want_status 2 "renders given without --renders-bucket"
+      want_text "UNKNOWN live: render writers of the renders bucket: no --renders-bucket" "renders given without --renders-bucket"
+      ;;
+    no-admin)
+      local args
+      mapfile -t args < <(args_without --renders-admin)
+      run_only "${args[@]}"
+      want_status 2 "renders given without --renders-admin"
+      want_text "UNKNOWN $renders_step: no --renders-admin" "renders given without --renders-admin"
+      ;;
+    cloud-run)
+      iam "$project_res" roles/run.serviceAgent "serviceAccount:service-$number@serverless-robot-prod.iam.gserviceaccount.com"
+      run
+      want_status 0 "the renders project's Cloud Run service agent"
+      want_line "ACCEPTED serviceAccount:service-$number@serverless-robot-prod.iam.gserviceaccount.com: roles/run.serviceAgent, granted at $project_res, a Google service agent of the renders bucket's project $project (number $number), accepted by $renders_step alone" \
+        "the renders project's Cloud Run service agent"
+      ;;
+    other-agent)
+      iam "$project_res" roles/run.serviceAgent "serviceAccount:service-999999999999@serverless-robot-prod.iam.gserviceaccount.com"
+      run
+      want_status 1 "another project's Cloud Run service agent"
+      want_text "FINDING serviceAccount:service-999999999999@serverless-robot-prod.iam.gserviceaccount.com: storage.objects.create, storage.objects.delete, storage.objects.update, storage.buckets.update on $renders_res" \
+        "another project's Cloud Run service agent"
+      ;;
+    lookalike)
+      iam "$project_res" roles/run.serviceAgent "serviceAccount:service-$number@example-other.iam.gserviceaccount.com"
+      run
+      want_status 1 "an account named service-<number> in another project"
+      want_text "FINDING serviceAccount:service-$number@example-other.iam.gserviceaccount.com: " "an account named service-<number> in another project"
+      ;;
+    managed-folder)
+      iam "$renders_res" roles/example.folderAdmin "serviceAccount:$applier"
+      run
+      want_status 1 "a holder of storage.managedFolders.setIamPolicy alone"
+      want_text "FINDING serviceAccount:$applier: storage.managedFolders.setIamPolicy on $renders_res through roles/example.folderAdmin" \
+        "a holder of storage.managedFolders.setIamPolicy alone"
+      ;;
+    no-project)
+      local args
+      mapfile -t args < <(args_without --renders-project)
+      run_only "${args[@]}"
+      want_status 2 "renders given without --renders-project"
+      want_text "UNKNOWN $renders_step: no --renders-project" "renders given without --renders-project"
+      ;;
+    project-unread)
+      run --renders-project example-unread
+      want_status 2 "a renders project whose number cannot be read"
+      want_text "UNKNOWN $renders_step: the number of the renders bucket's project example-unread cannot be read" \
+        "a renders project whose number cannot be read"
+      ;;
+    no-renders)
+      local args
+      mapfile -t args < <(args_without --rbac-render --secret-render --iam-preview)
+      run_only "${args[@]}"
+      ! has_prefix "$renders_step" || fail "the renders step ran with no render given"
+      ;;
+  esac
+}
+if row rw; then
+  each render_writer_row clean people stranger group unconditioned other-object single-quoted code no-witness empty refused no-bucket no-admin \
+    no-renders cloud-run other-agent lookalike managed-folder no-project project-unread
+  passed "(rw) the renders bucket's writers are the applier, the four conditioned writers and the bucket project's own service agents; a person, a person in a group, any other holder, a writer off its condition, a declared stranger, another project's agent and a managed folder's policy writer are findings; no applier, an empty or refused answer and a missing flag or project number read UNKNOWN"
+fi
+
+# --- (wp) The broker's Workload Identity principal on the operator's account. A deployment binds it
+# while the broker does not yet run as its account; it mints the operator's token as the broker's
+# account does, with no second person approving each use, so it is a finding as that grant is. ---
+broker_principal_of() {
+  printf 'principal://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s.svc.id.goog/subject/ns/%s/sa/%s' \
+    "$number" "$project" "$1" "$2"
+}
+broker_principal_row() {
+  base_world
+  case "$1" in
+    broker)
+      iam "$gsa_res" roles/iam.serviceAccountTokenCreator "$(broker_principal_of secrets-broker secrets-broker)"
+      run
+      want_status 1 "the broker's principal minting the operator's token"
+      want_line "FINDING $(broker_principal_of secrets-broker secrets-broker): iam.serviceAccounts.getAccessToken, iam.serviceAccounts.getOpenIdToken, iam.serviceAccounts.signJwt, iam.serviceAccounts.signBlob, iam.serviceAccounts.implicitDelegation on $gsa_res through roles/iam.serviceAccountTokenCreator, granted at $gsa_res" \
+        "the broker's principal minting the operator's token"
+      ;;
+    other-namespace)
+      iam "$gsa_res" roles/iam.serviceAccountTokenCreator "$(broker_principal_of legion worker)"
+      run
+      want_status 1 "another namespace's principal minting the operator's token"
+      want_text "FINDING $(broker_principal_of legion worker): " "another namespace's principal minting the operator's token"
+      ;;
+    other-role)
+      iam "$gsa_res" roles/iam.serviceAccountKeyAdmin "$(broker_principal_of secrets-broker secrets-broker)"
+      run
+      want_status 1 "the broker's principal holding another role on the operator's account"
+      want_text "FINDING $(broker_principal_of secrets-broker secrets-broker): " "the broker's principal holding another role on the operator's account"
+      ;;
+  esac
+}
+if row wp; then
+  each broker_principal_row broker other-namespace other-role
+  passed "(wp) the broker's Workload Identity principal minting the operator's token is a finding, as are another namespace's principal and the broker's holding another role"
 fi

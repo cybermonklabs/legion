@@ -6,7 +6,8 @@
 # --- code: IAM ---
 
 # covers CHECK KIND ID PROJECT: whether a binding the code declares on KIND ID (with the project its
-# resource names, for a secret) reaches the check's resource.
+# resource names, for a secret) reaches the check's resource. The renders bucket's project is no
+# flag, so a grant on that project is the live step's alone; one on the bucket is read here.
 covers() {
   local check="$1" kind="$2" id="$3" in_project="$4"
   case "$kind" in organization | folder) return 0 ;; esac
@@ -23,6 +24,7 @@ covers() {
       [ -z "$in_project" ] || [ "$in_project" = "$PROJECT" ] || [ "$in_project" = "${PROJECT_NUMBER:-}" ]
       ;;
     state:bucket) [ "${id#b/}" = "$BUCKET" ] ;;
+    renders:bucket) [ "${id#b/}" = "$RENDERS_BUCKET_NAME" ] ;;
     *) return 1 ;;
   esac
 }
@@ -41,6 +43,16 @@ else
   [ -n "$PROJECT_NUMBER" ] || PROJECT_NUMBER_ERROR="gcloud projects describe $PROJECT answered no projectNumber"
 fi
 CHECK_RESOURCE[signing]="$(resource_of signing)"
+# The renders bucket's project number, whose service agents the renders check accepts (checks.sh).
+# A number that cannot be read leaves those agents unknown, so the check is UNKNOWN, not clean.
+if [ -z "${CHECK_MISSING[renders]:-}" ]; then
+  if ! have gcloud ||
+    ! gcloud projects describe "$RENDERS_PROJECT" --format=json --quiet >"$WORK/renders-project.json" 2>"$WORK/renders-project.err" ||
+    ! RENDERS_PROJECT_NUMBER="$(jq -er '.projectNumber | select(type == "string" and test("^[0-9]+$"))' "$WORK/renders-project.json" 2>/dev/null)"; then
+    RENDERS_PROJECT_NUMBER=""
+    CHECK_MISSING[renders]="the number of the renders bucket's project $RENDERS_PROJECT cannot be read (gcloud projects describe needs resourcemanager.projects.get there): $(first_line "$WORK/renders-project.err" 2>/dev/null)"
+  fi
+fi
 
 step="code: IAM"
 if [ "${#IAM_PREVIEWS[@]}" -eq 0 ]; then
@@ -68,14 +80,14 @@ else
     printf '%s\n' "${permissions//,/$'\n'}" | sed '/^$/d' | sort -u >"$ROLE_FILE"
   done 3<"$WORK/preview.rec"
   judged=0
-  while IFS="$US" read -r -u 3 what a b c d e f; do
+  while IFS="$US" read -r -u 3 what a b c d e f g; do
     case "$what" in
       empty) unknown "$step" "$a lists no resource, so it shows nothing" ;;
       nosames) unknown "$step" "$a was made without --show-sames, so it leaves out every binding it does not change" ;;
       unknown) unknown "$step" "$a: the preview does not know its $b (it is computed when the program applies), so what it grants is unknown" ;;
       unread) unknown "$step" "$a: the check does not read $b, which can grant on the resources these checks are about" ;;
       binding)
-        # a: kind, b: id, c: the secret's project, d: role, e: member, f: urn
+        # a: kind, b: id, c: the secret's project, d: role, e: member, f: urn, g: condition
         for check in "${CHECKS[@]}"; do
           [ -z "${CHECK_MISSING[$check]:-}" ] || continue
           covers "$check" "$a" "$b" "$c" || continue
@@ -89,7 +101,7 @@ else
           judged=$((judged + 1))
           attached="$a:$b"
           [ "$a" != serviceaccount ] || attached="//iam.googleapis.com/projects/-/serviceAccounts/${b##*/}"
-          iam_verdict "$check" "$e" "$d" "$attached" code
+          iam_verdict "$check" "$e" "$d" "$attached" code "$g"
           [ "$VERDICT" != finding ] ||
             finding "$e" "$(held_text "$check" "$granted") on $(resource_of "$check") through $d, declared by $f$NOTE" \
               "$d" "$(resource_of "$check")" "$(held_list "$check" "$granted")" "$attached"
@@ -98,6 +110,6 @@ else
     esac
   done 3<"$WORK/preview.rec"
   if unchanged; then
-    pass "$step" "the previews grant the checked permissions to no one but people, Google's service agents and the accounts allowed by name ($judged grants read; a group they name is judged by its members in the live steps)"
+    pass "$step" "the previews grant the checked permissions to no one but Google's service agents and the accounts allowed by name, no person and no group among them ($judged grants read)"
   fi
 fi

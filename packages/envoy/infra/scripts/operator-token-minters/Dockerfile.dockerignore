@@ -1,0 +1,4 @@
+*
+!packages/envoy/infra/scripts/operator-token-minters.sh
+!packages/envoy/infra/scripts/operator-token-minters/
+!packages/envoy/infra/scripts/operator-token-minters/**

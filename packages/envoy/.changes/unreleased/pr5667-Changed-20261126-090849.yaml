@@ -1,0 +1,40 @@
+kind: Changed
+body: |-
+  `infra/scripts/operator-token-minters.sh` reads guarded token-Secret declarations from rendered
+  Kubernetes objects instead of listing Kubernetes Secrets, beside the token Secrets each guarded
+  ServiceAccount lists, and reads the operator's secret's admin and tier tags from its Secret
+  Manager annotations (`--secrets-prefix`) instead of through the broker. That secret is a finding
+  whatever its tags, since one person's approval releases it at most: an open route until
+  INFRA-840's grant door exists. No such secret passes only once `gcloud secrets list` of the
+  prefix's project lists a secret of that prefix, so a mistyped prefix reads UNKNOWN; the auditor
+  needs `secretmanager.secrets.list` there besides `secretmanager.secrets.get`. A Secret render that holds
+  no document or declares no Secret reads UNKNOWN, and the broker's pod fence is credited only while
+  every other pod in `dispatch` takes Secrets the renders declare. A new step lists who can write
+  the renders bucket (`--renders-bucket`, `--renders-project`, `--renders-admin`,
+  `--render-writer`), managed folders' policies included: anyone but the bucket's applier, each
+  writer under its own object's condition and the bucket project's own Google service agents is a
+  finding. A person is now a finding like any other holder, in every IAM step and in every RBAC
+  review, with the right and where it was granted: nobody holds the operator identity standing
+  (INFRA-840's R16), and a person's User subject is reviewed as every User is, an email-shaped one
+  on a fleet member that is no GKE cluster included. An IAM group holding a checked permission is a
+  finding as the group, whatever its members, in the live steps and in a preview alike, and each
+  member Policy Analyzer expands is judged besides. Another step makes a finding of each GKE cluster of the pool that no
+  `--audited-cluster` names. On another GKE Standard cluster of the pool, a system ServiceAccount
+  with a pod on a node is reviewed for every right that cluster's review asks. A guarded namespace
+  on another cluster of the pool now brings the operator's cluster's rights to that cluster's
+  review, each holder named, instead of being a finding of its own. The secrets broker's grant to
+  mint the operator's token is now a finding, as its account or as its Workload Identity principal:
+  no automated job holds the operator identity (R16), and the finding names it an open route until
+  INFRA-840's grant door exists. A User named by a Google service account's
+  uniqueId is judged as that account under the number too when the cluster also names it by email,
+  and every finding, credit and residual labels the operator's cluster
+  `cluster:<project>/<location>/<name>` as every other cluster is. A disabled GKE Hub API reads
+  UNKNOWN, `--fleet none` or not. An empty part of the check is refused before any step runs, a
+  step that reports nothing reads UNKNOWN, and `--report` lists each step's census state under
+  `steps`. The Kubernetes reads each live step makes are listed in `reads.json`. The minter auditor
+  image runs the check from a no-argument entrypoint with Job-pinned `MINTERS_AUDITOR_*`
+  environment variables, refuses a gcloud quota project, and is published and attested from main as
+  the worker image is.
+time: 2026-11-26T09:08:49Z
+custom:
+    Issue: pr5667

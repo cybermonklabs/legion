@@ -9,7 +9,7 @@
 # name is the operator's, and with two or more none is: the run says so, and reads none of them as
 # the operator's or as another cluster.
 step="live: clusters"
-CLUSTERS_LISTED=false CLUSTERS_COMPLETE=false OPERATOR_FOUND=false OPERATOR_LOCATION="$LOCATION"
+CLUSTERS_LISTED=false CLUSTERS_COMPLETE=false OPERATOR_FOUND=false OPERATOR_LOCATION="$LOCATION" POOL_LISTED=true
 # PROJECT_CLUSTERS: <project>/<location>/<name> of each cluster the project's list holds, which the
 # Workload Identity step reads, so its fleet part does not read one twice. GROUPS_CONFIG: the same
 # key's Google Groups for RBAC, `on:<security group>` or `off` (groups_verdict). CLUSTER_SETTINGS:
@@ -75,6 +75,7 @@ fi
 : >"$WORK/pool-clusters.tsv"
 if [ -n "$POOL_PROJECT" ] && [ "$POOL_PROJECT" != "$PROJECT" ]; then
   step="live: clusters of the pool project $POOL_PROJECT"
+  POOL_LISTED=false
   mark
   if ! have gcloud; then
     unknown "$step" "gcloud is not on PATH"
@@ -94,6 +95,8 @@ if [ -n "$POOL_PROJECT" ] && [ "$POOL_PROJECT" != "$PROJECT" ]; then
     done <"$WORK/pool-clusters.tsv"
     if grep -q 'did not respond' "$WORK/pool-clusters.err"; then
       unknown "$step" "gcloud container clusters list --project $POOL_PROJECT says its list is incomplete, so a cluster in a zone that did not answer is neither read nor counted: $(grep -m 1 'did not respond' "$WORK/pool-clusters.err" | sed 's/[[:cntrl:]]/ /g')"
+    else
+      POOL_LISTED=true
     fi
     if [ -s "$WORK/pool-clusters.tsv" ]; then
       ! unchanged || pass "$step" "the pool project runs $(awk -F'\t' '{ printf "%s%s (%s)", (NR > 1 ? ", " : ""), $1, $2 }' "$WORK/pool-clusters.tsv")"

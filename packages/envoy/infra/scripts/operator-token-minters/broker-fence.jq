@@ -101,19 +101,23 @@ def fence_secrets:
   + [((.spec.containers // []) + (.spec.initContainers // []) + (.spec.ephemeralContainers // []))[]
      | ((.env // [])[] | .valueFrom.secretKeyRef.name // empty), ((.envFrom // [])[] | .secretRef.name // empty)]
   | unique;
-# fence_pods($prefix; $account; $secrets): a namespace's pod list read for the account's shape, as
-# one record: the pods outside the fence's names ($prefix*) that run as $account or take a Secret of
-# the broker's, each written with what it runs as and takes; and how many witness pods there are,
-# those named $prefix* that run as $account. The broker's Secrets are $secrets (--db-secret and the
-# namespace's token Secrets) and every Secret a witness pod takes.
-def fence_pods($prefix; $account; $secrets):
+# fence_pods($prefix; $account; $secrets; $declared): a namespace's pod list read for the account's
+# shape, as one record: the pods outside the fence's names ($prefix*) that run as $account, take a
+# Secret of the broker's, or take a Secret $declared does not name, each written with what it runs
+# as and takes; and how many witness pods there are, those named $prefix* that run as $account. The
+# broker's Secrets are $secrets (--db-secret and the guarded pairs' token Secrets there) and every
+# Secret a witness pod takes; $declared names each Secret of the namespace the Secret renders
+# declare, and a Secret no render declares may hold the broker's token, which the check cannot read.
+def fence_pods($prefix; $account; $secrets; $declared):
   [objs | {name: .metadata.name, account: (.spec.serviceAccountName // .spec.serviceAccount // "default"), secrets: fence_secrets}] as $pods
   | [$pods[] | select((.name | startswith($prefix)) and .account == $account)] as $witness
   | ($secrets + [$witness[].secrets[]] | unique) as $held
   | [$pods[] | select(.name | startswith($prefix) | not)
-     | . + {takes: [.secrets[] | select(. as $s | any($held[]; . == $s))]}
-     | select(.account == $account or (.takes | length) > 0)
-     | "\(.name) (runs as \(.account)\(if (.takes | length) > 0 then ", takes \(.takes | join(", "))" else "" end))"] as $outside
+     | . + {takes: [.secrets[] | select(. as $s | any($held[]; . == $s))],
+            undeclared: [.secrets[] | select(. as $s | any($held[]; . == $s) or any($declared[]; . == $s) | not)]}
+     | select(.account == $account or (.takes | length) > 0 or (.undeclared | length) > 0)
+     | "\(.name) (runs as \(.account)\(if (.takes | length) > 0 then ", takes \(.takes | join(", "))" else "" end)"
+       + "\(if (.undeclared | length) > 0 then ", takes \(.undeclared | join(", ")), which no --secret-render declares" else "" end))"] as $outside
   | [($outside | join("; ")), ($witness | length)] | rec;
 # fence_refuses($fence; $r): the policy that refuses $r's use on the broker's pods, $r a right as
 # rights_json writes it, while $fence ({namespace, account, direct}) is credited; nothing for any

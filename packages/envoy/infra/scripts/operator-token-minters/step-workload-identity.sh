@@ -8,18 +8,24 @@
 pool_name="the workload pool's project"
 [ -z "$POOL_PROJECT" ] || pool_name="project $POOL_PROJECT"
 
-# read_other_cluster STEP PRINCIPAL WHERE GROUPS [SETTINGS]: on the cluster KUBE names, no guarded
-# pair's namespace may exist (else a finding for PRINCIPAL, the cluster), and no ServiceAccount
-# outside the cluster's system namespaces, none of Kubernetes' own groups, and no binding subject
-# may hold a right of GUARD_RIGHTS, a custom or admission resource's right from the cluster's
-# discovery, a write of a binding or a role in a namespace that holds a RoleBinding
+# read_other_cluster STEP PRINCIPAL WHERE GROUPS [SETTINGS [AUTOPILOT]]: on the cluster KUBE names, no
+# ServiceAccount outside the cluster's system namespaces, none of Kubernetes' own groups, and no
+# binding subject may hold a right of GUARD_RIGHTS, a custom or admission resource's right from the
+# cluster's discovery, a write of a binding or a role in a namespace that holds a RoleBinding
 # (binding_rights), or any of those limited by name (each a finding, its right followed by WHERE);
 # every binding of system:masters but the bootstrap one is a finding, and its other Group subjects
 # are judged by GROUPS, where the cluster takes its groups from (groups_verdict), and SETTINGS by
-# settings_verdict. The reviews carry the witness. PASS when it recorded neither a finding nor an
-# UNKNOWN.
+# settings_verdict. AUTOPILOT, the GKE cluster's autopilot_of mode ("" for no GKE cluster), judges
+# its system ServiceAccounts that run on its nodes (node_escape). The reviews carry the witness.
+# PASS when it recorded neither a finding nor an UNKNOWN. A guarded pair's namespace that exists
+# there names no principal of its own: its ServiceAccount acts as the pair's Google account through
+# the pool, so the cluster is reviewed with the operator's cluster's rights too (RIGHTS_TABLE, and
+# the Secrets the renders declare), each holder a named finding with the cluster's label, and a
+# REVIEWED line says so. What that review cannot see is a privileged or hostPath pod on a node of a
+# GKE Standard cluster reading the ServiceAccount's token, which is UNKNOWN, as on the operator's.
 read_other_cluster() {
-  local cstep="$1" principal="$2" where="$3" groups_mode="$4" settings="${5:-}" ns name pair acts accounts=0
+  local cstep="$1" principal="$2" where="$3" groups_mode="$4" settings="${5:-}" autopilot="${6:-}" ns name pair acts accounts=0
+  local -a present=()
   local -A exists=()
   mark
   for pair in "${GUARDED[@]}"; do
@@ -34,11 +40,17 @@ read_other_cluster() {
       fi
     fi
     [ "${exists[$ns]}" = yes ] || continue
+    present+=("$pair")
+  done
+  for pair in ${present[@]+"${present[@]}"}; do
     acts="the Google service account the pool binds it to"
     [ "$pair" != "$NAMESPACE/$KSA" ] || acts="$operator_account"
     [ -z "$BROKER" ] || [ "$pair" != "$BROKER_WORKLOAD" ] || acts="the broker account $BROKER"
-    finding "$principal" "namespace $ns exists there, so its ServiceAccount $pair acts as $acts through the workload pool $POOL_PROJECT.svc.id.goog" \
-      "namespace $ns, guarding $pair" "$principal" "" ""
+    echo "REVIEWED $principal: namespace ${pair%%/*} exists there, so its ServiceAccount $pair acts as $acts through the workload pool $POOL_PROJECT.svc.id.goog; the cluster is reviewed with the operator's cluster's rights"
+    case "$autopilot" in
+      "" | true) ;;
+      *) unknown "$cstep" "the cluster is not GKE Autopilot and holds the guarded namespace ${pair%%/*}, so a privileged or hostPath pod on a node can read the token of $pair there, a node escape no RBAC review here sees" ;;
+    esac
   done
   if ! kubectl --kubeconfig "$KUBE" get serviceaccounts --all-namespaces -o json >"$WORK/serviceaccounts.json" 2>"$WORK/serviceaccounts.err"; then
     unknown "$cstep" "the API server refused the ServiceAccounts' list (it needs list on serviceaccounts, container.serviceAccounts.list on GKE): $(first_line "$WORK/serviceaccounts.err")"
@@ -71,6 +83,8 @@ read_other_cluster() {
   # beside the guard rights, and live_named reads the rules that limit any of them by name from
   # this cluster's own roles; step-rbac.sh says why.
   guard_rights="$(with_rights "$(with_rights "$(with_rights "$(with_rights "$GUARD_RIGHTS" "$CUSTOM_RIGHTS")" "$ADMISSION_RIGHTS")" "$POWER_RIGHTS")" "$BINDING_RIGHTS")"
+  # A guarded namespace there: the operator's cluster's rights too.
+  [ "${#present[@]}" -eq 0 ] || guard_rights="$(with_rights "$(with_rights "$guard_rights" "$(rights_json)")" "$SECRET_RIGHTS")"
   # A cluster that is no GKE cluster runs kube-controller-manager's own approver of kubelet client
   # certificates (NODE_CLIENT_RIGHTS).
   [ "$groups_mode" != own ] || guard_rights="$(with_rights "$guard_rights" "$NODE_CLIENT_RIGHTS")"
@@ -87,8 +101,9 @@ read_other_cluster() {
     csr_chains "$where" "$principal"
     follow_becomes "$KUBE" "$cstep" "$where" "$principal"
     remember_cluster "$KUBE" "$cstep" "$where" "$principal"
+    node_escape "$cstep" "$where" "$principal" "$autopilot" "$guard_rights"
     ! unchanged ||
-      pass "$cstep" "no guarded namespace ($GUARDED_TEXT), and none of its $accounts ServiceAccounts outside the system namespaces, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects and anyone unauthenticated may make a namespace, a ServiceAccount, a pod or a custom resource in a guarded namespace, write a webhook or admission policy, or hold an escalation right"
+      pass "$cstep" "$([ "${#present[@]}" -eq 0 ] && echo "no guarded namespace ($GUARDED_TEXT), and none" || echo "the guarded namespaces there reviewed with the operator's cluster's rights, and none") of its $accounts ServiceAccounts outside the system namespaces, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects and anyone unauthenticated may make a namespace, a ServiceAccount, a pod or a custom resource in a guarded namespace, write a webhook or admission policy, or hold an escalation right"
   fi
 }
 
@@ -118,8 +133,9 @@ else
       unknown "$cstep" "$KUBE_ERROR"
       continue
     fi
+    autopilot_of "$cluster" "$location" "$PROJECT"
     read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "${GROUPS_CONFIG["$label"]:-unknown:the cluster list gave no authenticatorGroupsConfig}" \
-      "${CLUSTER_SETTINGS["$label"]:-}"
+      "${CLUSTER_SETTINGS["$label"]:-}" "$AUTOPILOT_MODE"
   done 5<"$WORK/clusters.tsv"
 fi
 
@@ -139,8 +155,9 @@ while IFS=$'\t' read -r -u 5 cluster location _; do
     continue
   fi
   member_project_iam "$POOL_PROJECT"
+  autopilot_of "$cluster" "$location" "$POOL_PROJECT"
   read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "${GROUPS_CONFIG["$label"]:-unknown:the cluster list gave no authenticatorGroupsConfig}" \
-    "${CLUSTER_SETTINGS["$label"]:-}"
+    "${CLUSTER_SETTINGS["$label"]:-}" "$AUTOPILOT_MODE"
 done 5<"$WORK/pool-clusters.tsv"
 
 # fleet_memberships: every membership of the pool project's fleet, from the GKE Hub API, every
@@ -161,7 +178,11 @@ fleet_memberships() {
 
 # hub_list COLLECTION PERMISSION PAGES: every page of the GKE Hub API's
 # projects/$POOL_PROJECT/locations/-/COLLECTION, each page's JSON a line of PAGES. Returns 1 with
-# HUB_ERROR, naming PERMISSION, when the listing was refused or a page is not JSON.
+# HUB_ERROR, naming PERMISSION, when the listing was refused or a page is not JSON. A refusal
+# because the API is disabled in the pool project (403, SERVICE_DISABLED) is no empty listing:
+# Google keeps a disabled service's resources, a membership among them, while the API refuses to
+# list them, and whoever holds serviceusage.services.disable there, which no step here reads, can
+# turn it off; so it is HUB_ERROR too, naming the cause.
 hub_list() {
   local token page="" quoted_page pages=0 status why
   HUB_ERROR=""
@@ -196,6 +217,17 @@ hub_list() {
     } | curl -sS --fail-with-body --max-time 60 -G -K - --data-urlencode pageSize=100 \
       "https://gkehub.googleapis.com/v1/projects/$POOL_PROJECT/locations/-/$1" >"$WORK/hub-page.json" 2>"$WORK/hub.err" || status=$?
     if [ "$status" -ne 0 ]; then
+      if jq -e --arg project "$POOL_PROJECT" '
+        .error.code == 403
+        and any(.error.details[]?;
+          .reason == "SERVICE_DISABLED"
+          and .metadata.service == "gkehub.googleapis.com"
+          and ((.metadata.consumer // "") == ("projects/" + $project) or (.metadata.project // "") == $project)
+        )
+      ' "$WORK/hub-page.json" >/dev/null 2>&1; then
+        HUB_ERROR="the GKE Hub API is disabled in project $POOL_PROJECT (SERVICE_DISABLED), and refused the listing of projects/$POOL_PROJECT/locations/-/$1; Google keeps a disabled service's resources, so one registered there is not read, and whoever holds serviceusage.services.disable on the project can turn the API off, so a disabled API is never read as none: enable gkehub.googleapis.com there, and --fleet none then passes a listing that holds none"
+        return 1
+      fi
       why="$(jq -r '[.error.code, .error.status, .error.message] | map(select(. != null) | tostring) | join(" ")' "$WORK/hub-page.json" 2>/dev/null |
         sed -n '1{s/[[:cntrl:]]/ /g;p;}')" || true
       [ -n "$why" ] || why="$(last_line "$WORK/hub.err")"
@@ -249,6 +281,9 @@ rbac_only() {
 # be told from one that saw nothing, so it is UNKNOWN, unless --fleet none says the pool has no
 # fleet; with it, each membership listed is a finding. The fleet's scopes are read beside it.
 step="live: Workload Identity: the fleet of $pool_name"
+# FLEET_LISTED: whether $WORK/fleet.rec holds every membership of the fleet, which the audited
+# clusters step reads (step-audited-clusters.sh).
+FLEET_LISTED=false
 if [ -z "$POOL_PROJECT" ]; then
   unknown "$step" "no --project or --pool-project: the workload pool's project is not named"
 elif ! have gcloud; then
@@ -258,9 +293,11 @@ else
   if ! fleet_memberships; then
     unknown "$step" "$FLEET_ERROR"
   else
+    FLEET_LISTED=true
     # A GKE member read here in a project other than --project adds to OTHER_PROJECTS.
     while IFS="$US" read -r -u 6 what id location gke_project gke_location gke_cluster; do
       if [ "$what" = unreachable ]; then
+        FLEET_LISTED=false
         unknown "$step" "the listing could not reach the locations $id, so a membership registered there is not listed"
         continue
       fi
@@ -301,7 +338,8 @@ else
         groups_config_of "$gke_cluster" "$gke_location" "$gke_project"
         # The member's own project's IAM first (its own step), then its cluster.
         [ -z "$member_project" ] || member_project_iam "$member_project"
-        read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "$GROUPS_MODE" "${CLUSTER_SETTINGS["$label"]:-}"
+        autopilot_of "$gke_cluster" "$gke_location" "$gke_project"
+        read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "$GROUPS_MODE" "${CLUSTER_SETTINGS["$label"]:-}" "$AUTOPILOT_MODE"
       else
         here=$((here + 1))
         label="$POOL_PROJECT/$location/$id"
@@ -317,15 +355,17 @@ else
         read_other_cluster "$cstep" "membership:$label" " on fleet member $label" own
       fi
     done 6<"$WORK/fleet.rec"
-    [ "$members" -gt 0 ] || [ "$FLEET" = none ] ||
+    if [ "$members" -eq 0 ] && [ "$FLEET" != none ]; then
+      FLEET_LISTED=false
       unknown "$step" "the GKE Hub API lists no membership in the fleet, so an answer that saw nothing cannot be told from a fleet that holds none (--fleet none says it has none)"
-  fi
-  fleet_scopes
-  if [ "${#FINDINGS[@]}" -eq "$fleet_f" ] && [ "${#UNKNOWNS[@]}" -eq "$fleet_u" ]; then
-    if [ "$members" -eq 0 ]; then
-      pass "$step" "the GKE Hub API lists no membership in the fleet, as --fleet none says, and the fleet holds no scope"
-    else
-      pass "$step" "$members membership(s) listed, every location reached: $own the operator's cluster, $above read above as clusters of the project, $here read here, and the fleet holds no scope"
+    fi
+    fleet_scopes
+    if [ "${#FINDINGS[@]}" -eq "$fleet_f" ] && [ "${#UNKNOWNS[@]}" -eq "$fleet_u" ]; then
+      if [ "$members" -eq 0 ]; then
+        pass "$step" "the GKE Hub API lists no membership in the fleet, as --fleet none says, and the fleet holds no scope"
+      else
+        pass "$step" "$members membership(s) listed, every location reached: $own the operator's cluster, $above read above as clusters of the project, $here read here, and the fleet holds no scope"
+      fi
     fi
   fi
 fi

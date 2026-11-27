@@ -172,3 +172,7 @@ live_iam sql
 live_iam dbsecret "the RBAC step's principals' get on it is in that step"
 live_iam state
 live_iam signing
+
+# --- live: who could have written the renders and previews the code steps read (checks.sh,
+# renders): with no render given there is nothing to vouch for, and the step does not run. ---
+[ "${CHECK_MISSING[renders]:-}" = skip ] || live_iam renders

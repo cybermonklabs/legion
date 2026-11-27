@@ -17,9 +17,9 @@
 #     placeholder in a plugin download URL, which Pulumi substitutes with the plugin version at
 #     install time, so this script must emit it uninterpolated - hence the single quotes around it
 #     below, and hence a caller must not pass it through a second round of shell expansion.
-#   * worker_image and envoy_image lowercase nothing. ghcr.io rejects an upper-case path, but the
-#     owner and name here are already lowercase, and $GITHUB_REPOSITORY carries the owner as
-#     GitHub spells it, so lowercasing would only hide the day an owner is not.
+#   * worker_image, minters_auditor_image and envoy_image lowercase nothing. ghcr.io rejects an
+#     upper-case path, but the owner and name here are already lowercase, and $GITHUB_REPOSITORY
+#     carries the owner as GitHub spells it, so lowercasing would only hide the day an owner is not.
 #   * repository_url spells the owner exactly as $GITHUB_REPOSITORY does, because npm matches a
 #     package's repository.url against the repository publishing it case-sensitively (npm docs,
 #     "Generating provenance statements", Prerequisites): a case-folded owner there fails the
@@ -46,6 +46,7 @@ name=${repository#*/}
 
 keys=(
   worker_image
+  minters_auditor_image
   envoy_image
   plugin_download_url
   repository_url
@@ -56,6 +57,7 @@ keys=(
 # shellcheck disable=SC2016 # the literal ${VERSION} is Pulumi's placeholder, substituted by Pulumi
 values=(
   "ghcr.io/${repository}-worker"
+  "ghcr.io/${repository}/minters-auditor"
   "ghcr.io/${repository}/envoy"
   "https://github.com/${repository}/releases/download/envoy-infra-v"'${VERSION}'
   "https://github.com/${repository}"

@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2016,SC2034,SC2154 # fake_bin is the test's; each single-quoted $name is jq's or a fake's own, not this shell's
-# operator-token-minters/test-fakes.sh: the fake kubectl, gcloud, agent-secrets and curl that
+# operator-token-minters/test-fakes.sh: the fake kubectl, gcloud and curl that
 # operator-token-minters.test.sh puts first on PATH, each answering from the world directory a run
 # names. Sourced by the test, whose header says what each fake models.
 # fake writes the fake command $1 from the body on stdin, after the header every fake shares: the
@@ -28,6 +28,20 @@ for arg in "$@"; do
 done
 refuse() { echo "ERROR: (gcloud.$1) PERMISSION_DENIED: $2" >&2; exit 1; }
 case "${words[*]}" in
+  "iam service-accounts list")
+    # A project's service accounts, from service-accounts/<project>.json; a project the world
+    # holds none for is refused, as IAM refuses iam.serviceAccounts.list to a caller without it.
+    [ -e "$world/service-accounts/${flag[project]:-}.json" ] ||
+      refuse iam.service-accounts.list "Permission 'iam.serviceAccounts.list' denied on resource (or it may not exist)."
+    cat "$world/service-accounts/${flag[project]:-}.json"
+    ;;
+  "iam service-accounts describe "*)
+    # A service account by its uniqueId, from unique-ids.json ({uniqueId: email}), or NOT_FOUND.
+    id="${words[3]}"
+    email="$(jq -r --arg id "$id" '.[$id] // ""' "$world/unique-ids.json" 2>/dev/null || true)"
+    [ -n "$email" ] || { echo "ERROR: (gcloud.iam.service-accounts.describe) NOT_FOUND: Unknown service account." >&2; exit 1; }
+    jq -n --arg e "$email" --arg id "$id" '{email: $e, uniqueId: $id, name: "projects/-/serviceAccounts/\($e)"}'
+    ;;
   "iam roles describe "*)
     role="${words[3]}"
     [ ! -e "$world/refuse-describe" ] || refuse iam.roles.describe "Permission 'iam.roles.get' denied on resource (or it may not exist)."
@@ -49,6 +63,51 @@ case "${words[*]}" in
       { echo "ERROR: (gcloud.projects.describe) NOT_FOUND: Project $other not found or permission denied." >&2; exit 1; }
     jq -n --arg p "$other" --arg n "$(<"$world/numbers/$other")" \
       '{projectId: $p, projectNumber: $n, name: $p, lifecycleState: "ACTIVE", parent: {type: "organization", id: "100"}}'
+    ;;
+  "secrets list")
+    # A project's secrets, as `gcloud secrets list --format=json` prints them, every page: each
+    # `name` the full resource name projects/<number>/secrets/<id> (read with gcloud 594.0.0 on
+    # 2026-11-27: `gcloud secrets list --project=<id> --limit=1 --format=json` of a real project
+    # printed its one secret's name in that form, the project by its number). The world's project,
+    # by its number or its ID, holds agent-secrets-<slug> for each secrets/<NAME>.json and each id
+    # other-secrets lists, one a line; any other project holds none. refuse-secret-list answers as a
+    # caller without secretmanager.secrets.list is answered.
+    [ ! -e "$world/refuse-secret-list" ] ||
+      refuse secrets.list "Permission 'secretmanager.secrets.list' denied for resource 'projects/${flag[project]:-}' (or it may not exist)."
+    case "${flag[project]:-}" in
+      "$number" | "$project")
+        {
+          for file in "$world"/secrets/*.json; do
+            [ -e "$file" ] || continue
+            name="$(basename "$file" .json)"
+            printf 'agent-secrets-%s\n' "$(printf '%s' "$name" | tr 'A-Z_' 'a-z-')"
+          done
+          cat "$world/other-secrets" 2>/dev/null || true
+        } | jq -R -s --arg n "$number" '[split("\n")[] | select(length > 0) | {name: "projects/\($n)/secrets/\(.)", replication: {automatic: {}}}]'
+        ;;
+      *) echo '[]' ;;
+    esac
+    ;;
+  "secrets describe "*)
+    # A broker secret, as Secret Manager holds it: projects/<number>/secrets/agent-secrets-<slug>,
+    # its broker tags as the secret's annotations, an empty tag as none (secrets/<NAME>.json holds
+    # the broker's view of it). Refused and missing secrets answer as gcloud 593.0.0 does (read on
+    # 2026-11-26). admin-outside-annotations puts admin beside the annotations instead, as a field
+    # Secret Manager does not have: the control that the check reads the annotations alone.
+    id="${words[2]}"
+    [ ! -e "$world/refuse-secret-show" ] ||
+      refuse secrets.describe "Permission 'secretmanager.secrets.get' denied for resource '$id' (or it may not exist)."
+    [[ "$id" =~ ^projects/$number/secrets/agent-secrets-([a-z0-9-]+)$ ]] ||
+      { echo "ERROR: (gcloud.secrets.describe) NOT_FOUND: Secret [$id] not found." >&2; exit 1; }
+    name="$(printf '%s' "${BASH_REMATCH[1]}" | tr 'a-z-' 'A-Z_')"
+    [ -e "$world/secrets/$name.json" ] ||
+      { echo "ERROR: (gcloud.secrets.describe) NOT_FOUND: Secret [$id] not found." >&2; exit 1; }
+    jq --arg id "$id" --arg outside "$([ -e "$world/admin-outside-annotations" ] && echo true || echo false)" '
+      ({owner, tier, type, github_owners, requesters, scopes, admin, max_grant, default_grant}
+       | with_entries(select(.value != null and .value != ""))) as $tags
+      | {name: $id, createTime: .created, etag: "\"example\"", replication: {automatic: {}}}
+      + if $outside == "true" then {annotations: ($tags | del(.admin)), admin: .admin} else {annotations: $tags} end' \
+      "$world/secrets/$name.json"
     ;;
   "projects get-ancestors "*)
     # A project's own ancestors when the world holds them (ancestors/<project>.json), else the
@@ -136,6 +195,12 @@ case "${words[*]}" in
       [ -z "${flag[$kind]:-}" ] || scope="$kind/${flag[$kind]}"
     done
     [ ! -e "$world/refuse-analyze" ] || refuse asset.analyze-iam-policy "Permission 'cloudasset.assets.analyzeIamPolicy' denied on resource '//cloudresourcemanager.googleapis.com/${scope/\//s/}' (or it may not exist)."
+    # refuse-analyze-search answers as Google answered a reader that holds analyzeIamPolicy and not
+    # searchAllResources, on 2026-11-20.
+    [ ! -e "$world/refuse-analyze-search" ] || refuse asset.analyze-iam-policy "Caller doesn't have cloudasset.assets.searchAllResources permission on the requested scope"
+    # refuse-analyze-of and empty-analysis-of name one resource whose analysis alone is refused or empty.
+    ! grep -qxF -- "${flag[full-resource-name]:-}" "$world/refuse-analyze-of" 2>/dev/null ||
+      refuse asset.analyze-iam-policy "Permission 'cloudasset.assets.analyzeIamPolicy' denied on resource '${flag[full-resource-name]}'."
     # A binding on the resource, on the project that holds it (a bucket's `_` and the project
     # number are this world's project), or, from the organization's scope, on the organization.
     # With --analyze-service-account-impersonation, each service account among the holders gets an
@@ -145,9 +210,10 @@ case "${words[*]}" in
       --arg project "$project" --arg number "$number" \
       --arg org_res "//cloudresourcemanager.googleapis.com/organizations/100" \
       --arg expand_groups "${flag[expand-groups]:-}${flag[output-group-edges]:-}" --arg expand_roles "${flag[expand-roles]:-}" \
+      --arg group_stub "${OPERATOR_MINTERS_GROUP_STUB:-}" \
       --arg impersonation "${flag[analyze-service-account-impersonation]:-}" \
       --arg explored "$([ -e "$world/not-explored" ] && echo false || echo true)" \
-      --arg empty "$([ -e "$world/empty-analysis" ] && echo true || echo false)" \
+      --arg empty "$({ [ -e "$world/empty-analysis" ] || grep -qxF -- "${flag[full-resource-name]:-}" "$world/empty-analysis-of" 2>/dev/null; } && echo true || echo false)" \
       --slurpfile iam "$world/iam.json" --slurpfile roles "$world/roles.json" --slurpfile groups "$world/groups.json" '
       def results($res; $asked):
         ((([$res | capture("/projects/(?<p>[^/]+)") | .p] | first) // "") as $p
@@ -161,12 +227,12 @@ case "${words[*]}" in
             | ([$b.members[] | select(startswith("group:")) | . as $g | ($groups[0][$g] // [])[] | {sourceNode: $g, targetNode: .}]) as $edges
             | {
                 attachedResourceFullName: $b.attached,
-                iamBinding: {role: $b.role, members: $b.members},
+                iamBinding: ({role: $b.role, members: $b.members} + (if $b.condition then {condition: $b.condition} else {} end)),
                 accessControlLists: [{
                   resources: [{fullResourceName: $res}],
                   accesses: (if $expand_roles == "true" then [$held[] | {permission: .}] else [{role: $b.role}] end)
                 }],
-                identityList: (if $expand_groups == "truetrue"
+                identityList: (if $expand_groups == "truetrue" and $group_stub != "drop"
                   then {identities: ([$b.members[], $edges[].targetNode] | unique | map({name: .})), groupEdges: $edges}
                   else {identities: ($b.members | map({name: .}))} end),
                 fullyExplored: true
@@ -209,6 +275,59 @@ done
 read -r _ cluster <"$kubeconfig"
 dir="$world/clusters/$cluster"
 [ -d "$dir" ] || { echo "fake kubectl: no cluster $cluster" >&2; exit 2; }
+record_read() {
+  local step verb group resource url=""
+  emit() {
+    printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "${5:-}" >>"$world/kubectl-calls.tsv"
+  }
+  case "${args[*]}" in
+    "create -f - -o json") emit reviews.sh create authorization.k8s.io subjectaccessreviews ;;
+    "get serviceaccounts --all-namespaces -o json")
+      if [ "$cluster" = operator-cluster ]; then step=step-rbac.sh; else step=step-workload-identity.sh; fi
+      emit "$step" list "" serviceaccounts
+      ;;
+    "get clusterrolebindings,rolebindings --all-namespaces -o json")
+      emit reviews.sh list rbac.authorization.k8s.io clusterrolebindings
+      emit reviews.sh list rbac.authorization.k8s.io rolebindings
+      ;;
+    "get roles,clusterroles --all-namespaces -o json")
+      emit reviews.sh list rbac.authorization.k8s.io roles
+      emit reviews.sh list rbac.authorization.k8s.io clusterroles
+      ;;
+    "get namespace "*" -o name") emit step-workload-identity.sh get "" namespaces ;;
+    "get pods --all-namespaces -o json") emit node-escape.sh list "" pods ;;
+    "get pods -n "*" -o json") emit broker-fence.sh list "" pods ;;
+    "get service -n "*" -o json") emit admission-backends.sh get "" services ;;
+    "get mutatingwebhookconfigurations,validatingwebhookconfigurations -o json")
+      emit admission-backends.sh list admissionregistration.k8s.io mutatingwebhookconfigurations
+      emit admission-backends.sh list admissionregistration.k8s.io validatingwebhookconfigurations
+      ;;
+    "get customresourcedefinitions -o json") emit admission-backends.sh list apiextensions.k8s.io customresourcedefinitions ;;
+    "get workloadallowlists.auto.gke.io -o json") emit admission-backends.sh list auto.gke.io workloadallowlists ;;
+    "get validatingadmissionpolicies.admissionregistration.k8s.io,validatingadmissionpolicybindings.admissionregistration.k8s.io -o json")
+      # broker-fence.sh's read; param_rights (admission-backends.sh) makes the same call when the
+      # discovery lists these two alone, and the same two list rights serve both.
+      emit broker-fence.sh list admissionregistration.k8s.io validatingadmissionpolicies
+      emit broker-fence.sh list admissionregistration.k8s.io validatingadmissionpolicybindings
+      ;;
+    "get "*"admissionpolicies"*" -o json")
+      local resource
+      for resource in ${args[1]//,/ }; do emit admission-backends.sh list admissionregistration.k8s.io "${resource%%.*}"; done
+      ;;
+    "get --raw /metrics") emit reviews.sh get "" "" /metrics ;;
+    # A discovery document, as a ClusterRole's nonResourceURLs grants it: /api/* or /apis/*.
+    "get --raw /apis/"*) emit admission-backends.sh get "" "" "/apis/*" ;;
+    "get --raw /api/"*) emit admission-backends.sh get "" "" "/api/*" ;;
+    "api-resources --namespaced=true --verbs=create -o name" | "api-resources --namespaced=false -o name" | "api-resources --api-group=admissionregistration.k8s.io -o name")
+      emit reviews.sh get "" "" /api
+      emit reviews.sh get "" "" /apis
+      emit reviews.sh get "" "" /apis/*
+      ;;
+    # A call this recorder does not map is recorded as one, so no call goes unchecked.
+    *) emit UNMAPPED "${args[*]}" "" "" "" ;;
+  esac
+}
+record_read
 forbidden() {
   echo "Error from server (Forbidden): $1 is forbidden: User \"reader@example-project.iam.gserviceaccount.com\" cannot $2 at the cluster scope: requires one of [\"$3\"] permission(s)." >&2
   exit 1
@@ -256,6 +375,12 @@ case "${args[*]}" in
     #   review-follow-nostatus answers a follow round's reviews with no status (row cy);
     #   review-witness-copied answers the witness's reviews with copies of the first other review,
     #   and review-repeated answers the last review with a copy of the first, keeping the count (row cy).
+    # A review a grant answers is allowed, its reason the binding's as the RBAC authorizer writes it
+    # (k8s.io/kubernetes plugin/pkg/auth/authorizer/rbac, the bindings' describers): from the
+    # grant's binding_name and role_name when it has them, which name the binding and role the
+    # bindings' and roles' lists hold too, so a row cannot give the reason a third name; else its
+    # binding text. A grant with `error` answers its review with that evaluation error and no
+    # verdict, as an authorizer that failed to decide does (rows ne and nu).
     while ! mkdir "$dir/review-calls.lock" 2>/dev/null; do :; done
     calls=$(( $(cat "$dir/review-calls" 2>/dev/null || echo 0) + 1 ))
     echo "$calls" >"$dir/review-calls"
@@ -299,11 +424,17 @@ case "${args[*]}" in
                 and (.verb == "*" or .verb == ($a.verb // "")) and (.group == "*" or .group == ($a.group // ""))
                 and (.resource == "*" or .resource == ($a.resource // "")) and (.subresource == "*" or .subresource == ($a.subresource // ""))
                 and (.namespace == null or .namespace == ($a.namespace // ""))
-                and (.name == null or .name == ($a.name // "")))
-            | .binding ] as $by
+                and (.name == null or .name == ($a.name // ""))) ] as $matched
+        | [ $matched[] | select(.error | not)
+            | if .binding_name then
+                (if .binding then error("a grant names binding_name and binding both: the reason is its binding'"'"'s, never a second text") else . end)
+                | "\(if .namespace == null then "ClusterRoleBinding \(.binding_name | tojson)" else "RoleBinding \("\(.binding_name)/\(.namespace)" | tojson)" end) of \(.role_kind // "ClusterRole") \(.role_name | tojson) to \(.subject.kind) \(if .subject.kind == "ServiceAccount" then "\(.subject.name)/\(.subject.namespace)" else .subject.name end | tojson)"
+              else .binding end ] as $by
+        | ([ $matched[] | .error // empty ] | first) as $error
         | (($masters == "on" and any($groups[]; . == "system:masters"))) as $master
         | . + {status: (if $master then {allowed: true, reason: "RBAC: allowed by ClusterRoleBinding \"cluster-admin\" of ClusterRole \"cluster-admin\" to Group \"system:masters\""}
                         elif ($by | length) > 0 then {allowed: true, reason: "RBAC: allowed by \($by[0])"}
+                        elif $error then {allowed: false, evaluationError: $error}
                         else {allowed: false} end)};
       def witness: (.spec.user // "") == "" and (.spec.groups // []) == ["system:masters"];
       [.items[] | answer]
@@ -324,10 +455,11 @@ case "${args[*]}" in
     # The built-in cluster-admin binding (unless the world drops it), the bootstrap RoleBinding
     # kube-system/system::extension-apiserver-authentication-reader, and one binding of each grant,
     # naming its subject: a RoleBinding when the grant names a namespace, to the grant's Role when
-    # it has role_kind Role. A grant marked unlisted has no binding here, as an authorizer other than
-    # RBAC (a webhook) would allow it, though the reviews still allow it (row dc). A world marked
-    # no-rolebindings answers the ClusterRoleBindings alone, as an answer whose RoleBinding half came
-    # back empty would (row cu).
+    # it has role_kind Role, named by the grant's binding_name and role_name when it has them. A
+    # grant marked unlisted has no binding here, as an authorizer other than RBAC (a webhook) would
+    # allow it, though the reviews still allow it (row dc). A world marked no-rolebindings answers
+    # the ClusterRoleBindings alone, as an answer whose RoleBinding half came back empty would (row
+    # cu).
     shaped_answer bindings
     [ ! -e "$dir/refuse-bindings" ] || forbidden clusterrolebindings.rbac.authorization.k8s.io 'list resource "clusterrolebindings" in API group "rbac.authorization.k8s.io"' container.clusterRoleBindings.list
     jq --arg boot "$([ -e "$dir/no-bootstrap-binding" ] && echo off || echo on)" --arg rolebindings "$([ -e "$dir/no-rolebindings" ] && echo off || echo on)" '{apiVersion: "v1", kind: "List", items: (
@@ -343,8 +475,8 @@ case "${args[*]}" in
       + [to_entries[] | .key as $i | .value as $g | select($g.unlisted != true) | {
           apiVersion: "rbac.authorization.k8s.io/v1",
           kind: (if $g.namespace == null then "ClusterRoleBinding" else "RoleBinding" end),
-          metadata: ({name: "planted-\($i)"} + (if $g.namespace == null then {} else {namespace: $g.namespace} end)),
-          roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: ($g.role_kind // "ClusterRole"), name: "planted-\($i)"},
+          metadata: ({name: ($g.binding_name // "planted-\($i)")} + (if $g.namespace == null then {} else {namespace: $g.namespace} end)),
+          roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: ($g.role_kind // "ClusterRole"), name: ($g.role_name // "planted-\($i)")},
           subjects: [$g.subject | if .kind == "ServiceAccount" then . else . + {apiGroup: "rbac.authorization.k8s.io"} end]}]
       | map(select($rolebindings == "on" or .kind != "RoleBinding")))}' \
       "$dir/grants.json"
@@ -445,6 +577,12 @@ case "${args[*]}" in
     { if [ -e "$dir/pods.json" ]; then cat "$dir/pods.json"; else echo '[]'; fi; } |
       jq --arg ns "${args[3]}" '{apiVersion: "v1", kind: "List", items: [.[] | select(.metadata.namespace == $ns)]}'
     ;;
+  "get pods --all-namespaces -o json")
+    # Every pod of the cluster: the world's pods.json entries, or none.
+    shaped_answer pods
+    [ ! -e "$dir/refuse-pods" ] || forbidden pods 'list resource "pods" in API group ""' container.pods.list
+    { if [ -e "$dir/pods.json" ]; then cat "$dir/pods.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
+    ;;
   "get --raw /metrics")
     # The API server's metrics, the seats of global-default among them: 40, as on the operator's
     # real cluster, or the world's global-default-seats. A world marked metrics-refused refuses the
@@ -465,10 +603,11 @@ case "${args[*]}" in
     ;;
   "get roles,clusterroles --all-namespaces -o json")
     # The built-in cluster-admin role, the bootstrap Role kube-system/extension-apiserver-
-    # authentication-reader, and one role of each grant (planted-<its index>, as the bindings' list
-    # names it), holding the grant as a rule, limited by name when the grant names one: a Role in the
-    # grant's namespace when it has role_kind Role, else a ClusterRole. A world marked no-roles
-    # answers the ClusterRoles alone, as an answer whose Role half came back empty would (row cu).
+    # authentication-reader, and one role of each grant (its role_name, or planted-<its index>, as
+    # the bindings' list names it), holding the grant as a rule, limited by name when the grant
+    # names one: a Role in the grant's namespace when it has role_kind Role, else a ClusterRole. A
+    # world marked no-roles answers the ClusterRoles alone, as an answer whose Role half came back
+    # empty would (row cu).
     shaped_answer roles
     [ ! -e "$dir/refuse-roles" ] || forbidden roles.rbac.authorization.k8s.io 'list resource "roles" in API group "rbac.authorization.k8s.io"' container.roles.list
     jq --arg roles "$([ -e "$dir/no-roles" ] && echo off || echo on)" '{apiVersion: "v1", kind: "List", items: (
@@ -481,7 +620,7 @@ case "${args[*]}" in
         rules: [{apiGroups: [""], resources: ["configmaps"], resourceNames: ["extension-apiserver-authentication"], verbs: ["get", "list", "watch"]}]}]
       + [to_entries[] | .key as $i | .value as $g | {
           apiVersion: "rbac.authorization.k8s.io/v1", kind: ($g.role_kind // "ClusterRole"),
-          metadata: ({name: "planted-\($i)"} + (if ($g.role_kind // "") == "Role" then {namespace: $g.namespace} else {} end)),
+          metadata: ({name: ($g.role_name // "planted-\($i)")} + (if ($g.role_kind // "") == "Role" then {namespace: $g.namespace} else {} end)),
           rules: [{apiGroups: [$g.group], verbs: [$g.verb],
                    resources: [if $g.resource == "*" or ($g.subresource // "") == "" then $g.resource else "\($g.resource)/\($g.subresource)" end]}
                   + (if $g.name then {resourceNames: [$g.name]} else {} end)]}]
@@ -548,28 +687,6 @@ case "${args[*]}" in
 esac
 EOF
 
-# --- Fake agent-secrets: `secret show NAME --json`, as its failures print on stderr: a line naming
-# the sign-in first, then the refusal (read from legion-envoy-v30.43.0 on 2026-11-21, which words a
-# missing secret as gRPC's own `rpc error: code = NotFound` where the current source writes
-# `GetSecret answered NotFound`; old-words picks the first wording). ---
-fake agent-secrets <<'EOF'
-[ "$#" -eq 4 ] && [ "$1 $2 $4" = "secret show --json" ] || { echo "fake agent-secrets: unexpected call: agent-secrets $*" >&2; exit 2; }
-signed_in="agent-secrets secret show: using the active gcloud account (gcloud configuration example): reader@example-project.iam.gserviceaccount.com"
-if [ -e "$world/refuse-secret-show" ]; then
-  printf '%s\n' "$signed_in" "agent-secrets secret show: Secret Manager GetSecret answered PermissionDenied (missing permission: secretmanager.secrets.get; its message is not printed); looked in GCP Secret Manager project 123456789012" >&2
-  exit 1
-fi
-if [ ! -e "$world/secrets/$3.json" ]; then
-  if [ -e "$world/old-words" ]; then
-    printf '%s\n' "$signed_in" "agent-secrets secret show: rpc error: code = NotFound desc = Secret [projects/123456789012/secrets/agent-secrets-$3] not found.; looked in GCP Secret Manager project 123456789012" >&2
-  else
-    printf '%s\n' "$signed_in" "agent-secrets secret show: Secret Manager GetSecret answered NotFound (its message is not printed); looked in GCP Secret Manager project 123456789012" >&2
-  fi
-  exit 1
-fi
-cat "$world/secrets/$3.json"
-EOF
-
 # --- Fake curl: the GKE Hub API's GET projects/<p>/locations/-/memberships, as v1 answers it
 # (ListMembershipsResponse: resources, nextPageToken, unreachable), one membership a page, the
 # unreachable locations on the first page alone; and GET projects/<p>/locations/-/scopes
@@ -614,11 +731,25 @@ deny() {
   exit 22
 }
 project_of="${url#https://gkehub.googleapis.com/v1/projects/}"
+# A world marked fleet-service-disabled answers each GKE Hub listing of the pool project, its
+# memberships and its scopes, as Google answers a disabled service: 403 with SERVICE_DISABLED.
+disabled() {
+  jq -nc --arg project "$1" --arg service "$2" '{error: {code: 403, status: "PERMISSION_DENIED",
+    details: [{reason: "SERVICE_DISABLED", metadata: {consumer: ("projects/" + $project), service: $service}}]}}'
+  echo "curl: (22) The requested URL returned error: 403" >&2
+  exit 22
+}
 if [ "$url" = "https://gkehub.googleapis.com/v1/projects/$fleet_project/locations/-/scopes" ]; then
+  [ ! -e "$world/fleet-service-disabled" ] || disabled "$fleet_project" gkehub.googleapis.com
   [ ! -e "$world/refuse-scopes" ] || deny gkehub.scopes.list "projects/$fleet_project/locations/-/scopes"
   { if [ -e "$world/scopes.json" ]; then cat "$world/scopes.json"; else echo '[]'; fi; } |
     jq --argjson at "${token:-0}" '. as $s | {scopes: [$s[$at] // empty]} + (if $at + 1 < ($s | length) then {nextPageToken: "p\\\"\($at + 1)"} else {} end)'
   exit 0
+fi
+if [ "$url" = "https://gkehub.googleapis.com/v1/projects/$fleet_project/locations/-/memberships" ]; then
+  [ ! -e "$world/fleet-service-disabled" ] || disabled "$fleet_project" gkehub.googleapis.com
+  [ ! -e "$world/fleet-service-disabled-other-service" ] || disabled "$fleet_project" other.googleapis.com
+  [ ! -e "$world/fleet-service-disabled-other-project" ] || disabled other-project gkehub.googleapis.com
 fi
 if [ "$url" != "https://gkehub.googleapis.com/v1/projects/$fleet_project/locations/-/memberships" ] || [ -e "$world/refuse-fleet" ]; then
   deny gkehub.memberships.list "projects/${project_of%%/*}/locations/-/memberships"
