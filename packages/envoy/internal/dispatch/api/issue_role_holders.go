@@ -21,10 +21,12 @@ import (
 // 20261124213825_issue_role_holders_by_session). Two claims of one issue can hold one role — the
 // agent of a key on a step of another role, beside that role's own claim of an earlier version of
 // the plan — so a role can have more than one session, and each session holds one role. The
-// Legion daemon is the one party that gives a session a role. It publishes the live set of each
-// issue here: when a claim readies, when a claim ends and at each boot. The results route of a
-// later release reads the set in the write transaction of a result (heldRole), so that the stored
-// role of a result is the role that its session holds.
+// Legion daemon is the one party that gives a session a role. It publishes the set of each issue
+// here: when a claim readies, when a claim ends and at each boot. A claim whose idle pod the daemon
+// released, or that a project pause's stop suspended, keeps its session and its role, so its
+// session stays in the set until the claim ends (packages/daemon's supervise.HoldsRole). The
+// results route of a later release reads the set in the write transaction of a result (heldRole),
+// so that the stored role of a result is the role that its session holds.
 //
 // With DISPATCH_LEGION_STATUS_SCOPE on, only a Legion daemon's own broker token can publish. It
 // must hold model.ScopeLegionStatus. It must prove session legion-daemon:<project> of the issue's
@@ -43,15 +45,18 @@ import (
 // daemon's, or another project's daemon's. A publication
 // sets that mark even on a pair it keeps. The status guard trusts only marked architect pairs.
 //
-// A claim ends when the daemon retires it, fails it or suspends it. The session of an ended claim
-// leaves the set only when the daemon's next publication lands, and until then its row stays. The
-// process of a failed or a suspended claim can still run during that window: the daemon lets go of
-// a process whose stop the runtime refused. Such a process keeps the pane's bearer, and its session
-// keeps its role, until the publication lands. The daemon queues the publication in the
-// transaction of each claim write that changes the session holding a role, so an end whose claim
-// write failed with an error that the daemon owes is published when the daemon makes that write
-// again at the claim's next decision. An end whose claim write failed and is not owed leaves the
-// daemon's memory ended and its store live, and the set follows the store (dispatch://INFRA-4099).
+// A claim ends when the daemon retires it, fails it or suspends it by any source but the idle
+// release. The session of an ended claim leaves the set only when the daemon's next publication
+// lands, and until then its row stays. The process of a failed or a suspended claim can still run
+// during that window: the daemon lets go of a process whose stop the runtime refused. Such a
+// process keeps the pane's bearer, and its session keeps its role, until the publication lands.
+// A released claim has not ended: its session holds its role through the release, so a process of
+// it whose stop the runtime refused writes as that session in its role, as the resumed agent
+// will. The daemon queues the publication in the transaction of each claim write that changes the
+// session holding a role, so an end whose claim write failed with an error that the daemon owes
+// is published when the daemon makes that write again at the claim's next decision. An end whose
+// claim write failed and is not owed leaves the daemon's memory ended and its store live, and the
+// set follows the store (dispatch://INFRA-4099).
 // A later decision of that claim, such as a second stop, makes that write again only while the
 // claim still holds a pending task that the decision retires, such as the task of a turn that is
 // over, because the retirement writes the claim with it; otherwise the session stays listed until

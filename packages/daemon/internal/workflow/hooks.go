@@ -82,10 +82,12 @@ func hookCount(hook Hook, counts map[string]int) int {
 // publishes on that claim's topic: a prompt resolved when it runs would reach whichever agent a
 // later entry of the role's step names by then, in a round the words were not written for.
 // Whether a role has a session is not read here. A role that has run no phase holds no topic, and
-// the outbox ends that one row undelivered with a log line, as it does for any role message; a
-// firing that wrote rows only for the roles a phase row names would write a different set of rows
-// on an issue whose reviewer has not started, which is not what the hook names. Such a role's
-// prompt names the role's own claim (record.WorkerClaim).
+// the outbox's row for it waits an hour for a session to hold the role (internal/daemon's
+// publishKeptToRole), holding no pod while the role has no claim (internal/store's
+// idleWaitingRow), then ends undelivered with a message on the issue that names the hook's
+// prompt (keptRoleMessageEnded); a firing that wrote rows only for the roles a phase row names
+// would write a different set of rows on an issue whose reviewer has not started, which is not
+// what the hook names. Such a role's prompt names the role's own claim (record.WorkerClaim).
 //
 // The counts map is the task's own (recordPass) and is handed to each row as it stands: the outbox
 // row encodes it at once (record.NewOutboxRow), and nothing writes to it after the move that
