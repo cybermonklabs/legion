@@ -66,6 +66,45 @@ func (p ProjectDay) WithZeros(zeros []DayRow) ProjectDay {
 	return p
 }
 
+// repositoryRows is rows, one repository's cut of a day as a family's day builders build it
+// (DeliveryDay.Rows, LegionDay.Rows), less each row whose part is empty (emptyPart): R12 writes no
+// zero row for a repository, so a repository's day with no input of a series holds no row of it and
+// reads "no data", where the project's own row of the series (repo "") holds its zero row from the
+// series' first input day on (ProjectDay.WithZeros). A lead time of pull requests no deploy has
+// shipped yet, a Legion cut (the roots or the children) that none of the repository's issues of the
+// day is in, and a filing class the repository's filings of the day hold none of are such parts. An
+// empty part adds nothing to a fold, so the repositories' rows that stand still partition the
+// all-repositories row. Every writer of a day takes its rows from those builders, a walk, a page,
+// a span, a settings rewrite and a rebuild alike, and deletes each stored row of the day it does
+// not hold, so a rewrite that leaves a repository's part empty deletes its row, and the delete logs
+// its change and moves the stored figures of its cut as any other. unowned-p0's rows, whose 0 is a
+// count, are WriteUnownedP0Day's, and never pass through here.
+func repositoryRows(rows []DayRow) []DayRow {
+	return slices.DeleteFunc(rows, func(row DayRow) bool { return emptyPart(row.DayPart) })
+}
+
+// emptyPart reports whether part is a zero part, as a day builder builds it of a cut that holds no
+// input of its series (measures/parts.go): no sample, n 0, via_repository 0, and its sum,
+// numerator, denominator, largest value, last value and every count 0 or none, as a fold adds them
+// (measures.ValueOrZero). Beside other parts it adds nothing to their fold; alone it folds to zero
+// counts, where a fold of no part of the series reads no value.
+func emptyPart(part measures.DayPart) bool {
+	if part.N != 0 || len(part.Samples) != 0 || part.ViaRepository != 0 {
+		return false
+	}
+	for _, value := range []*float64{part.Sum, part.Num, part.Den, part.Max, part.LastValue} {
+		if measures.ValueOrZero(value) != 0 {
+			return false
+		}
+	}
+	for _, count := range part.Counts {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // writeProjectDay is the write of one project's computed rows of one day: day's rows of family's
 // evals, of every deploy repository the day holds rows of, and its members of family's families,
 // written as writeDayRowsIn and writeDayMembersIn write them, in a transaction of its own
@@ -715,17 +754,18 @@ func upsertDays(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string) e
 // the evals slugs names, of every deploy repository, that the day does not hold: the rows the day
 // no longer builds. A day holds exactly the rows its builders build from its input, beside the
 // zero row of each all-repositories series it has no input of from that series' first input day on
-// (refresh.buildDelivery), so a row whose input left (a repository whose last pull request moved
-// away, a card the settings no longer make, a job no run reports any more) goes, as a whole walk
-// over the same inputs and settings holds no such row; the all-repositories zero rows the day
-// keeps are among its rows (ProjectDay.WithZeros). The eval_days trigger logs the delete
-// (migration 20261117100014), so a view of the row's numbers wakes to it. The readings write's rows
-// of those evals (an eval a register write made logged for a while) are its own, and stay as they
-// are. The rows held grow with the days, so they go in statements of at most statementBytes of
-// parameters (staleRuns), all in tx, each reading the stored rows of its own range of keys of the
-// days written whose project the range can hold, with the ids of the evals of those projects
-// alone, in cuts where those would pass their reserve (writtenReserve, writtenCuts): the
-// statements together delete what one would.
+// (refresh.buildDelivery), and no repository's row whose part is empty (repositoryRows), so a row
+// whose input left (a repository whose last pull request moved away, or whose pull requests of the
+// day no deploy ships any more, a card the settings no longer make, a job no run reports any more)
+// goes, as a whole walk over the same inputs and settings holds no such row; the all-repositories
+// zero rows the day keeps are among its rows (ProjectDay.WithZeros). The eval_days trigger logs the
+// delete (migration 20261117100014), so a view of the row's numbers wakes to it. The readings
+// write's rows of those evals (an eval a register write made logged for a while) are its own, and
+// stay as they are. The rows held grow with the days, so they go in statements of at most
+// statementBytes of parameters (staleRuns), all in tx, each reading the stored rows of its own
+// range of keys of the days written whose project the range can hold, with the ids of the evals of
+// those projects alone, in cuts where those would pass their reserve (writtenReserve,
+// writtenCuts): the statements together delete what one would.
 func deleteStaleDays(ctx context.Context, tx pgx.Tx, days []ProjectDay, slugs []string) error {
 	projects, dates := writtenDays(days)
 	limit := writtenReserve(projects, slugs)

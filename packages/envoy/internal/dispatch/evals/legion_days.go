@@ -28,8 +28,11 @@ import (
 // builder builds in each of its cuts (metrics.CutSeries; every series of the catalogue but the
 // root figures' children cut, which no day holds): the all-repositories row (repo ''),
 // built from every issue and filing of the day, and one row per repository the eval's input is
-// in, built from that repository's alone. An issue's repository, and a filing's, is the one the
-// issue (the filed issue) resolves to by the rule that fills issue_facts.repo
+// in, built from that repository's alone, where it counts something: a repository's part that is
+// empty (a cut none of the repository's issues of the day is in, a filing class none of its
+// filings is of) is no row (repositoryRows), since R12 writes no zero row for a repository, and
+// that repository's day reads "no data" for the series. An issue's repository, and a filing's, is
+// the one the issue (the filed issue) resolves to by the rule that fills issue_facts.repo
 // (legionfacts.ReadRepos: its own, an ancestor's, else its project's default repository,
 // refs.IssueRepoTerms), resolved when the day is built rather than read from the stored row. An
 // issue or a filing that resolves to no repository is in the all-repositories row alone, so the
@@ -42,8 +45,8 @@ import (
 // first slot observation (LegionSince): R6 has each read "no data" for a window that starts before
 // that observation, and a row of an earlier day would hold hours read with no claim observed,
 // every one of them idle, or with no slot observed. A day with no input of an eval writes no row
-// of it: the explicit zero rows of a series from its first input day on are the refresher's
-// (ZeroLegionDay, ProjectDay.WithZeros).
+// of it: the explicit zero rows of a series from its first input day on are the refresher's, in
+// the all-repositories row alone (ZeroLegionDay, ProjectDay.WithZeros).
 //
 // Each issue counted is an item of the family `legion` in eval_day_members, keyed by its issue
 // key, on its close day with its repository. The day an issue leaves when it closes again on
@@ -190,7 +193,8 @@ type legionInput struct {
 }
 
 // Rows is the project's Legion rows of the day under since, built by the legion/metrics day
-// builders, and the issues they count; no row and no item for a day with no input.
+// builders, and the issues they count; no row and no item for a day with no input. A repository's
+// row stands only where its part counts something (repositoryRows).
 func (d LegionDay) Rows(since LegionSince) ProjectDay {
 	result := ProjectDay{Project: d.Project, Day: d.Day}
 	var all legionInput
@@ -217,7 +221,7 @@ func (d LegionDay) Rows(since LegionSince) ProjectDay {
 	}
 	result.Rows = d.build("", all, since)
 	for _, repo := range slices.Sorted(maps.Keys(byRepo)) {
-		result.Rows = append(result.Rows, d.build(repo, *byRepo[repo], since)...)
+		result.Rows = append(result.Rows, repositoryRows(d.build(repo, *byRepo[repo], since))...)
 	}
 	slices.SortFunc(result.Members, func(a, b Member) int { return cmp.Compare(a.RowKey, b.RowKey) })
 	return result

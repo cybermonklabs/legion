@@ -320,15 +320,15 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 	// the history runs 17 minutes and every run 19.
 	want := map[string][]string{
 		"ALPHA": {
-			// acme/alpha#3 and acme/beta#1, both through ALPHA-1.
+			// acme/alpha#3 and acme/beta#1, both through ALPHA-1. acme/alpha ships acme/alpha's pull
+			// requests alone, so acme/beta's lead times to production time none and hold no row: a
+			// repository has no zero row (repositoryRows).
 			"merge-to-production minutes all: n=1 via=0 samples=[29]",
 			"merge-to-production minutes acme/alpha: n=1 via=0 samples=[29]",
-			"merge-to-production minutes acme/beta: n=0 via=0 samples=[]",
 			// No pull request records a first commit, so first-commit-to-production times none and,
 			// before its first day, holds no row (dropUnshipped).
 			"open-to-production minutes all: n=1 via=0 samples=[89]",
 			"open-to-production minutes acme/alpha: n=1 via=0 samples=[89]",
-			"open-to-production minutes acme/beta: n=0 via=0 samples=[]",
 			"pr-open-to-merge minutes all: n=2 via=0 samples=[60 60]",
 			"pr-open-to-merge minutes acme/alpha: n=1 via=0 samples=[60]",
 			"pr-open-to-merge minutes acme/beta: n=1 via=0 samples=[60]",
@@ -527,6 +527,194 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 		t.Errorf("BETA's items after the move: %v, want %v", got, wantBetaMembers)
 	}
 	t.Logf("compared %d day rows; after acme/alpha#3 moved to BETA, ALPHA holds %d", compared, len(alpha))
+}
+
+// TestARepositoryHoldsNoZeroRowAndARewriteThatEmptiesItsPartDeletesItsRow: R12 writes no zero row
+// for a repository (repositoryRows). Over two days of acme/alpha, the deploy repository, each with
+// a pull request of EVAL-1, which counts for EVAL, and one that names no issue, which counts for
+// the repository's plain owner key, the first day's deploy ships the day's two pull requests, and
+// the second day's one deploy, created before that day's merges, ships none: the second day's pull
+// requests have no deploy yet, as those of the last hour of a history have none (k34,
+// dispatch://INFRA-2916). Written as the refresher's walk writes it, the second day holds no lead
+// time to production of a repository under any key, where the first day's acme/alpha rows time its
+// pull requests; each key's all-repositories row of each lead time holds its zero row, the series
+// having begun the day before; the owner key's deploy-frequency and deploy-run-success rows, of all
+// repositories and of acme/alpha, count the deploy; and every other row of the day stands as the
+// day's input builds it, EVAL's zero rows of the deploy series among them. Then the second day's
+// deploy fails its production job and the day is written again: the owner key's acme/alpha row of
+// deploy-frequency, which counted that deploy, counts nothing and is deleted, its all-repositories
+// row holds its zero row, its deploy-run-success rows count the failure, and EVAL's rows stand.
+func TestARepositoryHoldsNoZeroRowAndARewriteThatEmptiesItsPartDeletesItsRow(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := t.Context()
+	pool := r.database.Pool
+	first, second := attributionDay, attributionDay.AddDate(0, 0, 1)
+	exec := func(what, statement string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, statement, args...); err != nil {
+			t.Fatalf("write %s: %v", what, err)
+		}
+	}
+	exec("the issue EVAL-1", `
+		insert into issues (key, project_key, number, title, status, rank, created_by, created_at)
+		values ('EVAL-1', 'EVAL', 1, 'Eval work', 'in_progress', '00000001', '{"kind":"system","id":"zero-row-test"}', $1)
+	`, first.AddDate(0, 0, -1))
+	production := "production / apply"
+	if _, err := delivery.PutSettings(ctx, pool, delivery.DeliverySettings{
+		DeployRepo: alphaRepo, DeployWorkflowPath: ".github/workflows/deploy.yml", ProductionJobNames: []string{production},
+		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml", PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{},
+	}, model.Actor{Kind: "system", ID: "zero-row-test"}); err != nil {
+		t.Fatalf("write the delivery settings: %v", err)
+	}
+	// Each pull request opens an hour before its merge, its first commit half an hour before that.
+	for _, pr := range []struct {
+		number int
+		issue  *string
+		merged time.Time
+	}{
+		{1, new("EVAL-1"), first.Add(10 * time.Hour)},
+		{2, nil, first.Add(10*time.Hour + 10*time.Minute)},
+		{3, new("EVAL-1"), second.Add(11 * time.Hour)},
+		{4, nil, second.Add(11*time.Hour + 10*time.Minute)},
+	} {
+		created, firstCommit := pr.merged.Add(-time.Hour), pr.merged.Add(-90*time.Minute)
+		if err := delivery.UpsertPullRequest(ctx, pool, delivery.DeliveryPullRequest{
+			Repo: alphaRepo, Number: pr.number, Title: fmt.Sprintf("Change %d", pr.number), URL: fmt.Sprintf("https://github.com/%s/pull/%d", alphaRepo, pr.number),
+			Author: "dev-ana", CreatedAt: &created, MergedAt: new(pr.merged), FirstCommitAt: &firstCommit, IssueKey: pr.issue, Sessions: []string{},
+		}); err != nil {
+			t.Fatalf("write %s#%d: %v", alphaRepo, pr.number, err)
+		}
+	}
+	// Each deploy starts a minute after GitHub creates it and ends 19 minutes later; its production
+	// job runs the 17 minutes between, and ships at its end.
+	for _, run := range []struct {
+		id      int64
+		created time.Time
+	}{{101, first.Add(10*time.Hour + 30*time.Minute)}, {102, second.Add(10*time.Hour + 30*time.Minute)}} {
+		started, completed := run.created.Add(time.Minute), run.created.Add(20*time.Minute)
+		if err := delivery.UpsertRun(ctx, pool, delivery.DeliveryRun{
+			Repo: alphaRepo, RunID: run.id, Kind: delivery.DeliveryRunKindDeploy, HeadSHA: fmt.Sprintf("%040d", run.id), HeadCommitAt: run.created.Add(-time.Minute),
+			StartedAt: started, CreatedAt: new(run.created), CompletedAt: &completed, Conclusion: new(delivery.DeliveryRunConclusionSuccess),
+			URL: fmt.Sprintf("https://github.com/%s/actions/runs/%d", alphaRepo, run.id), HeadBranch: new("main"), Event: new("push"),
+		}); err != nil {
+			t.Fatalf("write run %d: %v", run.id, err)
+		}
+		job := delivery.DeliveryRunJob{Name: production, StartedAt: new(started.Add(time.Minute)), CompletedAt: new(completed.Add(-time.Minute)),
+			Conclusion: new(delivery.DeliveryJobConclusionSuccess)}
+		if err := delivery.UpsertRunJobs(ctx, pool, alphaRepo, run.id, []delivery.DeliveryRunJob{job}, true); err != nil {
+			t.Fatalf("write the jobs of run %d: %v", run.id, err)
+		}
+	}
+	t.Logf("wrote %v", r.refreshDays(t, nil, first, second))
+
+	owner := OwnerKey(alphaRepo, nil, nil)
+	on := func(key string, day time.Time) []string {
+		t.Helper()
+		var rows []DayRow
+		for _, row := range r.stored(t, key) {
+			if row.Day.Equal(day) {
+				rows = append(rows, row)
+			}
+		}
+		return allFacts(rows)
+	}
+	repositoryLeadTimes := func(day time.Time) int {
+		t.Helper()
+		n := 0
+		for _, slug := range leadTimeSlugs {
+			n += r.count(t, `select count(*) from eval_days where day = $1 and repo <> '' and eval_id like '%/' || $2`, day, slug)
+		}
+		return n
+	}
+	// The first day's acme/alpha rows time the pull requests run 101 shipped at 10:49, in EVAL's
+	// rows (acme/alpha#1) and the owner key's (acme/alpha#2).
+	firstDay := map[string][]string{
+		"EVAL": {
+			"merge-to-production minutes acme/alpha: n=1 via=0 samples=[49]",
+			"first-commit-to-production minutes acme/alpha: n=1 via=0 samples=[139]",
+			"open-to-production minutes acme/alpha: n=1 via=0 samples=[109]",
+		},
+		owner: {
+			"merge-to-production minutes acme/alpha: n=1 via=1 samples=[39]",
+			"first-commit-to-production minutes acme/alpha: n=1 via=1 samples=[129]",
+			"open-to-production minutes acme/alpha: n=1 via=1 samples=[99]",
+		},
+	}
+	for key, want := range firstDay {
+		got := on(key, first)
+		for _, fact := range want {
+			if !slices.Contains(got, fact) {
+				t.Errorf("%s's rows of %s lack %q:\n%s", key, first.Format(time.DateOnly), fact, strings.Join(got, "\n"))
+			}
+		}
+	}
+	if n := repositoryLeadTimes(first); n != 6 {
+		t.Errorf("%s holds %d repositories' rows of a lead time to production, want acme/alpha's 3 of EVAL and 3 of %s", first.Format(time.DateOnly), n, owner)
+	}
+
+	// The second day: acme/alpha#3 and acme/alpha#4 merge with no deploy yet, and run 102, which
+	// reached production at 10:49, before they merged, ships neither.
+	wantEval := []string{
+		"merge-to-production minutes all: n=0 via=0 samples=[]",
+		"first-commit-to-production minutes all: n=0 via=0 samples=[]",
+		"open-to-production minutes all: n=0 via=0 samples=[]",
+		"pr-open-to-merge minutes all: n=1 via=0 samples=[60]",
+		"pr-open-to-merge minutes acme/alpha: n=1 via=0 samples=[60]",
+		"rework-share prs all: n=1 via=0 share=0/1",
+		"rework-share prs acme/alpha: n=1 via=0 share=0/1",
+		// The deploy series EVAL began the day before with run 101, which hold their zero rows.
+		"deploy-frequency deploys all: n=0 via=0 sum=0 with_prs=0",
+		"deploy-run-success runs all: n=0 via=0 share=0/0",
+		"production-deploy minutes all: n=0 via=0 samples=[]",
+	}
+	slices.Sort(wantEval)
+	// ownerRows is the owner key's rows of the second day, sorted: frequency its deploy-frequency
+	// rows, success its deploy-run-success rows' facts and card its production-deploy rows'.
+	ownerRows := func(frequency []string, success, card string) []string {
+		return slices.Sorted(slices.Values(slices.Concat([]string{
+			"merge-to-production minutes all: n=0 via=0 samples=[]",
+			"first-commit-to-production minutes all: n=0 via=0 samples=[]",
+			"open-to-production minutes all: n=0 via=0 samples=[]",
+			"pr-open-to-merge minutes all: n=1 via=1 samples=[60]",
+			"pr-open-to-merge minutes acme/alpha: n=1 via=1 samples=[60]",
+			"rework-share prs all: n=1 via=1 share=0/1",
+			"rework-share prs acme/alpha: n=1 via=1 share=0/1",
+			"deploy-run-success runs all: " + success,
+			"deploy-run-success runs acme/alpha: " + success,
+			"production-deploy minutes all: " + card,
+			"production-deploy minutes acme/alpha: " + card,
+		}, frequency)))
+	}
+	wantOwner := ownerRows([]string{
+		"deploy-frequency deploys all: n=1 via=1 sum=1 with_prs=0",
+		"deploy-frequency deploys acme/alpha: n=1 via=1 sum=1 with_prs=0",
+	}, "n=1 via=1 share=1/1", "n=1 via=1 samples=[17]")
+	for key, want := range map[string][]string{"EVAL": wantEval, owner: wantOwner} {
+		if got := on(key, second); !slices.Equal(got, want) {
+			t.Errorf("%s's rows of %s:\n%s\nwant:\n%s", key, second.Format(time.DateOnly), strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+	}
+	if n := repositoryLeadTimes(second); n != 0 {
+		t.Errorf("%s holds %d repositories' rows of a lead time to production, want none: its pull requests have no deploy yet, and a repository has no zero row",
+			second.Format(time.DateOnly), n)
+	}
+
+	// Run 102's production job fails: the deploy reaches production no more.
+	exec("run 102's failure", `update delivery_runs set conclusion = 'failure' where repo = $1 and run_id = 102`, alphaRepo)
+	exec("run 102's production job's failure", `update delivery_run_jobs set conclusion = 'failure' where repo = $1 and run_id = 102`, alphaRepo)
+	r.refreshDays(t, nil, second)
+	wantOwner = ownerRows([]string{"deploy-frequency deploys all: n=0 via=0 sum=0 with_prs=0"}, "n=1 via=1 share=0/1", "n=1 via=1 samples=[17]")
+	if got := on(owner, second); !slices.Equal(got, wantOwner) {
+		t.Errorf("%s's rows of %s after run 102 failed:\n%s\nwant:\n%s", owner, second.Format(time.DateOnly), strings.Join(got, "\n"), strings.Join(wantOwner, "\n"))
+	}
+	if n := r.count(t, `select count(*) from eval_days where project_key = $1 and eval_id = $2 and day = $3 and repo = $4`,
+		owner, EvalID(owner, SlugDeployFrequency), second, alphaRepo); n != 0 {
+		t.Errorf("%s holds %d rows of %s's deploy-frequency in %s after its one deploy failed, want none: it counts nothing there", second.Format(time.DateOnly), n, owner, alphaRepo)
+	}
+	if got := on("EVAL", second); !slices.Equal(got, wantEval) {
+		t.Errorf("EVAL's rows of %s after run 102 failed:\n%s\nwant them as they stood:\n%s", second.Format(time.DateOnly), strings.Join(got, "\n"), strings.Join(wantEval, "\n"))
+	}
 }
 
 // A pull request's ranked candidates make its attribution list as the attribution passes over and

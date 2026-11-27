@@ -51,7 +51,8 @@ import (
 // before its first deploy or PR-checks run. A lead time to production begins on the merge day of
 // the first pull request the repository ships (dropUnshipped): a day before it whose pull requests
 // none of the repository's deploys ships counts nothing toward a lead time, and holds no row of
-// it, where a day after it holds its row, a zero one included.
+// it, where a day after it holds its all-repositories row, a zero one included, and the row of a
+// pull requests' repository (repo) only where it times one of them (repositoryRows, R12).
 
 // deployRepoSlugs is the evals (by slug) whose rows and items read the deploy repository: the
 // delivery and CI evals a day keeps once per repository, and change-fail-rate and
@@ -221,7 +222,8 @@ var leadTimeSlugs = []string{SlugMergeToProduction, SlugFirstCommitToProduction,
 // (n 0), where the eval holds no row on or before day (first, firstOf's): a day before the first
 // pull request the repository ships counts nothing toward its lead times, as a day before a
 // series' first input day is no day of it. From the first day that counts one on, a day that
-// counts none holds its row as it is built, a zero one.
+// counts none holds its all-repositories row as it is built, a zero one; the day's reads build no
+// repository's row of a lead time that counts none (repositoryRows), so it holds none.
 func dropUnshipped(rows []DayRow, first map[evalKey]time.Time, day time.Time) []DayRow {
 	unshipped := map[evalKey]bool{}
 	for _, row := range rows {
