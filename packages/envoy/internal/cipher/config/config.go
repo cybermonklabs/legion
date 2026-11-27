@@ -146,10 +146,10 @@ type Config struct {
 	// subject names its kind already, and the google: tag names the other, so a mistyped
 	// address is refused as the kind it was written as rather than read as the other.
 	//
-	// A Kubernetes caller presents its own projected token, for BROKER_K8S_OIDC_AUDIENCE,
-	// verified against BROKER_K8S_OIDC_ISSUER as every other ServiceAccount token the broker
-	// takes is, and is looked up by the token's sub; so a Kubernetes entry needs that pair. A
-	// Google caller presents its machine's own Google identity token, for
+	// A Kubernetes caller presents its own projected token, of an audience BROKER_K8S_OIDC_AUDIENCE
+	// lists, verified against BROKER_K8S_OIDC_ISSUER as every other ServiceAccount token the
+	// broker takes is, and is looked up by the token's sub; so a Kubernetes entry needs that
+	// pair. A Google caller presents its machine's own Google identity token, for
 	// BROKER_GOOGLE_OIDC_AUDIENCE — the audience every machine of the deployment already holds
 	// one for — verified against BROKER_GOOGLE_OIDC_ISSUER, and is looked up by the token's
 	// email; so a Google entry needs BROKER_GOOGLE_OIDC_AUDIENCE. Either token is refused if it
@@ -754,17 +754,18 @@ type Config struct {
 	// old ones within 24 hours.
 	PodRegistrars api.PodRegistrars
 	// BROKER_POD_REGISTRATION_AUDIENCE: an audience POST /v1/oauth/exchange/pod-sessions accepts
-	// for the pod token a registration's body carries, beside the broker's own
-	// BROKER_K8S_OIDC_AUDIENCE, which a daemon presents today: a token of either audience,
+	// for the pod token a registration's body carries, beside the audiences the broker's own
+	// BROKER_K8S_OIDC_AUDIENCE lists, one of which a daemon presents today: a token of any of them,
 	// verified against BROKER_K8S_OIDC_ISSUER, which this needs, names the pod, and an expired
-	// one of either is 401 POD_TOKEN_EXPIRED. No other route accepts a token of this audience:
-	// enrolment and every ServiceAccount login verify at the broker's own audience, the token
+	// one of any of them is 401 POD_TOKEN_EXPIRED. No other route accepts a token of this
+	// audience: enrolment and every ServiceAccount login verify at the listed audiences, the token
 	// exchange at BROKER_EXCHANGE_K8S_AUDIENCE and the NATS auth service at
 	// BROKER_NATS_K8S_AUDIENCE, so a registrar may be handed a pod's token that registers the pod
 	// and is spendable nowhere else. Read trimmed. Refused at start, naming it and the other
-	// setting, when it equals any of those three, each compared when it is set, since a token of
-	// it would then be spendable on that setting's routes too. Unset, the route accepts the
-	// broker's own audience alone.
+	// setting, when it equals an audience BROKER_K8S_OIDC_AUDIENCE lists,
+	// BROKER_EXCHANGE_K8S_AUDIENCE or BROKER_NATS_K8S_AUDIENCE, each compared when it is set, since
+	// a token of it would then be spendable on that setting's routes too. Unset, the route accepts
+	// the listed audiences alone.
 	PodRegistrationAudience string
 	// BROKER_POD_OPERATORS: the Kubernetes accounts whose pods act for a person,
 	// whitespace-separated <email>=system:serviceaccount:<namespace>:<name> entries, such as
@@ -847,10 +848,32 @@ type Config struct {
 	// pair once no live pod runs as the old account. Unset, no account is paired.
 	SessionAccountPairs [][2]string
 	// BROKER_K8S_OIDC_ISSUER: the issuer of the Kubernetes service-account tokens pods enroll
-	// with. Set it with BROKER_K8S_OIDC_AUDIENCE, or neither, in which case no pod can enroll.
+	// with. Set it with BROKER_K8S_OIDC_AUDIENCE, which lists the audiences of its tokens the
+	// broker takes, or neither, in which case no pod can enroll.
 	K8sOIDCIssuer string
-	// BROKER_K8S_OIDC_AUDIENCE: the audience a pod's projected service-account token must carry.
-	K8sOIDCAudience string
+	// BROKER_K8S_OIDC_AUDIENCE: the audiences a projected service-account token of the cluster
+	// BROKER_K8S_OIDC_ISSUER names may carry for the broker to take it, one or more, separated by
+	// white space (spaces, tabs or line feeds), such as agent-secrets, or example-pod-new
+	// example-pod-old, all of that one issuer. A token of any listed audience is taken, each as a
+	// token of the one audience was before: for a pod's enrolment and its renewals, for a
+	// service's token login of BROKER_SERVICE_LOGINS and the registration and release routes
+	// (POST /v1/oauth/exchange/pod-sessions and its /release) the service calls with its token,
+	// for a caller of BROKER_API_ACCOUNTS, for an edge listener's GET /v1/project-repositories,
+	// and as the pod token a registration carries. The token exchange
+	// (BROKER_EXCHANGE_K8S_AUDIENCE), the NATS auth service and the NATS writer hold
+	// (BROKER_NATS_K8S_AUDIENCE) take none of them. A token is checked against the listed
+	// audience it carries, so an expired token of a listed audience is refused as expired, and a
+	// token of an audience the setting does not list is refused as before, expired or not.
+	//
+	// With BROKER_K8S_OIDC_ISSUER set, the broker refuses to start on a value of white space
+	// alone, naming the setting; on an audience listed twice, naming the setting and the
+	// audience; and on a listed audience that BROKER_EXCHANGE_K8S_AUDIENCE,
+	// BROKER_POD_REGISTRATION_AUDIENCE or BROKER_NATS_K8S_AUDIENCE names too, one listed alone
+	// included, naming both settings, since a token of it would be spendable on both settings'
+	// routes. A deployment lists a second audience only while it moves its callers from one
+	// audience to another, and removes the old one once no pod projects a token of it. Held in
+	// the order given; nil with neither setting.
+	K8sOIDCAudiences []string
 	// BROKER_GOOGLE_OIDC_ISSUER: the issuer of the Google identity tokens machines present,
 	// https://accounts.google.com when unset, which is where every real one comes from. It is a
 	// variable because a dev stack has no Google: cmd/dev-oidc-issuer stands in for it on a
@@ -929,9 +952,10 @@ type Config struct {
 	// BROKER_EXCHANGE_K8S_AUDIENCE: the audience a pod's projected service-account token must
 	// carry to be exchanged (RFC 8693) for a Dispatch access token. Its issuer is the one cluster
 	// the broker is told about, BROKER_K8S_OIDC_ISSUER, which this needs; the audience is its own
-	// because an exchanging pod projects a token for it beside the one it enrolls with
-	// (BROKER_K8S_OIDC_AUDIENCE), so neither token is spendable where the other is. Unset, no
-	// pod exchanges.
+	// because an exchanging pod projects a token for it beside the one it enrolls with, of an
+	// audience BROKER_K8S_OIDC_AUDIENCE lists, so neither token is spendable where the other is:
+	// an audience that list holds too refuses the start, naming both settings. Unset, no pod
+	// exchanges.
 	ExchangeK8sAudience string
 	// BROKER_EXCHANGE_GITHUB_ISSUER: the issuer of the token a continuous-integration workflow
 	// run presents to the exchange, https://token.actions.githubusercontent.com for runs on
@@ -2029,6 +2053,44 @@ func exchangeListingRefusal(cfg *Config) error {
 	return nil
 }
 
+// clusterAudienceRefusal refuses an audience of the cluster issuer's tokens that two settings
+// name, naming both: an audience BROKER_K8S_OIDC_AUDIENCE lists that
+// BROKER_POD_REGISTRATION_AUDIENCE, BROKER_EXCHANGE_K8S_AUDIENCE or BROKER_NATS_K8S_AUDIENCE
+// names too, one audience listed alone included, and a registration audience equal to the
+// exchange's or the NATS auth service's, each compared where it is set. A listed audience is
+// taken at every route that reads BROKER_K8S_OIDC_AUDIENCE, and each other setting's audience at
+// its own routes alone: the exchange's at the token exchange, the NATS auth service's at that
+// service and the NATS writer hold, and the registration audience at POST
+// /v1/oauth/exchange/pod-sessions. So a token of an audience two settings name would be spendable
+// on both settings' routes. A refusal of the registration audience quotes it, as it did before
+// the list; the others name the settings alone. Load calls it once, after it reads all four
+// settings.
+func clusterAudienceRefusal(cfg *Config) error {
+	others := []struct{ setting, audience, routes string }{
+		{"BROKER_EXCHANGE_K8S_AUDIENCE", cfg.ExchangeK8sAudience, "the token exchange"},
+		{"BROKER_NATS_K8S_AUDIENCE", cfg.NATS.K8sAudience, "the NATS auth service and the NATS writer hold"},
+	}
+	for _, listed := range cfg.K8sOIDCAudiences {
+		if listed == cfg.PodRegistrationAudience {
+			return fmt.Errorf("BROKER_POD_REGISTRATION_AUDIENCE is %q, which BROKER_K8S_OIDC_AUDIENCE lists too: a token of the registration audience is accepted at POST /v1/oauth/exchange/pod-sessions alone, so give it an audience no other setting names", cfg.PodRegistrationAudience)
+		}
+		for _, other := range others {
+			if listed == other.audience {
+				return fmt.Errorf("BROKER_K8S_OIDC_AUDIENCE lists the audience %s names: a token of it would be spendable both where the broker takes a listed audience and at %s, so give %s an audience BROKER_K8S_OIDC_AUDIENCE does not list", other.setting, other.routes, other.setting)
+			}
+		}
+	}
+	if cfg.PodRegistrationAudience == "" {
+		return nil
+	}
+	for _, other := range others {
+		if cfg.PodRegistrationAudience == other.audience {
+			return fmt.Errorf("BROKER_POD_REGISTRATION_AUDIENCE is %q, which %s is too: a token of the registration audience is accepted at POST /v1/oauth/exchange/pod-sessions alone, so give it an audience no other setting names", cfg.PodRegistrationAudience, other.setting)
+		}
+	}
+	return nil
+}
+
 // parseExchangeAccounts reads setting's whitespace-separated
 // <service account>=<project>=<person>[=<session>] entries, the identities BROKER_EXCHANGE_ACCOUNTS
 // lists, in order. The project may be empty (<service account>==<person>), which is the shared
@@ -2947,7 +3009,6 @@ func Load(getenv func(string) string) (Config, error) {
 		AzureTokenFile:            orDefault(getenv("BROKER_AZURE_TOKEN_FILE"), secrets.DefaultAzureTokenFile),
 		AzureLoginSecret:          getenv("BROKER_AZURE_LOGIN_SECRET"),
 		K8sOIDCIssuer:             getenv("BROKER_K8S_OIDC_ISSUER"),
-		K8sOIDCAudience:           getenv("BROKER_K8S_OIDC_AUDIENCE"),
 		GoogleOIDCIssuer:          orDefault(strings.TrimSpace(getenv("BROKER_GOOGLE_OIDC_ISSUER")), DefaultGoogleOIDCIssuer),
 		GoogleOIDCAudience:        strings.TrimSpace(getenv("BROKER_GOOGLE_OIDC_AUDIENCE")),
 		EnvoyURL:                  getenv("BROKER_ENVOY_URL"),
@@ -3340,7 +3401,15 @@ func Load(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	cfg.K8sOIDCIssuer, cfg.K8sOIDCAudience = issuer, audience
+	cfg.K8sOIDCIssuer = issuer
+	if issuer != "" {
+		cfg.K8sOIDCAudiences = strings.Fields(audience)
+		for i, listed := range cfg.K8sOIDCAudiences {
+			if slices.Contains(cfg.K8sOIDCAudiences[:i], listed) {
+				return Config{}, fmt.Errorf("BROKER_K8S_OIDC_AUDIENCE lists the audience %q twice; list each audience once", listed)
+			}
+		}
+	}
 	if len(cfg.ServiceLogins) > 0 && cfg.K8sOIDCIssuer == "" {
 		return Config{}, fmt.Errorf("BROKER_SERVICE_LOGINS needs BROKER_K8S_OIDC_ISSUER and BROKER_K8S_OIDC_AUDIENCE, whose tokens its accounts log in with")
 	}
@@ -3454,7 +3523,7 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS, a VM service in BROKER_VM_SERVICES or a google: edge-listener entry in BROKER_NATS_SERVICES; with none, no Google identity token for that audience could ever be accepted")
 	}
 	// The registration route's two settings, read after every other audience of the cluster
-	// issuer's tokens, so the registration audience is compared with each of them.
+	// issuer's tokens, so that clusterAudienceRefusal below reads every audience it compares.
 	if cfg.PodRegistrars, err = parsePodRegistrars("BROKER_POD_REGISTRARS", getenv("BROKER_POD_REGISTRARS")); err != nil {
 		return Config{}, err
 	}
@@ -3462,22 +3531,11 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, errors.New("BROKER_POD_REGISTRARS needs BROKER_K8S_OIDC_ISSUER and BROKER_K8S_OIDC_AUDIENCE, whose tokens its registrars log in with and its pods' tokens are verified against")
 	}
 	cfg.PodRegistrationAudience = strings.TrimSpace(getenv("BROKER_POD_REGISTRATION_AUDIENCE"))
-	if cfg.PodRegistrationAudience != "" {
-		if cfg.K8sOIDCIssuer == "" {
-			return Config{}, errors.New("BROKER_POD_REGISTRATION_AUDIENCE needs BROKER_K8S_OIDC_ISSUER, the cluster whose pods' tokens carry it")
-		}
-		// Each other audience a token of the cluster's issuer is accepted at, by the route that
-		// accepts it: equal to one of them, a token minted for registering a pod would be
-		// spendable there too, and one minted for there would register a pod.
-		for _, other := range []struct{ setting, audience string }{
-			{"BROKER_K8S_OIDC_AUDIENCE", cfg.K8sOIDCAudience},
-			{"BROKER_EXCHANGE_K8S_AUDIENCE", cfg.ExchangeK8sAudience},
-			{"BROKER_NATS_K8S_AUDIENCE", cfg.NATS.K8sAudience},
-		} {
-			if other.audience == cfg.PodRegistrationAudience {
-				return Config{}, fmt.Errorf("BROKER_POD_REGISTRATION_AUDIENCE is %q, which %s is too: a token of the registration audience is accepted at POST /v1/oauth/exchange/pod-sessions alone, so give it an audience no other setting names", cfg.PodRegistrationAudience, other.setting)
-			}
-		}
+	if cfg.PodRegistrationAudience != "" && cfg.K8sOIDCIssuer == "" {
+		return Config{}, errors.New("BROKER_POD_REGISTRATION_AUDIENCE needs BROKER_K8S_OIDC_ISSUER, the cluster whose pods' tokens carry it")
+	}
+	if err := clusterAudienceRefusal(&cfg); err != nil {
+		return Config{}, err
 	}
 	// BROKER_POD_OPERATORS is read after every setting mappedAccountRefusal checks it against, so
 	// a refusal added there reads a setting this function has already read.

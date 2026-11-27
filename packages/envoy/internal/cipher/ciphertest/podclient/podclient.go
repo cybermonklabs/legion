@@ -42,9 +42,9 @@ type TB interface {
 type Pods struct {
 	T    TB
 	Base string
-	// Token is account's projected ServiceAccount token for the audience the broker takes pod
-	// tokens for (BROKER_K8S_OIDC_AUDIENCE), bound to the pod podUID, or to no pod when podUID is
-	// empty: IssuerTokens for an issuer in the test's own process.
+	// Token is account's projected ServiceAccount token for an audience the broker takes pod
+	// tokens for (one BROKER_K8S_OIDC_AUDIENCE lists), bound to the pod podUID, or to no pod when
+	// podUID is empty: IssuerTokens for an issuer in the test's own process.
 	Token func(account, podUID string) string
 }
 

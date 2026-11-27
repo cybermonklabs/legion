@@ -86,7 +86,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_AZURE_TOKEN_FILE":              givesNone("a file path"),
 	"BROKER_AZURE_LOGIN_SECRET":            givesNone("a secret's name"),
 	"BROKER_K8S_OIDC_ISSUER":               givesNone("an issuer"),
-	"BROKER_K8S_OIDC_AUDIENCE":             givesNone("an audience"),
+	"BROKER_K8S_OIDC_AUDIENCE":             givesNone("audiences"),
 	"BROKER_GOOGLE_OIDC_ISSUER":            givesNone("an issuer"),
 	"BROKER_GOOGLE_OIDC_AUDIENCE":          givesNone("an audience"),
 	"BROKER_ENVOY_URL":                     givesNone("an Envoy listener's URL"),
