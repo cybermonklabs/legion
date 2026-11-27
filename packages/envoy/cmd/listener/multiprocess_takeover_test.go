@@ -1011,17 +1011,6 @@ func mpRecords(output, msg string) []map[string]any {
 	return records
 }
 
-// mpRecordTime is when a pod logged record.
-func mpRecordTime(t *testing.T, record map[string]any) time.Time {
-	t.Helper()
-	text, _ := record["time"].(string)
-	at, err := time.Parse(time.RFC3339Nano, text)
-	if err != nil {
-		t.Fatalf("read the time of %v: %v", record, err)
-	}
-	return at
-}
-
 // mpJoinTry bounds a try of the listener state bucket the grant refused that was in flight when the
 // grant came: the open waits listenerStateOpenSends of listenerStateRequestWait at most, and a
 // second for the rest of it.
@@ -1035,18 +1024,26 @@ const mpJoinTry = listenerStateOpenSends*listenerStateRequestWait + time.Second
 // wait and one try of the grant.
 func mpJoined(t *testing.T, pod *mpPod, line string, granted time.Time) time.Time {
 	t.Helper()
+	return mpJoinedWithin(t, pod, line, granted, 0)
+}
+
+// mpJoinedWithin is mpJoined for a join whose first rounds may take rounds past the try that
+// opened the bucket: a join that meets a dead holder's record takes it only once it has stood
+// unchanged for leaseTTL, at the standby poll after that (lease.Contend).
+func mpJoinedWithin(t *testing.T, pod *mpPod, line string, granted time.Time, rounds time.Duration) time.Time {
+	t.Helper()
 	var joined time.Time
-	mpEventually(t, durableRefusedRetryCap+mpJoinTry, pod.instance+" to join the lease once its grant carried the listener state bucket", func() bool {
+	mpEventually(t, durableRefusedRetryCap+mpJoinTry+rounds, pod.instance+" to join the lease once its grant carried the listener state bucket", func() bool {
 		records := mpRecords(pod.Output.String(), line)
 		if len(records) == 0 {
 			return false
 		}
-		joined = mpRecordTime(t, records[0])
+		joined = logRecordTime(t, records[0])
 		return true
 	})
 	backoff := durableBindPoll
 	for _, record := range mpRecords(pod.Output.String(), listenerStateRefusedLine) {
-		if mpRecordTime(t, record).After(joined) {
+		if logRecordTime(t, record).After(joined) {
 			break
 		}
 		wait, _ := record["retry_in"].(string)
@@ -1056,9 +1053,9 @@ func mpJoined(t *testing.T, pod *mpPod, line string, granted time.Time) time.Tim
 		}
 		backoff = parsed
 	}
-	if took := joined.Sub(granted); took > backoff+mpJoinTry {
-		t.Fatalf("%s joined the lease %s after its grant carried the bucket, past the %s wait it was in and a try's %s", pod.instance,
-			took.Round(time.Millisecond), backoff, mpJoinTry)
+	if took := joined.Sub(granted); took > backoff+mpJoinTry+rounds {
+		t.Fatalf("%s joined the lease %s after its grant carried the bucket, past the %s wait it was in, a try's %s and its rounds' %s", pod.instance,
+			took.Round(time.Millisecond), backoff, mpJoinTry, rounds)
 	}
 	t.Logf("%s joined the lease %s after the grant, out of a %s wait", pod.instance, joined.Sub(granted).Round(time.Millisecond), backoff)
 	return joined
@@ -1242,7 +1239,7 @@ func mpReceiving(t *testing.T, pod *mpPod, within time.Duration) time.Time {
 		if len(records) == 0 {
 			return false
 		}
-		receiving = mpRecordTime(t, records[0])
+		receiving = logRecordTime(t, records[0])
 		return true
 	})
 	return receiving
@@ -1364,7 +1361,7 @@ func TestTwoPodsLeaseHeldElsewhereOnALateGrantForwardsNothingPastItsDecision(t *
 	// decision.
 	stopped := time.Duration(-1)
 	for _, record := range mpRecords(row.a.Output.String(), "session relays follow the receive term") {
-		if at := mpRecordTime(t, record); record["relaying"] == false && !at.Before(joined) {
+		if at := logRecordTime(t, record); record["relaying"] == false && !at.Before(joined) {
 			stopped = at.Sub(joined)
 			break
 		}
@@ -1448,55 +1445,65 @@ func TestTwoPodsLeaseHeldElsewhereOnALateGrantStoresARepeatedRoleForwardOnce(t *
 	}
 }
 
-// A pod that delivered without a lease, whose join reads the record of a holder that has since
-// died (killed while it waited out this pod's binding), counts that record held: it stands by,
-// and its lease takes the record once the record has stood unchanged for a full ttl, as any
-// standby's does, settling as a term over an expired record must. So it holds the lease within
-// the wait it was in and one try of the grant (the join), leaseTTL, a standby poll and a second;
-// it receives the durable as it takes the term, and its settle hold ends within settleCap (an ack
-// wait and settleMargin, 7 s) and a second of that. Every message reaches its session exactly once.
+// A pod that delivered without a lease, whose join meets the record of a holder that has since
+// died (killed while it waited out this pod's binding), takes that record and keeps the
+// subscription it received on: the join's first rounds read the record unchanged for a full
+// leaseTTL, as any standby's reads do, and take it as expired (lease.Contend), and the pod logs
+// leaseJoinedHolderLine and never leaseJoinedStandbyLine. So it holds the lease within the wait it
+// was in, one try of the grant, leaseTTL, a standby poll and a second. The term must settle, so it
+// holds what it receives on that subscription (durableReceiver.adopt); the dead holder never
+// received, so every outstanding message is already in this pod's hands and the hold ends settled,
+// not at its cap, within a second of the take. It subscribes to the durable once in all, its
+// relays never stop nor restart a session's consumer, and every message reaches its session
+// exactly once and within 3 s of its publish. Before, the join stood down at its first read of
+// that record: the pod ended the term it received on, and its lease took the record a leaseTTL
+// later and settled for up to an ack wait, so the messages the ended term held came back at their
+// ack wait, after newer ones.
 func TestTwoPodsLeaseHeldByADeadPodOnALateGrantIsTakenWhenItExpires(t *testing.T) {
 	row := mpStartLateGrantRow(t, "late_expired", mpStartPod)
 	b := mpStartLateGrantHolder(t, row)
 	b.kill(t)
 	granted := row.grant.grant(t)
-	joined := mpJoined(t, row.a, leaseJoinedStandbyLine, granted)
-	settleCap := productionReceiveConfig().settleCap
-	takeBound := leaseTTL + leaseStandbyPoll + time.Second
-	var taken time.Time
-	mpEventually(t, takeBound+5*time.Second, "pod-a to take the dead holder's expired record", func() bool {
-		for _, record := range mpRecords(row.a.Output.String(), "listener lease acquired") {
-			if record["from"] == leaseTakenExpired.String() {
-				taken = mpRecordTime(t, record)
-				return true
-			}
-		}
-		return false
-	})
-	if took := taken.Sub(joined); took > takeBound {
-		t.Fatalf("pod-a took the dead holder's expired record %s after its join (%s after the grant), past leaseTTL, a standby poll and a second (%s): a standby takes a record it has read unchanged for a full leaseTTL, counted from its first read at the join, at its next poll (lease.poll)",
-			took.Round(time.Millisecond), taken.Sub(granted).Round(time.Millisecond), takeBound)
+	joined := mpJoinedWithin(t, row.a, leaseJoinedHolderLine, granted, leaseTTL+leaseStandbyPoll+time.Second)
+	if record := mpRecords(row.a.Output.String(), leaseJoinedHolderLine)[0]; record["lease"] != leaseTakenExpired.String() {
+		t.Fatalf("pod-a joined the lease taking it from %v, want the dead holder's expired record: %v", record["lease"], record)
 	}
-	var settled time.Time
-	mpEventually(t, settleCap+5*time.Second, "pod-a's settle hold to end", func() bool {
-		records := mpRecords(row.a.Output.String(), "settle hold ended; delivering the held messages in stream order")
-		if len(records) == 0 {
+	var taken, settled time.Time
+	mpEventually(t, 5*time.Second, "pod-a's settle hold to end", func() bool {
+		output := row.a.Output.String()
+		takes, ends := mpRecords(output, "listener lease acquired"), mpRecords(output, "settle hold ended; delivering the held messages in stream order")
+		if len(takes) == 0 || len(ends) == 0 {
 			return false
 		}
-		settled = mpRecordTime(t, records[0])
+		if takes[0]["from"] != leaseTakenExpired.String() || ends[0]["outcome"] != "settled" {
+			t.Fatalf("pod-a took the lease %v and its settle hold ended %v, want taken over the expired record and settled", takes[0], ends[0])
+		}
+		taken, settled = logRecordTime(t, takes[0]), logRecordTime(t, ends[0])
 		return true
 	})
-	if held := settled.Sub(taken); held > settleCap+time.Second {
-		t.Fatalf("pod-a's settle hold ended %s after it took the expired record, past settleCap and a second (%s): a term taken over an expired record holds what it receives for settleCap at most, an ack wait and settleMargin",
-			held.Round(time.Millisecond), settleCap+time.Second)
+	if held := settled.Sub(taken); held > time.Second {
+		t.Fatalf("pod-a's settle hold ended %s after it took the expired record, want within a second: nothing was outstanding outside its hands", held.Round(time.Millisecond))
 	}
-	t.Logf("pod-a took the expired record %s after the grant (%s after its join) and its settle hold ended %s after that",
-		taken.Sub(granted).Round(time.Millisecond), taken.Sub(joined).Round(time.Millisecond), settled.Sub(taken).Round(time.Millisecond))
+	t.Logf("pod-a took the dead holder's expired record and joined the lease %s after the grant; its settle hold ended %s after the take",
+		joined.Sub(granted).Round(time.Millisecond), settled.Sub(taken).Round(time.Millisecond))
 	mpWaitActive(t, row.a, 10*time.Second)
-	time.Sleep(5 * time.Second) // publish on past the take
+	time.Sleep(5 * time.Second) // publish on past the join
 	row.stop()
+	output := row.a.Output.String()
+	if records := mpRecords(output, leaseJoinedStandbyLine); len(records) != 0 {
+		t.Fatalf("pod-a logged %q across the join, want none: %v", leaseJoinedStandbyLine, records)
+	}
+	if subscribes := len(mpRecords(output, "durable receiving")); subscribes != 1 {
+		t.Fatalf("pod-a subscribed to the durable %d times across the join, want once: it let its subscription go", subscribes)
+	}
+	mpRelayed(t, row.a, false, "stopped its session relays across the join")
+	if restarts := len(mpRecords(output, mpRelayTermRestartLine)); restarts != 0 {
+		t.Fatalf("pod-a's session relays restarted %d consumers at their ack floor across the join, want none: their term ended under them", restarts)
+	}
+
 	messages := row.publisher.all()
 	row.serving.awaitAll(t, messages, 30*time.Second)
 	time.Sleep(mpQuiet)
 	row.serving.requireOnce(t, messages)
+	row.serving.requireWithin(t, messages, 3*time.Second, time.Time{})
 }

@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -24,11 +25,19 @@ import (
 // and the rig's lease is the one the pod joins once a grant lets it open the bucket, which a row
 // hands over through the receiver's join (durableReceiver.startJoin), as main does. Neither the
 // lease's loop nor its first rounds are started here. adjust, when not nil, changes the receiver's
-// options before it is made: its holder-only loops (durableReceiverOptions.loops), its logger.
+// options before it is made: its holder-only loops (durableReceiverOptions.loops), its logger,
+// its handler.
 func startJoiningReceiverRig(t *testing.T, uri, machineID string, adjust func(*receiverRig, *durableReceiverOptions)) *receiverRig {
 	t.Helper()
+	return startJoiningReceiverRigVia(t, uri, uri, machineID, adjust)
+}
+
+// startJoiningReceiverRigVia is startJoiningReceiverRig with the bus client connected at busURI
+// (a proxy, say) and the listener state bucket's connection at stateURI.
+func startJoiningReceiverRigVia(t *testing.T, busURI, stateURI, machineID string, adjust func(*receiverRig, *durableReceiverOptions)) *receiverRig {
+	t.Helper()
 	handle, _ := recordingHandler()
-	rig := newReceiverRig(t, uri, machineID, "pod-a", handle, testReceiveTiming(), testLeaseTiming())
+	rig := newReceiverRigVia(t, busURI, stateURI, machineID, "pod-a", handle, testReceiveTiming(), testLeaseTiming())
 	// The rig's own receiver was made with its lease; this one is made without, from the same
 	// options (newDurableReceiver leaves the lease out of them), and it is the one the rig's
 	// reconnect hook and cleanup reach, since both read rig.receiver when they run.
@@ -441,4 +450,311 @@ func TestAShutdownRightAfterTheLeaseTookTheTermOverHandsTheTermBack(t *testing.T
 	if record, found := leaseRecordOf(t, rig); !found || record.Holder != "pod-a" || !record.Released {
 		t.Fatalf("the lease record after the stop is %+v (found %t), want pod-a's, released", record.leaseFields, found)
 	}
+}
+
+// deadHolderRecord is the lease record of a holder that died: another pod's name and boot,
+// written once and never renewed or released.
+const deadHolderRecord = `{"holder":"pod-dead","boot":"0123456789abcdef"}`
+
+// logRecordTime is when the log record was written, as its time field says.
+func logRecordTime(t *testing.T, record map[string]any) time.Time {
+	t.Helper()
+	text, _ := record["time"].(string)
+	at, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil {
+		t.Fatalf("read the time of %v: %v", record, err)
+	}
+	return at
+}
+
+// heldTakeKV is the listener state bucket as a lease writes it, with the lease's first write of
+// the record, its take, held until Release: reached closes as that write begins, so a row acts
+// while the take is in flight, before the record names this pod. Every other call passes on.
+type heldTakeKV struct {
+	natsgo.KeyValue
+	reached chan struct{}
+	release chan struct{}
+	held    sync.Once
+	let     sync.Once
+}
+
+func (k *heldTakeKV) hold() {
+	k.held.Do(func() {
+		close(k.reached)
+		<-k.release
+	})
+}
+
+// Release lets the held take go on.
+func (k *heldTakeKV) Release() { k.let.Do(func() { close(k.release) }) }
+
+func (k *heldTakeKV) Create(key string, value []byte) (uint64, error) {
+	k.hold()
+	return k.KeyValue.Create(key, value)
+}
+
+func (k *heldTakeKV) Update(key string, value []byte, last uint64) (uint64, error) {
+	k.hold()
+	return k.KeyValue.Update(key, value, last)
+}
+
+// holdTake has the rig's lease, which must not have started, hold its take (heldTakeKV), and
+// lets the take go as the row ends, so a row that fails before it does still stops.
+func holdTake(t *testing.T, rig *receiverRig) *heldTakeKV {
+	t.Helper()
+	kv := rig.lease.kv
+	held := &heldTakeKV{KeyValue: kv.Legacy(), reached: make(chan struct{}), release: make(chan struct{})}
+	rig.lease.kv = bus.NewKeyValue(held, kv.WatchHandle(), kv.Streams())
+	t.Cleanup(held.Release)
+	return held
+}
+
+// dropAtTheBucketsAge has the rig's listener state bucket drop its lease record at the end of
+// the record's life, as its MaxAge drops a record nobody writes again: it shortens the bucket's
+// MaxAge to a second, waits for the record to be gone, and puts the age back, so the join meets
+// the bucket as a listener keeps it. The age is shortened on the bucket the rig opened rather than
+// at its create, since every open raises a shorter one (openListenerState).
+func dropAtTheBucketsAge(t *testing.T, rig *receiverRig) {
+	t.Helper()
+	js := rig.client.JS()
+	info, err := js.StreamInfo("KV_" + bus.ListenerStateBucket)
+	if err != nil {
+		t.Fatalf("read the listener state bucket's stream: %v", err)
+	}
+	short := info.Config
+	short.MaxAge, short.Duplicates = time.Second, time.Second
+	testnats.UpdateStream(t, js, short)
+	testwait.Until(t, "the bucket's MaxAge to drop the lease record", func() (bool, bool) {
+		_, found := leaseRecordOf(t, rig)
+		return found, !found
+	})
+	testnats.UpdateStream(t, js, info.Config)
+}
+
+// A pod that delivered without a lease and joins its machine's lease late, meeting a dead
+// holder's record (deadHolderRecord), takes the lease and keeps its subscription whatever the
+// record's age: one just written, inside the 20 minutes the bucket keeps it (listenerStateMaxAge),
+// the join's first rounds wait out as any standby does and take as expired (lease.Contend); one
+// the bucket's MaxAge dropped at the end of that life they take as absent. Either way the join
+// logs leaseJoinedHolderLine and never leaseJoinedStandbyLine, the term it received on is the
+// lease's with no second subscribe, and the messages published before the join, during it (while
+// its take is held, heldTakeKV) and after it each reach the handler, which stands for their
+// sessions, once and in publish order, every one acknowledged, so none comes back at its ack
+// wait. The term taken as expired must settle, and with nothing outstanding anywhere else its
+// settle hold ends settled, not at its cap, within a second of the take (durableReceiver.adopt);
+// the one taken as absent holds nothing. A live holder, whose renewals move the record's
+// revision, still stands the join by: it logs leaseJoinedStandbyLine naming that holder and takes
+// nothing.
+//
+// Before, the join's first rounds returned at their first read of a record another process held,
+// so the join stood down on the dead holder's record: it logged leaseJoinedStandbyLine and ended
+// the term it received on, and a ttl later its own loop took the record as expired, so what the
+// ended term held came back at its ack wait, after newer messages.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
+func TestALateLeaseJoinTakesADeadHoldersRecordAndKeepsItsSubscription(t *testing.T) {
+	for _, row := range []struct {
+		name      string
+		machineID string
+		dropped   bool
+		taken     leaseAcquisition
+	}{
+		{"a record just written", "box-join-dead", false, leaseTakenExpired},
+		{"a record the bucket's MaxAge dropped", "box-join-dropped", true, leaseTakenAbsent},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			uri := testnats.URL(t)
+			handle, received := recordingHandler()
+			rig := startJoiningReceiverRig(t, uri, row.machineID, func(_ *receiverRig, options *durableReceiverOptions) {
+				options.handle = handle
+			})
+			rig.awaitState(t, receiveActive, 10*time.Second)
+			publishDurable(t, rig.client, "before")
+			got := []receivedMessage{awaitReceived(t, received, 5*time.Second, "the message published before the join")}
+
+			putLeaseRecord(t, uri, row.machineID, deadHolderRecord)
+			if row.dropped {
+				dropAtTheBucketsAge(t, rig)
+			}
+			take := holdTake(t, rig)
+			rig.receiver.startJoin(func(ctx context.Context) *lease {
+				rig.lease.Contend(ctx)
+				rig.lease.Start(context.Background())
+				return rig.lease
+			})
+			testwait.Receive(t, "the lease's take of the record", take.reached)
+			if strings.Contains(rig.logs.String(), leaseJoinedStandbyLine) {
+				t.Fatalf("the join logged %q before its lease took the record: it stood down on the dead holder's record", leaseJoinedStandbyLine)
+			}
+			publishDurable(t, rig.client, "during")
+			got = append(got, awaitReceived(t, received, 5*time.Second, "the message published while the join's take was held"))
+			take.Release()
+			if joined := rig.logRecord(t, leaseJoinedHolderLine, 5*time.Second); joined["lease"] != row.taken.String() {
+				t.Fatalf("the join took the lease from a record it reads %v, want %s: %v", joined["lease"], row.taken, joined)
+			}
+			publishDurable(t, rig.client, "after")
+			got = append(got, awaitReceived(t, received, 5*time.Second, "the message published after the join"))
+
+			for i, data := range []string{"before", "during", "after"} {
+				if got[i].data != data || got[i].delivered != 1 {
+					t.Fatalf("the handler took %+v, want before, during and after, in that order, each at its first delivery", got)
+				}
+			}
+			awaitDurable(t, rig.client, rig.consumer, "every message acknowledged", func(info *natsgo.ConsumerInfo) bool {
+				return info.NumAckPending == 0 && info.NumPending == 0
+			})
+			if info, err := rig.client.JS().ConsumerInfo(bus.Stream, rig.consumer); err != nil || info.Delivered.Consumer != 3 || info.NumRedelivered != 0 {
+				t.Fatalf("the durable after the three messages: %+v (%v), want three deliveries and no redelivery", info, err)
+			}
+			rig.awaitRecord(t, "pod-a's, receiving", func(record leaseRecord) bool { return record.Holder == "pod-a" && record.Receiving })
+			subscribes, held := 0, false
+			var taken map[string]any
+			for _, line := range logtest.JSONLines(t, rig.logs.String()) {
+				switch line["msg"] {
+				case "durable receiving":
+					subscribes++
+				case leaseJoinedStandbyLine:
+					t.Fatalf("the join logged %q: %v", leaseJoinedStandbyLine, line)
+				case "listener lease acquired":
+					taken = line
+				case "settle hold ended; delivering the held messages in stream order":
+					held = true
+				}
+			}
+			if subscribes != 1 {
+				t.Fatalf("the pod subscribed to the durable %d times, want once: the lease takes over the subscription it received on without one", subscribes)
+			}
+			if row.taken != leaseTakenExpired {
+				if held {
+					t.Fatalf("the term taken from a record that asks no settle held what it received:\n%s", rig.logs.String())
+				}
+				return
+			}
+			end := rig.settleHoldEnd(t, time.Second)
+			if after := logRecordTime(t, end).Sub(logRecordTime(t, taken)); end["outcome"] != "settled" || after > time.Second {
+				t.Fatalf("the settle hold of the term taken over the dead holder's record ended %v, %s after the take, want settled within a second", end, after)
+			}
+			rig.awaitRecord(t, "pod-a's, no longer unsettled", func(record leaseRecord) bool { return record.Holder == "pod-a" && !record.Unsettled })
+		})
+	}
+
+	t.Run("a live holder's record stands the join by", func(t *testing.T) {
+		uri := testnats.URL(t)
+		const machineID = "box-join-live"
+		conn := testnats.Connect(t, uri)
+		t.Cleanup(conn.Close)
+		kv, err := openListenerState(t.Context(), conn, 1, listenerStateRequestWait)
+		if err != nil {
+			t.Fatalf("open the listener state bucket for pod-b: %v", err)
+		}
+		holder := newLease(kv, machineID, "pod-b", testLeaseTiming(), time.Now, logging.NewWithWriter(machineID, io.Discard))
+		holder.Start(context.Background())
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = holder.Release(ctx)
+		})
+		waitFor(t, "pod-b to take the absent lease record", holder.Holding)
+
+		rig := startJoiningReceiverRig(t, uri, machineID, nil)
+		rig.awaitState(t, receiveActive, 10*time.Second)
+		rig.receiver.startJoin(func(ctx context.Context) *lease {
+			rig.lease.Contend(ctx)
+			rig.lease.Start(context.Background())
+			return rig.lease
+		})
+		if standby := rig.logRecord(t, leaseJoinedStandbyLine, 5*time.Second); standby["active_instance"] != "pod-b" {
+			t.Fatalf("the join stood by for %v, want pod-b, which renews the record: %v", standby["active_instance"], standby)
+		}
+		if strings.Contains(rig.logs.String(), leaseJoinedHolderLine) || rig.lease.Holding() {
+			t.Fatal("the join took the lease from pod-b, which renews it")
+		}
+		if record, found := leaseRecordOf(t, rig); !found || record.Holder != "pod-b" || record.Released {
+			t.Fatalf("the lease record after the join is %+v (found %t), want pod-b's, held", record.leaseFields, found)
+		}
+	})
+}
+
+// A pod that delivered without a lease, whose binding broke while the holder of the record its
+// join later meets bound the durable and took messages it never acked before it died, holds what
+// reaches it after the join until those messages come back at their ack wait: the lease takes
+// that holder's record as expired, so the term the join adopts must settle
+// (durableReceiver.adopt), and its settle hold delivers the held messages first, in stream order,
+// and ends settled once every outstanding message is in this pod's hands (receiveTerm.settle).
+// The row cuts the pod's bus connection (testnats.Proxy), binds the durable as that holder
+// (bindAsAHolder), which takes two messages and goes, restores the connection, and joins the lease
+// once the pod is bound again; it publishes two newer messages after the join, inside the held
+// messages' ack wait. All four reach the handler once, in stream order, and none is left
+// unacknowledged.
+//
+// Before, the join adopted the term with no hold: the newer messages reached the handler at once,
+// and the held ones a whole ack wait later, after them.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late, and the join
+// must come inside the held messages' 6 s ack wait.
+func TestALateLeaseJoinOverAHolderThatTookMessagesDeliversThoseFirst(t *testing.T) {
+	uri := testnats.URL(t)
+	const machineID = "box-join-held"
+	proxy := testnats.StartProxy(t, uri)
+	handle, received := recordingHandler()
+	rig := startJoiningReceiverRigVia(t, proxy.URL(), uri, machineID, func(_ *receiverRig, options *durableReceiverOptions) {
+		options.handle = handle
+	})
+	rig.awaitState(t, receiveActive, 10*time.Second)
+
+	// pod-a's binding breaks, and the holder binds the durable, takes two messages and goes.
+	proxy.Cut()
+	client, holder := bindAsAHolder(t, uri, machineID, func(*natsgo.Msg) {})
+	publishDurable(t, client, "held-1")
+	publishDurable(t, client, "held-2")
+	awaitDurable(t, client, rig.consumer, "the holder to take both messages", func(info *natsgo.ConsumerInfo) bool {
+		return info.NumAckPending == 2 && info.NumPending == 0
+	})
+	taken := time.Now()
+	if err := holder.Unsubscribe(); err != nil {
+		t.Fatalf("unsubscribe the holder: %v", err)
+	}
+	awaitDurable(t, client, rig.consumer, "the durable to read unbound with both messages outstanding", func(info *natsgo.ConsumerInfo) bool {
+		return !info.PushBound && info.NumAckPending == 2
+	})
+	proxy.Restore()
+	awaitDurable(t, client, rig.consumer, "pod-a to bind the durable again", func(info *natsgo.ConsumerInfo) bool {
+		return info.PushBound
+	})
+
+	putLeaseRecord(t, uri, machineID, deadHolderRecord)
+	rig.receiver.startJoin(func(ctx context.Context) *lease {
+		rig.lease.Contend(ctx)
+		rig.lease.Start(context.Background())
+		return rig.lease
+	})
+	if joined := rig.logRecord(t, leaseJoinedHolderLine, 5*time.Second); joined["lease"] != leaseTakenExpired.String() {
+		t.Fatalf("the join took the lease from a record it reads %v, want the holder's, expired: %v", joined["lease"], joined)
+	}
+	publishing := time.Now()
+	t.Logf("the newer messages go out %s after the holder took the older ones, inside their %s ack wait", publishing.Sub(taken).Round(time.Millisecond), consumerAckWait)
+	publishDurable(t, client, "newer-1")
+	publishDurable(t, client, "newer-2")
+	var got []receivedMessage
+	for range 4 {
+		got = append(got, awaitReceived(t, received, 15*time.Second, "the held messages and the newer ones"))
+	}
+	if got[0].at.Before(publishing) {
+		t.Fatalf("UNKNOWN: the handler took %+v, the first before the newer messages were published: the held ones came back before the join, and the row needs a join inside their ack wait", got)
+	}
+	for i, want := range []receivedMessage{{data: "held-1", delivered: 2}, {data: "held-2", delivered: 2}, {data: "newer-1", delivered: 1}, {data: "newer-2", delivered: 1}} {
+		if got[i].data != want.data || got[i].delivered != want.delivered {
+			t.Fatalf("the handler took %+v, want the holder's two messages, redelivered, before the two newer ones, in stream order", got)
+		}
+	}
+	if end := rig.settleHoldEnd(t, time.Second); end["outcome"] != "settled" {
+		t.Fatalf("the settle hold ended %v, want settled once the held messages came back", end)
+	}
+	awaitDurable(t, client, rig.consumer, "every message acknowledged", func(info *natsgo.ConsumerInfo) bool {
+		return info.NumAckPending == 0 && info.NumPending == 0
+	})
+	select {
+	case message := <-received:
+		t.Fatalf("the handler took %q (delivery %d) after the four", message.data, message.delivered)
+	default:
+	}
+	rig.awaitRecord(t, "pod-a's, no longer unsettled", func(record leaseRecord) bool { return record.Holder == "pod-a" && !record.Unsettled })
 }

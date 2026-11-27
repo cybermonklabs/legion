@@ -82,15 +82,18 @@ import (
 //
 // A listener whose NATS user lacked the grant for the listener state bucket at its start receives
 // without a lease, the machine's one deliverer, and tries the bucket again until a grant lets it
-// open it (joinDeliveryLease). Its lease's first rounds then take the record or read another pod's
-// (lease.Contend), and the receive loop hands the term it receives on to that lease
+// open it (joinDeliveryLease). Its lease's first rounds then take the record, or see another pod
+// write it (lease.Contend), and the receive loop hands the term it receives on to that lease
 // (durableReceiver.joinTerm). A lease that holds takes the term as it stands - its subscription,
-// its queue and the message in hand - so no message waits for the switch (durableReceiver.adopt).
-// A lease another pod holds, one that took it while this pod delivered without it and waits out
-// this pod's binding as a pre-lease build's (awaitUnbound), ends the term: from that instant
-// nothing it takes is forwarded or acked, its relays stop and get relayFormerSettle to settle the
-// frames they forwarded, and then its subscription goes, which ends that holder's wait at its next
-// poll. Either way the pod goes on under the lease, as the holder or a standby.
+// its queue and the message in hand - so no message waits for the switch (durableReceiver.adopt):
+// a lease that took a dead holder's record too, which the first rounds wait out as any standby
+// does, and whose term then holds what it receives until every message outstanding is in this
+// pod's hands, as any term that must settle does. A lease another pod holds, one that took it
+// while this pod delivered without it and waits out this pod's binding as a pre-lease build's
+// (awaitUnbound), ends the term: from that instant nothing it takes is forwarded or acked, its
+// relays stop and get relayFormerSettle to settle the frames they forwarded, and then its
+// subscription goes, which ends that holder's wait at its next poll. Either way the pod goes on
+// under the lease, as the holder or a standby.
 //
 // The holder sends InProgress every inProgressEvery for every message it has received and not
 // settled, queued or in hand, so none waits out the ack wait while this pod is alive. On a
@@ -419,8 +422,8 @@ func newDurableReceiver(options durableReceiverOptions) *durableReceiver {
 
 // join hands this pod, which started without a lease, the lease it joined once its NATS grant let
 // it open the listener state bucket (joinDeliveryLease, main.go): the lease's first rounds have
-// taken the record or read another pod's (lease.Contend) and its loop runs. The receive loop
-// takes it from there (run, joinTerm). It is called once, by the try startJoin runs.
+// taken the record, or seen another pod write it (lease.Contend), and its loop runs. The receive
+// loop takes it from there (run, joinTerm). It is called once, by the try startJoin runs.
 func (r *durableReceiver) join(l *lease) {
 	r.joined.Store(l)
 	r.joinCancel()
@@ -774,7 +777,7 @@ func (r *durableReceiver) serve(ctx, termCtx context.Context, status leaseStatus
 	var hold time.Duration
 	if settle {
 		hold = r.timing.settleCap
-		r.logger.Info("listener lease term must settle; receiving at once and holding what arrives until the durable's outstanding messages are in hand",
+		r.logger.Info(settleHoldLine,
 			slog.String("consumer", r.consumer), slog.String("lease", status.How.String()), slog.String("cap", hold.String()),
 			slog.Bool("hand_back", status.HandBack))
 	} else {
@@ -878,19 +881,26 @@ func (r *durableReceiver) receive(ctx, termCtx context.Context) bool {
 }
 
 // joinTerm hands the term this pod received on without a lease to the lease that joined (join),
-// whose first rounds took the record or read another pod's (lease.Contend). It reads the lease
-// once, and that read decides; the lease is stored as this pod's at once, and from that instant
-// the handler delivers only while the lease holds (holding).
+// whose first rounds took the record, or saw another pod write it (lease.Contend). It reads the
+// lease once, and that read decides; the lease is stored as this pod's at once, and from that
+// instant the handler delivers only while the lease holds (holding).
 //
 // A lease that holds the record takes the term over as it stands: the term's subscription, its
 // queue and the message in hand stay, so nothing waits for the switch, and the term is the
 // lease's from here (receiveTerm.leaseTerm), which the receive loop serves (run, adopt). The
 // holder-only loops the term ran without a lease have been told to stop, and start again under
-// the lease's term.
+// the lease's term. So does a lease whose first rounds met a dead holder's record, one nobody
+// renews whatever its age: they took it once it had stood unchanged for the ttl, as any standby
+// takes it, and the term, which must settle then, holds what it receives from the adopt on until
+// every message outstanding is in this pod's hands, so what that holder received and never acked
+// comes before what reached this pod after the adopt (adopt).
 //
-// A lease another pod holds - the pod that took the lease while this one delivered without it and
-// waits for this pod's binding to end (awaitUnbound) - ends the term, as a lost lease's end does:
-// from the store on, nothing the handler takes is forwarded or acked, so each such message comes
+// A lease another pod holds - one whose write of the record the first rounds read, a renewal or a
+// take: the pod that took the lease while this one delivered without it and waits for this pod's
+// binding to end (awaitUnbound) - ends the term, as a lost lease's end does. The rounds see such a
+// write once that pod's next renewal lands, within leaseRenewEvery and one standby poll of their
+// first read, and this pod delivers until then, while that pod waits for its binding. From the
+// store on, nothing the handler takes is forwarded or acked, so each such message comes
 // back to the holder at its ack wait and is delivered there once, while the message in hand
 // settles as normal, its ack included (endLost). The relays stop first and are given
 // relayFormerSettle, the settle a former holder's successor waits out (lease.FormerSettleWait),
@@ -934,19 +944,37 @@ const (
 // receiving, and hands the relays this term, bounded by the lease's loss deadline
 // (lease.UntilLoss), in place of the one without a lease they followed, so each relay goes on
 // pulling with no restart. The holder-only loops start under the term (receive), as they do for
-// any term. The term settles nothing: what the durable has outstanding was pushed to this very
-// subscription, and a record that said its term must settle (unsettled, stale_binding) keeps
-// saying so, so the pod after this one settles in its turn.
+// any term.
+//
+// A term that must settle (leaseStatus.Settle: taken over an expired record, or from one carrying
+// unsettled or stale_binding) holds what its subscription receives from the adopt on, as a term
+// that subscribes holds it (receiveTerm.askSettle, receiveTerm.settle), for settleCap at most. The
+// holder whose record the lease took may have bound the durable while this pod's binding was
+// broken, by a reconnect or a resubscribe, and received messages it never acked; those come back
+// at their ack wait, and the hold delivers them before what reached this pod after the adopt. The
+// hold ends at its first read of the durable that finds every outstanding message in this pod's
+// hands, at once where no other subscriber holds any, and reports the term settled
+// (lease.Settled). A term that need not settle holds nothing.
 func (r *durableReceiver) adopt(ctx, termCtx context.Context, status leaseStatus) bool {
 	l := r.lease.Load()
 	r.mu.Lock()
-	subject := r.term.subject
+	term, subject := r.term, r.term.subject
 	r.mu.Unlock()
 	l.SetDeliverSubject(subject)
 	l.SetReceiving(status.Term)
+	if status.Settle {
+		r.logger.Info(settleHoldLine,
+			slog.String("consumer", r.consumer), slog.String("lease", status.How.String()), slog.String("cap", r.timing.settleCap.String()),
+			slog.Bool("hand_back", status.HandBack), slog.Bool("adopted", true))
+		term.askSettle(r.timing.settleCap)
+	}
 	r.relays.setOwned(&relayTerm{ctx: termCtx, untilLoss: func() time.Duration { return l.UntilLoss(status.Term) }})
 	return r.receive(ctx, termCtx)
 }
+
+// settleHoldLine is the line a term that must settle logs as its settle hold begins, at its
+// subscribe (serve) or at the adopt of a term a lease that joined took over (adopt).
+const settleHoldLine = "listener lease term must settle; receiving at once and holding what arrives until the durable's outstanding messages are in hand"
 
 // prepare reads the durable, creating it when it is missing and, when correct is set, correcting
 // its policy when it has drifted (correctListenerDurable), retrying every bindPoll until it
@@ -1078,16 +1106,17 @@ func (r *durableReceiver) awaitUnbound(ctx context.Context) error {
 // to the lease's loss deadline for term (lease.UntilLoss, sessionRelays.termContext).
 func (r *durableReceiver) begin(termCtx context.Context, subject string, hold time.Duration, term uint64) error {
 	t := &receiveTerm{
-		subject:   subject,
-		queue:     make(chan *nats.Msg, receiveQueueCapacity),
-		unsettled: map[*nats.Msg]struct{}{},
-		closing:   make(chan struct{}),
-		handled:   make(chan struct{}),
-		stopped:   make(chan struct{}),
-		logger:    r.logger,
-		hold:      hold,
-		leaseTerm: term,
-		holding:   hold > 0,
+		subject:     subject,
+		queue:       make(chan *nats.Msg, receiveQueueCapacity),
+		unsettled:   map[*nats.Msg]struct{}{},
+		closing:     make(chan struct{}),
+		handled:     make(chan struct{}),
+		stopped:     make(chan struct{}),
+		logger:      r.logger,
+		hold:        hold,
+		leaseTerm:   term,
+		holding:     hold > 0,
+		settleAsked: make(chan struct{}),
 	}
 	handling, cancel := context.WithCancel(context.Background())
 	t.handling, t.cancel = handling, cancel

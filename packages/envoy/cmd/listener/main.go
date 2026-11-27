@@ -3112,12 +3112,14 @@ func runListener(credentialWait time.Duration) {
 	// lease (podLease), the delivery ledger becomes the machine's shared one (dedupe.Joining), and
 	// the lease judges this pod's receiving by the receive loop's signal. The last-seen records are
 	// no part of the join: their bucket opens in a loop of its own, which the join waits on no try
-	// of (startLastSeenBucket). The lease's first rounds then take the record or read another pod's
-	// (lease.Contend), before anything this pod delivers is given up; its loop starts, and the
-	// receive loop hands the term it receives on to it, which takes that term as
-	// it stands or, when another pod holds the lease, ends it (durableReceiver.join). An edge
-	// listener, which dialled no lease connection, joins none. The join runs under a context of
-	// the receiver's own, which the shutdown ends and waits out before it stops receiving
+	// of (startLastSeenBucket). The lease's first rounds then take the record, or see another pod
+	// write it (lease.Contend), before anything this pod delivers is given up: a dead holder's
+	// record, which nobody renews, they take once it has stood unchanged for the ttl, and a live
+	// holder's they leave once its next renewal lands, within leaseRenewEvery and one standby
+	// poll. Its loop starts, and the receive loop hands the term it receives on to it, which takes
+	// that term as it stands or, when another pod holds the lease, ends it (durableReceiver.join).
+	// An edge listener, which dialled no lease connection, joins none. The join runs under a
+	// context of the receiver's own, which the shutdown ends and waits out before it stops receiving
 	// (durableReceiver.startJoin, durableReceiver.Stop), so a join that completes as the pod stops
 	// is handed over or released by that stop rather than left renewing until the exit; the
 	// joined lease's own loop runs under a context nothing cancels, as a lease opened at the start

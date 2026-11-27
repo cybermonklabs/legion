@@ -527,13 +527,16 @@ A grant applied after the pod started is so taken within one wait, with no resta
 
 - The pod tries to take the record before it gives anything up (`lease.Contend`).
   A record that is absent or released it takes, and its subscription, its queue and the message in hand become the holder's: nothing is unsubscribed, so no message waits for the switch and no second pod delivers (`durableReceiver.joinTerm`, `durableReceiver.adopt`).
+  A record that is not released and that nobody writes, a dead holder's however long the bucket has kept it, it takes as any standby takes it, once its revision has stood unchanged for the TTL (5 s), delivering on its subscription until then, and that subscription becomes the holder's in the same way.
+  The term then settles as a term taken over an expired record does, on that subscription (`durableReceiver.adopt`): it holds what arrives until every message the durable has outstanding is in its hands, or for the settle cap (7 s), and delivers that in stream order, so what the dead holder received and never acked, which comes back at its ack wait, goes before newer messages;
+  where no other subscriber holds any, the hold ends at its first read of the durable.
   `/healthz` drops `lease` and names the pod `active`, and the holder's loops start under the lease.
 
 - A record another pod holds it cannot take: that pod took the lease while this one delivered without it, and waits out this pod's push binding as a pre-lease build's ("Two builds of the listener" above).
-  The pod stops delivering at once: from that read on, nothing its handler takes is forwarded or acked, so each such message comes back to the holder at its ack wait and is delivered there once, and the message in hand settles as normal, its ack included.
+  The pod tells it from a dead holder's record by its revision alone, with no clock: it reads the record again until it finds it at another revision than its first read did, which that pod's next renewal writes, within the 1 s renewal and a 0.5 s poll of that first read.
+  It delivers until then, while that pod waits for its binding, and then stops delivering at once: from that read on, nothing its handler takes is forwarded or acked, so each such message comes back to the holder at its ack wait and is delivered there once, and the message in hand settles as normal, its ack included.
   Its relays stop and are given `relayFormerSettle` (1 s) to settle the frames they forwarded, acks included, so the holder's relays, which restart each session's consumer at its ack floor, send none of them again;
   then its subscription goes, which ends the holder's wait at its next poll (1 s), and the pod stands by under the lease.
-  A record that is not released counts as held at that first read, one whose holder died included: the pod stands by, and its lease takes the record once it has stood unchanged for the TTL, as any standby's does, with the settle hold an expired record asks for.
 
 - A stop ends a join still trying before it stops receiving, and waits for it, within the receive stop's budget ("Graceful stop order" above): a lease the join took as the pod stopped is ended with the pod's receiving, its term handed back as any holder's is, or released by the stop when the pod had not taken it up yet, so no standby waits out the record of a pod that stopped gracefully (`durableReceiver.Stop`).
   The join's wait for its next try of the bucket, up to 30 s, ends at the stop too, so it spends none of that budget, and an open that succeeds once the stop came makes no lease (`joinDeliveryLease`).

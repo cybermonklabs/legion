@@ -172,6 +172,12 @@ type lease struct {
 	givenUpRev       uint64
 	givenUpAt        time.Time
 	receiveDownSince time.Time
+	// otherRev is the revision of the record the standby's last read found another process
+	// holding (not released, naming a holder and another boot than this process's), zero when
+	// that read found none: no record, a released one, one it could not decode, or this
+	// process's own write. Contend compares it from round to round; seenRev cannot serve, since
+	// poll resets it while the receive connection is down and a take that lost resets it too.
+	otherRev uint64
 
 	mu         sync.Mutex
 	held       bool
@@ -276,19 +282,36 @@ func (l *lease) Start(ctx context.Context) {
 }
 
 // Contend runs the lease's rounds (step) on the caller's goroutine, before Start, until this
-// process holds the record or has read a record another process holds, or ctx ends, and returns
-// the lease then: the try of a pod that joins its machine's lease late, once its NATS grant lets
-// it open the listener state bucket (joinDeliveryLease), which takes the lease before it gives up
-// anything it delivers without one. A record that is absent or released is taken at once (poll);
-// one that is not released is another process's, read and left, and Start's loop takes it only
-// once it has stood unchanged for a full ttl, as any standby's does. A round whose read failed, or
-// whose take another write beat, runs again after the wait it returned. The rounds' state is the
-// loop's own (step), so Contend runs before Start and never beside it.
+// process holds the record, or reads a record another process holds at another revision than
+// its first read of such a record found, or ctx ends, and returns the lease then: the try of a
+// pod that joins its machine's lease late, once its NATS grant lets it open the listener state
+// bucket (joinDeliveryLease), which takes the lease before it gives up anything it delivers
+// without one. A record that is absent or released is taken at once (poll). One another process
+// holds is taken as any standby takes it, once its revision has stood unchanged for a full ttl,
+// so the join takes a dead holder's record whatever its age and keeps what it delivers on
+// (durableReceiver.joinTerm). A revision that moved shows a live holder, which renewed the
+// record, or another standby, which took it, and Contend returns with that holder named
+// (leaseStatus.ActiveInstance). It compares the revisions its rounds read (otherRev) and no
+// clock. The cost is the wait for that move: a join that meets a live holder returns once that
+// holder's next renewal lands, within renewEvery and one standby poll, not at its first read. A
+// round whose read failed, or whose take another write beat, runs again after the wait it
+// returned, and a round while this pod's receive connection is down takes nothing (poll). The
+// rounds' state is the loop's own (step), so Contend runs before Start and never beside it.
 func (l *lease) Contend(ctx context.Context) leaseStatus {
+	var met uint64
 	for {
 		wait := l.step()
 		status := l.Status()
-		if status.Holding || status.ActiveInstance != "" || waitUnlessDone(ctx, wait) != nil {
+		if status.Holding {
+			return status
+		}
+		if l.otherRev != 0 {
+			if met != 0 && l.otherRev != met {
+				return status
+			}
+			met = l.otherRev
+		}
+		if waitUnlessDone(ctx, wait) != nil {
 			return status
 		}
 	}
@@ -806,6 +829,7 @@ func (l *lease) ownRevision() (uint64, bool, error) {
 // at its revision, at once) or unchanged for a full ttl since this process first saw its
 // revision (Update at that revision). The released revision this process wrote on giving the
 // lease up it takes only two standby polls after that (GiveUp), so another standby takes it first.
+// Each read records the revision of a record another process holds, for Contend (otherRev).
 //
 // down is whether this pod's receive connection is down (receiveDown): it then reads the record,
 // so its /healthz still names the holder, and takes none, since a pod that receives nothing would
@@ -819,7 +843,7 @@ func (l *lease) poll(down bool) time.Duration {
 		l.mu.Lock()
 		l.record = leaseRecord{}
 		l.mu.Unlock()
-		l.seenRev = 0
+		l.seenRev, l.otherRev = 0, 0
 		if down {
 			return l.cfg.standbyPoll
 		}
@@ -843,6 +867,10 @@ func (l *lease) poll(down bool) time.Duration {
 	l.mu.Lock()
 	l.record = record
 	l.mu.Unlock()
+	l.otherRev = 0
+	if !record.Released && record.Holder != "" && record.Boot != l.boot {
+		l.otherRev = entry.Revision()
+	}
 	switch {
 	case down:
 		l.seenRev = 0

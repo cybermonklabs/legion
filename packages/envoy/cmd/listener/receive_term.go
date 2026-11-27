@@ -41,6 +41,11 @@ type receiveTerm struct {
 	hold           time.Duration
 	leaseTerm      uint64
 	markReadFailed bool
+	// settleAsked is closed once a lease that joined took this term over as one that must settle
+	// (askSettle, durableReceiver.adopt), and askedHold, written before the close, is the longest
+	// that hold lasts: the handler holds what the term receives from its next message on.
+	settleAsked chan struct{}
+	askedHold   time.Duration
 
 	mu sync.Mutex
 	// closed is set once the term takes no more messages (close).
@@ -255,12 +260,16 @@ func sortByStreamSequence(messages []*nats.Msg) {
 // NAK, so the durable redelivers it after the ack wait to whoever holds the lease then.
 //
 // A term that must settle first holds what it receives (settle), then delivers that batch in
-// stream order before it reads the queue.
+// stream order before it reads the queue. A term asked to settle once it runs (askSettle) enters
+// the same hold between two messages: the message in hand is delivered first, and a message the
+// handler took from the queue as the ask came is held with the rest rather than handed on.
 func (t *receiveTerm) handle(r *durableReceiver) {
 	defer close(t.handled)
-	if t.hold > 0 && !t.settle(r) {
+	if t.hold > 0 && !t.settle(r, t.hold) {
 		return
 	}
+	// asked is the ask until its hold has run, and nil, never ready, after it.
+	asked := t.settleAsked
 	for {
 		select {
 		case <-t.closing:
@@ -272,8 +281,19 @@ func (t *receiveTerm) handle(r *durableReceiver) {
 			select {
 			case <-t.closing:
 				return
+			case <-asked:
 			case m = <-t.queue:
 			}
+		}
+		select {
+		case <-asked:
+			asked = nil
+			t.holdBack(m)
+			if !t.settle(r, t.askedHold) {
+				return
+			}
+			continue
+		default:
 		}
 		if r.holding() {
 			r.handle(t.handling, m)
@@ -282,25 +302,50 @@ func (t *receiveTerm) handle(r *durableReceiver) {
 	}
 }
 
-// settle is a term's settle hold. It delivers nothing while the InProgress ticker keeps what
-// arrives alive, and reads the durable every settlePoll until its NumAckPending is no more than
-// the distinct messages the term holds, which means every message outstanding is in this pod's
-// hands: what a dead holder had received, or the server pushed to a lost node's lingering
-// connection, comes back once its ack wait runs out, and what a stopping holder handed back once
-// the hand-back delay does, after newer messages pushed to this pod, and the stream-order sort
-// puts it back before them. The batch is gathered before each read, so every message it counts
-// was still outstanding at the read. A read that fails keeps the hold. The hold ends at its cap
-// regardless, and its end clears the lease term's unsettled and the ack wait it owed.
+// askSettle has the handler hold what the term receives from its next message on, for hold at
+// most, as a term that must settle holds from its subscribe (settle): the term a lease that joined
+// took over as it stood, when that lease's term must settle (durableReceiver.adopt). It is called
+// once, after the term's leaseTerm is set.
+func (t *receiveTerm) askSettle(hold time.Duration) {
+	t.askedHold = hold
+	close(t.settleAsked)
+}
+
+// holdBack puts m, a message the handler took and did not hand on, at the head of the held batch,
+// which the hold gathers and sorts with what arrives after it. A nil m holds nothing.
+func (t *receiveTerm) holdBack(m *nats.Msg) {
+	if m == nil {
+		return
+	}
+	t.mu.Lock()
+	t.held = append([]*nats.Msg{m}, t.held...)
+	t.mu.Unlock()
+}
+
+// settle is a term's settle hold, which lasts hold at most. It delivers nothing while the
+// InProgress ticker keeps what arrives alive, and reads the durable every settlePoll until its
+// NumAckPending is no more than the distinct messages the term holds, which means every message
+// outstanding is in this pod's hands: what a dead holder had received, or the server pushed to a
+// lost node's lingering connection, comes back once its ack wait runs out, and what a stopping
+// holder handed back once the hand-back delay does, after newer messages pushed to this pod, and
+// the stream-order sort puts it back before them. The batch is gathered before each read, so
+// every message it counts was still outstanding at the read. A read that fails keeps the hold.
+// The hold ends at its cap regardless, and its end clears the lease term's unsettled and the ack
+// wait it owed.
 //
 // A term taken from a hand-back candidate reads the stopping pod's mark beside the durable, and
-// ends the hold once that mark is there and handBackSettleCap has passed since the subscribe
-// (readHandBackMark): the mark says the stop NAKed what it held with the hand-back delay and
-// held the deliver subject until this pod was receiving, so nothing of it is waiting out an ack
-// wait. It comes after this pod is receiving, which is why the hold is where it is read and not
-// the subscribe. A mark that is absent, or that cannot be read, leaves the hold to its cap.
+// ends the hold once that mark is there and handBackSettleCap has passed since the hold began, at
+// the subscribe or at the adopt (readHandBackMark): the mark says the stop NAKed what it held with
+// the hand-back delay and held the deliver subject until this pod was receiving, so nothing of it
+// is waiting out an ack wait. It comes after this pod is receiving, which is why the hold is where
+// it is read and not the subscribe. A mark that is absent, or that cannot be read, leaves the hold
+// to its cap.
 //
 // It reports false when the term closed first.
-func (t *receiveTerm) settle(r *durableReceiver) bool {
+func (t *receiveTerm) settle(r *durableReceiver, hold time.Duration) bool {
+	t.mu.Lock()
+	t.holding = true
+	t.mu.Unlock()
 	start := time.Now()
 	ctx, cancel := context.WithCancel(t.handling)
 	defer cancel()
@@ -311,7 +356,7 @@ func (t *receiveTerm) settle(r *durableReceiver) bool {
 		case <-ctx.Done():
 		}
 	}()
-	limit := time.NewTimer(t.hold)
+	limit := time.NewTimer(hold)
 	defer limit.Stop()
 	poll := time.NewTicker(r.timing.settlePoll)
 	defer poll.Stop()
