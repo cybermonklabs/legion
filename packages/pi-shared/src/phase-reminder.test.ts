@@ -61,7 +61,7 @@ test("the record check aborts a daemon read that outlives its bound, and reminds
   expect(handed).toHaveLength(1);
   expect(handed[0]?.issue).toBe("LEGION-208");
   expect(handed[0]?.signal.aborted).toBe(true);
-  expect((handed[0]?.signal.reason as Error).message).toBe("no answer within 20ms");
+  expect((handed[0]?.signal.reason as Error | undefined)?.message).toBe("no answer within 20ms");
   expect(debugged).toEqual(["legion: the daemon did not answer the phase reminder's record check"]);
 });
 

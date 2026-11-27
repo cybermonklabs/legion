@@ -16,8 +16,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 )
 
-// Provisioning leaves the repository it happens to stand inside alone, on both ways to the
-// repository, and refuses outright to provision below one.
+// Provisioning leaves the repository it happens to stand inside alone, and refuses outright to
+// provision below one.
 //
 // jj searches upward from the directory it runs in for the closest `.jj` and opens that
 // repository; it has no ceiling option, and the two provisioning commands that create a
@@ -34,24 +34,22 @@ import (
 // runs once per way the state directory is reached, because the path the operator names and the
 // path the child stands in need not be the same one.
 func TestProvisionLeavesTheEnclosingRepositoryUntouched(t *testing.T) {
-	for _, source := range []string{"github"} {
-		t.Run("a state directory outside it, from "+source, func(t *testing.T) {
-			run := newLocalRunner(t)
-			decoy := enclosingRepository(t)
-			before := readEnclosingState(t, decoy)
-			t.Chdir(decoy)
+	t.Run("a state directory outside it", func(t *testing.T) {
+		run := newLocalRunner(t)
+		decoy := enclosingRepository(t)
+		before := readEnclosingState(t, decoy)
+		t.Chdir(decoy)
 
-			req := provisionRequest(t)
-			working, err := Provision(context.Background(), run, req)
-			if err != nil {
-				t.Fatalf("Provision from %s while standing in %s: %v", source, decoy, err)
-			}
-			if _, err := os.Stat(filepath.Join(working.Dir, ".jj")); err != nil {
-				t.Errorf("Provision from %s left no workspace of its own: %v", source, err)
-			}
-			assertEnclosingRepositoryUnchanged(t, decoy, before)
-		})
-	}
+		req := provisionRequest(t)
+		working, err := Provision(context.Background(), run, req)
+		if err != nil {
+			t.Fatalf("Provision while standing in %s: %v", decoy, err)
+		}
+		if _, err := os.Stat(filepath.Join(working.Dir, ".jj")); err != nil {
+			t.Errorf("Provision left no workspace of its own: %v", err)
+		}
+		assertEnclosingRepositoryUnchanged(t, decoy, before)
+	})
 
 	// The first row is the live operator case: a legion.yaml kept inside a checkout, whose
 	// relative state_dir resolves lexically against the configuration file's own directory

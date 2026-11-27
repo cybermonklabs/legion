@@ -100,6 +100,7 @@ func runOpening(issue string, audience record.DesignAudience, generation, treeGe
 // design-news credit of the member still counts. Each is read before the change too, where each
 // holds, so the reads are seen to read the fences.
 func TestARootsNextChangeKeepsEachMembersFences(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	root := runIssue(runRoot, phase.Implementing, "in_progress")
@@ -154,6 +155,7 @@ func TestARootsNextChangeKeepsEachMembersFences(t *testing.T) {
 // rises, as an item and as an opening, while news told to the holder of the root in the run that
 // ended counts no more. Both count before the change.
 func TestAnArchitectsNewsOfItsRootStandsWhileTheRootsGenerationRises(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	root := runIssue(runRoot, phase.Implementing, "in_progress")
 	putRunIssue(t, st, root)

@@ -214,7 +214,7 @@ func TestEachCutCountsRootsOrChildren(t *testing.T) {
 }
 
 // TestEachPhaseStartsAtItsRolesFirstEventAndEndsWhereTheNextStarts is the fallback timeline, for
-// an issue the sampler never observed: each role's phase starts at the first event of its
+// an issue Dispatch never observed: each role's phase starts at the first event of its
 // session or at the handoff of the phase before it, whichever comes first, accepting starts at
 // the review handoff, and the merging the merger's first event starts ends at the close.
 func TestEachPhaseStartsAtItsRolesFirstEventAndEndsWhereTheNextStarts(t *testing.T) {
@@ -340,7 +340,7 @@ func TestAnIssuesOwnArchitectEventsGiveItADesignPhase(t *testing.T) {
 		worked("implementer", hour(1)).
 		handedOff("review", hour(3)).
 		closedAt(hour(5))
-	// The sampler recorded a slot an hour before this one's architect spoke, which is where its
+	// Dispatch recorded a slot an hour before this one's architect spoke, which is where its
 	// design phase begins.
 	admitted := newIssue("INFRA-4").
 		observe(legion.FieldSlot, hour(1), "2").
@@ -506,6 +506,33 @@ func TestTheNoRoleBarHoldsAParentsWaitOnItsChildren(t *testing.T) {
 	}
 	if hours := barOf(t, w, "tester").Hours; hours != 3 {
 		t.Fatalf("the tester bar = %g hours, want the three hours of testing after the wait", hours)
+	}
+}
+
+// TestTheNoRoleBarHoldsAMergedIssuesWaitForItsChecks: `verifying`, the phase a merged issue
+// waits in while its close waits for the checks of its Verification document
+// (cybermonklabs/legion#5558), is a phase no role works (RoleFor in
+// packages/daemon/internal/phase), as `awaiting_person`, `awaiting_children` and `held` are, so
+// its hours are on the "no role" bar. Unlike `done`, it is inside the workflow and inside the
+// work time, so a phase left off every bar would leave the seven bars short of the work time and
+// metric 1's card and metric 2's would disagree about the same issue. The issue below implements
+// for two hours, merges for one, and waits three hours for its checks before its close.
+func TestTheNoRoleBarHoldsAMergedIssuesWaitForItsChecks(t *testing.T) {
+	issue := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(6)).
+		observeString(legion.FieldPhase, hour(0), "implementing").
+		observeString(legion.FieldPhase, hour(2), "merging").
+		observeString(legion.FieldPhase, hour(3), "verifying").
+		observeString(legion.FieldPhase, hour(6), "done")
+	partitionsItsWorkTime(t, issue)
+	w := windowOf(fixture(hour(-24), hour(24), issue), ScopeAll)
+	if hours := barOf(t, w, barNoRole).Hours; hours != 3 {
+		t.Fatalf("the no-role bar = %g hours, want the three the merged issue waited for its checks", hours)
+	}
+	if hours := barOf(t, w, "merger").Hours; hours != 1 {
+		t.Fatalf("the merger bar = %g hours, want the one hour of merging: the wait after the merge is no role's", hours)
+	}
+	if hours := barOf(t, w, "implementer").Hours; hours != 2 {
+		t.Fatalf("the implementer bar = %g hours, want the two hours of implementing", hours)
 	}
 }
 
@@ -770,7 +797,7 @@ func TestWorkHoursBeforeTheFirstPhaseMarkAreOnThatPhasesBar(t *testing.T) {
 // The hours before an issue's first observation are the event log's to name (the spec's
 // "Statuses before observations"), so the first observed phase is the issue's first phase only
 // where the event log names none before it: here, an issue whose Legion work opens with a
-// handoff naming no phase two hours before the sampler first saw it. Those hours are on the bar
+// handoff naming no phase two hours before Dispatch first observed it. Those hours are on the bar
 // of the phase it is first seen in, as the fallback's are, or the seven bars would not add up to
 // the work time.
 func TestWorkHoursBeforeTheFirstObservedMarkAreOnThatPhasesBar(t *testing.T) {
@@ -807,8 +834,8 @@ func TestWorkHoursBeforeTheFirstObservedMarkAreOnThatPhasesBar(t *testing.T) {
 // Its hours before it come from these status rules, so they keep the phases its events mark
 // rather than all falling on the first phase the sampler saw" (the spec's "Statuses before
 // observations"). The issue below was implemented, tested, reviewed and sent back before the
-// sampler's first read found it implementing at hour 4; from there the daemon's phases name its
-// second round. Metric 3 reads the same two halves: the status history's first round and its
+// first observation of it found it implementing at hour 4; from there the daemon's phases name
+// its second round. Metric 3 reads the same two halves: the status history's first round and its
 // send-back before hour 4, and the observed second round after it, whose `needs_review` status
 // is the observations' to count and not the status history's.
 func TestAnIssueFirstObservedInFlightTakesItsEarlierPhasesFromItsEvents(t *testing.T) {
@@ -841,7 +868,7 @@ func TestAnIssueFirstObservedInFlightTakesItsEarlierPhasesFromItsEvents(t *testi
 		"architect": 1, "planner": 0, "implementer": 3, "tester": 2, "reviewer": 2, "merger": 0, barNoRole: 0,
 	}
 	if !reflect.DeepEqual(hoursPerBar, want2) {
-		t.Fatalf("the bars are %v, want %v: the first round's testing and reviewing hours are not the implementing the sampler first saw",
+		t.Fatalf("the bars are %v, want %v: the first round's testing and reviewing hours are not the implementing Dispatch first observed",
 			hoursPerBar, want2)
 	}
 	row := w.fact(t, "INFRA-1")

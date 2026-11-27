@@ -122,9 +122,10 @@ func TestRegisteredOpenGateRecordsChildAndStartsPlanningAtItsSlot(t *testing.T) 
 		t.Fatalf("child tree/phase = %q/%q, want LEGION-208/planning", tree, gotPhase)
 	}
 	// The first supervise row is the child's own architect's start, before its planner's
-	// (Engine.gateOpened). The second notice is the child-status that every child the line starts
-	// tells the architect above it (ChildStartedNotice).
-	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "plan_record", "supervise", "notice", "notice"})
+	// (Engine.gateOpened). The one notice is the child-status that every child the line starts
+	// tells the architect above it (ChildStartedNotice): the child's move out of admitted tells
+	// nobody (noticeFor).
+	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "plan_record", "supervise", "notice"})
 	var branchIssue string
 	var generation int
 	if err := pool.QueryRow(ctx, "select issue, (payload->>'generation')::int from outbox where kind = 'issue_branch'").Scan(&branchIssue, &generation); err != nil {

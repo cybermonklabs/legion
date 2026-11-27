@@ -747,11 +747,14 @@ func TestACheckDispatchCouldNotPlaceIsReadAgainOnTheBackoff(t *testing.T) {
 
 // After a second merge, the production check recorded for the earlier merge decides nothing: the
 // production term reads earlier_merge, and the close waits. A reason waits too, so the read opens
-// no check of the newest merge, which would stand in the term's place.
+// no check of the newest merge, which would stand in the term's place. The merger's completion of
+// the merged generation has not landed, so that reason starts no next change yet (changeDue) and
+// the issue stands where this case reads it.
 func TestAProductionCheckOfAnEarlierMergeDecidesNothing(t *testing.T) {
 	t.Parallel()
 	rig := newWaitRig(t, claim.RoleTester)
 	rig.seedRoot(phase.Merging, "retro")
+	owedMerger(t, rig)
 	rig.mergeRoot()
 	rig.seedCheck(waitRoot, waitGeneration, waitRootMerge, record.CheckRecorded)
 	rig.seedDefect(waitRoot, "the retro found the cache key unchecked")

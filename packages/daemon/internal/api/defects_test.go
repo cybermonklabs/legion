@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/dispatchbody"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -67,6 +70,34 @@ func setIssueColumns(t *testing.T, h *harness, key, set string, args ...any) {
 	t.Helper()
 	if _, err := h.store.Pool().Exec(context.Background(), "update issues set "+set+" where key = $1", append([]any{key}, args...)...); err != nil {
 		t.Fatalf("set %s of %s: %v", set, key, err)
+	}
+}
+
+// mergedWithItsMergerAtWork stands statusRoot in verifying through the merge itself: its merger at
+// work on the entry its start raised, its pull request open at defectHead, and GitHub's merge of
+// that pull request applied through the daemon's own handlers. So the issue's record says the
+// merger's completion of the merged generation is owed because the merge said so, and no statement
+// of this test wrote it.
+func mergedWithItsMergerAtWork(t *testing.T, h *harness, handlers []intake.Handler, merger claim.Token) {
+	t.Helper()
+	acceptPhase(t, h, statusRoot, phase.Merging)
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: statusRoot, Role: claim.RoleMerger, Claim: merger,
+			EntryTask: "Merge pull request #42.", Entry: 1}); err != nil {
+			return err
+		}
+		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: statusRoot, Repo: "acme/widgets",
+			Number: 42, Branch: "legion/" + statusRoot, Base: "main", HeadSHA: defectHead, Failing: []string{}})
+	}); err != nil {
+		t.Fatalf("stand %s at its merge: %v", statusRoot, err)
+	}
+	if _, err := intake.ApplyFact(context.Background(), h.store.Pool(), "github", "merged-"+statusRoot, intake.PullRequestMerged{
+		Repo: "acme/widgets", Number: 42, MergeSHA: strings.Repeat("c", 40), HeadSHA: defectHead,
+		MergedAt: time.Date(2026, 11, 27, 6, 0, 0, 0, time.UTC)}, handlers...); err != nil {
+		t.Fatalf("merge the pull request of %s: %v", statusRoot, err)
+	}
+	if at := issuePhaseOf(t, h, statusRoot); at != phase.Verifying {
+		t.Fatalf("%s after its merge stands in %s, want verifying", statusRoot, at)
 	}
 }
 
@@ -218,9 +249,9 @@ func TestReportDefectAnswersEachCase(t *testing.T) {
 
 	t.Run("the merger in verifying before its completion lands records the defect", func(t *testing.T) {
 		t.Parallel()
-		h, _, _ := statusHarness(t)
-		setIssueColumns(t, h, statusRoot, "phase = 'verifying', status = 'testing', merger_completion_owed = true")
+		h, handlers, _ := statusHarness(t)
 		merger := newLiveClaim(t, h, statusRoot, claim.RoleMerger)
+		mergedWithItsMergerAtWork(t, h, handlers, merger.token)
 		if answer := answeredDefect(t, reportDefectAs(h, merger.grant(t), statusRoot, defectText, defectHead, "")); answer.State != "recorded" {
 			t.Fatalf("answer = %+v, want recorded", answer)
 		}
@@ -234,9 +265,14 @@ func TestReportDefectAnswersEachCase(t *testing.T) {
 
 	t.Run("the merger in verifying after its completion landed is refused", func(t *testing.T) {
 		t.Parallel()
-		h, _, _ := statusHarness(t)
-		setIssueColumns(t, h, statusRoot, "phase = 'verifying', status = 'testing', merger_completion_owed = false")
+		h, handlers, _ := statusHarness(t)
 		merger := newLiveClaim(t, h, statusRoot, claim.RoleMerger)
+		mergedWithItsMergerAtWork(t, h, handlers, merger.token)
+		result, err := intake.ApplyFact(context.Background(), h.store.Pool(), "api", "merger-completion", intake.HandoffComplete{
+			Generation: 1, Issue: statusRoot, Role: claim.RoleMerger, Claim: merger.token, Summary: "merged", Commit: defectHead}, handlers...)
+		if err != nil || result.Refusal != nil {
+			t.Fatalf("the merger's completion in verifying = %+v, %v; want it recorded", result.Refusal, err)
+		}
 		refused(t, reportDefectAs(h, merger.grant(t), statusRoot, defectText, defectHead, ""), http.StatusForbidden, "DEFECT_CALLER_NOT_ALLOWED")
 		if rows := defectRows(t, h, statusRoot); len(rows) != 0 {
 			t.Fatalf("defects = %+v, want none", rows)
@@ -299,25 +335,59 @@ func TestReportDefectAnswersEachCase(t *testing.T) {
 		})
 	}
 
+	// Who owns the issue is held twice: the route holds a phase worker to its own issue and refuses
+	// the controller, and the workflow holds an architect to the rule of sign_off. Each of these
+	// callers would be taken by the other holds alone: the child's implementer stands in retro as
+	// the root does, and the child's architect is an architect of the tree.
 	for _, tc := range []struct {
-		name string
-		text string
-		head string
-		code string
+		name  string
+		grant func(t *testing.T, h *harness) string
 	}{
-		{"a blank defect", " \n\t ", defectHead, "DEFECT_TEXT_REQUIRED"},
-		{"a defect of more blocks than Dispatch holds a body to", strings.TrimSuffix(strings.Repeat("y\n\n", dispatchbody.ItemBlocks), "\n\n"), defectHead, "DEFECT_TEXT_TOO_LONG"},
-		{"a defect holding a decision block", "The retry never stops.\n\n" + theDecisionBlock + "\n", defectHead, "DEFECT_TEXT_DECISION_BLOCK"},
-		{"no head", defectText, "", "DEFECT_HEAD_REQUIRED"},
-		{"a short head", defectText, "4d2f6a0", "DEFECT_HEAD_REQUIRED"},
-		{"an uppercase head", defectText, strings.ToUpper(defectHead), "DEFECT_HEAD_REQUIRED"},
+		{"the child's implementer naming the root", func(t *testing.T, h *harness) string {
+			acceptPhase(t, h, statusChild, phase.Retro)
+			implementer := newLiveClaimIn(t, h, statusRoot, statusChild, claim.RoleImplementer)
+			return implementer.grant(t)
+		}},
+		{"the child's architect, an architect of the tree that does not own the root", func(t *testing.T, h *harness) string {
+			architect := newLiveClaimIn(t, h, statusRoot, statusChild, claim.RoleArchitect)
+			return architect.grant(t)
+		}},
+		{"the controller", func(t *testing.T, h *harness) string { return controllerGrant(t, h).GrantID }},
+	} {
+		t.Run(tc.name+" is refused DEFECT_CALLER_NOT_ALLOWED", func(t *testing.T) {
+			t.Parallel()
+			h, _, _ := statusHarness(t)
+			acceptPhase(t, h, statusRoot, phase.Retro)
+			refused(t, reportDefectAs(h, tc.grant(t, h), statusRoot, defectText, defectHead, ""), http.StatusForbidden, "DEFECT_CALLER_NOT_ALLOWED")
+			if rows := defectRows(t, h, statusRoot); len(rows) != 0 {
+				t.Fatalf("defects = %+v, want none", rows)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name  string
+		text  string
+		head  string
+		check string
+		code  string
+	}{
+		{"a blank defect", " \n\t ", defectHead, "", "DEFECT_TEXT_REQUIRED"},
+		{"a defect of more blocks than Dispatch holds a body to", strings.TrimSuffix(strings.Repeat("y\n\n", dispatchbody.ItemBlocks), "\n\n"), defectHead, "", "DEFECT_TEXT_TOO_LONG"},
+		{"a defect holding a decision block", "The retry never stops.\n\n" + theDecisionBlock + "\n", defectHead, "", "DEFECT_TEXT_DECISION_BLOCK"},
+		{"no head", defectText, "", "", "DEFECT_HEAD_REQUIRED"},
+		{"a short head", defectText, "4d2f6a0", "", "DEFECT_HEAD_REQUIRED"},
+		{"an uppercase head", defectText, strings.ToUpper(defectHead), "", "DEFECT_HEAD_REQUIRED"},
+		{"a check that runs onto a line of its own", defectText, defectHead, "c-done\n## Closed", "DEFECT_CHECK_INVALID"},
+		{"a check with a space", defectText, defectHead, "c done", "DEFECT_CHECK_INVALID"},
+		{"a check longer than a block id", defectText, defectHead, strings.Repeat("c", 129), "DEFECT_CHECK_INVALID"},
 	} {
 		t.Run(tc.name+" is refused "+tc.code, func(t *testing.T) {
 			t.Parallel()
 			h, _, _ := statusHarness(t)
 			acceptPhase(t, h, statusRoot, phase.Retro)
 			implementer := newLiveClaim(t, h, statusRoot, claim.RoleImplementer)
-			refused(t, reportDefectAs(h, implementer.grant(t), statusRoot, tc.text, tc.head, ""), http.StatusBadRequest, tc.code)
+			refused(t, reportDefectAs(h, implementer.grant(t), statusRoot, tc.text, tc.head, tc.check), http.StatusBadRequest, tc.code)
 			if rows := defectRows(t, h, statusRoot); len(rows) != 0 {
 				t.Fatalf("defects = %+v, want none", rows)
 			}
@@ -390,14 +460,47 @@ func TestWithdrawDefectAnswersEachCase(t *testing.T) {
 		}
 	})
 
-	t.Run("a phase worker is refused DEFECT_WITHDRAW_NOT_OWNER", func(t *testing.T) {
-		t.Parallel()
-		h, id, implementer := reported(t)
-		refused(t, withdrawDefectAs(h, implementer.grant(t), statusRoot, id, "fixed"), http.StatusForbidden, "DEFECT_WITHDRAW_NOT_OWNER")
-		if rows := defectRows(t, h, statusRoot); len(rows) != 1 || rows[0].withdrawn {
-			t.Fatalf("defects = %+v, want the defect still open", rows)
-		}
-	})
+	// Only the owning architect withdraws: the route refuses a phase worker and the controller, and
+	// the workflow an architect of the tree that does not own the issue by the rule of sign_off.
+	for _, tc := range []struct {
+		name  string
+		grant func(t *testing.T, h *harness, implementer liveClaim) string
+	}{
+		{"a phase worker", func(t *testing.T, _ *harness, implementer liveClaim) string { return implementer.grant(t) }},
+		{"the child's architect, an architect of the tree that does not own the root", func(t *testing.T, h *harness, _ liveClaim) string {
+			architect := newLiveClaimIn(t, h, statusRoot, statusChild, claim.RoleArchitect)
+			return architect.grant(t)
+		}},
+		{"the controller", func(t *testing.T, h *harness, _ liveClaim) string { return controllerGrant(t, h).GrantID }},
+	} {
+		t.Run(tc.name+" is refused DEFECT_WITHDRAW_NOT_OWNER", func(t *testing.T) {
+			t.Parallel()
+			h, id, implementer := reported(t)
+			refused(t, withdrawDefectAs(h, tc.grant(t, h, implementer), statusRoot, id, "fixed"), http.StatusForbidden, "DEFECT_WITHDRAW_NOT_OWNER")
+			if rows := defectRows(t, h, statusRoot); len(rows) != 1 || rows[0].withdrawn {
+				t.Fatalf("defects = %+v, want the defect still open", rows)
+			}
+		})
+	}
+
+	// The reason is written into close-wait.md, so it is held to what Dispatch takes in a document's
+	// message as the defect's text is.
+	for _, tc := range []struct {
+		name, reason, code string
+	}{
+		{"a reason of more blocks than Dispatch holds a body to", strings.TrimSuffix(strings.Repeat("y\n\n", dispatchbody.ItemBlocks), "\n\n"), "DEFECT_REASON_TOO_LONG"},
+		{"a reason holding a decision block", "Fixed by the retro.\n\n" + theDecisionBlock + "\n", "DEFECT_REASON_DECISION_BLOCK"},
+	} {
+		t.Run(tc.name+" is refused "+tc.code, func(t *testing.T) {
+			t.Parallel()
+			h, id, _ := reported(t)
+			architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
+			refused(t, withdrawDefectAs(h, architect.grant(t), statusRoot, id, tc.reason), http.StatusBadRequest, tc.code)
+			if rows := defectRows(t, h, statusRoot); len(rows) != 1 || rows[0].withdrawn {
+				t.Fatalf("defects = %+v, want the defect still open", rows)
+			}
+		})
+	}
 
 	for _, id := range []string{"999999", "not-an-id"} {
 		t.Run("the id "+id+" is refused DEFECT_NOT_FOUND", func(t *testing.T) {
@@ -456,6 +559,81 @@ func TestWithdrawDefectAnswersEachCase(t *testing.T) {
 			t.Fatalf("defects = %+v, want the defect still open", rows)
 		}
 	})
+}
+
+// A withdrawal is said in close-wait.md's next version (D8), and the row that writes the document
+// renders the wait the record holds when it runs, so the stored wait keeps each withdrawal until a
+// version holding it is uploaded (daemon's closeWaitPublish clears it then): whatever writes the
+// wait before that row runs keeps the withdrawals it already holds. Two withdrawals back to back
+// and a report after them, in retro, and the same in verifying, where each write is the close's
+// own judgement, leave both withdrawals, each with its reason, in the wait and in the document
+// rendered from it. A reason that runs over lines is indented under its item, so no line of it
+// stands as a heading of the document.
+func TestAWithdrawalStaysInTheWaitUntilAVersionShowsIt(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		at       phase.Phase
+		set      string
+		reporter claim.Role
+	}{
+		{at: phase.Retro, reporter: claim.RoleImplementer},
+		{at: phase.Verifying, set: "phase = 'verifying', status = 'testing', merger_completion_owed = true", reporter: claim.RoleMerger},
+	} {
+		t.Run(string(tc.at), func(t *testing.T) {
+			t.Parallel()
+			h, _, _ := statusHarness(t)
+			if tc.set == "" {
+				acceptPhase(t, h, statusRoot, tc.at)
+			} else {
+				setIssueColumns(t, h, statusRoot, tc.set)
+			}
+			reportedAt := time.Date(2026, 11, 27, 5, 0, 0, 0, time.UTC)
+			var ids []int64
+			for _, text := range []string{"the retry never stops", "the log names no issue", "the cache never expires"} {
+				ids = append(ids, seedDefect(t, h, record.Defect{Issue: statusRoot, Generation: 1, Kind: record.DefectKindDefect, Text: text,
+					Role: tc.reporter, Head: defectHead, ReportedAt: reportedAt}))
+			}
+			reasons := []string{"same as the cache defect", "fixed by the retro\n## Closed"}
+			architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
+			for i, reason := range reasons {
+				answeredDefect(t, withdrawDefectAs(h, architect.grant(t), statusRoot, strconv.FormatInt(ids[i], 10), reason))
+			}
+			reporter := newLiveClaim(t, h, statusRoot, tc.reporter)
+			answeredDefect(t, reportDefectAs(h, reporter.grant(t), statusRoot, defectText, defectHead, ""))
+
+			wait := storedWaitOn(t, h, statusRoot)
+			if len(wait.Withdrawn) != 2 || wait.Withdrawn[0].ID != ids[0] || wait.Withdrawn[0].Reason != reasons[0] ||
+				wait.Withdrawn[1].ID != ids[1] || wait.Withdrawn[1].Reason != reasons[1] {
+				t.Fatalf("the stored wait's withdrawals = %+v, want defects %d and %d with their reasons", wait.Withdrawn, ids[0], ids[1])
+			}
+			document := closeWaitDocumentOn(t, h, statusRoot)
+			for _, reason := range []string{reasons[0], "fixed by the retro"} {
+				if !strings.Contains(document, reason) {
+					t.Errorf("close-wait.md lacks the reason %q:\n%s", reason, document)
+				}
+			}
+			if lines := strings.Split(document, "\n"); slices.Contains(lines, "## Closed") {
+				t.Errorf("close-wait.md holds the reason's line \"## Closed\" as a heading:\n%s", document)
+			}
+		})
+	}
+}
+
+// closeWaitDocumentOn is close-wait.md as the row that writes it renders issue's record now.
+func closeWaitDocumentOn(t *testing.T, h *harness, issue string) string {
+	t.Helper()
+	var document string
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		held, err := record.NewStore().Issue(ctx, tx, issue)
+		if err != nil || held == nil {
+			return fmt.Errorf("read %s: %v", issue, err)
+		}
+		document, err = record.CloseWaitDocument(*held)
+		return err
+	}); err != nil {
+		t.Fatalf("render close-wait.md of %s: %v", issue, err)
+	}
+	return document
 }
 
 // The goldens of the two calls' answers are real answers of their routes: the implementer's

@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/stateevent"
 )
 
 // OutboxKind names one durable side effect.
@@ -79,6 +80,13 @@ const (
 	// OutboxKindRoleHoldersPublish publishes the role sessions of one issue whose claims hold their
 	// roles onto its Dispatch row (RoleHoldersPublish).
 	OutboxKindRoleHoldersPublish OutboxKind = "role_holders_publish"
+	// OutboxKindStateChange, OutboxKindStateAdmission and OutboxKindStateBoot are the daemon's
+	// state events (StateChange, StateAdmission, StateBoot), named as package stateevent names
+	// them. Like gated_steps_publish, each row's issue column holds the bare project key, so a
+	// project's state events run on one lane (LaneState).
+	OutboxKindStateChange    OutboxKind = stateevent.KindChange
+	OutboxKindStateAdmission OutboxKind = stateevent.KindAdmission
+	OutboxKindStateBoot      OutboxKind = stateevent.KindBoot
 	// OutboxKindMergeHoldsChanged tells the merger of an issue in merging that the project's merge
 	// holds document changed (MergeHoldsChanged).
 	OutboxKindMergeHoldsChanged OutboxKind = "merge_holds_changed"
@@ -100,6 +108,10 @@ const (
 	// onto its document close-wait.md (CloseWaitPublish).
 	OutboxKindCloseRead        OutboxKind = "close_read"
 	OutboxKindCloseWaitPublish OutboxKind = "close_wait_publish"
+	// OutboxKindMergeRead reads, outside the fact transaction, whether the work of a closed issue
+	// whose record shows no merge (MergeHistoryPartial, MergeHistoryNone) merged, for the request
+	// for new work that waits on it (MergeRead).
+	OutboxKindMergeRead OutboxKind = "merge_read"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on six lanes side by
@@ -111,7 +123,7 @@ const (
 // with the starts and suspends they queue. The board lane runs the issue's Dispatch writes and
 // notice publishes beside them, so a status write or a notice never waits behind a start pulling
 // an image, and a slow publish never holds a stop back. It carries the deployment's gated-steps
-// publish too, the one row addressed to the bare project key rather than to an issue, so that
+// publish too, addressed like each state row (LaneState) to the bare project key, so that
 // write runs on a board lane of the project's own, behind none of any issue's rows and holding
 // none of them back. The role-message lane runs the kinds the daemon addresses to one role of the
 // issue on that role's own topic: the end of a parent's phase that its open children stopped, which
@@ -140,7 +152,9 @@ const (
 // root behind it, and on the board lane it would wait behind a notice that waits as long as its
 // architect holds no role, while the news it sends is owed to every holder of the tree. It also
 // runs the read of an issue's checks for the judge of its close (close_read), a read of Dispatch
-// that writes nothing there and must not wait behind such a notice either. The document that says
+// that writes nothing there and must not wait behind such a notice either, and the read of whether
+// a closed issue's work merged (merge_read), which reads Dispatch and GitHub and applies what it
+// read as a fact, as the close read does. The document that says
 // what the close waits for (close_wait_publish) is a write of the issue's Dispatch row, so it runs
 // on the board lane among the issue's other writes, ahead of the status write of its close.
 // The record lane runs the writes of the records of the issue's work — each step's record and the
@@ -148,6 +162,17 @@ const (
 // their own, so a Dispatch that is slow to take a record, or one that backs a record off until it
 // has the route, delays no status write, notice or start of that issue: a record is history, and
 // the work it records never waits for it.
+//
+// The state lane (LaneState) runs the daemon's state events (state_change, state_admission,
+// state_boot), and it is a project's lane, not an issue's: every state row carries the bare
+// Dispatch project key in its issue column, as the gated-steps publish does, so a project has
+// exactly one state lane. Each row takes its sequence when its transaction commits
+// (OutboxRow.StateSeq), and the lane publishes the rows strictly in that order (store.go's
+// outboxInOrder), since Dispatch reads the sequence for gaps and lanes that ran side by side, one
+// per issue, would publish out of sequence. So a state row that fails holds every later state row
+// of its project until it is published, but for one the listener refuses the same way however
+// often it is sent: internal/daemon's settle finishes that row, logged (permanentRefusal,
+// finishRefused), and the rows after it run.
 type OutboxLane string
 
 const (
@@ -157,6 +182,7 @@ const (
 	LaneClaim       OutboxLane = "claim"
 	LaneDocuments   OutboxLane = "documents"
 	LaneRecord      OutboxLane = "record"
+	LaneState       OutboxLane = "state"
 )
 
 // laneKinds is each lane's kinds in the order LaneKinds lists them. Every OutboxKind is in exactly
@@ -168,8 +194,9 @@ var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish, OutboxKindCloseWaitPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
-	LaneDocuments:   {OutboxKindDesignChanges, OutboxKindCloseRead},
+	LaneDocuments:   {OutboxKindDesignChanges, OutboxKindCloseRead, OutboxKindMergeRead},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
+	LaneState:       {OutboxKindStateChange, OutboxKindStateAdmission, OutboxKindStateBoot},
 }
 
 // LaneOf is the lane that runs kind.
@@ -187,9 +214,9 @@ func LaneKinds(lane OutboxLane) []OutboxKind {
 	return slices.Clone(laneKinds[lane])
 }
 
-// OutboxLanes is every lane an issue's rows run on, in name order: the lanes laneKinds holds, so
-// a reader that needs every lane, or every kind, takes them from here rather than from a list of
-// its own, which a new lane would leave short.
+// OutboxLanes is every lane the outbox's rows run on (OutboxLane), in name order: the lanes
+// laneKinds holds, so a reader that needs every lane, or every kind, takes them from here rather
+// than from a list of its own, which a new lane would leave short.
 func OutboxLanes() []OutboxLane {
 	return slices.Sorted(maps.Keys(laneKinds))
 }
@@ -227,8 +254,10 @@ type pauseHold struct {
 // reads and writes of Dispatch (the gate, pending-basis and re-parent seeds among them), the
 // reconcile of a tree's news of its approved design (design_changes), which reads Dispatch and
 // writes the news record and tells a role only by a news-only start, which is a start this list
-// holds, and the controller's notices (controller_notice), since the pause never holds the
-// controller (spec Design item 8).
+// holds, the controller's notices (controller_notice), since the pause never holds the controller
+// (spec Design item 8), and the state events (LaneState), since a pause's own claim moves are
+// changes Dispatch observes. A state row carries the bare project key, which the pause's project
+// scope matches, so it runs through the pause only because its kind is none of these.
 //
 // The outbox's claim reads the list as SQL literals (store.go's outboxPauseFree, built from it),
 // so DueRows, ClaimRow, HeldRows and PauseHeldRows hold exactly these rows, and the resume marks
@@ -1493,6 +1522,19 @@ type SuperviseRequest struct {
 	// refuses a row that carries it (DisallowUnknownFields), so the way back of the done-by-checks
 	// migration deletes such rows.
 	StartAt *StartAt `json:"startAt,omitempty"`
+	// WakeDetail is the detail of the wake whose kind WakeKind names: the head and what its
+	// settlement came to, the role token or the session a message was sent to, or the backstop
+	// that came due. The task of the start is WakeTask of that kind and detail (workflow's
+	// wakeRow), so a cancel or a release's record that must tell the same wake in other words
+	// renders the task again from the two rather than cutting words out of it (workflow's
+	// retellWakeTask). Every wake the workflow takes names a detail that is not empty. A start
+	// that an earlier daemon queued carries no detail, and the payload of such a start still
+	// decodes, with WakeDetail empty: the store keeps the task of such a start as it is
+	// (store's retellStarts). A pause's owed launch carries no task and no detail. Every other
+	// request carries none. A release before this key refuses a row that carries it
+	// (DisallowUnknownFields), so a rollback strips it from each queued start first
+	// (docs/kubernetes.md, "Rolling back idle release").
+	WakeDetail string `json:"wakeDetail,omitempty"`
 }
 
 // StartAt is where a next change's working copy starts (SuperviseRequest.StartAt): Bookmark, the
@@ -1828,6 +1870,47 @@ type RoleHoldersPublish struct {
 
 func (RoleHoldersPublish) OutboxKind() OutboxKind { return OutboxKindRoleHoldersPublish }
 
+// StateChange is a state_change row's payload: what one write moved of what Dispatch observes of
+// one issue, one row for each issue the write moved (stateevent.Change, which documents its
+// fields). Its shape and its checks are package stateevent's, which the claim writes of
+// internal/store build too, so every state row has one shape. It is a type of its own over that
+// shape, not an alias, only because an outbox payload carries its kind as a method
+// (OutboxPayload), and a method cannot be declared on another package's type; StateChange(change)
+// and stateevent.Change(value) convert between the two.
+type StateChange stateevent.Change
+
+func (StateChange) OutboxKind() OutboxKind { return OutboxKindStateChange }
+
+// StateField names one field of an issue that a state change can move (stateevent.Field).
+type StateField = stateevent.Field
+
+// The five fields Dispatch observes of an issue, named as the state route serves them.
+const (
+	StateFieldPhase     = stateevent.FieldPhase
+	StateFieldTree      = stateevent.FieldTree
+	StateFieldSlot      = stateevent.FieldSlot
+	StateFieldWaitingOn = stateevent.FieldWaitingOn
+	StateFieldClaim     = stateevent.FieldClaim
+)
+
+// StateFieldChange is one field a write moved (stateevent.FieldChange).
+type StateFieldChange = stateevent.FieldChange
+
+// StateAdmission is a state_admission row's payload, the judged admission block
+// (stateevent.Admission, including `p0Holders` and without `p0Bound`, which the state route adds
+// separately). Its producer encodes AdmissionBlock, whose JSON is the route's own without
+// `p0Bound` (QueueAdmissionBlock). It is a type of its own over that shape for the reason
+// StateChange is.
+type StateAdmission stateevent.Admission
+
+func (StateAdmission) OutboxKind() OutboxKind { return OutboxKindStateAdmission }
+
+// StateBoot is a state_boot row's payload, a daemon run's first state event (stateevent.Boot). It
+// is a type of its own over that shape for the reason StateChange is.
+type StateBoot stateevent.Boot
+
+func (StateBoot) OutboxKind() OutboxKind { return OutboxKindStateBoot }
+
 // StepRecord is one write of an issue's record of one step onto Dispatch (PUT
 // /api/v1/issues/{key}/steps/{id}): the start of the step, its end, or the report alone of a
 // completion that landed after that end (workflow's reportEndedStep). ID is the record's id, a
@@ -1999,6 +2082,122 @@ type CloseWaitPublish struct {
 }
 
 func (CloseWaitPublish) OutboxKind() OutboxKind { return OutboxKindCloseWaitPublish }
+
+// MergeRead reads whether the work of the row's issue merged, for the request for new work that
+// waits on it: the issue's record shows no positive merge (MergeHistoryPartial or MergeHistoryNone),
+// so the door queued this read instead of a next change. Issue and Generation are the issue and
+// the generation the request was taken at. Requester is who asked (RequesterPerson,
+// claim.RoleController or claim.RoleArchitect), and Request the request's text. A later request by
+// a person writes its asker and its text over the row's; the apply of the read's fact reads both
+// from the row as it stands then. Progress is the read's saved stage, written by the executor
+// alone. One row stands for an issue at a time.
+type MergeRead struct {
+	Issue      string            `json:"issue"`
+	Generation uint64            `json:"generation"`
+	Requester  claim.Role        `json:"requester"`
+	Request    string            `json:"request"`
+	Progress   MergeReadProgress `json:"progress"`
+}
+
+func (MergeRead) OutboxKind() OutboxKind { return OutboxKindMergeRead }
+
+// The stages of a merge read, in the order the executor runs them (MergeReadProgress.Stage). The
+// empty stage is a read not started.
+const (
+	MergeReadStageLinks      = "links"
+	MergeReadStageResults    = "results"
+	MergeReadStageBases      = "bases"
+	MergeReadStageCandidates = "candidates"
+	MergeReadStageMetadata   = "metadata"
+)
+
+// The states of a merge read beside the stage it stands at (MergeReadProgress.State). The empty
+// state is a read still reading.
+const (
+	// MergeReadStateUnread is a search that completed and found no candidate that answers.
+	MergeReadStateUnread = "unread"
+	// MergeReadStateStopped is a stage whose third attempt failed: no automatic attempt follows.
+	MergeReadStateStopped = "stopped"
+)
+
+// MergeReadMaxFailures is the failed attempts one stage of a merge read may count: after the third
+// it stops (MergeReadStateStopped).
+const MergeReadMaxFailures = 3
+
+// MergeReadProgress is the saved stage of one merge read, which a later turn resumes from. Each
+// field is optional and its zero value is a read not started. Stage is the stage the read stands
+// at, State whether it reads, ended unread or stopped. Cursor is the next page, or the deferred
+// redirect, of the current base's commits/{sha}/pulls listing, empty for its first page. Links are
+// the external links the last links read found. Bases are the merge commits whose pull requests the
+// read lists, and Candidates the pull requests it reads. Attempts counts every GET attempt
+// reserved, retries and redirects included, and Failures the failed attempts of the current stage,
+// with Cause the last failure's text and RetryAt the stage's next attempt after it. Reserved is an
+// attempt reserved whose answer is not saved yet, and Uncertain counts such attempts a crash left.
+// MetadataReads counts the pull-request reads of missing branch metadata of a known merge. Refresh
+// is a door's ask for one links read, which the executor clears once it ran it. No token or
+// credential is kept here.
+type MergeReadProgress struct {
+	Stage         string               `json:"stage,omitempty"`
+	State         string               `json:"state,omitempty"`
+	Cursor        string               `json:"cursor,omitempty"`
+	Links         []string             `json:"links,omitempty"`
+	Bases         []MergeReadBase      `json:"bases,omitempty"`
+	Candidates    []MergeReadCandidate `json:"candidates,omitempty"`
+	Attempts      int                  `json:"attempts,omitempty"`
+	Failures      int                  `json:"failures,omitempty"`
+	Cause         string               `json:"cause,omitempty"`
+	RetryAt       time.Time            `json:"retryAt,omitzero"`
+	Reserved      bool                 `json:"reserved,omitempty"`
+	Uncertain     int                  `json:"uncertain,omitempty"`
+	MetadataReads int                  `json:"metadataReads,omitempty"`
+	Refresh       bool                 `json:"refresh,omitempty"`
+}
+
+// The sources of a merge read's base (MergeReadBase.Source): Dispatch's results read, or the
+// issue's production check.
+const (
+	MergeReadSourceResults    = "results"
+	MergeReadSourceProduction = "production"
+)
+
+// The sources of a merge read's candidate beside those two (MergeReadCandidate.Source): an
+// external link of the issue, a clock a clear kept, and the issue's retained pull request row.
+const (
+	MergeReadSourceLink     = "link"
+	MergeReadSourceCleared  = "cleared"
+	MergeReadSourceRetained = "retained"
+)
+
+// MergeReadBase is one merge commit whose pull requests a merge read lists
+// (GET /repos/{repo}/commits/{sha}/pulls): its repository, its commit, where it was found, and
+// whether every page of its listing was read.
+type MergeReadBase struct {
+	Repo   string `json:"repo"`
+	SHA    string `json:"sha"`
+	Source string `json:"source"`
+	Done   bool   `json:"done,omitempty"`
+}
+
+// MergeReadCandidate is one pull request a merge read reads (GET /repos/{repo}/pulls/{n}): its
+// repository and number, where it was found, and its answer, nil until that read answered.
+type MergeReadCandidate struct {
+	Repo   string           `json:"repo"`
+	Number int              `json:"number"`
+	Source string           `json:"source"`
+	Answer *MergeReadAnswer `json:"answer,omitempty"`
+}
+
+// MergeReadAnswer is what GitHub answered of one candidate: whether it merged, whether it names
+// the issue (its branch or its body), so it may answer the read, and its final head, merge commit,
+// base and merged_at where it merged.
+type MergeReadAnswer struct {
+	Merged   bool      `json:"merged"`
+	Names    bool      `json:"names"`
+	Head     string    `json:"head,omitempty"`
+	SHA      string    `json:"sha,omitempty"`
+	Base     string    `json:"base,omitempty"`
+	MergedAt time.Time `json:"mergedAt,omitzero"`
+}
 
 // CheckWakeDue is the one row that can start a production check's next look beside the check's
 // own bound (CheckBound): the wake the checking agent named for itself on a pending report
@@ -2826,6 +3025,24 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindStateChange:
+		value := StateChange{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindStateAdmission:
+		value := StateAdmission{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindStateBoot:
+		value := StateBoot{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindIssueBranch:
 		value := IssueBranch{}
 		if err := decoder.Decode(&value); err != nil {
@@ -2928,6 +3145,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindMergeRead:
+		value := MergeRead{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindDesignChanges:
 		value := DesignNewsReconcile{}
 		if err := decoder.Decode(&value); err != nil {
@@ -3016,6 +3239,8 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Generation == 0 {
 			return fmt.Errorf("a publish of the close's wait names the generation whose wait it writes")
 		}
+	case MergeRead:
+		return validMergeRead(issue, value)
 	case IssueSuspend:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")
@@ -3195,6 +3420,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.WakeKind == pods.WakePause && value.Pause == 0 {
 			return fmt.Errorf("a start for a %s wake names the pause that owed it", value.WakeKind)
 		}
+		if value.WakeDetail != "" && value.WakeKind == "" {
+			return fmt.Errorf("a supervise %s names a wake detail and no wake kind; only a wake's start names one", value.Op)
+		}
 		if value.TurnStart != nil && value.Op != "suspend" {
 			return fmt.Errorf("a supervise %s names a turn start; only a left pod's close's suspend names one", value.Op)
 		}
@@ -3240,6 +3468,22 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 	case RoleHoldersPublish:
 		if value.Issue == "" {
 			return fmt.Errorf("a role-holders publish requires the issue whose role sessions it writes")
+		}
+	// A state row's message is what Dispatch writes its observations from, so each state row, the
+	// claim writes' among them, is checked here by the checks package stateevent holds for its kind
+	// (Change.Validate, Admission.Validate, Boot.Validate): checks of the row's own fields, not of
+	// the whole message.
+	case StateChange:
+		if err := stateevent.Change(value).Validate(); err != nil {
+			return err
+		}
+	case StateAdmission:
+		if err := stateevent.Admission(value).Validate(); err != nil {
+			return err
+		}
+	case StateBoot:
+		if err := stateevent.Boot(value).Validate(); err != nil {
+			return err
 		}
 	case CheckWakeDue:
 		if value.Look <= 0 {
@@ -3393,6 +3637,57 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 	default:
 		return fmt.Errorf("unknown outbox payload %T", payload)
+	}
+	return nil
+}
+
+// mergeReadRequesters are who may ask for the request a merge read waits on.
+var mergeReadRequesters = []claim.Role{RequesterPerson, claim.RoleController, claim.RoleArchitect}
+
+// validMergeRead refuses a merge read no row may carry: one of another issue than the row's, of no
+// generation, of an asker who cannot ask, or of no request's text, and a saved stage the executor
+// could not resume (validMergeReadProgress).
+func validMergeRead(issue string, value MergeRead) error {
+	switch {
+	case value.Issue == "" || value.Issue != issue:
+		return fmt.Errorf("a merge read names its row's issue %s. It names %q", issue, value.Issue)
+	case value.Generation == 0:
+		return fmt.Errorf("a merge read names the generation its request was taken at")
+	case !slices.Contains(mergeReadRequesters, value.Requester):
+		return fmt.Errorf("a merge read's request was asked by a person, the controller or an architect, not %q", value.Requester)
+	case strings.TrimSpace(value.Request) == "":
+		return fmt.Errorf("a merge read carries the text of the request it waits on")
+	}
+	return validMergeReadProgress(value.Progress)
+}
+
+// validMergeReadProgress refuses a saved stage of a merge read that names a stage, a state or a
+// source the executor does not know, more failed attempts than a stage may count, a count below
+// zero, or a base or a candidate that names no pull request it can read.
+func validMergeReadProgress(progress MergeReadProgress) error {
+	stages := []string{"", MergeReadStageLinks, MergeReadStageResults, MergeReadStageBases, MergeReadStageCandidates, MergeReadStageMetadata}
+	switch {
+	case !slices.Contains(stages, progress.Stage):
+		return fmt.Errorf("a merge read stands at no stage it runs: %q", progress.Stage)
+	case !slices.Contains([]string{"", MergeReadStateUnread, MergeReadStateStopped}, progress.State):
+		return fmt.Errorf("a merge read is in no state it knows: %q", progress.State)
+	case progress.Failures < 0 || progress.Failures > MergeReadMaxFailures:
+		return fmt.Errorf("a merge read's stage counts %d failed attempts, not 0 to %d", progress.Failures, MergeReadMaxFailures)
+	case progress.Attempts < 0 || progress.Uncertain < 0 || progress.MetadataReads < 0:
+		return fmt.Errorf("a merge read counts no attempt below zero")
+	}
+	for _, base := range progress.Bases {
+		if base.Repo == "" || base.SHA == "" || !slices.Contains([]string{MergeReadSourceResults, MergeReadSourceProduction}, base.Source) {
+			return fmt.Errorf("a merge read's base names its repository, its merge commit and its source, results or production. It names %q, %q and %q",
+				base.Repo, base.SHA, base.Source)
+		}
+	}
+	sources := []string{MergeReadSourceLink, MergeReadSourceCleared, MergeReadSourceRetained, MergeReadSourceProduction, MergeReadSourceResults}
+	for _, candidate := range progress.Candidates {
+		if candidate.Repo == "" || candidate.Number <= 0 || !slices.Contains(sources, candidate.Source) {
+			return fmt.Errorf("a merge read's candidate names its repository, a pull request number above 0 and a source it knows. It names %q, #%d and %q",
+				candidate.Repo, candidate.Number, candidate.Source)
+		}
 	}
 	return nil
 }

@@ -269,7 +269,7 @@ func (issuePod) secretAnnotations(l launch) map[string]string {
 
 // initContainers is workspace-init, which fills the clone directly on the issue volume. It mounts
 // the provisioning Secret and its in-memory TMPDIR for its one-shot credentials, the issue volume,
-// and the config home that holds the clone's jj configuration. Each takes the pod's one
+// and the config home that holds the clone's jj configuration. It takes the pod's one
 // reservation, which adds nothing to the pod's: the scheduler counts a pod's request as the larger
 // of its main containers' sum and its largest init container.
 func (k issuePod) initContainers(r *Runtime, l launch) []corev1.Container {

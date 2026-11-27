@@ -239,16 +239,19 @@ test.each([
   ["429 naming invalid_grant", "invalid_grant", 429],
   ["408 naming access_denied", "deny", 408],
   ["408 with no body", "empty-408", undefined],
-] as const)("a poll answered %s is polled again, and the login completes", async (_, answer, status) => {
-  const stub = broker({ polls: [answer, "approve"], oauthErrorStatus: status });
-  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
-  const outcome = await finishDeviceLogin(started, { path: loginPath(), sleep: noSleep }).then(
-    (login) => login.credentialId,
-    (error: unknown) => (error as Error).message
-  );
-  expect(outcome).toBe(STAND_IN_CREDENTIAL);
-  expect(stub.polls).toHaveLength(2);
-});
+] as const)(
+  "a poll answered %s is polled again, and the login completes",
+  async (_, answer, status) => {
+    const stub = broker({ polls: [answer, "approve"], oauthErrorStatus: status });
+    const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+    const outcome = await finishDeviceLogin(started, { path: loginPath(), sleep: noSleep }).then(
+      (login) => login.credentialId,
+      (error: unknown) => (error as Error).message
+    );
+    expect(outcome).toBe(STAND_IN_CREDENTIAL);
+    expect(stub.polls).toHaveLength(2);
+  }
+);
 
 test("a poll answered 400 authorization_pending, or 429 with no body, is polled again", async () => {
   const stub = broker({ polls: ["pending", "empty-429", "approve"] });

@@ -723,6 +723,18 @@ type EntrySweep struct{}
 
 func (EntrySweep) namedIssue() (string, bool) { return "", false }
 
+// LingerDeadline is the moment a root's linger the admission block reads runs out, applied as a
+// synthetic fact by the daemon's one timer for it (internal/daemon's wakeAtLingerDeadlines) and
+// never decoded from an event: the block changes at that deadline with no write at all (admit's
+// queueAdmissionBlock), and an admission pass runs only on a fact, so this is the fact that runs
+// one there. Admission is the only handler that acts on it, and does nothing but end its pass with
+// the block judged, which admit's block rule (Admission.Apply) always does for this fact, and
+// written where it moved, which queues that change's state event. It carries nothing: the pass
+// reads the whole project and the clock.
+type LingerDeadline struct{}
+
+func (LingerDeadline) namedIssue() (string, bool) { return "", false }
+
 // ProjectResumed is the resume of the daemon's project's pause, applied as a synthetic fact once
 // the resume has committed and never decoded from an event (internal/daemon's
 // projectPause.Resumed, decision 22 of dispatch://INFRA-3759). It is the resume's one admission
@@ -1879,7 +1891,7 @@ type CutoverMergerRepair struct{}
 
 func (CutoverMergerRepair) namedIssue() (string, bool) { return "", false }
 
-// CheckReport is the checking role's report on one look of its closed issue's production check:
+// CheckReport is the checking role's report on one look of its issue's production check:
 // the `legion` tool's `handoff_complete` on an issue whose check is open (api/handoff.go),
 // carrying no commit. Verdict is pass, pending or fail; Summary is what the agent saw. Look is
 // the look the route read as the check's current one, so a report of a look its bound or a hold

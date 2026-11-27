@@ -310,9 +310,10 @@ func (s spentProofs) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _,
 	sum := sha256.Sum256([]byte(jti + "\x00" + htu))
 	key := hex.EncodeToString(sum[:])
 	// Bounded ends the wait with the request, as every other bucket call this listener makes
-	// does; the abandoned create may still land, which is the right way round for a record whose
-	// whole purpose is to be there.
-	revision, _, err := bus.Bounded(ctx, func() (uint64, error) {
+	// does, and waits within it for a connection nats.go is reconnecting; the abandoned create
+	// may still land once sent, which is the right way round for a record whose whole purpose is
+	// to be there.
+	revision, _, err := bus.Bounded(ctx, s.kv.Conn(), func() (uint64, error) {
 		return s.kv.Create(key, nil)
 	})
 	if bus.IsCASConflict(err) {
@@ -363,7 +364,7 @@ func (s *proofSpend) release(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), proofReleaseBudget)
 	defer cancel()
-	_, _, err := bus.Bounded(ctx, func() (struct{}, error) {
+	_, _, err := bus.Bounded(ctx, s.kv.Conn(), func() (struct{}, error) {
 		return struct{}{}, s.kv.Delete(s.key, nats.LastRevision(s.revision))
 	})
 	s.key = ""

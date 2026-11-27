@@ -76,7 +76,7 @@ type Intake struct {
 // holding its durable and taking it over under a hold and a lease it takes on leases, routing by
 // settings, and attributing each pull request by attributor, timed by tuning (intakeTuning):
 // production's values, which StartIntakes passes, or a test's.
-func newIntake(tuning *intakeTuning, natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache, attributor *Attributor) *Intake {
+func newIntake(tuning *intakeTuning, natsClient *bus.Client, pool *store.Pool, leases DurableLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache, attributor *Attributor) *Intake {
 	in := &Intake{pool: pool, github: github, events: broker, settings: settings, attributor: attributor}
 	in.heldDurable = newHeldDurable(tuning, natsClient, leases, deliveryConsumerConfig, intakeKey, in.deliver)
 	return in
@@ -143,8 +143,9 @@ func (in *Intake) Run(ctx context.Context) {
 // handlePullRequestEnvelope, a workflow run to routeWorkflowEnvelope, a push to
 // handlePushEnvelope, any other kind nowhere. It is the whole filter: the durable is handed every
 // GitHub notification on the bus (githubIntakeSubject), CI settlements and comments among them,
-// and an envelope with no payload that a caller of the listener's publish route can still put
-// there. The payload is decoded once, into its fields. An empty payload, or one of a kind route
+// and an envelope with no payload, which a NATS user granted the lane can still put there (the
+// listener's publish route refuses GitHub's lane by name). The payload is decoded once, into its
+// fields. An empty payload, or one of a kind route
 // does not handle, is discarded before any GitHub call or write, whatever its other fields hold (a
 // CI settlement's hold arrays, cistore.Summary); only a pull request's, a workflow run's or a
 // push's string fields are read, as the flat string map its handler takes (flatPayload), and every

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,8 +15,8 @@ import (
 )
 
 // DefectKind is what a reason of a next change is: a check of the issue's Verification document
-// that Dispatch computes as a fail, a production check's fail, or a defect of the change a role
-// reported.
+// that Dispatch computes as a fail, a production check's fail, a defect of the change a role
+// reported, or a request for new work on an issue whose work merged.
 type DefectKind string
 
 const (
@@ -28,7 +29,19 @@ const (
 	// DefectKindDefect is a defect of the change a role reported (report_defect). It holds the
 	// close until a merged change carries it or a withdrawal ends it.
 	DefectKindDefect DefectKind = "defect"
+	// DefectKindRequest is a request for new work on an issue whose work merged: the reason of the
+	// one next change the request starts. Its Role says who asked (RequesterPerson,
+	// claim.RoleController or claim.RoleArchitect). It holds the close until a merged change carries
+	// it, or until the asker's word ends it. The close lists it apart from the defects
+	// (CloseWait.Requests).
+	DefectKindRequest DefectKind = "request"
 )
+
+// RequesterPerson is who asked for a request a person made: a Dispatch user's event, an operator's
+// `legion issue status`, the daemon's todo of a person's approval, and a request that names no
+// actor. A request of the controller names claim.RoleController, and one of an architect
+// claim.RoleArchitect.
+const RequesterPerson claim.Role = "person"
 
 // DefectClosedByPerson is the withdrawal reason of each defect still open when a person's done
 // closed its issue (CloseDefectsByPerson): the person's word ended it, and no change carried it.
@@ -126,6 +139,30 @@ func (s *Postgres) OpenDefects(ctx context.Context, tx pgx.Tx, issue string) ([]
 	return open, nil
 }
 
+// Defects is every reason of a next change the issue holds, of any kind and whatever its state,
+// oldest first: the one read of a check's whole history, which the judge of the close asks
+// before it records a check's fail as a reason, so a fail whose deciding result an earlier
+// change already carried records none.
+func (s *Postgres) Defects(ctx context.Context, tx pgx.Tx, issue string) ([]Defect, error) {
+	rows, err := tx.Query(ctx, "select "+defectColumns+" from defects where issue = $1 order by id", issue)
+	if err != nil {
+		return nil, fmt.Errorf("read the defects of %s: %w", issue, err)
+	}
+	defer rows.Close()
+	held := []Defect{}
+	for rows.Next() {
+		defect, err := scanDefect(rows)
+		if err != nil {
+			return nil, fmt.Errorf("read the defects of %s: %w", issue, err)
+		}
+		held = append(held, defect)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the defects of %s: %w", issue, err)
+	}
+	return held, nil
+}
+
 func (s *Postgres) Defect(ctx context.Context, tx pgx.Tx, issue string, id int64) (*Defect, error) {
 	defect, err := scanDefect(tx.QueryRow(ctx, "select "+defectColumns+" from defects where issue = $1 and id = $2", issue, id))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -135,6 +172,44 @@ func (s *Postgres) Defect(ctx context.Context, tx pgx.Tx, issue string, id int64
 		return nil, fmt.Errorf("read defect %d of %s: %w", id, issue, err)
 	}
 	return &defect, nil
+}
+
+func (s *Postgres) ClearWaitWithdrawals(ctx context.Context, tx pgx.Tx, issue string, shown []WaitWithdrawal) error {
+	if len(shown) == 0 {
+		return nil
+	}
+	var encoded []byte
+	if err := tx.QueryRow(ctx, "select close_wait from issues where key = $1 for update", issue).Scan(&encoded); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("read the stored wait of %s: %w", issue, err)
+	}
+	if len(encoded) == 0 {
+		return nil
+	}
+	var wait StoredWait
+	if err := json.Unmarshal(encoded, &wait); err != nil {
+		return fmt.Errorf("read the stored wait of %s: %w", issue, err)
+	}
+	var kept []WaitWithdrawal
+	for _, withdrawn := range wait.Withdrawn {
+		if !slices.ContainsFunc(shown, func(said WaitWithdrawal) bool { return said.ID == withdrawn.ID && said.At.Equal(withdrawn.At) }) {
+			kept = append(kept, withdrawn)
+		}
+	}
+	if len(kept) == len(wait.Withdrawn) {
+		return nil
+	}
+	wait.Withdrawn = kept
+	cleared, err := json.Marshal(wait)
+	if err != nil {
+		return fmt.Errorf("write the stored wait of %s: %w", issue, err)
+	}
+	if _, err := tx.Exec(ctx, "update issues set close_wait = $2 where key = $1", issue, cleared); err != nil {
+		return fmt.Errorf("write the stored wait of %s: %w", issue, err)
+	}
+	return nil
 }
 
 func (s *Postgres) WithdrawDefect(ctx context.Context, tx pgx.Tx, issue string, id int64, reason string, at time.Time) (bool, error) {

@@ -11,8 +11,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/envoy/internal/dispatch/legion"
 )
 
 // a-c-real-state: GET /api/v1/issues/{key}/legion against a real daemon's state. The test reads a
@@ -182,11 +180,15 @@ func compareCapturedIssue(report *captureDisagreements, key string, issue captur
 
 // TestTheLegionReadMatchesACapturedDaemonState is a-c-real-state. It seeds the capture's project
 // and one Dispatch issue for every captured key, names a server of the file's bytes as the
-// project's daemon, and makes the base's whole read of it, the sampler's pass, which records the
-// rows the route reads as production records them. Then for every captured issue it compares the
-// route's answer with the capture (C-1 to C-6), and each card of one board answer with that
-// issue's answer (C-7). It prints how many issues it compared, which is how many the file holds,
-// the file's size, how many issues carry a waitingOn, and the median and largest time of one GET.
+// project's daemon through the settings API, and reads it whole, at the URL that API stored
+// (legion.GetSettings), through the Legion intake's own whole read (legion.ReadWhole), which
+// records the rows the route reads as production records them. The capture must carry
+// `daemon.stateSeq`, `daemon.stateId` and `settings.dispatch_url`: a whole read of a state without
+// one of them is a failed read (ErrNoStateSeq, ErrNoStateID, ErrNoDispatchURL), and the test stops
+// there. Then for every captured issue it compares the route's answer with the capture (C-1 to
+// C-6), and each card of one board answer with that issue's answer (C-7). It prints how many
+// issues it compared, which is how many the file holds, the file's size, how many issues carry a
+// waitingOn, and the median and largest time of one GET.
 func TestTheLegionReadMatchesACapturedDaemonState(t *testing.T) {
 	t.Parallel()
 	path := os.Getenv("LEGION_STATE_CAPTURE")
@@ -229,7 +231,7 @@ func TestTheLegionReadMatchesACapturedDaemonState(t *testing.T) {
 	}))
 	t.Cleanup(daemon.Close)
 	nameLegionDaemon(t, handler, project, daemon.URL)
-	legion.NewSampler(database.Pool).Pass(t.Context())
+	readLegionWhole(t, database, project)
 	var ok bool
 	var failure *string
 	if err := database.Pool.QueryRow(t.Context(), `

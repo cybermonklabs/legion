@@ -14,7 +14,8 @@ import "fmt"
 // The board's columns. Queue holds no phase: the board route fills it (legionBoardCompute);
 // Design the `admitted` issues on a card that Queue does not hold — the slot
 // holders, and the ones no card stands above, which are on no other issue's count (the board
-// route's legionBoardCompute); Retro `retro` alone; Merging `merging` and `awaiting_merge`; Waiting
+// route's legionBoardCompute); Retro `retro` alone; Merging `merging` and `awaiting_merge`;
+// Verifying `verifying`, a merged issue whose close waits for its checks; Waiting
 // on children the parents in `awaiting_children`, whether or not the daemon's blocked list names
 // them (legionBoardCompute); and Held the phase metric 2 puts on the "no role" bar beside
 // `awaiting_person` and `awaiting_children` (the plan's D11).
@@ -28,6 +29,7 @@ const (
 	ColumnAccepting        = "accepting"
 	ColumnRetro            = "retro"
 	ColumnMerging          = "merging"
+	ColumnVerifying        = "verifying"
 	ColumnAwaitingChildren = "awaiting_children"
 	ColumnAwaiting         = "awaiting_person"
 	ColumnHeld             = "held"
@@ -51,7 +53,13 @@ type Column struct {
 // phases those tables name merging, `merging` and `awaiting_merge` (dispatch://INFRA-1077's
 // b74df7a79b), and
 // `awaiting_children` has a column of its own: a parent in it keeps no slot and waits for none,
-// and no role works it. The metrics key an issue's hours by these columns, so an issue's retro
+// and no role works it. `verifying` has one for the same reason and one more: it is the state
+// cybermonklabs/legion#5558 creates, where an issue waits after its merge for the checks of its
+// Verification document, and it is the state an operator most needs to see, because it is where
+// work now waits that never waited before. Under Merging the board would tell the story before
+// that change, an issue in the merger's hands; in no column at all the change's whole effect
+// would be invisible in the one view an operator watches. The metrics key an issue's hours by
+// these columns, so an issue's retro
 // hours are under `retro` there too, and on no merger figure.
 var Columns = []Column{
 	{ColumnQueue, nil},
@@ -63,6 +71,7 @@ var Columns = []Column{
 	{ColumnAccepting, []string{PhaseAccepting}},
 	{ColumnRetro, []string{PhaseRetro}},
 	{ColumnMerging, []string{PhaseMerging, PhaseAwaitingMerge}},
+	{ColumnVerifying, []string{PhaseVerifying}},
 	{ColumnAwaitingChildren, []string{PhaseAwaitingChildren}},
 	{ColumnAwaiting, []string{PhaseAwaitingPerson}},
 	{ColumnHeld, []string{PhaseHeld}},

@@ -241,13 +241,16 @@ test.each([
   ],
   ["a button under a hidden element", `<div data-shut hidden>${SAVE}</div>`, "hidden"],
   ["a button under an inert element", `<div data-shut inert>${SAVE}</div>`, "inert"],
-] as const)("%s in a shut group named as its bound takes no press", (_element, inside, attribute) => {
-  const button = drawButton(shutGroup(inside));
-  const bound = marked(button, "bound");
-  expect(usableControl(button, bound), "the button takes a press").toBe(false);
-  marked(button, "shut").removeAttribute(attribute);
-  expect(
-    usableControl(button, bound),
-    `the button takes no press once its ${attribute} is taken off`
-  ).toBe(true);
-});
+] as const)(
+  "%s in a shut group named as its bound takes no press",
+  (_element, inside, attribute) => {
+    const button = drawButton(shutGroup(inside));
+    const bound = marked(button, "bound");
+    expect(usableControl(button, bound), "the button takes a press").toBe(false);
+    marked(button, "shut").removeAttribute(attribute);
+    expect(
+      usableControl(button, bound),
+      `the button takes no press once its ${attribute} is taken off`
+    ).toBe(true);
+  }
+);

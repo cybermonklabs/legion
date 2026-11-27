@@ -509,6 +509,10 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		return err
 	}
 	now := e.now()
+	issue, ended, err := e.mergedEntry(ctx, tx, issue, pr, now)
+	if err != nil {
+		return err
+	}
 	entering := issue
 	entering.Phase = phase.Verifying
 	view, err := e.closeWaitFrom(ctx, tx, entering, now)
@@ -540,7 +544,8 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		return err
 	}
 	stored := e.waitOf(issue, view, old, now)
-	stored.Entered = now
+	stored.Entered, stored.Ended = now, ended
+	stored.Withdrawn = heldWithdrawals(old, nil)
 	if err := putStoredWait(&issue, stored); err != nil {
 		return err
 	}

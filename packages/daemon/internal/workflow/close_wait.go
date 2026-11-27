@@ -332,8 +332,17 @@ func closeReadAgain(now time.Time, unreadSince time.Time) time.Time {
 // row that writes close-wait.md, the first read of the checks, and one close-waits notice to the
 // owning architect. It starts nobody and suspends nothing: no role works the wait, the claims and
 // the pod stand, and the idle release frees the pod.
+//
+// The merge ends the change it merged (changeMerged), whose reasons it marks merged, and it records
+// whether the merger's completion of the generation that merged is still owed
+// (Issue.MergerCompletionOwed), which a next change waits for (changeDue) and which lets the merger
+// report a defect in verifying until it lands (mayReportDefect).
 func (e *Engine) enterVerifying(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, trigger TriggerKind, handoff record.PhaseRow, pr *record.PullRequest) error {
 	now := e.now()
+	issue, ended, err := e.mergedEntry(ctx, tx, issue, pr, now)
+	if err != nil {
+		return err
+	}
 	entering := issue
 	entering.Phase, entering.Hold = phase.Verifying, nil
 	view, err := e.closeWaitFrom(ctx, tx, entering, now)
@@ -345,7 +354,8 @@ func (e *Engine) enterVerifying(ctx context.Context, tx pgx.Tx, issue record.Iss
 		return err
 	}
 	stored := e.waitOf(issue, view, old, now)
-	stored.Entered = now
+	stored.Entered, stored.Ended = now, ended
+	stored.Withdrawn = heldWithdrawals(old, nil)
 	if err := putStoredWait(&issue, stored); err != nil {
 		return err
 	}
@@ -426,6 +436,9 @@ func (e *Engine) closeChecksRead(ctx context.Context, tx pgx.Tx, fact intake.Clo
 		return intake.Result{}, err
 	}
 	if issue.Phase != phase.Verifying {
+		if issue.NextChange != 0 {
+			return intake.Result{}, e.judgeOpenChange(ctx, tx, *issue, nil)
+		}
 		return intake.Result{}, nil
 	}
 	if err := e.openCheckAtRead(ctx, tx, *issue); err != nil {
@@ -455,7 +468,7 @@ func (e *Engine) openCheckAtRead(ctx context.Context, tx pgx.Tx, issue record.Is
 		return nil
 	}
 	failed := slices.ContainsFunc(view.wait.Checks, func(check record.CheckWait) bool { return check.State == record.CheckStateFail })
-	if len(view.wait.Beneath) > 0 || len(view.facts.Defects) > 0 || failed || view.facts.OpenChange {
+	if len(view.wait.Beneath) > 0 || len(changeReasons(view)) > 0 || failed || view.facts.OpenChange {
 		return nil
 	}
 	if check := view.facts.Production; check != nil && check.Generation == issue.Generation && check.MergeSHA == issue.Merge.SHA {
@@ -486,6 +499,11 @@ func (e *Engine) resultChanged(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 		if err := e.lookAfterNotRun(ctx, tx, *issue, fact); err != nil {
 			return intake.Result{}, err
 		}
+		return intake.Result{}, e.askCloseRead(ctx, tx, *issue)
+	}
+	// An open next change ends when each of its reasons is resolved, a check's by its pass, so a
+	// result's event reads the checks for it as for an issue in verifying (judgeOpenChange).
+	if issue.NextChange != 0 {
 		return intake.Result{}, e.askCloseRead(ctx, tx, *issue)
 	}
 	return intake.Result{}, nil
@@ -596,10 +614,15 @@ func (e *Engine) judgeClose(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 	return e.judgeCloseNoting(ctx, tx, issue, nil)
 }
 
-// judgeCloseNoting is judgeClose for an event that close-wait.md names once, in the version it
+// judgeCloseNoting is judgeClose for an event that close-wait.md names once, in a version it
 // writes: withdrawn, the defects a withdrawal ended (defectWithdrawal), which the stored wait it
-// writes holds as its Withdrawn. A later write leaves them out, since waitOf starts every wait
-// afresh.
+// writes holds as its Withdrawn beside every withdrawal the wait already held (heldWithdrawals).
+// The wait keeps a withdrawal until a version of the document holding it is uploaded, whatever
+// writes the wait first; the row that uploads it takes it out (daemon's closeWaitPublish).
+//
+// Where the close still waits, the wait is stored first, with the notices that come at once, and
+// then a reason that waits starts the next change where its moment has come (startChangeIfDue):
+// a check Dispatch computes as a fail, a production check's fail, or a reported defect (D2, D7).
 func (e *Engine) judgeCloseNoting(ctx context.Context, tx pgx.Tx, issue record.Issue, withdrawn []record.WaitWithdrawal) error {
 	if issue.Phase != phase.Verifying {
 		return nil
@@ -611,7 +634,11 @@ func (e *Engine) judgeCloseNoting(ctx context.Context, tx pgx.Tx, issue record.I
 	if view.wait.Done() {
 		return e.closeOnChecks(ctx, tx, issue, view, withdrawn)
 	}
-	return e.storeWait(ctx, tx, issue, view, withdrawn)
+	if err := e.storeWait(ctx, tx, issue, view, withdrawn); err != nil {
+		return err
+	}
+	_, err = e.startChangeIfDue(ctx, tx, issue.Key)
+	return err
 }
 
 // storeWait writes the stored wait of view where it differs from the one the row holds, with the
@@ -624,7 +651,7 @@ func (e *Engine) storeWait(ctx context.Context, tx pgx.Tx, issue record.Issue, v
 		return err
 	}
 	stored := e.waitOf(issue, view, old, now)
-	stored.Withdrawn = withdrawn
+	stored.Withdrawn = heldWithdrawals(old, withdrawn)
 	if err := e.tellAtOnce(ctx, tx, issue, old, stored, view.wait); err != nil {
 		return err
 	}
@@ -755,7 +782,7 @@ func (e *Engine) closeOnChecks(ctx context.Context, tx pgx.Tx, issue record.Issu
 		return err
 	}
 	stored := e.waitOf(issue, view, old, now)
-	stored.Withdrawn = withdrawn
+	stored.Withdrawn = heldWithdrawals(old, withdrawn)
 	stored.Closed = &now
 	if err := putStoredWait(&issue, stored); err != nil {
 		return err
@@ -785,6 +812,17 @@ func (e *Engine) closeOnChecks(ctx context.Context, tx pgx.Tx, issue record.Issu
 		return err
 	}
 	return e.leave(ctx, tx, issue, "done")
+}
+
+// heldWithdrawals is what a stored wait written over old holds of withdrawals: each one old holds,
+// which no uploaded version of close-wait.md has said yet, then withdrawn, the ones the write
+// adds. waitOf builds every other item of the wait afresh, so this is what keeps a withdrawal from
+// being replaced before the row that writes close-wait.md renders it.
+func heldWithdrawals(old record.StoredWait, withdrawn []record.WaitWithdrawal) []record.WaitWithdrawal {
+	if len(old.Withdrawn) == 0 && len(withdrawn) == 0 {
+		return nil
+	}
+	return append(slices.Clone(old.Withdrawn), withdrawn...)
 }
 
 // closeLingeringMember writes the close of issue, a member of a lingering tree, on row, the table's

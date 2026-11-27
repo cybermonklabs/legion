@@ -65,12 +65,12 @@ type Config struct {
 	Steps          []record.DesignStep
 	ReviewRoundCap int
 	Linger         time.Duration
-	// ProductionCheckBound is how long a closed issue's production check waits for its deploy
-	// before its last look (config.Config.ProductionCheckBound, `production_check_hours`): the
-	// check's bound_at is its open plus this. Zero takes the shipped 14 days.
+	// ProductionCheckBound is how long a production check runs from its opening before its last
+	// look (config.Config.ProductionCheckBound, `production_check_hours`): the check's bound_at is
+	// its open plus this. Zero takes the shipped 14 days.
 	ProductionCheckBound time.Duration
 	// ProductionCheckRole is the project's `production_check` (config.Project.ProductionCheck):
-	// the role that works the production check a merge closing an issue opens, and empty for the
+	// the role that works the production check a merged issue's close waits for, and empty for the
 	// project that opens none. It decides the checks opened under this configuration, never one
 	// already open, whose role its own row holds.
 	ProductionCheckRole claim.Role
@@ -194,10 +194,6 @@ type Engine struct {
 	// fact's transaction commits, and facts commit on each consumer's goroutine and the API's, so
 	// the set takes its own lock (intake.RecentKeys).
 	droppedSettlements *intake.RecentKeys[intake.SettlementIdentity]
-	// nextChange is what a reason of a next change found in verifying calls: a production check's
-	// fail (productionFail). It is a seam until the next change's opener is built, and a test reads
-	// its call through it.
-	nextChange func(ctx context.Context, tx pgx.Tx, issue record.Issue, reason record.Defect) error
 }
 
 var _ intake.Handler = (*Engine)(nil)
@@ -223,9 +219,7 @@ func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 	if log == nil {
 		log = slog.Default()
 	}
-	e := &Engine{store: store, cfg: cfg, log: log, droppedSettlements: intake.NewRecentKeys[intake.SettlementIdentity](intake.DroppedSettlementsKept)}
-	e.nextChange = e.nextChangeDue
-	return e
+	return &Engine{store: store, cfg: cfg, log: log, droppedSettlements: intake.NewRecentKeys[intake.SettlementIdentity](intake.DroppedSettlementsKept)}
 }
 
 func (e *Engine) now() time.Time { return e.cfg.Clock().UTC() }
@@ -1054,10 +1048,20 @@ func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) e
 // role that works the phase it stands at is none of a phase that role has left, so it is answered
 // as the run the stop ended (pastReportOf). A task with plan rows takes it the same way, whatever
 // step it stands at now; the test of the run itself is ranUnreported.
+//
+// Verifying is a phase no role works, so a completion there is refused like any other, but for one:
+// the merger's completion of the generation that merged, while the record still owes it
+// (Issue.MergerCompletionOwed). The merger completes in the turn that merged, and the merge can
+// land first, so its completion is of the merge it left (phase.LeftBy answers merging), recorded on
+// its own row and on the generation it worked, and refused neither HANDOFF_NOT_CURRENT_PHASE nor
+// HANDOFF_STALE_GENERATION (D7). A next change waits for it (changeDue).
 func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token) (bool, error) {
 	at := issue.Phase
 	if record.HeldForChildren(issue) || record.HeldFor(issue, record.HoldTaskStopped) {
 		at = record.StandsAt(issue)
+	}
+	if role == claim.RoleMerger && at == phase.Verifying && issue.MergerCompletionOwed {
+		return e.ranUnreported(ctx, tx, issue, role, token)
 	}
 	if works := RoleFor(at); at == phase.Admitted || works == "" || works == role || phase.LeftBy(role, at) == "" {
 		return false, nil
@@ -1243,7 +1247,15 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		return intake.Result{}, err
 	}
 	if !current {
-		return intake.Result{}, e.reportEndedStep(ctx, tx, *issue, reported, fact.HandoffRecord)
+		if err := e.reportEndedStep(ctx, tx, *issue, reported, fact.HandoffRecord); err != nil {
+			return intake.Result{}, err
+		}
+		// The merger's completion of the merged generation, taken in verifying (leftItsPhase),
+		// is the moment a next change waits for (mergerCompleted).
+		if fact.Role == claim.RoleMerger && issue.Phase == phase.Verifying && issue.MergerCompletionOwed {
+			return intake.Result{}, e.mergerCompleted(ctx, tx, issue.Key)
+		}
+		return intake.Result{}, nil
 	}
 	switch issue.Phase {
 	case phase.Planning:
@@ -1358,7 +1370,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: noticeFailure(fact),
 			Reason: fmt.Sprintf("%s's own architect failed; its notices come to you until it runs again, and %s", issue.Key, again)})
 	}
-	// The failure of the role an open check records ends the look of its closed issue's production
+	// The failure of the role an open check records ends the look of its merged issue's production
 	// check, as its bound would, and counts it a failed look, so the next look is named a backoff
 	// out that doubles with each failed look in a row (endFailedLook). Which role that is the check's
 	// own row says (record.ProductionCheck.Role, the role it opened under), never the setting as it
@@ -2760,7 +2772,7 @@ func (e *Engine) acceptanceHeld(ctx context.Context, tx pgx.Tx, issue record.Iss
 	if err != nil {
 		return acceptanceHold{}, err
 	}
-	if open := record.OpenBeneath(issue, members); len(open) > 0 {
+	if open := record.WorkBeneath(issue, members); len(open) > 0 {
 		return acceptanceHold{code: signOffChildInWorkflow, names: strings.Join(open, ", ")}, nil
 	}
 	resting, err := record.RestingRoots(ctx, tx, e.store, issue.Key)
@@ -2969,9 +2981,18 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	movedBack := w.MovesBack(issue.Phase, row.To)
+	// A move back out of the retro or the merge is a return for a cause that stays, and it carries
+	// each open defect reported in this generation (carryReturn), which the start task of the phase
+	// it reaches names: the returned work takes them, and this generation's merge ends them (D7).
+	var carried []record.Defect
 	if movedBack {
 		if err := e.recordPass(ctx, tx, issue, w.Task, issue.Phase, row.To, pr, len(open) > 0); err != nil {
 			return err
+		}
+		if record.AcceptedPhase(record.StandsAt(issue)) {
+			if carried, err = e.carryReturn(ctx, tx, issue); err != nil {
+				return err
+			}
 		}
 	}
 	if trigger == TriggerReviewRejected {
@@ -3054,15 +3075,15 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		if err := e.startStandingStep(ctx, tx, issue, w); err != nil {
 			return err
 		}
-	} else if err := e.start(ctx, tx, issue, w, starting, func(at Standing) string {
-		return task(issue, at, handoff, pr, reason)
-	}, from, movedBack); err != nil {
+	} else if err := e.startFrom(ctx, tx, issue, w, starting, func(at Standing) string {
+		return task(issue, at, handoff, pr, withCarried(reason, carried))
+	}, from, movedBack, firstStartAt(trigger, issue)); err != nil {
 		return err
 	}
 	if err := e.queueMovedNews(ctx, tx, issue); err != nil {
 		return err
 	}
-	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason)); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, issue, from, row.To, handoff, reason)); err != nil {
 		return err
 	}
 	// The merge forward follows the move (mergeForwardOnEntry): a move into implementing drops
@@ -3160,7 +3181,7 @@ func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Is
 	}
 	e.logOnCommit(ctx, "workflow: a parent is held before its retro", "issue", issue.Key, "tree", issue.Tree,
 		"task", w.Task, "hold", held.code, "holding", held.names)
-	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, to, handoff, reason)); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, issue, from, to, handoff, reason)); err != nil {
 		return err
 	}
 	return e.tellRetroHeld(ctx, tx, issue, w, held, trigger)
@@ -3191,23 +3212,31 @@ func (e *Engine) queueMovedNews(ctx context.Context, tx pgx.Tx, issue record.Iss
 	return nil
 }
 
-// noticeFor is what a transition on trigger out of from into to tells the architect: that from
-// finished, with its worker's handoff. Two moves tell it nothing (a notice of no kind, which notice
-// drops): its own sign-off, whose only recipient would be the architect that just acted, and the
-// merge that closes the issue, whose close tells the architect above a child child-closed itself
-// (leave) and closes the child's own architect with its other claims, and suspends a root's
-// architect with the rest of its tree. A third move names no role: the gate's opening, the one move
-// out of admitted (Table), whose role is the architect. A phase-finished names the worker whose
-// phase ended, and admitted has none: its role is an architect, the role that reads this notice.
+// noticeFor is what a transition of issue on trigger out of from into to tells the architect: that
+// from finished, with its worker's handoff. Three moves tell it nothing (a notice of no kind, which
+// notice drops). The first is its own sign-off, whose only recipient would be the architect that
+// just acted. The second is the merge that closes the issue, whose close tells the architect above
+// a child child-closed itself (leave) and closes the child's own architect with its other claims,
+// and suspends a root's architect with the rest of its tree. The third is a child's gate opening,
+// the move out of admitted that starts the child's first phase (StartFirstPhase). That start tells
+// the architect above the child with a child-status (ChildStartedNotice), and the child's own
+// architect, which the move starts (gateOpened), learns of the child from its catch-up.
+//
+// The gate's opening is the one move out of admitted (Table). On a tree's own root it tells the
+// root's own architect, and its notice names no role: a phase-finished names the worker whose phase
+// ended, and admitted has none, since its role is the architect, the role that reads this notice.
 //
 // A worker's own backward move (TriggerBackward, request_backward_move) keeps the phase-finished
 // kind the architect's prompt routes on, and says in its reason what happened and who asked: the
 // phase it moved the issue to, the role that moved it and the words that role gave. The handoff
 // row a move writes is empty, so without that reason the architect reads a completion with no
 // summary and no verdict and cannot tell it from a worker that finished its phase.
-func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, reason string) record.Notice {
+func noticeFor(trigger TriggerKind, issue record.Issue, from, to phase.Phase, handoff record.PhaseRow, reason string) record.Notice {
 	switch trigger {
 	case TriggerGateOpened:
+		if !claim.IsTreeRoot(issue.Key, issue.Tree) {
+			return record.Notice{}
+		}
 		return record.Notice{Kind: "phase-finished", Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
 	case TriggerBackward:
 		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
@@ -3261,9 +3290,10 @@ func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRo
 //
 // waited is every issue the mirror row still names, in Dispatch's own order, all of them done by
 // now — or empty, when the issue named none or someone took its blocked-by links off while it
-// waited, which the notice's reason says instead. A tree's own root gets no notice: the
-// architect this would tell is the root's own, which the phase-finished of the move out of
-// admitted already tells (noticeFor).
+// waited, which the notice's reason says instead. A child's move out of admitted tells nobody
+// (noticeFor), so this child-status is the one notice of its start. A tree's own root gets no
+// notice here: the architect this would tell is the root's own, which the phase-finished of the
+// move out of admitted already tells (noticeFor).
 func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, waited []string) error {
 	if err := e.gateOpened(ctx, tx, issue); err != nil {
 		return err
@@ -3305,7 +3335,7 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 	if err := e.planFirstStep(ctx, tx, issue); err != nil {
 		return err
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.IssueBranch{Generation: issue.Generation}); err != nil {
+	if err := e.enqueue(ctx, tx, issue.Key, record.IssueBranchOf(issue)); err != nil {
 		return err
 	}
 	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
