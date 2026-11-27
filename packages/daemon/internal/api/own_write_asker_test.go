@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // preparedWrites keeps each fact a route gives its own status write, as the daemon's preparation
@@ -85,7 +86,7 @@ func TestTheRoutesOwnWriteSaysWhoAsked(t *testing.T) {
 		if status := h.request(http.MethodPost, "/legion/v1/issues/status", IssueStatusRequest{GrantID: grant.GrantID, Issue: statusChild, Status: "backlog"}, nil); status.Code != http.StatusOK {
 			t.Fatalf("set_status = %d %s, want 200", status.Code, status.Body)
 		}
-		asked(t, writes.of(t, statusChild), claim.Role("person"), "operator")
+		asked(t, writes.of(t, statusChild), record.RequesterPerson, "operator")
 	})
 
 	t.Run("rerun_child is an architect's", func(t *testing.T) {

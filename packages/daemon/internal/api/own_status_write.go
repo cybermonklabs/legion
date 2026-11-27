@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // setDispatchStatus writes an issue's status in Dispatch as the daemon, answering a refused or
@@ -67,20 +68,17 @@ func (s *server) applyOwnStatusWrite(w http.ResponseWriter, r *http.Request, wri
 	return true
 }
 
-// requesterPerson is who asked where a person did, the operator among them: the request it
-// writes is a person's, which only that person ends with no pull request.
-const requesterPerson claim.Role = "person"
-
 // operatorPerson is the person a write through the operator's grant names (PersonActor): the
 // operator's bearer names no one, so the write names the operator.
 const operatorPerson = "operator"
 
-// ownWriteAsker is who asked set_status for its write, by the grant it redeemed: a person, named
-// operatorPerson, for the operator's grant (`legion issue status`, credential.Grant.Operator), and
-// the controller for a controller session's.
+// ownWriteAsker is who asked set_status for its write, by the grant it redeemed: a person
+// (record.RequesterPerson), named operatorPerson, for the operator's grant (`legion issue status`,
+// credential.Grant.Operator), and the controller for a controller session's. A person's request
+// ends with no pull request only on that person's word.
 func ownWriteAsker(grant credential.Grant) (claim.Role, string) {
 	if grant.Operator {
-		return requesterPerson, operatorPerson
+		return record.RequesterPerson, operatorPerson
 	}
 	return claim.RoleController, ""
 }

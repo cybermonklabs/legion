@@ -41,7 +41,7 @@ func TestAnOwnWriteSaysWhoAsked(t *testing.T) {
 	}{
 		{"the controller's set_status", claim.RoleController, ""},
 		{"an architect's rerun_child", claim.RoleArchitect, ""},
-		{"the operator's legion issue status", claim.Role("person"), "operator"},
+		{"the operator's legion issue status", record.RequesterPerson, "operator"},
 	} {
 		written := dispatch.Issue{Key: "ACME-1", Title: "ACME-1", Status: "todo", Rank: "A", HandedOver: true, LastSeq: int64(2 + i), ResolvedRepo: "acme/widgets"}
 		event := OwnStatusWrite(written, tc.requester, tc.person)
