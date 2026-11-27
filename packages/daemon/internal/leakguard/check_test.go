@@ -702,7 +702,7 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 		started := filepath.Join(t.TempDir(), "started")
 		mark := filepath.Join(t.TempDir(), "mark")
 		guard := New(Options{
-			Check: leakguardtest.Write(t, t.TempDir(), passes),
+			Check: leakguardtest.Write(t, t.TempDir(), "sleep 2.5\n"+passes),
 			Env:   withRules(t, append(fixtureenv.Isolated(t.TempDir()), neverAnswers(t, "gh", started, mark))),
 		})
 		ctx := deadlinePassedOnceStarted(t, theBound, started)
@@ -718,7 +718,7 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 	t.Run("a git read of the push's records", func(t *testing.T) {
 		started := filepath.Join(t.TempDir(), "started")
 		mark := filepath.Join(t.TempDir(), "mark")
-		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, neverAnswers(t, "git", started, mark))
+		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), "sleep 2.5\n"+passes), Public, neverAnswers(t, "git", started, mark))
 		ctx := deadlinePassedOnceStarted(t, theBound, started)
 		// A local commit and a ref the destination does not hold yet: the guard asks git for the
 		// repository's remotes and then for the commits the push would add, which are reads the

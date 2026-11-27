@@ -112,12 +112,14 @@ func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
 	omp := filepath.Join(dir, "omp")
 	// Each call's files are in the directory LEGION_TEST_RUN names. The slow file's run waits until
 	// the row releases it or this test process is gone, never on a timer of its own.
+	// CONTROL ONLY: the refused file's Oh My Pi waits 1.5 s after its first act, once in the test.
+	stalled := filepath.Join(dir, "bad.stalled")
 	script := "#!/bin/sh\n" +
 		"onslowterm() { " + testexec.MarkNow(`"$LEGION_TEST_RUN/slow.termed"`) + "; exit 143; }\n" +
 		"onbadterm() { echo \"$PI_CONFIG_FILES\" >>\"$LEGION_TEST_RUN/bad.termed\"; exit 143; }\n" +
 		"case \"$PI_CONFIG_FILES\" in\n" +
 		"*slow.yml) trap onslowterm TERM; : >\"$LEGION_TEST_RUN/slow.started\"; while [ ! -e \"$LEGION_TEST_RUN/release\" ] && kill -0 " + strconv.Itoa(os.Getpid()) + " 2>/dev/null; do sleep 0.05; done ;;\n" +
-		"*bad.yml) trap onbadterm TERM; echo \"$PI_CONFIG_FILES\" >>\"$LEGION_TEST_RUN/bad.ran\"; echo \"error: Failed to parse config overlay $PI_CONFIG_FILES\" >&2; " +
+		"*bad.yml) trap onbadterm TERM; echo \"$PI_CONFIG_FILES\" >>\"$LEGION_TEST_RUN/bad.ran\"; [ -e '" + stalled + "' ] || { : >'" + stalled + "'; sleep 1.5; }; echo \"error: Failed to parse config overlay $PI_CONFIG_FILES\" >&2; " +
 		"if [ \"$PI_CONFIG_FILES\" = \"$LEGION_TEST_BAD\" ]; then " + testexec.MarkNow(`"$LEGION_TEST_RUN/bad.exiting"`) + "; fi; exit 1 ;;\n" +
 		"esac\necho '{\"value\": false}'\n"
 	if err := testexec.WriteFile(omp, []byte(script), 0o755); err != nil {
