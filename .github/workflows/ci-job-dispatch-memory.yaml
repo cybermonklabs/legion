@@ -52,7 +52,6 @@ jobs:
           --health-retries 5
     env:
       JOB_TIMEOUT_MINUTES: 75 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
-      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -80,7 +79,19 @@ jobs:
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
       - name: Check the service allows this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # The service's own address on the runner's docker network, which the tests reach it at
+      # instead of localhost:5432, the port map the runner's userland proxy serves: that proxy
+      # copies every byte of this lane's Postgres traffic and cost 131 CPU-s of the machine's
+      # 1,936 a run, with the suite 87 s slower for it (three runs each way, measured in
+      # .github/scripts/postgres-service-address.sh's header). The script fails the job rather
+      # than leave the tests a URL with no host, and the tests skip only on an unset
+      # DISPATCH_TEST_DATABASE_URL, which the step below always sets.
+      - id: service-address
+        name: Read the service's own address
+        run: .github/scripts/postgres-service-address.sh "${{ job.services.postgres.id }}" >>"$GITHUB_OUTPUT"
       - name: Memory tests of the Dispatch server
+        env:
+          DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@${{ steps.service-address.outputs.address }}:5432/postgres?sslmode=disable
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh memory ./cmd/dispatch)
           go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch
