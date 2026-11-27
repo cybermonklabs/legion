@@ -48,7 +48,7 @@ func (r *waitDeliveryRig) idleRelease() *releaseRuntime {
 func (r *waitDeliveryRig) dueAt(at time.Time, kinds ...record.OutboxKind) []record.OutboxRow {
 	r.t.Helper()
 	var due []record.OutboxRow
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		due, err = r.records.DueRows(r.ctx, tx, r.issue.Project, r.issue.Key, kinds, at)
 		return err
@@ -203,6 +203,7 @@ func wantWaitTask(t *testing.T, sent fake.Prompt, wait record.ClaimWait) {
 // of 0, under which the release's own timers never run (tickWakes returns at once): the wait's
 // time is an outbox row, which the lanes run under either.
 func TestAtItsTimeTheWaitsOwnTaskIsDeliveredWithOrWithoutAnIdleRelease(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		configure func(*waitDeliveryRig)
@@ -260,6 +261,7 @@ func TestAtItsTimeTheWaitsOwnTaskIsDeliveredWithOrWithoutAnIdleRelease(t *testin
 // relaunched process is ready the tester is sent the wake's task, which says the pod was released
 // and gives the wait's own task.
 func TestTheTimeOfAReleasedWorkersWaitBringsItsPodBack(t *testing.T) {
+	t.Parallel()
 	r := newWaitDeliveryRig(t)
 	r.idleRelease()
 	taken := r.working(1, "Test it.")
@@ -297,6 +299,7 @@ func TestTheTimeOfAReleasedWorkersWaitBringsItsPodBack(t *testing.T) {
 // writes no start: the first wait is over. The second wait stands, its own row still queued for its
 // time, and the tester is sent nothing.
 func TestTheTimeOfAReplacedWaitSendsTheWorkerNothing(t *testing.T) {
+	t.Parallel()
 	r := newWaitDeliveryRig(t)
 	taken := r.working(1, "Test it.")
 	first := r.declareUntil("the review of the head", time.Now().Add(2*time.Hour))
@@ -369,6 +372,7 @@ func heldAtItsTime(t *testing.T, r *waitDeliveryRig) (record.ClaimWait, supervis
 // task behind that turn and finishes, and sends nothing into it. Once the turn is over, the tester
 // is sent the wait's own task.
 func TestAHeldTaskGoesFirstAndTheWaitsOwnTaskAfterIt(t *testing.T) {
+	t.Parallel()
 	r := newWaitDeliveryRig(t)
 	wait, held, start := heldAtItsTime(t, r)
 
@@ -399,6 +403,7 @@ func TestAHeldTaskGoesFirstAndTheWaitsOwnTaskAfterIt(t *testing.T) {
 // queues nothing, and it is logged. The turn ends, the tester is sent nothing more, and the newer
 // wait still stands, since no task of the old wait's time reached the claim as new work.
 func TestASecondWaitInTheHeldTasksTurnFinishesTheOldWaitsStartWithNoDelivery(t *testing.T) {
+	t.Parallel()
 	r := newWaitDeliveryRig(t)
 	wait, held, start := heldAtItsTime(t, r)
 
@@ -441,6 +446,7 @@ func TestASecondWaitInTheHeldTasksTurnFinishesTheOldWaitsStartWithNoDelivery(t *
 // backoff, finds the newer wait standing and finishes with no delivery, so no task of the old
 // wait's time reaches the claim as new work and the newer wait still stands.
 func TestASecondWaitInTheHeldTasksTurnFinishesTheOldWaitsWakeWithNoDelivery(t *testing.T) {
+	t.Parallel()
 	r := newWaitDeliveryRig(t)
 	r.idleRelease()
 	r.working(1, "Test it.")
@@ -509,11 +515,13 @@ func TestASecondWaitInTheHeldTasksTurnFinishesTheOldWaitsWakeWithNoDelivery(t *t
 //     the release's boundary cancels the release (store's IssueReleaseStop): the pod is never
 //     taken down, and the start delivers the wait's own task to the tester in it.
 //   - After the release has stopped the tester and before its teardown: the claim is released, so
-//     its time wakes it as any wake of a released claim does. The resume that wake records is newer
-//     than the release's mark, so the teardown cancels the release (store's IssueRelease), the
-//     pod is never taken down, and the wake's start brings the tester back in it with the wake's
-//     task.
+//     its time wakes it as any wake of a released claim does. Under main's rule (#4194,
+//     store.IssueRelease, releaseOvertaken) a wake of a role this release has already recorded as
+//     released no longer cancels the release: the release runs to its end and takes the pod down,
+//     and the wake's start waits behind the teardown (record's outboxInOrder) and then brings the
+//     tester back in the new pod with the wake's task.
 func TestAWaitsTimeDuringItsPodsReleaseReachesTheWorkerOnceThePodIsBack(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// stopped runs the release's save and its stop of the tester before the wait's time.
@@ -569,10 +577,14 @@ func TestAWaitsTimeDuringItsPodsReleaseReachesTheWorkerOnceThePodIsBack(t *testi
 
 			r.drainAt(wait.WakeAt, record.OutboxKindIssueBundle, record.OutboxKindSupervise, record.OutboxKindIssueRelease)
 			if r.releaseMarked() {
-				t.Fatal("the release is still in progress after its rows ran, want it cancelled")
+				t.Fatal("the release is still in progress after its rows ran, want it finished")
 			}
-			if _, suspended := rt.reads(); suspended != 0 {
-				t.Fatalf("the runtime took the pod down %d times, want never: the wait's time cancelled the release", suspended)
+			wantSuspended := 0
+			if tc.stopped {
+				wantSuspended = 1
+			}
+			if _, suspended := rt.reads(); suspended != wantSuspended {
+				t.Fatalf("the runtime took the pod down %d times, want %d", suspended, wantSuspended)
 			}
 			if tc.stopped {
 				r.wantPrompts(1, "nothing is sent before the tester's process is back")

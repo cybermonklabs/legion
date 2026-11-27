@@ -31,7 +31,8 @@
       "LEGION-212",
       "LEGION-218",
       "LEGION-219",
-      "LEGION-220"
+      "LEGION-220",
+      "LEGION-221"
     ],
     "waiting": [
       "LEGION-212",
@@ -46,7 +47,8 @@
       "LEGION-215",
       "LEGION-216",
       "LEGION-218",
-      "LEGION-219"
+      "LEGION-219",
+      "LEGION-221"
     ],
     "blocked": [
       {
@@ -269,6 +271,12 @@
               "argsBytes": 128,
               "argsHash": "9b2e45c0d1f8a673",
               "startedAt": "2126-09-22T09:17:12Z"
+            },
+            "wait": {
+              "id": "5e2b7c41-9d36-4a8f-b0c2-7e14d9a3f685",
+              "waitingOn": "the review the repository requires on pull request #1247",
+              "wakeAt": "2126-09-22T11:00:00Z",
+              "declaredAt": "2126-09-22T09:17:05.123456Z"
             }
           },
           "pass": 3,
@@ -1019,6 +1027,56 @@
           "drawnAt": "2126-09-21T18:42:11Z"
         }
       ]
+    },
+    "LEGION-221": {
+      "key": "LEGION-221",
+      "generation": 1,
+      "phase": "merging",
+      "status": "retro",
+      "tree": "LEGION-221",
+      "treeRuns": true,
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "priority": null,
+      "workers": {
+        "merger": {
+          "claim": {
+            "session": "ses_merger_221",
+            "state": "suspended",
+            "pluginContract": 0,
+            "updateState": "none",
+            "hold": {
+              "step": "spec",
+              "artifactId": "7b4e9c12-3d58-4a61-b7f0-2c9e5d8a1f46",
+              "version": 3
+            }
+          },
+          "pass": 0,
+          "rounds": 0
+        }
+      },
+      "designGate": {
+        "artifactId": "7b4e9c12-3d58-4a61-b7f0-2c9e5d8a1f46",
+        "currentVersion": 3,
+        "approvedVersion": 2
+      },
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "artifactId": "7b4e9c12-3d58-4a61-b7f0-2c9e5d8a1f46",
+          "currentVersion": 3,
+          "approvedVersion": 2,
+          "status": "waiting"
+        }
+      ],
+      "slot": {
+        "index": 6,
+        "admittedAt": "2126-09-21T11:20:00Z"
+      },
+      "phaseEntry": 1,
+      "givenEntry": 1,
+      "treeMovedAt": "2126-09-22T09:01:00Z",
+      "quietHours": 0.2861111111111111
     }
   },
   "pendingStatusWrites": [],

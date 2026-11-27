@@ -205,14 +205,14 @@ func TestAPendingReconcileHoldsTheMergerOffAnUnreadHistoryUntilItReadsItAgain(t 
 	}
 	// The control: with no reconcile pending, the unread history stands and the merger would be
 	// released on it.
-	if err := r.runner.mergerWaitsForTheDesignGate(r.ctx, root, claim.RoleMerger); err != nil {
+	if err := r.runner.mergerWaitsForTheDesignGate(r.ctx, root, start); err != nil {
 		t.Fatalf("the merger's hold with the history unread and no reconcile pending = %v, want it released", err)
 	}
 
 	// Dispatch answers again, and a transition queues the tree's reconcile beside the merger's start.
 	answers = true
 	r.queueReconcile(0)
-	if err := r.runner.mergerWaitsForTheDesignGate(r.ctx, root, claim.RoleMerger); !errors.Is(err, wait.ErrWaiting) {
+	if err := r.runner.mergerWaitsForTheDesignGate(r.ctx, root, start); !errors.Is(err, wait.ErrWaiting) {
 		t.Fatalf("the merger's hold with a reconcile pending = %v, want it held (wait.ErrWaiting): that reconcile reads the history again", err)
 	}
 	if err := r.runner.execute(r.ctx, row); !errors.Is(err, wait.ErrWaiting) {

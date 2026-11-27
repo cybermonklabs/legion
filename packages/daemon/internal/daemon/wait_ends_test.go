@@ -85,7 +85,7 @@ func (r *waitEndsRig) waiting(issue, tree string, role claim.Role, generation ui
 		string(token), tree, issue, string(role), "ses-"+string(role)); err != nil {
 		r.t.Fatalf("seed the claim of %s's %s: %v", issue, role, err)
 	}
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutPhase(context.Background(), tx, record.PhaseRow{Issue: issue, Role: role, Claim: token, Entry: 2})
 	}); err != nil {
 		r.t.Fatalf("seed the phases row of %s's %s: %v", issue, role, err)
@@ -142,7 +142,7 @@ func (r *waitEndsRig) assertEnded(id string, token claim.Token, issue string, ro
 func (r *waitEndsRig) stands(token claim.Token) bool {
 	r.t.Helper()
 	var stands bool
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		_, stands, err = workflow.WaitStandsNow(context.Background(), tx, r.records, config.DesignGateRootIssues.Steps(), token)
 		return err
@@ -161,6 +161,7 @@ func (r *waitEndsRig) stands(token claim.Token) bool {
 // the wait ends in that fact with the cause that the issue runs a new generation, ended by the
 // Dispatch event.
 func TestAReadmissionsNewGenerationEndsTheWaitInItsOwnFact(t *testing.T) {
+	t.Parallel()
 	r := newWaitEndsRig(t)
 	const root, child = "LEGION-208", "LEGION-209"
 	r.issue(record.Issue{Key: root, Tree: root, Project: "LEGION", Title: root, Repo: "sjawhar/legion", DefaultBranch: "main",
@@ -189,7 +190,7 @@ func TestAReadmissionsNewGenerationEndsTheWaitInItsOwnFact(t *testing.T) {
 func (r *waitEndsRig) recorded(key string) record.Issue {
 	r.t.Helper()
 	var issue *record.Issue
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, err = r.records.Issue(context.Background(), tx, key)
 		return err
@@ -205,6 +206,7 @@ func (r *waitEndsRig) recorded(key string) record.Issue {
 // would have been (the engine's leave), and the wait it stops ends in that same transaction, ended
 // by the reconcile, which has no event id of its own: the pass and the boot.
 func TestTheBootReconcileEndsTheWaitsItsListingStops(t *testing.T) {
+	t.Parallel()
 	r := newWaitEndsRig(t)
 	const root, child = "LEGION-208", "LEGION-209"
 	r.issue(record.Issue{Key: root, Tree: root, Project: "LEGION", Title: root, Repo: "sjawhar/legion", DefaultBranch: "main",
@@ -213,7 +215,7 @@ func TestTheBootReconcileEndsTheWaitsItsListingStops(t *testing.T) {
 	r.issue(record.Issue{Key: child, Tree: root, Parent: new(root), Project: "LEGION", Title: child, Repo: "sjawhar/legion",
 		DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Phase: phase.Testing, Generation: 1, Status: "testing",
 		DispatchStatus: "testing", Rank: "B", LastDispatchSeq: 1})
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutGate(context.Background(), tx, record.DesignGate{Issue: root, ArtifactID: "artifact-208",
 			LatestVersion: 3, ApprovedVersion: new(3)}); err != nil {
 			return err

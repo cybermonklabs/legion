@@ -39,6 +39,7 @@ func (r *waitDeliveryRig) reportNews(wait record.ClaimWait, key string) api.Wait
 // ended and names the update ask, and the wait stands; each is logged once. A person's message
 // afterwards is news and ends the wait.
 func TestWaitStandsForThePodUpdateAskItsOutboxPublished(t *testing.T) {
+	t.Parallel()
 	r := newWaitDeliveryRig(t)
 	r.working(1, "Test it.")
 	wait := r.declare()

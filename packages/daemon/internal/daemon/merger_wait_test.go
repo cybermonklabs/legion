@@ -61,6 +61,7 @@ func (r *waitDeliveryRig) wantTimeOfAnEndedWaitSendsNothing(wait record.ClaimWai
 //
 // In both, the time of the ended wait sends the merger nothing.
 func TestTheDesignGatesClosingEndsAMergersWaitWithALiveOrAReleasedPod(t *testing.T) {
+	t.Parallel()
 	t.Run("a live pod", func(t *testing.T) {
 		r := newHeldMergerRig(t)
 		waited := r.mergerWaiting()
@@ -74,9 +75,10 @@ func TestTheDesignGatesClosingEndsAMergersWaitWithALiveOrAReleasedPod(t *testing
 
 		r.opensTheGate()
 		r.drainAt(time.Now().UTC(), record.OutboxKindRoleMessage, record.OutboxKindNotice)
-		if got := r.roleTopicMessages()[told:]; len(got) != 2 || got[1] != heldMergerOpenedMessage {
+		wantOpened := heldMergerOpenedMessage + " Nothing your issue holds changed since version 2, which your phase took."
+		if got := r.roleTopicMessages()[told:]; len(got) != 2 || got[1] != wantOpened {
 			t.Fatalf("the live merger's role topic was sent %q by the two moves, want the closing message and then the opening message: %q",
-				got, heldMergerOpenedMessage)
+				got, wantOpened)
 		}
 		if starts := entryStartRows(t, r.pool, r.issue.Key); len(starts) != 0 {
 			t.Fatalf("the start rows after the two moves = %+v, want none: the live merger's delivery of each is the role message", starts)
@@ -148,6 +150,7 @@ func TestTheDesignGatesClosingEndsAMergersWaitWithALiveOrAReleasedPod(t *testing
 //     still queued: it carries a task and names no phase, so it is the close's one delivery, and
 //     the close writes no start of its own.
 func TestAMergersWaitsOwnTaskSentAfterTheGateClosedNamesTheClosedGate(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		released bool

@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -28,6 +29,7 @@ import (
 // leaves it outside any fact, so its row has no end until the next fact's reconciler writes one,
 // and no reader of the state may take that worker for waiting meanwhile.
 func TestTheStateRouteShowsEachWaitThatStandsAndNoOther(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	tested, building := cfg.Project+"-1", cfg.Project+"-2"
 	tester := previousClaim(t, cfg, tested, tested, claim.RoleTester, supervise.StateReady)
@@ -57,7 +59,7 @@ func TestTheStateRouteShowsEachWaitThatStandsAndNoOther(t *testing.T) {
 	}
 	standing := waitOf(tester, phase.Testing, tester.Session, "the review of the head")
 	stale := waitOf(implementer, phase.Implementing, "ses_before_the_relaunch", "CI on the rebased head")
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, wait := range []record.ClaimWait{standing, stale} {
 			if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: wait.Issue, Role: wait.Role, Claim: wait.Token, Entry: 1}); err != nil {
 				return err
@@ -73,10 +75,10 @@ func TestTheStateRouteShowsEachWaitThatStandsAndNoOther(t *testing.T) {
 
 	view := &source{
 		store: st, records: records, project: cfg.Project, projectToken: project, runtime: "tmux", admissionCap: cfg.AdmissionCap,
-		startedAt: time.Now(), deployment: func() capabilities.Deployment { return capabilities.Deployment{} },
+		startedAt: time.Now(), deployment: func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} },
 		reports: func() map[claim.Token]capabilities.Report { return nil },
 	}
-	handler := api.NewServer("127.0.0.1", 0, api.Options{State: view, StateTransactions: st}).Handler
+	handler := api.NewServer("127.0.0.1", 0, api.Options{State: view, StateTransactions: st.Pool()}).Handler
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/legion/v1/state", nil))
 	if recorder.Code != http.StatusOK {
@@ -103,7 +105,7 @@ func TestTheStateRouteShowsEachWaitThatStandsAndNoOther(t *testing.T) {
 	// Both rows still have no end, by claim token: the implementer's shows on no claim because it
 	// does not stand, not because its row ended.
 	var unended []string
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := records.StandingWaits(ctx, tx, project)
 		for _, row := range rows {
 			unended = append(unended, row.ID)

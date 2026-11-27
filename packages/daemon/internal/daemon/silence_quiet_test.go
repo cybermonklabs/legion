@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -92,7 +93,7 @@ func (q *quietSweep) stands(at phase.Phase) {
 	q.t.Helper()
 	issue := q.issue()
 	issue.Phase, issue.Status = at, workflow.PhaseStatus(at)
-	if err := pgx.BeginFunc(q.ctx, q.pool, func(tx pgx.Tx) error { return q.records.PutIssue(q.ctx, tx, issue) }); err != nil {
+	if err := store.Transact(q.ctx, q.pool, func(ctx context.Context, tx pgx.Tx) error { return q.records.PutIssue(ctx, tx, issue) }); err != nil {
 		q.t.Fatalf("move %s to %s: %v", podUpdateIssue, at, err)
 	}
 }
@@ -124,6 +125,7 @@ func aQuietMerger(t *testing.T, steps []record.DesignStep) *quietSweep {
 // gate opens, and the next sweep acts on the merger as on any open phase: its silence sends it the
 // phase's task again and tells its architect, and its standing report is told to its architect.
 func TestTheSilenceSweepHoldsOffAMergerTheDesignGateHoldsUntilTheGateOpens(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		background bool
@@ -187,6 +189,7 @@ func TestTheSilenceSweepHoldsOffAMergerTheDesignGateHoldsUntilTheGateOpens(t *te
 // boot mints the same silence, which no sweep of the hold spent, sends the merger its phase's task
 // again and tells its architect.
 func TestTheSilenceSweepLeavesAHeldMergerAloneAndSweepsItAfterABootThatEmptiesTheGatedSteps(t *testing.T) {
+	t.Parallel()
 	q := aQuietMerger(t, config.DesignGateRootIssues.Steps())
 	merger := claim.RoleMerger
 	q.goesQuiet(merger)
@@ -221,6 +224,7 @@ func TestTheSilenceSweepLeavesAHeldMergerAloneAndSweepsItAfterABootThatEmptiesTh
 // unapproved gated step has no row, and the sweep acts on the merger quiet past the bound as on
 // any open phase: it sends the merger its phase's task again and tells its architect.
 func TestTheSilenceSweepRepairsAMergerWhoseOnlyUnapprovedGatedStepHasNoRow(t *testing.T) {
+	t.Parallel()
 	q := aQuietMerger(t, []record.DesignStep{record.DesignStepSpec, record.DesignStepDecisions})
 	merger := claim.RoleMerger
 	q.goesQuiet(merger)
@@ -245,6 +249,7 @@ func TestTheSilenceSweepRepairsAMergerWhoseOnlyUnapprovedGatedStepHasNoRow(t *te
 // works. Once news reaches its session the wait ends, and the next sweep acts on the implementer
 // as before it declared.
 func TestTheSilenceSweepWritesNothingForAWorkerWhoseWaitStands(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		background bool
@@ -306,7 +311,7 @@ func (q *quietSweep) declaresWait(role claim.Role) record.ClaimWait {
 	wait := record.ClaimWait{ID: "wait-" + string(role), Project: podUpdateProject, Token: q.tokens[role], Issue: issue.Key,
 		Role: role, Generation: issue.Generation, Phase: issue.Phase, PhaseEntry: silenceEntry, TakenEntry: silenceEntry,
 		Session: q.claimOf(role).Session, WaitingOn: "the run on the branch's head", WakeAt: now.Add(24 * time.Hour), DeclaredAt: now}
-	if err := pgx.BeginFunc(q.ctx, q.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(q.ctx, q.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := q.records.DeclareWait(q.ctx, tx, wait)
 		return err
 	}); err != nil {

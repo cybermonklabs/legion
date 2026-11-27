@@ -186,7 +186,7 @@ func (r *waitDeliveryRig) restart() {
 // transition's start does (workflow's started).
 func (r *waitDeliveryRig) enter(entry int64, task string) {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: r.issue.Key, Role: r.role, Claim: r.token,
 			Entry: entry, EntryTask: task}); err != nil {
 			return err
@@ -323,7 +323,7 @@ func (r *waitDeliveryRig) standing() (record.ClaimWait, bool) {
 	r.t.Helper()
 	var wait record.ClaimWait
 	var stands bool
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		wait, stands, err = workflow.WaitStandsNow(r.ctx, tx, r.records, r.w.gatedSteps, r.token)
 		return err
@@ -440,6 +440,7 @@ func (r *waitDeliveryRig) admissionPasses() {
 // holds it as no new work. Each leaves the wait standing, no task was prompted after the
 // declaration, and the admission passes that follow write the waiting claim no new row.
 func TestAStartThatHandsAWaitingClaimNoNewWorkBringsItBackAndDeliversNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// quiet is how many start rows of the come-back carry a task the wait holds back.
@@ -465,11 +466,11 @@ func TestAStartThatHandsAWaitingClaimNoNewWorkBringsItBackAndDeliversNothing(t *
 		{name: "the resume of a cancelled idle release", quiet: 1, comeBack: func(r *waitDeliveryRig) {
 			r.handle(supervise.RequestSuspend{Claim: r.token, Reason: "the idle release stopped the role",
 				By: supervise.SuspendedByReleased})
-			resume, err := r.runner.releaseResume(r.issue.Key, r.issue.Tree)(claim.RoleTester, r.issue.Generation)
+			resume, err := r.runner.releaseResume(r.issue.Key, r.issue.Tree)(claim.RoleTester, r.issue.Generation, store.DroppedWake{})
 			if err != nil {
 				r.t.Fatalf("build the cancel's resume row: %v", err)
 			}
-			if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+			if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 				return r.records.Enqueue(r.ctx, tx, record.OutboxRow{Issue: r.issue.Key, Kind: record.OutboxKind(resume.Kind),
 					Payload: json.RawMessage(resume.Payload), NextAt: time.Now()})
 			}); err != nil {
@@ -502,7 +503,7 @@ func TestAStartThatHandsAWaitingClaimNoNewWorkBringsItBackAndDeliversNothing(t *
 			tc.comeBack(r)
 			catchUp := r.runStarts()
 			if len(catchUp) != 1 || !catchUp[0].request.ResumeTask || catchUp[0].request.Entry != 0 ||
-				catchUp[0].request.Task != workflow.ResumePhaseTask(r.issue) {
+				catchUp[0].request.Task != resumeTaskOf(t, r.pool, r.w.engine, r.issue.Key) {
 				t.Fatalf("the ready queued %+v, want the catch-up's one start: the phase's resume task at entry 0", catchUp)
 			}
 
@@ -548,11 +549,12 @@ func TestAStartThatHandsAWaitingClaimNoNewWorkBringsItBackAndDeliversNothing(t *
 // in the turn it starts the tester declares its wait. The repair's row, run after that turn,
 // delivers nothing, and the wait stands.
 func TestASilenceRepairWrittenBeforeTheWaitDeliversNothingOnceItStands(t *testing.T) {
+	t.Parallel()
 	r := newWaitDeliveryRig(t)
 	taken := r.working(1, "Test it.")
 	r.endTurn(taken.ID)
 	var last time.Time
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		claims, err := r.records.RoleClaims(r.ctx, tx, []claim.Token{r.token})
 		if err != nil {
 			return err
@@ -598,6 +600,7 @@ func TestASilenceRepairWrittenBeforeTheWaitDeliversNothingOnceItStands(t *testin
 // next sweep sends the held task, behind the sentence that its turn was interrupted: the event
 // that sends a held task once its wait has ended is the next send the claim makes.
 func TestAWaitHoldsTheTaskADeathInItsDeclaringTurnTookBack(t *testing.T) {
+	t.Parallel()
 	r := newWaitDeliveryRig(t)
 	taken := r.working(1, "Test it.")
 	wait := r.declare()
@@ -651,6 +654,7 @@ func TestAWaitHoldsTheTaskADeathInItsDeclaringTurnTookBack(t *testing.T) {
 // the wait stands, ended by nothing. News then reaches the session and its report ends the wait,
 // and the next sweep sends the record: the relaunch's sentence, under the record's own delivery.
 func TestAWaitHoldsTheRelaunchsRecordAndSendsItOnceTheWaitEnds(t *testing.T) {
+	t.Parallel()
 	r := newWaitDeliveryRig(t)
 	taken := r.working(1, "Test it.")
 	wait := r.declare()
@@ -720,6 +724,7 @@ func TestAWaitHoldsTheRelaunchsRecordAndSendsItOnceTheWaitEnds(t *testing.T) {
 //   - An operator's task, which reaches the machine through the operator's route with no outbox
 //     row, given to the waiting tester between turns.
 func TestNewWorkEndsTheWaitAtItsSendAndIsDelivered(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// declared brings the tester from its turn on entry 1's task, taken, to the send of the new

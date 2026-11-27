@@ -330,9 +330,10 @@ func wakeWords(stop WakeStop) (preamble, away, backstop string) {
 // of the start it dropped. A wake taken after the release recorded the role does not cancel the
 // release, but a cancel for another cause can still follow it, and then the pod never went away.
 //
-// Two wakes reach the role only through that task: a CI settlement, whose woken role is told no
-// message of its own (tellChecks), and the backstop. For those the answer depends on what stopped
-// the session the task was written for. A task that begins with WakeTask of the wake for a
+// Four wakes reach the role only through that task: a CI settlement, whose woken role is told no
+// message of its own (tellChecks), the backstop, a wait's time (pods.WakeWaitTime), and the
+// design gate's own move of a merger (pods.WakeDesignGate). For those the answer depends on what
+// stopped the session the task was written for. A task that begins with WakeTask of the wake for a
 // session an idle release stopped (StoppedByRelease) says that the pod was released, which the
 // cancel makes false. Its answer is WakeTask of the same wake for a release that did not finish
 // (stoppedByCancelledRelease), and then the rest of the task, so the review round's sentences the
@@ -340,14 +341,16 @@ func wakeWords(stop WakeStop) (preamble, away, backstop string) {
 // with WakeTask of the wake for a session a project's pause stopped (StoppedByPause) was taken
 // while the release stood (store.PodRecords.PauseOfWake). It says that the pod was kept. The
 // cancel kept the pod, so those words stay true, and the answer is that task as it is: the role
-// must still read the settlement or the backstop. A task that begins with neither is no task this
-// daemon wrote for that wake, and answers "".
+// must still read the settlement, the backstop, the wait's time or the gate's move. A task that
+// begins with neither is no task this daemon wrote for that wake, and answers "".
 //
 // Every other wake answers "": a message wake's message reaches the session anyway, so the
 // resume needs none of its text. The text of a message wake for a session a release stopped also
 // says that the message came "while your pod was gone", which the cancel makes false.
 func CancelledWakeTask(kind, detail, task string) string {
-	if kind != pods.WakeChecks && kind != pods.WakeBackstop {
+	switch kind {
+	case pods.WakeChecks, pods.WakeBackstop, pods.WakeWaitTime, pods.WakeDesignGate:
+	default:
 		return ""
 	}
 	if strings.HasPrefix(task, WakeTask(kind, detail, StoppedByPause)) {

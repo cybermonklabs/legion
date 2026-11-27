@@ -115,8 +115,8 @@ func (w *workflowRuntime) tickWakes(ctx context.Context) {
 // now. The row is the durable half and the fact the acting half: a backstop that came due while
 // the daemon was down is read by the first pass after it starts, and the row's conditional fire
 // (store.PodRecords.FirePodBackstop) is what makes two passes that read the same row wake its
-<<<<<<< 7fa22de66d
-// pod once.
+// pod once. The start row the fact's wake queues wakes its lane once the fact commits, through the
+// project's records (projectRecords.wakeOnCommit), so the pass wakes no lane of its own.
 //
 // A merger the design gate holds is not woken by its backstop while the gate is closed
 // (dispatch://INFRA-2040 R1, D13 of its plan): the backstop stays due, and the first pass that
@@ -130,10 +130,6 @@ func (w *workflowRuntime) tickWakes(ctx context.Context) {
 // per boot (heldBackstops), and `wake: a held merger's backstop is taken` at the pass that takes
 // a backstop it logged so. A read of the hold that fails fires nothing and is logged: every row is
 // still due at the next pass, which reads again.
-=======
-// pod once. The start row the fact's wake queues wakes its lane once the fact commits, through the
-// project's records (projectRecords.wakeOnCommit), so the pass wakes no lane of its own.
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 func (w *workflowRuntime) fireDueBackstops(ctx context.Context, now time.Time) {
 	due, err := w.idleStore.DuePodBackstops(ctx, w.projectID, now)
 	if err != nil {
@@ -159,8 +155,8 @@ func (w *workflowRuntime) fireDueBackstops(ctx context.Context, now time.Time) {
 		result, err := intake.ApplyFact(ctx, w.pool, "wake", id, fact, w.handlers...)
 		if err != nil {
 			w.log.Warn("wake: could not fire a released pod's backstop", "issue", backstop.Issue, "role", backstop.Role, "error", err)
+			continue
 		}
-<<<<<<< 7fa22de66d
 		if result.Unspent {
 			w.backstopWaits(backstop, record.DesignGate{})
 			continue
@@ -170,9 +166,6 @@ func (w *workflowRuntime) fireDueBackstops(ctx context.Context, now time.Time) {
 			w.log.Info("wake: a held merger's backstop is taken", "issue", backstop.Issue, "role", backstop.Role,
 				"backstop", backstop.ID)
 		}
-		w.wakeOutbox(backstop.Issue, record.OutboxKindSupervise)
-=======
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 	}
 }
 
@@ -193,7 +186,7 @@ func (w *workflowRuntime) heldMergerBackstops(ctx context.Context, due []store.P
 		return held, nil
 	}
 	var gates map[string]record.DesignGate
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		gates, err = w.engine.HeldMergers(ctx, tx, issues)
 		return err
@@ -673,19 +666,9 @@ func (r *outbox) logRefusedByOpenResume(issue string, role claim.Role, detail st
 // period — and neither does an issue whose phase no role works.
 //
 // It also cancels the backstops the release before this one armed: that pod is gone, and its
-<<<<<<< 7fa22de66d
 // backstop has nothing left to bring back. The cancel comes first whatever is armed after it, so
 // a claim that a start brought back since that release, still holding its backstop, holds none
-// once this release takes its pod again.
-//
-// A worker whose wait stands gets none (dispatch://INFRA-2040 R3): the wait's time wakes it
-// (workflow's waitDue), and a backstop would wake it before that for nothing it waits on. The
-// wait is read as every reader of a wait reads it (standingWait). A merger the closed design
-// gate holds gets its backstop as any released worker does (R1): no wait stands under the hold
-// (workflow.WaitStands), and the wake tick leaves that backstop due until it reads the gate open
-// (fireDueBackstops).
-=======
-// backstop has nothing left to bring back. A backstop of an issue that waits for its admission
+// once this release takes its pod again. A backstop of an issue that waits for its admission
 // slot is armed all the same and wakes no one when it fires (the workflow's podBackstopDue): the
 // issue can give its slot back after the release, so the fire is where that is read.
 //
@@ -695,7 +678,13 @@ func (r *outbox) logRefusedByOpenResume(issue string, role claim.Role, detail st
 // that is running by then, or on one whose open resume refuses a second wake. The release's mark
 // closed every resume left open before it (store.CloseOpenResumes), so an open resume here is
 // such a wake.
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+//
+// A worker whose wait stands gets none (dispatch://INFRA-2040 R3): the wait's time wakes it
+// (workflow's waitDue), and a backstop would wake it before that for nothing it waits on. The
+// wait is read as every reader of a wait reads it (standingWait). A merger the closed design
+// gate holds gets its backstop as any released worker does (R1): no wait stands under the hold
+// (workflow.WaitStands), and the wake tick leaves that backstop due until it reads the gate open
+// (fireDueBackstops).
 func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 	if err := r.trees.CancelPodBackstopsOf(ctx, r.project, issue.Key, ""); err != nil {
 		return err
@@ -715,7 +704,13 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 		if c.Role != role || c.ServingGeneration != issue.Generation {
 			continue
 		}
-<<<<<<< 7fa22de66d
+		if _, _, open, err := r.trees.OpenPodResume(ctx, r.project, issue.Key, role); err != nil || open {
+			if open {
+				r.log.Info("wake: the release of an issue's pod arms no backstop: a wake is already bringing its open phase's role back",
+					"issue", issue.Key, "role", role)
+			}
+			return err
+		}
 		wait, stands, err := r.standingWait(ctx, c.Token)
 		if err != nil {
 			return err
@@ -725,15 +720,6 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 				"issue", issue.Key, "role", role, "claim", c.Token, "wait", wait.ID, "wake_at", wait.WakeAt.UTC().Format(time.RFC3339))
 			return nil
 		}
-=======
-		if _, _, open, err := r.trees.OpenPodResume(ctx, r.project, issue.Key, role); err != nil || open {
-			if open {
-				r.log.Info("wake: the release of an issue's pod arms no backstop: a wake is already bringing its open phase's role back",
-					"issue", issue.Key, "role", role)
-			}
-			return err
-		}
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 		due := r.now().UTC().Add(r.backstop)
 		r.log.Info("wake: the release of an issue's pod arms its open phase's backstop",
 			"issue", issue.Key, "role", role, "due", due.Format(time.RFC3339))

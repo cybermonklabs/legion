@@ -196,6 +196,8 @@ func TestACancelledWakeTaskKeepsThePausesWordsOfASettlementOrABackstop(t *testin
 	for _, tc := range []struct{ kind, detail string }{
 		{kind: pods.WakeChecks, detail: "head1 failed build"},
 		{kind: pods.WakeBackstop, detail: "the backstop armed for LEGION-208's implementer came due"},
+		{kind: pods.WakeWaitTime, detail: "Your wait for the review ended at 2026-11-14T10:00:00Z."},
+		{kind: pods.WakeDesignGate, detail: gateMovedTask("LEGION-208")},
 	} {
 		for _, suffix := range []string{"", appended} {
 			paused := WakeTask(tc.kind, tc.detail, StoppedByPause) + suffix
@@ -238,7 +240,7 @@ func TestARetellRendersTheWakeAgainFromItsKindAndDetail(t *testing.T) {
 	t.Parallel()
 	const appended = " The review round's two sentences follow the wake's task."
 	const tricky = "legion-LEGION-208-implementer) while your pod was gone. (and more"
-	for _, kind := range []string{pods.WakeChecks, pods.WakeRoleMessage, pods.WakeAgentMessage, pods.WakeBackstop, pods.WakeDelivery} {
+	for _, kind := range []string{pods.WakeChecks, pods.WakeRoleMessage, pods.WakeAgentMessage, pods.WakeBackstop, pods.WakeWaitTime, pods.WakeDesignGate, pods.WakeDelivery} {
 		for _, tc := range []struct {
 			name     string
 			from, to WakeStop

@@ -276,7 +276,8 @@
       "LEGION-212",
       "LEGION-218",
       "LEGION-219",
-      "LEGION-220"
+      "LEGION-220",
+      "LEGION-221"
     ],
     "waiting": [
       "LEGION-212",
@@ -291,7 +292,8 @@
       "LEGION-215",
       "LEGION-216",
       "LEGION-218",
-      "LEGION-219"
+      "LEGION-219",
+      "LEGION-221"
     ],
     "blocked": [
       {
@@ -495,6 +497,21 @@
         "implementer": {
           "claim": {
             "state": "working"
+          }
+        }
+      }
+    },
+    "LEGION-221": {
+      "key": "LEGION-221",
+      "phase": "merging",
+      "tree": "LEGION-221",
+      "slot": {
+        "index": 6
+      },
+      "workers": {
+        "merger": {
+          "claim": {
+            "state": "suspended"
           }
         }
       }

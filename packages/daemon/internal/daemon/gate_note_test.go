@@ -8,6 +8,7 @@ package daemon
 // as its session receives it: the prompt the relaunched or live process was sent.
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -53,6 +55,7 @@ const (
 //     built at its send, gives the opening message, and the opening's start follows it with the
 //     opening message.
 func TestAHeldMergersFirstTaskGivesTheDesignGateAsItStandsAtItsSend(t *testing.T) {
+	t.Parallel()
 	const settled = heldMergerSettled
 	for _, tc := range []struct {
 		name string
@@ -179,6 +182,7 @@ func TestAHeldMergersFirstTaskGivesTheDesignGateAsItStandsAtItsSend(t *testing.T
 //     message and no task, which opens with the same note;
 //   - an operator delivers it a task through the operator's route.
 func TestEveryTaskAHeldMergersSessionReceivesNamesTheClosedGate(t *testing.T) {
+	t.Parallel()
 	t.Run("the held task sent again after a death during the hold", func(t *testing.T) {
 		r := newHeldMergerRig(t)
 		taken := r.working(1, heldMergerTask)
@@ -203,7 +207,7 @@ func TestEveryTaskAHeldMergersSessionReceivesNamesTheClosedGate(t *testing.T) {
 			ask   = "The daemon must replace the pod that runs this issue's roles. The reasons are: image a, now b."
 		)
 		r.handle(supervise.PodUpdateOpen{Claim: r.token, Round: round, Reasons: "image a, now b"})
-		if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+		if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 			return r.records.Enqueue(r.ctx, tx, mustOutboxRow(t, r.issue.Key,
 				record.UpdateAsk{Role: r.role, Round: round, Pod: "held-merger-pod", Text: ask}, time.Now()))
 		}); err != nil {

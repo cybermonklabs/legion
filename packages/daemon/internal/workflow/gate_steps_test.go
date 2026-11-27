@@ -1092,10 +1092,11 @@ func TestARegisteredVerificationDocumentHoldsTheTreeUntilItsOwnApproval(t *testi
 // A new version of a registered Verification document closes the standing gate under the workers
 // already running, as a new spec version does: the merger and the root architect are told it
 // closed, and the predicate the merger's start hold reads (standingGateOpen, which the outbox's
-// designGateClosed asks through classify.StandingGate) holds the merge until a person approves
-// that version. The approval opens the gate, and they are told that too: each took the version
-// before, so each is owed the new one's news, and the task that carries it leads with the opening,
-// its told row recording the opening as owed in place of the opened message (openingDelivery).
+// mergerHeld asks through HeldByDesignGate and classify.StandingGate) holds the merge until a
+// person approves that version. The approval opens the gate, and they are told that too: each took
+// the version before, so each is owed the new one's news, and the task that carries it leads with
+// the opening, its told row recording the opening as owed in place of the opened message
+// (openingDelivery).
 func TestANewVerificationVersionClosesTheGateAndHoldsTheMerger(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)

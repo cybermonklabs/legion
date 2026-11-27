@@ -125,6 +125,7 @@ func heldBackstopArmed(t *testing.T, r *waitDeliveryRig, closes bool) armedBacks
 // What the ticks leave is checked without stopping the case, so a backstop taken during the hold
 // also shows what it does to the CI wake after it.
 func TestAHeldMergersBackstopWaitsForTheGateAndACIWakeAfterItReachesTheMerger(t *testing.T) {
+	t.Parallel()
 	r := newHeldMergerRig(t)
 	backstop := heldBackstopArmed(t, r, true)
 	counted := r.countsBackstopFacts()
@@ -176,6 +177,7 @@ func TestAHeldMergersBackstopWaitsForTheGateAndACIWakeAfterItReachesTheMerger(t 
 // tick reads the hold itself and applies no fact. Once the gate stands open again, the first tick
 // takes the backstop, logs that it took it, and wakes the merger.
 func TestAHeldMergersBackstopThatRacesTheGatesClosingIsLeftUnfired(t *testing.T) {
+	t.Parallel()
 	r := newHeldMergerRig(t)
 	backstop := heldBackstopArmed(t, r, false)
 	approved := 1
@@ -235,6 +237,7 @@ func backstopEvent(r *waitDeliveryRig, backstop armedBackstop) string {
 // nothing, and the first tick fires the backstop; its start passes the fence and the relaunched
 // merger takes the backstop's task.
 func TestAHeldMergersBackstopIsTakenAtTheFirstTickAfterABootThatEmptiesTheGatedSteps(t *testing.T) {
+	t.Parallel()
 	r := newHeldMergerRig(t)
 	backstop := heldBackstopArmed(t, r, true)
 	if resumes := r.backstopsFired(backstop.dueAt); len(resumes) != 0 {
@@ -265,6 +268,7 @@ func TestAHeldMergersBackstopIsTakenAtTheFirstTickAfterABootThatEmptiesTheGatedS
 // open gate and queues its start, the gate then closes, and that start, which names no phase,
 // passes the fence and gives the relaunched merger the backstop's task.
 func TestABackstopWakeTakenBeforeTheGateClosedReachesTheHeldMerger(t *testing.T) {
+	t.Parallel()
 	r := newHeldMergerRig(t)
 	backstop := heldBackstopArmed(t, r, false)
 	if resumes := r.backstopsFired(backstop.dueAt); len(resumes) != 1 || resumes[0] != "merger:"+pods.WakeBackstop {

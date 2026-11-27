@@ -86,6 +86,7 @@ func wantGateMessage(t *testing.T, sent fake.Prompt, message, says, why string) 
 // nothing and to take a queued pull request back out of the merge queue. No start is written for
 // the live merger, and the delivery is logged as the role message.
 func TestALiveMergerIsSentTheClosingMessageThatHoldsTheMerge(t *testing.T) {
+	t.Parallel()
 	r := newHeldMergerRig(t)
 	r.mergerWorked()
 	sent := len(r.prompts())
@@ -148,7 +149,7 @@ func awayMergers() []awayMerger {
 		{name: "its relaunch is in flight with none: the resume of a cancelled idle release", away: func(r *waitDeliveryRig, at time.Time) {
 			r.markRelease()
 			r.drainAt(at, record.OutboxKindIssueBundle, record.OutboxKindSupervise)
-			if err := r.runner.cancelRelease(r.ctx, r.issue.Key, r.issue.Tree, workflow.IdleHoldBundleSave, "the case cancels the release"); err != nil {
+			if err := r.runner.cancelRelease(r.ctx, r.issue.Key, r.issue.Tree, workflow.IdleHoldWorkspaceUnread, "the case cancels the release"); err != nil {
 				r.t.Fatalf("cancel the release: %v", err)
 			}
 			r.drainAt(at.Add(time.Minute), record.OutboxKindIssueRelease, record.OutboxKindSupervise)
@@ -204,6 +205,7 @@ func (r *waitDeliveryRig) wantRelaunchWithNoTask(after string) {
 // start is written in the fact that tells the tree, and its task reaches the merger with no wake
 // report at all.
 func TestEachMergerAwayFromItsSessionGetsOneGateDeliveryAtTheCloseAndAtTheOpening(t *testing.T) {
+	t.Parallel()
 	for _, open := range []bool{false, true} {
 		move, message, note := "closed", heldMergerClosedNote, heldMergerClosedNote
 		if open {
@@ -297,6 +299,7 @@ func TestEachMergerAwayFromItsSessionGetsOneGateDeliveryAtTheCloseAndAtTheOpenin
 // sent the opening message, and once the turn of that task has ended and closed the resume, a
 // wake tick past the backstop's time wakes nothing and no second task follows.
 func TestAnApprovalOverABackstopDueDuringTheHoldGivesTheMergerOneTaskForTheOpening(t *testing.T) {
+	t.Parallel()
 	r := newHeldMergerRig(t)
 	backstop := heldBackstopArmed(t, r, true)
 	if resumes := r.backstopsFired(backstop.dueAt); len(resumes) != 0 {

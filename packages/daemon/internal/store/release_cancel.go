@@ -20,17 +20,21 @@ import (
 // cancel uses. The release's mark, its rows, its decline's record and its teardown's decisions are
 // in idle.go and issue_release.go.
 
-// DroppedWake is what a cancel deleted of one role's wake (dropWakesUnderRelease): Kind, Detail
-// and Task, the wake kind, the detail and the task of the start it deleted
-// (record.SuperviseRequest.WakeKind, WakeDetail and Task), each "" where the cancel found no start
-// of the wake. Kind is the kind that the start's task was rendered with (workflow.WakeTask), and
-// the builder needs that kind to render the task again. The role's newest resume can be the
+// DroppedWake is what a cancel deleted of one role's wake (dropWakesUnderRelease): Kind, Detail,
+// Task, WaitID and GateMessage, the wake kind, detail, task and the daemon's own task marks of
+// the start it deleted (record.SuperviseRequest's WakeKind, WakeDetail, Task, WaitID and
+// GateMessage), each zero where the cancel found no start of the wake. Kind is the kind that the
+// start's task was rendered with (workflow.WakeTask), and the builder needs that kind to render
+// the task again; WaitID and GateMessage travel on the resume's start when the builder keeps the
+// task of a wait's time or the design gate's own start. The role's newest resume can be the
 // resume of another wake of the role, of another kind. The zero DroppedWake is a role whose wake
 // the cancel did not drop. A start that an earlier daemon queued carries no detail, so its task
 // cannot be rendered again (retellStarts says why), and the cancel hands its builder the zero
 // DroppedWake for that role.
 type DroppedWake struct {
 	Kind, Detail, Task string
+	WaitID             string
+	GateMessage        bool
 }
 
 // ReleaseWokenRow builds the outbox row that brings one claim a cancelled release suspended back,
@@ -683,8 +687,10 @@ func dropWakesUnderRelease(ctx context.Context, tx pgx.Tx, project, issue string
 			delete from outbox where issue = $2 and id > $5 and `+wakeStartRow+`
 				and outbox.payload->>'role' in (select role from woken)
 			returning outbox.id, outbox.payload->>'role' as role, outbox.payload->>'wakeKind' as kind,
-				coalesce(outbox.payload->>'task', '') as task, outbox.payload->>'wakeDetail' as detail)
-		select w.role, coalesce(s.kind, ''), coalesce(s.id, 0), coalesce(s.task, ''), s.detail from woken w left join started s on s.role = w.role
+				coalesce(outbox.payload->>'task', '') as task, outbox.payload->>'wakeDetail' as detail,
+				coalesce(outbox.payload->>'waitId', '') as wait_id, coalesce(outbox.payload->>'gateMessage', '') = 'true' as gate_message)
+		select w.role, coalesce(s.kind, ''), coalesce(s.id, 0), coalesce(s.task, ''), s.detail,
+			coalesce(s.wait_id, ''), coalesce(s.gate_message, false) from woken w left join started s on s.role = w.role
 		order by w.id desc, s.id desc`,
 		project, issue, wake, roles, last)
 	if err != nil {
@@ -697,7 +703,7 @@ func dropWakesUnderRelease(ctx context.Context, tx pgx.Tx, project, issue string
 		var start int64
 		var detail *string
 		var got DroppedWake
-		if err := rows.Scan(&role, &got.Kind, &start, &got.Task, &detail); err != nil {
+		if err := rows.Scan(&role, &got.Kind, &start, &got.Task, &detail, &got.WaitID, &got.GateMessage); err != nil {
 			return nil, fmt.Errorf("delete the wakes taken while the release of %s stood: %w", issue, err)
 		}
 		if _, seen := dropped[claim.Role(role)]; seen {

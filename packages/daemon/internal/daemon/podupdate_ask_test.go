@@ -23,15 +23,11 @@ const (
 	askedText  = "The daemon must replace the pod that runs this issue's roles. The reasons are: image a, now b."
 )
 
-<<<<<<< 7fa22de66d
 // askedOpenedAt is when the round was opened on every claim askRunner puts in a round, to the
 // nanosecond as the daemon that opened it holds it (supervise.Claim.UpdateOpenedAt).
 var askedOpenedAt = time.Date(2026, 11, 14, 22, 50, 13, 123456789, time.UTC)
 
-// The four lines the executor writes, one for each way a row ends without an error. The first
-=======
 // The five lines the executor writes, one for each way a row ends without an error. The first
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 // is the line the production check reads (requirement R8).
 const (
 	askPublishedLine = "outbox update ask published to the role topic"
@@ -132,6 +128,7 @@ var mintedPublishKey = regexp.MustCompile(`^publish\.[0-9a-f]{32}$`)
 // restarted between two rows publishes the later one under it too. Once an attempt reaches the
 // role, the claim is marked asked and a later row of the round publishes nothing.
 func TestPodUpdateAskOfOneRoundOpeningPublishesEveryRetryUnderOneKey(t *testing.T) {
+	t.Parallel()
 	publisher := &outboxPublisher{err: fmt.Errorf("publish to the implementer's topic: %w", notify.ErrNoHolder)}
 	runner, _ := askRunner(t, publisher, map[claim.Role]string{claim.RoleImplementer: askedRound})
 	if err := runner.execute(context.Background(), askRow(t, 78, claim.RoleImplementer)); err != nil {

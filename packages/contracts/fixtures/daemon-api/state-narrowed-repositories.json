@@ -17,7 +17,8 @@
       "LEGION-212",
       "LEGION-218",
       "LEGION-219",
-      "LEGION-220"
+      "LEGION-220",
+      "LEGION-221"
     ],
     "waiting": [
       "LEGION-212",
@@ -32,7 +33,8 @@
       "LEGION-215",
       "LEGION-216",
       "LEGION-218",
-      "LEGION-219"
+      "LEGION-219",
+      "LEGION-221"
     ],
     "blocked": [
       {
@@ -942,6 +944,49 @@
           "drawnAt": "2126-09-21T18:42:11Z"
         }
       ]
+    },
+    "LEGION-221": {
+      "key": "LEGION-221",
+      "generation": 1,
+      "phase": "merging",
+      "status": "retro",
+      "tree": "LEGION-221",
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "workers": {
+        "merger": {
+          "claim": {
+            "session": "ses_merger_221",
+            "state": "suspended",
+            "pluginContract": 0,
+            "updateState": "none"
+          },
+          "pass": 0,
+          "rounds": 0
+        }
+      },
+      "designGate": {
+        "artifactId": "7b4e9c12-3d58-4a61-b7f0-2c9e5d8a1f46",
+        "currentVersion": 3,
+        "approvedVersion": 2
+      },
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "artifactId": "7b4e9c12-3d58-4a61-b7f0-2c9e5d8a1f46",
+          "currentVersion": 3,
+          "approvedVersion": 2,
+          "status": "waiting"
+        }
+      ],
+      "slot": {
+        "index": 6,
+        "admittedAt": "2126-09-21T11:20:00Z"
+      },
+      "phaseEntry": 1,
+      "givenEntry": 1,
+      "treeMovedAt": "2126-09-22T09:01:00Z",
+      "quietHours": 0.2833333333333333
     }
   },
   "pendingStatusWrites": [],

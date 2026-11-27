@@ -103,6 +103,9 @@ func populatedPodLocator(token claim.Token, issue string, generation uint64) *ru
 //   - LEGION-218 and LEGION-219, reviewing roots whose rounds wait on GitHub's merge state: the
 //     first for GitHub's first answer, its architect suspended by the operator; the second held
 //     `behind` its base and told of it, its architect retired by the close of the run before.
+//   - LEGION-221, a root in merging whose spec took a new version after the merger took the one a
+//     person approved, so its closed design gate holds the merger (workflow.HeldByDesignGate),
+//     whose idle pod the daemon released during the hold.
 func populatedRecord(s *seeding) {
 	issue := func(key, tree string, ph phase.Phase, status, repo string, generation uint64, seq int64) record.Issue {
 		branch := "main"
@@ -200,6 +203,10 @@ func populatedRecord(s *seeding) {
 	childAtWork := issue("LEGION-220", "LEGION-208", phase.Implementing, "in_progress", "acme/widgets", 1, 15)
 	childAtWork.Parent = new("LEGION-208")
 
+	// LEGION-221: a root in merging whose spec Dispatch moved to version 3 after a person approved
+	// version 2, which closed its design gate over the merger (workflow's putGateTold).
+	heldMerging := issue("LEGION-221", "LEGION-221", phase.Merging, "retro", "acme/widgets", 1, 16)
+
 	s.putRecorded(
 		recorded{merged, mirror("LEGION-207", "done", 3, ""), at(22, 8, 40, 12)},
 		recorded{root, mirror("LEGION-208", "in_progress", 4, ""), at(22, 8, 58, 14)},
@@ -213,6 +220,7 @@ func populatedRecord(s *seeding) {
 		recorded{waiting, mirror("LEGION-218", "needs_review", 10, ""), at(22, 9, 7, 21)},
 		recorded{stuck, mirror("LEGION-219", "needs_review", 11, ""), at(20, 16, 42, 58)},
 		recorded{childAtWork, mirror("LEGION-220", "in_progress", 15, "LEGION-208"), at(22, 9, 4, 40)},
+		recorded{heldMerging, mirror("LEGION-221", "retro", 16, ""), at(22, 9, 1, 0)},
 	)
 	// LEGION-217: what Dispatch says of a child of LEGION-208 its architect has not released, which
 	// the daemon keeps no record of (blockers.Mirror writes every issue fact it applies).
@@ -252,13 +260,14 @@ func populatedRecord(s *seeding) {
 		{Issue: "LEGION-218", Index: 3, AdmittedAt: at(22, 8, 14, 52)},
 		{Issue: "LEGION-219", Index: 4, AdmittedAt: at(19, 10, 27, 44)},
 		{Issue: "LEGION-220", Index: 5, AdmittedAt: at(22, 7, 52, 18)},
+		{Issue: "LEGION-221", Index: 6, AdmittedAt: at(21, 11, 20, 0)},
 	} {
 		s.in("the slot of "+slot.Issue, func(ctx context.Context, tx pgx.Tx) error { return s.records.PutSlot(ctx, tx, slot) })
 	}
 	// The promotion of each root it started opened that root's tree (record.Store.OpenTreeLifecycle).
 	// LEGION-207's stays open while its tree lingers: the outbox reserves its cleanup when the linger
 	// ends (outbox's reservedTreeClose).
-	s.openTrees("LEGION", "LEGION-207", "LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219")
+	s.openTrees("LEGION", "LEGION-207", "LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219", "LEGION-221")
 	// LEGION-200's tree, which an operator opened for a root the daemon keeps no record of
 	// (store.Store.OpenOperatorTreeLifecycle, the operator's spawn), handed LEGION-210 and LEGION-211
 	// over; its lifecycle stands open while a claim of it does.
@@ -307,8 +316,9 @@ func populatedRecord(s *seeding) {
 	// LEGION-207's architect registered its spec on a person's approval of version 5 of LEGION-200's,
 	// so the step stands open on that basis at the version it registered, which no person approved.
 	// LEGION-214's architect registered its spec on version 6 while a person's approval of that
-	// version was still asked for, so its step waits, closed, on that open request. LEGION-215 and
-	// LEGION-216 never ran, so no architect registered theirs.
+	// version was still asked for, so its step waits, closed, on that open request. LEGION-221's
+	// spec took version 3 after a person approved version 2, so its gate is closed over its merger.
+	// LEGION-215 and LEGION-216 never ran, so no architect registered theirs.
 	const ancestor, ancestorSpec = "LEGION-200", "f3b8d1a6-5c27-4e90-8a14-6e9c2d7b0f58"
 	openOnBasis := record.GateBasis{Issue: ancestor, ArtifactID: ancestorSpec, Version: 5,
 		Approval: record.EventMark{At: at(20, 15, 2, 41)}, Approver: "user:alice",
@@ -326,6 +336,7 @@ func populatedRecord(s *seeding) {
 			pendingOnBasis, "c81e5d3a-7f42-4b96-a0d8-3e6f9b1c2a75"),
 		{Issue: "LEGION-218", ArtifactID: "f3b8d205-7c41-4e69-9a02-5d7e1c6b4f38", LatestVersion: 5, ApprovedVersion: new(5), EverOpened: true},
 		{Issue: "LEGION-219", ArtifactID: "a9142c7e-0b63-4d85-8f17-3e6a0d9b2c54", LatestVersion: 2, ApprovedVersion: new(2), EverOpened: true},
+		{Issue: "LEGION-221", ArtifactID: "7b4e9c12-3d58-4a61-b7f0-2c9e5d8a1f46", LatestVersion: 3, ApprovedVersion: new(2), EverOpened: true},
 	} {
 		gate.Step = record.DesignStepSpec
 		s.in("the gate of "+gate.Issue, func(ctx context.Context, tx pgx.Tx) error { return s.records.PutGate(ctx, tx, gate) })
@@ -387,8 +398,8 @@ func populatedRecord(s *seeding) {
 	})
 }
 
-// populatedClaims writes the populated record's phases rows and claims, and the capability report
-// of the one live session that has reported.
+// populatedClaims writes the populated record's phases rows and claims, the wait LEGION-208's
+// implementer declared, and the capability report of the one live session that has reported.
 func populatedClaims(s *seeding, rows populatedRows) {
 	token := func(issue string, role claim.Role) claim.Token { return s.token("LEGION", issue, role) }
 	architect208 := token("LEGION-208", claim.RoleArchitect)
@@ -436,6 +447,8 @@ func populatedClaims(s *seeding, rows populatedRows) {
 		{Issue: "LEGION-219", Role: claim.RoleReviewer, Claim: token("LEGION-219", claim.RoleReviewer), Pass: 2, Rounds: 1, Entry: 2,
 			Decision: &record.ReviewDecision{State: "approved", Head: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
 				ToldStuckHead: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284", ToldStuckState: record.MergeStateBehind}},
+		// LEGION-221's merger holds the work of merging's entry, which the gate's close holds.
+		{Issue: "LEGION-221", Role: claim.RoleMerger, Claim: token("LEGION-221", claim.RoleMerger), Entry: 1, EntryRaisedAt: at(22, 8, 21, 7)},
 	} {
 		s.in("the phases row of "+row.Issue+" "+string(row.Role), func(ctx context.Context, tx pgx.Tx) error { return s.records.PutPhase(ctx, tx, row) })
 	}
@@ -536,15 +549,45 @@ func populatedClaims(s *seeding, rows populatedRows) {
 		{Token: token("LEGION-219", claim.RoleReviewer), Project: "legion", Tree: "LEGION-219", Issue: "LEGION-219", Role: claim.RoleReviewer,
 			Generation: 3, State: supervise.StateIdle, Session: "ses_reviewer_219", GivenEntry: 2,
 			Locator: populatedPodLocator(token("LEGION-219", claim.RoleReviewer), "LEGION-219", 3), PluginContract: api.ServingFloor},
+		// The daemon released the held merger's idle pod (store.Store.RecordPodRelease below); the
+		// claim keeps the session it ran, and the design gate holds its phase work until a person
+		// approves the spec's version 3 (workflow.HeldByDesignGate).
+		{Token: token("LEGION-221", claim.RoleMerger), Project: "legion", Tree: "LEGION-221", Issue: "LEGION-221", Role: claim.RoleMerger,
+			Generation: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased, Session: "ses_merger_221", GivenEntry: 1},
 	} {
 		s.claimAs(c)
 	}
-	// The release of LEGION-211's pod in LEGION-200's tree (store.Store.RecordPodRelease), which
-	// suspended its implementer as `released`. A release takes only a pod whose workspace held
-	// nothing unpushed and saves no bundle, so it records no bundle bytes (store.PodRelease).
-	_, _, err := s.st.RecordPodRelease(s.ctx, store.PodRelease{Project: "legion", Issue: "LEGION-211", Generation: 2,
-		Roles: []string{string(claim.RoleImplementer)}, At: at(22, 8, 55, 0)})
-	s.must("the release of LEGION-211's pod", err)
+	// The release of LEGION-211's pod in LEGION-200's tree and of LEGION-221's
+	// (store.Store.RecordPodRelease), which suspended each one's role as `released`. A release
+	// takes only a pod whose workspace held nothing unpushed and saves no bundle, so it records no
+	// bundle bytes (store.PodRelease).
+	for _, release := range []store.PodRelease{
+		{Project: "legion", Issue: "LEGION-211", Generation: 2, Roles: []string{string(claim.RoleImplementer)}, At: at(22, 8, 55, 0)},
+		{Project: "legion", Issue: "LEGION-221", Generation: 1, Roles: []string{string(claim.RoleMerger)}, At: at(22, 9, 6, 40)},
+	} {
+		_, _, err := s.st.RecordPodRelease(s.ctx, release)
+		s.must("the release of "+release.Issue+"'s pod", err)
+	}
+
+	// LEGION-208's implementer declared a wait in the turn it is in (api's declare_wait route, whose
+	// fact the workflow applies, workflow's waitDeclared): the wait on the entry it had taken, and
+	// its time queued in the same transaction, a wait_due row due at the wait's time
+	// (record.Store.DeclareWait, record.WaitDue). The wait stands (workflow.WaitStands): the issue,
+	// its generation, the phase's entry and the claim's session are those it was declared in.
+	waited := record.ClaimWait{ID: "5e2b7c41-9d36-4a8f-b0c2-7e14d9a3f685", Project: "legion", Token: implementer208,
+		Issue: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Phase: phase.Implementing, PhaseEntry: 4, TakenEntry: 4,
+		Session: "ses_implementer_208", WaitingOn: "the review the repository requires on pull request #1247",
+		WakeAt: at(22, 11, 0, 0), DeclaredAt: at(22, 9, 17, 5).Add(123456 * time.Microsecond)}
+	s.in("the wait of LEGION-208's implementer", func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := s.records.DeclareWait(ctx, tx, waited); err != nil {
+			return err
+		}
+		due, err := record.NewOutboxRow("LEGION-208", record.WaitDue{Token: implementer208, WaitID: waited.ID}, waited.WakeAt)
+		if err != nil {
+			return err
+		}
+		return s.records.Enqueue(ctx, tx, due)
+	})
 
 	// The session's capability report, from the process the locator names: two rows it proved and
 	// one it did not, with the fact its check found. The store keeps it (PutCapabilityReport), and

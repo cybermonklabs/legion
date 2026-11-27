@@ -88,6 +88,7 @@ func (r *waitDeliveryRig) backstopsFired(at time.Time) []string {
 // none wakes it at any time during the wait. The wait's time wakes it instead, which ends the wait;
 // and the next release, the wait over, arms its backstop as before.
 func TestAReleaseArmsNoBackstopForAWaitingWorkerAndLeavesNoneItHeld(t *testing.T) {
+	t.Parallel()
 	r := newWaitDeliveryRig(t)
 	r.idleRelease()
 	r.runner.backstop = testReleaseBackstop
@@ -152,6 +153,7 @@ func TestAReleaseArmsNoBackstopForAWaitingWorkerAndLeavesNoneItHeld(t *testing.T
 // (wait_due) is no delivery that holds it. The release takes the pod down, leaves the wait
 // standing and arms no backstop for the tester.
 func TestAPodWhoseOnlyPhaseWorkerWaitsIsReleasedAfterTheIdlePeriod(t *testing.T) {
+	t.Parallel()
 	r := newWaitDeliveryRig(t)
 	rt := r.idleRelease()
 	r.runner.backstop = testReleaseBackstop
@@ -160,7 +162,7 @@ func TestAPodWhoseOnlyPhaseWorkerWaitsIsReleasedAfterTheIdlePeriod(t *testing.T)
 	r.endTurn(taken.ID)
 	if _, err := r.pool.Exec(r.ctx, `update claims set plugin_contract = $2, activity_at = now(),
 		activity_background = false, activity_kinds = '', activity_next_reminder_at = null,
-		updated_at = now() - interval '30 minutes' where issue = $1`, r.issue.Key, api.DaemonAPIVersion); err != nil {
+		updated_at = now() - interval '30 minutes' where issue = $1`, r.issue.Key, api.DaemonAPIVersion()); err != nil {
 		t.Fatalf("report what the tester's session is doing: %v", err)
 	}
 
@@ -211,7 +213,7 @@ func (r *idleRig) waitsUnended(t *testing.T) record.ClaimWait {
 	wait := record.ClaimWait{ID: "wait-merger", Project: "legion", Token: r.token, Issue: r.issue.Key, Role: claim.RoleMerger,
 		Generation: 1, Phase: phase.Merging, Session: "ses-merger", WaitingOn: "the merge queue",
 		WakeAt: time.Now().Add(2 * time.Hour), DeclaredAt: time.Now()}
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := r.issues.DeclareWait(context.Background(), tx, wait)
 		return err
 	}); err != nil {
@@ -228,6 +230,7 @@ func (r *idleRig) waitsUnended(t *testing.T) record.ClaimWait {
 // armed its backstop too. The control is the same merger under an open gate, whose wait stands:
 // its release arms none.
 func TestAReleaseOfAHeldMergersPodArmsItsBackstop(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		open      bool

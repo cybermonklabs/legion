@@ -2191,6 +2191,7 @@ func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 // says so. The body the daemon's own golden test writes carries one, on LEGION-208's
 // implementer, and the line names it from that body too.
 func TestPlainStateNamesEachStandingWait(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (plainStateOf); it changes the whole process's working directory (plainStateOf).
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
 	implementerWait := `"wait":{"id":"wait-208","waitingOn":"the review of LEGION-207's pull request",` +
@@ -2226,8 +2227,8 @@ func TestPlainStateNamesEachStandingWait(t *testing.T) {
 		{
 			name:   "the body the daemon's golden test writes",
 			served: string(golden),
-			want: "waits: 1 — LEGION-208 implementer wait 5e2b7c41-9d36-4a8f-b0c2-7e14d9a3f685 until 2026-09-22T11:00:00Z, " +
-				"declared 2026-09-22T09:17:05Z: \"the review of LEGION-207's pull request\"\n",
+			want: "waits: 1 — LEGION-208 implementer wait 5e2b7c41-9d36-4a8f-b0c2-7e14d9a3f685 until 2126-09-22T11:00:00Z, " +
+				"declared 2126-09-22T09:17:05Z: \"the review the repository requires on pull request #1247\"\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2243,8 +2244,9 @@ func TestPlainStateNamesEachStandingWait(t *testing.T) {
 // that is with its reviewer, and the document's id, read from each claim view's `hold`, which the
 // daemon serves only while the hold stands. A claim with no hold is in none, and with no hold
 // standing the line says so. The body the daemon's own golden test writes carries one, on
-// LEGION-215's merger, and the line names it from that body too.
+// LEGION-221's merger, and the line names it from that body too.
 func TestPlainStateNamesEachHeldMerger(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (plainStateOf); it changes the whole process's working directory (plainStateOf).
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
 	specHold := `"hold":{"step":"spec","artifactId":"artifact-208","version":3}`
@@ -2275,7 +2277,7 @@ func TestPlainStateNamesEachHeldMerger(t *testing.T) {
 		{
 			name:   "the body the daemon's golden test writes",
 			served: string(golden),
-			want:   "holds: 1 — LEGION-215 merger held by spec v7 (d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093)\n",
+			want:   "holds: 1 — LEGION-221 merger held by spec v3 (7b4e9c12-3d58-4a61-b7f0-2c9e5d8a1f46)\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

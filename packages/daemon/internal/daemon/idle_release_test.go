@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -204,18 +206,7 @@ type idleRig struct {
 
 func newIdleRig(t *testing.T) *idleRig {
 	t.Helper()
-<<<<<<< 7fa22de66d
 	return newIdleRigOf(t, phase.Implementing, claim.RoleImplementer, "implement it", nil)
-}
-
-// newIdleRigOf is the idle rig (idleRig) with its issue in at and its one live claim role's, in
-// session ses-<role>, idle with task pending in at. seed, when set, writes more of the issue's
-// record in a transaction of its own before the claim is seeded.
-func newIdleRigOf(t *testing.T, at phase.Phase, role claim.Role, task string,
-	seed func(ctx context.Context, tx pgx.Tx, records record.Store, issue record.Issue) error,
-) *idleRig {
-=======
-	return newIdleRigIn(t, phase.Implementing)
 }
 
 // newIdleRigIn is newIdleRig with the issue standing in at: implementing, as every other test of
@@ -225,27 +216,33 @@ func newIdleRigOf(t *testing.T, at phase.Phase, role claim.Role, task string,
 // and the rest of the pod is the same pod: one live implementer in its own session, idle, on the
 // daemon's plugin contract and the configured image.
 func newIdleRigIn(t *testing.T, at phase.Phase) *idleRig {
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+	t.Helper()
+	return newIdleRigOf(t, at, claim.RoleImplementer, "implement it", nil)
+}
+
+// newIdleRigOf is the idle rig (idleRig) with its issue in at and its one live claim role's, in
+// session ses-<role>, idle with task pending in at, or holding no task in awaiting_children
+// (newIdleRigIn). seed, when set, writes more of the issue's record in a transaction of its own
+// before the claim is seeded.
+func newIdleRigOf(t *testing.T, at phase.Phase, role claim.Role, task string,
+	seed func(ctx context.Context, tx pgx.Tx, records record.Store, issue record.Issue) error,
+) *idleRig {
 	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: at, Generation: 1,
-<<<<<<< 7fa22de66d
 		Status: workflow.PhaseStatus(at), Rank: "U", LastDispatchSeq: 1}
-=======
-		Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
 	if at == phase.AwaitingChildren {
 		waited := time.Now().UTC().Add(-time.Hour)
-		issue.ChildrenWait = &record.ChildrenWait{Start: phase.Implementing, Task: "implement it",
+		issue.ChildrenWait = &record.ChildrenWait{Start: phase.Implementing, Task: task,
 			Reason: endedTheImplementersPhase.Reason, Since: waited}
 		issue.ChildrenWaitedAt = &waited
 	}
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 	putOutboxIssue(t, pool, records, issue)
 	if seed != nil {
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return seed(ctx, tx, records, issue) }); err != nil {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error { return seed(ctx, tx, records, issue) }); err != nil {
 			t.Fatalf("seed the record of %s: %v", issue.Key, err)
 		}
 	}
@@ -276,24 +273,16 @@ func newIdleRigIn(t *testing.T, at phase.Phase) *idleRig {
 	pending := supervise.Delivery{ID: "outbox:7", Task: task, Phase: at,
 		Generation: 1, QueuedAt: time.Now().UTC().Add(-time.Hour)}
 	stored := supervise.Claim{Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
-<<<<<<< 7fa22de66d
 		Role: role, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 		State: supervise.StateIdle, Locator: &locator, Session: "ses-" + string(role),
-		SessionFile: "/tmp/" + string(role) + ".jsonl", PluginContract: api.DaemonAPIVersion, Pending: &pending}
-	if err := st.PutClaimAndDelivery(ctx, stored, pending); err != nil {
-		t.Fatalf("seed the idle %s: %v", role, err)
-=======
-		Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
-		State: supervise.StateIdle, Locator: &locator, Session: "ses-implementer",
-		SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion(), Pending: &pending}
+		SessionFile: "/tmp/" + string(role) + ".jsonl", PluginContract: api.DaemonAPIVersion(), Pending: &pending}
 	if at == phase.AwaitingChildren {
 		stored.Pending = nil
 		if err := st.PutClaim(ctx, stored); err != nil {
-			t.Fatalf("seed the idle implementer: %v", err)
+			t.Fatalf("seed the idle %s: %v", role, err)
 		}
 	} else if err := st.PutClaimAndDelivery(ctx, stored, pending); err != nil {
-		t.Fatalf("seed the idle implementer: %v", err)
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+		t.Fatalf("seed the idle %s: %v", role, err)
 	}
 	if _, err := sup.restore(ctx, []supervise.Claim{stored}); err != nil {
 		t.Fatalf("restore the idle %s: %v", role, err)

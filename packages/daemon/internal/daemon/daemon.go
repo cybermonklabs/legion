@@ -577,11 +577,8 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// holds, no wait holds one back, no task carries a design gate's note, and every tree
 		// closes.
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
-<<<<<<< 7fa22de66d
 		plan.waitHolds, plan.endWait, plan.gateNote = workflow.waitHolds, workflow.endWait, workflow.gateNote
-=======
 		plan.phaseRole = workflow.phaseRole
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 		plan.cacheRepositories = workflow.cacheRepositories
 		plan.rootTask, plan.designNews, plan.workingCopy = workflow.rootTask, workflow.designNews, workflow.workingCopy
 		plan.taskConfirmed = workflow.taskConfirmed
@@ -1290,16 +1287,10 @@ type plan struct {
 	// repository state's own (repositories.renames, which is cfg.RepositoryRenames). Never nil,
 	// as installed is not.
 	left *appauth.LeftOut
-<<<<<<< 7fa22de66d
-	// phaseHolds, waitHolds, endWait, gateNote, rootHears, rootTask and treeClosable are the
-	// workflow's answers to the supervisor's predicates; nil without a workflow, where every
-	// delivery is sent as it was queued, no wait holds one back or is ended at a send, no task
-	// carries a design gate's note, and every tree closes.
-=======
-	// phaseHolds, rootHears, rootTask, designNews, workingCopy and treeClosable are the workflow's
-	// answers to the supervisor's predicates; nil without a workflow, where every delivery is sent
-	// as it was queued and every tree closes.
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+	// phaseHolds, waitHolds, endWait, gateNote, rootHears, rootTask, designNews, workingCopy and
+	// treeClosable are the workflow's answers to the supervisor's predicates; nil without a
+	// workflow, where every delivery is sent as it was queued, no wait holds one back or is ended
+	// at a send, no task carries a design gate's note, and every tree closes.
 	phaseHolds   func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
 	waitHolds    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, bool, error)
 	endWait      func(ctx context.Context, c supervise.Claim, d supervise.Delivery, wait string) error
@@ -2284,13 +2275,10 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Secrets:                 p.secretsEnroller,
 		Registrar:               p.secretsRegistrar,
 		PhaseHolds:              p.phaseHolds,
-<<<<<<< 7fa22de66d
 		WaitHolds:               p.waitHolds,
 		EndWait:                 p.endWait,
 		GateNote:                p.gateNote,
-=======
 		PhaseRole:               p.phaseRole,
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
 		DesignNews:              p.designNews,
@@ -3258,8 +3246,12 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// daemon without one leaves pauses the nil interface, which the API reads as no pause service
 	// and answers every pause and resume PAUSE_UNAVAILABLE.
 	var pauses api.PauseService
-<<<<<<< 7fa22de66d
+	// The replay and the discard of the intake's give-ups, which a daemon with no workflow runs
+	// no intake for: the API answers their routes 503 then. It is left a nil interface rather than
+	// a nil *intake.GiveUps, which the API would read as an intake.
+	var giveUps api.GiveUps
 	if w != nil {
+		catchUps = w.catchUps
 		records, handlers, client, tokens, grants = w.records, w.handlers, w.dispatch, w.apps, w.grants
 		claimReady, prepare, unread, await = w.claimReady, w.prepareObserved, w.repositoryUnread, w.awaitRecovery
 		handoffCompleted = w.handoffCompleted
@@ -3268,30 +3260,14 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		consumerLag = w.consumers.Lag
 		pauses = w.pauses.service
 		architectStalls = w.admission.ArchitectStallArms
-=======
-	// The replay and the discard of the intake's give-ups, which a daemon with no workflow runs
-	// no intake for: the API answers their routes 503 then. It is left a nil interface rather than
-	// a nil *intake.GiveUps, which the API would read as an intake.
-	var giveUps api.GiveUps
-	if workflow != nil {
-		catchUps = workflow.catchUps
-		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.apps, workflow.grants
-		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
-		handoffCompleted = workflow.handoffCompleted
-		roleHoldersChanged = workflow.roleHoldersChanged
-		githubAPI = workflow.githubAPI
-		consumerLag = workflow.consumers.Lag
-		pauses = workflow.pauses.service
-		architectStalls = workflow.admission.ArchitectStallArms
 		// A replay applies a stored message through the handlers a live delivery runs, on the
 		// consumers' pool and spec, so it is judged as the same message delivered now would be.
-		replays, err := intake.NewGiveUps(workflow.consumers.Records(), workflow.handlers...)
+		replays, err := intake.NewGiveUps(w.consumers.Records(), w.handlers...)
 		if err != nil {
 			return fmt.Errorf("build the replay of the intake's give-ups: %w", err)
 		}
 		giveUps = replays
-		stateRun = workflow.stateRun
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+		stateRun = w.stateRun
 	}
 	// Under `controller: daemon` the keeper launches and keeps the project's controller, and takes
 	// its ready. The liveness sweep runs beside it under either mode, never behind it.
@@ -4070,13 +4046,8 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		held = s.wakes()
 	}
 	state, err := projection.Project(ctx, projection.Inputs{
-<<<<<<< 7fa22de66d
-		Tx: tx, Store: records, Project: s.project, Steps: s.gatedSteps, Experiments: s.experiments,
-		Claims: claims, Stranded: stranded, Waits: waits, Holds: holds, Reports: s.reports(),
-=======
 		Tx: tx, Store: records, Project: s.project, Cap: s.admissionCap, Steps: s.gatedSteps,
-		Experiments: s.experiments, Claims: claims, Stranded: stranded, Reports: s.reports(),
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+		Experiments: s.experiments, Claims: claims, Stranded: stranded, Waits: waits, Holds: holds, Reports: s.reports(),
 		Wakes: api.WakesWaitingOf(held, paced), Now: now,
 	})
 	if err != nil {
@@ -4105,11 +4076,11 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	// one surface that says why a quiet pod still runs. pod_holds is
 	// keyed on the claim token's spelling of the project, as the idle pass writes it
 	// (releaseUnownedPods says why the two spellings differ).
-	holds, err := s.store.StandingPodHoldsTx(ctx, tx, s.projectToken)
+	podHolds, err := s.store.StandingPodHoldsTx(ctx, tx, s.projectToken)
 	if err != nil {
 		return api.State{}, nil, err
 	}
-	for key, hold := range holds {
+	for key, hold := range podHolds {
 		if view, shown := state.Issues[key]; shown {
 			view.PodHold = api.PodHoldViewOf(hold)
 			state.Issues[key] = view

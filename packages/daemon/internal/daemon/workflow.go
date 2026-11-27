@@ -873,37 +873,13 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	engineCfg.Clock = clock
 	engineCfg.ExperimentSource = source
 	w.engine = workflow.New(w.records, engineCfg, log)
-<<<<<<< 7fa22de66d
-	w.admission = admit.New(w.records, w.engine, cfg.AdmissionCap, cfg.Project, log)
-	// The project's declared experiments decide what each unit admission records is drawn for.
-	// A project whose file writes neither the `memory` block nor an `experiments` key declares
-	// the memory experiment all the same, at mode off, whose draw records each new tree at no
-	// variant (config.Project.ExperimentsDeclared).
-	w.admission.UseExperiments(cfg.ExperimentsDeclared())
-	// `stalled_tree_notice_hours` is the bound the admission pass tells the controller a tree
-	// has stopped at: the loader gives six hours to a file that names no key, so the pass
-	// always runs under a number somebody chose.
-	w.admission.UseStalledTreeNotice(cfg.StalledTreeNotice)
-	// The bounds `worker_silence_minutes` and `worker_background_hours` set are what the tick's
-	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
-	// config.Config.WorkerBackground).
-	w.admission.UseWorkerSilence(cfg.WorkerSilence, cfg.WorkerBackground)
-	w.handlers, w.reviewAppLogin = factHandlers(w.records, cfg.Project, w.engine, w.admission), reviewAppLogin
-=======
 	w.admission = workflowAdmission(w.records, w.engine, cfg, clock, log)
 	// Every admission pass that judges the block reports the next linger deadline it reads, and
 	// the daemon's one timer for it runs a pass then (wakeAtLingerDeadlines, which run starts). A
 	// pass reports only with the state events on, which the boot turns on after this.
 	w.lingerWake = newLingerWake()
 	w.admission.UseLingerWake(w.lingerWake.arm)
-	// The mirror runs before both deciders, and that order is load-bearing. The engine decides
-	// whether to start a child and admission whether to admit a root inside this same
-	// transaction, from the mirror's rows, so the row an event carries must already be written
-	// when they look. Neither could write it itself: the engine returns early on an event whose
-	// sequence or status it has already seen (Engine.dispatchIssue), which is exactly the
-	// blocked-by-only edit this mirror exists for, and admission runs second in any case.
-	w.handlers, w.reviewAppLogin = []intake.Handler{blockers.NewMirror(w.records, cfg.Project), w.engine, w.admission}, reviewAppLogin
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+	w.handlers, w.reviewAppLogin = factHandlers(w.records, cfg.Project, w.engine, w.admission), reviewAppLogin
 	w.gatedSteps = cfg.Gates.Steps()
 	// The boot writes through the bare records, so it asks for no follow of a record it fills:
 	// backfillRepositories says why.
@@ -1425,7 +1401,6 @@ func (w *workflowRuntime) phaseHolds(ctx context.Context, key string, queuedFor 
 	return record.PhaseHolds(issue, queuedFor, generation), nil
 }
 
-<<<<<<< 7fa22de66d
 // waitHolds answers supervise's Deps.WaitHolds from the record, through the workflow's one rule
 // (workflow.Engine.WaitHoldsSend): the standing wait of c's worker, "" for none, and whether it
 // holds d — a task the claim had already taken when it declared, one a death in its turn took back
@@ -1439,7 +1414,7 @@ func (w *workflowRuntime) phaseHolds(ctx context.Context, key string, queuedFor 
 func (w *workflowRuntime) waitHolds(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, bool, error) {
 	var wait string
 	var holds bool
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		wait, holds, err = w.engine.WaitHoldsSend(ctx, tx, c.Token, d)
 		return err
@@ -1451,19 +1426,17 @@ func (w *workflowRuntime) waitHolds(ctx context.Context, c supervise.Claim, d su
 
 // endWait answers supervise's Deps.EndWait: it ends wait, the standing wait of c's worker that d's
 // send ends as new work, through the workflow's one end of it (workflow.Engine.EndWaitAtSend), in
-// a transaction of its own, and logs `wait: ended` once that transaction commits. The fact lock is
-// not taken, and not needed: sendPending sends only to a ready or idle claim, and a wait is
-// declared only in a turn, so the declaration and this end never run at once for one claim, and
-// the end is a compare-and-set on the wait's id that leaves a wait some fact ended meanwhile as
-// that fact ended it.
+// a transaction of its own, and logs `wait: ended` once that transaction commits (store.OnCommit).
+// The fact lock is not taken, and not needed: sendPending sends only to a ready or idle claim, and
+// a wait is declared only in a turn, so the declaration and this end never run at once for one
+// claim, and the end is a compare-and-set on the wait's id that leaves a wait some fact ended
+// meanwhile as that fact ended it.
 func (w *workflowRuntime) endWait(ctx context.Context, c supervise.Claim, d supervise.Delivery, wait string) error {
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
-		return w.engine.EndWaitAtSend(scoped, tx, c, d, wait)
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return w.engine.EndWaitAtSend(ctx, tx, c, d, wait)
 	}); err != nil {
 		return fmt.Errorf("end the wait %s of %s at the send of %s: %w", wait, c.Token, d.ID, err)
 	}
-	committed()
 	return nil
 }
 
@@ -1494,7 +1467,7 @@ func readMergerGateNote(ctx context.Context, pool *store.Pool, records record.St
 	if role != claim.RoleMerger || len(steps) == 0 {
 		return note, nil
 	}
-	if err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := records.Issue(ctx, tx, key)
 		if err != nil || issue == nil {
 			return err
@@ -1509,7 +1482,8 @@ func readMergerGateNote(ctx context.Context, pool *store.Pool, records record.St
 		return supervise.GateNote{}, fmt.Errorf("read the design gate of the tree of %s for its %s: %w", key, role, err)
 	}
 	return note, nil
-=======
+}
+
 // phaseRole answers supervise's Deps.PhaseRole from the issue record: the worker of key's open
 // phase (workflow.OpenPhaseRole), which the pod start gate puts first among the starts no request
 // raised — deaths, a roles container's restart, a pod an update round replaced
@@ -1526,7 +1500,6 @@ func (w *workflowRuntime) phaseRole(ctx context.Context, key string) (claim.Role
 		return "", nil
 	}
 	return workflow.OpenPhaseRole(issue.Phase), nil
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 }
 
 // rootHears answers supervise's Deps.RootHears from the issue record: a root architect's task of a
@@ -2027,7 +2000,6 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	// takes the lock every fact applies under: a read of the live records for the repository
 	// caches (refreshLive) never publishes over an issue it is recording. It settles the runs its
 	// writes end as a fact does (intake.OpenSettlers), before it commits.
-<<<<<<< 7fa22de66d
 	//
 	// The pass also names itself as the fact its writes are caused by (intake.WithAppliedFact), so
 	// a wait any of its writes ends — the engine's own transitions it applies among them — is ended
@@ -2036,16 +2008,10 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	if boot {
 		pass = "boot"
 	}
-	scoped, committed := intake.WithCommitHooks(intake.WithAppliedFact(ctx, "reconcile", pass+":"+w.bootID))
-	scoped, settle := intake.OpenSettlers(scoped, w.handlers...)
-	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
-		if err := intake.SerializeFacts(scoped, tx); err != nil {
-=======
 	var refused []string
-	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
+	if err := store.Transact(intake.WithAppliedFact(ctx, "reconcile", pass+":"+w.bootID), w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		ctx, settle := intake.OpenSettlers(ctx, w.handlers...)
 		if err := intake.SerializeFacts(ctx, tx); err != nil {
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 			return fmt.Errorf("serialize the reconcile with every fact: %w", err)
 		}
 		// The boot's whole listing refills the project's rows of the copy of Dispatch's issues
@@ -2107,18 +2073,14 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		if refused, err = w.admission.Reconcile(ctx, tx, listed, target, position); err != nil {
 			return err
 		}
-<<<<<<< 7fa22de66d
 		// The reconcile is the one admission pass outside a fact: its re-admissions, promotions
 		// and recorded observations are written in this transaction, so the waits they stopped end
 		// in it, as the last handler ends a fact's (workflow.WaitReconciler), ended by this pass
 		// under the name it applies itself as (intake.WithAppliedFact above).
-		if err := w.engine.EndStaleWaits(scoped, tx); err != nil {
+		if err := w.engine.EndStaleWaits(ctx, tx); err != nil {
 			return err
 		}
-		return settle(scoped, tx)
-=======
 		return settle(ctx, tx)
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 	}); err != nil {
 		return nil, fmt.Errorf("reconcile admission: %w", err)
 	}
@@ -2275,7 +2237,7 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // facts are applied already is (applySweepFacts).
 func (w *workflowRuntime) quietByDesign(ctx context.Context, keys []record.RoleRunKey) (map[claim.Token]struct{}, error) {
 	var quiet map[claim.Token]struct{}
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		quiet, err = w.engine.QuietByDesign(ctx, tx, keys)
 		return err

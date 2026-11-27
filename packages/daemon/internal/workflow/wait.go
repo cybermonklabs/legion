@@ -891,7 +891,7 @@ func (e *Engine) WaitHoldsSend(ctx context.Context, tx pgx.Tx, token claim.Token
 // The end is a compare-and-set on the wait's id (record.Store.EndWait), so a fact that ended or
 // replaced the wait meanwhile keeps its own end. tx is a transaction of the caller's own, which
 // takes no fact lock, for the reason WaitHoldsSend's takes none. `wait: ended` is logged once tx
-// commits, so ctx carries the commit hooks (intake.WithCommitHooks).
+// commits, so ctx carries the transaction's commit scope (store.Transact, store.OnCommit).
 func (e *Engine) EndWaitAtSend(ctx context.Context, tx pgx.Tx, c supervise.Claim, d supervise.Delivery, waitID string) error {
 	project, err := claim.ProjectToken(e.cfg.Project)
 	if err != nil {

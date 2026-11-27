@@ -45,13 +45,12 @@ func drawnAt(t *testing.T, experiment string) string {
 // hold, every root carries whether its tree runs, one issue carries the correction of its
 // repository and one the change Dispatch has named that the daemon has not applied, its capability
 // report holds the repository caches' row with that source's own word, and the body carries the
-// daemon's Dispatch credential under dispatch_token_broker. The wait entry's test rows write a
-// claim view's `wait` and `hold` into it (carriedState): LEGION-208's implementer carries the wait
-// it declared, which stands, and its planner a design gate's hold. The same record ten seconds into
-// a pause is the paused state (pausedState), which carries `paused`; narrowing_test.go's
-// narrowingState puts that pause beside this state, so one state proves every band of
-// stateNarrowings, that they compose, and the value strip of a capability row's `source` beside
-// them. It stands no member of the line of the kind 132 added, whose value strip
+// daemon's Dispatch credential under dispatch_token_broker. LEGION-208's implementer carries the
+// wait it declared, which stands, and LEGION-221's merger the closed design gate's hold. The same
+// record ten seconds into a pause is the paused state (pausedState), which carries `paused`;
+// narrowing_test.go's narrowingState puts that pause beside this state, so one state proves every
+// band of stateNarrowings, that they compose, and the value strip of a capability row's `source`
+// beside them. It stands no member of the line of the kind 132 added, whose value strip
 // waiting_on_issue_test.go proves, and the pause's other key, `lastPause`, is the last-pause
 // fixture's. What the quiet-time band is measured on in finer grain — both halves on each member
 // of one tree, and neither on an issue whose tree has left the workflow — is quiet_time_test.go's
@@ -143,10 +142,9 @@ var (
 // reads the wakes, whose tool-call line reads the step records, whose merge-wait line reads the
 // waits on GitHub, whose waits line reads the waits workers declared and whose holds line reads
 // the design gate's holds — are served all of them, the basis and every root's `treeRuns` with the
-// rest. The state is the populated one with the wait entry's two keys written into it
-// (carriedState), since the golden carries neither.
+// rest.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
-	full := stateFrom(t, carriedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
+	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
 	fields := []string{"memoryGroup", "updateRound", "gatedSteps", "waitingLine", "leakCheckCause", TreeMovedAtField, QuietHoursField,
 		"assignments", "apps", "treeRuns", "basis", string(GatedStepOpenOnBasis), string(GatedStepPendingOnBasis), "dispatchCredential",
@@ -401,7 +399,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, plans: true, correction: true, priority: true, seq: true, caches: true, giveUps: true, contract: DaemonAPIVersion(), basis: true, credential: true, waiting: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			body := stateFrom(t, carriedState(t), tc.remote, tc.claims)
+			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
 
 			// Only LEGION-208's tree was drawn: its root and its children LEGION-209 and LEGION-220
 			// carry the draw when the caller is served it, and no other issue carries one whoever
@@ -419,28 +417,30 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			// and LEGION-214's is no live tree, so neither carries a measure whoever asks.
 			drawn := map[string]bool{"LEGION-208": true, "LEGION-209": true, "LEGION-220": true}
 			gated := map[string]bool{"LEGION-207": true, "LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true,
-				"LEGION-214": true, "LEGION-215": true, "LEGION-216": true, "LEGION-218": true, "LEGION-219": true}
+				"LEGION-214": true, "LEGION-215": true, "LEGION-216": true, "LEGION-218": true, "LEGION-219": true, "LEGION-221": true}
 			onBasis := map[string]bool{"LEGION-207": true, "LEGION-214": true}
 			lined := map[string]bool{"LEGION-211": true, "LEGION-212": true, "LEGION-216": true}
 			measured := map[string]bool{"LEGION-208": true, "LEGION-209": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true,
-				"LEGION-215": true, "LEGION-216": true, "LEGION-218": true, "LEGION-219": true, "LEGION-220": true}
+				"LEGION-215": true, "LEGION-216": true, "LEGION-218": true, "LEGION-219": true, "LEGION-220": true, "LEGION-221": true}
 			// The issues the fixture holds an experiment answer for: the drawn tree's root and
 			// its children, each under its tree's draw and its own, and LEGION-210, whose
 			// hand-over settled it at no arm, which is an answer and so a row.
 			assigned := map[string]bool{"LEGION-208": true, "LEGION-209": true, "LEGION-210": true, "LEGION-220": true}
 			// The issues whose current phase names a role carry the entry numbers (entried
 			// below): LEGION-208 and LEGION-220, whose implementers hold the work their rows name,
-			// LEGION-211, whose implementer is behind it, and the reviewing roots LEGION-218 and
-			// LEGION-219, whose reviewers hold theirs. The held, awaiting_person and done issues
-			// carry neither whoever asks. LEGION-208 alone carries the two times: every other
-			// issue would carry an architect's handshake too, a root its own architect's in every
-			// phase and a child its own architect's, and no other architect claim of the fixture
-			// holds one: LEGION-218's, which the operator suspended, LEGION-219's, which a close
-			// retired, and LEGION-220's, which failed, were never queued an entry of this run. The
+			// LEGION-211, whose implementer is behind it, the reviewing roots LEGION-218 and
+			// LEGION-219, whose reviewers hold theirs, and LEGION-221, whose merger the design gate
+			// holds. The held, awaiting_person and done issues carry neither whoever asks. LEGION-208
+			// alone carries the two times: every other issue would carry an architect's handshake
+			// too, a root its own architect's in every phase and a child its own architect's, and no
+			// other architect claim of the fixture holds one: LEGION-218's, which the operator
+			// suspended, LEGION-219's, which a close retired, and LEGION-220's, which failed, were
+			// never queued an entry of this run, and LEGION-221 holds no architect claim. The
 			// architect-stalled arms leave with the two times, and the daemon names one for
 			// LEGION-210, a root no architect claim stands for, and for LEGION-219, whose retired
 			// architect no start of its run waits to relaunch (admit's architectClaimUnreachable).
-			entried := map[string]bool{"LEGION-208": true, "LEGION-211": true, "LEGION-218": true, "LEGION-219": true, "LEGION-220": true}
+			entried := map[string]bool{"LEGION-208": true, "LEGION-211": true, "LEGION-218": true, "LEGION-219": true, "LEGION-220": true,
+				"LEGION-221": true}
 			timed := map[string]bool{"LEGION-208": true}
 			stalled := map[string]bool{"LEGION-210": true, "LEGION-219": true}
 			waits := map[string]bool{"LEGION-218": true, "LEGION-219": true}

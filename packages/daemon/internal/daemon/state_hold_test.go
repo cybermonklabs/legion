@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -27,6 +28,7 @@ import (
 // the merger of the tree whose spec stands approved, and the implementer of the held issue, carry
 // no hold, and once a person approves the version with the reviewer, no claim carries one.
 func TestTheStateRouteShowsTheHoldOfEachMergerTheClosedGateHolds(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	heldRoot, held, openRoot, open := cfg.Project+"-1", cfg.Project+"-2", cfg.Project+"-3", cfg.Project+"-4"
 	merger := previousClaim(t, cfg, heldRoot, held, claim.RoleMerger, supervise.StateIdle)
@@ -63,7 +65,7 @@ func TestTheStateRouteShowsTheHoldOfEachMergerTheClosedGateHolds(t *testing.T) {
 	}
 	put := func(gates ...record.DesignGate) {
 		t.Helper()
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			for _, gate := range gates {
 				if err := records.PutGate(ctx, tx, gate); err != nil {
 					return err
@@ -78,11 +80,11 @@ func TestTheStateRouteShowsTheHoldOfEachMergerTheClosedGateHolds(t *testing.T) {
 
 	view := &source{
 		store: st, records: records, project: cfg.Project, projectToken: project, runtime: "tmux", admissionCap: cfg.AdmissionCap,
-		startedAt: time.Now(), deployment: func() capabilities.Deployment { return capabilities.Deployment{} },
+		startedAt: time.Now(), deployment: func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} },
 		reports:    func() map[claim.Token]capabilities.Report { return nil },
 		gatedSteps: config.DesignGateRootIssues.Steps(),
 	}
-	handler := api.NewServer("127.0.0.1", 0, api.Options{State: view, StateTransactions: st}).Handler
+	handler := api.NewServer("127.0.0.1", 0, api.Options{State: view, StateTransactions: st.Pool()}).Handler
 	read := func() api.State {
 		t.Helper()
 		recorder := httptest.NewRecorder()

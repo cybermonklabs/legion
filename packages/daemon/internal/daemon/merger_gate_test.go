@@ -192,7 +192,28 @@ func putOutboxGate(t *testing.T, pool *store.Pool, records record.Store, gate re
 	}
 }
 
-<<<<<<< 7fa22de66d
+// putOutboxTold records what issue's holder took of its tree's approved design.
+func putOutboxTold(t *testing.T, pool *store.Pool, records record.Store, issue string, versions map[record.DesignStep]int) {
+	t.Helper()
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		return records.RaiseTold(context.Background(), tx, issue, record.AudienceHolder, raisedTo(versions), time.Now().UTC())
+	}); err != nil {
+		t.Fatalf("record what %s's holder took: %v", issue, err)
+	}
+}
+
+// putOutboxChanges records what changed in pair's document between its two versions, as Dispatch
+// read it.
+func putOutboxChanges(t *testing.T, pool *store.Pool, records record.Store, pair record.VersionPair) {
+	t.Helper()
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		return records.PutDesignChanges(context.Background(), tx, record.DesignChanges{VersionPair: pair, State: record.DesignChangesRead,
+			Sections: []record.SectionChange{{Heading: "Design", Change: "changed"}}, ReadAt: time.Now().UTC()})
+	}); err != nil {
+		t.Fatalf("record the change set of %+v: %v", pair, err)
+	}
+}
+
 const (
 	// heldMergerSpec is the spec document of the held-merger rig's tree, and heldMergerPR and
 	// heldMergerHead the number of its issue's pull request and the head the record holds it at.
@@ -207,9 +228,11 @@ const (
 // under a deployment that gates the spec (`gates.design: root-issues`) and an idle release that
 // arms a backstop at each release. The root's architect registers the spec at version 1 and a
 // person approves it; the issue then stands in merging with its pull request open at
-// heldMergerHead, and the outbox delivers what the gate's moves queued. The gate stands open and
-// the merger has no claim yet: a case puts it to work (working) and closes the gate
-// (closesTheGate).
+// heldMergerHead, and the outbox delivers what the gate's moves queued. The merger took version 1
+// and what changed from it to version 2 is recorded (putOutboxTold, putOutboxChanges), so the news
+// of the approved design it is owed holds none of its starts (the outbox's
+// mergerWaitsForItsNews). The gate stands open and the merger has no claim yet: a case puts it to
+// work (working) and closes the gate (closesTheGate).
 func newHeldMergerRig(t *testing.T) *waitDeliveryRig {
 	t.Helper()
 	r := newWaitDeliveryRigOf(t, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
@@ -222,8 +245,15 @@ func newHeldMergerRig(t *testing.T) *waitDeliveryRig {
 		Version: 1, DispatchVersion: 1, Since: record.EventMark{Seq: 2}})
 	r.applies("spec-approved-1", intake.DispatchArtifact{Key: r.issue.Key, ArtifactID: heldMergerSpec, Kind: intake.DispatchArtifactApproved,
 		Version: 1, Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: record.EventMark{Seq: 3}})
+	putOutboxTold(t, r.pool, r.records, r.issue.Key, map[record.DesignStep]int{record.DesignStepSpec: 1})
+	putOutboxChanges(t, r.pool, r.records, record.VersionPair{ArtifactID: heldMergerSpec, From: 1, To: 2})
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return r.records.SettleOpening(ctx, tx, r.issue.Key, record.AudienceHolder, false)
+	}); err != nil {
+		t.Fatalf("settle the v1 opening on %s's holder: %v", r.issue.Key, err)
+	}
 	r.movesTo(phase.Merging)
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutPullRequest(r.ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: r.issue.Key,
 			Repo: "acme/widgets", Number: heldMergerPR, Branch: "legion/" + r.issue.Key, HeadSHA: heldMergerHead,
 			Failing: []string{}, MergeState: record.MergeStateClean})
@@ -254,8 +284,13 @@ func (r *waitDeliveryRig) closesTheGate() {
 }
 
 // opensTheGate is a person's approval of the spec's version 2, which opens the tree's design gate.
+// The merger's holder is recorded told of version 2 first (putOutboxTold), so the opening owes it
+// no news of the approved design and its one delivery of the move is the gate's own (workflow's
+// gateDelivery): a merger the opening owes that news is given it instead in the one task that
+// leads with the opening (workflow's openingDelivery), which the design-news tests hold.
 func (r *waitDeliveryRig) opensTheGate() {
 	r.t.Helper()
+	putOutboxTold(r.t, r.pool, r.records, r.issue.Key, map[record.DesignStep]int{record.DesignStepSpec: 2})
 	r.applies("spec-approved-2", intake.DispatchArtifact{Key: r.issue.Key, ArtifactID: heldMergerSpec, Kind: intake.DispatchArtifactApproved,
 		Version: 2, Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: record.EventMark{Seq: 5}})
 	if held, holds := workflow.HeldByDesignGate(r.issue, claim.RoleMerger, r.treeGate()); holds {
@@ -297,6 +332,7 @@ func (r *waitDeliveryRig) wantReleased(why string) {
 //   - the wait's own start, written when the time of a wait the merger declared under the open gate
 //     came and run after the gate closed, passes the fence and delivers the wait's task.
 func TestTheDesignGateFenceHoldsTheMergersPhaseWorkAndNothingElse(t *testing.T) {
+	t.Parallel()
 	t.Run("a start that names merging waits", func(t *testing.T) {
 		r := newHeldMergerRig(t)
 		r.mergerWorked()
@@ -393,7 +429,7 @@ func TestTheDesignGateFenceHoldsTheMergersPhaseWorkAndNothingElse(t *testing.T) 
 		if got := r.machine.Claim(); !got.Released() {
 			t.Fatalf("the merger after the release's stop = %s by %s, want it released", got.State, got.SuspendedBy)
 		}
-		if err := r.runner.cancelRelease(r.ctx, r.issue.Key, r.issue.Tree, workflow.IdleHoldBundleSave, "the case cancels the release"); err != nil {
+		if err := r.runner.cancelRelease(r.ctx, r.issue.Key, r.issue.Tree, workflow.IdleHoldWorkspaceUnread, "the case cancels the release"); err != nil {
 			t.Fatalf("cancel the release: %v", err)
 		}
 		starts := entryStartRows(t, r.pool, r.issue.Key)
@@ -472,12 +508,13 @@ func (r *waitDeliveryRig) removalsPublished(id int64) []outboxPublish {
 // nothing. Once the person approves the spec's version 2, the row wakes the merger, and once the
 // relaunched session holds the role the message is published to it once.
 func TestAMergeQueueRemovalDuringTheHoldWaitsForTheDesignGateToOpen(t *testing.T) {
+	t.Parallel()
 	r := newHeldMergerRig(t)
 	r.mergerWorked()
 	r.closesTheGate()
 	released := time.Now().UTC().Add(time.Minute)
 	r.releasesAt(released)
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.Enqueue(r.ctx, tx, mustOutboxRow(t, r.issue.Key,
 			record.MergeQueueRemoval{Number: heldMergerPR, Head: heldMergerHead}, time.Now()))
 	}); err != nil {
@@ -513,26 +550,5 @@ func TestAMergeQueueRemovalDuringTheHoldWaitsForTheDesignGateToOpen(t *testing.T
 	want := record.MergeQueueRemoval{Number: heldMergerPR, Head: heldMergerHead}.Message(r.issue.Key, "acme/widgets")
 	if len(published) != 1 || published[0].message != want {
 		t.Fatalf("the removal was published %+v, want it told to the woken merger once: %q", published, want)
-=======
-// putOutboxTold records what issue's holder took of its tree's approved design.
-func putOutboxTold(t *testing.T, pool *store.Pool, records record.Store, issue string, versions map[record.DesignStep]int) {
-	t.Helper()
-	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
-		return records.RaiseTold(context.Background(), tx, issue, record.AudienceHolder, raisedTo(versions), time.Now().UTC())
-	}); err != nil {
-		t.Fatalf("record what %s's holder took: %v", issue, err)
-	}
-}
-
-// putOutboxChanges records what changed in pair's document between its two versions, as Dispatch
-// read it.
-func putOutboxChanges(t *testing.T, pool *store.Pool, records record.Store, pair record.VersionPair) {
-	t.Helper()
-	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
-		return records.PutDesignChanges(context.Background(), tx, record.DesignChanges{VersionPair: pair, State: record.DesignChangesRead,
-			Sections: []record.SectionChange{{Heading: "Design", Change: "changed"}}, ReadAt: time.Now().UTC()})
-	}); err != nil {
-		t.Fatalf("record the change set of %+v: %v", pair, err)
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 	}
 }

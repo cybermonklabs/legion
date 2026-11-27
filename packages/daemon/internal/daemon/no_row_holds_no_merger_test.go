@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -56,6 +57,7 @@ const closedGateWords = "The design gate of LEGION-208 closed"
 //   - the merger's owed answer gives the merge and that wait, and no hold;
 //   - no task and no message the merger receives names a closed gate.
 func TestNoRowHoldsNoMergerUnderAGatedStepNobodyRegistered(t *testing.T) {
+	t.Parallel()
 	r := newWaitDeliveryRigOf(t, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Retro, Generation: 1,
 		Status: workflow.PhaseStatus(phase.Retro), Rank: "U", HandedOver: true, LastDispatchSeq: 1},
@@ -151,13 +153,14 @@ func TestNoRowHoldsNoMergerUnderAGatedStepNobodyRegistered(t *testing.T) {
 // ran under. Its merger starts and is not held: the outbox's fence lets its start through and the
 // record shows no hold, under the default deployment, which gates the spec step.
 func TestNoRowHoldsNoMergerOfAChildHandedOverInMergingWithNoGateToCarry(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	const root, child = "LEGION-208", "LEGION-209"
 	until := time.Now().UTC().Add(time.Hour)
 	parent := root
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, put := range []error{
 			records.PutIssue(ctx, tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root,
 				Project: "LEGION", Title: root, Phase: phase.Done, Generation: 2, Status: "done", LingerUntil: &until}),
@@ -188,7 +191,7 @@ func TestNoRowHoldsNoMergerOfAChildHandedOverInMergingWithNoGateToCarry(t *testi
 
 	var handed *record.Issue
 	var gates map[record.DesignStep]record.DesignGate
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if handed, err = records.Issue(ctx, tx, child); err != nil {
 			return err
@@ -278,7 +281,7 @@ func (r *waitDeliveryRig) movesTo(at phase.Phase) {
 func (r *waitDeliveryRig) treeGate() record.TreeGate {
 	r.t.Helper()
 	var rows map[record.DesignStep]record.DesignGate
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		rows, err = r.records.GatesOf(r.ctx, tx, r.issue.Tree)
 		return err

@@ -21,10 +21,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-<<<<<<< 7fa22de66d
 
-=======
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -910,34 +907,30 @@ func (r *cutoverRig) settled(t *testing.T, issue cutoverIssue) {
 }
 
 // toldOnce holds that issue's merger was given exactly one task over its whole life in this
-<<<<<<< 7fa22de66d
-// test, and that it is the merging task: the resume task of the phase it holds
-// (workflow.ResumePhaseTask), read from the issue as the record holds it now, behind the design
+// test, and that it is the merging task: the resume task of the phase it holds, as the daemon's
+// engine composes it from the issue as the record holds it now (resumeTaskOf), behind the design
 // gate's state that a merger's task opens with at its send (workflow.MergerGateNote,
 // dispatch://INFRA-2040 R7), read from the tree's gate rows as they stand now.
-func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
+func (r *cutoverRig) mergerNote(t *testing.T, issue cutoverIssue) supervise.GateNote {
 	t.Helper()
 	stands := readIssue(t, r.pool, issue.key)
 	if stands == nil {
 		t.Fatalf("read %s: the record does not hold it", issue.key)
 	}
 	var gates map[record.DesignStep]record.DesignGate
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		gates, err = r.records.GatesOf(context.Background(), tx, stands.Tree)
+		gates, err = r.records.GatesOf(ctx, tx, stands.Tree)
 		return err
 	}); err != nil {
 		t.Fatalf("read the design gate of %s: %v", stands.Tree, err)
 	}
-	note := workflow.MergerGateNote(*stands, claim.RoleMerger, record.TreeGate{Steps: r.cfg.Gates.Steps(), Rows: gates})
-	want := note.InFrontOf(workflow.ResumePhaseTask(*stands))
-=======
-// test, and that it is the merging task: the resume task of the phase it holds, as the daemon's
-// engine composes it from the issue as the record holds it now (resumeTaskOf).
+	return workflow.MergerGateNote(*stands, claim.RoleMerger, record.TreeGate{Steps: r.cfg.Gates.Steps(), Rows: gates})
+}
+
 func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 	t.Helper()
-	want := resumeTaskOf(t, r.pool, r.engine, issue.key)
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+	want := r.mergerNote(t, issue).InFrontOf(resumeTaskOf(t, r.pool, r.engine, issue.key))
 	if told := r.tasks(issue.merger); len(told) != 1 || told[0] != want {
 		t.Fatalf("%s's merger was given the tasks %q, want once with its merging task %q", issue.key, told, want)
 	}
@@ -954,7 +947,7 @@ func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 // sentence in front of the news, and is counted as the news.
 func (r *cutoverRig) toldOnceWithNews(t *testing.T, issue cutoverIssue, version int) {
 	t.Helper()
-	task := resumeTaskOf(t, r.pool, r.engine, issue.key)
+	task := r.mergerNote(t, issue).InFrontOf(resumeTaskOf(t, r.pool, r.engine, issue.key))
 	read := fmt.Sprintf("dispatch doc-read --issue %s --artifact spec-%s --version %d", issue.key, issue.key, version)
 	told := r.tasks(issue.merger)
 	merging, news := 0, 0
@@ -976,7 +969,7 @@ func (r *cutoverRig) toldOnceWithNews(t *testing.T, issue cutoverIssue, version 
 // (cutoverSlotRepairTask).
 func (r *cutoverRig) toldTheQueuedTask(t *testing.T, issue cutoverIssue) {
 	t.Helper()
-	want := cutoverSlotRepairTask(issue.key)
+	want := r.mergerNote(t, issue).InFrontOf(cutoverSlotRepairTask(issue.key))
 	if told := r.tasks(issue.merger); len(told) != 1 || told[0] != want {
 		t.Fatalf("%s's merger was given the tasks %q, want once with the task of the start the old record queued for it, %q: no other start gives it a second task",
 			issue.key, told, want)
