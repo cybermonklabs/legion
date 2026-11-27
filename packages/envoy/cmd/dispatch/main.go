@@ -27,12 +27,14 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	dispatchcipher "github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/dashboard"
@@ -46,6 +48,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
@@ -66,6 +69,8 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/listenfd"
+	"github.com/sjawhar/envoy/natsurl"
+	"github.com/sjawhar/envoy/pgdsn"
 )
 
 const (
@@ -479,6 +484,21 @@ func main() {
 		slog.Info("dispatch: filled document_search for the documents stored before this release", "rows", filled)
 	}
 
+	// session_titles (migration 20261117100008) holds each session's newest stamped title,
+	// 20261117100015's trigger keeps it in step from the deploy on, and this fills it for the
+	// events stored before that, in committed batches, for document_search's reason above
+	// (20261117100016's comment). Production runs two replicas under `strategy: RollingUpdate`.
+	// This pod listens only after the fill, so the old pods serve while it migrates and fills.
+	// The old build reads titles from events, and the trigger stores the titles the old pods write.
+	// A failed fill exits this pod, stops the rollout and leaves the old pods serving: with the
+	// table unfilled, delivery.ResolveSessionTitles would name every earlier session by its id.
+	if filled, err := database.FillSessionTitles(ctx); err != nil {
+		slog.Error("dispatch: fill session_titles for the events stored before this release", "error", err)
+		os.Exit(1)
+	} else if filled > 0 {
+		slog.Info("dispatch: filled session_titles for the events stored before this release", "rows", filled)
+	}
+
 	// asks_anchor_artifact_id (migration 0148) indexes the anchors whose artifact_id is a
 	// lower-case document id, the form every server-written anchor carries. A row an earlier
 	// release stored with another spelling is left out, and settlement records no mark for it:
@@ -564,7 +584,7 @@ func main() {
 
 	serviceTokens := serviceTokenVerifier(boot)
 	if serviceTokens != nil {
-		slog.Info("dispatch: verifying service-account tokens", "issuer", boot.OIDCIssuer, "audience", boot.OIDCAudience)
+		logServiceTokens(boot)
 		go serviceTokens.Run(ctx)
 	}
 
@@ -593,6 +613,13 @@ func main() {
 		slog.Error("dispatch: build the answerer", "error", err)
 		os.Exit(1)
 	}
+	// The process's one count of its own calls to GitHub, by installation, counter and caller
+	// kind, which the two GitHub clients of the process that call with an installation token
+	// count on, and the rate reading reports (runRateReading): the API's, which the architecture
+	// importer and the delivery intakes and reconcile share, and the CI reconcile's. The webhook
+	// redelivery sweep's client calls with the App's JWT alone, which GitHub charges to no
+	// installation, so it counts on nothing.
+	gitHubCalls := githubrate.NewCounter()
 
 	// The answers reads this process serves, each timed from the moment it enters the route's
 	// handler chain, as its access-log line times it: the API records them, and the keyword fill
@@ -615,6 +642,7 @@ func main() {
 		Events:         broker,
 		Renames:        renames,
 		App:            appCfg,
+		GitHubRate:     gitHubCalls,
 		AgentStream:    agentStream,
 		AgentPublisher: agentPublisher,
 		Files:          fileStore,
@@ -660,16 +688,18 @@ func main() {
 	//     shared listener below says their work may have changed, or when a due time their last
 	//     pass asked for comes round: the embedding queue (embedqueue.WakeChannel), the reference
 	//     excerpts (docs.ExcerptsOwedChannel), the edit notices (docs.EditNoticesChannel), the
-	//     suggestion outcomes (api.EventsChannel) and the delivery settings both intakes route by
-	//     (delivery.SettingsChannel). The two leased ones, reference-excerpts and edit-notices,
-	//     take their lease with no period (duty.RunWoken): a process that finds it held retries
-	//     until a pass of its own runs, since the other process's pass may have read before the
-	//     change that woke this one. The suggestion-outcome loop takes none: each of its pages
-	//     runs in a transaction holding the suggestion_outcome_cursor row for update, which
-	//     serialises two processes woken by one commit, the first pass on a database included
-	//     (api/suggestion_outcomes.go). The keyed writes' own sweep - the Idempotency-Keys past
-	//     their window, and the deliveries a process that died left owed - keeps a timer of its
-	//     own below, because no wake announces either: a death commits nothing.
+	//     suggestion outcomes (api.EventsChannel), the delivery settings both delivery intakes
+	//     route by (delivery.SettingsChannel) and the Legion settings, on whose every write the
+	//     Legion state intake checks each project's starting point (legion.SettingsChannel). The
+	//     two leased ones, reference-excerpts and edit-notices, take their lease with no period
+	//     (duty.RunWoken): a process that finds it held retries until a pass of its own runs,
+	//     since the other process's pass may have read before the change that woke this one. The
+	//     suggestion-outcome loop takes none: each of its pages runs in a transaction holding the
+	//     suggestion_outcome_cursor row for update, which serialises two processes woken by one
+	//     commit, the first pass on a database included (api/suggestion_outcomes.go). The keyed
+	//     writes' own sweep - the Idempotency-Keys past their window, and the deliveries a process
+	//     that died left owed - keeps a timer of its own below, because no wake announces either:
+	//     a death commits nothing.
 	//   - boot passes, which run once at start: the embedding coverage pass (embedqueue.Run starts
 	//     it, and repeats its identity steps and its record of issues' inputs every 10 minutes for
 	//     as long as the process runs) and the task progress reconciliation (retrying, briefly,
@@ -678,10 +708,9 @@ func main() {
 	//     never arrived, a delivery that failed: the delivery reconcile and the architecture
 	//     import every 5 minutes, each starting after a random delay within one interval
 	//     (duty.RunJittered), and the webhook redelivery sweep every 2, sweeping at start
-	//     (redeliver.Sweeper.Run). While delivery settings are saved, a push of a source's branch
-	//     imports that source at once (delivery.PushImports, architecture.Importer.Pushed; the
-	//     delivery intake runs only then), so the architecture import's timer repairs a push that
-	//     never arrived, and is the only automatic import where no settings are saved. Each then
+	//     (redeliver.Sweeper.Run). A push of a source's branch imports that source at once
+	//     (delivery.PushImports, architecture.Importer.Pushed), so the architecture import's
+	//     timer repairs a push that never arrived. Each then
 	//     waits its interval less up to a tenth of it, drawn afresh every time
 	//     (duty.JitteredWithin), so no wait is longer than
 	//     the interval and two processes' ticks drift apart rather than staying in step. Under
@@ -722,9 +751,10 @@ func main() {
 	// Deliberately NOT leased, in three classes:
 	//   - already claims its own work, so two processes never do one unit of it twice: the
 	//     embedding queue (embedqueue, `for update skip locked`), the task progress
-	//     reconciliation (`for no key update ... skip locked`) and the delivery intakes (each
+	//     reconciliation (`for no key update ... skip locked`), the delivery intakes (each
 	//     delivers from its durable only while it holds that durable's duty.Hold, which
-	//     delivery.StartIntakes takes).
+	//     delivery.StartIntakes takes) and the Legion state intake (likewise under its own
+	//     durable's hold, legion.StartIntake).
 	//   - per-process by design, because each serves this process's own connections or memory:
 	//     the delivery live hub and its listener (migration 0107_events_notify.up.sql states that
 	//     purpose), the event stream relay, the document rooms' timers, the document compaction
@@ -734,8 +764,10 @@ func main() {
 	//     listener hub (its connection is this process's membership and every loop above waits on
 	//     a wake of this process's own, so it has to run in every process), the room sync
 	//     registered on it (it serves the rooms resident in this process: it catches them up with
-	//     the other processes' writes and answers their room queries) and the document sockets'
-	//     schema re-check (it closes this process's own sockets).
+	//     the other processes' writes and answers their room queries), the document sockets'
+	//     schema re-check (it closes this process's own sockets) and the GitHub rate reading
+	//     (runRateReading: the own calls it reports are this process's, and its lines name the
+	//     process).
 	//   - a boot one-shot already serialised by an advisory lock or idempotent: the migrations,
 	//     retirePlainRefreshTokens, restoreDecidedWordings, repairIssueAsks and
 	//     renameRepositories above, and the embedding coverage pass (two processes' passes at
@@ -800,18 +832,22 @@ func main() {
 	// The display tree fill (texttreefill.Run): a leased loop like the rest, reserved here so
 	// that this process's count is the same whether or not it has work to do.
 	textTreeFillLeases := reserve("text tree fill")
-	// The Legion sampler (legion.RunSampler): a leased loop like the rest, reserved here so that
-	// this process's count is the same whether or not any project names a daemon.
-	legionSamplerLeases := reserve("Legion sampler")
 	// R25's one-time fix of parents' statuses at boot (api.RunParentStatusFixAtBoot, below): it
 	// takes its lease only with DISPATCH_PARENT_STATUS_RULE on, and is reserved here so that this
 	// process's count is the same with the setting off.
 	parentStatusFixLeases := reserve("parent status fix")
-	// The intakes' six callers - a consumer lease, a hold and the hold's renewal per durable -
-	// whether or not this configuration starts them (delivery.ReserveIntakeLeases).
+	// The delivery intakes' six callers - a consumer lease, a hold and the hold's renewal per
+	// durable - whether or not this configuration starts them (delivery.ReserveIntakeLeases).
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
 	if err != nil {
 		slog.Error("dispatch delivery: reserve the lease pool for the intakes", "error", err)
+		os.Exit(1)
+	}
+	// The Legion state intake's three callers - its durable's consumer lease, its hold and the
+	// hold's renewal - whether or not this configuration starts it (legion.ReserveLeases).
+	legionIntakeLeases, err := legion.ReserveLeases(leaseCallers)
+	if err != nil {
+		slog.Error("dispatch: reserve the lease pool for the Legion state intake", "error", err)
 		os.Exit(1)
 	}
 	// The keyword fill's two callers - its own goroutine's hold statements, batches and reads, and
@@ -875,6 +911,11 @@ func main() {
 	// shutdown waits for before it closes the pool; it stays nil with no outbox.
 	var outboxPublisher *outbox.Outbox
 	var outboxStopped chan struct{}
+	// The API server's writer of an issue message, which the outbox posts the message about the
+	// events a role did not take with (outbox.Deps.PostIssueMessage). The outbox starts before the
+	// API server is registered (routes.New, below), so it reads the writer from here once that has
+	// happened, and a post before it fails and is tried again on the post's own back-off.
+	var postSystemMessage atomic.Pointer[func(context.Context, model.Actor, model.SystemMessage) (string, error)]
 	outboxPublishFailures := met.NewCounter(
 		"envoy_dispatch_outbox_publish_failures_total",
 		"Destinations of an outbox publish attempt that were not reached, by reason: denied (the server refused the send under the connection's own publish permissions), refused (NATS refuses it however often it is retried), unanswered (NATS took the forward and the stream did not acknowledge the copy it stored, which is the whole of a forward's answer) or failed (every other failure)",
@@ -897,13 +938,20 @@ func main() {
 		// by the windows this deployment gave its listeners (roleHolderWindows).
 		holders := roles.NewBuckets(natsClient, boot.RoleHolderWindows)
 		outboxPublisher = outbox.New(outbox.Deps{
-			Store:            &store.Store{Pool: outboxPool},
-			Publisher:        natsClient,
-			Broker:           broker,
-			Listen:           database.Pool.Listener,
-			RoleClaims:       holders,
-			Sessions:         holders,
-			KeptLanes:        natsClient,
+			Store:      &store.Store{Pool: outboxPool},
+			Publisher:  natsClient,
+			Broker:     broker,
+			Listen:     database.Pool.Listener,
+			RoleClaims: holders,
+			Sessions:   holders,
+			KeptLanes:  natsClient,
+			PostIssueMessage: func(ctx context.Context, actor model.Actor, message model.SystemMessage) (string, error) {
+				post := postSystemMessage.Load()
+				if post == nil {
+					return "", errors.New("the API server is not registered yet")
+				}
+				return (*post)(ctx, actor, message)
+			},
 			PublishFailures:  outboxPublishFailures,
 			RoleForwardsHeld: outboxRoleForwardsHeld,
 			Metrics:          met,
@@ -914,24 +962,6 @@ func main() {
 			outboxPublisher.Run(ctx)
 		}()
 	}
-	// embedqueue.Run no-ops when its own Deps.Embedder is nil, so this always starts: the server's
-	// embedding queue keeps coverage itself, so a later deploy that gives meaning search a place
-	// to embed needs no other wiring change and no person-run step to cover existing content.
-	// It gets a rate-limited wrapper around the same client api.Deps holds unwrapped above
-	// (embedder, BuildAppContext's Embedder option): the queue is the only embedqueue caller, and
-	// pacing only its calls - never a live search request's own query embedding, which always
-	// goes straight through the unwrapped client - is what keeps saturating background work from
-	// taking live search down with it (LEGION-549 round 5; embed.RateLimitedEmbedder's own doc
-	// comment has the AIMD mechanism and the headroom this leaves). A nil embedder (meaning
-	// search off) stays nil rather than becoming a non-nil wrapper around nothing, which
-	// embedqueue.Run's own nil check depends on. The queue starts before this process registers
-	// below; it embeds and drops only while its embedder's identity is the active one, which every
-	// process decides from the live registry rows (embedqueue, active.go), so a process configured
-	// with another embedder than the fleet's leaves the vectors as they are.
-	var backgroundEmbedder embed.Embedder
-	if embedder != nil {
-		backgroundEmbedder = embed.NewRateLimitedEmbedder(embedder)
-	}
 
 	// This process's one shared LISTEN connection. Its name is what makes this process a member:
 	// the other envoy-dispatch processes read it in pg_stat_activity (docs/room_sync.go), and only
@@ -940,17 +970,18 @@ func main() {
 	// still hold listener connections of their own (store.Pool.Listener).
 	//
 	// A wake is registered only for a loop that will read it: with no embedder embedqueue.Run
-	// returns at once, without NATS or the GitHub App no intake starts to route by the settings,
-	// and without the GitHub App this process keeps no copy of the GitHub reads' record (below),
-	// so none of those channels is LISTENed on.
+	// returns at once, without NATS or the GitHub App no delivery intake starts to route by the
+	// delivery settings, without NATS no Legion state intake starts to read a project's daemon on
+	// a write of its Legion setting, and without the GitHub App this process keeps no copy of the
+	// GitHub reads' record (below), so none of those channels is LISTENed on.
 	listenerHub := &pglisten.Hub{
 		Owner: "dispatch",
 		Dial: func(ctx context.Context) (*pgx.Conn, error) {
 			return database.Pool.Dedicated(ctx, docs.ListenerApplicationPrefix+documentService.ProcessID())
 		},
 	}
-	var embeddingsWake, settingsWake, gitHubReadsWake <-chan struct{}
-	if backgroundEmbedder != nil {
+	var embeddingsWake, settingsWake, legionSettingsWake, gitHubReadsWake <-chan struct{}
+	if embedder != nil {
 		embeddingsWake = listenerHub.Wake(embedqueue.WakeChannel)
 	}
 	excerptsWake := listenerHub.Wake(docs.ExcerptsOwedChannel)
@@ -962,6 +993,9 @@ func main() {
 	if natsClient != nil && appCtx.GitHub() != nil {
 		settingsWake = listenerHub.Wake(delivery.SettingsChannel)
 	}
+	if natsClient != nil {
+		legionSettingsWake = listenerHub.Wake(legion.SettingsChannel)
+	}
 	if appCfg != nil {
 		gitHubReadsWake = listenerHub.Wake(githubreads.Channel)
 	}
@@ -972,7 +1006,23 @@ func main() {
 	textVersionsEventsWake := listenerHub.Wake(api.EventsChannel)
 	textVersionsReleasedWake := listenerHub.Wake(duty.HoldReleasedChannel)
 
-	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
+	// embedqueue.Run no-ops when its own Deps.Embedder is nil, so this always starts: the server's
+	// embedding queue keeps coverage itself, so a later deploy that gives meaning search a place
+	// to embed needs no other wiring change and no person-run step to cover existing content.
+	// It gets a rate-limited wrapper around the same client api.Deps holds unwrapped above
+	// (embedder, BuildAppContext's Embedder option): the queue is the only embedqueue caller, and
+	// pacing only its calls - never a live search request's own query embedding, which always
+	// goes straight through the unwrapped client - is what keeps saturating background work from
+	// taking live search down with it (LEGION-549 round 5; embed.RateLimitedEmbedder's own doc
+	// comment has the AIMD mechanism and the headroom this leaves). Deps.Paced makes the wrapper
+	// and keeps it as the queue's pace, so the pace's wait renews the queue's claim on the rows it
+	// waits to embed, and a canary that meets an outage backs the pace off. A nil embedder (meaning
+	// search off) stays nil rather than becoming a non-nil wrapper around nothing, which
+	// embedqueue.Run's own nil check depends on. The queue starts before this process registers
+	// below; it embeds and drops only while its embedder's identity is the active one, which every
+	// process decides from the live registry rows (embedqueue, active.go), so a process configured
+	// with another embedder than the fleet's leaves the vectors as they are.
+	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: embedder, Wake: embeddingsWake}.Paced())
 	// The block schema the store holds, read again each time a supertag write announces itself.
 	// A read that fails, and a value the install refuses, leaves the installed schema in place
 	// and is read again; a store a newer build migrated is installed at this build's own
@@ -1129,7 +1179,7 @@ func main() {
 	// ciInstance is filled in once this process is registered, below, and each pass records its
 	// counts in ci_reconcile_passes under the id it then holds.
 	ciInstance := &registeredInstance{}
-	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, boot.VerdictAppID, ciReconcileInterval, ciInstance, renames)
+	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, boot.VerdictAppID, ciReconcileInterval, ciInstance, renames, gitHubCalls)
 	if err != nil {
 		slog.Error("dispatch: open the CI reconcile pass", "error", err)
 		os.Exit(1)
@@ -1164,11 +1214,17 @@ func main() {
 	appCtx.Architecture().GitHubReads = recordGitHubRead
 	go architecture.Run(ctx, appCtx.Architecture(), architectureImportLeases, boot.ArchitectureImportAtStart)
 
-	// dispatch://INFRA-1077: each project whose legion_settings row names a Legion daemon has its
-	// `GET /legion/v1/state` read once a minute from one replica, under the `legion-state` lease,
-	// and every value that moved recorded. It is a timer and not a woken loop for the reason the
-	// delivery reconcile below is: a remote daemon announces nothing Dispatch can listen for.
-	go legion.RunSampler(ctx, database.Pool, legionSamplerLeases)
+	// The GitHub rate reading: every 10 minutes, and once in the last minute before each counter
+	// resets, one github_rate_reading line for each installation of the App, through a JSON logger
+	// of its own, so a log store reads the line's fields where the rest of the log is text. It reads
+	// with the API's client, which counts on gitHubCalls with the CI reconcile's, and needs the
+	// App's private key.
+	if gitHub := appCtx.GitHub(); gitHub != nil {
+		slog.Info("dispatch: reading the GitHub rate counters of each installation of the App", "client_id", appCfg.ClientID, "interval", githubrate.Interval)
+		go runRateReading(ctx, gitHub, slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+	} else {
+		slog.Info("dispatch: GitHub rate reading off: it needs the GitHub App private key")
+	}
 
 	// LEGION-567: the delivery timeline's 5-minute GitHub-App reconcile runs regardless of NATS
 	// (it never touches it); the NATS consumer that catches events between reconcile passes needs
@@ -1182,43 +1238,69 @@ func main() {
 		reconcile.TickEvery(boot.DeliveryReconcileInterval)
 	}
 	go reconcile.Run(ctx, deliveryReconcileLeases)
-	// waitIntakes waits for both intakes to stop once ctx is cancelled; StartIntakes returns it as
-	// a sync.OnceFunc, so a second call returns once the first has. The shutdown runs it before it
-	// closes the database pool: it closes the intakes' NATS clients after their Runs return, then
-	// waits for any hand-back finalizer to release its duty.Hold through that pool. A hold left in
-	// place for its TTL names the stopped process's deliver subject, which a process of the build
-	// before holds, binding by lookup, goes on delivering at, so the next holder would read that
-	// binding as a dead holder's and take it over. Every exit after the intakes start runs it too
-	// (exitAfterIntakes, stopIntakesOnExit, and the stop during the registry's admission wait), since
-	// each intake can hold its durable before this process serves anything. With no NATS client there
-	// is nothing to wait for.
+	// waitIntakes waits for the three intakes to stop once ctx is cancelled: the two delivery
+	// intakes and the Legion state intake. StartIntakes and legion.StartIntake each return their
+	// stop as a function a second call of which returns once the first has, so a second call of
+	// waitIntakes does too. The shutdown runs it before it closes the database pool: each stop
+	// closes its intakes' NATS clients after their Runs return, then waits for any hand-back
+	// finalizer to release its duty.Hold through that pool. A hold left in place for its TTL
+	// names the stopped process's deliver subject, which a process of the build before holds,
+	// binding by lookup, goes on delivering at, so the next holder would read that binding as a dead
+	// holder's and take it over. Every exit after the intakes start runs it too (exitAfterIntakes,
+	// stopIntakesOnExit, and the stop during the registry's admission wait), since each intake can
+	// hold its durable before this process serves anything. With no NATS client there is nothing
+	// to wait for.
 	waitIntakes := func() {}
 	if natsClient != nil {
-		// The intake and the job intake (LEGION-690) each bind a durable, so each takes a client of
-		// its own (delivery.StartIntakes). Their Runs begin stopping at the signal beside the HTTP
-		// drain and document shutdown, and return once a message in a handler has been acknowledged or
-		// given up at its stop budget and handed back. StartIntakes then closes both clients, waits for
-		// each pending hand-back's finalizer to release the hold through the pool, and returns. Each
-		// connects in the background as the publisher does, and its poll takes the durable's hold once
-		// it has. While delivery settings are saved (the intake runs only then), the intake hands each
-		// push of a branch to the architecture importer the ticker and the routes share, which imports
-		// the enabled sources on that repository and branch at once; a push it hands over once the
-		// importer's Close has begun starts nothing (architecture.Importer.Pushed).
+		// The intake and the job intake (LEGION-690) each bind a durable, and the Legion state
+		// intake a third, so each takes a client of its own (delivery.StartIntakes,
+		// legion.StartIntake). Their Runs begin stopping at the signal beside the HTTP drain and
+		// document shutdown, and return once a message in a handler has been acknowledged or given
+		// up at its stop budget and handed back. StartIntakes and legion.StartIntake then close
+		// their clients, wait for each pending hand-back's finalizer to release the hold through
+		// the pool, and return. Each connects in the background as the publisher does, and its poll
+		// takes the durable's hold once it has, whether or not delivery settings are saved. The
+		// intake hands each push of a branch to the architecture importer the ticker and the routes
+		// share, which imports the enabled sources on that repository and branch at once; a push it
+		// hands over once the importer's Close has begun starts nothing
+		// (architecture.Importer.Pushed). Each intake's client writes with the deadline
+		// delivery.IntakeWriteDeadline, which says how long a write to a frozen link holds the
+		// client's Close and why no fixed time bounds that Close. No other client of the server
+		// takes that deadline, since the publisher and the agent stream relay publish payloads a
+		// slow link can take longer than that to accept.
 		connectIntake := func(name string) (*bus.Client, error) {
-			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
+			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name),
+				bus.WithWriteDeadline(delivery.IntakeWriteDeadline))...)
 		}
 		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake, appCtx.Architecture(), attributor)
 		if err != nil {
 			slog.Error("dispatch delivery: connect NATS", "error", err)
 			os.Exit(1)
 		}
-		waitIntakes = stopIntakes
+		// dispatch://INFRA-3931: each project whose legion_settings row names a Legion daemon has
+		// its observations written from the state events that daemon publishes, which the Legion
+		// state intake takes from its held durable, with or without the GitHub App; it reads a
+		// daemon's `GET /legion/v1/state` whole only for the reasons legion's ReadReason constants
+		// name, a project's reads at least legion.ReadRetryAfter apart, and no recurring timer
+		// reads one. A connect that fails stops the delivery intakes before the exit, since they
+		// may hold their durables already.
+		stopLegionIntake, err := legion.StartIntake(ctx, connectIntake, database.Pool, legionIntakeLeases, legionSettingsWake)
+		if err != nil {
+			slog.Error("dispatch: connect the Legion state intake to NATS", "error", err)
+			cancel()
+			stopIntakes()
+			os.Exit(1)
+		}
+		waitIntakes = func() {
+			stopIntakes()
+			stopLegionIntake()
+		}
 		// A stop before serving (the admission wait, below) returns without shutdown, and a panic
 		// before serving unwinds past it, so the intakes are stopped here too; after shutdown has
 		// waited for them, this returns at once.
 		defer stopIntakesOnExit(cancel, waitIntakes)
 	} else {
-		slog.Info("dispatch delivery: no NATS client — intake is idle; the reconcile alone still runs")
+		slog.Info("dispatch: no NATS client — the delivery intakes and the Legion state intake are idle; the delivery reconcile alone still runs")
 	}
 
 	// LEGION-781, INFRA-555: the announcer publishes server.started once each time every live
@@ -1236,6 +1318,7 @@ func main() {
 	})
 
 	routesHandler, background := routes.New(appCtx)
+	postSystemMessage.Store(&background.PostSystemMessage)
 	// The keyword fill (textversions.Run) writes search_text_versions, the keyword table of each
 	// past version of the searchable text, from the event log. It is a held duty, not a loop woken
 	// per pass: one process holds its duty.Hold (search-text-versions-fill) for as long as it
@@ -1503,6 +1586,66 @@ func dispatchStreamOptions(boot bootConfig, env settingValues) []bus.ConnectOpti
 	}
 }
 
+// credentialURLRefusal is why raw, the value of the setting named setting, is refused as a URL
+// that can carry a credential, or nil: one with a user name or a password, an "@" after its host
+// (natsurl.UserinfoPastHost: where a credential holding a "/", "?" or "#" written as the user
+// lands), a query or a fragment, each named by the setting alone, as the daemon refuses them in
+// agent_secrets.url. what names the URL the setting holds, which has none of them. A value that
+// does not parse is nil here: the caller's shape check names it through redact.URL. Dispatch
+// builds every request to such a URL on it, and net/http masks a password but not a user name or
+// a query in the errors it returns, which reach Dispatch's log and, from the Envoy listener's
+// client, its API's answers.
+func credentialURLRefusal(setting, what, raw string) error {
+	parsed, err := url.Parse(raw)
+	switch {
+	case err != nil:
+		return nil
+	case parsed.User != nil:
+		return fmt.Errorf("%s cannot be read: it holds a user name or a password, which %s has none of", setting, what)
+	case natsurl.UserinfoPastHost(parsed):
+		return errors.New(setting + " cannot be read: " + natsurl.UserinfoPastHostReason)
+	case parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(raw, "#"):
+		return fmt.Errorf("%s cannot be read: it holds a query or a fragment, which %s has none of", setting, what)
+	}
+	return nil
+}
+
+// agentSecretsURLRefusal is why raw, DISPATCH_AGENT_SECRETS_URL's value, is no broker URL, or nil:
+// one credentialURLRefusal refuses, and one that is no absolute http(s) URL with no path, named
+// through redact.URL. Dispatch's introspection and its broker client build every request on it.
+func agentSecretsURLRefusal(raw string) error {
+	if err := credentialURLRefusal("DISPATCH_AGENT_SECRETS_URL", "the broker's URL", raw); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" {
+		return fmt.Errorf("DISPATCH_AGENT_SECRETS_URL=%q (expected an absolute http(s) URL with no path)", redact.URL(raw))
+	}
+	return nil
+}
+
+// gitHubAPIBaseRefusal is why raw, DISPATCH_GITHUB_API_BASE's value, is refused, or nil: one
+// credentialURLRefusal refuses, and one that is no absolute http(s) URL with a host, named through
+// redact.URL, as ENVOY_URL's shape refusal is. credentialURLRefusal reads only a value net/url
+// parses as a URL with an authority, so the shape check refuses what it cannot read: a value that
+// does not parse (an unencoded "%" or a space in its password), and one with no "//" after its
+// scheme (`ghuser:<token>@ghe.example/api/v3`, read as the scheme `ghuser` and an opaque rest). The
+// GitHub App client builds every request on the base and names the request's URL in its own
+// words on a failed call (githubapp's `<method> <target>: …`), password and all, which reaches
+// the 502 of the App installation route, a CI check's detail and the GitHub read record /healthz
+// serves. The server and redeliver-webhooks each read it. A base with a path (GitHub Enterprise's
+// `/api/v3`) loads.
+func gitHubAPIBaseRefusal(raw string) error {
+	if err := credentialURLRefusal("DISPATCH_GITHUB_API_BASE", "the GitHub API's base URL", raw); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("DISPATCH_GITHUB_API_BASE=%q (expected an absolute http(s) URL with a host)", redact.URL(raw))
+	}
+	return nil
+}
+
 // resolveBootConfig is the server's configuration from what the settings table read (env),
 // checked before anything connects. It holds the settings main hands on as values; three groups
 // reach their readers from env instead, through the table's lookup: the GitHub App credentials
@@ -1536,6 +1679,16 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	}
 	if boot.DatabaseURL == "" {
 		return bootConfig{}, errors.New("DATABASE_URL required")
+	}
+	// Before the dev sign-in fence parses it (loopbackDatabase), which would print part of a
+	// password a refused DSN leaves in its host or in pgx's quote of it.
+	if err := pgdsn.Refusal(store.DSNSetting, boot.DatabaseURL); err != nil {
+		return bootConfig{}, err
+	}
+	if boot.GitHubAPIBase != "" {
+		if err := gitHubAPIBaseRefusal(boot.GitHubAPIBase); err != nil {
+			return bootConfig{}, err
+		}
 	}
 	if fallback := boot.ProjectOwnerFallback; fallback != "" {
 		if err := principal.CheckPersonLogin(fallback); err != nil {
@@ -1685,9 +1838,12 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if envoyURL == "" {
 		envoyURL = defaultEnvoyURL
 	}
+	if err := credentialURLRefusal("ENVOY_URL", "the Envoy listener's URL", envoyURL); err != nil {
+		return bootConfig{}, err
+	}
 	parsed, err := url.Parse(envoyURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return bootConfig{}, fmt.Errorf("ENVOY_URL=%q (expected an absolute http(s) URL)", envoyURL)
+		return bootConfig{}, fmt.Errorf("ENVOY_URL=%q (expected an absolute http(s) URL)", redact.URL(envoyURL))
 	}
 	boot.EnvoyURL = strings.TrimSuffix(envoyURL, "/")
 
@@ -1702,14 +1858,13 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 
 	agentSecretsURL := strings.TrimSuffix(strings.TrimSpace(env.get("DISPATCH_AGENT_SECRETS_URL")), "/")
 	if agentSecretsURL != "" {
-		parsed, err := url.Parse(agentSecretsURL)
-		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" {
-			return bootConfig{}, fmt.Errorf("DISPATCH_AGENT_SECRETS_URL=%q (expected an absolute http(s) URL with no path)", redact.URL(agentSecretsURL))
+		if err := agentSecretsURLRefusal(agentSecretsURL); err != nil {
+			return bootConfig{}, err
 		}
 		boot.AgentSecretsURL = agentSecretsURL
-		boot.AgentSecretsTokenFile = strings.TrimSpace(env.get("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"))
+		boot.AgentSecretsTokenFile = strings.TrimSpace(env.get(dispatchcipher.TokenFileSetting))
 		if boot.AgentSecretsTokenFile == "" {
-			return bootConfig{}, errors.New("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE is required when DISPATCH_AGENT_SECRETS_URL is set: Dispatch calls the broker with its own projected Kubernetes ServiceAccount token")
+			return bootConfig{}, errors.New(dispatchcipher.TokenFileSetting + " is required when DISPATCH_AGENT_SECRETS_URL is set: Dispatch calls the broker with its own projected Kubernetes ServiceAccount token")
 		}
 	}
 	// The value is strict, as DISPATCH_DEV_SIGNIN's is: a misspelt `on` must refuse the boot, not
@@ -1783,7 +1938,7 @@ func devSignInFence(boot bootConfig, env settingValues) error {
 		}
 	}
 	if !routes.LoopbackURL(boot.EnvoyURL) {
-		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 delivers through this machine's Envoy listener only: ENVOY_URL=%q must name 127.0.0.1, [::1] or localhost", boot.EnvoyURL)
+		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 delivers through this machine's Envoy listener only: ENVOY_URL=%q must name 127.0.0.1, [::1] or localhost", redact.URL(boot.EnvoyURL))
 	}
 	return nil
 }
@@ -1813,18 +1968,20 @@ func devSignInLoadedFence(boot bootConfig, serverURL string, app *auth.AppConfig
 		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 refuses the App private key in %s, whatever DISPATCH_GITHUB_API_BASE names: that file is where the real App's key is kept, and with the flag any loopback client can have the App sign calls. Pass a throwaway App in the environment instead (DISPATCH_APP_CLIENT_ID and a generated DISPATCH_APP_PEM_B64, which take precedence over app.json), with DISPATCH_GITHUB_API_BASE naming a GitHub fake on a loopback host, as packages/dispatch/e2e/run-server.sh does", source.Path)
 	}
 	if !routes.LoopbackURL(boot.GitHubAPIBase) {
-		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 lets the App private key (DISPATCH_APP_PEM_B64) sign calls only to a loopback host: DISPATCH_GITHUB_API_BASE=%q (empty is https://api.github.com) must name 127.0.0.1, [::1] or localhost. Use a throwaway key: every App call hands a signed App JWT to whatever listens there", boot.GitHubAPIBase)
+		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 lets the App private key (DISPATCH_APP_PEM_B64) sign calls only to a loopback host: DISPATCH_GITHUB_API_BASE=%q (empty is https://api.github.com) must name 127.0.0.1, [::1] or localhost. Use a throwaway key: every App call hands a signed App JWT to whatever listens there", redact.URL(boot.GitHubAPIBase))
 	}
 	return nil
 }
 
 // loopbackDatabase refuses a DATABASE_URL with a host that is not this machine: the data a
 // dev-sign-in server serves to any local process must be a scratch database here. pgx parses
-// both the URL and the key=value forms, multi-host lists included, exactly as store.Open will.
+// both the URL and the key=value forms, multi-host lists included, exactly as store.Open will. A
+// DSN pgx cannot parse is named through pgdsn.ConnectError, never by pgx's text, which quotes it;
+// resolveBootConfig has refused one whose host would hold part of a password (pgdsn.Refusal).
 func loopbackDatabase(databaseURL string) error {
 	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
-		return fmt.Errorf("DATABASE_URL: %w", err)
+		return pgdsn.ConnectError(store.DSNSetting, databaseURL, err)
 	}
 	hosts := []string{config.Host}
 	for _, fallback := range config.Fallbacks {
@@ -2377,6 +2534,13 @@ func (g *gitHubReads) member() *gitHubReadsMember {
 	}
 }
 
+// logServiceTokens logs the issuer and audience boot verifies service-account tokens under, the
+// issuer through redact.URL: oidc.IssuerRefusal has refused a credential in its userinfo, past its
+// host, or in its query or fragment, and redact.URL prints none of a value that is no plain URL.
+func logServiceTokens(boot bootConfig) {
+	slog.Info("dispatch: verifying service-account tokens", "issuer", redact.URL(boot.OIDCIssuer), "audience", boot.OIDCAudience)
+}
+
 // serviceTokenVerifier is the verifier of the projected service-account tokens boot's
 // DISPATCH_OIDC_ISSUER issues to DISPATCH_OIDC_AUDIENCE, nil when boot configures none. It reads
 // nothing: the issuer is discovered in the background (oidc.LazyVerifier.Run, which main starts at
@@ -2400,8 +2564,12 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // It serves a read-only token (ciphertoken.Options.ServesReadOnly): one that holds read, which
 // the broker mints from a read entry or narrows when a trade asks for read. Dispatch is the one
 // service that asks for it, because its route table classes the GET rows such a token may call
-// (the read class, readClasses in internal/dispatch/api), and every other route answers it
-// 403 READ_ONLY_TOKEN before anything of the route runs.
+// (the read class its declaration states, internal/dispatch/api), and every other route answers it
+// 403 READ_ONLY_TOKEN before anything of the route runs. It serves an approve-only token too
+// (ciphertoken.Options.ServesApproveOnly): the scope approve alone, which the broker mints for a
+// person's approve grant and spends through its proxy, never released. The routes whose
+// declaration states ApproveOnly are the routes such a token may call, and every other route
+// answers it 403 APPROVE_ONLY_TOKEN before anything of the route runs.
 //
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
 // presentation is refused as any non-bearer Authorization header has always been
@@ -2412,16 +2580,18 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 	}
 	return ciphertoken.New(ciphertoken.Options{
 		BrokerURL: boot.AgentSecretsURL,
-		Account:   ciphertoken.NewAccountToken(boot.AgentSecretsTokenFile),
+		Account:   ciphertoken.NewAccountToken(dispatchcipher.TokenFileSetting, boot.AgentSecretsTokenFile),
 		Origins:   proofOrigins(serverURL, boot.ProofOrigins),
 		Replay:    store.NewDPoPProofs(database.Pool),
 		// Dispatch's own rule for which address a request came from, the one its access log and
 		// its other buckets read; the check itself has none, so this says whose proxy header is
 		// trusted here (auth.ForwardedAddress).
 		Address: auth.ForwardedAddress,
-		// The read class and its gate are Dispatch's own (internal/dispatch/api), so a read-only
-		// token reaches the reads of that class and no other route.
-		ServesReadOnly: true,
+		// The read class, the approve list and their gates are Dispatch's own
+		// (internal/dispatch/api), so a read-only token reaches the reads of that class and an
+		// approve-only token the routes the approve list names, and no other route.
+		ServesReadOnly:    true,
+		ServesApproveOnly: true,
 	})
 }
 

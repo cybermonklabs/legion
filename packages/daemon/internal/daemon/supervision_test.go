@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	recordpkg "github.com/sjawhar/legion/daemon/internal/record"
@@ -65,7 +66,7 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 		}, "envoy_token_file names"},
 		{"a NATS nkey seed file that is not there", func(c *config.Config, _ *overrides) {
 			c.NatsNkeySeedFile = filepath.Join(c.StateDir, "absent")
-		}, "nats_nkey_seed_file names " + "{state}/absent, which could not be read"},
+		}, "nats_nkey_seed_file names a file that could not be read: it does not exist"},
 		{"a blank NATS nkey seed file", func(c *config.Config, _ *overrides) {
 			c.NatsNkeySeedFile = testnkeys.SeedFile(t, " \n")
 		}, "nats_nkey_seed_file names {seed}, which is empty"},
@@ -80,7 +81,7 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 		}, "NATS_NKEY_SEED_FILE is set but empty"},
 		{"NATS_NKEY_SEED_FILE naming a missing file", func(c *config.Config, o *overrides) {
 			o.environ = []string{"NATS_NKEY_SEED_FILE=" + filepath.Join(c.StateDir, "absent")}
-		}, "NATS_NKEY_SEED_FILE names {state}/absent, which could not be read"},
+		}, "NATS_NKEY_SEED_FILE names a file that could not be read: it does not exist"},
 		{"a provider key naming the NATS nkey seed beside the daemon's", func(c *config.Config, _ *overrides) {
 			c.NatsNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 			c.ProviderKeys = []config.ProviderKey{{Env: "NATS_NKEY_SEED", Secret: "NATS_NKEY_SEED_TESTS"}}
@@ -91,7 +92,7 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 		{"a daemon NATS nkey seed file that is not there, beside a usable pane seed", func(c *config.Config, _ *overrides) {
 			c.NatsNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 			c.NatsDaemonNkeySeedFile = filepath.Join(c.StateDir, "absent")
-		}, "nats_daemon_nkey_seed_file names {state}/absent, which could not be read"},
+		}, "nats_daemon_nkey_seed_file names a file that could not be read: it does not exist"},
 		{"a daemon NATS nkey seed file holding an account's seed", func(c *config.Config, _ *overrides) {
 			c.NatsDaemonNkeySeedFile = filepath.Join(c.StateDir, "daemon.seed")
 			if err := os.WriteFile(c.NatsDaemonNkeySeedFile, []byte(testnkeys.Account(t)), 0o600); err != nil {
@@ -112,7 +113,7 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 		{"a provider key that cannot be resolved", func(c *config.Config, o *overrides) {
 			c.ProviderKeys = []config.ProviderKey{{Env: "ABSENT_ENV", Secret: "ABSENT_KEY"}}
 			o.environ = []string{"PATH=" + t.TempDir()}
-		}, "provider_keys.ABSENT_ENV: the secrets command is not on PATH, so ABSENT_KEY cannot be read"},
+		}, "provider_keys.ABSENT_ENV: the secrets command is not on PATH, so the secretsd key it names cannot be read"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			cfg := testConfig(t)
@@ -831,12 +832,19 @@ func TestRunWaitsToRelaunchAnUnfinishedClaimUntilOrphanReconciliationSucceeds(t 
 	thirdOverrides := fakeRuntime(third, &built{})
 	thirdOverrides.orphanSweep = 20 * time.Millisecond
 	final := startDaemon(t, cfg, thirdOverrides)
-	testwait.Eventually(t, "the third boot to launch after reconciliation succeeds", func() bool { return len(third.CallsOf("Spawn")) == 1 })
-	if spawned := third.CallsOf("Spawn")[0]; spawned.Spec.Generation != 2 {
-		t.Fatalf("the third boot spawned generation %d, want 2", spawned.Spec.Generation)
+	// The fake records Spawn as the call begins, and the machine records the process Spawn answers
+	// after the call returns, publishing the claim at the end of that decision (Machine.unlock): a
+	// read made once the call is recorded can come before the locator. So the wait is for the
+	// claim to hold its process, and the Spawn is read after it.
+	c := testwait.Until(t, "the third boot's launch after reconciliation succeeds to record its process", func() (api.OperatorClaim, bool) {
+		read := final.claim(token)
+		return read, read.Locator != nil
+	})
+	if c.State != string(supervise.StateLaunching) || c.Generation != 2 {
+		t.Fatalf("claim after successful reconciliation = %+v, want the one launching incarnation at generation 2", c)
 	}
-	if c := final.claim(token); c.State != string(supervise.StateLaunching) || c.Locator == nil {
-		t.Fatalf("claim after successful reconciliation = %+v, want the one launching incarnation", c)
+	if spawns := third.CallsOf("Spawn"); len(spawns) != 1 || spawns[0].Spec.Generation != 2 {
+		t.Fatalf("the third boot spawned %+v, want one launch at generation 2", spawns)
 	}
 }
 
@@ -1014,7 +1022,7 @@ func TestRunResolvesProviderKeysAtBootAndKeepsThemThroughThePrune(t *testing.T) 
 		"  AGENT_KEY:--no-request) echo '{\"key\":\"AGENT_KEY\",\"tier\":\"agent\"}' ;;\n" +
 		"  AGENT_KEY:--value) echo 'agent-value' ;;\n" +
 		"  *) exit 9 ;;\nesac\n"
-	if err := os.WriteFile(filepath.Join(bin, "secrets"), []byte(stub), 0o755); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "secrets"), []byte(stub), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	o := fakeRuntime(fake.NewRuntime(), &built{})
@@ -1259,6 +1267,12 @@ func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true}},
 		{stream.PromptResult{Claim: token, DeliveryID: "d1", Error: "no model"},
 			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", Error: "no model"}},
+		// Every member of the error object the machine decides on, Oh My Pi's class of the
+		// failure among them: a cyber_policy code dropped here is a refusal the ladder re-sends.
+		{stream.PromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true, Error: "503 cyber_policy: synthetic refusal text",
+			HTTPStatus: 503, Provider: "openai", Model: "gpt-5.5", Code: "cyber_policy"},
+			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true, Error: "503 cyber_policy: synthetic refusal text",
+				HTTPStatus: 503, Provider: "openai", Model: "gpt-5.5", Code: "cyber_policy"}},
 		{stream.LateRefusal{Claim: token, DeliveryID: "d1", Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."},
 			supervise.StreamLateRefusal{Claim: token, DeliveryID: "d1", Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."}},
 		{stream.LateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Replayed: true, ConnSequence: 3},

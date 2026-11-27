@@ -121,9 +121,10 @@ func TestRegisteredOpenGateRecordsChildAndStartsPlanningAtItsSlot(t *testing.T) 
 		t.Fatalf("child tree/phase = %q/%q, want LEGION-208/planning", tree, gotPhase)
 	}
 	// The first supervise row is the child's own architect's start, before its planner's
-	// (Engine.gateOpened). The second notice is the child-status that every child the line starts
-	// tells the architect above it (ChildStartedNotice).
-	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "plan_record", "supervise", "notice", "notice"})
+	// (Engine.gateOpened). The one notice is the child-status that every child the line starts
+	// tells the architect above it (ChildStartedNotice): the child's move out of admitted tells
+	// nobody (noticeFor).
+	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "plan_record", "supervise", "notice"})
 	var branchIssue string
 	var generation int
 	if err := pool.QueryRow(ctx, "select issue, (payload->>'generation')::int from outbox where kind = 'issue_branch'").Scan(&branchIssue, &generation); err != nil {
@@ -377,17 +378,17 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 	}
 }
 
-// reviewerPrompt is the reviewer's composed prompt as its pane reads it: every part Compose names,
-// read back and joined in order.
-func reviewerPrompt(t *testing.T) string {
+// rolePrompt is role's composed prompt as its pane reads it: every part Compose names, read back
+// and joined in order.
+func rolePrompt(t *testing.T, role claim.Role) string {
 	t.Helper()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	parts, err := composer.Compose(claim.RoleReviewer, false)
+	parts, err := composer.Compose(role, false)
 	if err != nil {
-		t.Fatalf("compose the reviewer's prompt: %v", err)
+		t.Fatalf("compose the %s's prompt: %v", role, err)
 	}
 	var prompt strings.Builder
 	for _, path := range parts.RolePromptPaths {
@@ -404,7 +405,7 @@ func reviewerPrompt(t *testing.T) string {
 // its own completion carries none, so a rename on either side alone fails here.
 func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
 	t.Parallel()
-	prompt := reviewerPrompt(t)
+	prompt := rolePrompt(t, claim.RoleReviewer)
 	for _, want := range []string{"`" + testerVerdictLabel + ":`", "`VERDICT_ROLE_FORBIDDEN`"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("the reviewer's prompt does not say %q", want)
@@ -425,7 +426,7 @@ func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s, the skill the reviewer's prompt sends it to: %v", mergeGate, err)
 	}
-	prompt := reviewerPrompt(t)
+	prompt := rolePrompt(t, claim.RoleReviewer)
 	sentences := reviewround.Sentences("<sha>", 7)
 	for _, tc := range []struct {
 		field, part string

@@ -14,6 +14,7 @@ import (
 // differ only where the sanitizer writes `.` and `_` alike, keep subjects of their own. The
 // expected subjects are the ones githubPushSubject in packages/contracts builds (envelope.test.ts).
 func TestGithubPushSubjectCutsARefPastTheSubjectBound(t *testing.T) {
+	t.Parallel()
 	const prefix = "notifications.github.acme.widgets.push.branch."
 	room := SubjectMaxBytes - len(prefix)
 

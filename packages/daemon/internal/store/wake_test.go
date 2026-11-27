@@ -60,10 +60,11 @@ func reopenStore(t *testing.T, store *Store) *Store {
 	return reopened
 }
 
-// A wake reads a released claim by its role token and by the session it kept, and reads neither
-// once another path has taken the claim over: a suspension of any other source is somebody
-// else's to resume.
-func TestAReleasedClaimIsReadByItsTokenAndItsSessionUntilAnotherPathTakesItOver(t *testing.T) {
+// A listener's report reads the claim it names by its role token and by the session it kept,
+// whatever the claim's state, since the report marks it in any of them. What the read says of the
+// claim is what decides the wake: it is released until another path takes it over, and a
+// suspension of any other source is somebody else's to resume.
+func TestAListenersReportReadsItsClaimByTokenAndBySessionInAnyState(t *testing.T) {
 	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
@@ -71,18 +72,18 @@ func TestAReleasedClaimIsReadByItsTokenAndItsSessionUntilAnotherPathTakesItOver(
 
 	records := podRecords(t, store)
 	inTx(t, store, func(tx pgx.Tx) error {
-		byToken, found, err := records.ReleasedClaimByToken(ctx, tx, string(releasedToken))
-		if err != nil || !found {
-			t.Fatalf("ReleasedClaimByToken = %+v, %t, %v; want the released claim", byToken, found, err)
+		byToken, found, err := records.ClaimByToken(ctx, tx, string(releasedToken))
+		if err != nil || !found || !byToken.Released() {
+			t.Fatalf("ClaimByToken = %+v, %t, %v; want the released claim", byToken, found, err)
 		}
 		if byToken.Issue != rootIssue || byToken.Role != claim.RoleImplementer || byToken.ServingGeneration != 1 {
 			t.Fatalf("the claim read by token = %+v, want the implementer of %s at generation 1", byToken, rootIssue)
 		}
-		bySession, found, err := records.ReleasedClaimBySession(ctx, tx, "session-1")
-		if err != nil || !found || bySession.Token != releasedToken {
-			t.Fatalf("ReleasedClaimBySession = %+v, %t, %v; want the same claim", bySession, found, err)
+		bySession, found, err := records.ClaimBySession(ctx, tx, "session-1")
+		if err != nil || !found || bySession.Token != releasedToken || !bySession.Released() {
+			t.Fatalf("ClaimBySession = %+v, %t, %v; want the same claim", bySession, found, err)
 		}
-		if _, found, err := records.ReleasedClaimBySession(ctx, tx, "another-daemons-session"); err != nil || found {
+		if _, found, err := records.ClaimBySession(ctx, tx, "another-daemons-session"); err != nil || found {
 			t.Fatalf("a session of no claim of this project = %t, %v; want not found", found, err)
 		}
 		return nil
@@ -94,11 +95,13 @@ func TestAReleasedClaimIsReadByItsTokenAndItsSessionUntilAnotherPathTakesItOver(
 			t.Fatalf("take the claim over: %v", err)
 		}
 		inTx(t, store, func(tx pgx.Tx) error {
-			if _, found, err := records.ReleasedClaimByToken(ctx, tx, string(releasedToken)); err != nil || found {
-				t.Fatalf("a claim suspended by %s reads released = %t, %v; want not found", source, found, err)
+			byToken, found, err := records.ClaimByToken(ctx, tx, string(releasedToken))
+			if err != nil || !found || byToken.Released() || byToken.SuspendedBy != source {
+				t.Fatalf("a claim suspended by %s reads %+v, %t, %v; want it found and not released", source, byToken, found, err)
 			}
-			if _, found, err := records.ReleasedClaimBySession(ctx, tx, "session-1"); err != nil || found {
-				t.Fatalf("a claim suspended by %s reads released by session = %t, %v; want not found", source, found, err)
+			bySession, found, err := records.ClaimBySession(ctx, tx, "session-1")
+			if err != nil || !found || bySession.Released() {
+				t.Fatalf("a claim suspended by %s reads by session %+v, %t, %v; want it found and not released", source, bySession, found, err)
 			}
 			return nil
 		})
@@ -335,6 +338,85 @@ func TestTakingAWakeRecordsItAgainstTheNewestReleaseOnce(t *testing.T) {
 	}
 	if _, _, found, err := store.OpenPodResume(ctx, "legion", rootIssue, claim.RoleImplementer); err != nil || found {
 		t.Fatalf("OpenPodResume after the first turn = %t, %v; want none", found, err)
+	}
+}
+
+// A wake taken while a release still stands, after that release recorded the role as `released`,
+// ends that release, and the take reads the release before it, since this one has no row yet. The
+// release's own record points that wake at it: its release and the release it saw become this
+// release, and its time and its stuck clock move to this release's time, when the pod starts to
+// come back. Nothing else is pointed: not a wake of a role the release never recorded, not a wake
+// whose role has taken its first turn, and not a wake taken before the mark.
+func TestARecordedReleasePointsTheWakeTakenUnderItsMarkAtItself(t *testing.T) {
+	t.Parallel()
+	store := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, store)
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	earlier, _, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
+		Generation: 1, Roles: []string{"implementer"}, At: at.Add(-2 * time.Hour)})
+	if err != nil {
+		t.Fatalf("record the earlier release: %v", err)
+	}
+	take := func(role claim.Role, when time.Time) int64 {
+		t.Helper()
+		token, err := claim.NewToken("legion", rootIssue, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if taken, err := store.TakePodWake(ctx, "legion", rootIssue, token, pods.WakeAgentMessage, when, 0); err != nil || !taken {
+			t.Fatalf("take the %s's wake = %t, %v; want it taken", role, taken, err)
+		}
+		id, _, found, err := store.OpenPodResume(ctx, "legion", rootIssue, role)
+		if err != nil || !found {
+			t.Fatalf("the %s's open resume = %t, %v; want the one its wake recorded", role, found, err)
+		}
+		return id
+	}
+	// A wake of the reviewer before the mark: the mark's wake_row is its id. The mark is written
+	// by hand so that resume stays open, which the mark of a release that suspends a role closes.
+	before := take(claim.RoleReviewer, at.Add(-time.Hour))
+	markRelease(t, store, 1, 1, 1, 0, claim.RoleImplementer, claim.RoleReviewer, claim.RoleTester)
+	if _, err := store.Pool().Exec(ctx, `update issue_releases set wake_row = $2 where project = 'legion' and issue = $1`,
+		rootIssue, before); err != nil {
+		t.Fatalf("set the mark's newest wake: %v", err)
+	}
+	taken := at.Add(-10 * time.Minute)
+	woken := take(claim.RoleImplementer, taken)
+	outside := take(claim.RoleArchitect, taken)
+	turned := take(claim.RoleTester, taken)
+	if err := store.MarkPodResumeFirstTurn(ctx, turned, taken.Add(time.Minute)); err != nil {
+		t.Fatalf("stamp the tester's first turn: %v", err)
+	}
+
+	release, _, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+		Roles: []string{"implementer", "reviewer", "tester"}, At: at})
+	if err != nil {
+		t.Fatalf("record the release: %v", err)
+	}
+
+	for _, want := range []struct {
+		what          string
+		id            int64
+		release, seen int64
+		at            time.Time
+	}{
+		{what: "the wake taken under the mark", id: woken, release: release, seen: release, at: at},
+		{what: "the wake of a role the release never recorded", id: outside, release: earlier, seen: earlier, at: taken},
+		{what: "the wake whose role took its first turn", id: turned, release: earlier, seen: earlier, at: taken},
+		{what: "the wake taken before the mark", id: before, release: earlier, seen: earlier, at: at.Add(-time.Hour)},
+	} {
+		var release, seen int64
+		var resumed, clock time.Time
+		if err := store.Pool().QueryRow(ctx, `select release_id, seen_release, at, clock_at from pod_resumes where id = $1`,
+			want.id).Scan(&release, &seen, &resumed, &clock); err != nil {
+			t.Fatalf("read %s: %v", want.what, err)
+		}
+		if release != want.release || seen != want.seen || !resumed.Equal(want.at) || !clock.Equal(want.at) {
+			t.Errorf("%s has release %d, seen release %d, time %s and stuck clock %s; want %d, %d, and %s for both",
+				want.what, release, seen, resumed.UTC().Format(time.RFC3339Nano), clock.UTC().Format(time.RFC3339Nano),
+				want.release, want.seen, want.at.Format(time.RFC3339Nano))
+		}
 	}
 }
 

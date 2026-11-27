@@ -17,7 +17,7 @@
 // shows by failing at that step.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration, the
+// own whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration, the
 // real store and its migrations, the real HTTP API, the real intake consumers, the real review
 // round and its stuck notice, the real merge-state ladder (daemon's readMergeStates) and the real
 // state build. Facts enter only as production's do: GitHub envelopes on the ENVOY_NOTIFICATIONS
@@ -129,6 +129,9 @@ type mergeWaitReadableLive struct {
 // approval that follows it, the two issues the same state carries no wait for at all, and the
 // answer that ends the wait.
 func TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive(t *testing.T) {
+	// Not parallel: a live proof on the one NATS server LEGION_E2E_NATS_URL names: it creates the stream
+	// ENVOY_NOTIFICATIONS there and writes the file LEGION_E2E_DAEMON_LOG names, which a proof beside it
+	// would share, and its steps watch liveSettle's 3 s for what must not happen.
 	r := newMergeWaitReadableLive(t)
 	r.step("merge-wait-appears", r.mergeWaitAppears)
 	r.step("a-confirming-read-moves-the-stamp", r.aConfirmingReadMovesTheStamp)
@@ -172,7 +175,7 @@ func newMergeWaitReadableLive(t *testing.T) *mergeWaitReadableLive {
 	o := fakeRuntime(r.rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
-	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, o, r.log())
 	return r
 }
 

@@ -22,8 +22,9 @@ func after(hours float64) time.Time {
 }
 
 // corpus writes the event log, handoffs and observations of one finished child of one root, the
-// shapes Read gathers: a session titled by its role and issue, status snapshots, a handoff, the
-// sampler's observations, a merged pull request, and an issue the implementer filed in the tree.
+// shapes the reads gather: a session titled by its role and issue, status snapshots, a handoff,
+// the observations Dispatch records, a merged pull request, and an issue the implementer filed in
+// the tree.
 func corpus(t *testing.T) *store.Store {
 	t.Helper()
 	database := storetest.Open(t)
@@ -83,12 +84,12 @@ func corpus(t *testing.T) *store.Store {
 	return database
 }
 
-// TestReadGathersEveryFactTheRulesRead: one read over a seeded event log carries the role events,
-// the statuses, the ask turn, the handoff, the observations, the merge time and the filing, and
-// the report computed from it is the one the rules describe.
-func TestReadGathersEveryFactTheRulesRead(t *testing.T) {
+// TestReadProjectGathersEveryFactTheRulesRead: the facts' read over a seeded event log carries the
+// role events, the statuses, the ask turn, the handoff, the observations, the merge time and the
+// filing, and the facts and the folds of the evals over it are the ones the rules describe.
+func TestReadProjectGathersEveryFactTheRulesRead(t *testing.T) {
 	database := corpus(t)
-	population, err := Read(t.Context(), database.Pool, nil, "INFRA", after(-2), after(24))
+	population, err := ReadProject(t.Context(), database.Pool, "INFRA", after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -118,30 +119,70 @@ func TestReadGathersEveryFactTheRulesRead(t *testing.T) {
 		t.Fatalf("the filings are %+v, want the child the architect filed and the follow-up the implementer filed", population.Filed)
 	}
 
-	report := Compute(population, ScopeAll, after(24))
-	if report.Finished != 1 || report.WorkTime.Issues[0].Key != "INFRA-2" {
-		t.Fatalf("the report counted %d issues (%+v), want the child alone", report.Finished, report.WorkTime.Issues)
+	w := windowOf(population, ScopeAll)
+	if len(w.finished) != 1 || w.finished[0] != "INFRA-2" {
+		t.Fatalf("the window finished %v, want the child alone", w.finished)
 	}
 	// Nine hours from the first worker event to the close, less the two parked ones.
-	if row := report.WorkTime.Issues[0]; row.Hours != 7 || row.ParkedHours != 2 {
-		t.Errorf("the child's work time = %g hours with %g parked, want 7 and 2", row.Hours, row.ParkedHours)
+	if row := w.fact(t, "INFRA-2"); row.WorkHours != 7 || row.ParkedHours != 2 {
+		t.Errorf("the child's work time = %g hours with %g parked, want 7 and 2", row.WorkHours, row.ParkedHours)
 	}
 	// The turn the daemon recorded runs from hour 1 to hour 3, and the issue was parked from
 	// hour 2, so one of its two hours is off the bar with the rest of the parked time: the bar's
 	// seven hours are the work time's own.
-	bar := barOf(t, report, "implementer")
+	bar := barOf(t, w, "implementer")
 	if bar.Segments.InATurn != 1 || bar.Segments.WaitingOnPerson != 1 || bar.Hours != 7 {
 		t.Errorf("the implementer bar = %g hours, %+v, want seven hours with the unparked hour of the turn and the hour of the ask on the person",
 			bar.Hours, bar.Segments)
 	}
 	classed := map[string]string{}
-	for _, row := range report.Splitting.Filed {
+	for _, row := range w.filed {
 		classed[row.Key] = row.Class
 	}
 	// The architect filed the child before its own first implementer event, and the child's
 	// implementer filed the follow-up after it.
 	if classed["INFRA-2"] != ClassInTreeAtDesign || classed["INFRA-3"] != ClassInTreeLater {
 		t.Fatalf("the filings are classed %v, want one at design and one later", classed)
+	}
+}
+
+// seedTitledEvent seeds a comment event that session wrote on issue at seq, stamping the given
+// session title, which readRoleEvents and the phase-work read resolve.
+func seedTitledEvent(t *testing.T, database *store.Store, issue string, seq int, session, title string, at time.Time) {
+	t.Helper()
+	actor := fmt.Sprintf(`{"kind":"session","id":%q,"origin":{"session_title":%q}}`, session, title)
+	if _, err := database.Pool.Exec(t.Context(), `insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		values ($1, $2, 'comment.created', $3::jsonb, '{}'::jsonb, false, $4)`, issue, seq, actor, at); err != nil {
+		t.Fatalf("seed %s's %s event on %s: %v", session, title, issue, err)
+	}
+}
+
+// TestReadIgnoresTheLegionDaemonsOwnEvents: the Legion daemon writes on its issues as
+// `legion-daemon:<PROJECT>` (its role-holder publications among them). That session stamps no
+// title of its own, so resolving it would read every event it wrote for nothing; readRoleEvents
+// leaves it out before the title read (legion.DaemonSession). This seeds the daemon an event that
+// does carry a role title for the issue, which the old code would resolve into a role event, and
+// holds that the read records none: its control is that the same title from an ordinary session
+// is recorded, so the title path does record a role event at all.
+func TestReadIgnoresTheLegionDaemonsOwnEvents(t *testing.T) {
+	database := corpus(t)
+	seedTitledEvent(t, database, "INFRA-2", 100, "legion-daemon:INFRA", "Legion reviewer · INFRA-2", after(3))
+	seedTitledEvent(t, database, "INFRA-2", 101, "s-plain", "Legion tester · INFRA-2", after(3))
+
+	population, err := ReadProject(t.Context(), database.Pool, "INFRA", after(24))
+	if err != nil {
+		t.Fatalf("read the population: %v", err)
+	}
+	child := population.Issues["INFRA-2"]
+	if child == nil {
+		t.Fatalf("the population holds %v, want INFRA-2 among them", population.Keys)
+	}
+	if _, ok := child.FirstRoleEvent["reviewer"]; ok {
+		t.Errorf("a role event was recorded for the daemon's reviewer title, which the daemon skip must drop")
+	}
+	if at, ok := child.FirstRoleEvent["tester"]; !ok || !at.Equal(after(3)) {
+		t.Errorf("the ordinary session's tester event = %v (%t), want %v: the control that the title path records a role event at all",
+			at, ok, after(3))
 	}
 }
 
@@ -163,7 +204,7 @@ func TestADaemonsTreeFieldNamesTheRootWhereAReadCarriedOne(t *testing.T) {
 	`, after(-1)); err != nil {
 		t.Fatalf("seed the other root: %v", err)
 	}
-	population, err := Read(ctx, database.Pool, nil, "INFRA", after(-2), after(24))
+	population, err := ReadProject(ctx, database.Pool, "INFRA", after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -175,13 +216,13 @@ func TestADaemonsTreeFieldNamesTheRootWhereAReadCarriedOne(t *testing.T) {
 	}
 }
 
-// TestADaemonsTreeFieldNamesTheRootOfAnIssueTheWindowDoesNotReach: the same rule for an issue no
-// read of the window covers. The metrics read the event log, the handoffs and the observations
-// of the issues the window could have finished and their trees (scopeKeys), and an open issue in
-// none of those carries no observation of its own; the daemon's `tree` for it is a fact of the
-// project all the same, and the Legion board reads it project-wide. Reading it for the window's
-// issues alone put one issue in two trees: the board's and the metrics'.
-func TestADaemonsTreeFieldNamesTheRootOfAnIssueTheWindowDoesNotReach(t *testing.T) {
+// TestADaemonsTreeFieldNamesTheRootOfAnIssueTheReadDoesNotReach: the same rule for an issue a
+// read's scope does not reach. ReadIssues reads the event log, the handoffs and the observations
+// of the trees of the issues it recomputes (treeScopeKeys), and an open issue in none of those
+// carries no observation of its own there; the daemon's `tree` for it is a fact of the project
+// all the same, and the Legion board reads it project-wide. Reading it for the scope's issues
+// alone put one issue in two trees: the board's and the facts'.
+func TestADaemonsTreeFieldNamesTheRootOfAnIssueTheReadDoesNotReach(t *testing.T) {
 	database := corpus(t)
 	ctx := t.Context()
 	exec := func(sql string, args ...any) {
@@ -190,8 +231,9 @@ func TestADaemonsTreeFieldNamesTheRootOfAnIssueTheWindowDoesNotReach(t *testing.
 			t.Fatalf("seed (%s): %v", sql, err)
 		}
 	}
-	// A tree of its own, beside the one the corpus holds: none of these closed in the window,
-	// none filed anything in it and none is a filer's issue, so scopeKeys reaches no key of it.
+	// A tree of its own, beside the one the corpus holds: none of these is in the child's tree,
+	// none filed anything and none is a filer's issue, so the scope of a read of the child
+	// reaches no key of it.
 	exec(`insert into issues (key, project_key, number, title, status, rank, created_by, created_at)
 		values ('INFRA-6', 'INFRA', 6, 'An unrelated parent', 'in_progress', 'r', '{"kind":"user","id":"alice"}'::jsonb, $1)`, after(-1))
 	exec(`insert into issues (key, project_key, number, title, status, rank, parent_key, created_by, created_at)
@@ -204,12 +246,12 @@ func TestADaemonsTreeFieldNamesTheRootOfAnIssueTheWindowDoesNotReach(t *testing.
 	exec(`insert into legion_observations (project, issue_key, field, value, observed_at)
 		values ('INFRA', 'INFRA-7', $1, '"INFRA-8"'::jsonb, $2)`, legion.FieldTree, after(2))
 
-	population, err := Read(ctx, database.Pool, nil, "INFRA", after(-2), after(24))
+	population, err := ReadIssues(ctx, database.Pool, "INFRA", []string{"INFRA-2"}, nil, after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
 	if marks := population.Issues["INFRA-7"].Observed; len(marks) != 0 {
-		t.Fatalf("the window's observation read carried %v of INFRA-7, so the issue is not the one this test is about", marks)
+		t.Fatalf("the scope's observation read carried %v of INFRA-7, so the issue is not the one this test is about", marks)
 	}
 	if root := population.TreeRoot("INFRA-7"); root != "INFRA-8" {
 		t.Fatalf("the open issue's tree root = %q, want the INFRA-8 the daemon named for it", root)
@@ -259,7 +301,7 @@ func TestOnlyAnAskOpenedByASessionOfTheIssuesOwnTreeMakesItWaitOnAPerson(t *test
 	event("INFRA-2", 10, "ask.opened", session("Legion implementer · INFRA-9"), `{"id":"ask-3"}`, after(8))
 	event("INFRA-2", 11, "ask.answered", `{"kind":"user","id":"alice"}`, `{"id":"ask-3"}`, after(9))
 
-	population, err := Read(ctx, database.Pool, nil, "INFRA", after(-2), after(24))
+	population, err := ReadProject(ctx, database.Pool, "INFRA", after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -276,19 +318,20 @@ func TestOnlyAnAskOpenedByASessionOfTheIssuesOwnTreeMakesItWaitOnAPerson(t *test
 	}
 	// The child's seven bar hours: the unparked hour of its turn, the two hours of the asks its
 	// own tree opened, and four idle. The hour of the ask the other tree opened is idle too.
-	bar := barOf(t, Compute(population, ScopeAll, after(24)), "implementer")
+	bar := barOf(t, windowOf(population, ScopeAll), "implementer")
 	if bar.Hours != 7 || bar.Segments.WaitingOnPerson != 2 || bar.Segments.InATurn != 1 || bar.Segments.Idle != 4 {
 		t.Fatalf("the implementer bar = %g hours, %+v, want seven hours with two waiting on a person", bar.Hours, bar.Segments)
 	}
 }
 
-// TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot: Read takes the window's observations and
-// the project's reported set, with its trees, from one snapshot (readSampled), so a sampler commit
-// during the read moves both or neither. The commit here lands, on another connection, the moment
-// the first statement reading legion_observations or legion_current ends, and every other such
-// statement waits for it, so the two reads straddle it whether they run in turn or side by side:
-// it names INFRA-2 a tree of its own. The read the commit landed in takes INFRA-2's newest `tree`
-// observation and its Tree from before the commit, and the next read both from the commit.
+// TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot: ReadProject takes the scope's observations
+// and the project's reported set, with its trees, from one snapshot (read, readSampled), so an
+// intake commit during the read moves both or neither. The commit here lands, on another
+// connection, the moment the first statement reading legion_observations or legion_current ends,
+// and every other such statement waits for it, so the two reads straddle it whether they run in
+// turn or side by side: it names INFRA-2 a tree of its own. The read the commit landed in takes
+// INFRA-2's newest `tree` observation and its Tree from before the commit, and the next read both
+// from the commit.
 func TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot(t *testing.T) {
 	database := corpus(t)
 	ctx := t.Context()
@@ -318,7 +361,7 @@ func TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot(t *testing.T) {
 			t.Errorf("commit INFRA-2's new tree during the read: %v", err)
 		}
 	})
-	population, err := Read(ctx, traced, nil, "INFRA", after(-2), after(24))
+	population, err := ReadProject(ctx, traced, "INFRA", after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -329,11 +372,67 @@ func TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot(t *testing.T) {
 		t.Errorf("the read the commit landed in has INFRA-2's newest tree observation %q and its Tree %q, want INFRA-1 for both, from before the commit", observed, tree)
 	}
 
-	population, err = Read(ctx, traced, nil, "INFRA", after(-2), after(24))
+	population, err = ReadProject(ctx, traced, "INFRA", after(24))
 	if err != nil {
 		t.Fatalf("read the population again: %v", err)
 	}
 	if observed, tree := newest(population); observed != "INFRA-2" || tree != "INFRA-2" {
 		t.Errorf("the next read has INFRA-2's newest tree observation %q and its Tree %q, want INFRA-2 for both, the commit's", observed, tree)
+	}
+}
+
+// TestAWholeReadThatDropsAnIssueIsReadAsADrop: a whole read that no longer carries an issue writes
+// a `null` row for each of the issue's fields, and the metrics read a `null` slot beside a `null`
+// phase at one moment as a drop, not a release (TestANullSlotMarkIsAReleaseOnlyInAReadThatStillCarriesTheIssue).
+// Here the issue's slot has a row newer than the dropping read's own time, as a state event of a
+// daemon whose clock runs ahead of Dispatch's writes, and its phase has none. A whole read still
+// writes its two `null` rows at one moment, 1 µs after that newer row (legion's
+// recordObservations, which legion's TestAWholeReadAfterEventsAheadOfDispatchsClockIsTheNewestState
+// holds to that rule through the intake's own whole read), and those are the rows seeded here. So
+// the root, admitted and holding a slot from hour 0 with its architect at work, is in design to its
+// close at hour 6, and spends no hour in the queue. Each `null` at its own field's moment would read
+// the slot's as a release, and put the hours after it in the queue.
+func TestAWholeReadThatDropsAnIssueIsReadAsADrop(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := t.Context()
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("seed (%s): %v", sql, err)
+		}
+	}
+	exec(`insert into projects (key, name, default_assignee) values ('INFRA', 'INFRA', 'alice')`)
+	exec(`insert into issues (key, project_key, number, title, status, rank, created_by, created_at, closed_at)
+		values ('INFRA-1', 'INFRA', 1, 'The root', 'done', 'm', '{"kind":"user","id":"alice"}'::jsonb, $1, $2)`, after(-1), after(6))
+	exec(`insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		values ('INFRA-1', 1, 'comment.created', $1::jsonb, '{}'::jsonb, false, $2)`,
+		`{"kind":"session","id":"s-architect","origin":{"session_title":"Legion architect · INFRA-1"}}`, after(0))
+
+	observe := func(field, value string, at time.Time) {
+		t.Helper()
+		exec(`insert into legion_observations (project, issue_key, field, value, observed_at)
+			values ('INFRA', 'INFRA-1', $1, $2::jsonb, $3)`, field, value, at)
+	}
+	// The read at hour 0 finds the root admitted in slot 0.
+	observe(legion.FieldPhase, `"admitted"`, after(0))
+	observe(legion.FieldSlot, `0`, after(0))
+	// A state event gives the root slot 1, on a daemon clock three hours ahead of Dispatch's.
+	observe(legion.FieldSlot, `1`, after(3))
+	// The read at hour 2 on Dispatch's clock no longer carries the root: its `null` rows, both at
+	// one moment, 1 µs after the project's newest row.
+	moment := after(3).Add(time.Microsecond)
+	observe(legion.FieldPhase, `null`, moment)
+	observe(legion.FieldSlot, `null`, moment)
+
+	population, err := ReadProject(ctx, database.Pool, "INFRA", after(24))
+	if err != nil {
+		t.Fatalf("read the population: %v", err)
+	}
+	w := windowOf(population, ScopeAll)
+	if row := w.fact(t, "INFRA-1"); row.WorkHours != 6 || row.QueuedHours != 0 {
+		t.Errorf("the root's work time = %g h with %g h queued, want 6 h with none queued: a drop releases no slot", row.WorkHours, row.QueuedHours)
+	}
+	if bar := barOf(t, w, "architect"); bar.Hours != 6 {
+		t.Errorf("the architect bar = %g h, want 6: the root is in design from hour 0 to its close", bar.Hours)
 	}
 }

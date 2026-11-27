@@ -1,7 +1,7 @@
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
-import type { Artifact } from "../../api/types";
+import type { Artifact, DisplayTree } from "../../api/types";
 import { inputMethodKey } from "../../lib/input-method-key";
 import { focusOnDocument } from "../shell/roving";
 import type { DocumentAdmissions } from "./document-admission";
@@ -189,6 +189,7 @@ export function useNodeEditing({
   artifacts,
   container,
   onEditing,
+  onOwnEdit,
   onReport,
 }: {
   /** Each artifact of the issue by its slug (`issue-artifacts.ts`). */
@@ -198,6 +199,12 @@ export function useNodeEditing({
   /** Tells the page which document a row is editing, so it draws that document's one editor and
    *  hands it to the row. */
   onEditing: OnEditing;
+  /** Called at each edit of the row's editor's own that changes the document - the reader's
+   *  typing in a heading as in a paragraph, never a collaborator's (`holdEditsToBlock`'s
+   *  `onOwnEdit`) - with the key of the row being edited and the row's block as the edit left
+   *  it, so the tree reads a read that drops the row while its note of the edit lasts as the
+   *  reader's (`IssueTree.tsx`'s `ownAct`). */
+  onOwnEdit: (row: string, block: DisplayTree) => void;
   /** What a key reports when the node it was pressed on has no text to put a caret in, or its
    *  editor could not open. */
   onReport: (report: string) => void;
@@ -254,6 +261,10 @@ export function useNodeEditing({
   const letGo = useRef<(() => void) | undefined>(undefined);
   // The view of the editor the page handed over last, while the page holds it.
   const editorView = useRef<EditorView | undefined>(undefined);
+  // The row each edit of the editor's own is reported for, and what hears of it (`onOwnEdit`),
+  // read as each edit is made.
+  const ownEdit = useRef({ onOwnEdit, row: editingRow });
+  ownEdit.current = { onOwnEdit, row: editingRow };
   const onEditor = useCallback((editor: RowEditor | undefined) => {
     letGo.current?.();
     letGo.current = undefined;
@@ -269,6 +280,10 @@ export function useNodeEditing({
       () => {
         hold.current = "on";
         holdChanged.current?.();
+      },
+      (block) => {
+        const { onOwnEdit: heard, row } = ownEdit.current;
+        if (row !== undefined) heard(row, block);
       }
     );
   }, []);

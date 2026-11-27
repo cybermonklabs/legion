@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
@@ -78,6 +79,34 @@ const (
 
 var rolePushForms = []rolePushForm{rolePushPod, rolePushTmux}
 
+// What a form changes, and what it does not (newRolePushWrapper, podDir, install). A role's `jj
+// <args>` reaches the push step through the form's jj, first on PATH:
+//   - pod: packages/daemon/docker/jj, a shell script. It expands the line as jj does (aliases,
+//     ui.default-command) by its own reads of jj's configuration, refuses a git jj's configuration
+//     names other than the git wrapper, filters the warnings its reads print (once_only), puts
+//     `--config=git.executable-path="<git wrapper>"` in front of the line and a second such layer
+//     at the end of the deepest level that holds a --config of the role's, or in front of the
+//     command word (podForces), and hands a line it read as a push to `legion jj --real <next jj>`.
+//   - tmux: workerbin.Install's bin/jj, `legion jj --after <bin> -- <args>`: legion jj expands the
+//     line itself, in Go (expandJJ, whose jjCommandWord skips the global options of jjWordValues
+//     and jjWordFlags, the pod's wrapper's lists, TestTheGlobalOptionListsAreTheImageWrappers),
+//     reads the push's configuration itself (readConfiguration), and runs the next jj on PATH after
+//     bin.
+// Each form then runs the same step, cmd/legion/jj.go's, on the push line it was handed: the
+// trailer and author rules, the rewrite of a revision argument to the commits it named, the bounds
+// of a word and of a command, the snapshot, the dry run and its reading, the retries. The line
+// differs: the pod's carries its git.executable-path layers, global options readJJPush keeps
+// (options, which every step command carries first) and whose level-0 --config moves configEnd, so
+// the dry run puts its own --config ui.quiet=false in front of `git` in a pod and, on a line with
+// no --config of the role's, in front of --dry-run in a pane. The step's environment comes from the
+// form, whose PATH differs: the step's git reads (gitMoved) run the first git on it, the git
+// wrapper in a pod and bin/git in a pane. So a case that tests the expansion (a global flag in
+// front of the command word among it), the wrappers' refusals, their filtering of warnings, which
+// jj or git a form runs, the dry run's placement of its quiet layer, or a form's own command (help,
+// a jj that jj starts) runs in both forms (rolePushEachForm), and a case of the step's own logic
+// runs in one (rolePushStepLogic), with one case of each family of that logic still in both as the
+// check that the forms agree.
+
 // rolePushEachForm runs test under each form, each in a parallel subtest named for the form.
 func rolePushEachForm(t *testing.T, test func(t *testing.T, form rolePushForm)) {
 	for _, form := range rolePushForms {
@@ -86,6 +115,29 @@ func rolePushEachForm(t *testing.T, test func(t *testing.T, form rolePushForm)) 
 			test(t, form)
 		})
 	}
+}
+
+// rolePushStepForm is the one form a case of the step's own logic runs in: the pod's, a Legion
+// pod's, whose line also carries the git.executable-path words the step skips.
+const rolePushStepForm = rolePushPod
+
+// rolePushStepLogic runs test under rolePushStepForm alone, in a parallel subtest named for it, for
+// a case of the step's own logic (above).
+func rolePushStepLogic(t *testing.T, test func(t *testing.T, form rolePushForm)) {
+	t.Run(string(rolePushStepForm), func(t *testing.T) {
+		t.Parallel()
+		test(t, rolePushStepForm)
+	})
+}
+
+// rolePushForEach runs test under each form where both is true, the case that checks a family of
+// the step's logic in both forms, and under rolePushStepForm alone where it is false.
+func rolePushForEach(t *testing.T, both bool, test func(t *testing.T, form rolePushForm)) {
+	if both {
+		rolePushEachForm(t, test)
+		return
+	}
+	rolePushStepLogic(t, test)
 }
 
 // rolePushRealJJ is the first jj on the test process's PATH that is a compiled program
@@ -343,7 +395,7 @@ func (f *rolePushFixture) script(dir, name, body string) string {
 		f.t.Fatal(err)
 	}
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+	if err := execfile.Write(path, []byte(body), 0o700); err != nil {
 		f.t.Fatal(err)
 	}
 	return path
@@ -897,21 +949,25 @@ func rolePushStepLines(stderr string) rolePushLines {
 }
 
 // rolePushRow is one row of a test: the push's arguments, with placeholders (resolve), and the
-// setup that makes the repository it pushes from and says what the push must leave.
+// setup that makes the repository it pushes from and says what the push must leave. bothForms runs
+// it in each form (rolePushForEach): a row whose line holds a configuration layer, an alias or a
+// `--` of the role's, which the pod's wrapper reads itself, or the row that checks its family of
+// the step's logic in both forms.
 type rolePushRow struct {
-	name  string
-	args  []string
-	setup func(f *rolePushFixture) rolePushWant
+	name      string
+	args      []string
+	setup     func(f *rolePushFixture) rolePushWant
+	bothForms bool
 }
 
-// rolePushRun runs each row under each form, each in a repository of its own, with a recording jj
-// ahead of the real one (rolePushRecords), so that check reads each real push's
+// rolePushRun runs each row in its forms (bothForms), each in a repository of its own, with a
+// recording jj ahead of the real one (rolePushRecords), so that check reads each real push's
 // --ignore-working-copy (checkIgnoring).
 func rolePushRun(t *testing.T, rows []rolePushRow) {
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+			rolePushForEach(t, row.bothForms, func(t *testing.T, form rolePushForm) {
 				f := newRolePushFixture(t, form, rolePushRecords)
 				want := row.setup(f)
 				f.pushAndCheck(row.args, want)
@@ -922,19 +978,20 @@ func rolePushRun(t *testing.T, rows []rolePushRow) {
 
 // rolePushArgsRow is one row of a test whose push's arguments name what its setup made: the setup
 // makes the repository the push goes from, and answers the push's arguments and what the push
-// must leave.
+// must leave. bothForms is rolePushRow's.
 type rolePushArgsRow struct {
-	name  string
-	setup func(f *rolePushFixture) ([]string, rolePushWant)
+	name      string
+	setup     func(f *rolePushFixture) ([]string, rolePushWant)
+	bothForms bool
 }
 
-// rolePushRunArgs runs each row under each form, each in a repository of its own, with a recording
-// jj of behaviour ahead of the real one where behaviour is not "".
+// rolePushRunArgs runs each row in its forms (bothForms), each in a repository of its own, with a
+// recording jj of behaviour ahead of the real one where behaviour is not "".
 func rolePushRunArgs(t *testing.T, behaviour string, rows []rolePushArgsRow) {
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+			rolePushForEach(t, row.bothForms, func(t *testing.T, form rolePushForm) {
 				f := newRolePushFixture(t, form, behaviour)
 				args, want := row.setup(f)
 				f.pushAndCheck(args, want)
@@ -966,22 +1023,23 @@ func (f *rolePushFixture) onlyRefs(want rolePushWant) {
 // (jj_push_bound_test.go), or one of a descendant of the working copy. setup makes the state it
 // runs on, and answers the push's arguments, what the push through the form's jj must leave, and
 // what jj alone must leave on a twin state made the same way, which the row checks where alone is
-// true.
+// true. bothForms is rolePushRow's.
 type rolePushNamedRow struct {
-	name  string
-	alone bool
-	setup func(f *rolePushFixture) (args []string, want, alone rolePushWant)
+	name      string
+	alone     bool
+	setup     func(f *rolePushFixture) (args []string, want, alone rolePushWant)
+	bothForms bool
 }
 
-// rolePushRunNamed runs each row under each form: where alone is true, jj alone on a twin state
-// first, which must leave what the row's alone says and no other ref beside main on origin; then
-// the push through the form's jj, with a recording jj ahead of the real one, which must leave what
-// the row's want says and no other ref beside main on origin.
+// rolePushRunNamed runs each row in its forms (bothForms): where alone is true, jj alone on a twin
+// state first, which must leave what the row's alone says and no other ref beside main on origin;
+// then the push through the form's jj, with a recording jj ahead of the real one, which must leave
+// what the row's want says and no other ref beside main on origin.
 func rolePushRunNamed(t *testing.T, rows []rolePushNamedRow) {
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+			rolePushForEach(t, row.bothForms, func(t *testing.T, form rolePushForm) {
 				if row.alone {
 					twin := newRolePushFixture(t, form, "")
 					args, _, alone := row.setup(twin)

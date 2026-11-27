@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -37,6 +38,7 @@ func wantNamedNotPrinted(t *testing.T, what, text string, named []string, secret
 // carries a credential, or that is no plain http(s) URL, is not printed, and the line names the
 // setting in its place; a plain one still prints as the page under it, and names the setting too.
 func TestMachineLoginPrintsTheApproveURLOnlyAsRedactPrintsIt(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock := fakeLoginHelper(t, "KQ7M-X4PZ", []string{"issued"})
 	for _, row := range []struct {
@@ -67,6 +69,7 @@ func TestMachineLoginPrintsTheApproveURLOnlyAsRedactPrintsIt(t *testing.T) {
 // prints the approve URL: a page that carries a user and a password, or a token in its query, is
 // not printed. Control: a plain https page still prints whole.
 func TestMachineLoginPrintsTheBrokersPageOnlyAsRedactPrintsIt(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at redact_core_test.go:72).
 	t.Setenv("AGENT_SECRETS_APPROVE_URL", "")
 	password := "hunter2pw-" + "verifypage-" + "6d1e"
 	withUser := (&url.URL{Scheme: "https", User: url.UserPassword("tokuser5b8c", password), Host: "dispatch.example", Path: "/credentials/machine"}).String()
@@ -92,6 +95,7 @@ func TestMachineLoginPrintsTheBrokersPageOnlyAsRedactPrintsIt(t *testing.T) {
 // help still says AGENT_SECRETS_KEY_DIR is --out's default, and still prints the default of
 // --pod-token-file, which is this program's own constant.
 func TestEnrollHelpPrintsNoKeyDirectory(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at redact_core_test.go:99).
 	const secret = "hunter2pw-keydir-6e2f18"
 	t.Setenv("AGENT_SECRETS_KEY_DIR", filepath.Join(t.TempDir(), secret))
 	for _, row := range []struct {
@@ -115,6 +119,7 @@ func TestEnrollHelpPrintsNoKeyDirectory(t *testing.T) {
 // does not parse, or names no host, is refused without the URL or the parser's words about it,
 // which quote it whole; a proxy URL that names a host is still used.
 func TestAnAirlockProxyURLThatCannotBeUsedIsNotPrinted(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, proxy, secret string
 	}{
@@ -160,12 +165,14 @@ func inheritedWgetrc(t *testing.T) (string, []string) {
 
 // TestAnAirlockDirectoryThatCannotBePutInPlaceNamesItsPathButNotWGETRCs: every path the airlock
 // prints is its root - XDG_RUNTIME_DIR, else TMPDIR, else the system's temporary directory - and
-// names this CLI made below it, none of which a person sets to a secret's file, so when a grant's
-// directory cannot take its final name the refusal names that path and the system's reason. The
-// WGETRC the command inherits names a file that can hold http_password, so neither its path nor
-// what it holds prints. With nothing in the way the root takes the grant's files, and the wgetrc
-// there carries the inherited lines: the control, which shows the run read that WGETRC.
+// names this CLI made below it, the grant's id and a keyed hash of the trust, none of which a
+// person sets to a secret's file or can test a guess against, so when a grant's directory cannot
+// take its final name the refusal names that path and the system's reason. The WGETRC the command
+// inherits names a file that can hold http_password, so neither its path nor what it holds prints.
+// With nothing in the way the root takes the grant's files, and the wgetrc there carries the
+// inherited lines: the control, which shows the run read that WGETRC.
 func TestAnAirlockDirectoryThatCannotBePutInPlaceNamesItsPathButNotWGETRCs(t *testing.T) {
+	t.Parallel()
 	wgetrc, secrets := inheritedWgetrc(t)
 	base := filepath.Join(t.TempDir(), "runtime")
 	root := filepath.Join(base, "agent-secrets", "airlock")
@@ -173,23 +180,40 @@ func TestAnAirlockDirectoryThatCannotBePutInPlaceNamesItsPathButNotWGETRCs(t *te
 		t.Fatal(err)
 	}
 	environ := []string{"XDG_RUNTIME_DIR=" + base, wgetrc}
-	// A file where the grant's directory goes: the rename of a directory onto it is refused.
-	if err := os.WriteFile(filepath.Join(root, "grant-one"), nil, 0o600); err != nil {
+	// The grant's directory is named with a key kept in the root and for what its files hold
+	// (proxyTrustDirName), so a first run under this root shows the name; the key stays for the
+	// next run, so the same command takes the same name again.
+	learned, err := prepareAirlock(environ, testRelease("AIRLOCK_ME", nil, nil), "grant-one", nil)
+	if err != nil {
+		t.Fatalf("prepareAirlock to learn the name: %v", err)
+	}
+	name := filepath.Base(filepath.Dir(learned.bundle))
+	if err := os.RemoveAll(filepath.Join(root, name)); err != nil {
 		t.Fatal(err)
 	}
-	_, err := prepareAirlock(environ, testRelease("AIRLOCK_ME", nil, nil), "grant-one", nil)
+	// A file where the grant's directory goes: the rename of a directory onto it is refused.
+	if err := os.WriteFile(filepath.Join(root, name), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = prepareAirlock(environ, testRelease("AIRLOCK_ME", nil, nil), "grant-one", nil)
 	if err == nil {
 		t.Fatal("prepareAirlock put its directory in place over a file")
 	}
-	wantNamedNotPrinted(t, "the refusal", err.Error(), []string{"put the airlock directory in place", filepath.Join(root, "grant-one") + ": not a directory"}, secrets...)
+	// Nor does it hold the digits a plain hash of the trust gives, against which a guess of the
+	// WGETRC's password could be tested (proxyTrustDirName is keyed).
+	plain := unkeyedTrustDigest(environ, testAirlockCertificate)
+	wantNamedNotPrinted(t, "the refusal", err.Error(), []string{"put the airlock directory in place", filepath.Join(root, name) + ": not a directory"}, append(slices.Clone(secrets), plain)...)
 
 	t.Run("control: nothing in the way", func(t *testing.T) {
-		if err := os.Remove(filepath.Join(root, "grant-one")); err != nil {
+		if err := os.Remove(filepath.Join(root, name)); err != nil {
 			t.Fatal(err)
 		}
 		files, err := prepareAirlock(environ, testRelease("AIRLOCK_ME", nil, nil), "grant-one", nil)
 		if err != nil {
 			t.Fatalf("prepareAirlock: %v", err)
+		}
+		if filepath.Dir(files.bundle) != filepath.Join(root, name) {
+			t.Fatalf("the grant's files are at %s, want them under %s", files.bundle, filepath.Join(root, name))
 		}
 		if data, err := os.ReadFile(files.wgetrc); err != nil || !strings.Contains(string(data), "http_password") {
 			t.Fatalf("the grant's wgetrc: %v; want it to carry the inherited lines", err)

@@ -143,7 +143,7 @@ func (r *Reconcile) Run(ctx context.Context, leases duty.Leases) {
 // leasedPass runs one reconcile pass under the lease, for the tick due at due. Its period is
 // duty.LeasePeriod of the interval this loop ticks on (tickInterval).
 func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time.Time) {
-	duty.Exclusive(ctx, leases, deliveryReconcileLease, due, duty.LeasePeriod(r.tickInterval()), r.runOnce)
+	duty.Exclusive(ctx, nil, leases, deliveryReconcileLease, due, duty.LeasePeriod(r.tickInterval()), r.runOnce)
 }
 
 // runOnce performs one reconcile pass: the pull-request head refresh, then — where delivery is
@@ -175,12 +175,11 @@ func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time
 // population, the deploy repository, its workflow paths) or run against the deploy repository's
 // own grants.
 //
-// The intake's NATS consumer is gated on the settings for a reason of its own, not for the one
-// above: it binds its durable only once the settings cache holds settings (Intake.Run), and the
-// durable is created with no start policy (deliveryConsumerConfig, so JetStream's DeliverAll), so
-// a first bind in a deployment that never had settings would deliver the stream's whole 72-hour
-// backlog
-// (docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-INFRA-594.md).
+// The intake's NATS consumer follows the same split: it binds its durable and writes every
+// `pull_request` envelope's head row whatever the settings say, and hands its delivery-timeline
+// work to the settings (Intake.Run, route). Its first bind starts at the stream's next sequence,
+// so turning the intake on hands it none of the stream's 72-hour retained history
+// (heldDurable.takeOver, takeOverStart).
 //
 // It is the pass the lease runs (leasedPass), so it is one attempt at reading GitHub
 // (githubreads), recorded through RecordGitHubReads' recorder when it ends: the GitHub client
@@ -191,11 +190,12 @@ func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time
 // An answer a step takes as data is no failure, and neither are the steps that read no GitHub nor
 // the runs backfills, which never fail the pass (the client still notes what they meet). It is
 // recorded on the context the lease handed the pass, so a pass this process's shutdown cut short
-// records nothing.
+// records nothing. Begin also names the read as the caller kind its calls to GitHub are counted
+// under, for the rate reading.
 func (r *Reconcile) runOnce(ctx context.Context) {
 	caller := ctx
-	ctx, attempt := githubreads.Begin(ctx)
-	defer githubreads.Finish(caller, githubreads.DeliveryReconcile, attempt, r.gitHubReads, nil)
+	ctx, attempt := githubreads.Begin(ctx, githubreads.DeliveryReconcile)
+	defer githubreads.Finish(caller, attempt, r.gitHubReads, nil)
 	now := time.Now()
 	headErr := r.reconcilePullRequestHeads(ctx, now)
 	// Where the pass returns before record() below exists, the head pass's failure can only be
@@ -299,6 +299,9 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 		record("record issue.deployed events", err)
 	} else if written > 0 {
 		slog.Info("dispatch delivery: recorded issue.deployed", "events", written, "by", "reconcile")
+	}
+	if _, err := RecordProductionDeploys(ctx, r.pool, settings, r.events); err != nil {
+		record("record production deploys", err)
 	}
 
 	if len(failures) > 0 {

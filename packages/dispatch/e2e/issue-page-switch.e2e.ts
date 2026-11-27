@@ -101,7 +101,8 @@ function newPageHeading(page: Page): Locator {
 
 /** The new page as the parts so far draw it: the title as the page's one `h1`, no tab, the
  *  header, which draws the key and the title, the view row, the outline's one line for an issue
- *  that holds nothing, the Contents pane and the Spec view, and nothing else. */
+ *  that holds nothing, the Contents pane and the Spec view, and nothing else but what the foot
+ *  draws - the box to write in and the read mark - which `e2e/issue-page-l.e2e.ts` reads. */
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
   await expect(newPageHeading(page)).toHaveText(issue.title);
@@ -113,9 +114,10 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   // view row (`[data-filter-row]`), the Contents pane (`[data-testid="issue-contents"]`) and the
   // Spec view (`[data-spec-body]`), whose own rows read them; the outline draws its one line for
   // an issue that holds nothing at the issue's own address, and each other slot drawn so far adds
-  // no text or control.
-  const filled =
-    '[data-issue-header], [data-filter-row], [data-testid="issue-contents"], [data-spec-body]';
+  // no text or control. The box at the foot (`[data-testid="issue-composer"]`) and the read mark
+  // at the outline's end (`[data-outline-end]`) are left out of both counts, as a filled slot is.
+  const footSlot = '[data-testid="issue-composer"], [data-outline-end]';
+  const filled = `[data-issue-header], [data-filter-row], [data-testid="issue-contents"], [data-spec-body], ${footSlot}`;
   const header = newPage.locator("[data-issue-header]");
   const row = newPage.locator("[data-filter-row]");
   await expect(header).toHaveCount(1);
@@ -134,7 +136,7 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
         }, filled),
       {
         message:
-          "the new page draws text outside its header, its view row, the Contents pane and the Spec view",
+          "the new page draws text outside its header, its view row, the Contents pane, the Spec view and its foot",
       }
     )
     .toBe(body);
@@ -146,7 +148,7 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
         (found, parts) => found.filter((control) => control.closest(parts) === null).length,
         filled
       ),
-    "the new page draws a control outside its header, its view row, the Contents pane and the Spec view"
+    "the new page draws a control outside its header, its view row, the Contents pane, the Spec view and its foot"
   ).toBe(0);
 }
 

@@ -325,18 +325,14 @@ func TestADeleteOfTheConsumerAWholeLossLeftUnreconciledRecordsTheSequenceBeforeT
 			waitForAckFloor(t, consumers, session, before)
 			waitForAckPending(t, consumers, session, 0)
 
+			ownerBefore, consumersBefore := reconnectsBeforeCut(owner, consumers)
 			srv.CutStream(t, Stream, func(int64) int64 { return 0 })
-
-			testwait.Eventually(t, "the stream's owner and the session consumers to reconnect", func() bool {
-				return owner.Connected() && consumers.client.Connected()
-			})
+			awaitReconnectsAfterCut(t, owner, consumers, ownerBefore, consumersBefore)
 			var state sessionStreamState
-			if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 100*time.Millisecond, func() bool {
+			testwait.UntilPolling(t, 100*time.Millisecond, "the stream to answer a state read after the restart", func() (string, bool) {
 				state, err = consumers.streamState(ctx)
-				return err == nil
-			}) {
-				t.Fatalf("read the stream after the restart: %v", err)
-			}
+				return fmt.Sprint(err), err == nil
+			})
 			if state.lastSeq != 0 {
 				t.Fatalf("the stream's last sequence after the whole block was cut is %d, want 0", state.lastSeq)
 			}

@@ -933,7 +933,7 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 	// The merge, as an envelope a publisher older than head_repo made. Its author is outside the
 	// delivery population, so the envelope writes the head row and nothing else.
 	intake := newIntake(tuningFor(t), nil, pool, nil, client, nil, nil, unrenamed())
-	wrote, err := intake.handlePullRequestEnvelope(ctx, settings, map[string]string{
+	wrote, err := intake.handlePullRequestEnvelope(ctx, &settings, map[string]string{
 		"kind": "pr", "action": "closed", "merged": "true", "repo": "acme/widgets", "number": "61",
 		"title": "HEAD-7 the work", "body": "", "head_ref": "legion/HEAD-7", "head_sha": mergedHead,
 		"base_ref": "main", "author": "stranger", "updated_at": "2026-02-06T00:00:00Z",
@@ -1886,7 +1886,7 @@ func TestACompareReadRefusedOnTheDefaultBranchHoldsNothing(t *testing.T) {
 // A refusal of the repository's own default branch holds nothing where the caller spelled that
 // branch out either, and not only where it passed DefaultBranch. An `after_merge` walk asks
 // about the branch the issue merged into and then about the default branch
-// (api/results_comparison.go, measuredBranches), and for an issue merged the ordinary way those
+// (api/results_comparison.go, branchesIn), and for an issue merged the ordinary way those
 // two steps are one branch under two names; a hold taken under the spelled-out name would
 // answer the default-branch step from it without a read, and every `default_branch` result of
 // the repository, and every `after_merge` result of it no stored row answers, would read

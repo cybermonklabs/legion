@@ -229,7 +229,7 @@ that marker (`agent-task`, `api`, `browse`, `cache`, `discussion`, `issue`, `lab
 `release`, `repo`, `ruleset`, `run` and `workflow`, as gh's `pkg/cmd/root/root.go` builds them;
 `repo set-default` only with `--view` or `--unset`), because gh itself acts on `origin` there. A
 command naming no owner, in a directory whose remotes name none, runs at the issue owner's. A
-command whose last `--help` is true, and `gh --version` alone, only print. It fails closed: a
+command whose last `--help` is true, and `gh --version` and `gh -h`, each alone, only print. It fails closed: a
 command it cannot read for certain (an option the leaf's
 help does not list or names a repository with in a way it does not know, a subcommand gh does not
 know, a first word gh's own help does not list, anything before the command but `-R` and
@@ -661,8 +661,10 @@ a shared box has no such boundary: the daemon, its panes and the operator are on
 wrapper put first on a pane's `PATH` would be one the pane can replace, and a `core.hooksPath`
 pinned for it one the pane can override.
 A copy of them here would read as a guard and hold nothing.
-What a pane does run the guard in is `legion gh`, the same binary with the same rules compiled
-in, which resolves the shared public leak check from the pane's own `PUBLIC_LEAK_CHECK`.
+What a pane does run the guard in is `legion gh`, the same binary, which resolves the shared
+public leak check from the pane's own `PUBLIC_LEAK_CHECK` and runs the deployment's private-name
+rule file that the pane's launch hands it, or no private-name rule where the deployment names none
+([What a pane's Dispatch credential is](#what-a-panes-dispatch-credential-is)).
 A pane can find that check no other way: `PUBLIC_LEAK_CHECK` is not a name a pane reads from the
 daemon's environment, a pane's `XDG_CONFIG_HOME` is under the state directory rather than the
 operator's home, and the check's installer puts its files on no `PATH` a pane has.
@@ -700,8 +702,10 @@ a check, a `public-leak-check.sh` on `PATH` that is a dangling link or has no ex
 public writes, pushes included, are then refused under either setting, and the daemon logs a line
 per launch.
 With no setting, the daemon logs once at boot that the deployment leak check is not configured, and
-a pane's `legion gh` with no check named anywhere writes under the guard's visibility read and this
-repository's own private-name rules alone.
+a pane's `legion gh` with no check named anywhere writes under the guard's visibility read and the
+deployment's private-name rules alone, where the deployment names a rule file; where it names
+none either, the call is cleared with nothing read
+([The deployment's private-name rules](kubernetes.md#the-deployments-private-name-rules)).
 
 The real gh is a compiled program, so when the first `gh` on the daemon's `PATH`
 is a script (a `gh` wrapper of the box's own, as the devbox's login `PATH` heads with, or asdf's
@@ -753,6 +757,18 @@ every launch secret to a 0600 file of its own under `<state_dir>/secrets` and te
 matching `<NAME>_FILE` pointer, here `ENVOY_TOKEN_FILE` (`secretFiles`, `WriteSecretFiles` and
 `panePairs`, `packages/daemon/internal/runtime/tmux/spawn.go`).
 
+The deployment's private-name rule file is a launch secret too, `LEGION_PRIVATE_NAME_RULES`, which
+the pane's `legion gh` reads through `LEGION_PRIVATE_NAME_RULES_FILE`. The daemon reads the file
+once at boot, from `private_name_rules_file` in `legion.yaml` or else
+`LEGION_PRIVATE_NAME_RULES_FILE` in its own environment, and hands its bytes to every launch. A
+pane keeps the copy its launch was handed, so a changed file reaches a pane after the daemon
+restarts and that pane launches again. Where neither setting names a file, no launch carries the
+secret, and a pane's `legion gh` runs no private-name rule and prints nothing of it; the daemon
+logs once, at boot, that the deployment names no rule file.
+`legion controller start` passes the operator's own environment to its controller, so an operator
+who wants that controller's guard to run the rules exports `LEGION_PRIVATE_NAME_RULES_FILE` there.
+`docs/kubernetes.md`, "The deployment's private-name rules", has the rest.
+
 When `dispatch_token_file` holds one of the deployment's shared agent tokens
 (`DISPATCH_AGENT_TOKEN`), Dispatch matches the bearer against them (`MatchesSharedAgentToken`,
 `packages/envoy/internal/dispatch/auth/agent_token.go`) and reads no person, no service and no
@@ -775,6 +791,28 @@ identity the broker can issue"), and nothing on this box does that at this relea
 `dispatch://INFRA-267` is where the daemon and its workers get Dispatch tokens of their own, a dev
 box session writing under an approved machine login included, and `dispatch://INFRA-264` is where
 Dispatch accepts a broker token.
+
+A job entry of the broker is how such a token names its writer's own account and no person.
+`BROKER_EXCHANGE_JOB_ACCOUNTS` lists a pod's Kubernetes service account,
+`BROKER_EXCHANGE_JOB_WORKFLOWS` a GitHub Actions workflow of one repository on one ref, and
+`BROKER_VM_EXCHANGE_JOB_ACCOUNTS` a machine's Google service account, each with its projects (one
+project key, or `public` and at most 16 private project keys) and, where it fixes one, a session.
+The token the exchange mints for that identity names it as its service and no person, so Dispatch
+records a daemon's or a workflow's write under its session and its own account, and under no
+person. The token holds no OAuth scope, so a route that needs one refuses it with
+`403 OAUTH_SCOPE_REQUIRED` before Dispatch's project check runs. A token whose entry names one
+project writes that project. The project check judges its write to another project as it judges
+a person's `named` token's for the same project: it writes another project's objects as a token
+that names no project does, and an object of a private project that the entry does not name gets
+the answer of an object that does not exist. A write that belongs to the deployment, such as a
+project create, is refused `403 PROJECT_SCOPE_DEPLOYMENT`. A token whose entry names
+`public` writes wherever a token that names no project may, and its list limits no write at
+this release. A GitHub Actions job trades its run's token with
+`AGENT_SECRETS_MACHINE_IDENTITY=github-actions` and sends its requests with `dispatch api`
+(`packages/envoy-client/README.md`, "The `dispatch` command"). A machine's token that names a
+service under the project scope `person`, of a machine nobody has signed in on and no job entry
+lists, still reads and is refused every write `403 SIGN_IN_REQUIRED` (`docs/kubernetes.md`, "The
+Dispatch identity the broker can issue").
 
 ## Phase workers on Claude Code
 
@@ -906,8 +944,8 @@ provider_keys:
   session it resumes), the git
   identity a launch sets (`JJ_USER`, `GIT_AUTHOR_NAME`, …), the identities of the issue's roles that
   every workflow launch sets for the push step (`LEGION_ROLE_IDENTITIES`), the pointers to the
-  secrets every launch gets as a file of its own (`ENVOY_TOKEN_FILE`, `NATS_NKEY_SEED_FILE`), the
-  variables that place
+  secrets every launch gets as a file of its own (`ENVOY_TOKEN_FILE`,
+  `LEGION_PRIVATE_NAME_RULES_FILE`, `NATS_NKEY_SEED_FILE`), the variables that place
   the session a resume reads (`OMP_SESSION_STORAGE`, `OMP_SESSION_SQL_DSN`,
   `OMP_SESSION_SQL_DSN_FILE`, `OMP_CONFIG_ROOT`, `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`), a provider key or its
   `_FILE` pointer, any credential-shaped name (`…_TOKEN`, `…_KEY`, `…_SECRET`, `…_SEED`,
@@ -1121,11 +1159,33 @@ provider_keys:
   every pane carries and a key whose `_FILE` pointer every pane carries.
   The shim exports every provider key into the environment of the agent it starts (Oh My Pi, or
   `legion claude-bridge` on a Claude Code pane), where it acts as the pane variable of that name.
+  The variable must be upper case (upper-case letters, digits and underscores, not starting with
+  a digit), as every provider's variable is: one with a lowercase letter refuses the load as
+  `provider_keys entry <n>: its key (the variable OMP reads) must be an upper-case environment
+  variable name …`, so rename it, and the `models.yml` or overlay that reads it, to upper case.
 - **`controller: daemon`** works under tmux too: the daemon launches the controller in a pane of
   its own window, `controller`, working in `<state_dir>/controller`, told `LEGION_CONTROLLER=1` and
   an empty `LEGION_SLACK_CHANNELS`, and supervises it like a root architect. It needs
   `dispatch_url`. A project with no GitHub owner to mint for runs it with gh acting as nobody, its
   gh directory empty.
+- **The daemon replaces its own controller's session** under `controller: daemon`, under either
+  runtime. After two launches of one session in a row end before the session finishes a turn — a
+  death the daemon charges, before or after ready, or a turn the daemon ended — the next launch
+  starts a fresh session. `controller_turn_bound_minutes` (90 by default, `0` off) is how long a
+  controller turn may stay open, steps or none, before the daemon ends that launch and counts the
+  end. `controller_session_max_age_hours` (72 by default, `0` off) is how old the session, read
+  from its id, may grow before a launch the daemon makes of it starts a fresh session instead of
+  resuming it: every launch of the controller that no operator's request raised, a death's, a
+  launch failure's, a pod update's or displacement's, a stale-plugin refresh's, a turn ended past
+  its bound, the keeper's retry or resume, and the boot relaunch of an unfinished launch among
+  them. The daemon stops no live controller for its age, and an operator's own resume, or a task
+  an operator delivers to a suspended controller, keeps the session. Each replacement writes one
+  Warn line naming the claim, the old session and the reason, and the fresh session's ready one
+  line naming both sessions; the fresh session's first
+  prompt names the old session and the reason and says that messages sent to the old session may
+  be lost. The old session's transcript stays in the session store. A session that never finished
+  a turn, the controller's first or a fresh one, is not replaced: the keeper retries it with its
+  waits, and one Error line says so and names, as `oldSession`, the session a fresh one replaced.
 
 ## How workspaces are provisioned on the host
 

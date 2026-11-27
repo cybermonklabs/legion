@@ -1,0 +1,23 @@
+---
+type: component
+id: dispatch
+name: Dispatch
+kind: component
+purpose:
+  - It keeps the issues, the documents and the results of each project.
+---
+type: component
+id: legion
+name: Legion
+kind: component
+purpose:
+  - It runs the agents that work on the issues of a project.
+---
+type: component
+id: legion-to-dispatch
+name: Legion to Dispatch
+kind: interface
+joins:
+  - dispatch
+purpose:
+  - Legion reads issues and writes results through it.

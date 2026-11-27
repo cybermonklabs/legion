@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -9,25 +10,29 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/githubrate"
+
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// The outbox runs its rows on lanes. A lane is one issue's rows of one kind of work — its lifecycle
-// rows (starts, stops, the branch, the workspace), its board rows (status writes, messages,
-// notices) or its role messages (the end of a role's phase), record.OutboxLane — run one at a time
-// in the order they are due, on a goroutine of its own that lives only while the issue has such
-// rows. A lane is woken by the write that commits one
-// of its rows (projectRecords, through store.OnCommit), by the timer it arms for its next row due
-// later, and by the sweep, which every sweepInterval lists the lanes with a row still in the outbox
-// (record.Store.UnfinishedLanes) and wakes each: a row whose run ended without its finish or retry
-// recorded — a lost database connection, a daemon that died mid-row — keeps its lease until it
-// lapses, and the sweep after the lapse wakes its lane, which lists it due again and runs it. The
-// registry lock (outbox.mu) guards only the lane map and the running flag, and is never held across
-// a database call or an executor: a wake comes from inside a committed fact's hook, on the intake's
-// goroutine, and the API's, and must return at once whatever a lane is doing; a lane blocked on
-// GitHub must hold up nothing but its own issue.
+// The outbox runs its rows on lanes. A lane is one issue's rows of one kind of work
+// (record.OutboxLane names each lane and the kinds it runs), run one at a time in the order they
+// are due, on a goroutine of its own that lives only while the issue has such rows. The project's
+// state events (record.LaneState) are one lane more, keyed by the bare Dispatch project key that
+// every state row carries as its issue, so a wake of that key and any state kind, the sweep and the
+// timer start and run it as they do an issue's: its rows run one message at a time (stateEvents),
+// strictly in sequence order (record's outboxInOrder). A lane is woken by the write that commits
+// one of its rows (projectRecords, through store.OnCommit), by the timer it arms for its next row
+// due later, and by the sweep, which every sweepInterval lists the lanes with a row still in the
+// outbox (record.Store.UnfinishedLanes) and wakes each: a row whose run ended without its finish or
+// retry recorded — a lost database connection, a daemon that died mid-row — keeps its lease until
+// it lapses, and the sweep after the lapse wakes its lane, which lists it due again and runs it.
+// The registry lock (outbox.mu) guards only the lane map and the running flag, and is never held
+// across a database call or an executor: a wake comes from inside a committed fact's hook, on the
+// intake's goroutine, and the API's, and must return at once whatever a lane is doing; a lane
+// blocked on GitHub must hold up nothing but its own issue.
 
 // outboxLane is one issue's lane as the registry runs it: the goroutine that drains its due rows
 // (runLane) and the one-slot wake that tells it a row of its kinds was written or came due.
@@ -35,6 +40,13 @@ type outboxLane struct {
 	key  record.LaneKey
 	wake chan struct{}
 }
+
+// outboxHoldRecheck is how soon a row the test's hold put back (outbox.hold) is due again, and
+// errOutboxRowHeld the last error such a row records. Neither is reached in production, where
+// nothing holds a row.
+const outboxHoldRecheck = 100 * time.Millisecond
+
+var errOutboxRowHeld = errors.New("held by the outbox's test hold until it lets the row through")
 
 // timers is the clock the lanes' timers are armed on: the outbox's, or the wall clock for an outbox
 // a test built by hand without one.
@@ -59,8 +71,10 @@ func nudge(wake chan struct{}) {
 // restart drops the pool's connections) is logged and tried again at the next tick, so the runner
 // outlives the failure instead of ending with it. Once ctx ends it closes the registry, so no wake
 // starts a lane, and waits for every lane to return: a row mid-run ends and settles first
-// (runRow), so the daemon's stop is a real join.
+// (runRow), so the daemon's stop is a real join. Every call a lane makes to GitHub counts as the
+// outbox's (callerOutbox).
 func (r *outbox) Run(ctx context.Context) {
+	ctx = githubrate.WithCaller(ctx, callerOutbox)
 	if r.log == nil {
 		r.log = slog.Default()
 	}
@@ -327,6 +341,12 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 		}
 		return nil
 	}
+	if r.hold != nil && r.hold(row) {
+		if err := r.retryAt(ctx, row, r.now().UTC().Add(outboxHoldRecheck), errOutboxRowHeld); err != nil {
+			r.log.Error("outbox row hold not recorded; it runs again when its lease expires", "row", row.ID, "error", err)
+		}
+		return nil
+	}
 	// The renewal's ticks run on timer goroutines of their own (renewLease), beside the row's
 	// effect, so they are a second caller of the pool and take a hold mark of their own
 	// (store.ForConcurrentWorker). On the lane's mark a tick that came while the effect was inside
@@ -341,14 +361,21 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	renewal := r.renewLease(store.ForConcurrentWorker(ctx), row, now)
 	err := r.execute(ctx, row)
 	renewal.stop()
-	settleCtx := ctx
-	if ctx.Err() != nil {
-		var cancel context.CancelFunc
-		settleCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), outboxSettleTimeout)
-		defer cancel()
-	}
+	settleCtx, cancel := settleContext(ctx)
+	defer cancel()
 	r.settle(settleCtx, row, err)
 	return nil
+}
+
+// settleContext is the context a row's run records what it came to on, once its effect ran: ctx
+// while ctx lives, and once the daemon's stop has ended ctx, a context of its own bounded by
+// outboxSettleTimeout, since a record the stop cut short would leave the row to run again at the
+// next boot as though it had not.
+func settleContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx.Err() == nil {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), outboxSettleTimeout)
 }
 
 // leaseRenewal keeps a running row's lease live (renewLease): when the run began, the tick armed
@@ -482,16 +509,17 @@ func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *l
 }
 
 // finishesItsOwnRow is whether row's own effect finishes the row inside its run: a left pod's close
-// check (record.IssueWorkspaceCheck with CloseRoles), which finishes its row in the transaction that
-// records what it decided (checkLeftPodWorkspace). The idle release's check is the same kind and
-// never does.
+// check (record.IssueWorkspaceCheck.LeftPodClose: CloseRoles, or the launcher's check with Close
+// where no role runs in the pod), which finishes its row in the transaction that records what it
+// decided (checkLeftPodWorkspace). The idle release's check, and the launcher's check of a pod no
+// claim owns, are the same kind and never do.
 func finishesItsOwnRow(row record.OutboxRow) bool {
 	if row.Kind != record.OutboxKindIssueBundle {
 		return false
 	}
 	payload, err := record.DecodeOutboxPayload(row)
 	check, ok := payload.(record.IssueWorkspaceCheck)
-	return err == nil && ok && len(check.CloseRoles) > 0
+	return err == nil && ok && check.LeftPodClose()
 }
 
 // warnHeld is one tick's look at the lifecycle rows of the row's issue held behind it

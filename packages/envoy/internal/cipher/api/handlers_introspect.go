@@ -22,8 +22,9 @@ type introspectionResponse = oauthwire.Introspection
 
 // introspect is POST /v1/oauth/introspect: the RFC 7662 request, a form whose token parameter
 // names the access token to read back, answered with what the broker knows about it — whether it
-// is live and, when it is, the session, the person and the projects it carries, the scope it was
-// granted, when it expires and the key it is bound to.
+// is live and, when it is, the session, the person and the projects it carries, the Google
+// account the credential behind a person's token records, the scope it was granted, when it
+// expires and the key it is bound to.
 //
 // A token the broker does not know, one it has revoked and one that has expired are all answered
 // with active false (RFC 7662 Section 2.2), so the answer discloses nothing to a caller holding a
@@ -31,7 +32,10 @@ type introspectionResponse = oauthwire.Introspection
 // answering that as "not live" would deny a sound token and hide the outage. A row whose stored
 // project claim this broker could not have written is 500 STORED_CLAIM_MALFORMED, naming the
 // session and launcher credential whose token it is, so an operator looks at that row and not at
-// the database.
+// the database. A live token whose person Dispatch holds is answered active and held; one whose
+// person's hold the gate cannot tell is 503 HOLD_UNCHECKABLE, naming the person and why in fixed
+// words, with the gate's own error in the log alone. Dispatch answers either 503 as
+// BROKER_UNAVAILABLE, and the Envoy listener answers it with a 503.
 //
 // It spends no bucket of its own: authenticate has already spent its source address's bucket
 // (DefaultAccountLimit), the one every accountAuth route shares, before the caller's token was
@@ -52,10 +56,15 @@ func (s *server) introspect(w http.ResponseWriter, r *http.Request, _ string) {
 	// HTTP reference can read the route's body type off it.
 	var answer introspectionResponse
 	answer, err := s.deps.OAuth.Introspect(r.Context(), r.PostForm.Get("token"))
+	var uncheckable *oauth.HoldUncheckableError
 	switch {
 	case errors.Is(err, oauth.ErrStoredClaimMalformed):
 		slog.Error("broker: introspect token failed: a stored claim is malformed", "error", err)
 		writeError(w, http.StatusInternalServerError, "STORED_CLAIM_MALFORMED", err.Error())
+		return
+	case errors.As(err, &uncheckable):
+		slog.Error("broker: introspect token failed: whether Dispatch holds its person cannot be read", "person", uncheckable.Verdict.Person, "error", uncheckable.Verdict.Err)
+		writeError(w, http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", uncheckable.Error())
 		return
 	case err != nil:
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "introspect token", err)

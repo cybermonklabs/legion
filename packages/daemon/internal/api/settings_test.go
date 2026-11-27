@@ -9,8 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/apifixture"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // settingsConfigTypes is config.Config and every struct type of its package reachable from it
@@ -57,12 +59,14 @@ var settingsEmitted = map[string]string{
 	"Config.StateDir":                                "state_dir",
 	"Config.Runtime":                                 "runtime",
 	"Config.AdmissionCap":                            "admission_cap",
+	"Config.AdmissionP0Bound":                        "admission_p0_bound",
 	"Config.DaemonURL":                               "daemon_url",
 	"Config.WorkerStreamPort":                        "worker_stream_port",
 	"Config.OmpInvocation":                           "omp_invocation",
 	"Config.OmpLaunchPrefix":                         "omp_launch_prefix",
 	"Config.ProviderKeys":                            "provider_keys (the variable names alone)",
 	"Config.InstructionsPath":                        "instructions",
+	"Config.PrivateNameRulesFile":                    "private_name_rules_file (the path alone, never the rules)",
 	"Config.WorkerBootTimeout":                       "worker_boot_timeout_seconds",
 	"Config.WorkerRPCTimeout":                        "worker_rpc_timeout_seconds",
 	"Config.WorkerStopTimeout":                       "worker_stop_timeout_seconds",
@@ -93,6 +97,8 @@ var settingsEmitted = map[string]string{
 	"Config.PodUpdateRoundsPerMinute":                "pod_update_rounds_per_minute",
 	"Config.ReviewRoundCap":                          "review_round_cap",
 	"Config.ControllerLaunch":                        "controller",
+	"Config.ControllerTurnBound":                     "controller_turn_bound_minutes",
+	"Config.ControllerSessionMaxAge":                 "controller_session_max_age_hours",
 	"Config.Capabilities":                            "capabilities",
 	"Config.WorkerBackends":                          "worker_backends",
 	"Config.RoleConfigFiles":                         "role_config_files",
@@ -227,12 +233,14 @@ var settingsExcluded = map[string]string{
 	"PodConfig.Env":                      "runtime.kubernetes.pod: the operator's free text, delivered to every pod's spec",
 	"PodConfig.Volumes":                  "runtime.kubernetes.pod: Kubernetes API types naming the operator's Secrets, ConfigMaps, claims and NFS exports",
 	"PodConfig.VolumeMounts":             "runtime.kubernetes.pod: Kubernetes API types",
-	"PodConfig.ServiceAccount":           "runtime.kubernetes.pod: the operator's ServiceAccount, which every pod runs as and reads from its own spec",
+	"PodConfig.ServiceAccount":           "runtime.kubernetes.pod: the operator's ServiceAccount, which the issue pods run as, and the controller's pod and a cache's pod where their own keys name none, and which each such pod reads from its own spec",
+	"PodConfig.ControllerServiceAccount": "runtime.kubernetes.pod: the operator's ServiceAccount the controller's pod runs as in place of service_account, which that pod reads from its own spec",
 	"Kubernetes.PluginsFromBinary":       "derived: where the settled plugins pair came from, not a setting",
 	"Config.Warnings":                    "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `legion config check` prints",
 	"Project.CommitIssueTrailerRepos":    "a deployment's own repositories, named by a route that authenticates nobody (GET /legion/v1/state)",
 	"Config.LeakCheck":                   "a deployment's own repository, the one its shared leak check is published from, named by a route that authenticates nobody (GET /legion/v1/state); every role is told the checker beside it by the runtime, and needs no route for it",
 	"Config.StallLimits":                 "derived: the three LEGION_STALL_* numbers this daemon's own environment sets, which it passes to every session; no legion.yaml key names them",
+	"Config.PrivateNameRulesNamedBy":     "derived: which of private_name_rules_file and LEGION_PRIVATE_NAME_RULES_FILE named the rule file, which a refusal of the file at boot names; the settings carry the path under private_name_rules_file either way",
 	"StallLimits.CallBound":              "derived: LEGION_STALL_CALL_BOUND_MS in the daemon's environment, not a legion.yaml key",
 	"StallLimits.CallGrace":              "derived: LEGION_STALL_CALL_GRACE_MS in the daemon's environment, not a legion.yaml key",
 	"StallLimits.Step":                   "derived: LEGION_STALL_STEP_MS in the daemon's environment, not a legion.yaml key",
@@ -241,6 +249,10 @@ var settingsExcluded = map[string]string{
 	"Variant.MemoryBlock":                "derived: whether the arm is the `memory` block's rather than the `experiments` key's, set by config.Project.ExperimentsDeclared, which the settings already tell by carrying the block under `memory` and the key under `experiments`",
 	"Config.Revision":                    "not a setting: the commit this binary was built from, which `legion start` sets from cmd/legion's link-time revision and no legion.yaml key names",
 	"Config.GitHubGraphQLShare":          "not shown yet: the pace of the daemon's own GraphQL reads of GitHub, which no pod or plugin reads or acts on; carrying it on GET /legion/v1/state is a change of the daemon API contract (answers.go, packages/contracts) that the pull request adding the key does not make",
+
+	// The cache's bucket and the account holding its grant, which no pod but a cache pod reads.
+	"RepositoryCacheConfig.Bucket":         "runtime.kubernetes.repository_cache.bucket: the deployment's own Cloud Storage bucket, named by a route that authenticates nobody (GET /legion/v1/state); the cache pods alone read it, from their own environment, and an issue pod reaches its packs through the addresses its cache signs",
+	"RepositoryCacheConfig.ServiceAccount": "runtime.kubernetes.repository_cache.service_account: the ServiceAccount the cache pods alone run as, the one holding the bucket's grant, which each cache pod reads from its own spec",
 }
 
 // Every exported field of every struct the walk reaches (settingsConfigTypes) is named in exactly
@@ -319,7 +331,7 @@ func TestTheMemoryGuardSettingsShowEachPodKindsOwnBlock(t *testing.T) {
 var settingsFixturePlanted = []string{
 	"BEGIN", "PRIVATE KEY",
 	"postgres://", "fixture-dsn-password",
-	"legion:fixture-", "fixture-envoy-password", "fixture-nats-password",
+	"legion:fixture-", "fixture-envoy-password", "fixture-nats-user",
 	"legion:fixture-plugin-", "fixture-plugin-password", "fixture-plugin-token",
 	"/var/run/legion/OPERATOR_TOKEN", "/var/run/legion/ENVOY_TOKEN", "/var/run/legion/NATS_NKEY_SEED",
 	"/var/run/legion/NATS_DAEMON_NKEY_SEED", "/var/run/legion/DISPATCH_TOKEN", "/var/run/secrets/agent-secrets/token",
@@ -333,7 +345,7 @@ var settingsFixturePlanted = []string{
 // settingsForbiddenKeys are the legion.yaml keys that never appear in `settings`, at any depth.
 var settingsForbiddenKeys = []string{
 	"postgres_dsn", "private_key", "private_key_command", "private_key_secret", "token_command",
-	"kubeconfig", "context", "session_dsn_secret", "session_database", "pod", "env", "volumes", "volume_mounts", "service_account",
+	"kubeconfig", "context", "session_dsn_secret", "session_database", "pod", "env", "volumes", "volume_mounts", "service_account", "controller_service_account",
 	// A hook's own words, which the settings leave out whichever key the file writes them in.
 	"prompt",
 }
@@ -346,7 +358,8 @@ var settingsForbiddenKeys = []string{
 // carries each of these paths, which the rule below holds it to: an exemption no document
 // exercises is an exemption nobody has read.
 var settingsPathKeys = map[string]string{
-	"settings.hooks[].prompt_file": "the file a hook's words are read from, the deployment's own prose for its agents, carried as a path exactly as `instructions` is",
+	"settings.hooks[].prompt_file":     "the file a hook's words are read from, the deployment's own prose for its agents, carried as a path exactly as `instructions` is",
+	"settings.private_name_rules_file": "the deployment's private-name rule file, carried as a path alone and never its rules, exactly as `instructions` is",
 }
 
 // The maximal kubernetes file resolves to a settings block whose top-level, runtime.kubernetes and
@@ -362,8 +375,8 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	// (a) The top level: every key of the table, omp_invocation apart, which the loader refuses
 	// under runtime kubernetes.
 	wantTop := []string{
-		"project", "port", "bind", "advertise_host", "state_dir", "runtime", "admission_cap", "daemon_url",
-		"worker_stream_port", "omp_launch_prefix", "provider_keys", "instructions",
+		"project", "port", "bind", "advertise_host", "state_dir", "runtime", "admission_cap", "admission_p0_bound", "daemon_url",
+		"worker_stream_port", "omp_launch_prefix", "provider_keys", "instructions", "private_name_rules_file",
 		"worker_boot_timeout_seconds", "worker_rpc_timeout_seconds", "worker_stop_timeout_seconds",
 		"tree_stop_timeout_seconds", "slow_command_timeout_seconds", "probe_interval_seconds",
 		"controller_wake_interval_seconds", "worker_boot_registration_deadline_intervals",
@@ -373,7 +386,8 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 		"pod_update_grace_minutes", "stalled_tree_notice_hours", "worker_silence_minutes",
 		"worker_background_hours",
 		"pod_update_max_open_rounds", "pod_update_rounds_per_minute", "review_round_cap",
-		"controller", "capabilities", "worker_backends", "role_config_files", "repository_renames",
+		"controller", "controller_turn_bound_minutes", "controller_session_max_age_hours",
+		"capabilities", "worker_backends", "role_config_files", "repository_renames",
 		"hooks",
 	}
 	top := keysOf(t, encoded)
@@ -482,8 +496,8 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	if want := map[string]string{"tester": "omp"}; !maps.Equal(settings.WorkerBackends, want) {
 		t.Errorf("worker_backends = %q, want %q", settings.WorkerBackends, want)
 	}
-	if want := []RepositoryRenameSettings{{From: "acme/widgets-legacy", To: "acme/widgets"}}; !slices.Equal(settings.RepositoryRenames, want) {
-		t.Errorf("repository_renames = %+v, want the file's pair %+v", settings.RepositoryRenames, want)
+	if want := []RepositoryRenameSettings{{From: "acme/widgets-legacy", To: "acme/widgets"}, {From: "sjawhar/legion", To: "cybermonklabs/legion"}}; !slices.Equal(settings.RepositoryRenames, want) {
+		t.Errorf("repository_renames = %+v, want the file's pairs %+v", settings.RepositoryRenames, want)
 	}
 	if want := []string{"/bin/sh", "-c", "echo fixture-setup"}; !slices.Equal(settings.Runtime.Kubernetes.Setup, want) {
 		t.Errorf("runtime.kubernetes.setup = %q, want %q", settings.Runtime.Kubernetes.Setup, want)
@@ -508,16 +522,17 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	if want := map[string]string{"pool-capacity": "the pool is sized by hand for the admission cap"}; !maps.Equal(settings.Capabilities.Decided, want) {
 		t.Errorf("capabilities.decided = %q, want %q", settings.Capabilities.Decided, want)
 	}
-	// The two addresses the file gives userinfo ride masked; the one it gives none rides as written.
-	if want := "http://xxxxx@envoy-listener.internal.example:9020"; settings.EnvoyURL != want {
+	// The two addresses the file gives userinfo ride as their scheme and the mark of a URL with
+	// credentials; the one it gives none rides as written.
+	if want := "http://" + redact.URLWithCredentials; settings.EnvoyURL != want {
 		t.Errorf("envoy_url = %q, want %q", settings.EnvoyURL, want)
 	}
-	if want := []string{"nats://xxxxx@nats.internal.example:4222", "nats://nats-2.internal.example:4222"}; !slices.Equal(settings.NatsURLs, want) {
-		t.Errorf("nats_urls = %q, want %q: the first entry's userinfo masked, the second unchanged", settings.NatsURLs, want)
+	if want := []string{"nats://" + redact.URLWithCredentials, "nats://nats-2.internal.example:4222"}; !slices.Equal(settings.NatsURLs, want) {
+		t.Errorf("nats_urls = %q, want %q: the first entry's authority marked, the second unchanged", settings.NatsURLs, want)
 	}
-	// The plugin source in URL form rides with its userinfo masked and its query dropped; the one in
-	// version form rides as written.
-	want := PluginsSettings{PiLegion: "10.4.0", PiEnvoy: "https://xxxxx@plugins.internal.example/pi-envoy-10.4.0.tgz"}
+	// The plugin source in URL form rides with its authority marked and its query dropped; the one
+	// in version form rides as written.
+	want := PluginsSettings{PiLegion: "10.4.0", PiEnvoy: "https://" + redact.URLWithCredentials + "/pi-envoy-10.4.0.tgz"}
 	if plugins := settings.Runtime.Kubernetes.Plugins; plugins == nil || *plugins != want {
 		t.Errorf("runtime.kubernetes.plugins = %+v, want %+v", plugins, want)
 	}
@@ -572,7 +587,7 @@ func TestSettingsOfTheSandboxShowsEachMember(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			settings := SettingsOf(loadSettingsFile(t, settingsFixtureFile+tc.block))
+			settings := SettingsOf(apifixture.LoadSettings(t, settingsFixtureFile+tc.block))
 			if got := settings.Runtime.Kubernetes.Sandbox; !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("runtime.kubernetes.sandbox = %+v, want %+v", got, tc.want)
 			}
@@ -588,17 +603,24 @@ func TestSettingsOfTheSandboxShowsEachMember(t *testing.T) {
 	}
 }
 
-// endpointOf keeps an address's scheme, host and path and masks its userinfo, a user alone or a
-// user and password, as xxxxx@; "" stays "", and an address that yields no scheme and host is xxxxx
-// whole.
+// endpointOf keeps an address's scheme, host and path, and shows one with userinfo, a user alone or
+// a user and password, by its scheme, `[a URL with credentials]` and its path: nothing after the
+// last "@", a password holding an "@" with a host after it or none included. "" stays "", and an
+// address that yields no scheme and host is xxxxx whole.
 func TestEndpointOfMasksUserinfoAndKeepsThePath(t *testing.T) {
+	const marked = "://" + redact.URLWithCredentials
 	for _, tc := range []struct{ address, want string }{
 		{"http://envoy-listener.internal.example:9020", "http://envoy-listener.internal.example:9020"},
-		{"http://legion@envoy-listener.internal.example:9020", "http://xxxxx@envoy-listener.internal.example:9020"},
-		{"http://legion:fixture-envoy-password@envoy-listener.internal.example:9020", "http://xxxxx@envoy-listener.internal.example:9020"},
+		{"http://legion@envoy-listener.internal.example:9020", "http" + marked},
+		{"http://legion:fixture-envoy-password" + "@envoy-listener.internal.example:9020", "http" + marked},
 		{"https://dispatch.internal.example/legion", "https://dispatch.internal.example/legion"},
-		{"https://legion:fixture-dispatch-password@dispatch.internal.example/legion", "https://xxxxx@dispatch.internal.example/legion"},
-		{"nats://legion:fixture-nats-password@nats.internal.example:4222", "nats://xxxxx@nats.internal.example:4222"},
+		{"https://legion:fixture-dispatch-password" + "@dispatch.internal.example/legion", "https" + marked + "/legion"},
+		{"nats://legion:fixture-nats-password" + "@nats.internal.example:4222", "nats" + marked},
+		{"http://user:p" + "@ssword@envoy-listener.internal.example:9020", "http" + marked},
+		{"http://user:p" + "@ssword", "http" + marked},
+		{"https://madeUpHead0123?madeUpTail0123@dispatch.internal.example/legion", "https" + marked},
+		{"https://madeUpHead0123#madeUpTail0123@dispatch.internal.example/legion", "https" + marked},
+		{"https://madeUpHead0123/madeUpTail0123@dispatch.internal.example/legion", "https" + marked},
 		{"", ""},
 		{"not a url", "xxxxx"},
 		{"//host-only", "xxxxx"},
@@ -609,18 +631,23 @@ func TestEndpointOfMasksUserinfoAndKeepsThePath(t *testing.T) {
 	}
 }
 
-// pluginSourceOf leaves a version and an absolute tarball path as written and rides the URL form
-// through endpointOf, masking its userinfo as xxxxx@ and dropping its query and fragment.
+// PluginSourceOf leaves a version and an absolute tarball path as written and rides the URL form
+// through endpointOf, marking an authority with userinfo and dropping its query and fragment.
 func TestPluginSourceOfMasksOnlyTheURLForm(t *testing.T) {
 	for _, tc := range []struct{ source, want string }{
 		{"10.4.0", "10.4.0"},
 		{"/opt/plugins/pi-legion-10.4.0.tgz", "/opt/plugins/pi-legion-10.4.0.tgz"},
 		{"https://plugins.internal.example/pi-legion-10.4.0.tgz", "https://plugins.internal.example/pi-legion-10.4.0.tgz"},
-		{"https://legion:secret@plugins.internal.example/pi-legion-10.4.0.tgz?X-Amz-Signature=abc#frag", "https://xxxxx@plugins.internal.example/pi-legion-10.4.0.tgz"},
+		{"https://legion:secret@plugins.internal.example/pi-legion-10.4.0.tgz?X-Amz-Signature=abc#frag", "https://" + redact.URLWithCredentials + "/pi-legion-10.4.0.tgz"},
 		{"http://plugins.internal.example/x.tgz?token=t", "http://plugins.internal.example/x.tgz"},
+		// A plugin's scoped registry tarball URL keeps its path; any other "@" past the host, here a
+		// made-up credential ending in "/" written as the user, is the mark alone.
+		{"https://registry.example/@sjawhar/pi-legion/-/pi-legion-10.4.0.tgz", "https://registry.example/@sjawhar/pi-legion/-/pi-legion-10.4.0.tgz"},
+		{"https://madeUpPluginHead0123/@registry.example/pi-legion-10.4.0.tgz", "https://" + redact.URLWithCredentials},
+		{"https://madeUpPluginHead0123?madeUpTail0123@registry.example/@sjawhar/pi-legion/-/x.tgz", "https://" + redact.URLWithCredentials},
 	} {
-		if got := pluginSourceOf(tc.source); got != tc.want {
-			t.Errorf("pluginSourceOf(%q) = %q, want %q", tc.source, got, tc.want)
+		if got := PluginSourceOf(tc.source); got != tc.want {
+			t.Errorf("PluginSourceOf(%q) = %q, want %q", tc.source, got, tc.want)
 		}
 	}
 }
@@ -667,9 +694,50 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 		t.Errorf("settings carry the DSN: %s", encoded)
 	}
 
-	set := SettingsOf(loadSettingsFile(t, minimalSettingsFile+"review_round_cap: 5\n"))
+	set := SettingsOf(apifixture.LoadSettings(t, minimalSettingsFile+"review_round_cap: 5\n"))
 	if set.ReviewRoundCap != 5 {
 		t.Errorf("review_round_cap = %d, want the file's 5", set.ReviewRoundCap)
+	}
+}
+
+// The settings show omp_launch_prefix as its program and how many arguments follow
+// (omplaunch.PrefixShown), never an argument: here a made-up token an `env` prefix sets.
+func TestSettingsShowTheLaunchPrefixWithoutItsArguments(t *testing.T) {
+	const token = "madeUpLaunchToken0123456789"
+	cfg := minimalSettingsConfig(t)
+	cfg.OmpLaunchPrefix = []string{"/usr/bin/env", "OMP_TOKEN=" + token, "secrets"}
+	encoded, err := json.Marshal(SettingsOf(cfg))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got, want := string(keysOf(t, encoded)["omp_launch_prefix"]), `["env","(2 arguments, not shown)"]`; got != want {
+		t.Fatalf("omp_launch_prefix = %s, want %s", got, want)
+	}
+	if strings.Contains(string(encoded), token[:10]) {
+		t.Fatalf("the settings hold the launch prefix's token: %s", encoded)
+	}
+}
+
+// The deployment's private-name rule file reaches the settings by its path alone, under
+// private_name_rules_file, as `instructions` carries a path and never its text: the rules name the
+// deployment's private names, and the route that carries the settings authenticates nobody. A
+// file that names none carries no key at all, so the shapes the state golden pins do not move.
+func TestSettingsOfNamesThePrivateNameRuleFileByItsPathAlone(t *testing.T) {
+	const path = "/etc/legion/private-names.toml"
+	encoded, err := json.Marshal(SettingsOf(apifixture.LoadSettings(t, minimalSettingsFile+"private_name_rules_file: "+path+"\n")))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got, want := string(keysOf(t, encoded)["private_name_rules_file"]), `"`+path+`"`; got != want {
+		t.Errorf("private_name_rules_file = %s, want %s", got, want)
+	}
+
+	none, err := json.Marshal(SettingsOf(minimalSettingsConfig(t)))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if raw, present := keysOf(t, none)["private_name_rules_file"]; present {
+		t.Errorf("private_name_rules_file = %s for a file that names none, want absent", raw)
 	}
 }
 
@@ -683,7 +751,7 @@ func TestSettingsOfLeavesOutTheCommitIssueTrailerRepositories(t *testing.T) {
 	if body == settingsFixtureFile {
 		t.Fatal("the fixture's WIDGETS project was not given the key")
 	}
-	cfg := loadSettingsFile(t, body)
+	cfg := apifixture.LoadSettings(t, body)
 	if got := cfg.Projects["WIDGETS"].CommitIssueTrailerRepos; len(got) != 1 || got[0].String() != stamped {
 		t.Fatalf("the fixture's project carries %v, want %s: the assertions below would prove nothing", got, stamped)
 	}
@@ -732,7 +800,7 @@ func TestSettingsOfNamesAProjectsExperiments(t *testing.T) {
 	if body == settingsFixtureFile {
 		t.Fatal("the fixture's WIDGETS project was not given the key")
 	}
-	settings := SettingsOf(loadSettingsFile(t, body))
+	settings := SettingsOf(apifixture.LoadSettings(t, body))
 	want := []ExperimentSettings{
 		{Name: "plan-length", Mode: config.ExperimentRandom, Unit: config.ExperimentIssue, Variants: []VariantSettings{
 			{Name: "short", Weight: 3, ConfigFiles: []string{}},
@@ -786,7 +854,7 @@ func TestTheSettingsCarryThePlanOfAVariant(t *testing.T) {
 	if body == settingsFixtureFile {
 		t.Fatal("the fixture's WIDGETS project was not given the key")
 	}
-	settings := SettingsOf(loadSettingsFile(t, body))
+	settings := SettingsOf(apifixture.LoadSettings(t, body))
 	variants := settings.Projects["WIDGETS"].Experiments[0].Variants
 	if variants[0].Plan != "owner" || variants[1].Plan != "default" {
 		t.Fatalf("the arms' plans = %q and %q, want owner and default", variants[0].Plan, variants[1].Plan)
@@ -874,7 +942,7 @@ func TestSettingsOfTheHooksNamesEachHookAndNoWords(t *testing.T) {
 
 	const promptFile = "/etc/legion/hooks/back-to-implementing.md"
 	const inline = "Read the reviewer's thread before you write anything."
-	named := SettingsOf(loadSettingsFile(t, minimalSettingsFile+`hooks:
+	named := SettingsOf(apifixture.LoadSettings(t, minimalSettingsFile+`hooks:
   - name: back-to-implementing
     on: work_back
     moves: [reviewing-implementing, testing-implementing]

@@ -65,13 +65,22 @@ func seedMirrorIn(t *testing.T, pool *pgxpool.Pool, project, key, status string,
 	})
 }
 
-// applyMirrored applies fact through the daemon's own handler order (daemon/workflow.go): the
-// mirror first, so the deciders behind it read the row this very event writes.
+// applyMirrored applies a Dispatch issue fact through the daemon's own handler order
+// (applyAsTheDaemon).
 func applyMirrored(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID string, fact intake.DispatchIssue, engine intake.Handler) {
 	t.Helper()
+	applyAsTheDaemon(t, pool, admission, "dispatch", eventID, fact, engine)
+}
+
+// applyAsTheDaemon applies fact from source through the daemon's own handler order
+// (daemon/workflow.go): the mirror first, so the deciders behind it read the row this very event
+// writes, then engine and admission. It is the one helper of this package for that chain, which
+// applyMirrored and applyThroughMirror call.
+func applyAsTheDaemon(t *testing.T, pool *pgxpool.Pool, admission *Admission, source, eventID string, fact intake.Fact, engine intake.Handler) {
+	t.Helper()
 	mirror := blockers.NewMirror(record.NewStore(), testProject)
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", eventID, fact, mirror, engine, admission); err != nil {
-		t.Fatalf("ApplyFact %s: %v", eventID, err)
+	if _, err := intake.ApplyFact(context.Background(), pool, source, eventID, fact, mirror, engine, admission); err != nil {
+		t.Fatalf("ApplyFact %s/%s: %v", source, eventID, err)
 	}
 }
 
@@ -635,7 +644,7 @@ func TestAChildThatRanLabelledAsAnOrphanRootIsCheckedUnlessItCarriesItsRun(t *te
 			assertSlots(t, pool, nil)
 			assertWaiting(t, pool, []string{child})
 			inTx(t, pool, func(tx pgx.Tx) {
-				_, blocked, _, err := admission.tickRows(context.Background(), tx)
+				_, blocked, _, err := admission.tickRows(context.Background(), tx, func() (*passJudgement, error) { return admission.finalJudgement(context.Background(), tx) })
 				if err != nil {
 					t.Fatalf("read what is blocked: %v", err)
 				}
@@ -766,7 +775,7 @@ func TestNoIssueIsBothUnstartedAndUnreported(t *testing.T) {
 	assertBlocked := func(when string, want []record.BlockedIssue) {
 		t.Helper()
 		inTx(t, pool, func(tx pgx.Tx) {
-			_, got, _, err := admission.tickRows(context.Background(), tx)
+			_, got, _, err := admission.tickRows(context.Background(), tx, func() (*passJudgement, error) { return admission.finalJudgement(context.Background(), tx) })
 			if err != nil {
 				t.Fatalf("read what is blocked %s: %v", when, err)
 			}
@@ -812,10 +821,10 @@ func (s *countingStore) DispatchIssuesOf(ctx context.Context, tx pgx.Tx, keys []
 
 // Promotion judges every candidate from one read of the project's mirror, however many candidates
 // the waiting line holds: the rows are read before the loop, not inside it. The tick the test
-// drives judges the line twice and no more — promotion's own pass, and the one pass that builds
-// both lists the notice carries (Admission.tickRows) — whether or not a controller is registered
-// to be told, so it reads the mirror once for each judgement it makes and never once for each
-// candidate, which three blocked roots would show.
+// drives judges the line once and no more — promotion's own pass, whose judgement the tick's wake
+// reads at the pass's end (Admission.tickRows, finalJudgement) since the pass wrote nothing a
+// judgement reads after it — whether or not a controller is registered to be told, so it reads
+// the mirror once and never once for each candidate, which three blocked roots would show.
 func TestPromotionReadsTheMirrorOnceWhateverTheNumberOfBlockedRoots(t *testing.T) {
 	pool := migratedPool(t)
 	store := &countingStore{Store: record.NewStore()}
@@ -832,9 +841,9 @@ func TestPromotionReadsTheMirrorOnceWhateverTheNumberOfBlockedRoots(t *testing.T
 		t.Fatalf("ApplyFact tick: %v", err)
 	}
 
-	const judgements = 2
+	const judgements = 1
 	if store.mirrorReads != judgements {
-		t.Fatalf("the mirror was read %d times for three blocked candidates, want %d: once per judgement the tick makes", store.mirrorReads, judgements)
+		t.Fatalf("the mirror was read %d times for three blocked candidates, want %d: once for the one judgement the tick makes", store.mirrorReads, judgements)
 	}
 	assertSlots(t, pool, nil)
 }

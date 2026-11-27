@@ -21,7 +21,8 @@
 #   - walk-implementer-reviewer: the gate opens and the issue walks implementing, reviewing, retro
 #     and merging to done, and no planner and no tester is launched;
 #   - steps-read: `dispatch steps --issue <KEY>` as the person prints task a's step 1 implementer
-#     and step 2 reviewer, then the retro and the merge, each ended passed, and nothing else;
+#     and step 2 reviewer, then the retro and the merge, each ended passed, and no other run; the
+#     line `task a needs …` of the plan before them is no run, and the check passes over it;
 #   - walk-default-steps: the second issue, given no plan, walks planning, implementing, testing,
 #     reviewing, accepting (the architect's sign-off), retro and merging to done, and holds
 #     issue_plans version 0 of the source default, its task default done, plan_steps at places 1

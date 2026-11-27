@@ -113,8 +113,13 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
         options: >-
+          --shm-size=1g
           --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -157,11 +162,18 @@ jobs:
       - if: matrix.bun
         run: bun install --frozen-lockfile
 
-      # The three proofs that start the Go daemon: it refuses to boot without jj, and names it
+      # Each proof that starts the Go daemon: it refuses to boot without jj, and names it
       # (`missing required daemon tools: jj`), as run 40957651922 showed. This installs the jj the
       # worker image ships, which is the one the daemon is written for.
       - if: matrix.jj
         uses: ./.github/actions/install-jj
+
+      # A proof whose row sets `omp` runs real Oh My Pi panes, each answered by a model stand-in of
+      # its driver's own, so it needs the Oh My Pi .omp-pin names and no model route. This installs
+      # that build, held to its pinned sha256, and exports its path as LEGION_TEST_OMP, which the
+      # run step names to the script as LEGION_OMP_PATH.
+      - if: matrix.omp
+        uses: ./.github/actions/install-omp
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -174,11 +186,11 @@ jobs:
           # this workflow saves none (.github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs, "Caches").
           cache: false
 
-      # No commit, checkpoint or database copy here waits for the runner's disk: why every
-      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
-      - name: Turn crash safety off on the service
+      # The settings the service's command: line asks for, read back from the server; why each one
+      # is .github/scripts/postgres-service-settings.sh's header.
+      - name: Read the service's settings back
         timeout-minutes: 2
-        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
 
       - name: Run the proof
         env:
@@ -189,6 +201,9 @@ jobs:
           mkdir -p "$EVIDENCE_DIR"
           if [ -n "$EVIDENCE_VARIABLE" ]; then
             export "$EVIDENCE_VARIABLE=$EVIDENCE_DIR"
+          fi
+          if [ -n "${LEGION_TEST_OMP:-}" ]; then
+            export LEGION_OMP_PATH="$LEGION_TEST_OMP"
           fi
           bash "scripts/e2e/$SCRIPT" 2>&1 | tee "$EVIDENCE_DIR/output.log"
 

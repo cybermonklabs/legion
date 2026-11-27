@@ -30,13 +30,17 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
     # check-ci-filters.sh reduces only a one-line go test, so each legs step's whole script is
     # pinned, as the envoy-go unit step's is: its packages come from .github/scripts/go_legs.py
     # through xargs, and it carries a -skip besides, neither of which is a form that check
-    # reduces. Each Run names every package of every leg of its kind, as go-legs.yaml lists them:
-    # each leg runs the step over its own share, so the legs together compile and run those
-    # packages, each once. What a leg compiles is every test file of every package it runs, the
+    # reduces. Each Run names every package the legs of its kind run: the race Run the packages
+    # go-legs.yaml lists in them, and the plain Run those it lists in the plain legs and each
+    # package `go list ./...` prints that no place names, which the last plain leg, the job
+    # `unlisted` names, runs (DAEMON_PLAIN_PACKAGES, from leg_run_packages), so a change to only
+    # such a package's test files starts this job. Each leg runs the step over its own share, so
+    # the legs together compile and run those packages, each once. What a leg compiles is every
+    # test file of every package it runs, the
     # skipped tests' included: -skip leaves a test out of the run, never out of the build, so the
     # closure here is the step's whole closure and only those tests' own reads (the plugin-pack
     # gate, plugin-pack.py beside this file) leave this gate. The plain Run names the packages
-    # the legs list rather than the superset ./...: the race Run claims the five packages the
+    # the legs run rather than the superset ./...: the race Run claims the five packages the
     # plain legs leave out, which are this gate's own, while the text checks are the text-check
     # job's, and a Run saying ./... would keep what only their tests read - docs/kubernetes.md -
     # on this job's filter. Only they read it: the way back checks in internal/daemon, which a
@@ -59,7 +63,7 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
     ], workflow=DAEMON_FILE),
     # The shape gate's second run, stamped with HEAD's merge order: the step's whole script is
     # pinned (ci_job_reads.py's DAEMON_STAMPED_GATE_SCRIPT says why). What it compiles is
-    # internal/api's test build, which plain leg 2's step compiles too; the stamp changes the link
+    # internal/api's test build, which plain leg 3's step compiles too; the stamp changes the link
     # alone.
     pinned_step(DAEMON_PLAIN_LEGS_JOB, DAEMON_STAMPED_GATE_STEP, DAEMON, DAEMON_STAMPED_GATE_SCRIPT, [
         (DAEMON, ["./internal/api/"], "go test of internal/api's two shape tests, linked with HEAD's stamp", {}),
@@ -67,6 +71,9 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
 ], reads=reads(
     (GO_LEGS_SCRIPT, at(DAEMON_PLAIN_LEGS_JOB, DAEMON_PLAIN_STEP, DAEMON_FILE)),
     (GO_LEGS, f"{GO_LEGS_SCRIPT} reads each leg's packages from it"),
+    (f"{GO_LEGS_GROUPS}/**", f"{GO_LEGS_SCRIPT} reads the groups of a split package's tests from "
+                             f"{GO_LEGS_GROUPS}/<module>/<package>.yaml, one per leg that runs a share of it "
+                             f"({at(DAEMON_RACE_LEGS_JOB, DAEMON_RACE_STEP, DAEMON_FILE)}, internal/daemon)"),
     ("scripts/daemon-contract-order.sh", at(DAEMON_PLAIN_LEGS_JOB, DAEMON_CONTRACT_ORDER_STEP, DAEMON_FILE)),
     ("scripts/e2e/stage1-skeleton.sh", at(DAEMON_PLAIN_LEGS_JOB, "Stage 1 live proof", DAEMON_FILE)),
     ("scripts/e2e/lib/rig.sh", "`scripts/e2e/stage1-skeleton.sh#$root/scripts/e2e/lib/rig.sh` sources it"),
@@ -94,7 +101,7 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
                                                           f"const PoolImage"),
 ) + forced_order_reads(DAEMON_PLAIN_LEGS_JOB, DAEMON_FORCED_ORDER_STEP, DAEMON_FILE)
   + ceiling_reads(DAEMON_RACE_LEGS_JOB, DAEMON_FILE)
-  + crash_safety_reads(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE) + crash_safety_reads(DAEMON_RACE_LEGS_JOB, DAEMON_FILE)
+  + service_settings_reads(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE) + service_settings_reads(DAEMON_RACE_LEGS_JOB, DAEMON_FILE)
   + install_jj(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE) + install_omp(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE)
   + setup_go(DAEMON_PLAIN_LEGS_JOB, f"{DAEMON}/go.mod", DAEMON_FILE))
 GATE = with_reads(GATE, [

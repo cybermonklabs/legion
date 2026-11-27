@@ -2,8 +2,9 @@
 // The CONNECT ingress: what the proxy does with one CONNECT once its grant is read. The target is
 // read once (portNumber), a minted capability's grant is held to its one bound host (mintedHostOnly),
 // and the connection is then either opened and read by the proxy itself (connectBound), for a host
-// one of the grant's names binds, or carried as bytes it never reads (connectTunnel). serveProxy
-// decides that a request is a CONNECT; what a decrypted request may carry is bound.go's.
+// a name of the grant, or of another live grant of its enrollment, binds (sessionBinds), or carried
+// as bytes it never reads (connectTunnel). serveProxy decides that a request is a CONNECT; what a
+// decrypted request may carry is bound.go's.
 package proxy
 
 import (
@@ -20,17 +21,18 @@ import (
 	"github.com/sjawhar/envoy/internal/fold"
 )
 
-// serveConnect answers one CONNECT: a host one of the grant's names is bound to is decrypted
-// and read, any other host is a tunnel. Both are refused before any dial when the host resolves
-// somewhere this proxy never goes; the private destination's bound host, when the grant's names
-// bind it, is refused when the destination resolves anywhere but where upstreamAddresses allows.
+// serveConnect answers one CONNECT: a host a name of the grant, or of another live grant of its
+// enrollment, is bound to is decrypted and read, any other host is a tunnel. Both are refused
+// before any dial when the host resolves somewhere this proxy never goes; the private
+// destination's bound host, when it is bound for the session, is refused when the destination
+// resolves anywhere but where upstreamAddresses allows.
 func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholder string, grant requests.AirlockConnection) {
 	target := r.Host
 	if _, _, err := net.SplitHostPort(target); err != nil {
 		target = net.JoinHostPort(target, "443")
 	}
 	// The authority, with its host ASCII lower-cased: it is the URL and the Host header of
-	// every request this connection carries, and the one string the entry's hosts and the
+	// every request this connection carries, and the one string a kind's hosts and the
 	// request's own Host header are compared against. The reason quotes it lowercased too, as
 	// every line names a host the command wrote: a command may write anything here, its own
 	// placeholder among it.
@@ -55,27 +57,34 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 	if s.mintedHostOnly(w, r, grant, host, connectPort) {
 		return
 	}
-	// Whether this CONNECT may be decrypted and read: the (name, slot) pairs of the grant
-	// whose entry binds this host on the port the CONNECT named. One answer from the one
-	// function that says what is bound (candidates), so a change to what is bound is made in
-	// one place.
+	// Whether this CONNECT may be decrypted and read: whether a (name, slot) pair of the grant,
+	// or of another live grant of its enrollment, has a kind that binds this host on the port
+	// the CONNECT named. One answer from the one function that says what is bound for a session
+	// (sessionBinds, over candidates), so a change to what is bound is made in one place. The
+	// command holds the placeholders of every grant its session has - a role's own GitHub grant
+	// beside the one an agent-secrets run inside it asked for - and its password names one of
+	// them, so a host only another of them binds is read all the same.
 	//
-	// An empty answer is a tunnel rather than a refusal, whether it is a host no name binds or
+	// A false answer is a tunnel rather than a refusal, whether it is a host no name binds or
 	// another port of a bound name: the airlock blocks nothing it does not bind (R3), the
 	// proxy reads nothing on such a connection and puts nothing into it, and the command
 	// reaches that service exactly as it reaches every host the rules say nothing about. A minted
 	// capability's grant is the one exception, refused above (mintedHostOnly). The
 	// port is in it because every name the decision compares - the CONNECT host, the TLS name
-	// and the Host header - carries no port, so 443 is the only port an entry's hosts speak
+	// and the Host header - carries no port, so 443 is the only port a kind's hosts speak
 	// about and another port of one name is another service.
-	bound := len(s.candidates(grant, host, connectPort)) > 0
+	bound, err := s.sessionBinds(r.Context(), s.grants.AirlockRules(), grant, host, connectPort)
+	if err != nil {
+		s.refuseRead(w, r, call{grant: grant, host: host}, "enrollment", err)
+		return
+	}
 	// The addresses this name has, read and checked once: the tunnel below dials these and
 	// resolves nothing of its own, and a bound host's requests are checked and dialled the
 	// same way by the transport they go out on (dialChecked). A private destination's bound
-	// host, bound for this grant, is checked where its requests go instead, that destination's
+	// host, bound for this session, is checked where its requests go instead, that destination's
 	// own addresses (upstreamAddresses), which its transport checks and dials again for each
 	// request (dialUpstream); its public name is not read, since nothing is sent there. Not
-	// bound for this grant, it is a host like any other.
+	// bound for this session, it is a host like any other.
 	var addrs []netip.Addr
 	if d := s.destinationOf(host); bound && d != nil {
 		_, err = s.upstreamAddresses(r.Context(), d)
@@ -121,7 +130,7 @@ func portNumber(port string) (uint16, bool) {
 // blocks nothing it does not bind. It is answered before anything is resolved or dialled, with
 // codeMintedHostOnly and the rule's words.
 func (s *Server) mintedHostOnly(w http.ResponseWriter, r *http.Request, grant requests.AirlockConnection, host string, port uint16) bool {
-	if !grant.Minted || len(s.candidates(grant, host, port)) > 0 {
+	if !grant.Minted || len(candidates(s.grants.AirlockRules(), grant, host, port)) > 0 {
 		return false
 	}
 	s.refuse(w, r, call{grant: grant, host: host}, http.StatusForbidden, codeMintedHostOnly,
@@ -129,12 +138,13 @@ func (s *Server) mintedHostOnly(w http.ResponseWriter, r *http.Request, grant re
 	return true
 }
 
-// connectBound answers a CONNECT to a host one of the grant's names is bound to, on port 443:
-// the proxy opens the TLS itself, with a certificate of its own authority, and hands the
-// decrypted connection to the inner server. What travels with the connection is the target and
-// the password it was opened with: each request on it reads the grant again with that password
-// and builds its own candidates from what that read answers (serveBound), so a grant that ends
-// or a name that is withheld between two requests stops at the second one.
+// connectBound answers a CONNECT to a host a name of the grant, or of another live grant of its
+// enrollment, is bound to, on port 443: the proxy opens the TLS itself, with a certificate of its
+// own authority, and hands the decrypted connection to the inner server. What travels with the
+// connection is the target and the password it was opened with: each request on it reads the
+// grant again with that password and builds its own candidates from what that read answers
+// (serveBound), so a grant that ends or a name that is withheld between two requests stops at
+// the second one.
 func (s *Server) connectBound(w http.ResponseWriter, hijacker http.Hijacker, placeholder string, grant requests.AirlockConnection, target, host string, port uint16) {
 	client, err := hijack(hijacker)
 	if err != nil {

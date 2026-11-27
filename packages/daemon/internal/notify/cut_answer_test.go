@@ -64,7 +64,7 @@ func TestAnAnswerCutOffMidBodyIsNoAnswer(t *testing.T) {
 		}
 	})
 	t.Run("Publish", func(t *testing.T) {
-		err := New(cutAnswer(t, http.StatusNotFound, `{"error":"no live session holds the role","reason":"unclaimed"}`), "").
+		_, err := New(cutAnswer(t, http.StatusNotFound, `{"error":"no live session holds the role","reason":"unclaimed"}`), "").
 			Publish(ctx, "notifications.role.legion-x", "a notice", map[string]string{"k": "v"}, "key-1")
 		if err == nil || errors.Is(err, ErrNoHolder) || errors.Is(err, ErrHolderUnresponsive) {
 			t.Fatalf("Publish answered by a cut 404 = %v; want a plain error, no refusal kind", err)
@@ -117,7 +117,8 @@ func TestAnAnswerCutInsideAURLsUserNameNamesNoPartOfIt(t *testing.T) {
 		call   func(p *HTTPPublisher) error
 	}{
 		{"Publish", http.StatusInternalServerError, func(p *HTTPPublisher) error {
-			return p.Publish(ctx, "notifications.role.legion-x", "a notice", map[string]string{"k": "v"}, "key-1")
+			_, err := p.Publish(ctx, "notifications.role.legion-x", "a notice", map[string]string{"k": "v"}, "key-1")
+			return err
 		}},
 		{"ReadSessionRegistration", http.StatusInternalServerError, func(p *HTTPPublisher) error {
 			_, err := p.ReadSessionRegistration(ctx, "ses_s")

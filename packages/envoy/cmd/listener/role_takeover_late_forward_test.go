@@ -26,6 +26,7 @@ import (
 //
 // The control is the same rig with no hold: the forward is stored inside its wait and delivered.
 func TestAForwardStoredAfterItsFenceIsNoDeliveryAndTheResendReachesTheNewHolderOnce(t *testing.T) {
+	t.Parallel()
 	rig := newCrashRig(t)
 	const a, b, role = "ses_late_a", "ses_late_b", "late"
 	previous := rig.relayed(a, answerDone)
@@ -57,7 +58,9 @@ func TestAForwardStoredAfterItsFenceIsNoDeliveryAndTheResendReachesTheNewHolderO
 	}
 	release()
 	answer := crashPublished{EventID: item.EventID}
-	waitFor(t, crashWatch, "the held forward reported", func() bool {
+	// The released forward reporting its late store is a fact that must happen, and nothing here
+	// measures how long it takes, so it takes the package's bound like the rest of its kind.
+	waitFor(t, "the held forward reported", func() bool {
 		return strings.Contains(rig.harness.logs.String(), roles.ErrForwardStoredTooLate.Error())
 	})
 	if logs := rig.harness.logs.String(); strings.Contains(logs, `"listener role forwarded"`) &&
@@ -102,6 +105,7 @@ func TestAForwardStoredAfterItsFenceIsNoDeliveryAndTheResendReachesTheNewHolderO
 //
 // The control is a write at the subject's newest message, which lands.
 func TestAPassCannotWriteOverARecordAnotherPassMoved(t *testing.T) {
+	t.Parallel()
 	rig := newCrashRig(t)
 	const a, b, role = "ses_moved_a", "ses_moved_b", "moved"
 	rig.gone(a)
@@ -155,6 +159,7 @@ func TestAPassCannotWriteOverARecordAnotherPassMoved(t *testing.T) {
 // forwarder, whose seam the hold is on (crashRig.holdForward). This keeps that true: a change that
 // moved the route off the forwarder would leave the rows above holding nothing.
 func TestTheHoldSeamIsOnThePathARolePublishTakes(t *testing.T) {
+	t.Parallel()
 	rig := newCrashRig(t)
 	const holder, role = "ses_seam", "seam"
 	standIn := rig.relayed(holder, answerDone)
@@ -164,7 +169,7 @@ func TestTheHoldSeamIsOnThePathARolePublishTakes(t *testing.T) {
 	go rig.publish(role, "the seam's own message")
 	crashAwait(t, held, crashWatch, "the publish route's forward to reach the hold")
 	release()
-	waitFor(t, crashWatch, "the forward delivered", func() bool { return len(heard.all()) > 0 })
+	waitFor(t, "the forward delivered", func() bool { return len(heard.all()) > 0 })
 	if subject := contracts.LegacyAgentSubject(holder); len(rig.stored(subject)) == 0 {
 		t.Fatalf("nothing is stored on %s after the forward", subject)
 	}
