@@ -217,6 +217,7 @@ func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 			t.Errorf("the git's run had not returned %s after the cleanup cancelled its context", cutRunMargin)
 		}
 	})
+	psi := psiTotals() // DIAG (never merged)
 	call := calling(t)
 	started := time.Now()
 	go func() {
@@ -251,6 +252,12 @@ func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 		t.Errorf("execRunner.Run spent %s of its own before its git held .git/index.lock, when the git forked its clean filter, past main's %s: %s (Run = %v)", span.own, ownBound, span, err)
 	}
 	t.Logf("execRunner.Run started the git %s after the call, and spent %s of its own before the git held .git/index.lock: %s; the run returned after %s", began, span.own, span, elapsed)
+	// DIAG (never merged): the git's stat line as its clean filter read it (gitMark's second line).
+	gitStat := readStat(gitMark)
+	if _, second, found := strings.Cut(gitStat, "\n"); found {
+		gitStat = second
+	}
+	logBlocked(t, "W-ws9 (the git's stat as its filter began)", span.span, began, gitWaitedToLock(waited, seen, forked), known, gitStat, psi)
 	// exec reports a command whose Cancel succeeded as the context's error, so a Run that read
 	// that error before its own kill would report this git as one it could not run.
 	if err != nil {

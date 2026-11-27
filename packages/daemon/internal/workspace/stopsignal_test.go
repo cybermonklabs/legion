@@ -85,8 +85,9 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		ctx := budgetPassedOnceExists(t, ready)
 		// The lock is taken before the command reports that it is running, so a lock that is gone
 		// at the end is one the command's own SIGTERM handler removed.
-		script := testexec.MarkStart(`"$3"`) + `; : >"$1"; trap 'rm -f "$1"; exit 0' TERM; ` + markWaited("self", `"$4"`) + `; : >"$2"; ` + commandLives
+		script := testexec.MarkStart(`"$3"`) + `; : >"$1"; trap 'rm -f "$1"; exit 0' TERM; ` + markWaited("self", `"$4"`) + `; read -r st </proc/self/stat; printf '%s\n' "$st" >"$4.stat"; : >"$2"; ` + commandLives
 
+		psi := psiTotals() // DIAG (never merged)
 		call := calling(t)
 		started := time.Now()
 		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready, mark, readyAt})
@@ -105,6 +106,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 			t.Errorf("RunCommand spent %s of its own before its command reported that it was running, past main's %s: %s (RunCommand = %v)", span.own, ownBound, span, err)
 		}
 		t.Logf("RunCommand started its command %s after the call, and spent %s of its own before the command reported that it was running: %s", began, span.own, span)
+		logBlocked(t, "W-ws8 lock row", span.span, began, waited, known, readStat(readyAt+".stat"), psi) // DIAG (never merged)
 		passed, ok := ctx.Deadline()
 		if !ok {
 			t.Fatalf("the command reported that it was running, but its budget had not passed when the run returned after %s (RunCommand = %v)", elapsed, err)
@@ -155,9 +157,10 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		// so a helper nothing stopped is still there however long the row waits for it, and a run
 		// that waits on its pipes for ever fails the wait below rather than ending with the helper.
 		helper := `trap '' TERM; ` + waitInto("waited", "self") + `; printf '%s\n' "$waited" >"$3"; : >"$2"; while [ -d '` + dir + `' ] && kill -0 ` + strconv.Itoa(os.Getpid()) + ` 2>/dev/null; do sleep 0.05; done`
-		script := testexec.MarkStart(`"$6"`) + `; ` + waitInto("forked", "self") + `; sh -c "$2" sh "$3" "$4" "$5" & read -r word <"$4"; ` + waitInto("heard", "self") + `; trap '' TERM; ` + markWaited("self", `"$7"`, `"$forked"`, `"$heard"`) + `; : >"$1"; ` + commandLives
+		script := testexec.MarkStart(`"$6"`) + `; ` + waitInto("forked", "self") + `; sh -c "$2" sh "$3" "$4" "$5" & read -r word <"$4"; ` + waitInto("heard", "self") + `; trap '' TERM; ` + markWaited("self", `"$7"`, `"$forked"`, `"$heard"`) + `; read -r st </proc/self/stat; printf '%s\n' "$st" >"$7.stat"; : >"$1"; ` + commandLives
 
 		returned := make(chan error, 1)
+		psi := psiTotals() // DIAG (never merged)
 		call := calling(t)
 		started := time.Now()
 		go func() {
@@ -188,6 +191,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 			t.Errorf("RunCommand spent %s of its own before its command reported that it was running, its helper ready, past main's %s: %s (RunCommand = %v)", span.own, ownBound, span, err)
 		}
 		t.Logf("RunCommand started its command %s after the call, and spent %s of its own before the command reported that it was running, its helper ready: %s", began, span.own, span)
+		logBlocked(t, "W-ws8 helper row (the leader's stat)", span.span, began, waited, known, readStat(readyAt+".stat"), psi) // DIAG (never merged)
 		if err == nil || !strings.HasPrefix(err.Error(), "Command timed out after 1 s") {
 			t.Errorf("RunCommand = %v after %s, want \"Command timed out after 1 s …\": the budget's stop ended a command that ignores SIGTERM", err, elapsed)
 		}
@@ -205,7 +209,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		lock, ready, mark := filepath.Join(dir, "index.lock"), filepath.Join(dir, "ready"), filepath.Join(dir, "started")
 		readyAt := filepath.Join(dir, "ready-at")
 		fakeGit := filepath.Join(dir, "git")
-		script := "#!/bin/sh\n" + testexec.MarkStart(`"`+mark+`"`) + "\n: >\"" + lock + "\"\ntrap 'rm -f \"" + lock + "\"; exit 0' TERM\n" + markWaited("self", `"`+readyAt+`"`) + "\n: >\"" + ready + "\"\n" + commandLives + "\n"
+		script := "#!/bin/sh\n" + testexec.MarkStart(`"`+mark+`"`) + "\n: >\"" + lock + "\"\ntrap 'rm -f \"" + lock + "\"; exit 0' TERM\n" + markWaited("self", `"`+readyAt+`"`) + "\nread -r st </proc/self/stat; printf '%s\\n' \"$st\" >\"" + readyAt + ".stat\"\n: >\"" + ready + "\"\n" + commandLives + "\n"
 		if err := testexec.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 			t.Fatalf("write the fake git: %v", err)
 		}
@@ -216,6 +220,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		// second more, has its trap installed when it passes.
 		run := NewRunner(stopTimeout, map[string]string{"git": fakeGit})
 
+		psi := psiTotals() // DIAG (never merged)
 		call := calling(t)
 		started := time.Now()
 		result, err := run.Run(context.Background(), Command{Dir: dir, Argv: []string{"git"}, Timeout: stopTimeout})
@@ -235,6 +240,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 			t.Errorf("execRunner.Run spent %s of its own before its git reported that it was running, past main's %s: %s (Run = %v)", span.own, ownBound, span, err)
 		}
 		t.Logf("execRunner.Run started its git %s after the call, and spent %s of its own before the git reported that it was running: %s", began, span.own, span)
+		logBlocked(t, "W-ws7", span.span, began, waited, known, readStat(readyAt+".stat"), psi) // DIAG (never merged)
 		// exec reports a command whose Cancel succeeded and which then exited cleanly as the
 		// context's error, so a Run that propagated that error before reading its own kill would
 		// report this git as one it could not run, and transientCloneFailure would read the next
