@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  DELETED_POST_DELIVERY_ERROR,
   DELIVERY_DUPLICATE_WINDOW_MS,
   RECEIPT_TIMEOUT_CAUSE,
   STORE_UNCONFIRMED_CAUSE,
@@ -7,6 +8,7 @@ import {
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import type { PostDeletion } from "../refs/post-marks";
 import { answeredWithErrorGuidance, duplicateText, safeRetryGuidance } from "./delivery";
 import { type TargetedMessageAttempt, TargetedMessageCard } from "./TargetedMessageCard";
 
@@ -24,6 +26,7 @@ function attempt(overrides: Partial<TargetedMessageAttempt> = {}): TargetedMessa
 function card(props: {
   attempts: readonly TargetedMessageAttempt[];
   capabilities?: readonly string[];
+  deleted?: PostDeletion;
   onRetry?: (delivery: "aside" | "btw" | "steer") => void;
 }) {
   const capabilities = props.capabilities ?? ["aside", "btw", "steer"];
@@ -34,6 +37,7 @@ function card(props: {
         canAside={capabilities.includes("aside")}
         canBtw={capabilities.includes("btw")}
         canSteer={capabilities.includes("steer")}
+        deleted={props.deleted ?? null}
         deliveries={props.attempts}
         header={null}
         onRetry={props.onRetry ?? (() => {})}
@@ -227,6 +231,42 @@ test("an attempt the session answered with an error points at a mode change inst
     expect(screen.getByRole("button", { name: "Use Send instead" })).toBeTruthy();
   } finally {
     view.unmount();
+  }
+});
+
+// A delete ends each send of its post still pending, with its own words, and Dispatch refuses
+// every new delivery of a deleted post (409 POST_DELETED). So the attempt the delete ended
+// offers no Retry and no mode change, and its line says only that the delete ended it, never
+// that it failed: a delete ends a send, the send did not fail. An earlier attempt that failed
+// still reads as failed, and a failed attempt of a message nobody deleted keeps its words and
+// its Retry.
+test("an attempt the message's delete ended offers no Retry or mode change and says the delete ended it", () => {
+  const failed = attempt({ error: "no live session s1" });
+  const ended = attempt({ attempt: 2, error: DELETED_POST_DELIVERY_ERROR });
+  const view = render(
+    card({ attempts: [failed, ended], deleted: { at: new Date().toISOString(), by: null } })
+  );
+  try {
+    expect(screen.getByText("Ended by the post's delete")).toBeTruthy();
+    expect(screen.queryByText(`Failed: ${DELETED_POST_DELIVERY_ERROR}`)).toBeNull();
+    expect(screen.getByText("Attempt 1:", { exact: false }).textContent).toBe(
+      "Attempt 1: Failed: no live session s1"
+    );
+    expect(screen.queryByText(/Retry won't deliver it twice/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /instead/ })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+  const standing = render(card({ attempts: [failed] }));
+  try {
+    expect(
+      screen.getByText(`Failed: no live session s1. ${safeRetryGuidance("card", failed.error)}`)
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Use BTW instead" })).toBeTruthy();
+  } finally {
+    standing.unmount();
   }
 });
 

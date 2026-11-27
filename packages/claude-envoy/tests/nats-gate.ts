@@ -26,12 +26,12 @@ export interface NatsGate {
 /**
  * A TCP gate in front of the broker at `brokerUrl`, a FakeNatsServer's url: while shut, it closes
  * each connection at once, which fails a NATS dial at once; once opened, it carries each new
- * connection to the broker. It starts shut. `accepted` is told each connection as it opens, while
- * the client's socket is still up. It listens on the broker's own address, at a port of its own,
- * so a client dialing 127.0.0.1 never reaches it and never counts among its `attempts`
+ * connection to the broker. It starts shut. `carried` is told each connection it carries, as it
+ * opens. It listens on the broker's own address, at a port of its own, so a client dialing
+ * 127.0.0.1 never reaches it and never counts among its `attempts`
  * (fake-nats-server.ts's fakeHost).
  */
-export function natsGate(brokerUrl: string, accepted?: (leg: GateLeg) => void): NatsGate {
+export function natsGate(brokerUrl: string, carried?: (leg: GateLeg) => void): NatsGate {
   interface Leg {
     peer?: Socket<Leg>
     queued: Uint8Array[]
@@ -47,12 +47,12 @@ export function natsGate(brokerUrl: string, accepted?: (leg: GateLeg) => void): 
       open(client) {
         const leg: GateLeg = { clientPort: client.remotePort, upstreamPort: undefined }
         legs.push(leg)
-        accepted?.(leg)
         client.data = { queued: [], leg }
         if (!open) {
           client.end()
           return
         }
+        carried?.(leg)
         void Bun.connect<Leg>({
           hostname: broker.hostname,
           port: Number(broker.port),

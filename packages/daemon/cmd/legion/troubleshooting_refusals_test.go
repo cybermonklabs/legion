@@ -47,8 +47,13 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	"advertise_host must be an IP address or a DNS name, …": func(t *testing.T) string {
 		return refusalFile{kubernetes: true, top: "advertise_host: http://legion.internal.example\n"}.refuse(t)
 	},
-	// The Kelvin sign, which no ASCII name holds and which the refusal prints as its \u escape.
+	// The Kelvin sign, which no ASCII name holds and which the refusal of a URL's host prints as its
+	// \u escape.
 	`<key> must be an IP address or an ASCII DNS name; got "…\u212a…"`: func(t *testing.T) string {
+		return refusalFile{kubernetes: true, drop: []string{"daemon_url:"}, top: "daemon_url: http://legion\u212a.internal.example:13370\n"}.refuse(t)
+	},
+	// A value written whole as the host is refused without being printed.
+	"<key> must be an IP address or an ASCII DNS name; it holds a character that is not ASCII": func(t *testing.T) string {
 		return refusalFile{kubernetes: true, drop: []string{"bind:"}, top: "bind: legion\u212a.internal.example\n"}.refuse(t)
 	},
 	"<key> is required when runtime is kubernetes: …": func(t *testing.T) string {
@@ -159,11 +164,16 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	"projects.<KEY>.experiments.memory is unit issue: its unit must be tree, since a draw of it is served to every pod as the issue state's memoryGroup, memoryDrawMode and memoryDrawnAt, which are the draw of the issue's tree, one answer for every issue of it": func(t *testing.T) string {
 		return refusalFile{project: "    experiments: {memory: {unit: issue, variants: [{name: memory}, {name: none}]}}\n"}.refuse(t)
 	},
+	"projects.<KEY>.experiments.memory names plan: the memory experiment never sets how an issue is done, since a draw of it is the tree's memory group, so take plan out of its variants and set it on an experiment of its own": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {memory: {mode: random, variants: [{name: memory, plan: owner}, {name: none, plan: default}]}}\n"}.refuse(t)
+	},
 	"projects.<KEY>.experiments must be a mapping of an experiment's name to its block": func(t *testing.T) string {
 		return refusalFile{project: "    experiments: [plan-length]\n"}.refuse(t)
 	},
 	`projects.<KEY>.experiments key "…" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes`: func(t *testing.T) string {
-		return refusalFile{project: "    experiments: {Plan Length: {variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
+		// A name of the key grammar, with a "_" the experiment pattern refuses: a name outside the
+		// grammar is named by its line instead (the `unknown key` row).
+		return refusalFile{project: "    experiments: {plan_length: {variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
 	},
 	`projects.<KEY>.experiments.<NAME>.mode must be off, on, or random (got "…")`: func(t *testing.T) string {
 		return refusalFile{project: "    experiments: {plan-length: {mode: sometimes, variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
@@ -203,6 +213,23 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 		return refusalFile{project: "    experiments: {plan-length: {mode: random, variants: [{name: long, config_files: [" +
 			overlay + "], instructions: " + missing + "}, {name: control}]}}\n"}.refuse(t)
 	},
+	// An experiment that sets how each issue is done: each arm's `plan`.
+	`projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan must be owner or default (got "…")`: func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {planning: {mode: random, unit: issue, variants: [{name: a, plan: alone}, {name: b, plan: default}]}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan is owner-alone: the owner doing the whole issue itself in one step. This release of Legion does not carry it out yet.": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: owner-alone}]}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments.<NAME>.variants.<ARM> names no plan: each variant of an experiment that sets plan names how its issues are done": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b}]}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments.<NAME> sets plan and is unit <unit>: an experiment that sets how an issue is done draws for each issue, so write unit: issue": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {planning: {mode: random, unit: tree, variants: [{name: a, plan: owner}, {name: b, plan: default}]}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments.<NAME> and projects.<KEY>.experiments.<NAME> both set plan: one experiment sets how an issue is done": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: default}]}," +
+			" steps: {mode: random, unit: issue, variants: [{name: c, plan: owner}, {name: d, plan: default}]}}\n"}.refuse(t)
+	},
 	`projects.<KEY>.commit_issue_trailer_repos[<n>] must be "owner/name" (got "…")`: func(t *testing.T) string {
 		return refusalFile{project: "    commit_issue_trailer_repos: [acme]\n"}.refuse(t)
 	},
@@ -232,6 +259,7 @@ var refusalsNoFixtureDrives = map[string]string{
 // space and are no texts. A row in neither table fails naming the row, as does a table row naming
 // no row of the copy.
 func TestTheTroubleshootingTableHoldsEveryRefusalToAMessageTheLoaderProduces(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (refusalFixtures).
 	rows := troubleshootingRows(t)
 	named := make(map[string]bool, len(rows))
 	compared := 0

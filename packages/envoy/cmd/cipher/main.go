@@ -60,7 +60,8 @@
 // session (buildChildEnv). For a name the broker holds back behind its airlock, that child's
 // environment holds a placeholder in place of the value and the way to spend it: the broker's
 // proxy in HTTPS_PROXY and https_proxy, a NO_PROXY that keeps the secret's own hosts on that
-// proxy, NODE_USE_ENV_PROXY, and a trust bundle naming both the trust the command would have had
+// proxy, NODE_USE_ENV_PROXY, and, unless the machine's own trust already reaches the proxy
+// (prepareProxyTrustForCommand), a trust bundle naming both the trust the command would have had
 // and the proxy's certificate, in every bundle variable and in a WGETRC (airlock.go).
 // A machine session enrolls automatically through the helper's own
 // enroll loop, and a Legion pod's enrollment is its daemon's job — this CLI has no direct
@@ -220,11 +221,12 @@ AGENT_SECRETS_MACHINE_* / AGENT_SECRETS_POOL_* settings reads them from
                              exchange, which a person's sign-in presents as the actor token:
                              metadata (AGENT_SECRETS_MACHINE_AUDIENCE) or pool (that, with
                              AGENT_SECRETS_MACHINE_TOKEN_FILE, AGENT_SECRETS_POOL_AUDIENCE and
-                             AGENT_SECRETS_POOL_ACCOUNT); kubernetes is refused, since the broker
-                             mints no launcher credential for it; unset, it is found from the
-                             Google exchange audience the broker names: an external_account file
-                             GOOGLE_APPLICATION_CREDENTIALS names, or the Google metadata
-                             server, and kept in $XDG_STATE_HOME/agent-secrets/machine
+                             AGENT_SECRETS_POOL_ACCOUNT); kubernetes and github-actions are
+                             refused, since the broker mints no launcher credential for either;
+                             unset, it is found from the Google exchange audience the broker
+                             names: an external_account file GOOGLE_APPLICATION_CREDENTIALS
+                             names, or the Google metadata server, and kept in
+                             $XDG_STATE_HOME/agent-secrets/machine
   AGENT_SECRETS_MACHINE_TOKEN_FILE
                              the projected service-account token pool federates
   AGENT_SECRETS_MACHINE_AUDIENCE
@@ -762,6 +764,13 @@ func nextBackoff(cur time.Duration) time.Duration {
 	return min(2*cur, 10*time.Second)
 }
 
+// pollBackoff is the exec form's sleep before its next status read, after one that came back
+// undecided before the wait it asked had run out (its backoff). Nothing in this program replaces
+// it: exec_wait_test.go builds agent-secrets with one more file that does, recording each sleep
+// the loop asks for, so a row can tell a loop that sleeps after a held answer by that sleep
+// itself, whatever the machine's load.
+var pollBackoff = time.Sleep
+
 // ---------------------------------------------------------------------------
 // keygen
 // ---------------------------------------------------------------------------
@@ -1286,7 +1295,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 				return 1
 			}
 			if state == "pending" && time.Since(sent) < time.Duration(asked)*time.Second {
-				time.Sleep(min(backoff, time.Until(deadline)))
+				pollBackoff(min(backoff, time.Until(deadline)))
 				backoff = nextBackoff(backoff)
 			}
 		}
@@ -1351,12 +1360,14 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	// What each GitHub profile's token leaves out is said before anything runs, and never a token.
 	reportLeftOut(stderr, values.GitHubLeftOut)
 
-	// The airlock's two files are written before anything is said or run: without the trust
-	// bundle the command cannot verify the proxy, and a command that cannot reach its secret is
-	// better refused here than failed halfway through its own work.
+	// The airlock's files, where the command needs them (prepareProxyTrustForCommand), are written before
+	// the line that names the released secrets and before the command runs: without the trust
+	// bundle such a command cannot verify the proxy, and a command that cannot reach its secret is
+	// better refused here than failed halfway through its own work. They are decided and built on
+	// the environment the command will have, the released values in it.
 	var files airlockFiles
 	if values.Airlock != nil {
-		if files, err = prepareAirlock(os.Environ(), values.Airlock, *grantID, values.ExpiresAt); err != nil {
+		if files, err = prepareProxyTrustForCommand(os.Environ(), values.Values, values.Airlock, *grantID, values.ExpiresAt, stderr); err != nil {
 			fmt.Fprintf(stderr, "agent-secrets: %v; nothing was run\n", err)
 			return 1
 		}
@@ -1429,10 +1440,11 @@ var sessionIdentityVars = map[string]bool{
 // trust bundle the command must use.
 //
 // What this CLI sets is every released value, and, for a grant the airlock holds a name of
-// (release, and files, the two files prepareAirlock has written for it), that name's placeholder,
-// the AWS variables its slots fill, the proxy, and the trust bundle (airlockVars). release is nil
-// for every grant the airlock holds no name of, which is every grant of a broker with no rules
-// file, and then nothing of the airlock is in the child's environment at all.
+// (release, and files, what prepareProxyTrustForCommand wrote for it: nothing where the command
+// needs no bundle), that name's placeholder, the AWS variables its slots fill, the proxy, and the
+// trust bundle where it wrote one (airlockVars). release is nil for every grant the airlock
+// holds no name of, which is every grant of a broker with no rules file, and then nothing of the
+// airlock is in the child's environment at all.
 //
 // The set entries are appended in sorted order, so one grant's child environment is one string
 // whatever Go's map iteration gave.

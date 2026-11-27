@@ -2,17 +2,26 @@ import { dispatchToolSpecs } from "../src/dispatch-tools";
 import type { SchemaApi, SchemaNode } from "../src/tool-schema";
 
 // The slice of a schema the Go side needs to check a proposed call: what each argument holds,
-// whether it is required, and the names an enum allows. gen-go runs every dispatch tool's
-// arguments through a SchemaApi that records these calls instead of building zod, so the Go the
-// server validates a call with is the TypeScript declaration itself rather than a second copy
-// of it. Bounds (min, max) are left out on purpose: the server's own handler enforces them and
-// names them in its refusal, and a bound carried here would be a number nothing checks.
+// whether it is required, the names an enum allows, and the bounds it states. gen-go runs every
+// dispatch tool's arguments through a SchemaApi that records these calls instead of building zod,
+// so the Go the server validates a call with is the TypeScript declaration itself rather than a
+// second copy of it. A bound (min, max) is a text's length in UTF-16 units, as a JavaScript string
+// counts it, a list's count of items or a number's value. Most are a route's own: a constant of
+// dispatch-api-limits.ts or dispatch-tools.ts that gen-go writes into Go for the handler that
+// enforces it and names it in its refusal, or the route's refusal of an empty value. A few are the
+// tool's alone, which no route reads: dispatch_issues' priority list of at most 5 buckets (0 to 3,
+// and null for none), which the route reads as repeated values, and the image files of `images`,
+// which the command uploads before it sends anything. The catalogue serves a write tool's bounds
+// beside its fields. dispatch-tools.test.ts holds the generated Go to every bound a spec states,
+// and the fields its rows name to the constants their routes enforce.
 type RecordedField = {
   kind: "string" | "number" | "boolean" | "enum" | "array" | "object" | "any";
   optional: boolean;
   nullable: boolean;
   description: string;
   values?: readonly string[];
+  min?: number;
+  max?: number;
   item?: RecordedField;
   fields?: [string, RecordedField][];
 };
@@ -48,11 +57,12 @@ function recordedFields(shape: Record<string, RecordedNode>): [string, RecordedF
 // handler's to enforce, and the catalogue's check is of the arguments an action names, not of
 // how they agree.
 const recordingApi: SchemaApi<RecordedNode> = {
-  string: () => recordedNode({ kind: "string" }),
-  number: () => recordedNode({ kind: "number" }),
+  string: (opts = {}) => recordedNode({ kind: "string", min: opts.min, max: opts.max }),
+  number: (opts = {}) => recordedNode({ kind: "number", min: opts.min, max: opts.max }),
   boolean: () => recordedNode({ kind: "boolean" }),
   enum: (values) => recordedNode({ kind: "enum", values }),
-  array: (item) => recordedNode({ kind: "array", item: item.field }),
+  array: (item, opts = {}) =>
+    recordedNode({ kind: "array", item: item.field, min: opts.min, max: opts.max }),
   unknown: () => recordedNode({ kind: "any" }),
   object: (shape) => recordedNode({ kind: "object", fields: recordedFields(shape) }),
   refineObject: (shape) => recordedNode({ kind: "object", fields: recordedFields(shape) }),
@@ -83,6 +93,8 @@ function renderToolField(name: string, field: RecordedField): string {
   if (field.nullable) parts.push("Nullable: true");
   if (field.description !== "") parts.push(`Description: ${goString(field.description)}`);
   if (field.values) parts.push(`Values: []string{${field.values.map(goString).join(", ")}}`);
+  if (field.min !== undefined) parts.push(`Min: new(float64(${field.min}))`);
+  if (field.max !== undefined) parts.push(`Max: new(float64(${field.max}))`);
   if (field.item) parts.push(`Item: &ToolField${renderToolField("", field.item)}`);
   if (field.fields) {
     const nested = field.fields.map(([key, value]) => `${renderToolField(key, value)},`).join("\n");
@@ -134,7 +146,8 @@ const (
 )
 
 // ToolField is one argument a tool takes: an element of an array carries no name, and an
-// object's own arguments hang from Fields.
+// object's own arguments hang from Fields. Min and Max are the bounds the spec states, nil for
+// none: a text's length in UTF-16 units, a list's count of items, or a number's value.
 type ToolField struct {
 	Name        string        \`json:"name,omitempty"\`
 	Kind        ToolFieldKind \`json:"kind"\`
@@ -142,6 +155,8 @@ type ToolField struct {
 	Nullable    bool          \`json:"nullable,omitempty"\`
 	Description string        \`json:"description,omitempty"\`
 	Values      []string      \`json:"values,omitempty"\`
+	Min         *float64      \`json:"min,omitempty"\`
+	Max         *float64      \`json:"max,omitempty"\`
 	Item        *ToolField    \`json:"item,omitempty"\`
 	Fields      []ToolField   \`json:"fields,omitempty"\`
 }

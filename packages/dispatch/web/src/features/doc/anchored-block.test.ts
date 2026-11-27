@@ -1,8 +1,14 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import type { EditorView, NodeView } from "@milkdown/kit/prose/view";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
-
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { type AnchoredBlockHost, installTypedBlocks } from "./ask-block";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** The plain blocks of a document, drawn the way the Proof schema draws them: each stamps its own
  *  `data-block-id`, which is what the node view below has to reproduce. */

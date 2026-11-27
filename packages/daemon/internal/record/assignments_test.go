@@ -322,3 +322,38 @@ func TestTheAssignmentsOfAProjectLeaveEveryOtherProjectsOut(t *testing.T) {
 		}
 	})
 }
+
+// A row keeps how its issue is done (Plan) as it was drawn: a second write of the same issue and
+// experiment under another plan writes nothing, and the row reads the first plan back. The fault
+// caught is a write that updates a row it finds rather than leaving it.
+func TestARowKeepsThePlanItWasDrawnWith(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	drawnAt := time.Date(2026, 11, 17, 19, 7, 25, 0, time.UTC)
+	later := drawnAt.Add(time.Hour)
+
+	inTx(t, st, func(tx pgx.Tx) {
+		putRoot(t, ctx, records, tx, "LEGION-1")
+		wrote, err := records.PutAssignments(ctx, tx, "LEGION-1", []Assignment{
+			{Experiment: "planning", Unit: "issue", Variant: "b", Mode: "random", DrawnAt: &drawnAt, Plan: "default"},
+		})
+		must(t, err)
+		if wrote != 1 {
+			t.Fatalf("the draw wrote %d rows, want its one row", wrote)
+		}
+		again, err := records.PutAssignments(ctx, tx, "LEGION-1", []Assignment{
+			{Experiment: "planning", Unit: "issue", Variant: "a", Mode: "random", DrawnAt: &later, Plan: "owner"},
+		})
+		must(t, err)
+		if again != 0 {
+			t.Fatalf("a second write of the same experiment wrote %d rows, want none", again)
+		}
+		read, err := records.AssignmentsOf(ctx, tx, "LEGION-1")
+		must(t, err)
+		first := Assignment{Experiment: "planning", Unit: "issue", Variant: "b", Mode: "random", DrawnAt: &drawnAt}
+		if len(read) != 1 || assignedAs(read[0]) != assignedAs(first) || read[0].Plan != "default" {
+			t.Fatalf("the issue holds %+v, want only %s with the plan default: a row keeps the plan it was drawn with", read, assignedAs(first))
+		}
+	})
+}

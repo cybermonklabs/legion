@@ -1,6 +1,12 @@
 import { type Mock, mock, spyOn } from "bun:test";
 
-import { api, type WriteBounds, type WriteMethod, type WriteRequest } from "../api/client";
+import {
+  ApiError,
+  api,
+  type WriteBounds,
+  type WriteMethod,
+  type WriteRequest,
+} from "../api/client";
 import type {
   AskSnooze,
   CreateAgentMessageInput,
@@ -10,6 +16,8 @@ import type {
   InboxReadResponse,
   Issue,
   Message,
+  PatchPriorityInput,
+  Priority,
   UpdateIssueInput,
   UserAgentState,
   UserAgentStateInput,
@@ -128,6 +136,30 @@ export const answerIssuePatches = () =>
     "PATCH",
     "/api/v1/issues/*"
   );
+
+/** `PATCH /api/v1/priorities/{id}` (`priorityPatchRequest`): a change of a priority, called with
+ *  its id, the change and the bounds. */
+export const answerPriorityPatches = () =>
+  answerRoute<(id: string, input: PatchPriorityInput, bounds: WriteBounds) => Promise<Priority>>(
+    "PATCH",
+    "/api/v1/priorities/*"
+  );
+
+/** Dispatch's refusal of a priority's title written over one another person wrote since the
+ *  reader's edit started (`409 PRIORITY_CHANGED`), which an answer of `answerPriorityPatches`
+ *  rejects with. */
+export const PRIORITY_TITLE_CHANGED = new ApiError(409, {
+  code: "PRIORITY_CHANGED",
+  error: "the title was written meanwhile",
+});
+
+/** Dispatch's refusal of a priority's description written over one another person wrote since
+ *  the reader's edit started (`409 PRIORITY_CHANGED`), which an answer of `answerPriorityPatches`
+ *  rejects with. */
+export const PRIORITY_DESCRIPTION_CHANGED = new ApiError(409, {
+  code: "PRIORITY_CHANGED",
+  error: "the description was written meanwhile",
+});
 
 /** `PUT /api/v1/me/issues/{key}/state` (`issueStateRequest`). */
 export const answerIssueStates = () =>

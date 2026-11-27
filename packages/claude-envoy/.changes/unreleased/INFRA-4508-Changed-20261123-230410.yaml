@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  `legion.daemonApiVersion` is 232 (dispatch://INFRA-4508): the daemon's turn-outcome report takes
+  the provider's HTTP status and a mark for a turn that ran no prompt of the daemon's, which the
+  Claude bridge now sends for a turn an inbox delivery started, the phase hook's reminder among
+  them. The daemon judges such a turn from that report: a refusal whose status cannot clear fails
+  the claim at once, and the hook's owed check, which the daemon answers that a failed claim owes
+  nothing, then drops every later reminder; any other
+  refusal fails nothing, and the reminders keep their pace. Install this release with a daemon of
+  the same release.
+time: 2026-11-23T23:04:10.514806801Z
+custom:
+  Issue: INFRA-4508

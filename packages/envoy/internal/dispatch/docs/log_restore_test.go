@@ -10,9 +10,13 @@ import (
 // flags, and setting the previous slog default back undoes neither, so every log.Print after
 // the test would write into its finished buffer instead of stderr (internal/logtest).
 func TestRenderReuseGivesTheLogPackageItsOutputBack(t *testing.T) {
+	// Not parallel: it reads the log package's output and flags (log.Writer, log.Flags) around a
+	// subtest that swaps the default logger (captureRenderReuseWarnings).
 	output, flags := log.Writer(), log.Flags()
-	t.Run("TestRenderReuseADocumentOutsideTheSchema", TestRenderReuseADocumentOutsideTheSchema)
+	t.Run("capture warnings", func(t *testing.T) {
+		captureRenderReuseWarnings(t)
+	})
 	if log.Writer() != output || log.Flags() != flags {
-		t.Errorf("after TestRenderReuseADocumentOutsideTheSchema ended, log writes to %T with flags %d; want %T with flags %d", log.Writer(), log.Flags(), output, flags)
+		t.Errorf("after captureRenderReuseWarnings ended, log writes to %T with flags %d; want %T with flags %d", log.Writer(), log.Flags(), output, flags)
 	}
 }

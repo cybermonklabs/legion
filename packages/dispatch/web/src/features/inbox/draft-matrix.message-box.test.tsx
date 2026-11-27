@@ -44,7 +44,7 @@
  * that the rows above do not make - are `REASONS` in `draft-matrix.message-box.coverage.ts`, which
  * holds each census item this file answers for to a test above or to one of them.
  */
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 
@@ -60,6 +60,7 @@ import {
   REFUSAL,
   signedInAsReader,
 } from "../../__tests__/draft-matrix-fixture";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
 import type {
@@ -69,8 +70,15 @@ import type {
   MyReplyRow,
   MyReplyThreadRow,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { installInboxApiMocks } from "./inbox-fixture";
 import { threadSendKey } from "./ThreadBody";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 installInboxApiMocks();
 
@@ -85,6 +93,7 @@ function issueMessage(id: string, issueKey: string): Message {
     broadcast_id: null,
     created_at: "2026-10-12T00:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: issueKey,

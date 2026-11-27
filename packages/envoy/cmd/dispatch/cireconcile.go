@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -20,22 +21,35 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 )
 
-// reviewerAppID is DISPATCH_REVIEWER_APP_ID as a reconcile pass takes it: the text of the number
-// GitHub's own check run objects carry under app.id, which the pass compares a verdict check's
-// App against (contracts.ReviewerVerdictDecision). Unset it is empty, and the pass then records
-// no `tester` or `architect` check run at all. Anything but a positive decimal number refuses
-// startup naming the variable, as DISPATCH_APP_ID's own reader does (auth.LoadAppFromEnv).
+// reviewerAppID is DISPATCH_REVIEWER_APP_ID as a reconcile pass takes it (appIDSetting), which the
+// pass compares a verdict check's App against (contracts.ReviewerVerdictDecision). Unset it is
+// empty, and the pass then records no `tester` or `architect` check run at all.
 func reviewerAppID(env settingValues) (string, error) {
-	raw := strings.TrimSpace(env.get("DISPATCH_REVIEWER_APP_ID"))
+	return appIDSetting(env, "DISPATCH_REVIEWER_APP_ID", "the review App's numeric ID")
+}
+
+// verdictAppID is DISPATCH_VERDICT_APP_ID as a reconcile pass takes it (appIDSetting), the App
+// whose check suites the pass leaves out of the record (contracts.VerdictAppsOwnSuite). Unset it
+// is empty, and the pass records every App's completed suite.
+func verdictAppID(env settingValues) (string, error) {
+	return appIDSetting(env, "DISPATCH_VERDICT_APP_ID", "the verdict App's numeric ID")
+}
+
+// appIDSetting is the GitHub App id the setting name holds, as the text of the number GitHub's
+// own objects carry under app.id, and empty when it is unset or blank. Anything but a positive
+// decimal number refuses startup naming the variable, as DISPATCH_APP_ID's own reader does
+// (auth.LoadAppFromEnv); expected says what the value should be.
+func appIDSetting(env settingValues, name, expected string) (string, error) {
+	raw := strings.TrimSpace(env.get(name))
 	if raw == "" {
 		return "", nil
 	}
 	id, err := strconv.ParseUint(raw, 10, 64)
 	if err != nil || id == 0 {
-		return "", fmt.Errorf("DISPATCH_REVIEWER_APP_ID=%q (expected the review App's numeric ID)", raw)
+		return "", fmt.Errorf("%s=%q (expected %s)", name, raw, expected)
 	}
 	// The number as GitHub spells it, so a value written with a leading zero still matches the
-	// app.id of the checks the review App posted.
+	// app.id of the objects that App posted.
 	return strconv.FormatUint(id, 10), nil
 }
 
@@ -83,14 +97,15 @@ func (r *registeredInstance) get() string {
 // id rather than be handed it.
 //
 // renames is the rename pairs the boot read, which each pass names its repositories by
-// (cireconcile.Reconciler.Renames).
-func ciReconciler(natsClient *bus.Client, database *store.Store, app *auth.AppConfig, apiBase, reviewer string,
-	interval time.Duration, instance *registeredInstance, renames refs.Renames) (*cireconcile.Reconciler, error) {
+// (cireconcile.Reconciler.Renames). counted is the process's one count of its calls to GitHub,
+// which the pass's client counts on for the rate reading (nil counts none).
+func ciReconciler(natsClient *bus.Client, database *store.Store, app *auth.AppConfig, apiBase, reviewer, verdict string,
+	interval time.Duration, instance *registeredInstance, renames refs.Renames, counted *githubrate.Counter) (*cireconcile.Reconciler, error) {
 	if natsClient == nil {
 		return nil, nil
 	}
 	limits := ratelimit.New(database.Pool)
-	github, err := githubapp.New(app, apiBase, githubapp.WithLimits(limits))
+	github, err := githubapp.New(app, apiBase, githubapp.WithLimits(limits), githubapp.WithRateCounter(counted))
 	if err != nil || github == nil {
 		return nil, err
 	}
@@ -119,6 +134,7 @@ func ciReconciler(natsClient *bus.Client, database *store.Store, app *auth.AppCo
 		Limits:        limits,
 		Open:          open,
 		ReviewerAppID: reviewer,
+		VerdictAppID:  verdict,
 		Logger:        slog.Default(),
 		Pace:          cireconcile.RequestPace,
 		PassTimeout:   interval,

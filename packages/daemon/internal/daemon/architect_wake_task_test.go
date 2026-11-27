@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -59,13 +61,13 @@ func (r *mainPathRig) wakeByRoleMessage(report string) string {
 }
 
 // queueReleaseResume queues the resume a cancelled idle release writes for the architect's claim:
-// the row the daemon's own builder makes (outbox.releaseResume) at the root's generation, inserted
-// with the statement store.CancelIssueRelease uses. No release is marked and none is cancelled:
-// the row is written alone, outside the cancel's transaction. It returns that row as the outbox
-// holds it.
+// the row the daemon's own builder makes (outbox.releaseResume) at the root's generation, for a
+// role whose wake the cancel did not drop, inserted with the statement store.CancelIssueRelease
+// uses. No release is marked and none is cancelled: the row is written alone, outside the
+// cancel's transaction. It returns that row as the outbox holds it.
 func (r *mainPathRig) queueReleaseResume() entryStartRow {
 	r.t.Helper()
-	row, err := r.runner.releaseResume(r.key, r.key)(claim.RoleArchitect, r.issue().Generation)
+	row, err := r.runner.releaseResume(r.key, r.key)(claim.RoleArchitect, r.issue().Generation, store.DroppedWake{})
 	if err != nil {
 		r.t.Fatalf("build the release's resume: %v", err)
 	}
@@ -95,7 +97,7 @@ func (r *mainPathRig) architectStartPending() (string, bool) {
 	entry := rolePhaseRow(r.t, r.pool, r.key, claim.RoleArchitect).Entry
 	var reason string
 	var pending bool
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		run, err := r.records.RoleRun(r.ctx, tx, r.token, r.key, claim.RoleArchitect, root.Generation)
 		reason, pending = workflow.ArchitectStartPending(root, entry, run)
 		return err
@@ -132,6 +134,7 @@ func (r *mainPathRig) architectStartPending() (string, bool) {
 // row left for the lane to run again, and is sent once the wake's turn is over. Read as superseded
 // by the entry's task, the wake's task was retired at the seventh step, never taken by a turn.
 func TestAWakesTaskIsSentBeforeTheAnswerThatRaisedTheArchitectsEntry(t *testing.T) {
+	t.Parallel()
 	const child, ask = "LEGION-452", "ask-a"
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
@@ -209,6 +212,7 @@ func TestAWakesTaskIsSentBeforeTheAnswerThatRaisedTheArchitectsEntry(t *testing.
 // the resume is queued with no release marked or cancelled (queueReleaseResume). No idle pass is
 // run, so whether one releases a claim that holds its entry's task unconfirmed is not shown here.
 func TestAReleasesResumeLeavesTheTaskOfAnEntryTheClaimHolds(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	r.admitPass()
@@ -254,6 +258,7 @@ func TestAReleasesResumeLeavesTheTaskOfAnEntryTheClaimHolds(t *testing.T) {
 // suspended by the role stop's suspend alone (release); and the resume is queued with no release
 // marked or cancelled (queueReleaseResume).
 func TestTheSweepWaitsForAReleasesQueuedResumeAndRetiresNothingOfIt(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	r.admitPass()
@@ -308,8 +313,9 @@ func TestTheSweepWaitsForAReleasesQueuedResumeAndRetiresNothingOfIt(t *testing.T
 
 	r.admitPass()
 	starts = roleStartRows(t, r.pool, r.key, claim.RoleArchitect)
-	if len(starts) != 1 || starts[0].request.Entry != 2 || starts[0].request.Task == "" {
-		t.Fatalf("the architect starts after the resume ran = %+v, want the one start of entry 2 the sweep writes", starts)
+	if len(starts) != 1 || starts[0].request.Entry != 2 || starts[0].request.Task != "" || starts[0].request.Awaiting == nil {
+		t.Fatalf("the architect starts after the resume ran = %+v, want the one start of entry 2 the sweep writes: the resume's own, "+
+			"the wait its row keeps and no text, which the send renders (workflow.Engine.SendArchitectStart)", starts)
 	}
 	r.runStarts()
 	if prompts := r.prompts()[sent:]; len(prompts) != 1 || !strings.Contains(prompts[0].Message, answered) {

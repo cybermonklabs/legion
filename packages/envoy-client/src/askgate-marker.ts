@@ -90,12 +90,19 @@ export interface AskgateOwner {
   readonly store: string;
 }
 
-/** The Dispatch tools that always post text AskGate reviews. */
+/** The Dispatch tools that always post text AskGate reviews. A correction writes or takes down
+ *  the text of a post the gate reviewed when it was posted, so the four of them are gated too:
+ *  an edit's reviewed text is its new body, and a delete, which carries no body, is reviewed as
+ *  the call itself, since what the gate reviews is always the call's arguments. */
 const ALWAYS_GATED: Record<string, true> = {
   dispatch_ask: true,
   dispatch_message: true,
   dispatch_edit_ask: true,
   dispatch_comment: true,
+  dispatch_edit_comment: true,
+  dispatch_delete_comment: true,
+  dispatch_edit_message: true,
+  dispatch_delete_message: true,
   dispatch_doc_edit: true,
   dispatch_request_approval: true,
 };
@@ -117,8 +124,9 @@ export function uploadIsDocument(args: Readonly<Record<string, unknown>>): boole
 
 /**
  * The one predicate of a gated write, the gate's and the CLI's: `ask`, `message`, `edit-ask`,
- * `comment`, `doc-edit` and `request-approval`, an `issue` with a spec, and an `artifact` that
- * uploads a markdown document.
+ * `comment`, the four corrections (`edit-comment`, `delete-comment`, `edit-message`,
+ * `delete-message`), `doc-edit` and `request-approval`, an `issue` with a spec, and an `artifact`
+ * that uploads a markdown document.
  */
 export function gatedWrite(tool: string, args: Readonly<Record<string, unknown>>): boolean {
   // `=== true`, so a name on Object's prototype (`constructor`) is no gated tool.

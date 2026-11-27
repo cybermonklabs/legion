@@ -35,14 +35,15 @@ func (c *countingRecords) TreeIssues(ctx context.Context, tx pgx.Tx, tree string
 	return c.Store.TreeIssues(ctx, tx, tree)
 }
 
-// rerun_child judges the tree from one read of it (treeMembers), as release_children judges a
-// whole wave: those records carry the architect's ownership of the child (record.OwnsUnder), the
-// root whose linger stops a rerun and the chain the accepted ancestor is found on
-// (record.AcceptedAncestorIn). It read the root by itself and then the tree again through a helper
-// of its own, so one request's two judgements stood on two snapshots of the tree and a helper no
-// other route had a use for. A sub-architect's request read the tree to judge its ownership and
-// again for the two judgements. Now childOfTree reads the tree once for every judgement, so each
-// architect's request is held to one read.
+// rerun_child judges the tree from one read of the child and its tree (ownedIssueInTree), as
+// release_children judges a whole wave from one read of its tree: those records carry the
+// architect's place in the tree (record.ArchitectOfTreeIn), its ownership of the child
+// (record.OwnsUnder), the root whose linger stops a rerun and the chain the accepted ancestor is
+// found on (record.AcceptedAncestorIn). It read the root by itself and then the tree again through
+// a helper of its own, so one request's two judgements stood on two snapshots of the tree and a
+// helper no other route had a use for. A sub-architect's request read the tree to judge its
+// ownership and again for the two judgements. Now childOfTree reads the tree once for every
+// judgement, so each architect's request is held to one read.
 func TestRerunChildJudgesTheTreeFromOneRead(t *testing.T) {
 	// underChild is an issue under statusChild that is out of the workflow: the architect of
 	// statusChild may run it again.

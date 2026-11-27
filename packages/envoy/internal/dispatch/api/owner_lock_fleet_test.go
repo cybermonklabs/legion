@@ -106,7 +106,7 @@ func runEarlierBuildRace(t *testing.T, fixture itemRowFixture, race earlierBuild
 	}
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- race.send(handler) }()
-	if answer, early := queuedBehindOrAnswered(t, holder, pid, answered); early {
+	if answer, early := storetest.WaitForQueuedBehind(t, holder, pid, answered); early {
 		t.Fatalf("the request answered status=%d body=%s while the earlier build's writer held the issue's row; want it to wait for that row",
 			answer.Code, answer.Body.String())
 	}
@@ -120,29 +120,6 @@ func runEarlierBuildRace(t *testing.T, fixture itemRowFixture, race earlierBuild
 	}
 	answer := testwait.Receive(t, "the request's answer once the earlier build's write committed", answered)
 	return earlierBuildOutcome{answer: answer, waitingOn: waitingOn}
-}
-
-// queuedBehindOrAnswered is storetest.WaitForQueuedBehind with the test binary's deadline as its
-// only bound (testwait.UntilPolling): it waits until backend pid queues behind a lock holder's
-// transaction owns and answers false, or answers the call's answer and true if the call answers
-// first. A backend that never queues fails the row by name at that deadline, never sooner, so a
-// loaded runner's slow start of the call is not taken for a call that does not wait.
-func queuedBehindOrAnswered(t *testing.T, holder pgx.Tx, pid uint32, answered <-chan *httptest.ResponseRecorder) (*httptest.ResponseRecorder, bool) {
-	t.Helper()
-	answer := testwait.UntilPolling(t, 2*time.Millisecond, fmt.Sprintf("backend %d to queue behind the lock, or its call to answer", pid),
-		func() (*httptest.ResponseRecorder, bool) {
-			select {
-			case answer := <-answered:
-				return answer, true
-			default:
-			}
-			queued, err := storetest.QueuedBehind(context.Background(), holder, pid)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return nil, queued
-		})
-	return answer, answer != nil
 }
 
 // fleetRaceCase is the registry a race runs beside.
@@ -167,6 +144,7 @@ var fleetRaceCases = []fleetRaceCase{
 // the row only in its write phase), which is what the control row checks; what it answers then is
 // logged, not judged.
 func TestACommentResolveIsRefusedOnAnIssueAnEarlierBuildClosesWhileItIsUnderWay(t *testing.T) {
+	t.Parallel()
 	for _, fleet := range fleetRaceCases {
 		t.Run(fleet.name, func(t *testing.T) {
 			fixture := newFleetRaceFixture(t, fleet, "Closed meanwhile")
@@ -211,6 +189,7 @@ func TestACommentResolveIsRefusedOnAnIssueAnEarlierBuildClosesWhileItIsUnderWay(
 // the PATCH takes first, so without the row the PATCH would read the labels before that writer's
 // commit and write its own over them: the earlier build's label lost.
 func TestALabelAddedBesideAnEarlierBuildsLabelKeepsBoth(t *testing.T) {
+	t.Parallel()
 	for _, fleet := range fleetRaceCases {
 		t.Run(fleet.name, func(t *testing.T) {
 			fixture := newFleetRaceFixture(t, fleet, "Labelled meanwhile")
@@ -330,6 +309,7 @@ func pauseLabelWrite(t *testing.T, database *store.Store, pid uint32) pgx.Tx {
 // function waits without a bound, and no wait of this row ends on a clock: each ends on the fact
 // it waits for, bounded only by the test binary's deadline (testwait).
 func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing.T) {
+	t.Parallel()
 	for _, arrival := range earlierBuildArrivals {
 		t.Run(arrival.name, func(t *testing.T) {
 			fixture := newItemRowFixture(t, testServerOptions{}, "Arrived meanwhile", "A spec.\n")
@@ -346,7 +326,7 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 				answered <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+fixture.issueKey,
 					map[string]any{"labels_add": []string{"this-build"}}, "alice")
 			}()
-			if answer, early := queuedBehindOrAnswered(t, pause, pid, answered); early {
+			if answer, early := storetest.WaitForQueuedBehind(t, pause, pid, answered); early {
 				t.Fatalf("the PATCH answered status=%d body=%s before it reached its write phase; want it to wait at its update of the labels there",
 					answer.Code, answer.Body.String())
 			}

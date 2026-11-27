@@ -76,6 +76,36 @@ const mainClosureQuery = `
 		order by c.ref_key, c.depth, c.via_kind, c.via_id
 	`
 
+// mainDepthOneQuery is mainClosureQuery cut to its rows of depth 1, the only rows the comparisons
+// of the one-hop read take from it (mainsDepthOneMembers). Its one change is the bound of the
+// recursive term, `c.depth < 9` written `c.depth < 1`, and it fails t unless mainClosureQuery
+// holds that bound exactly once.
+//
+// Its rows are main's rows of depth 1, row for row, by the statement's own shape. Both terms of
+// closure before its recursive one, the read of refs and the read of an ask's current parts,
+// answer depth 1, and the recursive term answers c.depth + 1 for a row c of closure, 2 or more:
+// so closure's rows of depth 1 are those two terms' rows whatever bound the recursive term has,
+// and under `c.depth < 1` the recursive term reads none of them and closure holds them alone. The
+// final select keeps one row for each ref_key, its first by depth, via_kind and via_id: a ref_key
+// with a row of depth 1 keeps its least row of depth 1 under either bound, and one with none
+// keeps a row of depth 2 or more under main's bound, which the comparisons drop, and no row under
+// the cut. The join to artifacts and the test of issue_key read each row alone, so they keep the
+// same rows under both. TestTheClosureAnswersWhatMainsStatementDid and the random graphs' case
+// hold the two statements to the same rows of depth 1 on data where main's walk answers rows past
+// depth 1 (requireTheCutAgrees).
+//
+// The cut is what makes the comparisons cheap: main's walk follows each document to its ninth
+// hop. On the dev box, over an idle Postgres, it read the out side of the one-hop fixture in
+// 903 ms against the cut's 30 ms, and each of the 200 random graphs in about 20 ms against 7 ms.
+func mainDepthOneQuery(t testing.TB) string {
+	t.Helper()
+	const bound, cut = "c.depth < 9", "c.depth < 1"
+	if held := strings.Count(mainClosureQuery, bound); held != 1 {
+		t.Fatalf("mainClosureQuery holds %q %d times; its cut to depth 1 replaces exactly one", bound, held)
+	}
+	return strings.Replace(mainClosureQuery, bound, cut, 1)
+}
+
 // closureRow is one row of the closure statement, before Closure reduces it to a Member.
 type closureRow struct {
 	refKey  string
@@ -89,8 +119,9 @@ type closureRow struct {
 // which main's walk follows to its ninth hop and the one-hop read to its first document alone.
 type closureFixture struct {
 	database *store.Store
-	// refKeys names the ref_key of each document the closure reaches, in the order the walk
-	// reaches them: the comment's own targets first, then the chain.
+	// heldBlockDocument is the ref_key of the document whose block a current version holds,
+	// droppedBlock the ref_key of the document whose cited block none holds, and comment the id
+	// of the issue's comment that cites both.
 	heldBlockDocument string
 	droppedBlock      string
 	comment           string
@@ -112,7 +143,8 @@ func newClosureFixture(t *testing.T) closureFixture {
 	createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
 
 	// A chain of ten documents: the comment reaches the first, and each cites the next, so main's
-	// walk reaches the tenth at depth ten, where the one-hop read reaches the first alone.
+	// walk reaches the ninth at depth nine, the last its bound reaches, where the one-hop read
+	// reaches the first alone.
 	ids := make(map[string]string)
 	refs := make(map[string]string)
 	for index := 1; index <= 10; index++ {
@@ -153,10 +185,10 @@ func insertDocumentBlock(t *testing.T, tx pgx.Tx, artifactID, blockID, nodeID st
 	}
 }
 
-// closureStatementRows runs statement and answers its rows in the order it gave them.
-func closureStatementRows(t *testing.T, database *store.Store, statement, issueKey string) []closureRow {
+// closureStatementRows runs statement with args and answers its rows in the order it gave them.
+func closureStatementRows(t *testing.T, database *store.Store, statement string, args ...any) []closureRow {
 	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), statement, issueKey)
+	rows, err := database.Pool.Query(context.Background(), statement, args...)
 	if err != nil {
 		t.Fatalf("run the closure statement: %v", err)
 	}
@@ -178,11 +210,15 @@ func closureStatementRows(t *testing.T, database *store.Store, statement, issueK
 // Closure's members are main's rows of depth 1 over the same data, each at depth 1 with main's
 // via: a block its document still holds reaches that document, one no version holds reaches
 // nothing, and the documents of the chain past its first, which main's walk answered at depths
-// two to ten, are no member.
+// two to nine, are no member. It reads as somebody who proves no author, and no node of this data
+// is reserved for one, so the predicates it binds leave every member main answered. Main's rows
+// here are its whole walk's, and the cut the other comparisons read (mainDepthOneQuery) answers
+// the same rows of depth 1 over the chain's rows past depth 1 (requireTheCutAgrees).
 func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
+	t.Parallel()
 	fixture := newClosureFixture(t)
-	wantMembers := mainsDepthOneMembers(t, fixture.database, "CORE-1")
-	references, err := Closure(context.Background(), fixture.database.Pool, "CORE-1")
+	wantMembers := requireTheCutAgrees(t, fixture.database, "CORE-1")
+	references, err := Closure(context.Background(), fixture.database.Pool, model.Actor{}, "CORE-1", "")
 	if err != nil {
 		t.Fatalf("read the closure: %v", err)
 	}
@@ -204,6 +240,7 @@ func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 // build its hash and cannot use that index at all; the lateral join is what keeps the probe a
 // keyed one. Every read of refs is keyed too.
 func TestTheClosureProbesDocumentBlocksThroughItsNodeIndex(t *testing.T) {
+	t.Parallel()
 	fixture := newClosureFixture(t)
 	ctx := context.Background()
 	tx, err := fixture.database.Pool.Begin(ctx)
@@ -218,7 +255,7 @@ func TestTheClosureProbesDocumentBlocksThroughItsNodeIndex(t *testing.T) {
 		t.Fatalf("set local enable_seqscan = off: %v", err)
 	}
 	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+linksOutQuery, "CORE-1").Scan(&raw); err != nil {
+	if err := tx.QueryRow(ctx, "explain (format json) "+linksOutQuery(), "CORE-1", VisibilityArg(model.Actor{})).Scan(&raw); err != nil {
 		t.Fatalf("explain the out statement: %v", err)
 	}
 	plan := explaintest.OnePlan(t, raw)
@@ -317,6 +354,35 @@ func membersDiff(members, want []Member, wantName string) (string, []Member) {
 	return strings.Join(problems, "; "), got
 }
 
+// writeOutsideStoreNodes writes n session nodes into graph_nodes, each live and visible to its
+// project, and one value of each into graph_tuples, none of which any read of these tests
+// reaches, and analyzes both tables. Every read of the graph binds the visibility registry's
+// predicates (visibility.go), each a probe of graph_nodes by its key, and graph_edges' own tuple
+// arm reads graph_tuples by its far end, so both are tables the statements read, and a test that
+// holds every table its statements read to a real size holds these two to one too. A value is no
+// relation, so no arm of graph_edges answers one.
+func writeOutsideStoreNodes(t *testing.T, pool *store.Pool, n int) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `
+		insert into graph_nodes (kind, id, supertag, visibility, state, made_at, made_by, source_event)
+		select 'session', 'outside-session-' || i, 'session', 'project', 'live', now(), '{"kind":"user","id":"alice"}', 0
+		from generate_series(1, $1::int) i
+	`, n); err != nil {
+		t.Fatalf("write %d outside nodes into graph_nodes: %v", n, err)
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
+		select 'session', 'outside-session-' || i, 'name', 'value', 'Outside session ' || i, now(), '{"kind":"user","id":"alice"}', 0
+		from generate_series(1, $1::int) i
+	`, n); err != nil {
+		t.Fatalf("write a value of each of %d outside nodes into graph_tuples: %v", n, err)
+	}
+	if _, err := pool.Exec(ctx, "analyze graph_nodes, graph_tuples"); err != nil {
+		t.Fatalf("analyze graph_nodes and graph_tuples: %v", err)
+	}
+}
+
 // The references read reads one hop in each direction, keyed by the issue and its own content,
 // however large the graph beyond them. On a graph of the size and shape of INFRA-1098's closure
 // (newOneHopFixture), Closure answers under the route's 2 s bound: its links hold the 25
@@ -335,14 +401,19 @@ func membersDiff(members, want []Member, wantName string) (string, []Member) {
 // are at most 20 times the issue's own content, its links out and in and the rows of both fields;
 // and every table is read through an index by its first key column, artifacts by ref_key, id or
 // the issue's key. Every table a statement reads holds oneHopMinimumRows or more, so the planner
-// plans the default settings on tables of a real size.
+// plans the default settings on tables of a real size; graph_nodes, which each visibility
+// predicate of the statements probes by its key, is filled to that size with nodes no read of the
+// test reaches (writeOutsideStoreNodes).
 //
-// The control runs main's statement on the same fixture under the same bound: it must end at the
-// bound (SQLSTATE 57014) or read ten times the rows of plan nodes the out statement reads, which
-// shows the fixture is as hard as the real graph. Every count of every statement, and of main's,
-// is printed.
+// The control holds main's statement on the same fixture to reading ten times the rows of plan
+// nodes the out statement reads, or to ending at the same bound (SQLSTATE 57014), which shows the
+// fixture is as hard as the real graph. Its whole walk is explained first, under a deadline of its
+// own, and it runs under the bound only where its plan nodes did not read ten times as many: the
+// one case where the bound decides. Every count of every statement, and of main's, is printed.
 func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
+	t.Parallel()
 	fixture := newOneHopFixture(t, true)
+	writeOutsideStoreNodes(t, fixture.database.Pool, oneHopMinimumRows)
 	ctx := context.Background()
 	sizes := fixture.sizes(t)
 	bound := sizes.out + sizes.in + sizes.held
@@ -360,7 +431,7 @@ func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
 	}
 	recorder := &statementRecorder{Queryer: tx}
 	read := time.Now()
-	references, err := Closure(ctx, recorder, fixture.issue)
+	references, err := Closure(ctx, recorder, model.Actor{}, fixture.issue, "")
 	took := time.Since(read)
 	_ = tx.Rollback(ctx)
 	if err != nil {
@@ -447,8 +518,25 @@ func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
 		}
 	}
 
-	// The control: main's statement on the same fixture, under the same bound.
+	// The control. main's counts first, for the record of what this head reads against it: its
+	// whole walk, which the bound cuts, under a deadline of its own. The run under the bound below
+	// decides only where those counts did not: it is skipped where main's plan nodes read ten
+	// times the out statement's.
 	mainStatement := recordedStatement{sql: mainClosureQuery, args: []any{fixture.issue}}
+	mainNodeRows := -1.0
+	walked := time.Now()
+	if plan, err := explainAnalyzedWith(t, fixture.database.Pool, untimedAnalyze, mainStatement, "set local statement_timeout = '60s'"); err != nil {
+		t.Logf("mainClosureQuery's counts are not read: its plan did not run within 60s: %v", err)
+	} else {
+		counts := countPlan(t, keys, plan)
+		mainNodeRows = counts.nodeRows
+		t.Logf("mainClosureQuery, under the default settings and no bound (%s): count one %.2f rows of the link tables, count two %.2f rows of plan nodes, count three %d unkeyed reads",
+			time.Since(walked).Round(time.Millisecond), counts.linkRows, counts.nodeRows, len(counts.unkeyed))
+	}
+	if mainNodeRows >= 0 && outNodeRows >= 0 && mainNodeRows >= 10*outNodeRows {
+		t.Logf("control: main's statement read %.2f rows of plan nodes, ten times or more the out statement's %.2f", mainNodeRows, outNodeRows)
+		return
+	}
 	control, err := fixture.database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the control's transaction: %v", err)
@@ -466,26 +554,11 @@ func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
 	}
 	mainTook := time.Since(started).Round(time.Millisecond)
 	_ = control.Rollback(ctx)
-	// main's counts, for the record of what this head reads against it: its whole walk, which the
-	// bound cuts, under a deadline of its own.
-	mainNodeRows := -1.0
-	walked := time.Now()
-	if plan, err := explainAnalyzedWith(t, fixture.database.Pool, untimedAnalyze, mainStatement, "set local statement_timeout = '60s'"); err != nil {
-		t.Logf("mainClosureQuery's counts are not read: its plan did not run within 60s: %v", err)
-	} else {
-		counts := countPlan(t, keys, plan)
-		mainNodeRows = counts.nodeRows
-		t.Logf("mainClosureQuery, under the default settings and no bound (%s): count one %.2f rows of the link tables, count two %.2f rows of plan nodes, count three %d unkeyed reads",
-			time.Since(walked).Round(time.Millisecond), counts.linkRows, counts.nodeRows, len(counts.unkeyed))
-	}
 	switch {
 	case queryCanceled(mainErr):
 		t.Logf("control: main's statement ran past the %s bound after %s (SQLSTATE 57014)", oneHopBound, mainTook)
 	case mainErr != nil:
 		t.Fatalf("control: run main's statement: %v", mainErr)
-	case mainNodeRows >= 0 && outNodeRows >= 0 && mainNodeRows >= 10*outNodeRows:
-		t.Logf("control: main's statement answered within the bound, in %s, and read %.2f rows of plan nodes, ten times or more the out statement's %.2f",
-			mainTook, mainNodeRows, outNodeRows)
 	default:
 		t.Errorf("control: main's statement answered within the %s bound, in %s, and its plan nodes read %.2f rows, not ten times the out statement's %.2f (-1: not read): the fixture is not as hard as the real graph",
 			oneHopBound, mainTook, mainNodeRows, outNodeRows)
@@ -493,17 +566,48 @@ func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
 }
 
 // mainsDepthOneMembers is main's rows of depth 1 for issueKey, as the members they make, by
-// ref_key.
+// ref_key, read through mainDepthOneQuery, which answers no row of another depth.
 func mainsDepthOneMembers(t *testing.T, database *store.Store, issueKey string) []Member {
 	t.Helper()
+	rows := closureStatementRows(t, database, mainDepthOneQuery(t), issueKey)
+	for _, row := range rows {
+		if row.depth != 1 {
+			t.Fatalf("mainDepthOneQuery answered %+v for %s, a row of depth %d", row, issueKey, row.depth)
+		}
+	}
+	return depthOneMembers(rows)
+}
+
+// depthOneMembers is the members rows of depth 1 make, by ref_key.
+func depthOneMembers(rows []closureRow) []Member {
 	members := []Member{}
-	for _, row := range closureStatementRows(t, database, mainClosureQuery, issueKey) {
+	for _, row := range rows {
 		if row.depth == 1 {
 			members = append(members, Member{RefKey: row.refKey, Depth: 1, Via: model.ReferenceVia{Kind: row.viaKind, ID: row.viaID}})
 		}
 	}
 	sort.Slice(members, func(left, right int) bool { return members[left].RefKey < members[right].RefKey })
 	return members
+}
+
+// requireTheCutAgrees holds mainDepthOneQuery to the rows of depth 1 of main's whole walk
+// (mainClosureQuery) for issueKey, on data where that walk answers a row of depth 1 and a row past
+// it, so the cut has rows to keep and rows to leave out, and answers main's rows of depth 1 as the
+// members they make, by ref_key.
+func requireTheCutAgrees(t *testing.T, database *store.Store, issueKey string) []Member {
+	t.Helper()
+	walk := closureStatementRows(t, database, mainClosureQuery, issueKey)
+	if !slices.ContainsFunc(walk, func(row closureRow) bool { return row.depth > 1 }) {
+		t.Fatalf("main's walk answers no row past depth 1 for %s, so the cut has nothing to leave out; its rows: %+v", issueKey, walk)
+	}
+	want := depthOneMembers(walk)
+	if len(want) == 0 {
+		t.Fatalf("main's walk answers no row of depth 1 for %s, so the cut has nothing to keep; its rows: %+v", issueKey, walk)
+	}
+	if cut := mainsDepthOneMembers(t, database, issueKey); !reflect.DeepEqual(cut, want) {
+		t.Fatalf("mainDepthOneQuery answers %+v for %s; main's walk answers %+v at depth 1", cut, issueKey, want)
+	}
+	return want
 }
 
 // depthOneDiff compares Closure's members of issueKey with main's rows of depth 1 over the same
@@ -518,7 +622,7 @@ func depthOneDiff(t *testing.T, database *store.Store, issueKey string, reached 
 			t.Fatalf("main's statement answers %s at no depth 1 for %s, so the fixture decides nothing; its rows of depth 1: %v", refKey, issueKey, want)
 		}
 	}
-	references, err := Closure(context.Background(), database.Pool, issueKey)
+	references, err := Closure(context.Background(), database.Pool, model.Actor{}, issueKey, "")
 	if err != nil {
 		t.Fatalf("read %s's references: %v", issueKey, err)
 	}
@@ -559,6 +663,7 @@ func insertItemWithID(t *testing.T, tx pgx.Tx, kind ItemKind, id, issueKey strin
 // is first checked to answer at depth 1, and each named fixture also holds a second hop, which a
 // read past one hop answers. None holds a typed pointer, which main's statement does not read.
 func TestTheReferencesReadAnswersMainsDepthOneMembers(t *testing.T) {
+	t.Parallel()
 	// The out side of TestTheReferencesReadReadsOnlyTheIssuesOwnLinks' graph, its pointer a
 	// plain mention.
 	t.Run("the out side of the one-hop fixture", func(t *testing.T) {
@@ -688,8 +793,8 @@ func TestTheReferencesReadAnswersMainsDepthOneMembers(t *testing.T) {
 		insertReference(t, tx, "message", message, "artifact", reached["message"])
 		insertIndexedItem(t, tx, ItemMessage, "CORE-1", "Intro.\n\nSee dispatch://CORE/artifact/by-message-block-md.")
 		question := insertAsk(t, tx, "CORE-1", "Ship dispatch://CORE/artifact/by-question-md first?", model.AskOption{Label: "Yes"})
-		mentions := NewReader(ctx, tx, "ask", question.ID, itemBlockServer).Mentions(question.Question)
-		if _, err := replaceRefs(ctx, tx, "ask", question.ID, text.Refs(mentions), nil); err != nil {
+		mentions := NewReader(ctx, tx, question.Author, "ask", question.ID, itemBlockServer).Mentions(question.Question)
+		if _, err := replaceRefs(ctx, tx, "ask", question.ID, text.Refs(mentions), nil, false); err != nil {
 			t.Fatalf("index the ask's own references: %v", err)
 		}
 		indexAskPartsAt(t, tx, question, 1)
@@ -789,7 +894,9 @@ func TestTheReferencesReadAnswersMainsDepthOneMembers(t *testing.T) {
 	// 200 random graphs of 40 documents, each graph an issue of its own whose first two documents
 	// are the issue's, each document with up to six links to documents of its graph, a block its
 	// document holds or a block none holds, and a comment of the issue citing one to four of them,
-	// the first a document that is not the issue's, which main answers at depth 1.
+	// the first a document that is not the issue's, which main answers at depth 1. On the first
+	// graph, the cut of main's statement the comparisons read is first held to main's whole walk
+	// (requireTheCutAgrees).
 	t.Run("200 random graphs", func(t *testing.T) {
 		database := storetest.Open(t)
 		rows := map[string][][]any{}
@@ -859,6 +966,7 @@ func TestTheReferencesReadAnswersMainsDepthOneMembers(t *testing.T) {
 			{"comments", []string{"id", "issue_key", "author", "body"}},
 			{"refs", []string{"from_kind", "from_id", "to_kind", "to_id"}},
 		}, rows)
+		requireTheCutAgrees(t, database, graphs[0].issue)
 		var differ []string
 		for _, graph := range graphs {
 			if diff, _ := depthOneDiff(t, database, graph.issue, graph.reached); diff != "" {

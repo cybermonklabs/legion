@@ -116,7 +116,7 @@ func newContractRig(t *testing.T) *contractRig {
 		PendingTTL: 12 * time.Hour,
 		Audience:   brokerServer.URL, Skew: time.Minute, Replay: enr.Replay,
 	}
-	reqMachine.Chain = requests.NewChainVerifier(brokerStore, brokerServer.URL, time.Minute, reqMachine.Airlock)
+	reqMachine.Chain = requests.NewChainVerifier(brokerStore, brokerServer.URL, time.Minute, reqMachine.Policy)
 	provider := ciphertest.NewOAuthProvider(t, brokerStore, issuer)
 	mach := &machine.Service{
 		Store: brokerStore, Enroll: enr, Policy: cur,
@@ -378,6 +378,7 @@ func (rig *contractRig) decisionEvents(t *testing.T, recordID string) int {
 // the record stays pending in its approver's inbox. Approved on that page by its approver, signed
 // in to the broker, the request releases its value, and Dispatch's approve still decides nothing.
 func TestContractDispatchDecidesNoSecretRequest(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	pending := rig.createPendingAgentSecretRecord(t, "need it for the demo", "DEEL_API_KEY")
 	page := rig.BrokerURL + "/approve/" + pending.RecordID
@@ -416,6 +417,7 @@ func TestContractDispatchDecidesNoSecretRequest(t *testing.T) {
 // record shows in Dispatch's proxied ?approver=me list with its minimal facts and the broker's
 // page where it is decided.
 func TestContractPendingListShowsCreatedRecordThroughDispatch(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	recordID := rig.createPendingAgentSecretRecord(t, "checking the inbox lists a pending record", "DEEL_API_KEY").RecordID
 
@@ -431,6 +433,7 @@ func TestContractPendingListShowsCreatedRecordThroughDispatch(t *testing.T) {
 // code mints a launcher credential, while without the code the broker refuses CODE_REQUIRED and
 // with another code CODE_MISMATCH.
 func TestContractMachineLoginLookupAndApproveThroughDispatch(t *testing.T) {
+	t.Parallel()
 	newContractRig(t).approveMachineLogin(t, contractApprover, "contract-test-host")
 }
 
@@ -438,6 +441,7 @@ func TestContractMachineLoginLookupAndApproveThroughDispatch(t *testing.T) {
 // Dispatch with its code, as they approve one: another code is refused CODE_MISMATCH and leaves it
 // pending, its own code denies it, and a later approve is the broker's 409 RECORD_TERMINAL.
 func TestContractMachineLoginDeniedThroughDispatch(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	machineKey := contractSigningKey(t)
 	compact, err := record.Sign(machineKey, rig.BrokerURL,
@@ -469,6 +473,7 @@ func TestContractMachineLoginDeniedThroughDispatch(t *testing.T) {
 // approver — refused for another login — the human path that ends a grant, distinct from a session
 // ending its own.
 func TestContractGrantsListAndRevokeByApproverThroughDispatch(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	pending := rig.createPendingAgentSecretRecord(t, "checking a grant lists and its approver revokes it", "DEEL_API_KEY")
 	rig.approveOnBrokerPage(t, contractApprover, pending.RecordID)
@@ -523,6 +528,7 @@ func (rig *contractRig) pendingFor(t *testing.T, login string) []contractPending
 // approves it on the broker's page, the broker records that person's email as the deciding login,
 // the session gets the value, and the request leaves the inbox.
 func TestContractASharedSecretsRequestIsInItsOperatorsInboxAndAnyoneApprovesIt(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	pending := rig.createPendingAgentSecretRecord(t, "deploy the preview", "SHARED_KEY")
 
@@ -589,6 +595,7 @@ func asJSON(t *testing.T, v any) string {
 // the secret is an approval request to its owner, while another of the person's sessions still
 // gets it at once.
 func TestContractAnAutomaticGrantIsListedRevokedAndThenAsksItsOwner(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	session := rig.newSession(t, contractApprover)
 	auto := rig.request(t, session, "", "AUTO_TOKEN")
@@ -777,6 +784,7 @@ func (rig *contractRig) machineLoginsOf(t *testing.T, login string) []contractMa
 // the person's own revoke ends it, and with it the session the machine enrolled, whose grant then
 // releases nothing and whose machine enrolls no one more.
 func TestContractAPersonRevokesTheirMachineLoginThroughDispatch(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	credentialID, machineKey := rig.approveMachineLogin(t, contractApprover, "contract-test-host")
 	status, body, session := rig.enrollWithLauncher(t, machineKey, credentialID, "box-"+t.Name())
@@ -854,6 +862,7 @@ func (rig *contractRig) tokenLogin(t *testing.T) (string, *ecdsa.PrivateKey) {
 // service, which an older daemon would open, is refused SERVICE_LOGS_IN_WITH_TOKEN with nothing
 // for Dispatch to show.
 func TestContractAServicesTokenLoginIsListedAndRevokedByAnyoneThroughDispatch(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	credentialID, machineKey := rig.tokenLogin(t)
 
@@ -901,6 +910,7 @@ func TestContractAServicesTokenLoginIsListedAndRevokedByAnyoneThroughDispatch(t 
 // login is refused NOT_APPROVER to every other signed-in person, and stays pending for the person
 // it names.
 func TestContractAPersonsMachineLoginIsTheirsAloneToApproveThroughDispatch(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	machineKey := contractSigningKey(t)
 	compact, err := record.Sign(machineKey, rig.BrokerURL,
@@ -925,6 +935,7 @@ func TestContractAPersonsMachineLoginIsTheirsAloneToApproveThroughDispatch(t *te
 // person, who owns nothing, approving it on the broker's page decides nothing; the operator,
 // AUTO_TOKEN's owner, approves it there and the session reads AUTO_TOKEN on that approval.
 func TestContractAnyoneApprovalCannotReleaseAPersonsWithheldSecret(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	session := rig.newSession(t, contractApprover)
 	auto := rig.request(t, session, "", "AUTO_TOKEN")
@@ -1038,6 +1049,7 @@ func (rig *contractRig) dismissThroughDispatch(t *testing.T, recordID, login str
 // browser's body names; the approver's dismissal answers 200, and the inbox then holds the live
 // request alone.
 func TestContractExpiredSecretRequestStaysInTheInboxUntilDismissed(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	late := rig.createPendingAgentSecretRecord(t, "needed before its deadline", "DEEL_API_KEY")
 	live := rig.createPendingAgentSecretRecord(t, "needed now", "DEEL_API_KEY")
@@ -1086,6 +1098,7 @@ func TestContractExpiredSecretRequestStaysInTheInboxUntilDismissed(t *testing.T)
 // nothing. After the broker's machine-login sweep records it expired, the inbox still holds both;
 // the approver's dismissal answers 200, and the inbox then holds the live login alone.
 func TestContractExpiredMachineLoginStaysInTheInboxUntilDismissed(t *testing.T) {
+	t.Parallel()
 	rig := newContractRig(t)
 	const expiredCode = "BCDF-GHJK"
 	expired, deadline := rig.expiredMachineLogin(t, "contract-expired-host", expiredCode)

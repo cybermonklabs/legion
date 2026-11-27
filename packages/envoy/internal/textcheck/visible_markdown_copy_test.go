@@ -1,5 +1,7 @@
 package textcheck
 
+//ci:reads packages/daemon/internal/textcheck/visible_markdown_test.go readGoTokens os.ReadFile (readGoTokens, called with daemonVisibleMarkdown, ../../../daemon/internal/textcheck/visible_markdown_test.go, in TestVisibleMarkdownIsTheDaemonsReader)
+
 import (
 	"fmt"
 	"go/scanner"
@@ -18,6 +20,7 @@ const daemonVisibleMarkdown = "../../../daemon/internal/textcheck/visible_markdo
 // fails here, naming where the two part, while their docs, which say which module each serves,
 // may differ.
 func TestVisibleMarkdownIsTheDaemonsReader(t *testing.T) {
+	t.Parallel()
 	ours, theirs := readGoTokens(t, "visible_markdown_test.go"), readGoTokens(t, daemonVisibleMarkdown)
 	for index := range max(len(ours), len(theirs)) {
 		if index < len(ours) && index < len(theirs) && ours[index].text == theirs[index].text {

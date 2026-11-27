@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  `envoy-dispatch`'s display-tree cache now charges each tree what it holds in memory: the tree's
+  whole allocation, its key and the cache's entry for it, not only the bytes of its JSON. A full
+  cache now stays within its 64 MiB. Before, it could hold a third more than that. It also stays
+  within it however long the server runs, since the cache now makes its key map afresh as it
+  turns over instead of letting the map grow.

@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/contracts/fixtures/live/event.json TestAnEventFrameCarriesTheEventsOwnBytes
+
 import (
 	"bytes"
 	"context"
@@ -18,22 +20,18 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// eventFeedWait bounds a wait on the server's own work that does not wait on the event horizon -
-// a heartbeat, a subscription's end, a replay sent out of what a subscription already read, the
-// hub's own reads - so a frame that never arrives fails the test by name rather than holding it
-// until the package's own timeout, which would take every other test's result with it. A wait for
-// work behind the horizon keys on the horizon instead (eventFeedFrame, horizontest.WaitInProcess).
-const eventFeedWait = 30 * time.Second
 
 // The event feed stands behind the event horizon: a subscription's events_start is the last thing
 // it sends, once the relay's first cursor has awaited the horizon (firstRelayCursor), and the relay
-// sends an event only once the horizon has passed its id. The horizon's proof is instance-wide, so
-// a frame of the feed is as late as the longest transaction open anywhere on the Postgres
-// instance, which CI shares between every package of the module, and no clock bounds the wait for
-// one: it keys on the horizon's own account of itself (internal/dispatch/horizontest). Every server
-// these tests build warns at horizontest.StallWarning (newRegisteredTestServer).
+// sends an event only once the horizon has passed its id. An event write of the server's
+// database holds the horizon back until it ends, so a frame of the feed is as late as the longest
+// event write open there, a test fixture's or a loaded server's own, and no clock bounds the wait
+// for one: it reads the database's oldest event writer itself, and only a hold of the server's own
+// database past horizontest.OwnHoldBound or the drain before the run's deadline ends it
+// (internal/dispatch/horizontest).
 
 // eventFeedFrame is the next frame but a heartbeat client is sent, which what names: a frame of
 // the event feed, so the wait for it is the horizon's (horizontest.WaitInProcess), on the store of
@@ -223,6 +221,7 @@ func createPlainIssue(t *testing.T, handler http.Handler, project string) string
 }
 
 func TestTheEventFeedReplaysThenStreamsACommittedEvent(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	issue := createPlainIssue(t, rig.handler, "TEST")
 
@@ -254,6 +253,7 @@ func TestTheEventFeedReplaysThenStreamsACommittedEvent(t *testing.T) {
 
 // A person's socket and a bearer's are both served the feed.
 func TestTheEventFeedServesAPersonAndABearer(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	person := rig.dial(t, asUser("alice"))
@@ -273,6 +273,7 @@ func TestTheEventFeedServesAPersonAndABearer(t *testing.T) {
 // subscription with no resume (nothing replayed) and a since above the head (an id of a log since
 // replaced) say it is not.
 func TestTheEventFeedSaysWhenItsReplayCoversTheGap(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	createInteractionIssue(t, rig.handler, "TEST", "Replayed", "A spec")
 	head := eventHead(t, rig.database)
@@ -299,6 +300,7 @@ func TestTheEventFeedSaysWhenItsReplayCoversTheGap(t *testing.T) {
 // A resume exactly maxLiveReplay events behind is replayed every one of them, in order, says so
 // with replay_complete (its page then owes no refresh), and goes on to the live events, each once.
 func TestTheEventFeedReplaysAResumeAtTheBoundInFullThenStreamsLive(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	issue := createPlainIssue(t, rig.handler, "TEST")
 	since := eventHead(t, rig.database)
@@ -329,6 +331,7 @@ func TestTheEventFeedReplaysAResumeAtTheBoundInFullThenStreamsLive(t *testing.T)
 // which is the page's cue to refresh what it shows, and the subscription stays open for the live
 // events.
 func TestTheEventFeedSendsNoReplayPastItsBounds(t *testing.T) {
+	t.Parallel()
 	for name, backlog := range map[string]struct{ count, pad int }{
 		"past the event bound": {count: maxLiveReplay + 1},
 		"past the byte bound":  {count: maxLiveReplay, pad: maxLiveReplayBytes / maxLiveReplay},
@@ -361,6 +364,7 @@ func TestTheEventFeedSendsNoReplayPastItsBounds(t *testing.T) {
 // catch-up and the live feed hand over at the relay's published cursor, which is read only up to
 // the horizon (events.Horizon), and that stays below a while A is open.
 func TestTheEventFeedResumeCursorOrdersConcurrentEventCommits(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	other := createInteractionIssue(t, rig.handler, "OTHER", "Other issue", "A spec")
@@ -396,6 +400,7 @@ func TestTheEventFeedResumeCursorOrdersConcurrentEventCommits(t *testing.T) {
 // relay publishes into a subscription only ids above published, in strictly increasing order: no
 // event above since can arrive later below it.
 func TestTheEventFeedDoesNotResendAnEventAtOrBelowItsSince(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	// Long enough that the second subscription below opens between a commit and the read that
 	// commit's notification wakes, so the relay really is behind that subscription's since.
@@ -427,6 +432,7 @@ func TestTheEventFeedDoesNotResendAnEventAtOrBelowItsSince(t *testing.T) {
 // this subscription: invisible to the catch-up (id <= since) and to a relay subscription made only
 // afterwards.
 func TestTheEventFeedColdStartSendsNoBacklogAndDeliversTheNextCommit(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	backlog := eventHead(t, rig.database)
@@ -450,6 +456,7 @@ func TestTheEventFeedColdStartSendsNoBacklogAndDeliversTheNextCommit(t *testing.
 // holding no cursor adopts it and resumes from it without a gap, since every event above it is the
 // subscription's to send. The commit right after it reaches the subscription.
 func TestAColdSubscriptionStartsAtTheRelaysPublishedCursor(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	// An issue with no spec, whose document settles nothing, so nothing commits but the test's own
 	// writes and the relay's cursor stands where the subscription was handed it.
@@ -478,6 +485,7 @@ func TestAColdSubscriptionStartsAtTheRelaysPublishedCursor(t *testing.T) {
 // since, which would drop every event of the log as it now stands; and it is served what commits
 // next.
 func TestASinceAboveTheHeadStartsAtTheRelaysPublishedCursor(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	issue := createPlainIssue(t, rig.handler, "TEST")
 	client := rig.dial(t, withBearer("agent-token"))
@@ -493,8 +501,9 @@ func TestASinceAboveTheHeadStartsAtTheRelaysPublishedCursor(t *testing.T) {
 }
 
 // TestTheEventFeedResumesAfterTheEventLogIsResetBeneathTheReader: the browser suite empties the event
-// log between its scenarios (`truncate ... restart identity cascade`, e2e/seed.ts), so the next
-// row's id is 1 again. The relay notices, ends every open subscription (ended, behind), and the page
+// log between its scenarios (e2e/seed.ts deletes its rows and restarts its ids; this test truncates
+// it with `restart identity`, which does the same), so the next row's id is 1 again. The relay
+// notices, ends every open subscription (ended, behind), and the page
 // subscribes again -- and a page only ever raises its cursor, never lowers it, so it comes back
 // naming a since above the new log's head. Without the clamp, catch-up (`id > since`) matches
 // nothing and the live loop drops every event of the new log for ever, because they all sit at or
@@ -506,6 +515,7 @@ func TestASinceAboveTheHeadStartsAtTheRelaysPublishedCursor(t *testing.T) {
 // clamped to the head it resolved; an unclamped since drops it, and the only frame this page then
 // ever sees is a heartbeat.
 func TestTheEventFeedResumesAfterTheEventLogIsResetBeneathTheReader(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	renameIssue(t, rig.handler, issue.Key, "Renamed before the reset")
@@ -561,16 +571,26 @@ func (stream *gatedStream) SendWait(ctx context.Context, frame any) error {
 
 func (stream *gatedStream) Holds(string) bool { return false }
 
-// next is the next frame the subscription sent, within eventFeedWait.
+// next is the next frame the subscription sent. Its one bound is the test binary's deadline less
+// testwait's margin.
 func (stream *gatedStream) next(t *testing.T, what string) any {
 	t.Helper()
+	return testwait.Receive(t, what, stream.frames)
+}
+
+// handedStream is a gatedStream that notes the moment the subscription hands it its first frame,
+// on the subscription's own goroutine (SendWait), rather than the moment the test reads it.
+type handedStream struct {
+	*gatedStream
+	handed chan time.Time
+}
+
+func (stream handedStream) SendWait(ctx context.Context, frame any) error {
 	select {
-	case frame := <-stream.frames:
-		return frame
-	case <-time.After(eventFeedWait):
-		t.Fatalf("no frame within %s, waiting for %s", eventFeedWait, what)
-		return nil
+	case stream.handed <- time.Now():
+	default:
 	}
+	return stream.gatedStream.SendWait(ctx, frame)
 }
 
 // feedNext is the next frame an events subscription on database's server sent: a frame of the
@@ -586,6 +606,7 @@ func (stream *gatedStream) feedNext(t *testing.T, database *store.Store, what st
 // on live on the subscription it made instead. The subscription here waits for room as a socket's
 // does while its page reads nothing, so it drains nothing of what the relay publishes into it.
 func TestARelayDropWithinTheBoundsCatchesTheSubscriptionUp(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
@@ -638,6 +659,7 @@ func TestARelayDropWithinTheBoundsCatchesTheSubscriptionUp(t *testing.T) {
 // events in silence, and the page's resubscribe from the last id it applied is served what
 // commits next.
 func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
@@ -682,11 +704,7 @@ func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
 	if head := eventHead(t, database); last >= head {
 		t.Fatalf("the subscription sent through %d before it ended, want less than the head %d it could not catch up to", last, head)
 	}
-	select {
-	case <-running.(*runningSubscription).done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the dropped subscription's goroutine was still running 5s after its end")
-	}
+	testwait.Receive(t, "the dropped subscription's goroutine to return after its end", running.(*runningSubscription).done)
 
 	// The page's resubscribe, from the last id it applied, resolves its position - the backlog it
 	// missed is past the replay's bound, so it starts at the head and refreshes what it shows
@@ -709,25 +727,42 @@ func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
 // A subscription whose read fails (here, a database that no longer answers) ends with an ended
 // frame (behind), so its page subscribes again, rather than going silent; and it waits the relay's
 // retry first, so a read that keeps failing is asked again at that pace rather than as fast as the
-// page can resubscribe.
+// page can resubscribe. The retry is timed from the subscription's own two moments: its warning
+// that the read failed, which it logs before it waits (endEventsAfterFailure), and its hand of the
+// end frame to the stream. The test's setup and its read of the frame lie outside that span, so a
+// loaded machine lengthens neither end of it, and a subscription that skipped the retry fails
+// however long the rest took.
 func TestAnEventsSubscriptionWhoseReadFailsEndsAsBehind(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	database.Pool.Close()
 	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
 	if err != nil {
 		t.Fatalf("mark the subscription's context for the pool: %v", err)
 	}
-	stream := newGatedStream()
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, records)
+	stream := handedStream{gatedStream: newGatedStream(), handed: make(chan time.Time, 1)}
 	close(stream.gate)
-	began := time.Now()
 	running := served.startEventsSubscription(ctx, stream, "feed", nil)
 	t.Cleanup(running.stop)
 	ended, ok := stream.next(t, "feed's end").(LiveEnded)
 	if !ok || ended.Sub != "feed" || ended.Reason != "behind" {
 		t.Fatalf("the first frame of a subscription whose read failed = %+v, want its end, behind", ended)
 	}
-	if waited := time.Since(began); waited < eventRelayRetry {
-		t.Fatalf("the subscription ended %s after it started, before the relay's retry (%s)", waited, eventRelayRetry)
+	handed := <-stream.handed
+	var warned time.Time
+	for _, record := range records.Records() {
+		if strings.HasPrefix(record.Message, "dispatch: an events subscription could not ") {
+			warned = record.Time
+			break
+		}
+	}
+	if warned.IsZero() {
+		t.Fatal("the subscription whose read failed logged no warning that it could not read")
+	}
+	if waited := handed.Sub(warned); waited < eventRelayRetry {
+		t.Fatalf("the subscription handed on its end %s after it warned that its read failed, before the relay's retry (%s)", waited, eventRelayRetry)
 	}
 }
 
@@ -738,6 +773,7 @@ func TestAnEventsSubscriptionWhoseReadFailsEndsAsBehind(t *testing.T) {
 // frame, which is after it subscribed to the relay and read the head and before its catch-up, so
 // the commit lands exactly in that window.
 func TestAnEventCommittedDuringTheCatchUpIsSentOnce(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
@@ -781,6 +817,7 @@ func TestAnEventCommittedDuringTheCatchUpIsSentOnce(t *testing.T) {
 // An unsubscribe or a replacement stops the subscription while its socket stays open: its
 // goroutine returns and leaves the relay, and nothing more of it reaches the page.
 func TestAStoppedEventsSubscriptionLeavesTheRelayWhileItsSocketStaysOpen(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	relay := rig.served.eventRelay
@@ -788,10 +825,10 @@ func TestAStoppedEventsSubscriptionLeavesTheRelayWhileItsSocketStaysOpen(t *test
 
 	subscribeEvents(t, client, "feed", nil)
 	subscribeEvents(t, client, "feed", nil)
-	pollUntil(t, 5*time.Second, "the replaced subscription leaves the relay", func() bool { return relaySubscribers(relay) == 1 })
+	waitUntil(t, "the replaced subscription leaves the relay", func() bool { return relaySubscribers(relay) == 1 })
 
 	client.send(t, LiveUnsubscribe{Type: "unsubscribe", Sub: "feed"})
-	pollUntil(t, 5*time.Second, "the unsubscribed subscription leaves the relay", func() bool { return relaySubscribers(relay) == 0 })
+	waitUntil(t, "the unsubscribed subscription leaves the relay", func() bool { return relaySubscribers(relay) == 0 })
 	renameIssue(t, rig.handler, issue.Key, "Renamed after the unsubscribe")
 	client.quiet(t, 500*time.Millisecond, "after the page unsubscribed")
 	if !client.open() {
@@ -802,6 +839,7 @@ func TestAStoppedEventsSubscriptionLeavesTheRelayWhileItsSocketStaysOpen(t *test
 // An events view names its kind and nothing else, and its resume a decimal event id; anything else
 // is refused and starts nothing.
 func TestAnEventsViewNamesOnlyItsKindAndItsSinceIsAnEventID(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	client := rig.dial(t, asUser("alice"))
 	preset, query, at, session := 7, "repo=acme/widgets", "2026-10-14T09:00:00Z", "6f1c5b1e-8a3c-4b7e-9a51-0d2f3c4b5a69"
@@ -818,7 +856,7 @@ func TestAnEventsViewNamesOnlyItsKindAndItsSinceIsAnEventID(t *testing.T) {
 		{"an empty since", liveSubscribe("g", eventsView(), `{"since":""}`)},
 	} {
 		client.send(t, test.frame)
-		client.refusal(t, 3*time.Second, test.frame.Sub, "INVALID_FRAME")
+		client.refusal(t, test.frame.Sub, "INVALID_FRAME")
 	}
 	client.quiet(t, 300*time.Millisecond, "after every refused events view")
 	if subscribers := relaySubscribers(rig.served.eventRelay); subscribers != 0 {
@@ -836,6 +874,7 @@ func TestAnEventsViewNamesOnlyItsKindAndItsSinceIsAnEventID(t *testing.T) {
 // thousands of events: the page reopens its socket and resubscribes from the last id it applied, and
 // is sent what committed since.
 func TestTheDisconnectHookSendsTheEventFeedThroughItsResume(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{testHooks: true}, nil)
 	issue := createPlainIssue(t, rig.handler, "TEST")
 
@@ -851,7 +890,7 @@ func TestTheDisconnectHookSendsTheEventFeedThroughItsResume(t *testing.T) {
 	if disconnect := agentRequest(t, rig.handler, http.MethodPost, "/api/v1/live/_test/disconnect", nil, "agent-token"); disconnect.Code != http.StatusOK {
 		t.Fatalf("disconnect hook: status=%d body=%s", disconnect.Code, disconnect.Body.String())
 	}
-	if code, _ := client.closeCode(t, 5*time.Second); code != gws.CloseServiceRestart {
+	if code, _ := client.closeCode(t); code != gws.CloseServiceRestart {
 		t.Fatalf("the disconnect hook closed the socket with %d, want 1012", code)
 	}
 	// The close frame reaches the page before the handler's deferred teardown has ended its
@@ -875,6 +914,7 @@ func TestTheDisconnectHookSendsTheEventFeedThroughItsResume(t *testing.T) {
 // GET /api/v1/events and its test hook are gone, test hooks or not: the event feed is the live
 // socket's.
 func TestTheEventsRouteIsGone(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{testHooks: true}, nil)
 	for _, request := range []struct{ method, target string }{
 		{http.MethodGet, "/api/v1/events"},
@@ -933,6 +973,8 @@ func liveFixtureEventFrame(t *testing.T) LiveEventFrame {
 // on a socket, so the frame never waits to be asked. The tree is the one ReadForDisplay makes of
 // that text.
 func TestALiveEventFrameCarriesItsTrees(t *testing.T) {
+	// Not parallel: it sets pmdoc's block ID generator for the whole process
+	// (pmdoc.SetBlockIDGenerator in liveFixtureEventFrame).
 	frame := liveFixtureEventFrame(t)
 	var carried struct {
 		Trees map[string]json.RawMessage `json:"trees"`
@@ -958,6 +1000,7 @@ func TestALiveEventFrameCarriesItsTrees(t *testing.T) {
 // the socket's writer keeps those bytes; and fixtures/live/event.json, which the contracts' and
 // the dashboard's tests read, is that frame.
 func TestAnEventFrameCarriesTheEventsOwnBytes(t *testing.T) {
+	t.Parallel()
 	event := liveFixtureEvent()
 	sent := event
 	sent.Trees = eventDisplayTrees(event)

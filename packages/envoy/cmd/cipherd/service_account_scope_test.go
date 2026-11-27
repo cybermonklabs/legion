@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest/podclient"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -59,7 +59,7 @@ func TestAnAccountProvesOnlyTheServiceItIsListedFor(t *testing.T) {
 	}})
 	addr := process.Addr
 	requireHealthy(t, addr)
-	broker := ciphertest.Pods{T: t, Base: "http://" + addr, Token: ciphertest.IssuerTokens(t, issuer, podKey, podAudience)}
+	broker := podclient.Pods{T: t, Base: "http://" + addr, Token: podclient.IssuerTokens(t, issuer, podKey, podAudience)}
 
 	exampleLauncher := broker.LogIn(service, loginAccount)
 	otherLauncher := broker.LogIn(otherService, otherLogin)
@@ -71,7 +71,7 @@ func TestAnAccountProvesOnlyTheServiceItIsListedFor(t *testing.T) {
 	}
 
 	for who, c := range map[string]struct {
-		by      ciphertest.Launcher
+		by      podclient.Launcher
 		runtime string
 		account string
 	}{

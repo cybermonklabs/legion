@@ -21,6 +21,7 @@ import (
 // (admit's TestAHandedOverChildThatFinishedIsAdmittedFresh). The member a person left out of the
 // workflow is the one the tree keeps.
 func TestAFinishedMemberAPersonPutBackToWorkIsHandedOverWhenTheTreeCloses(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	now := time.Date(2026, 11, 4, 4, 0, 0, 0, time.UTC)
 	engine := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, ProductionCheckBound: 48 * time.Hour,

@@ -14,6 +14,7 @@ import (
 // (artifacts.go fitsIntegerColumn). The control is the largest position the column holds, which
 // both lists answer 200.
 func TestAnEventPositionAboveTheColumnsRangeIsRefusedNotAFault(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Event bounds", "A spec\n")
 	createAdviceProject(t, handler, "NOTES")

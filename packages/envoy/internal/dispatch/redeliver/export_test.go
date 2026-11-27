@@ -31,8 +31,8 @@ func PendingKey(at time.Time, guid string) string { return pendingKey(at, guid) 
 const CursorOverlap = cursorOverlap
 
 // RunUnderLease is Run with exclusive in place of duty.Exclusive and no lease pool, for a test of
-// the schedule alone: the loop's waits and the moment each sweep is due, with no statement of a
-// real lease between them.
+// the loop alone: its waits, the moment each sweep is due and what each sweep reports, with no
+// statement of a real lease between them.
 func (s *Sweeper) RunUnderLease(ctx context.Context, interval time.Duration, exclusive duty.ExclusiveFunc) {
 	s.run(ctx, interval, nil, exclusive)
 }

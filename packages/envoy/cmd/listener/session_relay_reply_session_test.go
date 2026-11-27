@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // relayRefusedReplyLine is the line the relay writes for a reply whose subject names another
@@ -35,10 +36,10 @@ import (
 const relayRefusedReplyLine = "session relay refused a reply naming another session than the one its frame was sent to; the frame is unchanged"
 
 // sessionUser is a NATS user holding one session's own grant, the one the auth service admits a
-// session with once natsgrant.Session publishes bus.SessionReplies: publish its replies
-// (bus.SessionReplies) and its agent stream frames, subscribe its relay subject and its agent
-// stream control subject. A publish the server refuses reaches the client only as an asynchronous
-// error, so each refusal on its connection is recorded by subject.
+// session with (natsgrant.Session): publish its replies (bus.SessionReplies) and its agent stream
+// frames, subscribe its relay subject and its agent stream control subject. A publish the server
+// refuses reaches the client only as an asynchronous error, so each refusal on its connection is
+// recorded by subject.
 type sessionUser struct {
 	id, seed, public string
 	mu               sync.Mutex
@@ -51,11 +52,28 @@ func newSessionUser(t *testing.T, prefix string) *sessionUser {
 	return &sessionUser{id: prefix + id.New(), seed: seed, public: public}
 }
 
-// entry is the user's line of the server's authorization.
+// entry is the user's line of the server's authorization: natsgrant.Session's lists, deny lists
+// included, as the auth service answers them.
 func (s *sessionUser) entry() string {
-	return fmt.Sprintf("{ nkey: %q, permissions: { publish: { allow: [%q, %q] }, subscribe: { allow: [%q, %q] } } }",
-		s.public, bus.SessionReplies(s.id), contracts.AgentStreamFramesSubject(s.id),
-		bus.DeliverSubject(s.id), contracts.AgentStreamControlSubject(s.id))
+	grant, err := natsgrant.Session(s.id)
+	if err != nil {
+		panic(err)
+	}
+	quote := func(subjects []string) string {
+		quoted := make([]string, len(subjects))
+		for i, subject := range subjects {
+			quoted[i] = strconv.Quote(subject)
+		}
+		return strings.Join(quoted, ", ")
+	}
+	rules := func(allow, deny []string) string {
+		if len(deny) == 0 {
+			return fmt.Sprintf("{ allow: [%s] }", quote(allow))
+		}
+		return fmt.Sprintf("{ allow: [%s], deny: [%s] }", quote(allow), quote(deny))
+	}
+	return fmt.Sprintf("{ nkey: %q, permissions: { publish: %s, subscribe: %s } }",
+		s.public, rules(grant.Publish, grant.PublishDeny), rules(grant.Subscribe, grant.SubscribeDeny))
 }
 
 // connect connects to uri as the user and records every publish the server refuses it.
@@ -173,7 +191,7 @@ func (s *sessionStandIn) replyUntilTheDeadline(t *testing.T, frame relayedFrame,
 }
 
 // clientResendPause is how long the client a session runs pauses before it sends a refused call
-// again: envoy-client's LISTENER_CALL_RETRY_DELAY_MS (packages/contracts/src/envoy-session.ts:64).
+// again: envoy-client's LISTENER_CALL_RETRY_DELAY_MS (packages/contracts/src/envoy-session.ts:67).
 const clientResendPause = 250 * time.Millisecond
 
 // deadlineSpare is what a wait that ends on its fact leaves of the test binary's deadline for its
@@ -186,11 +204,13 @@ const deadlineSpare = 30 * time.Second
 // registerAsTheClientDoes posts body to the listener's /v1/interests/subscribe as the test's
 // shared-token caller and returns once the listener takes it (200), sending a 5xx again as the
 // client a session runs does. envoy-client sends a 5xx once more after 250 ms (the 5xx branch of
-// request, packages/envoy-client/src/transport.ts:1121-1128; LISTENER_CALL_RETRY_DELAY_MS and
-// LISTENER_CALL_ATTEMPTS, packages/contracts/src/envoy-session.ts:64 and :72), and pi-envoy and
-// claude-envoy register again 20 to 40 s after a failed registration and then at every heartbeat
-// (packages/pi-envoy/extensions/envoy.ts:3764-3771 and :3804,
-// packages/claude-envoy/src/envoy-channel-server.ts:1925). So a registration refused because the
+// createEnvoyClient's request, packages/envoy-client/src/transport.ts; LISTENER_CALL_RETRY_DELAY_MS
+// and LISTENER_CALL_ATTEMPTS, packages/contracts/src/envoy-session.ts:67 and :75), and pi-envoy
+// and claude-envoy register again 20 to 40 s after a failed registration and then at every
+// heartbeat (each plugin's heartbeat and its armRetry, whose delay is heartbeatRetryDelayMs of
+// packages/envoy-client/src/envoy-settings.ts: ensureHeartbeat in
+// packages/pi-envoy/extensions/envoy.ts, heartbeat in
+// packages/claude-envoy/src/envoy-channel-server.ts). So a registration refused because the
 // server answered the listener late - the 503 consumer_error of a session consumer call past its
 // bound, or the bus-unavailable 503 of store work past its own - is a registration the session
 // makes again, not one it never makes.
@@ -338,6 +358,7 @@ func publishUntilAcknowledged(t *testing.T, client *bus.Client, end time.Time, i
 // this row's first form at main, which failed with s2's consumer at 0 pending and its ack floor on
 // the frame, and s2 receiving nothing after its new epoch.
 func TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt(t *testing.T) {
+	t.Parallel()
 	s1, s2 := newSessionUser(t, "ses_one_"), newSessionUser(t, "ses_two_")
 	uri, listenerURI, listener := startSessionGrantHub(t, "relay-reply-sessions", s1, s2)
 	consumers := observeConsumers(t, listenerURI)
@@ -432,9 +453,12 @@ func TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt(t *testi
 	})
 	requireStillPending(t, consumers, s2.id, heldFrame.seq)
 
-	// s2 restarts and registers a new epoch: the relay restarts at the ack floor and sends it the
-	// frame it never wrote, and s2's own done, the control, acknowledges it. The frames of the
-	// relay's earlier runs are dropped first, so the frame answered is this run's.
+	// s2 restarts and registers a new epoch: the relay restarts at the ack floor, which deletes the
+	// consumer holding the frame s2 never wrote and creates it again, so the row first waits for the
+	// consumer's stored state (awaitSessionConsumerStored); it sends s2 the frame again, and s2's own
+	// done, the control, acknowledges it. The frames of the relay's earlier runs are dropped first,
+	// so the frame answered is this run's.
+	awaitSessionConsumerStored(t, publisher.Conn, s2.id)
 	newest(heldFrame)
 	registerAsTheClientDoes(t, listener.port, consumerRegistration(s2.id, "epoch-2"))
 	again := two.collect(t, 1, testwait.Remaining(t, deadlineSpare))[0]
@@ -459,13 +483,19 @@ func TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt(t *testi
 // On main, under this grant, the server refused all three replies - the frame's received and done
 // on _INBOX.<inbox>.1 and the probe's done on a plain _INBOX.<id> - so the frame was never
 // acknowledged and the send answered connected only after the probe's one-second silence.
+//
+// The session registers the three delivery modes, as a plugin whose conversation takes messages
+// does: a probed session that advertises none answers a plain send no_receiver (sendHandler), and
+// this row reads connected.
 func TestASessionOnItsOwnGrantAnswersItsFramesAndTheConnectionProbe(t *testing.T) {
+	t.Parallel()
 	s1 := newSessionUser(t, "ses_own_grant_")
 	uri, listenerURI, listener := startSessionGrantHub(t, "relay-own-grant", s1)
 	consumers := observeConsumers(t, listenerURI)
 	publisher := connectPublisher(t, listenerURI)
 	one := startSessionStandInOn(t, s1.connect(t, uri), s1.id, answerDone)
-	registerAsTheClientDoes(t, listener.port, consumerRegistration(s1.id, "epoch-1"))
+	registerAsTheClientDoes(t, listener.port, fmt.Sprintf(
+		`{"session_id":%q,"topics":[],"self_subscribed":true,"delivery":{"consumer":true,"epoch":"epoch-1"},"capabilities":["aside","btw","steer"]}`, s1.id))
 
 	item := newEnvelope("agent", contracts.LegacyAgentSubject(s1.id), "for the session")
 	publish(t, publisher, item)
@@ -513,6 +543,7 @@ func (a *countingAcker) NakWithDelay(time.Duration) error { a.naks.Add(1); retur
 // has passed, when the next line says how many it held. The control is the frame's own session's
 // done, on the same token, which acks it and ends it.
 func TestAReplyNamingAnotherSessionMovesNoFrame(t *testing.T) {
+	t.Parallel()
 	var logs bytes.Buffer
 	relays := &sessionRelays{replyPrefix: "relay.reply.", frames: map[string]*relayFrame{}, logger: logging.NewWithWriter("test", &logs)}
 	run := &relayRun{sessionID: "ses_two", outstanding: map[string]*relayFrame{}}
@@ -592,6 +623,7 @@ func TestAReplyNamingAnotherSessionMovesNoFrame(t *testing.T) {
 // and took the refusal line, which writes one line a minute: any session could hold that line
 // with a token of its own, and a forgery in the same minute showed only as a count.
 func TestAReplyWithATokenPastItsSessionIDMovesNoFrameAndLogsNothing(t *testing.T) {
+	t.Parallel()
 	var logs bytes.Buffer
 	relays := &sessionRelays{replyPrefix: "relay.reply.", frames: map[string]*relayFrame{}, logger: logging.NewWithWriter("test", &logs)}
 	run := &relayRun{sessionID: "ses_two", outstanding: map[string]*relayFrame{}}
@@ -640,6 +672,7 @@ func TestAReplyWithATokenPastItsSessionIDMovesNoFrameAndLogsNothing(t *testing.T
 // and write (reMarkWithheldGap), so onReply runs it in a goroutine: a slow re-mark of one
 // session's frame holds up no other session's receipt.
 func TestANakGapReMarkRunsOffTheReceiptCallback(t *testing.T) {
+	t.Parallel()
 	frameFor := func(relays *sessionRelays, sessionID, token, gapMark string) *countingAcker {
 		run := &relayRun{sessionID: sessionID, outstanding: map[string]*relayFrame{}}
 		acker := &countingAcker{}
@@ -676,12 +709,12 @@ func TestANakGapReMarkRunsOffTheReceiptCallback(t *testing.T) {
 		}()
 		select {
 		case <-naked:
-		case <-time.After(2 * time.Second):
-			t.Fatal("onReply did not return within 2s of a nak carrying a gap mark; it waited on the re-mark instead of running it off the callback")
+		case <-time.After(listenerWaitBound(t)):
+			t.Fatal("onReply did not return in time of a nak carrying a gap mark; it waited on the re-mark instead of running it off the callback")
 		}
 		select {
 		case <-started:
-		case <-time.After(2 * time.Second):
+		case <-time.After(listenerWaitBound(t)):
 			t.Fatal("onReply never started the re-mark")
 		}
 		// The re-mark is still blocked. The other session's done is acked at once.
@@ -692,7 +725,7 @@ func TestANakGapReMarkRunsOffTheReceiptCallback(t *testing.T) {
 		}()
 		select {
 		case <-done:
-		case <-time.After(2 * time.Second):
+		case <-time.After(listenerWaitBound(t)):
 			t.Fatal("the other session's receipt was blocked behind the slow re-mark")
 		}
 		if otherAcker.acks.Load() != 1 {
@@ -714,7 +747,7 @@ func TestANakGapReMarkRunsOffTheReceiptCallback(t *testing.T) {
 		// A nak of a gap-marked frame runs the re-mark once.
 		frameFor(relays, "ses_marked", "TOKENOFAMARKEDSESSIONFRAME01", "a-gap-mark")
 		nak(relays, "ses_marked", "TOKENOFAMARKEDSESSIONFRAME01")
-		deadline := time.Now().Add(2 * time.Second)
+		deadline := time.Now().Add(listenerWaitBound(t))
 		for reMarked.Load() == 0 && time.Now().Before(deadline) {
 			time.Sleep(5 * time.Millisecond)
 		}
@@ -729,6 +762,7 @@ func TestANakGapReMarkRunsOffTheReceiptCallback(t *testing.T) {
 // answers frameHold for it (the relay loop's `case frameHold: continue`), not frameDrop (which
 // acknowledges and counts). This row fails if a not-admitted frame is acknowledged instead of held.
 func TestTheRelayHoldsANotAdmittedFrameRatherThanAcknowledgingIt(t *testing.T) {
+	t.Parallel()
 	m := &sessionRelays{repositories: &edgeRepositories{}, delivery: &sessionDelivery{}}
 	msg := bus.SessionMessage{Subject: contracts.LegacyAgentSubject("ses_unadmitted"), Data: []byte(`{"topic":"notifications.agent.ses_unadmitted"}`)}
 	if verdict := m.edgeWithholds("ses_unadmitted", msg); verdict.action != frameHold {
@@ -746,6 +780,7 @@ func TestTheRelayHoldsANotAdmittedFrameRatherThanAcknowledgingIt(t *testing.T) {
 // pass's lapse. This row fails if the loop acknowledges a held frame (acknowledgeWithheld in place
 // of the continue): the consumer's ack floor would then pass the frame.
 func TestTheRelayLoopHoldsAFrameWhoseAdmissionWasForgotten(t *testing.T) {
+	t.Parallel()
 	met := metrics.New()
 	grant, err := newEdgeGrant("edge-a", []string{"PRIV"}, met)
 	if err != nil {
@@ -798,6 +833,7 @@ func TestTheRelayLoopHoldsAFrameWhoseAdmissionWasForgotten(t *testing.T) {
 // waited out on a clock. Control: with onReply's call site reverted to a plain `go m.reMark`,
 // scheduleReMark is never reached, reMarking is never set, and the first check fails.
 func TestTwoReMarksOfOneSessionDoNotRunAtOnce(t *testing.T) {
+	t.Parallel()
 	relays := &sessionRelays{replyPrefix: "relay.reply.", frames: map[string]*relayFrame{}, logger: logging.New("test")}
 	entered := make(chan struct{}, 2)
 	release := make(chan struct{})
@@ -824,7 +860,7 @@ func TestTwoReMarksOfOneSessionDoNotRunAtOnce(t *testing.T) {
 	nak("TOKENOFTHEFIRSTREMARKFRAME01")
 	select {
 	case <-entered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("onReply never started the first re-mark")
 	}
 	// The second nak of the same session while the first re-mark is in flight: scheduleReMark folds
@@ -845,7 +881,7 @@ func TestTwoReMarksOfOneSessionDoNotRunAtOnce(t *testing.T) {
 	close(release)
 	select {
 	case <-entered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("the folded re-mark never ran after the first finished; the session's owed mark is dropped")
 	}
 }
@@ -856,6 +892,7 @@ func TestTwoReMarksOfOneSessionDoNotRunAtOnce(t *testing.T) {
 // the session's next relay run. Control (head): the re-mark reused X, the loop cleared X as sent, and
 // the entry ended with no mark - the notice owed nowhere.
 func TestANakReMarkBeforeTheLoopsClearKeepsTheGapNotice(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	m := &sessionRelays{sessions: rig.deps.sessions, logger: logging.New("test")}
 	m.reMark = m.reMarkWithheldGap
@@ -877,29 +914,33 @@ func TestANakReMarkBeforeTheLoopsClearKeepsTheGapNotice(t *testing.T) {
 	}
 }
 
+// openOwningStreamRegistry connects an owning-stream client and opens a session registry on it,
+// both closed when the test ends. name labels the pair in any failure.
+func openOwningStreamRegistry(t *testing.T, name string) (*bus.Client, *session.SessionRegistry) {
+	t.Helper()
+	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect %s: %v", name, err)
+	}
+	t.Cleanup(client.Close)
+	reg, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open %s's registry: %v", name, err)
+	}
+	return client, reg
+}
+
 // N10: a nak's re-mark whose write fails notes a fresh id in memory, so this listener's next relay
 // run still sends it (owedRepositoryGap). The loop has cleared the frame's own mark as sent, and
 // noteRepositoryGap notes nothing when its write fails, so without the in-memory note the notice is
 // owed nowhere. The write is made to fail by closing the relay's registry connection. Control: with
 // the in-memory note removed, the failed re-mark owes nothing.
 func TestANakReMarkWhoseWriteFailsStillOwesAFreshMark(t *testing.T) {
-	open := func(name string) (*bus.Client, *session.SessionRegistry) {
-		t.Helper()
-		client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
-		if err != nil {
-			t.Fatalf("connect %s: %v", name, err)
-		}
-		t.Cleanup(client.Close)
-		reg, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
-		if err != nil {
-			t.Fatalf("open %s's registry: %v", name, err)
-		}
-		return client, reg
-	}
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	run := func(sessionID string, failWrite bool) string {
-		client, reg := open(sessionID)
+		client, reg := openOwningStreamRegistry(t, sessionID)
 		m := &sessionRelays{sessions: reg, logger: logging.New("test")}
 		if err := reg.Put(sessionID, session.SessionEntry{MachineID: "test-machine", Projects: []string{"PRIV"}}); err != nil {
 			t.Fatalf("register %s: %v", sessionID, err)
@@ -921,5 +962,65 @@ func TestANakReMarkWhoseWriteFailsStillOwesAFreshMark(t *testing.T) {
 	}
 	if owed := run("ses_remark_fail", true); owed == "" {
 		t.Error("a re-mark whose write failed owes no mark, though its next run should send a fresh one it noted")
+	}
+}
+
+// The repository-gap-sent residue (the failing-write cell of the re-mark matrix, beside
+// TestANakReMarkBeforeTheLoopsClearKeepsTheGapNotice and TestANakReMarkWhoseWriteFailsStillOwesAFreshMark):
+// frame F carried mark X; F is nak'd and its re-mark runs before the relay loop's clear of X (the
+// N7 ordering), and the re-mark's write fails, so it notes a fresh mark Y in this process alone
+// (reMarkWithheldGap). The loop's clear then runs with the bus answering again: repositoryGapSent
+// forgets only the mark the frame carried, so Y stays owed in memory and the next frame this run
+// sends carries it, while X is cleared from the entry. The failing write is the re-mark's registry
+// on a closed connection; the clear runs on the relay's working registry. Control: the same steps
+// with the re-mark's write working keep a mark owed on the entry too.
+func TestARepositoryGapSentForgetsOnlyTheMarkTheFrameCarried(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	_, reader := openOwningStreamRegistry(t, "reader")
+	run := func(sessionID string, failWrite bool) (owed, stored, mark string) {
+		_, reg := openOwningStreamRegistry(t, sessionID)
+		failingClient, failing := openOwningStreamRegistry(t, sessionID+"-failing")
+		m := &sessionRelays{sessions: reg, logger: logging.New("test")}
+		if err := reg.Put(sessionID, session.SessionEntry{MachineID: "test-machine", Projects: []string{"PRIV"}}); err != nil {
+			t.Fatalf("register %s: %v", sessionID, err)
+		}
+		mark, err := m.noteRepositoryGap(ctx, sessionID)
+		if err != nil {
+			t.Fatalf("the loop's mark: %v", err)
+		}
+		testwait.Eventually(t, "the relay's cache to show the loop's mark", func() bool {
+			entry, _ := reg.Lookup(sessionID)
+			return entry.RepositoryGap == mark
+		})
+		if failWrite {
+			failingClient.Close()
+			m.sessions = failing
+		}
+		m.reMarkWithheldGap(sessionID)
+		m.sessions = reg
+		m.repositoryGapSent(ctx, sessionID, mark)
+		got, _, err := reader.StoredByWriter(ctx, sessionID)
+		if err != nil {
+			t.Fatalf("read %s: %v", sessionID, err)
+		}
+		testwait.Eventually(t, "the relay's cache to show the stored mark", func() bool {
+			entry, _ := reg.Lookup(sessionID)
+			return entry.RepositoryGap == got.RepositoryGap
+		})
+		return m.owedRepositoryGap(sessionID), got.RepositoryGap, mark
+	}
+	// Control, the write working: the re-mark's fresh mark reaches the entry, so a mark is owed both
+	// in memory and on the entry.
+	if owed, stored, _ := run("ses_gap_sent_ok", false); owed == "" || stored == "" {
+		t.Fatalf("CONTROL: a working re-mark before the loop's clear kept no mark (owed=%q stored=%q)", owed, stored)
+	}
+	// The failing write: X is cleared from the entry (stored empty), and the fresh mark Y, distinct
+	// from X, is owed in memory alone for the next frame this run sends.
+	owed, stored, mark := run("ses_gap_sent_fail", true)
+	t.Logf("failed re-mark before the loop's clear: owed=%q stored=%q mark=%q", owed, stored, mark)
+	if owed == "" || owed == mark || stored != "" {
+		t.Errorf("a failed re-mark did not leave a fresh mark owed in memory alone: owed=%q mark=%q stored=%q (want owed non-empty and != mark, stored empty)", owed, mark, stored)
 	}
 }

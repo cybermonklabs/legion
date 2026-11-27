@@ -70,7 +70,7 @@ func newDomainMembershipRig(t *testing.T) *membershipRig {
 func newMembershipRigFor(t *testing.T, rule SignInRule, hostedDomain string, claims map[string]any, subject string) *membershipRig {
 	t.Helper()
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), "dispatch-client", "dispatch-secret")
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), "dispatch-client", "dispatch-secret", memberRedirect)
 	flow := oidc.NewCodeFlow(issuer.URL(), "dispatch-client", "dispatch-secret", hostedDomain)
 	issuer.SignInAs(claims)
 	authURL, err := flow.AuthURL(context.Background(), memberRedirect, "state", "nonce")

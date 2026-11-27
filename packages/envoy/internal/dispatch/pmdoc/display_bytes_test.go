@@ -24,6 +24,7 @@ const displayTreeGrowthBound = 3.0
 // its bytes come from: three list items are about 800 bytes of tree against 100 bytes of
 // markdown. Run this with -v for the numbers.
 func TestADisplayTreeAnswerStaysInsideThreeTimesItsBase(t *testing.T) {
+	t.Parallel()
 	bodies := displayBoundBodies()
 	for _, answer := range []struct {
 		name       string

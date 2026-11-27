@@ -15,6 +15,7 @@ import {
 } from "../../../api/queries";
 import type { Comment, IssueAskRow, IssueDecisions } from "../../../api/types";
 import { type EventFreshness, useIsHuman } from "../../../hooks/useIsHuman";
+import { decision, KEY } from "../../decision-card/decision-fixture";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { answeredAsk } from "../../inbox/ask-card-fixture";
 import { EVENT_FRESH } from "../../refs/reference-target";
@@ -39,14 +40,7 @@ import {
   stubReads,
 } from "../slots/stage-fixtures";
 import { issueAsksQuery } from "../useIssueTree";
-import {
-  decision,
-  decisionNode,
-  decisionsRead,
-  issueDetails,
-  KEY,
-  READER,
-} from "./decisions-fixtures";
+import { decisionNode, decisionsRead, issueDetails, READER } from "./decisions-fixtures";
 
 let stubs: { mockRestore(): void }[] = [];
 beforeEach(() => {
@@ -584,4 +578,41 @@ test("the comments read refused, a comment named beside the Decisions view draws
     view.container.querySelector("[data-decisions-body]"),
     "the Decisions view was drawn beside the outline"
   ).toBeNull();
+});
+
+// The Decisions view drew its rows' references from the page's names and said nothing when their
+// read failed: every reference in an entry's words stayed its raw address, with no word of why
+// and no Retry. It draws the outline's names line over its list, after its own reads' lines, and
+// its Retry reads the names again.
+test("under the Decisions view, a failed names read draws the outline's names line over the list, and its Retry reads the names again", async () => {
+  spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([decision("d1")]));
+  // The stub `stubReads` set, which `spyOn` hands back: refused once, then its own answer.
+  const names = spyOn(api, "getReferenceTargets").mockRejectedValueOnce(REFUSED);
+  const view = drawStage("");
+  const namesLine = () =>
+    view.queryByText(STATE_LINES.names_unreadable)?.closest<HTMLElement>("[data-failed-read]") ??
+    null;
+  const line = await waitFor(() => {
+    const drawn = namesLine();
+    expect(drawn, "the Decisions view drew no line for the names read").not.toBeNull();
+    return drawn as HTMLElement;
+  });
+  const list = view.container.querySelector("[data-decisions-body]");
+  const tree = list?.querySelector('[role="tree"]');
+  if (list == null || tree == null) throw new Error(`the stage drew ${drawnSlot(view)}`);
+  expect(
+    {
+      inList: list.contains(line),
+      inTree: tree.contains(line),
+      overTree: (line.compareDocumentPosition(tree) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+    },
+    "the names line is not drawn in the list, over its tree"
+  ).toEqual({ inList: true, inTree: false, overTree: true });
+  const retry = line.querySelector<HTMLElement>(FAILED_READ_RETRY);
+  if (retry === null) throw new Error("the Decisions view's names line drew no Retry");
+  await act(async () => retry.click());
+  await waitFor(() =>
+    expect(namesLine(), "the Decisions view's names line stayed once the names answered").toBeNull()
+  );
+  expect(names.mock.calls.length, "the Retry did not ask the names again").toBe(2);
 });

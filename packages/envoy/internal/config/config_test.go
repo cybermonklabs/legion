@@ -108,16 +108,19 @@ func TestLoadLeavesAllowedHostsEmptyWhenUnset(t *testing.T) {
 	}
 }
 
+// An entry that is no host is refused by its position in the list, never its text: a made-up
+// credential in a URL's userinfo, pasted there, is the last row.
 func TestLoadRefusesAllowedHostsWithAPortSchemeOrPath(t *testing.T) {
-	for _, entry := range []string{"hub.internal.example:9020", "http://hub.internal.example", "hub.internal.example/v1", "[2001:db8::1]:9020", ".", "hub.internal.example]", "::1]", "-hub.internal.example", "hub_name", "*", "192.0.2.10:9020", "192.0.2.10:", "cafe:80", "dead.beef:443", "1:2", "[192.0.2.10]", "[cafe]", "[abc.def]", "cafe:9020", "a:b"} {
+	const credential = "madeUpHostsUser0123:madeUpHostsPassword0123"
+	for _, entry := range []string{"hub.internal.example:9020", "http://hub.internal.example", "hub.internal.example/v1", "[2001:db8::1]:9020", ".", "hub.internal.example]", "::1]", "-hub.internal.example", "hub_name", "*", "192.0.2.10:9020", "192.0.2.10:", "cafe:80", "dead.beef:443", "1:2", "[192.0.2.10]", "[cafe]", "[abc.def]", "cafe:9020", "a:b", "https://" + credential + "@hub.internal.example"} {
 		t.Run(entry, func(t *testing.T) {
 			t.Setenv("ENVOY_MACHINE_ID", "test-machine")
 			t.Setenv("NATS_URLS", "nats://127.0.0.1:4222")
-			t.Setenv("ENVOY_ALLOWED_HOSTS", "ok.internal.example,"+entry)
+			t.Setenv("ENVOY_ALLOWED_HOSTS", "ok.internal.example, ,"+entry)
 
 			_, err := Load(9020)
-			if err == nil || !strings.Contains(err.Error(), "ENVOY_ALLOWED_HOSTS") || !strings.Contains(err.Error(), entry) {
-				t.Fatalf("Load error = %v, want a refusal naming ENVOY_ALLOWED_HOSTS and %q", err, entry)
+			if want := "invalid ENVOY_ALLOWED_HOSTS entry 3: want a host name or address with no port, scheme or path"; err == nil || err.Error() != want {
+				t.Fatalf("Load error = %v, want %q", err, want)
 			}
 		})
 	}

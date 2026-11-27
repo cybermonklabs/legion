@@ -10,7 +10,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"maps"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +22,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
 const (
@@ -199,9 +204,10 @@ func TestAConnectionProofIsRefused(t *testing.T) {
 // broker's answer: for every answer, a live one and each one Verify refuses, it answers what such a
 // verifier's Verify answers for a request presenting a token the broker answers that way with a
 // sound proof. A verifier with the switch also admits a read-only token, which SessionCaller
-// refuses (TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne).
+// refuses (TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne), a token narrowed to reading
+// among them: each answer of the narrowed answers' golden file is a row, refused by both
+// (TestANarrowedAnswerIsACallerOnlyToAVerifierThatServesReadOnly).
 func TestSessionCallerIsTheVerifyRule(t *testing.T) {
-	rig := newRig(t)
 	caller := newSigner(t)
 	inactive := liveToken(caller.jkt, time.Hour)
 	inactive.Active = false
@@ -215,21 +221,59 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 	otherClient.ClientID = "another-client"
 	unknownScope := liveToken(caller.jkt, time.Hour)
 	unknownScope.ProjectScope = "everything"
-	// A named answer may name no project when it names a person (an account entry may
-	// name none), and names at most one.
+	// A named answer may name no project when it names a person (an account entry may name
+	// none), or when it names no person and names the account it acts as (an account entry may
+	// name neither), and names at most one. A named answer naming no person and a fleet is no
+	// token the broker mints: the service of that shape is always an account. A named answer
+	// naming no person holds no OAuth scope, as the broker mints an account entry's and a job's.
 	namedNoProject := liveToken(caller.jkt, time.Hour)
 	namedNoProject.ProjectScope, namedNoProject.Projects = ciphertoken.ProjectScopeNamed, nil
+	namedForAnAccount := liveToken(caller.jkt, time.Hour)
+	namedForAnAccount.Person, namedForAnAccount.Service, namedForAnAccount.Projects, namedForAnAccount.Scope = "", "system:serviceaccount:example-ns:example-public", nil, ""
+	namedForAFleet := namedForAnAccount
+	namedForAFleet.Service = "example-fleet"
+	// A job's named entry names exactly one project, so a job's named token naming none is no
+	// token the broker mints; a workflow, which no account entry names, shows it apart from an
+	// account entry's token.
+	namedForAWorkflowNoProject := jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopeNamed)
+	namedForAWorkflowNoProject.Service = "example-org/example-repo/.github/workflows/sweep.yaml@refs/heads/main"
+	namedForAWorkflow := namedForAWorkflowNoProject
+	namedForAWorkflow.Projects = []string{"ACME"}
 	namedTwoProjects := liveToken(caller.jkt, time.Hour)
 	namedTwoProjects.ProjectScope, namedTwoProjects.Projects = ciphertoken.ProjectScopeNamed, []string{"ACME", "OTHER"}
 	serviceWithProjects := serviceToken(caller.jkt, time.Hour)
 	serviceWithProjects.Projects = []string{"ACME"}
+	// A job's token names its service and no person, and its entry's scope and whole list: named
+	// with exactly one project, or public with 0 to 16 private projects, sorted, each once, and no
+	// OAuth scope at all. Each other shape of the two stays refused.
+	projects := make([]string, 17)
+	for i := range projects {
+		projects[i] = fmt.Sprintf("P%02d", i)
+	}
+	publicForPerson := jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic, "ACME")
+	publicForPerson.Person = "sjawhar"
+	publicRead := jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic)
+	publicRead.Scope = ciphertoken.ScopeRead
+	publicScoped := jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic)
+	publicScoped.Scope = "person"
+	// A cut names the past time a read-only token reads at, and a job's token writes.
+	publicCut := jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic)
+	publicCut.AsOf = "2026-11-18T09:30:00.123456Z"
+	// A job's named token holds no OAuth scope either, a word the broker grants or one it does not
+	// know, while a person's named token keeps the scope its entry grants, as at main.
+	scoped := func(answer ciphertoken.Introspection, scope string) ciphertoken.Introspection {
+		answer.Scope = scope
+		return answer
+	}
+	namedForJob := jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopeNamed, "ACME")
 	// Each row names whether Verify admits it, so a row that answers otherwise fails by name with
 	// Verify's own error, rather than as a count that names none.
-	for _, row := range []struct {
+	type row struct {
 		name     string
 		answer   ciphertoken.Introspection
 		admitted bool
-	}{
+	}
+	rows := []row{
 		{"live", liveToken(caller.jkt, time.Hour), true},
 		{"service", serviceToken(caller.jkt, time.Hour), true},
 		{"machine login", machineLoginToken(caller.jkt, time.Hour), false},
@@ -240,9 +284,38 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 		{"another client", otherClient, false},
 		{"unknown scope", unknownScope, false},
 		{"named with no project, for a person", namedNoProject, true},
+		{"named with no project, for an account", namedForAnAccount, true},
+		{"named with no project and no person, for a fleet", namedForAFleet, false},
+		{"named with no project, for an account, holding the scope person", scoped(namedForAnAccount, "person"), false},
 		{"named with two projects", namedTwoProjects, false},
 		{"service with projects", serviceWithProjects, false},
-	} {
+		{"a job's named token", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopeNamed, "ACME"), true},
+		{"a job's public token naming no project", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic), true},
+		{"a job's public token naming sixteen projects", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic, projects[:16]...), true},
+		{"a public token naming seventeen projects", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic, projects...), false},
+		{"a public token beside a person", publicForPerson, false},
+		{"a public token holding the scope read", publicRead, false},
+		{"a public token holding an OAuth scope", publicScoped, false},
+		{"a public token carrying a cut", publicCut, false},
+		{"a job's named token naming no project, for a workflow", namedForAWorkflowNoProject, false},
+		{"a job's named token naming one project, for a workflow", namedForAWorkflow, true},
+		{"a job's named token naming two projects", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopeNamed, "ACME", "OTHER"), false},
+		{"a job's named token holding the scope person", scoped(namedForJob, "person"), false},
+		{"a job's named token holding the scope approve", scoped(namedForJob, "approve"), false},
+		{"a job's named token holding an unknown scope word", scoped(namedForJob, "write"), false},
+		{"a person's named token holding the scope person", scoped(liveToken(caller.jkt, time.Hour), "person"), true},
+		{"a public token whose list is not sorted", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic, "OTHER", "ACME"), false},
+	}
+	narrowed := ciphertokentest.NarrowedAnswers(t, caller.jkt, "ses_narrowed", time.Now().Add(time.Hour).Unix())
+	for _, kind := range slices.Sorted(maps.Keys(narrowed)) {
+		rows = append(rows, row{"narrowed from a " + kind, narrowed[kind], false})
+	}
+	// Every row presents a token of its own, and the bucket admits each of them: what is under test
+	// is the answer, not the address.
+	rig := newRig(t, func(options *ciphertoken.Options) {
+		options.AddressLimit = ratelimit.Limit{Every: time.Nanosecond, Burst: len(rows)}
+	})
+	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			token := "token-" + row.name
 			rig.broker.Says(token, row.answer)

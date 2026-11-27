@@ -5,6 +5,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -205,18 +206,26 @@ func (c *senderCharge) forgive() {
 // published marks the charge by the stream's answer to the route's publish of the message
 // (bus.Client.PublishAckWithin, through publishPastInProcess), the one rule the send route and the
 // topic publish share. A publish that may have stored the message (mayHaveStored) costs one
-// whatever the route answers. Any other failure stored nothing and marks nothing: a refusal of the
-// server's, a failure before anything was sent, such as a wait for NATS to reconnect that
-// outlasted the route's deadline, and a request that ended while an earlier publish under its
-// message id was still in process (earlierAttemptInProcess), with no send of its own unanswered,
-// whose copy is that earlier publish's. A duplicate verdict names a copy the stream already held,
-// which costs nothing, also after a wake report, unless it answers a resend of this request's own
-// (bus.StoredAck.Resent), whose first send may have stored that copy. Every other answer stored
-// the message.
+// whatever the route answers. A publish the bus refused because the deployed stream does not
+// capture a topic this build stores (bus.ErrSubjectNotDeployed) sent nothing and costs nothing, a
+// wake reported for it included: the route answers it 503 with Retry-After: 1, and a sender that
+// sends it again once the stream captures the topic must not meet a 429 for a message nothing
+// took. The send route asks the bus before it reports a stopped target's wake and answers such a
+// refusal then, with no wake (bus.Client.UndeployedRefusal), so a wake reaches this rule only when
+// a narrowing began between that question and the publish. Any other failure stored nothing and
+// marks nothing: a refusal of the server's, a failure before anything was sent, such as a wait for
+// NATS to reconnect that outlasted the route's deadline, and a request that ended while an earlier
+// publish under its message id was still in process (earlierAttemptInProcess), with no send of its
+// own unanswered, whose copy is that earlier publish's. A duplicate verdict names a copy the stream
+// already held, which costs nothing, also after a wake report, unless it answers a resend of this
+// request's own (bus.StoredAck.Resent), whose first send may have stored that copy. Every other
+// answer stored the message.
 func (c *senderCharge) published(ack bus.StoredAck, err error) {
 	switch {
 	case mayHaveStored(err):
 		c.stored()
+	case errors.Is(err, bus.ErrSubjectNotDeployed):
+		c.forgive()
 	case err != nil:
 		// A refusal, or a failure before any send: the stream holds nothing of this publish.
 	case ack.Duplicate && !ack.Resent:
@@ -254,12 +263,12 @@ type senderRefusal struct {
 	retryAfterSeconds int
 }
 
-// senderRateLimitedAnswer is the 429's body. Error is what the agent reads: each client shows
-// a refusal's error as it is written and sends nothing below 500 again
-// (packages/envoy-client/src/transport.ts), so the sentence alone tells the agent that its sending
-// is limited, that this message went nowhere, and when to send it again. Reason is the outcome the
-// request's log line records, and not apiauth.go's rate_limited, which refuses a broker token's
-// check rather than a session's sending.
+// senderRateLimitedAnswer is the 429's body. Error is what the agent reads: each client shows a
+// refusal's error as it is written and does not send the request again on a 429
+// (packages/envoy-client/src/transport.ts sends a request again only on a 5xx or a 408), so the
+// sentence alone tells the agent that its sending is limited, that this message went nowhere, and
+// when to send it again. Reason is the outcome the request's log line records, and not
+// apiauth.go's rate_limited, which refuses a broker token's check rather than a session's sending.
 type senderRateLimitedAnswer struct {
 	Error             string         `json:"error"`
 	Reason            requestOutcome `json:"reason"`

@@ -28,8 +28,12 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
   const address = issueAddress(route, search, hash, specSlug);
   // The tree, the line of each read it is built from that stands refused, and whether every one
   // of those reads has settled (`useOutlineReads`), each under the key and with the freshness the
-  // tree reads it by, so they cost no request of their own.
-  const { failed, readsSettled, root } = useOutlineReads(issue);
+  // tree reads it by, so they cost no request of their own; what the page publishes of its
+  // batched names read, which the body hands its rows in the render that draws them
+  // (`published`), so none of them reads a reference the page asks for; and the outline's names
+  // line while those reads stand failed (`names`), which the body draws over its list, since
+  // every reference its rows draw waits on those names.
+  const { failed, names, published, readsSettled, root } = useOutlineReads(issue);
   // Who is reading, whose own answers carry the ink rule and whose decisions stand under "Your
   // decisions": the shell's one read of who is signed in, so it costs no request of its own, and
   // kept fresh as the tree keeps it (`EVENT_FRESH`), so a press of Decisions reads it no second
@@ -69,7 +73,9 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
         holdsEscape
         isClosed={issue.closed_at !== null}
         issue={issue}
+        namesLine={names}
         {...(tells ? { onRevealDrawn: onAddressDrawn } : {})}
+        published={published}
         reader={viewer}
         request={request}
         reveal={reveal?.at(-1)?.id}

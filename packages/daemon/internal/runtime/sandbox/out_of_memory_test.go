@@ -50,6 +50,7 @@ func oneContainerStatus(phase corev1.PodPhase, container corev1.ContainerStatus)
 // ended on its own: no mark. Neither does an end whose reason is Error, which carries 128, the
 // very exit code an out-of-memory end carries — the reason decides and the code never does.
 func TestTheRolesContainerOutOfMemoryEndIsMarkedOnTheRolesItCut(t *testing.T) {
+	t.Parallel()
 	labels := claimLabels(claim.RoleTester)
 	name := SandboxName(workerToken)
 	ended := func(end corev1.ContainerStateTerminated) corev1.ContainerStatus {
@@ -110,12 +111,17 @@ func TestTheRolesContainerOutOfMemoryEndIsMarkedOnTheRolesItCut(t *testing.T) {
 // the third exclusion, and its own test holds it
 // (TestAnEndedPodOfTheEarlierLayoutReportsTheRolesOwnContainer).
 func TestAnOutOfMemoryEndOutsideTheRolesContainerIsNotMarked(t *testing.T) {
+	t.Parallel()
 	t.Run("an init container", func(t *testing.T) {
 		g := newRig(t, nil)
 		loc := g.spawn(workerSpec(t))
+		// Past its restart grace (initRestartGrace), so the end is the pod's death (failedInit), not
+		// one more start the kubelet makes in a pod still provisioning (startingAgain).
+		ended := endedContainer(initContainer, outOfMemoryEnd)
+		ended.RestartCount = initRestartGrace + 1
 		g.update(g.pod(loc.Sandbox.Name), func(p *corev1.Pod) {
 			p.Status.Phase = corev1.PodPending
-			p.Status.InitContainerStatuses = []corev1.ContainerStatus{endedContainer(initContainer, outOfMemoryEnd)}
+			p.Status.InitContainerStatuses = []corev1.ContainerStatus{ended}
 		})
 		g.eventually("the pod store to see the failed init", func() bool {
 			p := g.r.storedPod(loc.Sandbox.Name)

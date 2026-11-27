@@ -11,13 +11,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/testbin"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 	"golang.org/x/sys/unix"
@@ -29,8 +29,8 @@ import (
 // entry, and a fixture that answered the paths itself would prove nothing about the clone a pod
 // holds.
 //
-// No row here calls t.Parallel, and none may: the rows that drive a launcher use t.Chdir, which
-// panics in a parallel test, and the package's sweep numbers are package variables a row shortens.
+// A row runs in parallel unless it calls t.Chdir, which panics in a parallel test, or writes a
+// package variable; each serial row says which.
 
 // The repository and the issue every clone of these rows belongs to. They name directories
 // rather than anything the rows assert, but they have to be a repository and an issue
@@ -248,15 +248,52 @@ func newGatedProc(t *testing.T, pids ...int) *gatedProc {
 	return g
 }
 
-// beforeDeadline is how long a wait that begins now may last: until 30 s before the test binary's
-// deadline, which leaves a failing row's cleanups and its failure time to run (cleanupBeforeDeadline
-// gives the cleanups their part of it), and about 36 years under -timeout 0 (testwait.Bounded of
-// 1<<60 ns). Each wait for something the sweep or the launcher will do is bounded by it rather than
-// by a fixed span, so a pass or a goroutine that is merely slow on a loaded machine still passes its
-// row, and one that never comes still fails it, naming what it waited for. One that never comes
-// thus costs the rest of the binary's -timeout.
+// beforeDeadline is how long a wait that begins now may last: testwait.Remaining (#4792), until
+// 30 s before the test binary's deadline, which leaves a failing row's cleanups and its failure
+// time to run (cleanupBeforeDeadline gives the cleanups their part of it), and 1<<60 ns, about 36
+// years, under -timeout 0. Each wait for something the sweep or the launcher will do is bounded by
+// it rather than by a fixed span, so a pass or a goroutine that is merely slow on a loaded machine
+// still passes its row, and one that never comes still fails it, naming what it waited for. One
+// that never comes thus costs the rest of the binary's -timeout. With 30 s or less left there is no
+// span a wait could run on, so it fails t there, on one line naming the deadline and the margin,
+// rather than handing back a bound that asks the fact once and blames it. It calls t.Fatalf, so it
+// is called on the goroutine running the test.
+//
+// Every wait of the package's tests for a fact whose span is not the claim is bounded by it, or by
+// cleanupBeforeDeadline in a cleanup, in the test process and in every process the test binary
+// re-enters alike (a *Helper test, the role stage, role-init, the session-peer stand-ins, the PID 1
+// helpers). The exceptions are main's own: the sites #4901 wrote bound their waits with
+// testwait.Bounded of three years and a margin of their own, 30 s at reaperBound (the waits on PID
+// 1's reaper), at pidNamespace's probe, at runAsPIDOne's wait for sudo and at the put-back case's
+// checks of the restored workspaces, and 15 s at the put-back helper's wait for a put-back, which
+// must give up after the waits on the reaper. Each is the same bound as beforeDeadline's, or
+// ordered against it, but hands back a bound already spent where beforeDeadline fails t; each site
+// names its margin in its own failure. A re-entered process is given a -test.timeout that ends
+// reentryMargin before its starter's own deadline (reentry), or
+// helperDeadlineGap before it for runAsPIDOne's helpers, so beforeDeadline there ends before the
+// starter's own beforeDeadline. A starter's wait for a child's end ends no sooner than the child's
+// own deadline, so the child's failure, its cleanups and its alarm all come while the starter still
+// waits (reentry). A child started with too little time for a wait of its own fails at that wait,
+// on the line above, which its starter prints with the rest of what it said. The re-entries whose
+// argv the test does not write wait on nothing of their own: the session peer's shim (roleShim's
+// `worker-shim`) hands its agent the deadline its plan carries (peerPlan.End), and mainHelpers,
+// the controller guard's shim, agent and eval kernel, which TestMain runs with no testing.T, live
+// until their parent's pipe ends (untilStdinEnds), with two minutes as a cap on what a failed run
+// leaves behind, never a wait a case reads. The role stage and its agents wait to the Deadline
+// their plan carries (stagePlan): the case's beforeDeadline, read once in the case, which ends
+// before the stage's own.
+//
+// Not hang guards, so not bounded by it: a span that is part of a case's claim, or an answer a
+// re-entered process prints and then goes on from. These are the race cases' two-minute search
+// budget (raceSwaps); the racer's 30 s (raceTheSwap's deadline), which also sets how long the racer
+// keeps swapping; the role-drain bounds handed to role-init (roleDrainStaysBound); and the gated
+// live measurement's bounds (memoryguard_live_test.go's controllerLive…Bound), each a part of that
+// measurement's verdict, run only where a person or a measurement Job asks for it.
+// removeWhileFilling's writer is no span at all: it runs until the removal answers, and only the
+// wait for that answer is bounded, by beforeDeadline.
 func beforeDeadline(t *testing.T) time.Duration {
-	return testwait.Bounded(t, 1<<60, 30*time.Second)
+	t.Helper()
+	return testwait.Remaining(t)
 }
 
 // cleanupBeforeDeadline is beforeDeadline for a wait in a cleanup: it ends 10 s before the test
@@ -397,8 +434,8 @@ func useGitLockProc(t *testing.T, proc string) {
 }
 
 // roleStart is a start of role's generation that runs argv and exits, carrying env besides the
-// workspace it names: the restore and the sweep both read LEGION_WORKSPACE from the environment
-// the launcher merges for the generation.
+// workspace it names: the sweep reads LEGION_WORKSPACE from the environment the launcher merges
+// for the generation.
 func roleStart(generation uint64, ws string, env []string) shimwire.LauncherStart {
 	return shimwire.LauncherStart{
 		ID: "start-" + strconv.FormatUint(generation, 10), Generation: generation,
@@ -470,7 +507,7 @@ func roleNamespaceHolder(t *testing.T, dir, lock string) int {
 		_ = process.status.Close()
 	})
 	var holder int
-	testwait.Eventually(t, "the role's shim to open "+lock, func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the role's shim to open "+lock, func() bool {
 		if !strings.Contains(out.String(), "holding") {
 			return false
 		}
@@ -514,6 +551,7 @@ func childOf(t *testing.T, parent int) int {
 // pod started is as stale as one written a day before. The locks of the clone's own git directory
 // and of the workspace's worktree entry go alike.
 func TestTheFirstPassRemovesEveryLockAtLauncherStart(t *testing.T) {
+	t.Parallel()
 	// A lock's path is a name a role of the pod wrote, and a Linux file name may hold a newline.
 	// The line carries it quoted (gitLockSweep.line), so no role can split a line of PID 1's
 	// log, which carries no role prefix, and have its second half read as another role's own
@@ -570,6 +608,7 @@ func TestTheFirstPassRemovesEveryLockAtLauncherStart(t *testing.T) {
 // sweep did not expect — a `kubectl exec` into the container, a role's jj that raced the
 // launcher's own start.
 func TestTheFirstPassKeepsALockAProcessHoldsOpen(t *testing.T) {
+	t.Parallel()
 	c := newLockClone(t)
 	held := c.lock("index.lock", "held", time.Second)
 	free := c.lock("refs/heads/legion.lock", "free", time.Second)
@@ -610,66 +649,15 @@ func TestTheFirstPassKeepsALockAProcessHoldsOpen(t *testing.T) {
 	})
 }
 
-// The pod's one workspace-bundle restore runs real git and jj against the clone, and a stale lock
-// fails it: the restore is exactly the work a wedged clone costs the issue before a role has even
-// started. The first pass runs before it, both ways the launcher reaches a workspace — from its
-// own working directory, before it serves any role at all, and from the first role start, whose
+// A stale lock fails every git and jj the pod's roles run against the clone: it is the work a
+// wedged clone costs the issue. The first pass runs before the first role starts, both ways the
+// launcher reaches a workspace — from its own working directory, before it serves any role at all
+// (TestTheLauncherTakesTheWorkspaceFromItsWorkingDirectory), and from the first role start, whose
 // answer waits for the pass.
-func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
-	t.Run("a lock that would fail the restore is gone before it runs", func(t *testing.T) {
-		testbin.RequireJJFilters(t)
-		requireRoleNamespaces(t)
-		f := newBundleFixture(t)
-		f.workOne()
-		saved := f.bundleWorkspaceOne()
-		ws := f.secondPod("ws2")
-		// The lock the restore's own `git update-ref` takes for each saved head: one left
-		// behind fails that command with "cannot lock ref", and the restore gives up with the
-		// released pod's work left in the daemon's database for good.
-		gitDir := f.gitDir(ws)
-		var planted []string
-		for index := range saved.Tips {
-			path := filepath.Join(gitDir, "refs", "heads", restoreRefPrefix+strconv.Itoa(index)+".lock")
-			if err := os.WriteFile(path, []byte("stale\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			planted = append(planted, path)
-		}
-
-		t.Chdir(ws)
-		useSweepingLauncher(t)
-		fleet := newFleet(t, 5*time.Second, "tester")
-		for _, path := range planted {
-			if !swept(path) {
-				t.Fatalf("the launcher's first pass left %s where it was; its log:\n%s", path, fleet.stderr.String())
-			}
-		}
-		frames, err := shimwire.SplitWorkspaceBundle("restore-ws2", bundleRelease, saved)
-		if err != nil {
-			t.Fatal(err)
-		}
-		conn := fleet.role("tester")
-		for _, frame := range frames {
-			if got, ok := conn.answer(frame).(shimwire.LauncherBundleResult); !ok || !got.OK {
-				t.Fatalf("slice %d answered %#v", frame.Index, got)
-			}
-		}
-		if got := conn.start(roleStart(1, ws, f.env)); !got.OK {
-			t.Fatalf("the start after the bundle answered %#v; the launcher's log:\n%s", got, fleet.stderr.String())
-		}
-		conn.awaitExit(1)
-		if conn.restored == nil || !conn.restored.OK {
-			t.Fatalf("the launcher reported %#v of the restore; its log:\n%s", conn.restored, fleet.stderr.String())
-		}
-		if !strings.Contains(fleet.stderr.String(), "the released workspace's saved work is restored") {
-			t.Fatalf("the restore left no notice in the container's log:\n%s", fleet.stderr.String())
-		}
-		// The work the stale lock would have cost the issue is in the workspace.
-		if body, err := os.ReadFile(filepath.Join(ws, "wip.txt")); err != nil || string(body) != "wip\n" {
-			t.Fatalf("the restored working copy's own change reads %q (%v)", body, err)
-		}
-	})
-
+func TestTheFirstPassRunsBeforeTheFirstRoleStarts(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process. It also changes the whole
+	// process's working directory (t.Chdir).
 	t.Run("no role start is answered until the pass returns", func(t *testing.T) {
 		requireRoleNamespaces(t)
 		c := newLockClone(t)
@@ -739,6 +727,7 @@ func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
 // which clone is its own: it sweeps before it connects, and a role that starts at once works a
 // clone whose stale locks are gone.
 func TestTheLauncherTakesTheWorkspaceFromItsWorkingDirectory(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	c := newLockClone(t)
 	lock := c.lock("index.lock", "stale", time.Second)
 	worktree := c.worktreeLock("HEAD.lock", "stale", time.Second)
@@ -762,6 +751,7 @@ func TestTheLauncherTakesTheWorkspaceFromItsWorkingDirectory(t *testing.T) {
 // remove. It is that row's control: the /proc it reads is the one the row hands it, and not the
 // machine's, where no such git need be running.
 func TestTheLaunchersFirstPassKeepsEveryLockWhileAGitItCannotReadRuns(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	c := newLockClone(t)
 	lock := c.lock("index.lock", "stale", time.Second)
 	worktree := c.worktreeLock("HEAD.lock", "stale", time.Second)
@@ -778,8 +768,9 @@ func TestTheLaunchersFirstPassKeepsEveryLockWhileAGitItCannotReadRuns(t *testing
 // directory the runtime's layout does not account for, which is every directory outside
 // <state>/workspaces/<owner>/<name>/<issue> — says so once and sweeps nothing, since it has no
 // clone to sweep. The first role start it serves names the workspace (LEGION_WORKSPACE), and
-// that is the clone it sweeps, under the first pass's rule, before the start's own restore runs.
+// that is the clone it sweeps, under the first pass's rule, before the start's own child runs.
 func TestALauncherWhoseDirectoryIsNoWorkspaceSweepsAtTheFirstRoleStart(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	requireRoleNamespaces(t)
 	c := newLockClone(t)
 	lock := c.lock("index.lock", "stale", time.Second)
@@ -818,6 +809,7 @@ func TestALauncherWhoseDirectoryIsNoWorkspaceSweepsAtTheFirstRoleStart(t *testin
 //
 // It drives the sweep's own learn and needs no launcher and no role namespaces of its own.
 func TestALearnWhoseDerivationFailedLearnsNothingFromALaterStart(t *testing.T) {
+	t.Parallel()
 	broken := newLockClone(t)
 	stale := broken.lock("index.lock", "stale", time.Hour)
 	// The derivation refuses a workspace no entry's gitdir names while its .git names an entry
@@ -861,6 +853,7 @@ func TestALearnWhoseDerivationFailedLearnsNothingFromALaterStart(t *testing.T) {
 // test database: a pass still walking a clone after Run returned would be the launcher writing to
 // a volume the pod is giving up.
 func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	t.Run("the ticker ends with the context", func(t *testing.T) {
 		c := newLockClone(t)
 		log := &lockedBuffer{}
@@ -892,7 +885,7 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 		t.Cleanup(func() { gitLockServed = previous })
 		f := newFleet(t, 2*time.Second, "tester")
 		running := c.lock("refs/heads/running.lock", "stale", time.Hour)
-		testwait.Eventually(t, "the sweep's clock to remove "+running, func() bool { return swept(running) })
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the sweep's clock to remove "+running, func() bool { return swept(running) })
 
 		f.cancel()
 		select {
@@ -914,12 +907,127 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 			t.Fatalf("Run returned before the sweep's ticker goroutine did: a pass can still run after the container's own process is gone; the launcher's log:\n%s", f.stderr.String())
 		}
 	})
+
+	// The row above reads its verdict when no pass is under way: the ticker goroutine then returns
+	// the moment the context ends, so its channel is closed when Run returns whether Run waited for
+	// it or not, and a Run that does not wait for its sweep passes that row. This row ends Run
+	// while a pass of its sweep is inside a removal, held there through the removal gitLockRemove
+	// answers, the one place a pass can be held (the second row of
+	// TestTheFirstPassRunsBeforeTheBundleRestore). A Run that waits for its sweep cannot return
+	// while that pass is held, however loaded the machine is; a Run that does not wait returns
+	// once its other waits are done.
+	//
+	// So the row fails a Run that returns in the half second after the tester's connection closed,
+	// all that such a Run has left being its waits for what it started (Run). That span is no
+	// verdict on a correct Run, which never returns in it: on a loaded machine it can only leave a
+	// slow wrong Run unseen there. Such a Run, returning after the half second but before the pass
+	// is let go, still fails, on the pass not having taken its lock when Run returned; one
+	// returning after the freed pass has finished is the one this row can miss. When Run returns,
+	// the row also reads #4855's event: the ticker goroutine's channel is closed.
+	t.Run("Run waits for a pass under way", func(t *testing.T) {
+		c := newLockClone(t)
+		shortGitLockClock(t, 20*time.Millisecond, time.Millisecond)
+		reached := make(chan string, 1)
+		release := make(chan struct{})
+		var removed atomic.Bool
+		previousRemove := gitLockRemove
+		gitLockRemove = func(path string) error {
+			select {
+			case reached <- path:
+			default:
+			}
+			<-release
+			err := os.Remove(path)
+			removed.Store(true)
+			return err
+		}
+		// Restored after the launcher's own cleanup, which waits for Run to return, since this
+		// is registered before newFleet registers that one; the pass is let go before either.
+		t.Cleanup(func() { gitLockRemove = previousRemove })
+		released := false
+		free := func() {
+			if !released {
+				released = true
+				close(release)
+			}
+		}
+		defer free()
+		served := make(chan (<-chan struct{}), 1)
+		previousServed := gitLockServed
+		gitLockServed = func(done <-chan struct{}) { served <- done }
+		t.Cleanup(func() { gitLockServed = previousServed })
+		t.Chdir(c.dir)
+		useSweepingLauncher(t)
+		f := newFleet(t, 2*time.Second, "tester")
+		running := c.lock("refs/heads/running.lock", "stale", time.Hour)
+		select {
+		case path := <-reached:
+			if path != running {
+				t.Fatalf("the sweep's clock held at the removal of %s, not of %s; the launcher's log:\n%s", path, running, f.stderr.String())
+			}
+		case <-time.After(beforeDeadline(t)):
+			t.Fatalf("the sweep's clock never reached the removal of %s; the launcher's log:\n%s", running, f.stderr.String())
+		}
+
+		// Whether the held pass had taken its lock when Run returned.
+		returned := make(chan bool, 1)
+		go func() {
+			err := <-f.result
+			taken := removed.Load()
+			// Put it back: newFleet's own cleanup waits for this same send.
+			f.result <- err
+			returned <- taken
+		}()
+		f.cancel()
+		conn := f.role("tester")
+		if err := conn.conn.SetReadDeadline(time.Now().Add(beforeDeadline(t))); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			if _, err := conn.reader.ReadBytes('\n'); err != nil {
+				var timeout net.Error
+				if errors.As(err, &timeout) && timeout.Timeout() {
+					t.Fatalf("the tester's connection stayed open after the container's context ended; the launcher's log:\n%s", f.stderr.String())
+				}
+				break
+			}
+		}
+		select {
+		case <-returned:
+			t.Fatalf("Run returned while a pass of its sweep was still held inside a removal: the sweep outlived the container's own process; the launcher's log:\n%s", f.stderr.String())
+		case <-time.After(500 * time.Millisecond):
+		}
+
+		free()
+		select {
+		case taken := <-returned:
+			if !taken {
+				t.Fatalf("Run returned before the pass of its sweep it was ended inside had taken its lock: it did not wait for its sweep; the launcher's log:\n%s", f.stderr.String())
+			}
+		case <-time.After(beforeDeadline(t)):
+			t.Fatalf("Run did not return after its context ended and its sweep's pass was let go; the launcher's log:\n%s", f.stderr.String())
+		}
+		if !swept(running) {
+			t.Fatalf("the held pass's lock %s is still there after Run returned", running)
+		}
+		select {
+		case ticker := <-served:
+			select {
+			case <-ticker:
+			default:
+				t.Fatalf("Run returned before the sweep's ticker goroutine did: a pass can still run after the container's own process is gone; the launcher's log:\n%s", f.stderr.String())
+			}
+		default:
+			t.Fatal("Run returned with no git lock sweep started: the launcher swept nothing")
+		}
+	})
 }
 
 // The sweep runs again on its clock for the life of the pod, with no role start between the
 // passes: a lock a role leaves at any point of the pod's life is removed within an interval of
 // becoming stale, which is the whole of what this half of the change is for.
 func TestTheSweepRunsAgainOnItsClockForTheLifeOfThePod(t *testing.T) {
+	t.Parallel()
 	c := newLockClone(t)
 	log := &lockedBuffer{}
 	s := c.sweep(log, procRoot(t, os.Getpid()))
@@ -935,7 +1043,7 @@ func TestTheSweepRunsAgainOnItsClockForTheLifeOfThePod(t *testing.T) {
 	for _, name := range []string{"index.lock", "refs/heads/one.lock", "refs/heads/two.lock"} {
 		path := c.lock(name, "stale", time.Hour)
 		line := "removed the git lock " + strconv.Quote(path) + ","
-		testwait.Eventually(t, "the clock pass that removes "+path, func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the clock pass that removes "+path, func() bool {
 			return strings.Contains(log.String(), line)
 		})
 		if !swept(path) {
@@ -968,6 +1076,7 @@ func TestTheSweepRunsAgainOnItsClockForTheLifeOfThePod(t *testing.T) {
 // lock's path, how many bytes it held, when it was last written and how long before the pass that
 // was.
 func TestTheSweepLogsEachRemovalWithItsPathSizeTimeAndAge(t *testing.T) {
+	t.Parallel()
 	c := newLockClone(t)
 	const content = "ref: refs/heads/main\n"
 	path := c.lock("packed-refs.lock", content, 0)
@@ -988,6 +1097,7 @@ func TestTheSweepLogsEachRemovalWithItsPathSizeTimeAndAge(t *testing.T) {
 // A lock the sweep kept writes the same line, with `kept` for `removed` and the condition that
 // kept it after a colon: the next pass decides it again, and the log says why this one did not.
 func TestTheSweepLogsEachLockItKeepsWithTheConditionThatKeptIt(t *testing.T) {
+	t.Parallel()
 	written := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 	const content = "ref: refs/heads/main\n"
 
@@ -1035,6 +1145,7 @@ func TestTheSweepLogsEachLockItKeepsWithTheConditionThatKeptIt(t *testing.T) {
 // would bury every line its roles write, and the sweep has nothing to report about a clone whose
 // locks are where git left them: none.
 func TestAPassThatFindsNoLockLogsNothing(t *testing.T) {
+	t.Parallel()
 	c := newLockClone(t)
 	// Files git leaves that are no lock, under both the git directory and the worktree entry.
 	c.plant(filepath.Join(c.gitDir, "packed-refs"), "# pack-refs with: peeled fully-peeled sorted\n", 0)
@@ -1055,6 +1166,7 @@ func TestAPassThatFindsNoLockLogsNothing(t *testing.T) {
 // the pass the pod runs for its whole life, where the first pass's rule — no process of the
 // container can hold a lock yet — no longer holds.
 func TestAClockPassRemovesAnUnheldLockOfTheCloneAndTheWorktreeEntry(t *testing.T) {
+	t.Parallel()
 	c := newLockClone(t)
 	index := c.lock("index.lock", "one", time.Hour)
 	ref := c.lock("refs/heads/legion.lock", "two", time.Hour)
@@ -1072,6 +1184,7 @@ func TestAClockPassRemovesAnUnheldLockOfTheCloneAndTheWorktreeEntry(t *testing.T
 // third condition and the reason a pass reads twice at all. Two writers replacing one file is
 // what either read prevents.
 func TestAClockPassKeepsALockAProcessHoldsOpen(t *testing.T) {
+	t.Parallel()
 	t.Run("a process holds it open at the first read", func(t *testing.T) {
 		c := newLockClone(t)
 		held := c.lock("index.lock", "held", time.Hour)
@@ -1083,9 +1196,13 @@ func TestAClockPassKeepsALockAProcessHoldsOpen(t *testing.T) {
 		log := &lockedBuffer{}
 		s := c.sweep(log, procRoot(t, os.Getpid()))
 		// An hour's recheck this pass must never reach: a lock the first read found a holder
-		// for is decided there and never read again, where a lock that reaches the second read
-		// would hold the pass for that hour. A row that gave the sweep its usual millisecond
-		// would read the same keep line whichever of the two reads wrote it.
+		// for is decided there and never read again. A lock that reached the second read would
+		// hold the pass for that hour, which fails the row at the hang guard awaitPass waits
+		// under only when that guard ends inside the hour: when the binary's -timeout is under
+		// about an hour, as CI's 30 minutes is. Under a longer -timeout, or none, such a pass
+		// returns after the hour with the same keep line, and the row passes it. A row that gave
+		// the sweep its usual millisecond would read the same keep line whichever of the two
+		// reads wrote it, under any -timeout.
 		s.recheck = time.Hour
 		done := make(chan struct{})
 		go func() { defer close(done); s.pass(context.Background(), false) }()
@@ -1121,6 +1238,8 @@ func TestAClockPassKeepsALockAProcessHoldsOpen(t *testing.T) {
 // writer is in. A comparison by the path the descriptor's link prints would be a comparison of
 // two different mount namespaces' names for one file.
 func TestAClockPassKeepsALockAGitOfARoleNamespaceHoldsOpen(t *testing.T) {
+	// Not parallel: it writes the package variable roleHome (roleNamespaceHolder), which parallel
+	// tests read.
 	requireRoleNamespaces(t)
 	scratch := namespaceScratch(t, "")
 	c := newLockCloneUnder(t, filepath.Join(scratch, "issue"))
@@ -1141,6 +1260,7 @@ func TestAClockPassKeepsALockAGitOfARoleNamespaceHoldsOpen(t *testing.T) {
 // the read, so the pass keeps them all. The alternative is a pass that removes a lock the one
 // process it could not read was writing.
 func TestAClockPassKeepsALockWhoseGitHolderItCannotRead(t *testing.T) {
+	t.Parallel()
 	for _, comm := range []string{"git", "jj"} {
 		t.Run("a "+comm+" whose open files cannot be read", func(t *testing.T) {
 			c := newLockClone(t)
@@ -1160,6 +1280,7 @@ func TestAClockPassKeepsALockWhoseGitHolderItCannotRead(t *testing.T) {
 // that took every unreadable process for a holder would keep every lock of a container running
 // anything the sweep cannot read into, and the wedged clone it exists to clear would stay wedged.
 func TestAClockPassRemovesALockWhoseUnreadableProcessIsNoGitOrJJ(t *testing.T) {
+	t.Parallel()
 	c := newLockClone(t)
 	stale := c.lock("index.lock", "stale", time.Hour)
 	log := &lockedBuffer{}
@@ -1187,6 +1308,7 @@ func TestAClockPassRemovesALockWhoseUnreadableProcessIsNoGitOrJJ(t *testing.T) {
 // no descriptor the walk can see yet, and a pass with no age bound would remove the lock of a
 // write that is happening. The line names that condition with the sweep's own guard in it.
 func TestAClockPassKeepsALockYoungerThanTheGuard(t *testing.T) {
+	t.Parallel()
 	c := newLockClone(t)
 	young := c.lock("index.lock", "a live writer's", 5*time.Minute)
 	log := &lockedBuffer{}
@@ -1213,6 +1335,7 @@ func TestAClockPassKeepsALockYoungerThanTheGuard(t *testing.T) {
 // mtime moved, or another file altogether at that path, and neither is the lock the pass decided
 // to remove.
 func TestAClockPassKeepsALockThatChangedBetweenTheTwoReads(t *testing.T) {
+	t.Parallel()
 	t.Run("its last write moved", func(t *testing.T) {
 		c := newLockClone(t)
 		path := c.lock("index.lock", "stale at the first read", time.Hour)
@@ -1258,6 +1381,7 @@ func TestAClockPassKeepsALockThatChangedBetweenTheTwoReads(t *testing.T) {
 // the lock keeps nothing, since the roles of a pod run git and jj all day and a pass that stood
 // down while one was running would never run at all.
 func TestAClockPassRemovesALockWhileAnotherGitRunsInTheContainer(t *testing.T) {
+	t.Parallel()
 	c := newLockClone(t)
 	stale := c.lock("index.lock", "stale", time.Hour)
 	// A real git of the container, running and holding no descriptor of the clone: `git
@@ -1288,11 +1412,10 @@ func TestAClockPassRemovesALockWhileAnotherGitRunsInTheContainer(t *testing.T) {
 }
 
 // The sweep answers for one workspace's locks and leaves every other file of the volume where it
-// is: another workspace of the same clone has a pod of its own deciding its locks, and the pod's
-// fetch feed is a bare repository whose only writer is the fetch that starts a pod
-// (workspace.RemoveStaleFeedLocks). A sweep that walked either would remove a lock a live writer
-// outside this container holds.
-func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAndTheFeedAlone(t *testing.T) {
+// is: another workspace of the same clone has a pod of its own deciding its locks. A sweep that
+// walked it would remove a lock a live writer outside this container holds.
+func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAlone(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	c := newLockClone(t)
 	ours := c.worktreeLock("index.lock", "ours", time.Hour)
 	// A second workspace's entry under the same clone: git names an entry after the directory's
@@ -1301,19 +1424,15 @@ func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAndTheFeedAlone(t *testing.
 	other := filepath.Join(c.gitDir, "worktrees", "infra-2")
 	c.plant(filepath.Join(other, "gitdir"), filepath.Join(filepath.Dir(c.dir), "infra-2", ".git")+"\n", 0)
 	theirs := c.plant(filepath.Join(other, "index.lock"), "another pod's", time.Hour)
-	// The pod's feed on the same volume, laid out as workspace.FeedRepository names it.
-	feed := c.plant(filepath.Join(c.root, "feed", lockCloneOwner, lockCloneRepo+".git", "refs", "heads", "main.lock"), "the feed's", time.Hour)
 	log := &lockedBuffer{}
 	s := c.sweep(log, procRoot(t, os.Getpid()))
 	s.pass(context.Background(), false)
 	requireRemoved(t, log, ours)
-	for _, path := range []string{theirs, feed} {
-		if swept(path) {
-			t.Fatalf("the sweep removed %s, which is no lock of its workspace; its log:\n%s", path, log.String())
-		}
-		if strings.Contains(log.String(), path) {
-			t.Fatalf("the sweep named %s in its log, which it never reads:\n%s", path, log.String())
-		}
+	if swept(theirs) {
+		t.Fatalf("the sweep removed %s, which is no lock of its workspace; its log:\n%s", theirs, log.String())
+	}
+	if strings.Contains(log.String(), theirs) {
+		t.Fatalf("the sweep named %s in its log, which it never reads:\n%s", theirs, log.String())
 	}
 
 	// The two files jj resolves a git directory through, .jj/repo and the repository's
@@ -1456,6 +1575,7 @@ func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAndTheFeedAlone(t *testing.
 // is ended by endRunawayReads, which the row fails on. The row's unstick runs once as the row
 // ends and lets go one read the fifo holds; a second read can then wait on until the binary ends.
 func TestTheSweepSkipsAWorktreeEntryWhoseGitdirIsNoFileGitWrote(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	// writer is the descriptor the held fifo's row keeps open on it, which its unstick closes.
 	var writer *os.File
 	for _, row := range []struct {
@@ -1779,6 +1899,7 @@ func (c *lockClone) unreadableEntry(cause string) string {
 // which is a running pod whose role breaks the entry after the derivation. This is case C of
 // internal/workspace's gitWorktreeEntries table, a gitdir gone ("missing") among its causes.
 func TestTheSweepNamesThisWorkspacesUnreadableWorktreeEntryOnceAndSweepsTheRest(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	for _, bad := range unreadableGitdirs {
 		t.Run(bad.name, func(t *testing.T) {
 			c := newLockClone(t)
@@ -1834,6 +1955,7 @@ func TestTheSweepNamesThisWorkspacesUnreadableWorktreeEntryOnceAndSweepsTheRest(
 // place, and what is wrong with it is what the line says. The first role start's derivation
 // accepts the workspace the same way.
 func TestTheDerivationNamesThisWorkspacesUnreadableWorktreeEntry(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	for _, bad := range unreadableGitdirs {
 		t.Run(bad.name, func(t *testing.T) {
 			line := func(c *lockClone) string {
@@ -2038,6 +2160,7 @@ func withinBound(t *testing.T, log *lockedBuffer, watched string, unstick func()
 // link followed to /dev/zero runs away, and a link followed, or a file read past the bound,
 // names this workspace's entry and turns the refusal into case C's acceptance.
 func TestTheDerivationRefusesAPointerThatNamesNoEntryItCanRead(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	for _, bad := range unusablePointers {
 		t.Run(bad.name, func(t *testing.T) {
 			c := newLockClone(t)
@@ -2077,6 +2200,7 @@ func TestTheDerivationRefusesAPointerThatNamesNoEntryItCanRead(t *testing.T) {
 // gone each time, leaves the entry's locks, and names the .git's error once rather than once a
 // minute. Each pass is waited for as the derivation's row above waits (withinBound).
 func TestTheSweepNamesAPointerThatNamesNoEntryOnceAndSweepsTheGitDirectory(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	for _, bad := range unusablePointers {
 		t.Run(bad.name, func(t *testing.T) {
 			c := newLockClone(t)
@@ -2117,6 +2241,7 @@ func TestTheSweepNamesAPointerThatNamesNoEntryOnceAndSweepsTheGitDirectory(t *te
 // the entry the .git names for this workspace's own would remove a lock of another workspace's
 // pod.
 func TestTheSweepKeepsTheLocksOfTheEntryItsPointerNamesWhenNoEntryIsItsOwn(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	c := newLockClone(t)
 	t.Chdir(c.dir)
 	log := &lockedBuffer{}
@@ -2160,6 +2285,7 @@ func TestTheSweepKeepsTheLocksOfTheEntryItsPointerNamesWhenNoEntryIsItsOwn(t *te
 // the row proves is that a sound own entry writes no line and holds no pass; it does not prove the
 // .git is never read, since a read of it through readGitdir would never block either.
 func TestTheSweepReadsNoPointerWhileThisWorkspacesEntryIsSound(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	t.Run("a pointer at a sibling whose gitdir cannot be read", func(t *testing.T) {
 		c := newLockClone(t)
 		sibling := filepath.Join(c.gitDir, "worktrees", "infra-2")
@@ -2248,6 +2374,7 @@ func TestTheSweepReadsNoPointerWhileThisWorkspacesEntryIsSound(t *testing.T) {
 // that plants a link does it while the pod runs, so what refuses the link is the walk of each
 // pass and not the one derivation.
 func TestTheSweepRefusesASymlinkedGitDirectory(t *testing.T) {
+	t.Parallel()
 	c := newLockClone(t)
 	stale := c.lock("index.lock", "stale", time.Hour)
 	log := &lockedBuffer{}
@@ -2281,6 +2408,7 @@ func TestTheSweepRefusesASymlinkedGitDirectory(t *testing.T) {
 // it are where the pass writes, and a link there would put its removals outside the clone just as
 // surely.
 func TestTheSweepRefusesASymlinkedWorktreesDirectory(t *testing.T) {
+	t.Parallel()
 	c := newLockClone(t)
 	stale := c.lock("index.lock", "stale", time.Hour)
 	working := c.worktreeLock("HEAD.lock", "stale", time.Hour)
@@ -2330,6 +2458,7 @@ func TestTheSweepRefusesASymlinkedWorktreesDirectory(t *testing.T) {
 // The link is planted after the sweep has its workspace, which is the order a pod has: the
 // launcher derives before it serves a role, and a role of the issue plants while the pod runs.
 func TestTheSweepRefusesACloneReplacedWithASymlinkAfterTheDerivation(t *testing.T) {
+	t.Parallel()
 	c := newLockClone(t)
 	stale := c.lock("refs/heads/main.lock", "stale", time.Hour)
 	log := &lockedBuffer{}
@@ -2387,6 +2516,7 @@ func TestTheSweepRefusesACloneReplacedWithASymlinkAfterTheDerivation(t *testing.
 // then says the sweep works a clone it would refuse on every pass, rather than the one line that
 // says why it has none.
 func TestTheDerivationRefusesACloneThatIsASymlinkBeforeTheSweepStarts(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	c := newLockClone(t)
 	stale := c.lock("refs/heads/main.lock", "stale", time.Hour)
 	elsewhere := c.clone + "-real"
@@ -2422,6 +2552,7 @@ func TestTheDerivationRefusesACloneThatIsASymlinkBeforeTheSweepStarts(t *testing
 // does. This runs in PID 1 of the roles container, where a failure that ended the process would
 // cost the issue every role it serves.
 func TestTheSweepGoesOnAfterALockItCannotRemove(t *testing.T) {
+	t.Parallel()
 	c := newLockClone(t)
 	// The walk answers the clone's locks in the order it found them, which is the order a
 	// directory read sorts them in, so the lock whose removal fails is the first of the two: what
@@ -2463,6 +2594,7 @@ func TestTheSweepGoesOnAfterALockItCannotRemove(t *testing.T) {
 // change of either number without a rewording of the note fails here, which is the only place it
 // can fail.
 func TestStaleGitLockNoteCarriesTheLaunchersSweepNumbers(t *testing.T) {
+	t.Parallel()
 	c := newLockClone(t)
 	lock := c.lock("index.lock", "a killed writer's", 31*time.Minute)
 	note := workspace.StaleGitLockNote(

@@ -1,16 +1,30 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the dropped file below is a drop, which user-event has no form for
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
-import type { Artifact, IssueReferences, IssueReferencesAnswer } from "../../api/types";
+import type {
+  Artifact,
+  DisplayTree,
+  IssueReferences,
+  IssueReferencesAnswer,
+  ReferenceLink,
+} from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath } from "../refs/routes";
 import { ArtifactsTab } from "./ArtifactsTab";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const artifact = {
   created_at: "2026-09-09T00:00:00Z",
@@ -646,6 +660,16 @@ test("an issue only other nodes link to shows Referenced by (1) before the secti
     members: [],
     truncated: false,
   };
+  // The row's name is drawn as its plain-text projection, which reads the bare key in it, CORE-1,
+  // by CORE-1's summary: the read is answered here, and the row waits for the name it gives, so no
+  // read is left out when the row ends.
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "CORE-1",
+    project: "CORE",
+    status: "in_progress",
+    title: "Ship the parser",
+  });
   const { getIssueReferences, listArtifacts, view } = renderTab([artifact], answer);
 
   try {
@@ -656,6 +680,290 @@ test("an issue only other nodes link to shows Referenced by (1) before the secti
       return closed === null || (closed.querySelector("summary")?.contains(element) ?? false);
     });
     expect(shown).not.toHaveLength(0);
+    await screen.findByRole("link", {
+      hidden: true,
+      name: "This links to CORE-1 Ship the parser.",
+    });
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    getIssueSummary.mockRestore();
+  }
+});
+
+/** A comment of OPS-1 whose body holds a bare issue address, which the issue's own content links
+ *  to: the one row of `links` in the rows below, named by that body. The rows that read an ask's
+ *  name and a message's give an ask and a message of OPS-1 (`addressedAsk`, `addressedMessage`)
+ *  the same text. */
+const addressedComment = "ffffffff-0000-4000-8000-000000000005";
+const addressedAsk = "ffffffff-0000-4000-8000-000000000006";
+const addressedMessage = "ffffffff-0000-4000-8000-000000000008";
+const addressedName = "Decided in dispatch://CORE-2 on **Friday**.";
+
+/** An answer whose one row is OPS-1's `kind` `id`, `addressedComment` unless given, carrying
+ *  `nameTree` as its `name_tree`, or none, as a Dispatch from before `name_tree` answers. */
+function addressedAnswer(
+  nameTree: DisplayTree | undefined,
+  kind: "ask" | "comment" | "message" = "comment",
+  id = addressedComment
+): IssueReferences {
+  return {
+    links: [
+      {
+        kinds: ["mentions"],
+        name: addressedName,
+        name_tree: nameTree,
+        node: graphNode({
+          id,
+          issue_key: "OPS-1",
+          kind,
+          project: "OPS",
+          ref: `dispatch://OPS-1/${kind}/${id}`,
+        }),
+        via: { id: "comment-1", kind: "comment" },
+      },
+    ],
+    linked_from: [],
+    members: [],
+    truncated: false,
+  };
+}
+
+/** Draws `answer`'s tab with CORE-2's summary answering its read, and hands the row's link, found
+ *  by the name the row should read, to `check`. */
+async function withAddressedRow(
+  answer: IssueReferences,
+  check: (link: HTMLElement) => void
+): Promise<void> {
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "CORE-2",
+    project: "CORE",
+    status: "in_progress",
+    title: "Cut the release",
+  });
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact], answer);
+  try {
+    check(
+      await screen.findByRole("link", {
+        hidden: true,
+        name: "Decided in CORE-2 Cut the release on Friday.",
+      })
+    );
+    expect(getIssueSummary).toHaveBeenCalledWith("CORE-2");
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    getIssueSummary.mockRestore();
+  }
+}
+
+// The reading list's `artifacts-reference-name`: a row's name is the words of a link, which hold
+// no markup, so the tab draws its plain-text projection from the tree the read sent of it. The
+// bold goes, and the bare issue address reads as its target's name, CORE-2's key and title, which
+// its own read answers. Drawn as the characters it is, the link would read
+// `Decided in dispatch://CORE-2 on **Friday**.`.
+test("a references row reads a reference in its name as its target's name", async () => {
+  await withAddressedRow(addressedAnswer(displayTree(addressedName)), (link) => {
+    expect(link).toHaveAttribute("href", `/issues/OPS-1/comments/${addressedComment}`);
+    expect(link.textContent).not.toContain("dispatch://");
+  });
+});
+
+// A Dispatch from before `name_tree` sends a row's name with no tree: the tab reads the name's
+// parse on the page in its place, never the characters as written, so the address still reads as
+// its target's name.
+test("a references row with no name_tree reads its name's parse, a reference in it as its target's name", async () => {
+  await withAddressedRow(addressedAnswer(undefined), (link) => {
+    expect(link).toHaveAttribute("href", `/issues/OPS-1/comments/${addressedComment}`);
+    expect(link.textContent).not.toContain("dispatch://");
+  });
+});
+
+// An ask's name and a message's are the head of a record's text as a comment's is (`nameSource`),
+// so each is drawn as its plain-text projection too: the bold goes, and the bare issue address
+// reads as CORE-2's key and title.
+test("a references row named by an ask's text reads a reference in it as its target's name", async () => {
+  await withAddressedRow(
+    addressedAnswer(displayTree(addressedName), "ask", addressedAsk),
+    (link) => {
+      expect(link).toHaveAttribute("href", `/issues/OPS-1/asks/${addressedAsk}`);
+      expect(link.textContent).not.toContain("dispatch://");
+    }
+  );
+});
+
+test("a references row named by a message's text reads a reference in it as its target's name", async () => {
+  await withAddressedRow(
+    addressedAnswer(displayTree(addressedName), "message", addressedMessage),
+    (link) => {
+      expect(link).toHaveAttribute("href", `/issues/OPS-1/messages/${addressedMessage}`);
+      expect(link.textContent).not.toContain("dispatch://");
+    }
+  );
+});
+
+// A row whose name is no record's text - a document's name, an issue's title - is drawn as the
+// characters it is, as the reference graph's excerpts draw those: a document called
+// `*draft*.md` keeps its asterisks, which a projection would read as emphasis and drop.
+test("a references row named by a document's name draws it as the characters it is", async () => {
+  const documentName = "*draft*.md";
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact], {
+    links: [
+      {
+        kinds: ["mentions"],
+        name: documentName,
+        name_tree: displayTree(documentName),
+        node: graphNode({
+          id: "ops-draft",
+          kind: "artifact",
+          project: "OPS",
+          ref: "dispatch://OPS/artifact/draft-md",
+        }),
+        via: { id: "comment-1", kind: "comment" },
+      },
+    ],
+    linked_from: [],
+    members: [],
+    truncated: false,
+  });
+  try {
+    expect(await screen.findByRole("link", { hidden: true, name: documentName })).toBeDefined();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+/** Renders the tab over a references answer whose list `list` holds `row` alone, with `drawnRow`,
+ *  which answers that row's item once its disclosure is drawn. */
+function renderReferenceRow(list: "links" | "linked_from", row: ReferenceLink) {
+  const rendered = renderTab([artifact], {
+    ...noReferences,
+    linked_from: list === "linked_from" ? [row] : [],
+    links: list === "links" ? [row] : [],
+  });
+  const label = list === "links" ? "References" : "Referenced by";
+  const drawnRow = async () => {
+    await screen.findByText(`${label} (1)`);
+    const section = within(rendered.view.container).getByRole("region", {
+      hidden: true,
+      name: label,
+    });
+    return within(section).getByRole("listitem", { hidden: true });
+  };
+  return { ...rendered, drawnRow };
+}
+
+// INFRA-1523: a comment its author deleted keeps its row, and the row says what became of it.
+// The read names a comment by the head of its body, which the delete cleared, so the deleted
+// line (`DeletedBody`: who deleted it, and when) names the row in place of the read's words, and
+// the row still opens the post's page. The fixture's `name` holds the post's former words, so a
+// row that fell back to them would show them; the post was edited before it was deleted, so
+// ` · edited` could be drawn, and only the row's reading of the delete keeps it off.
+test("a References row for a comment its author deleted draws the deleted line and none of its words, and still links to the comment", async () => {
+  const comment = "aaaaaaaa-0000-4000-8000-000000000011";
+  const deletedAt = "2026-10-20T11:00:00Z";
+  const { drawnRow, getIssueReferences, listArtifacts, view } = renderReferenceRow("links", {
+    kinds: ["mentions"],
+    name: "The parser lands on Friday.",
+    node: graphNode({
+      deleted_at: deletedAt,
+      deleted_by: { id: "alice", kind: "user" },
+      edited_at: "2026-10-20T10:00:00Z",
+      id: comment,
+      issue_key: "CORE-9",
+      kind: "comment",
+      project: "CORE",
+      ref: `dispatch://CORE-9/comment/${comment}`,
+    }),
+    via: { id: "comment-1", kind: "comment" },
+  });
+
+  try {
+    const row = await drawnRow();
+    const link = within(row).getByRole("link", { hidden: true });
+    expect(link).toHaveAttribute("href", `/issues/CORE-9/comments/${comment}`);
+    const line = link.querySelector("[data-post-deleted]");
+    expect(line?.textContent).toMatch(/^Deleted by alice · /);
+    expect(line?.querySelector("time")).toHaveAttribute("datetime", deletedAt);
+    expect(row).not.toHaveTextContent("The parser lands on Friday.");
+    expect(row).not.toHaveTextContent("edited");
+    expect(row).toHaveTextContent("comment · via comment");
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+// INFRA-1523: a message its author edited is named by the words the read gives for it, then
+// ` · edited`, as its byline says it (`EditedMark`), inside the link that opens it.
+test("a Referenced by row for a message its author edited names it, then says · edited", async () => {
+  const message = "eeeeeeee-0000-4000-8000-000000000012";
+  const { drawnRow, getIssueReferences, listArtifacts, view } = renderReferenceRow("linked_from", {
+    kinds: ["mentions"],
+    name: "See the diagram",
+    node: graphNode({
+      edited_at: "2026-10-20T10:30:00Z",
+      id: message,
+      issue_key: "CORE-7",
+      kind: "message",
+      project: "CORE",
+      ref: `dispatch://CORE-7/message/${message}`,
+    }),
+    via: { id: "CORE-1", kind: "issue" },
+  });
+
+  try {
+    const row = await drawnRow();
+    const link = within(row).getByRole("link", { hidden: true });
+    expect(link.textContent).toBe("See the diagram · edited");
+    expect(link).toHaveAttribute("href", `/issues/CORE-7/messages/${message}`);
+    expect(row.querySelector("[data-post-deleted]")).toBeNull();
+    expect(row).toHaveTextContent("message · to issue");
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+// INFRA-1523: a block of a comment carries its comment's delete mark (`refs/item_block_nodes.go`,
+// `itemBlockNodes`), so a row for a block of a deleted comment draws the deleted line too, and
+// never the block's words the read gave.
+test("a References row for a block of a deleted comment draws the deleted line and none of its words", async () => {
+  const comment = "bbbbbbbb-0000-4000-8000-000000000013";
+  const deletedAt = "2026-10-21T09:00:00Z";
+  const { drawnRow, getIssueReferences, listArtifacts, view } = renderReferenceRow("links", {
+    kinds: ["mentions"],
+    name: "Ship it once the parser lands.",
+    node: graphNode({
+      block_id: "b1",
+      deleted_at: deletedAt,
+      deleted_by: { id: "alice", kind: "user" },
+      id: `comment/${comment}#b1`,
+      issue_key: "CORE-9",
+      kind: "block",
+      parent: { id: comment, kind: "comment", ref: `dispatch://CORE-9/comment/${comment}` },
+      project: "CORE",
+      ref: `dispatch://CORE-9/comment/${comment}#b-b1`,
+    }),
+    via: { id: "comment-1", kind: "comment" },
+  });
+
+  try {
+    const row = await drawnRow();
+    const link = within(row).getByRole("link", { hidden: true });
+    expect(link).toHaveAttribute("href", `/issues/CORE-9/comments/${comment}#b-b1`);
+    const line = link.querySelector("[data-post-deleted]");
+    expect(line?.textContent).toMatch(/^Deleted by alice · /);
+    expect(line?.querySelector("time")).toHaveAttribute("datetime", deletedAt);
+    expect(row).not.toHaveTextContent("Ship it once the parser lands.");
+    expect(row).toHaveTextContent("block · via comment");
   } finally {
     view.unmount();
     listArtifacts.mockRestore();

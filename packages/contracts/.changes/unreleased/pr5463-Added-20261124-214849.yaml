@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+    A handoff completion may name checkOpenedAt to report a production check's look, with no
+    commit or handoff record. The request accepts the full RFC3339 opening time. The check's
+    role and last-look flag are optional in the plugin reader because no plugin reads them to
+    decide which call to send.
+time: 2026-11-24T21:48:49Z
+custom:
+    Issue: pr5463

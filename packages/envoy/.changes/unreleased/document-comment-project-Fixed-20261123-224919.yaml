@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A mention in a comment on a project document now reaches its session with the document's
+  project on every send. The comment's create already sent the event with its project, but a
+  Retry (`POST /api/v1/comments/{id}/deliveries`), the delivery sweep and a repeat of the create
+  under its idempotency key read the comment's `comment.created` event back from the log, and that
+  read named no project: the frame's `event.project` was `""`, and with no issue either, nothing in
+  the frame said whose document it was. The read now names the owner's project as every other
+  reader of the event log does: the issue's, or the document's. A mention in an issue's comment
+  sent on those roads now names the issue's project too.
+time: 2026-11-23T22:49:19Z
+custom:
+    Issue: document-comment-project

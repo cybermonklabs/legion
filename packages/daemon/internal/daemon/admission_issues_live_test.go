@@ -5,7 +5,7 @@
 // tree through the daemon's own intake and routes, and reads GET /legion/v1/state at each step.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration
+// own whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration
 // load, the real store and its migrations, the real HTTP API, the real claim supervision, the real
 // openWorkflow, the real JetStream consumers and the real outbox lanes. Facts enter only by the
 // transports production has — the GitHub envelopes of the ENVOY_NOTIFICATIONS stream and the
@@ -45,6 +45,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -96,6 +97,7 @@ type admissionIssuesArchitect struct {
 // architect's backlog of the two children, which frees the rows that return and that parent's
 // first phase then take.
 func TestTheCapCountsIssuesAndAParentWaitsForItsChildrenLive(t *testing.T) {
+	t.Parallel()
 	r := newAdmissionIssuesLive(t)
 	r.step("step1-two-live-trees-hold-no-slot", r.liveTreesHoldNoSlot)
 	r.step("step2-the-released-children-hold-both-slots-and-their-parent-waits", r.childrenHoldTheSlots)
@@ -127,7 +129,7 @@ func newAdmissionIssuesLive(t *testing.T) *admissionIssuesLive {
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = admissionIssuesGitHub(t)
-	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, o, r.log())
 	r.architect = r.registerArchitect()
 	return r
 }
@@ -257,7 +259,9 @@ func (r *admissionIssuesLive) seedTrees() {
 // it was seeding on an error.
 func (r *admissionIssuesLive) write(what string, body func(tx pgx.Tx) error) {
 	r.t.Helper()
-	if err := r.st.Tx(context.Background(), body); err != nil {
+	if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return body(tx)
+	}); err != nil {
 		r.t.Fatalf("seed %s: %v", what, err)
 	}
 }
@@ -295,7 +299,7 @@ func (r *admissionIssuesLive) registerArchitectOf(root, session string) *admissi
 	dialShim(t, r.built.address, launch.BootToken)
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: session, PluginContract: api.DaemonAPIVersion,
+		AgentID: session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s = %d %s, want 200", token, status, body)

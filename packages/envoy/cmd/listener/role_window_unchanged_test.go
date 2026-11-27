@@ -105,11 +105,12 @@ func (rig *windowRig) lookupRole(t *testing.T, role string) windowRoleAnswer {
 	return rig.serve(t, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
 }
 
-// publishToRole publishes message to role's topic through the publish route, from no sender
-// session.
+// publishToRole publishes message to role's topic through the publish route from a sender session
+// that holds no role here: a publish that names no session is refused, not kept, when no live
+// session holds the role (roleSend.noHolder), and the rows read the kept answer.
 func (rig *windowRig) publishToRole(t *testing.T, role, message string) windowRoleAnswer {
 	t.Helper()
-	body, err := json.Marshal(roleMessage(role, "", message))
+	body, err := json.Marshal(roleMessage(role, "ses_window_sender", message))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,14 +152,14 @@ func heldEventIDs(held []contracts.Envelope) []string {
 // it has returned.
 func (rig *windowRig) awaitHeldForSession(t *testing.T, sessionID, eventID, what string) contracts.Envelope {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		held := rig.heldForSession(t, sessionID)
 		if index := slices.IndexFunc(held, func(item contracts.Envelope) bool { return item.EventID == eventID }); index >= 0 {
 			return held[index]
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s: the stream holds %v on %s's own subject after 10s, want event %s among them",
+			t.Fatalf("%s: the stream holds %v on %s's own subject in the time it was given, want event %s among them",
 				what, heldEventIDs(held), sessionID, eventID)
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -183,6 +184,7 @@ func (rig *windowRig) awaitHeldForSession(t *testing.T, sessionID, eventID, what
 // routes, with the registry's clock moved past the window, read the holder unresponsive. So the
 // live answers before them come from the registration's age and from nothing else of the rig.
 func TestARoleHolderInsideTheLiveWindowReadsLiveOnEveryRoleRoute(t *testing.T) {
+	t.Parallel()
 	rig := newWindowRig(t)
 	const (
 		holder = "ses_window_holder"

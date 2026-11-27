@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,6 +37,7 @@ import (
 // alone, on its own schedule, releases and admits it within a bound — never waiting for a message
 // that will never come.
 func TestPollHoldReleaseClosesAHeldRootOnAQuietStreamWithinABound(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	url := workflowNATS(t)
 	conn := testnats.Connect(t, url)
@@ -53,7 +55,7 @@ func TestPollHoldReleaseClosesAHeldRootOnAQuietStreamWithinABound(t *testing.T) 
 
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
 			Key: "LEGION-EDGE", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Project: "CAPTURE", Title: "edge", Tree: "LEGION-EDGE", Phase: phase.Admitted,
 			Generation: 1, Status: "todo", Rank: "A", HandedOver: true, LastDispatchSeq: 1,
@@ -85,16 +87,111 @@ func TestPollHoldReleaseClosesAHeldRootOnAQuietStreamWithinABound(t *testing.T) 
 	<-done
 }
 
+// A Dispatch event whose handling fails every time pins the Dispatch consumer's ack floor below
+// the boot's target, and the hold on the listing behind it with it, until the intake gives the
+// event up at its bound and terminates it once the give-up commits: the floor's move past it is
+// what releases the hold, and pollHoldRelease reads only that position. The consumers here give a
+// message up after 3 deliveries and 300 ms, so the release comes within a second; every look at a
+// released hold finds the give-up committed, since the floor moves only once the message is
+// terminated after that commit.
+func TestPollHoldReleaseReleasesOnceTheEventThatPinnedTheFloorIsGivenUp(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	conn := testnats.Connect(t, workflowNATS(t))
+	js, err := jetstream.New(conn)
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	const giveUpDeliveries = 3
+	consumers, err := intake.OpenConsumers(ctx, js, pool, intake.ConsumerSpec{
+		Project: "LEGION", Repositories: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")}, AckWait: time.Second, Logger: log,
+		NakDelay: 10 * time.Millisecond, NakDelayCap: 40 * time.Millisecond, GiveUpDeliveries: giveUpDeliveries, GiveUpAfter: 300 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("OpenConsumers: %v", err)
+	}
+
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
+	admission := admit.New(record.NewStore(), engine, 1, "LEGION", log)
+	// The engine, but for the pinned event, whose every handling fails as a defect's would.
+	const pinned = "LEGION-301"
+	var failures atomic.Int64
+	failing := applyFunc(func(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
+		if issue, ok := fact.(intake.DispatchIssue); ok && issue.Key == pinned {
+			failures.Add(1)
+			return intake.Result{}, errors.New("the pinned event's handling fails every time")
+		}
+		return engine.Apply(ctx, tx, fact)
+	})
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		return record.NewStore().PutIssue(ctx, tx, record.Issue{
+			Key: "LEGION-300", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "edge", Tree: "LEGION-300", Phase: phase.Admitted,
+			Generation: 1, Status: "todo", Rank: "A", HandedOver: true, LastDispatchSeq: 1,
+		})
+	}); err != nil {
+		t.Fatalf("seed root: %v", err)
+	}
+	repo := "acme/widgets"
+	ack, err := js.Publish(ctx, "notifications.dispatch.issue."+pinned+".issue.updated",
+		retainedIssueEnvelope(t, pinned, 401, 3, "todo", map[string]string{"kind": "user", "id": "a-person"}, &repo))
+	if err != nil {
+		t.Fatalf("publish the pinned event: %v", err)
+	}
+	// The boot's listing is held until the consumer's floor reaches the pinned event.
+	reconcileAdmission(t, pool, admission, []dispatch.IssueSummary{
+		{Key: "LEGION-300", ResolvedRepo: "acme/widgets", Title: "edge", Status: "todo", Rank: "A", HandedOver: true, LastSeq: 2},
+	}, int64(ack.Sequence), intake.DispatchConsumerPosition{})
+	if !admission.Held() {
+		t.Fatal("Held() = false after seeding a behind record, want it held")
+	}
+
+	run, cancel := context.WithCancel(ctx)
+	consumed := make(chan error, 1)
+	go func() { consumed <- consumers.Run(run, failing, admission) }()
+	w := &workflowRuntime{
+		pool: pool, admission: admission, handlers: []intake.Handler{failing, admission},
+		dispatchProject: "LEGION", bootID: "test-boot", log: log,
+		holdPollInterval: 20 * time.Millisecond, consumers: consumers,
+	}
+	polled := make(chan struct{})
+	go func() { w.pollHoldRelease(run); close(polled) }()
+	t.Cleanup(func() {
+		cancel()
+		<-polled
+		if err := <-consumed; err != nil {
+			t.Errorf("Run: %v", err)
+		}
+	})
+
+	testwait.Eventually(t, "the hold releases once the pinned event is given up", func() bool {
+		if admission.Held() {
+			return false
+		}
+		var reason string
+		if err := pool.QueryRow(ctx, `select coalesce(give_up_reason, '') from intake_failures where consumer = $1 and stream_seq = $2`,
+			"legion-go-LEGION-dispatch", int64(ack.Sequence)).Scan(&reason); err != nil || reason != string(record.GiveUpBound) {
+			t.Fatalf("the hold released with the pinned event's record at reason %q (%v), want it given up at its bound before the release", reason, err)
+		}
+		return true
+	})
+	if calls := failures.Load(); calls < giveUpDeliveries {
+		t.Fatalf("the pinned event was handled %d times before its give-up, want at least the %d deliveries of the bound", calls, giveUpDeliveries)
+	}
+}
+
 // A failed DispatchPosition read must be retried by the poll on its own schedule, logged, never
 // silently ending the hold: a reader that fails a fixed number of times before succeeding proves
 // the poll neither gives up nor drops the hold on an error, and that it actually calls the reader
 // more times than the injected failure count once it does release.
 func TestPollHoldReleaseRetriesAFailedPositionRead(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
 			Key: "LEGION-EDGE", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Project: "CAPTURE", Title: "edge", Tree: "LEGION-EDGE", Phase: phase.Admitted,
 			Generation: 1, Status: "todo", Rank: "A", HandedOver: true, LastDispatchSeq: 1,
@@ -135,11 +232,12 @@ func TestPollHoldReleaseRetriesAFailedPositionRead(t *testing.T) {
 // the same consumer position that released the first: the poll's fact names the hold it releases,
 // so it is applied again rather than taken for the first release's duplicate, and the hold ends.
 func TestPollHoldReleaseReleasesASecondHoldTheSamePositionReaches(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
 			Key: "LEGION-EDGE", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Project: "CAPTURE", Title: "edge", Tree: "LEGION-EDGE", Phase: phase.Admitted,
 			Generation: 1, Status: "todo", Rank: "A", HandedOver: true, LastDispatchSeq: 1,
@@ -182,11 +280,12 @@ func TestPollHoldReleaseReleasesASecondHoldTheSamePositionReaches(t *testing.T) 
 // reading rather than adopting it as last before the transaction that carries it has actually
 // committed.
 func TestPollHoldReleaseRetriesAFailedApplyOfAnUnchangedPosition(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
 			Key: "LEGION-EDGE", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Project: "CAPTURE", Title: "edge", Tree: "LEGION-EDGE", Phase: phase.Admitted,
 			Generation: 1, Status: "todo", Rank: "A", HandedOver: true, LastDispatchSeq: 1,
@@ -293,6 +392,9 @@ func (d *pilotDispatch) PutStep(context.Context, string, string, dispatch.StepWr
 func (d *pilotDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return nil
 }
+func (d *pilotDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return nil
+}
 func (d *pilotDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }
@@ -370,6 +472,9 @@ func (d *filteringDispatch) PutStep(context.Context, string, string, dispatch.St
 func (d *filteringDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return nil
 }
+func (d *filteringDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return nil
+}
 func (d *filteringDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }
@@ -385,6 +490,7 @@ func (d *filteringDispatch) PutDesignGates(context.Context, string, []dispatch.D
 // Dispatch shows out of the workflow's own window is held on its own listing summary exactly like
 // one still inside it.
 func TestReconcileHoldsAKeyTheBootListingShowsOutOfTheWorkflowStatusWindow(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	url := workflowNATS(t)
 	conn := testnats.Connect(t, url)
@@ -443,6 +549,7 @@ func TestReconcileHoldsAKeyTheBootListingShowsOutOfTheWorkflowStatusWindow(t *te
 // backlog. Exactly the labeled todo root is admitted, and quickly — this regression row is one
 // worth keeping.
 func TestReconcileOnThePilotsShapeAdmitsOnlyTheLabeledTodoRootQuickly(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	url := workflowNATS(t)
 	conn := testnats.Connect(t, url)
@@ -518,18 +625,19 @@ func (f *failingPositionReader) DispatchPosition(context.Context) (intake.Dispat
 	return f.position, nil
 }
 
-// Non-blocking: a Dispatch event whose transaction always fails pins the ack floor forever (the
-// consumer sets no MaxDeliver), so the hold never releases and, before this, nothing in the log
-// said why. Once a hold has persisted past a bound, the poll warns on its own schedule — never
-// releasing on the strength of the timer, only naming what it is still waiting for: the target,
-// the current ack floor, and the stream sequence stuck behind it.
+// Non-blocking: a Dispatch event whose transaction always fails holds the ack floor below it until
+// the intake gives it up, no sooner than an hour after its first failure, so the hold does not
+// release before then, and this warning is the line that says why. Once a hold has persisted past
+// a bound, the poll warns on its own schedule — never releasing on the strength of the timer,
+// only naming what it is still waiting for: the target and the current ack floor.
 func TestPollHoldReleaseWarnsWhenAHoldPersistsPastItsBound(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	var logBuf syncBuffer
 	log := slog.New(slog.NewTextHandler(&logBuf, nil))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
 			Key: "LEGION-EDGE", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Project: "CAPTURE", Title: "edge", Tree: "LEGION-EDGE", Phase: phase.Admitted,
 			Generation: 1, Status: "todo", Rank: "A", HandedOver: true, LastDispatchSeq: 1,
@@ -581,6 +689,7 @@ func TestPollHoldReleaseWarnsWhenAHoldPersistsPastItsBound(t *testing.T) {
 // pollHoldReleaseWith's one more pass, once Held() turns false, closes that gap — no database
 // table of held keys, no later event of any kind needed.
 func TestANewerLabeledEventInTheWindowBetweenReleasesCommitAndItsCommitHookIsRecordedThenPromoted(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
@@ -614,43 +723,37 @@ func TestANewerLabeledEventInTheWindowBetweenReleasesCommitAndItsCommitHookIsRec
 
 	// release's own transaction commits here — its advisory lock is transaction-scoped and frees
 	// right at commit — but its commit hook, which clears pending, has not run yet: the exact
-	// window a concurrent event can land in.
-	tx, err := pool.Begin(context.Background())
-	if err != nil {
-		t.Fatalf("begin release tx: %v", err)
-	}
-	applied, committed := intake.WithCommitHooks(context.Background())
-	if _, err := admission.Apply(applied, tx, intake.DispatchConsumerPosition{AckFloorStream: 10}); err != nil {
+	// window a concurrent event can land in. The hook registered first runs first, so the newer
+	// labeled todo event lands in that window: LEGION-RACE is still in pending.
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		store.OnCommit(ctx, func() {
+			if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "label-added-in-race-window", intake.DispatchIssue{
+				Key: "LEGION-RACE", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated", Status: "todo", Title: "race", Rank: "A", HandedOver: true,
+			}, engine, admission); err != nil {
+				t.Fatalf("apply the racing event: %v", err)
+			}
+			var recorded bool
+			if err := pool.QueryRow(context.Background(), "select exists(select 1 from issues where key = $1)", "LEGION-RACE").Scan(&recorded); err != nil {
+				t.Fatalf("query LEGION-RACE record: %v", err)
+			}
+			if !recorded {
+				t.Fatal("LEGION-RACE not recorded in the race window, want it recorded despite pending still (momentarily) holding it")
+			}
+			var slotted bool
+			if err := pool.QueryRow(context.Background(), "select exists(select 1 from slots where issue = $1)", "LEGION-RACE").Scan(&slotted); err != nil {
+				t.Fatalf("query LEGION-RACE slot: %v", err)
+			}
+			if slotted {
+				t.Fatal("LEGION-RACE already slotted before pending cleared, want it recorded but not yet promoted (that transaction's own promote still saw it held)")
+			}
+		})
+		_, err := admission.Apply(ctx, tx, intake.DispatchConsumerPosition{AckFloorStream: 10})
+		return err
+	}); err != nil {
 		t.Fatalf("apply position fact: %v", err)
 	}
-	if err := tx.Commit(context.Background()); err != nil {
-		t.Fatalf("commit release tx: %v", err)
-	}
 
-	// The newer labeled todo event lands in that window: LEGION-RACE is still in pending.
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "label-added-in-race-window", intake.DispatchIssue{
-		Key: "LEGION-RACE", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated", Status: "todo", Title: "race", Rank: "A", HandedOver: true,
-	}, engine, admission); err != nil {
-		t.Fatalf("apply the racing event: %v", err)
-	}
-	var recorded bool
-	if err := pool.QueryRow(context.Background(), "select exists(select 1 from issues where key = $1)", "LEGION-RACE").Scan(&recorded); err != nil {
-		t.Fatalf("query LEGION-RACE record: %v", err)
-	}
-	if !recorded {
-		t.Fatal("LEGION-RACE not recorded in the race window, want it recorded despite pending still (momentarily) holding it")
-	}
-	var slotted bool
-	if err := pool.QueryRow(context.Background(), "select exists(select 1 from slots where issue = $1)", "LEGION-RACE").Scan(&slotted); err != nil {
-		t.Fatalf("query LEGION-RACE slot: %v", err)
-	}
-	if slotted {
-		t.Fatal("LEGION-RACE already slotted before pending cleared, want it recorded but not yet promoted (that transaction's own promote still saw it held)")
-	}
-
-	// The commit hook finally runs, clearing pending — exactly what ApplyFact would have done right
-	// after its own commit.
-	committed()
+	// The release's commit hook has run after the racing event's, clearing pending.
 	if admission.Held() {
 		t.Fatal("Held() = true after the commit hook ran, want the hold cleared")
 	}
@@ -675,6 +778,7 @@ func TestANewerLabeledEventInTheWindowBetweenReleasesCommitAndItsCommitHookIsRec
 // and wasHeld only clears once the closing pass actually succeeds, so the poll retries it on its
 // own schedule exactly as a failed position apply already does.
 func TestPollHoldReleaseRetriesAFailedClosingPass(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
@@ -706,24 +810,21 @@ func TestPollHoldReleaseRetriesAFailedClosingPass(t *testing.T) {
 	})
 
 	// The exact window between the commit and its hook leaves LEGION-RACE recorded but unpromoted once
-	// pending clears.
-	tx, err := pool.Begin(context.Background())
-	if err != nil {
-		t.Fatalf("begin release tx: %v", err)
-	}
-	applied, committed := intake.WithCommitHooks(context.Background())
-	if _, err := admission.Apply(applied, tx, intake.DispatchConsumerPosition{AckFloorStream: 10}); err != nil {
+	// pending clears: the hook registered first, which applies the racing event, runs before the
+	// release's own.
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		store.OnCommit(ctx, func() {
+			if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "label-added-in-race-window", intake.DispatchIssue{
+				Key: "LEGION-RACE", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated", Status: "todo", Title: "race", Rank: "A", HandedOver: true,
+			}, engine, admission); err != nil {
+				t.Fatalf("apply the racing event: %v", err)
+			}
+		})
+		_, err := admission.Apply(ctx, tx, intake.DispatchConsumerPosition{AckFloorStream: 10})
+		return err
+	}); err != nil {
 		t.Fatalf("apply position fact: %v", err)
 	}
-	if err := tx.Commit(context.Background()); err != nil {
-		t.Fatalf("commit release tx: %v", err)
-	}
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "label-added-in-race-window", intake.DispatchIssue{
-		Key: "LEGION-RACE", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated", Status: "todo", Title: "race", Rank: "A", HandedOver: true,
-	}, engine, admission); err != nil {
-		t.Fatalf("apply the racing event: %v", err)
-	}
-	committed()
 	if admission.Held() {
 		t.Fatal("Held() = true after the commit hook ran, want the hold cleared")
 	}
@@ -743,25 +844,23 @@ func TestPollHoldReleaseRetriesAFailedClosingPass(t *testing.T) {
 }
 
 // reconcileAdmission runs admission's boot reconcile as the workflow runtime does (reconcile): in
-// its own transaction, settling the runs its writes end before it commits, and running the commit
-// hooks it registered once that commits.
+// its own transaction (store.Transact), settling the runs its writes end before it commits, and
+// running the commit hooks it registered once that commits.
 func reconcileAdmission(t *testing.T, pool *store.Pool, admission *admit.Admission, summaries []dispatch.IssueSummary, target int64, position intake.DispatchConsumerPosition) {
 	t.Helper()
 	listed := make([]intake.DispatchIssue, len(summaries))
 	for i, summary := range summaries {
 		listed[i] = intake.ListedIssue(summary)
 	}
-	scoped, committed := intake.WithCommitHooks(context.Background())
-	scoped, settle := intake.OpenSettlers(scoped, admission)
-	if err := pgx.BeginFunc(scoped, pool, func(tx pgx.Tx) error {
-		if err := admission.Reconcile(scoped, tx, listed, target, position); err != nil {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		ctx, settle := intake.OpenSettlers(ctx, admission)
+		if _, err := admission.Reconcile(ctx, tx, listed, target, position); err != nil {
 			return err
 		}
-		return settle(scoped, tx)
+		return settle(ctx, tx)
 	}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	committed()
 }
 
 // The three admission log lines this proof reads, each the one an operator reads in the daemon's
@@ -782,6 +881,7 @@ const (
 // release that follows the quiet consumer's catch-up admits it, with the lower-ranked LEGION-NEXT
 // still waiting behind it.
 func TestAHeldRootKeepsItsPlaceOnTheRuntimeUntilItsOwnReleaseAdmitsIt(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	js := workflowJetStream(t, workflowNATS(t))
 	logged := &syncBuffer{}
@@ -795,7 +895,7 @@ func TestAHeldRootKeepsItsPlaceOnTheRuntimeUntilItsOwnReleaseAdmitsIt(t *testing
 
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, seed := range []struct{ key, rank string }{{"LEGION-HELD", "A"}, {"LEGION-NEXT", "B"}} {
 			if err := record.NewStore().PutIssue(context.Background(), tx, record.Issue{
 				Key: seed.key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Project: "CAPTURE", Title: seed.key, Tree: seed.key, Phase: phase.Admitted,
@@ -844,6 +944,10 @@ func TestAHeldRootKeepsItsPlaceOnTheRuntimeUntilItsOwnReleaseAdmitsIt(t *testing
 	testwait.Eventually(t, "the held root takes the free slot once the quiet stream's idle ticker releases it", func() bool {
 		return slices.Contains(tickSlotted(t, pool), "LEGION-HELD")
 	})
+	// The cancel can land while the release's commit is on its way to the server, already visible
+	// to tickSlotted; store.Transact waits for that commit's reply, and reads its outcome from the
+	// store when the reply is lost, so once done closes, the slot the release took has its line in
+	// the log.
 	cancel()
 	<-done
 
@@ -857,9 +961,15 @@ func TestAHeldRootKeepsItsPlaceOnTheRuntimeUntilItsOwnReleaseAdmitsIt(t *testing
 			releaseLine = line
 		case strings.Contains(line, slotTakenMessage):
 			takenLines = append(takenLines, line)
-			// The release is logged inline, within its own transaction, while a slot taken is
-			// logged by intake.OnCommit once that transaction has committed, so a slot reported
-			// before the release is one the pass took while the root was still held.
+			// Each line is a hook of its transaction's commit (store.OnCommit), and within one
+			// transaction the hooks run in the order they were registered: the release registers
+			// its line before its pass takes any slot, so a slot the release's own pass takes is
+			// logged after the release line. Across transactions the line order is not the commit
+			// order in general, since a commit whose outcome the store could not yet say runs its
+			// hooks later. Here the boot pass and the poller's passes run one after another and
+			// each receives its commit's reply, so a slot line before the release line is a slot
+			// an earlier pass took while the root was still held. Which issue holds the row is
+			// read from the slots table below, not from the lines.
 			takenBeforeRelease = takenBeforeRelease || releaseLine == ""
 		}
 	}

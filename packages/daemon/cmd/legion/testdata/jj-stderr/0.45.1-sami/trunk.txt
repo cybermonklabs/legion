@@ -1,0 +1,5 @@
+jj --color=never log --no-graph -r 'root()' -T commit_id
+Warning: Failed to resolve `revset-aliases.trunk()`: Revision `nosuch` doesn't exist
+The `trunk()` alias is temporarily set to `root()`.
+Hint: Use `jj config edit --repo` to adjust the `trunk()` alias.
+--- exit 0
