@@ -24,6 +24,19 @@ package api
 //
 // It is request-only: it adds no answer key and no enumeration value, so no shaping band moves
 // and every earlier contract's answer record stays as it was.
+//
+// Its fixture (contracts/20261127181502_owner-names-its-task.json) was written by hand, and holds
+// the three routes and nothing else. Do not write it again — `go test ./internal/api/
+// -update-entry=20261127181502` — while this tree still carries the numbered entries 221, 222,
+// 224 and 267 that other branches of this stack converted to entry files. The writer takes the
+// last entry's routes from what the request types read and its records from what the daemon
+// serves at the entry's number less the records of the entries before it, so over such a tree it
+// writes into this entry's fixture every field and key those four numbers add and no record of
+// this tree holds: `returnTo` on POST /legion/v1/phase/backward, and the 2,210 answer keys the
+// shape gate reports at every contract from 228 up. Once their entry files are in the tree, the
+// delta left for this entry is the three `task` rows the fixture already holds, and writing it
+// again leaves it as it is. A run of `-update` with no `-update-entry` writes the fixture of an
+// entry that has none and leaves this one alone (TestEntryFixtures).
 const ownerNamesItsTaskContract = 20261127181502
 
 func init() {
