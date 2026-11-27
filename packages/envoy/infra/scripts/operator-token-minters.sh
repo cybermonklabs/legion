@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # packages/envoy/infra/scripts/operator-token-minters.sh
 #
-# Who, other than a person, can come to hold the NATS auth service's operator identity.
+# Who, person or machine, can come to hold the NATS auth service's operator identity standing.
 #
 # The broker's `operator` entry of BROKER_NATS_SERVICES names one Kubernetes ServiceAccount
 # (envoy-operator/envoy-operator by default). NATS takes that account's token, and the account acts,
@@ -11,9 +11,12 @@
 # operator's is. So holding the operator's power takes one of: minting a guarded ServiceAccount's
 # token, running or entering a pod that runs as it, becoming a principal that can, minting the Google
 # service account's token, making a namespace and ServiceAccount of the same names on another
-# cluster of the project's workload pool, or registering a cluster to the pool's fleet. This check
-# lists every principal that is not a person and holds such a right, and is the precondition checked
-# before the operator entry is applied, and again before go-live.
+# cluster of the project's workload pool, or registering a cluster to the pool's fleet. Nobody holds
+# that identity standing, a person included (INFRA-840's R16, dispatch://INFRA-840/spec#b-r-operator-minters):
+# a principal holds it standing when it can come to hold it without a second person approving that
+# use at that time. This check lists every principal, person or machine, that holds such a right,
+# each a finding with the right and where it was granted, and is the precondition checked before
+# the operator entry is applied, and again before go-live.
 #
 # It runs with the gcloud and kubectl sign-ins of the shell it runs in: an identity
 # already held, never a person's administrator credential. It requests no credential, impersonates
@@ -38,10 +41,11 @@
 #   code: RBAC        What code declares, first: each --rbac-render file (the JSON render of the
 #                     program that declares the cluster's Roles and bindings, a List, an array or a
 #                     stream of objects) is read as the RBAC authorizer reads it, and each binding
-#                     that gives a right below to a subject that is not a person, a system
-#                     namespace's, a system component or the operator's own Google service account
-#                     is a finding. A rule limited by resourceNames on any right the live steps ask
-#                     (the list below, the guard rights, the certificate chain's and the admission
+#                     that gives a right below to a subject other than a system namespace's
+#                     ServiceAccount, a system component or the operator's own Google service
+#                     account, a person included, is a finding. A rule limited by resourceNames on
+#                     any right the live steps ask (the list below, the guard rights, the
+#                     certificate chain's and the admission
 #                     rights) is a finding naming the names: impersonating the group system:masters
 #                     by name is cluster-admin, RBAC lets one who may bind a role by name write a
 #                     binding to it, and an update of one webhook configuration or a patch of one
@@ -89,14 +93,15 @@
 #                     roles/editor there. Each finding names that route.
 #   live: minters     Policy Analyzer's holders, on --gsa or above it, of
 #                     iam.serviceAccounts.getAccessToken, getOpenIdToken, signJwt, signBlob, actAs,
-#                     implicitDelegation, iam.serviceAccountKeys.create and setIamPolicy. They must
-#                     be people and the Workload Identity member serviceAccount:<pool>.svc.id.goog[
-#                     <namespace>/<service account>], which is the witness: the answer must list it.
+#                     implicitDelegation, iam.serviceAccountKeys.create and setIamPolicy. Each is a
+#                     finding, a person included, but the Workload Identity member
+#                     serviceAccount:<pool>.svc.id.goog[<namespace>/<service account>], which is the
+#                     witness: the answer must list it.
 #                     The broker needs roles/iam.serviceAccountTokenCreator on that account to mint
 #                     the secret ENVOY_OPERATOR's token, so --broker-account allows that one binding,
 #                     on that account and in that role alone, and then the broker account's own
 #                     minters are checked the same way, its Workload Identity member
-#                     (--broker-workload) the witness and the one non-person allowed.
+#                     (--broker-workload) the witness and the one principal allowed.
 #   impersonation     Every IAM step analyses with --analyze-service-account-impersonation: who can
 #                     mint a holder's token, sign as it or act as it holds what the holder holds, so
 #                     the outermost principal of each such chain, through any number of service
@@ -134,7 +139,9 @@
 #                     nothing: every cluster's Roles and
 #                     ClusterRoles (`kubectl get roles,clusterroles -A`) are read against its bindings
 #                     as the code step reads a render: a rule whose resourceNames limit a right asked
-#                     is a finding naming the names for a subject that is not a person (an approval
+#                     is a finding naming the names for its subject, a person included, but a
+#                     system component, a system namespace's ServiceAccount and the operator's own
+#                     account (an approval
 #                     of certificate signing requests by name, whose name the requester picks, joins
 #                     the certificate chain). A refused list is UNKNOWN, and so is one that lacks
 #                     either of its two kinds' bootstrap objects, labelled
@@ -275,11 +282,12 @@
 # bound to cluster-admin on a member of the pool's fleet can make the operator's namespace and
 # ServiceAccount there. On the operator's cluster and on each other cluster of the pool, every User
 # subject of its ClusterRoleBindings and RoleBindings (`kubectl get clusterrolebindings,rolebindings
-# -A`) that is not a person is reviewed with system:authenticated (system:anonymous with
-# system:unauthenticated). A person is a User that is an email outside gserviceaccount.com; a Google
-# service account, and a User that is no email (a bare name such as deployer-bot, a principal://
-# name), are reviewed and can be findings. A person's User subject is never reviewed, so never a
-# finding, as iam_verdict never makes a `user:` member one and the accepted list names no person.
+# -A`) is reviewed with system:authenticated (system:anonymous with system:unauthenticated), but a
+# system component and the operator's own Google service account: a person (an email outside
+# gserviceaccount.com, as GKE names a Google account), a Google service account and a User that is
+# no email (a bare name such as deployer-bot, a principal:// name) alike, each a finding for each
+# right it holds. Nobody holds the operator identity standing, a person included (INFRA-840's R16),
+# so no User is passed over for the shape of its name.
 # A ServiceAccount a binding names is reviewed whether it exists or not: whoever can make it and a
 # pod in its namespace takes the binding's rights. On every cluster a ServiceAccount list that holds
 # none outside the system namespaces is UNKNOWN, since every cluster has default/default. A refused
@@ -303,12 +311,15 @@
 # finding; with it on, the cluster is UNKNOWN, a Group subject bound or not, since a Google group's
 # members are neither listed nor judged here; on a fleet member that is no GKE cluster, read through
 # the Connect gateway, its users and groups come from its own authenticator, so a Group subject bound
-# there is UNKNOWN, and so is a User whose name looks like an email, which that authenticator, not
-# Google, gives to whom it likes; where whether it is on cannot be read, a Group subject bound there
-# is UNKNOWN. The code
-# step reads no cluster's setting and judges another Group as off; the live step of the cluster says
-# UNKNOWN when it is on. A system: User or Group other than these is a Kubernetes component and
-# allowed.
+# there is UNKNOWN (a User subject bound there is reviewed, as every User subject is); where whether
+# it is on cannot be read, a Group subject bound there is UNKNOWN. The code step reads no cluster's
+# setting and judges another Group as off; the live step of the cluster says UNKNOWN when it is on.
+# A system: User or Group other than these is a Kubernetes component and allowed by its name:
+# system:-prefixed Users but system:anonymous and system:serviceaccount:<namespace>:<name> of a
+# namespace outside the system ones. A name is not who holds it, so the three ways a principal comes
+# to present such a name are each read and reported as the holder instead: a client certificate the
+# cluster signs for any user (the certificate signing chain), impersonate users cluster-wide (an
+# escalation right on every cluster), and a node escape on a cluster that is not Autopilot.
 #
 # Admission power outside the admission objects (admission-backends.sh), asked on every cluster of
 # the pool as the other rights are: for each mutating or validating webhook whose namespaceSelector
@@ -360,7 +371,8 @@
 # principal://iam.googleapis.com/projects/<pool project number>/locations/global/
 # workloadIdentityPools/<pool>.svc.id.goog/subject/ns/<ns>/sa/<name> of --broker-workload.
 #
-# In every IAM step a `user:` member is a person and allowed; a group the analysis expands is judged
+# In every IAM step a `user:` member, a person, is judged as every other holder is, a finding for
+# each checked permission it holds; a group the analysis expands is judged
 # by its members, and one it does not expand is a finding; the Google service agents the deployment
 # needs are allowed: GKE's (service-<number>@container-engine-robot), GKE Hub's
 # (service-<number>@gcp-sa-gkehub) and Compute Engine's (service-<number>@compute-system) of a

@@ -105,12 +105,13 @@ fi
 # judged by its members) or finding, with NOTE beside a finding. ATTACHED is the resource the binding
 # is made on; HOW is `expanded` for a group the analysis lists the members of, `code` for a member a
 # preview declares (its group, if any, is the live steps' to expand) or empty; CONDITION is the
-# binding's condition expression, empty for none.
+# binding's condition expression, empty for none. A `user:` member, a person, is judged as every
+# other holder is: nobody holds the operator identity standing, a person included (INFRA-840's R16,
+# dispatch://INFRA-840/spec#b-r-operator-minters), so no case below allows one.
 iam_verdict() {
   local check="$1" member="$2" role="$3" attached="$4" how="$5" condition="${6:-}" object
   VERDICT=finding NOTE=""
   case "$member" in
-    user:*) VERDICT=ok; return ;;
     group:*)
       if [ "$how" = expanded ] || [ "$how" = code ]; then VERDICT=skip; else NOTE=" (a group whose members the analysis does not list)"; fi
       return

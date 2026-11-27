@@ -19,7 +19,8 @@
 #   (dd) the broker holding a second role on the operator's account (roles/iam.serviceAccountKeyAdmin
 #        beside roles/iam.serviceAccountTokenCreator) is a finding naming that role;
 #   (q)  a Policy Analyzer answer longer than a pipe holds (3000 people beside the Workload Identity
-#        member) still finds its witness, and exits 0;
+#        member) still finds its witness: no UNKNOWN says the member is missing, and each person, the
+#        last of the 3000 included, is a finding;
 #   (t)  grade-ci holding roles/container.admin on a GKE fleet member's project (example-grade)
 #        exits 1, since GKE authorizes IAM beside RBAC;
 #   (ad) container.replicationControllers.create and update and container.nodes.proxy, each held on
@@ -65,8 +66,9 @@
 #        (example-grade, 222222222222) holding it there exits 0;
 #   (gp) a Policy Analyzer group path expanded to a service account is still a finding naming that
 #        account; a stub that drops expanded members misses it.
-#   (rw) the renders bucket's writers: people, a group of people, the applier and the four writers
-#        each under its own object's condition pass; another account with storage.admin there, a
+#   (rw) the renders bucket's writers: the applier and the four writers each under its own object's
+#        condition pass; a person, and a person in a group, holding storage.admin there are each a
+#        finding naming the person; another account with storage.admin there, a
 #        writer without its condition or with another object's, an expanded group holding a service
 #        account, and a writer the preview declares without its condition are each a finding naming
 #        it; an answer without the applier, an empty answer and a refused one read UNKNOWN, and so do
@@ -195,15 +197,20 @@ fi
 
 # --- (q) A long answer. Past the 64 KiB a pipe holds, `cut | grep -q` fails under pipefail with
 # SIGPIPE once grep has matched, reading the witness as missing; the check must read the answer
-# whole. ---
+# whole. The 3000 holders are people, each a finding, so the witness is held by the absence of the
+# UNKNOWN that a lost witness prints, and the answer's end by the last person's finding. ---
 if row q; then
   base_world
   mapfile -t people < <(seq -f 'user:person-%04g@example.com' 1 3000)
   iam "$gsa_res" roles/iam.serviceAccountTokenCreator "${people[@]}"
   run
-  want_status 0 "3000 people beside the Workload Identity member"
-  want_text "PASS live: minters of $gsa: 3003 holders listed" "3000 people beside the Workload Identity member"
-  passed "(q) a Policy Analyzer answer longer than a pipe holds still finds its witness"
+  want_status 1 "3000 people beside the Workload Identity member"
+  ! has_prefix "UNKNOWN live: minters of $gsa: the analysis does not list " ||
+    fail "3000 people beside the Workload Identity member: the witness read as missing"
+  want_text "FINDING user:person-3000@example.com: iam.serviceAccounts.getAccessToken" "the last of 3000 people"
+  [ "$(grep -c "^FINDING user:person-[0-9]*@example.com: .* on $gsa_res through roles/iam.serviceAccountTokenCreator, granted at $gsa_res$" <<<"$output")" -eq 3000 ] ||
+    fail "3000 people beside the Workload Identity member: not each of the 3000 is a finding on the operator's account"
+  passed "(q) a Policy Analyzer answer longer than a pipe holds still finds its witness, and names each of its 3000 people"
 fi
 
 # --- (t) IAM on a fleet member's own project. ---
@@ -537,6 +544,7 @@ fi
 if row gp; then
   base_world
   jq -n --arg member "serviceAccount:$worker_gsa" '{"group:cluster-admins@example.com": [$member]}' >"$world/groups.json"
+  iam "$project_res" roles/container.admin group:cluster-admins@example.com
   run
   want_status 1 "a service account expanded from a group"
   want_text "FINDING serviceAccount:$worker_gsa:" "a service account expanded from a group"
@@ -555,11 +563,19 @@ render_writer_row() {
   base_world
   case "$1" in
     clean)
+      run
+      want_status 0 "the applier and the four conditioned writers"
+      want_text "PASS $renders_step: " "the applier and the four conditioned writers"
+      ;;
+    people)
       edit "$world/groups.json" '. + {"group:render-admins@example.com": ["user:admin@example.com"]}'
       iam "$renders_res" roles/storage.admin user:owner@example.com group:render-admins@example.com
       run
-      want_status 0 "people, a group of people, the applier and the four conditioned writers"
-      want_text "PASS $renders_step: " "people, a group of people, the applier and the four conditioned writers"
+      want_status 1 "a person, and a person in a group, with roles/storage.admin on the bucket"
+      for person in owner@example.com admin@example.com; do
+        want_line "FINDING user:$person: storage.objects.create, storage.objects.delete, storage.objects.update, storage.buckets.setIamPolicy, storage.buckets.update, storage.managedFolders.setIamPolicy on $renders_res through roles/storage.admin, granted at $renders_res" \
+          "$person with roles/storage.admin on the bucket"
+      done
       ;;
     stranger)
       iam "$renders_res" roles/storage.admin "serviceAccount:$applier"
@@ -693,9 +709,9 @@ render_writer_row() {
   esac
 }
 if row rw; then
-  each render_writer_row clean stranger group unconditioned other-object single-quoted code no-witness empty refused no-bucket no-admin no-renders \
-    cloud-run other-agent lookalike managed-folder no-project project-unread
-  passed "(rw) the renders bucket's writers are people, the applier, the four conditioned writers and the bucket project's own service agents; any other holder, a writer off its condition, a declared stranger, another project's agent and a managed folder's policy writer are findings; no applier, an empty or refused answer and a missing flag or project number read UNKNOWN"
+  each render_writer_row clean people stranger group unconditioned other-object single-quoted code no-witness empty refused no-bucket no-admin \
+    no-renders cloud-run other-agent lookalike managed-folder no-project project-unread
+  passed "(rw) the renders bucket's writers are the applier, the four conditioned writers and the bucket project's own service agents; a person, a person in a group, any other holder, a writer off its condition, a declared stranger, another project's agent and a managed folder's policy writer are findings; no applier, an empty or refused answer and a missing flag or project number read UNKNOWN"
 fi
 
 # --- (wp) The broker's Workload Identity principal on the operator's account. ---

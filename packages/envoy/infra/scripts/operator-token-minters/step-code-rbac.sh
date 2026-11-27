@@ -70,7 +70,7 @@ else
       done 3<"$WORK/render.rec"
       csr_chains ", declared by the renders" "$(operator_res)"
       if unchanged; then
-        code_pass="the renders give the rights, the guard rights, the certificate chain and the admission rights, outright or by name, to no one but people, system namespaces and components, and the operator's own account ($declared grants read; custom resources are read live)"
+        code_pass="the renders give the rights, the guard rights, the certificate chain and the admission rights, outright or by name, to no one but system namespaces and components and the operator's own account, no person among them ($declared grants read; custom resources are read live)"
         if [ "${#CODE_PENDING[@]}" -eq 0 ]; then
           pass "$step" "$code_pass"
         else

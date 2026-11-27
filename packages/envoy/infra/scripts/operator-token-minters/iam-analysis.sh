@@ -150,7 +150,7 @@ live_iam() {
   done 3<"$WORK/analysis.rec"
   if unchanged; then
     allowances="$(allowed)"
-    pass "$step" "$holders holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and $chains impersonation chains, each from such a principal or by design${2:+; $2}$([ "$allowances" -eq 0 ] || echo ", beside $allowances that reach the broker's pod fence's residual through the account, each an ALLOWANCE")"
+    pass "$step" "$holders holders listed, each a group judged by its members, Google's service agent or the one allowed by name, none of them a person, and $chains impersonation chains, each from such a principal or by design${2:+; $2}$([ "$allowances" -eq 0 ] || echo ", beside $allowances that reach the broker's pod fence's residual through the account, each an ALLOWANCE")"
   fi
 }
 # iam_holder CHECK IDENTITY RIGHT ROLE RESOURCE PERMISSIONS ATTACHED: a holder iam_verdict judged a

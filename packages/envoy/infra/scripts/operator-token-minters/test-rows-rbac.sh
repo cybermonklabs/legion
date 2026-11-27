@@ -80,8 +80,8 @@
 #        ci/runner with patch of the ClusterRoleBinding cluster-admin and bind of the ClusterRole
 #        cluster-admin, each by name: each exits 1 naming the rights;
 #   (bi) on a fleet member that is no GKE cluster, a User that looks like an email
-#        (ci-bot@corp.example) bound to cluster-admin reads UNKNOWN: that cluster's own
-#        authenticator names its users, so the name proves no person;
+#        (ci-bot@corp.example) bound to cluster-admin is reviewed, as every User is, and exits 1
+#        naming it, with no UNKNOWN saying the name is not known to be a person;
 #   (bj) a client certificate signed by the cluster: legion/worker that may create certificate
 #        signing requests, update their approval and approve the signer
 #        kubernetes.io/kube-apiserver-client (rv9, beside a person who may mint the operator's
@@ -93,7 +93,7 @@
 #        and patch of the request my-csr by name with no signer (pn6), exit 0;
 #   (bo) legion/worker that may impersonate, by name, a user whose power is IAM's (owner@example.com,
 #        who holds roles/owner on the organization, or admin@example.com, a member of a group holding
-#        roles/container.admin) exits 1 naming that user;
+#        roles/container.admin, each planted by the row) exits 1 naming that user;
 #   (br) legion/worker that may get, by name, a token Secret the operator's ServiceAccount lists
 #        exits 1 naming it; a list of bindings without the bootstrap cluster-admin binding, on the
 #        operator's cluster or another, reads UNKNOWN;
@@ -453,7 +453,8 @@ if row ar; then
   passed "(ar) a right limited by name in the seed's namespace (patch of one Deployment, exec or an ephemeral container of one pod) is a finding naming the chain (N3)"
 fi
 
-# --- (aw) A User that is no email is reviewed, not taken for a person. ---
+# --- (aw) A User that is no email is reviewed, as every User subject is: its name says nothing of
+# who holds it, so no shape of name is passed over. ---
 principal_user="principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/ci/subject/runner"
 user_row() {
   local want
@@ -483,7 +484,7 @@ user_row() {
 }
 if row aw; then
   each user_row member principal code
-  passed "(aw) a User that is no email (deployer-bot on a non-GKE fleet member, a principal:// name, a render's deployer-bot) is reviewed and exits 1 naming it"
+  passed "(aw) a User that is no email (deployer-bot on a non-GKE fleet member, a principal:// name, a render's deployer-bot) is reviewed, as every User is, and exits 1 naming it"
 fi
 
 # --- (ka, kb) GKE's own ClusterRoleBinding kube-apiserver-kubelet-api-admin, to the ClusterRole
@@ -825,16 +826,19 @@ if row bd; then
 fi
 
 # --- (bi) An email-shaped User on a fleet member that is no GKE cluster. Its own authenticator names
-# its users, as it names its groups, so ci-bot@corp.example there is no proof of a person. ---
+# its users, as it names its groups, so ci-bot@corp.example there may be anyone; it is reviewed as
+# every User subject is, and the right it holds is a finding. ---
 if row bi; then
   base_world
   edge_member
   cluster_admin edge-cluster "$(user_subject ci-bot@corp.example)"
   run
-  want_status 2 "ci-bot@corp.example bound to cluster-admin on a non-GKE member"
-  want_text "UNKNOWN live: Workload Identity on fleet member edge: it takes its users from its own authenticator, not Google, so the User subjects bound here that look like emails (ci-bot@corp.example) are not known to be people" \
+  want_status 1 "ci-bot@corp.example bound to cluster-admin on a non-GKE member"
+  want_line "FINDING user:ci-bot@corp.example: create namespaces cluster-wide on fleet member $project/global/edge" \
     "ci-bot@corp.example bound to cluster-admin on a non-GKE member"
-  passed "(bi) an email-shaped User bound on a fleet member that is no GKE cluster reads UNKNOWN"
+  ! has_prefix "UNKNOWN live: Workload Identity on fleet member edge: it takes its users from its own authenticator" ||
+    fail "ci-bot@corp.example bound to cluster-admin on a non-GKE member: an UNKNOWN still says its name is not known to be a person"
+  passed "(bi) an email-shaped User bound on a fleet member that is no GKE cluster is reviewed and exits 1 naming it"
 fi
 
 # --- (bj) A client certificate the cluster signs. A certificate signed for
@@ -923,13 +927,20 @@ if row bj; then
 fi
 
 # --- (bo) Impersonating, by name, a user whose power comes from IAM: GKE's IAM authorizer judges an
-# impersonated user by its own IAM, so whoever may impersonate an IAM holder takes what it holds. ---
+# impersonated user by its own IAM, so whoever may impersonate an IAM holder takes what it holds.
+# Each user's IAM is planted here (the base world holds no person): owner@ owns the organization,
+# and admin@ is in the group cluster-admins, which holds roles/container.admin on the project. ---
 iam_user_row() {
   base_world
+  case "$1" in
+    owner@example.com) iam "$org_res" roles/owner user:owner@example.com ;;
+    admin@example.com) iam "$project_res" roles/container.admin group:cluster-admins@example.com ;;
+  esac
   subject_grant operator-cluster "$(sa_subject legion worker)" impersonate "" users "" "" "$1"
   run
   want_status 1 "legion/worker may impersonate $1 by name"
   want_line "FINDING system:serviceaccount:legion:worker: impersonate users $1 cluster-wide" "legion/worker may impersonate $1 by name"
+  want_text "FINDING user:$1: container.serviceAccounts.createToken" "$1, who holds GKE's IAM permissions"
 }
 if row bo; then
   each iam_user_row owner@example.com admin@example.com

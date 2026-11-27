@@ -105,6 +105,10 @@ readonly reads="$script_dir/operator-token-minters/reads.json"
 readonly wi_member="serviceAccount:example-project.svc.id.goog[envoy-operator/envoy-operator]"
 readonly control_wi_member="serviceAccount:example-project.svc.id.goog[envoy-operator-control/envoy-operator]"
 readonly broker_wi_member="serviceAccount:example-project.svc.id.goog[secrets-broker/secrets-broker]"
+# The project's Compute Engine service agent, which the reading accepts (principals.sh,
+# service_agent). The base world gives it roles/owner on the organization for one reason: so that
+# every analysis lists a holder without a person. No deployment grants an agent that; do not copy it.
+readonly compute_agent="serviceAccount:service-$number@compute-system.iam.gserviceaccount.com"
 readonly project_res="//cloudresourcemanager.googleapis.com/projects/$project"
 readonly org_res="//cloudresourcemanager.googleapis.com/organizations/$org"
 readonly gsa_res="//iam.googleapis.com/projects/$project/serviceAccounts/$gsa"
@@ -437,19 +441,23 @@ build_world() {
   role roles/example.renderWrite storage.objects.create storage.objects.delete
   role roles/example.folderAdmin storage.managedFolders.get storage.managedFolders.setIamPolicy
 
+  # No person holds anything here: nobody holds the operator identity standing, a person included
+  # (INFRA-840's R16), so every person a row plants is a finding, and row (sp) plants each of the
+  # shapes a person's grant takes. The group cluster-admins holds no binding here either; rows plant
+  # its binding where they need one. Every analysis must still list a holder, as a real one always
+  # does (an answer listing none reads UNKNOWN), so the organization's roles/owner is held by a
+  # principal the reading accepts: the project's Compute Engine service agent, Google's own, which
+  # nobody signs in as.
   echo '[]' >"$world/iam.json"
   jq -n '{"group:cluster-admins@example.com": ["user:admin@example.com"]}' >"$world/groups.json"
-  iam "$org_res" roles/owner user:owner@example.com
-  iam "$project_res" roles/container.admin group:cluster-admins@example.com
+  iam "$org_res" roles/owner "$compute_agent"
   iam "$project_res" roles/container.serviceAgent "serviceAccount:service-$number@container-engine-robot.iam.gserviceaccount.com"
-  iam "$project_res" roles/cloudsql.admin user:dba@example.com
   iam "$project_res" roles/viewer "serviceAccount:$ci_gsa"
   iam "$gsa_res" roles/iam.workloadIdentityUser "$wi_member"
   iam "$gsa_res" roles/iam.serviceAccountTokenCreator "serviceAccount:$broker"
   iam "$control_gsa_res" roles/iam.workloadIdentityUser "$control_wi_member"
   iam "$broker_res" roles/iam.workloadIdentityUser "$broker_wi_member"
   iam "$signing_res" roles/secretmanager.secretAccessor "serviceAccount:$gsa"
-  iam "$bucket_res" roles/storage.objectViewer user:admin@example.com
   iam "$renders_res" roles/storage.admin "serviceAccount:$renders_admin"
   local writer
   for writer in "${render_writers[@]}"; do
@@ -467,7 +475,8 @@ build_world() {
       created: "2026-11-17T12:00:00Z", last_changed: "2026-11-17T12:00:00Z", versions: {"1": ["ENABLED"]}}' >"$world/secrets/$name.json"
   done
 
-  # The code: the RBAC render and the IAM program's preview, each declaring only what (a) allows.
+  # The code: the RBAC render and the IAM program's preview, each declaring only what (a) allows, so
+  # no person and no group; row (sp) declares a person in a preview of its own.
   jq -n --arg gsa "$gsa" '{apiVersion: "v1", kind: "List", items: [
     {apiVersion: "rbac.authorization.k8s.io/v1", kind: "Role", metadata: {name: "envoy-operator-runtime", namespace: "envoy-operator"},
      rules: [{apiGroups: [""], resources: ["serviceaccounts/token"], resourceNames: ["envoy-operator"], verbs: ["create"]},
@@ -491,8 +500,6 @@ build_world() {
     def step($name; $type; $inputs): {op: "same", urn: "urn:pulumi:example::iam::\($type)::\($name)", provider: "example-provider",
                                       newState: {urn: "urn:pulumi:example::iam::\($type)::\($name)", custom: true, type: $type, inputs: $inputs}};
     {steps: [
-      step("admin-container"; "gcp:projects/iAMMember:IAMMember"; {project: $p, role: "roles/container.admin", member: "user:admin@example.com"}),
-      step("admins-container"; "gcp:projects/iAMMember:IAMMember"; {project: $p, role: "roles/container.admin", member: "group:cluster-admins@example.com"}),
       step("operator-workload"; "gcp:serviceaccount/iAMMember:IAMMember";
            {serviceAccountId: "projects/\($p)/serviceAccounts/\($gsa)", role: "roles/iam.workloadIdentityUser", member: $wi}),
       step("broker-mints-operator"; "gcp:serviceaccount/iAMMember:IAMMember";

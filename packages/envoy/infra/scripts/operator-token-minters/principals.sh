@@ -112,14 +112,16 @@ resolve_unique_id() {
 }
 
 # k8s_subject KIND NAMESPACE NAME: sets SUBJECT, the principal's name in a finding, and SUBJECT_OK,
-# whether it is allowed (the header's "Group and User subjects"). Allowed: a person (a User that is
-# an email outside gserviceaccount.com), a Kubernetes component (a system: User or Group other than
-# those below), a system namespace's ServiceAccount, Google's service agent, the operator's own
-# Google service account, and a Group other than Kubernetes' own, which the live steps judge by
-# where its members come from. Never allowed: Kubernetes' own groups (system:authenticated,
-# system:serviceaccounts and system:serviceaccounts:<namespace>, system:unauthenticated,
-# system:masters), whose members Kubernetes decides whatever Google Groups for RBAC says, anyone
-# unauthenticated, and a User that is no email (a bare name, a principal:// name).
+# whether it is allowed (the header's "Group and User subjects"). Allowed: a Kubernetes component (a
+# system: User or Group other than those below), a system namespace's ServiceAccount, Google's
+# service agent, the operator's own Google service account, and a Group other than Kubernetes' own,
+# which the live steps judge by where its members come from. Never allowed: a person (a User that is
+# an email outside gserviceaccount.com, which GKE gives a Google account), reviewed and judged as
+# every other principal is since nobody holds the operator identity standing (INFRA-840's R16),
+# Kubernetes' own groups (system:authenticated, system:serviceaccounts and
+# system:serviceaccounts:<namespace>, system:unauthenticated, system:masters), whose members
+# Kubernetes decides whatever Google Groups for RBAC says, anyone unauthenticated, and any other
+# User (a bare name, a principal:// name).
 k8s_subject() {
   local kind="$1" ns="$2" name="$3"
   SUBJECT_OK=false
@@ -161,11 +163,7 @@ k8s_subject() {
           SUBJECT="serviceAccount:$name"
           if { [ -n "$GSA" ] && [ "$name" = "$GSA" ]; } || service_agent "$SUBJECT"; then SUBJECT_OK=true; fi
           ;;
-        *)
-          SUBJECT="user:$name"
-          # A person is an email: one @, a dotted domain, no slash, colon or space.
-          if [[ "$name" =~ ^[^@/:[:space:]]+@[^@/:[:space:]]+\.[^@/:[:space:]]+$ ]]; then SUBJECT_OK=true; fi
-          ;;
+        *) SUBJECT="user:$name" ;;
       esac
       ;;
     *) SUBJECT="$kind:$name" ;;

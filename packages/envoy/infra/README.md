@@ -4783,7 +4783,7 @@ It runs with the sign-ins of the shell it runs in and requests no credential.
 It never reads a Kubernetes Secret.
 Instead, its `--secret-render` inputs provide the declared namespace, name and type of each Secret
 the Secret programs render, without making a live Secret API request or using a Secret value.
-It lists each principal that is not a person and can mint the token of a guarded ServiceAccount (the
+It lists each principal, person or machine, that can mint the token of a guarded ServiceAccount (the
 operator's, the secrets broker's, and each
 `--guarded` pair), run or enter a pod as one, create or change a custom resource in a guarded
 namespace, write a binding or a webhook or admission policy, have the cluster sign it a client
@@ -4793,16 +4793,22 @@ that fleet or write the namespaces and RBAC its scopes put on the members, make 
 Deployment Manager deployment on the project (Deployment Manager creates a deployment's resources as
 the project's Google APIs service agent, which holds `roles/editor` there), set IAM policy over any
 of these, or write the writer hold's tables beside the broker's routes, whether a role grants the
-right outright or limits it to an object by name, and each principal that can become one of those:
+right outright or limits it to an object by name, and each principal that can become one of those.
+Nobody holds the operator identity standing, a person included: a principal holds it standing when
+it can come to hold it without a second person approving that use at that time
+(INFRA-840's R16), so a
+person is a finding like any other holder, with the right and where it was granted. A principal
+becomes one of those
 through IAM impersonation, reported as the chain, by minting the token of a Google service
 account an RBAC finding names, by impersonating a user who holds GKE's IAM permissions, or in
 Kubernetes by running, entering or minting the token of a ServiceAccount that holds such a right. On
 each cluster of the project, of the pool project and of the pool's fleet it reviews every
-ServiceAccount outside the system namespaces, Kubernetes' own groups, each binding subject that is
-not a person (a person is an email outside `gserviceaccount.com`), and anyone unauthenticated, and
+ServiceAccount outside the system namespaces, Kubernetes' own groups, each binding subject (a
+person's email among them) but the `system:` components and the operator's own Google service
+account, and anyone unauthenticated, and
 reports every binding of `system:masters` but the bootstrap one. Any other Group is no finding while
 GKE's Google Groups for RBAC is off, and reads UNKNOWN where it is on or on a fleet member that is no
-GKE cluster, as an email-shaped User bound there does; a cluster with legacy ABAC or the identity
+GKE cluster; a cluster with legacy ABAC or the identity
 service for GKE on, a fleet scope, an empty fleet and a GKE Hub API disabled in the pool project
 read UNKNOWN too. A deployment whose pool project has no fleet passes `--fleet none`: an empty
 membership list then passes, and each
@@ -4916,15 +4922,23 @@ only the full set: each allowed review is judged alone (`operator-token-minters/
 
 Who is reviewed: each ServiceAccount outside the system namespaces (`kube-system`, `gke-*` and
 `gmp-*`), Kubernetes' own groups, anyone unauthenticated, and each binding subject the check does
-not allow. A `system:*` User is an allowed Kubernetes component, never reviewed. A User with no
+not allow. A `system:*` User is an allowed Kubernetes component, never reviewed: every
+`system:`-prefixed User but `system:anonymous`, and `system:serviceaccount:<namespace>:<name>` of a
+namespace outside the system ones, which is reviewed as that ServiceAccount. That name is accepted
+because each way a principal comes to present it is read and reported as the holder: a client
+certificate the cluster signs for any user (the certificate signing chain, row (bj) of
+`operator-token-minters.test.sh`), `impersonate users` cluster-wide (an escalation right on every
+cluster, rows (b) and (an)), and the node escape on a cluster that is not Autopilot (rows (bz) and
+(ne)). A User with no
 `system:` prefix, such as `kube-apiserver` in GKE's own ClusterRoleBinding
 `kube-apiserver-kubelet-api-admin` (to the ClusterRole `kubelet-api-admin`), is reviewed
-and printed on every cluster that binds it, and the check accepts no subject by its name.
+and printed on every cluster that binds it: past the `system:` components, the check accepts no
+subject by its name.
 A username is only a name: whoever can have a certificate or token issued with it, through a
 certificate signer and approver or by impersonation, presents it. Accepting it by name would hide
 that holder on every pool cluster. A per-cluster entry in the accepted list also shows a new
-cluster's binding the first time it appears. A person's email
-is allowed. A ServiceAccount of a system namespace is reviewed only under the node escape: a
+cluster's binding the first time it appears. A person's email is reviewed like any other User,
+and each right it holds is a finding. A ServiceAccount of a system namespace is reviewed only under the node escape: a
 non-operator cluster that `gcloud container clusters describe` reads as GKE Standard, where that
 account has a running pod on a node. A User named by a number is judged as the Google service account whose uniqueId it is. The number is resolved first from the IAM previews' service accounts, then from each named project's service-account list, then by `gcloud iam service-accounts describe`. A number no source resolves is a finding naming the number.
 
@@ -4986,7 +5000,8 @@ the `commit` and `run_id` metadata the report quotes, changes the bucket's polic
 managed folder's policy, which grants object writes under its prefix and is on neither the bucket's
 policy nor its ancestors'. It accepts:
 
-- people, a group judged by its expanded members, and Google's service agents, as every IAM step;
+- a group judged by its expanded members, and Google's service agents, as every IAM step (a
+  person is a finding here as in every step);
 - `--renders-admin EMAIL`, the account that applies the bucket, for any of them; the answer
   must list it, or the step is `UNKNOWN`;
 - each `--render-writer EMAIL=program/object`, only through a binding whose condition is exactly

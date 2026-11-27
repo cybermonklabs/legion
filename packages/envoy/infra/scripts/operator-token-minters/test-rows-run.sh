@@ -5,8 +5,16 @@
 # refused identity, the admin tag, the report and its fixture, and a copy missing a part. Sourced
 # by the test after its world and helpers; its header says what the fakes model. The rows:
 #
-#   (a)  a world of people, system namespaces and the Workload Identity member alone exits 0, and a
-#        project with the operator's cluster alone prints that it has no other;
+#   (a)  a world where no person holds anything, the system namespaces, Google's service agents and
+#        the Workload Identity member alone exits 0 with no FINDING and no UNKNOWN, and a project with
+#        the operator's cluster alone prints that it has no other;
+#   (sp) a standing person is a finding: a person holding a checked right in IAM (on the operator's
+#        account, on the organization, through an expanded group, on a hold writer's resource, in a
+#        preview) or in RBAC (bound to cluster-admin) is a FINDING naming the person, the right and
+#        where it was granted, and the run exits 1; the same world with those grants removed exits
+#        0; a person bound to a right no review asks is counted among the binding subjects, never as
+#        none; controls: a copy that passes every `user:` member (checks.sh) prints no IAM finding
+#        for them, and a copy that allows an email User subject (principals.sh) prints no RBAC one;
 #   (h)  a permission name missing from roles/container.admin's list fails the run, naming it;
 #   (i)  an empty listing exits 2 with UNKNOWN: agent namespaces holding no ServiceAccount, a Policy
 #        Analyzer answer listing no one, an analysis not fully explored;
@@ -73,7 +81,8 @@
 #   (db) a pick of the reviews to judge that stops part way (its awk under a 2 KiB file size limit)
 #        reads UNKNOWN naming it, exit 2, and the RBAC step does not pass.
 
-# --- (a) People, the system namespaces and the Workload Identity member alone. ---
+# --- (a) No person holds anything; the system namespaces, Google's service agents and the Workload
+# Identity member alone. ---
 if row a; then
   base_world
   run
@@ -89,7 +98,115 @@ if row a; then
   done
   want_line "PASS live: Workload Identity: the fleet of project $project: 1 membership(s) listed, every location reached: 1 the operator's cluster, 0 read above as clusters of the project, 0 read here, and the fleet holds no scope" \
     "a clean world's fleet"
-  passed "(a) people, the system namespaces and the Workload Identity member alone exit 0, and a project with the operator's cluster alone says so"
+  passed "(a) a world where no person holds anything, the system namespaces, Google's service agents and the Workload Identity member alone exit 0, and a project with the operator's cluster alone says so"
+fi
+
+# --- (sp) A standing person is a finding, in IAM and in RBAC. Each person below holds a right the
+# reading asks about, with no second person approving its use, so each is a standing holder of the
+# operator identity (INFRA-840's R16) and a FINDING names the person, the right and where the right
+# was granted. These are the shapes the base world's people held before R16, each planted here:
+# mallory@ mints the operator's account's token; eve@ owns the organization; admin@ holds
+# roles/container.admin through the group cluster-admins; dba@ writes the broker database's users;
+# reader@ reads the broker program's state; declared@ is given roles/container.admin by a preview.
+# The RBAC side reaches a person by each of k8s_subject's three paths: alice@ is bound to
+# cluster-admin on the operator's cluster (bound_subjects, step-rbac.sh), carol@ to cluster-admin on
+# another cluster of the pool (bound_subjects, step-workload-identity.sh), and bob@ may patch the
+# Deployment envoy-operator by name (named_principal, live_named). The base world's RBAC lost no
+# person to this row, as its IAM did: the only User subjects it binds are the operator's own Google
+# service account and comment-delivery's, both service accounts. ---
+readonly standing_people=(mallory@example.com eve@example.com admin@example.com dba@example.com reader@example.com declared@example.com
+  alice@example.com carol@example.com bob@example.com)
+# standing_people_world: the base world with each standing person planted.
+standing_people_world() {
+  base_world
+  iam "$gsa_res" roles/iam.serviceAccountTokenCreator user:mallory@example.com
+  iam "$org_res" roles/owner user:eve@example.com
+  iam "$project_res" roles/container.admin group:cluster-admins@example.com
+  iam "$project_res" roles/cloudsql.admin user:dba@example.com
+  iam "$bucket_res" roles/storage.objectViewer user:reader@example.com
+  edit "$world/preview.json" '.steps += [{op: "same", urn: "urn:pulumi:example::iam::gcp:projects/iAMMember:IAMMember::declared-container",
+    provider: "example-provider", newState: {urn: "urn:pulumi:example::iam::gcp:projects/iAMMember:IAMMember::declared-container",
+    custom: true, type: "gcp:projects/iAMMember:IAMMember", inputs: {project: $p, role: "roles/container.admin", member: "user:declared@example.com"}}}]' \
+    --arg p "$project"
+  cluster_admin operator-cluster "$(user_subject alice@example.com)"
+  add_cluster other-cluster us-east1
+  cluster_admin other-cluster "$(user_subject carol@example.com)"
+  subject_grant operator-cluster "$(user_subject bob@example.com)" patch apps deployments "" envoy-operator envoy-operator
+}
+# standing_people_problems: each line or report entry the run of standing_people_world must hold
+# that it does not, one a line: a FINDING line for each person, with the right and where it was
+# granted, and a --report finding naming each with a granted_at.
+standing_people_problems() {
+  local want person
+  for want in \
+    "FINDING user:mallory@example.com: iam.serviceAccounts.getAccessToken, iam.serviceAccounts.getOpenIdToken, iam.serviceAccounts.signJwt, iam.serviceAccounts.signBlob, iam.serviceAccounts.implicitDelegation on $gsa_res through roles/iam.serviceAccountTokenCreator, granted at $gsa_res" \
+    "FINDING user:eve@example.com: resourcemanager.organizations.setIamPolicy, iam.roles.update on $org_res through roles/owner, granted at $org_res" \
+    "FINDING user:dba@example.com: cloudsql.users.create, cloudsql.users.update on $sql_res through roles/cloudsql.admin, granted at $project_res" \
+    "FINDING user:reader@example.com: storage.objects.get on $bucket_res through roles/storage.objectViewer, granted at $bucket_res" \
+    "FINDING user:alice@example.com: create serviceaccounts/token envoy-operator in envoy-operator" \
+    "FINDING user:carol@example.com: create namespaces cluster-wide on cluster $project/us-east1/other-cluster"; do
+    has_line "$want" || echo "no line '$want'"
+  done
+  has_prefix "FINDING user:bob@example.com: patch deployments.apps envoy-operator" ||
+    echo "no FINDING of bob@example.com's patch of the Deployment envoy-operator by name"
+  has_prefix "FINDING user:admin@example.com: container.serviceAccounts.createToken" ||
+    echo "no FINDING of admin@example.com's container.serviceAccounts.createToken through the group cluster-admins"
+  has_prefix "FINDING user:declared@example.com: container.serviceAccounts.createToken" ||
+    echo "no FINDING of declared@example.com's container.serviceAccounts.createToken declared by the preview"
+  for person in "${standing_people[@]}"; do
+    jq -e --arg p "user:$person" 'any(.findings[]; .principal == $p and .granted_at != "")' "$temporary_dir/sp-report.json" >/dev/null ||
+      echo "no --report finding of user:$person with where it was granted"
+  done
+}
+if row sp; then
+  standing_people_world
+  run --report "$temporary_dir/sp-report.json"
+  problems="$(standing_people_problems)"
+  [ -z "$problems" ] || fail "a standing person is a finding: ${problems//$'\n'/; }"
+  want_status 1 "a standing person in IAM and in RBAC"
+  ! has_prefix "PASS live: minters of $gsa: " || fail "a standing person: the minters of the operator's account passed"
+  ! has_prefix "PASS live: RBAC on operator-cluster: " || fail "a standing person: the RBAC step passed"
+  # The person inside the group is named by the group's expansion: a stub that drops the expanded
+  # members (as row gp's control does) misses admin@ and nothing else.
+  OPERATOR_MINTERS_GROUP_STUB=drop run --report "$temporary_dir/sp-report.json"
+  problems="$(standing_people_problems)"
+  [[ "$problems" == *"through the group cluster-admins"* && "$problems" != *"mallory@"* && "$problems" != *"alice@"* ]] ||
+    fail "the stub dropping expanded group members read as: ${problems:-nothing}"
+  # The same world with each person's grant removed exits 0.
+  edit "$world/iam.json" 'map(.members -= ($ARGS.positional | map("user:" + .)) | select(.members | length > 0)
+    | select(.members != ["group:cluster-admins@example.com"]))' --args "${standing_people[@]}"
+  edit "$world/preview.json" '.steps |= map(select(.urn | endswith("::declared-container") | not))'
+  edit "$world/clusters/operator-cluster/grants.json" 'map(select(.subject.kind != "User" or ((.subject.name == "alice@example.com" or .subject.name == "bob@example.com") | not)))'
+  edit "$world/clusters/other-cluster/grants.json" 'map(select(.subject != {kind: "User", name: "carol@example.com"}))'
+  run
+  want_status 0 "the standing people's world with their grants removed"
+  [ "$(count_prefix 'FINDING ')" -eq 0 ] || fail "the standing people's world with their grants removed printed a FINDING"
+  # A person bound to a right no review asks is reviewed and counted, never read as no subject.
+  subject_grant operator-cluster "$(user_subject alice@example.com)" get "" configmaps "" legion ""
+  run
+  want_status 0 "a person bound to get configmaps alone"
+  want_text ", 1 binding subjects, and anyone unauthenticated), " "a person bound to get configmaps alone"
+  # Controls: a copy that passes every user: member, as the reading did before R16, prints no IAM
+  # finding for them, and a copy that allows an email User subject prints no RBAC finding for alice@,
+  # carol@ or bob@.
+  copy="$(script_copy person-ok-iam)"
+  plant "$(dirname "$copy")/operator-token-minters/checks.sh" '  case "$member" in' $'  case "$member" in\n    user:*) VERDICT=ok; return ;;'
+  standing_people_world
+  run_script="$copy" run --report "$temporary_dir/sp-report.json"
+  problems="$(standing_people_problems)"
+  [[ "$problems" == *"no line 'FINDING user:mallory@example.com: "* && "$problems" == *"no --report finding of user:eve@example.com "* &&
+    "$problems" == *"through the group cluster-admins"* && "$problems" != *"alice@"* && "$problems" != *"carol@"* && "$problems" != *"bob@"* ]] ||
+    fail "the control copy passing every user: member read as: ${problems:-nothing}"
+  copy="$(script_copy person-ok-rbac)"
+  plant "$(dirname "$copy")/operator-token-minters/principals.sh" '        *) SUBJECT="user:$name" ;;' \
+    $'        *)\n          SUBJECT="user:$name"\n          if [[ "$name" =~ ^[^@/:[:space:]]+@[^@/:[:space:]]+\\.[^@/:[:space:]]+$ ]]; then SUBJECT_OK=true; fi\n          ;;'
+  standing_people_world
+  run_script="$copy" run --report "$temporary_dir/sp-report.json"
+  problems="$(standing_people_problems)"
+  [[ "$problems" == *"no line 'FINDING user:alice@example.com: "* && "$problems" == *"no line 'FINDING user:carol@example.com: "* &&
+    "$problems" == *"bob@example.com's patch"* && "$problems" != *"mallory@"* ]] ||
+    fail "the control copy allowing an email User subject read as: ${problems:-nothing}"
+  passed "(sp) a standing person is a finding, in IAM (the operator's account, the organization, a group, a hold writer, a preview) and in RBAC (the operator's cluster, another cluster of the pool, a right limited by name), naming the right and where it was granted; the same world without the grants exits 0; a bound person is counted; controls: copies passing a user: member or an email User each miss them"
 fi
 
 # --- (h) A permission name roles/container.admin's list does not hold. ---
