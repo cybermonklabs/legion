@@ -284,6 +284,69 @@ func TestKnownSessionsAdmitsExactlyTheCallersTheConversationReadAdmits(t *testin
 	expectSameCallersAsConversationRead(t, rig, "the known-sessions read", knownActivity, knownSessionsPath(knownActivity))
 }
 
+// TestKnownSessionsAnswersOnlyTheSessionsItsCallerSees holds GET /api/v1/agents/known to
+// access.SessionClause: a session whose only record is in a private project is left out for a
+// person who does not see that project, as an unheld id is, and answered to a person who sees the
+// project and to the session's own caller.
+//
+// seedPrivateProject creates PUB and PRIV and marks PRIV private in SQL through its makePrivate
+// helper (writing session_projects_filled and setting projects.visibility = 'private' via
+// access.SetVisibility, because the visibility route refuses private until enabled), leaving alice
+// without access to PRIV while carol and bob see it.
+func TestKnownSessionsAnswersOnlyTheSessionsItsCallerSees(t *testing.T) {
+	t.Parallel()
+	seed := seedPrivateProject(t)
+	ctx := context.Background()
+
+	const hidden = "s-known-private"
+	for _, write := range []struct {
+		what      string
+		statement string
+		args      []any
+	}{
+		{"a session's event in PRIV", `insert into events (issue_key, seq, type, actor, payload, notify)
+			values ($1, 100, 'message.created', jsonb_build_object('kind', 'session', 'id', $2::text), '{}', false)`,
+			[]any{seed.issue[seedPrivate], hidden}},
+		{"the session's place in PRIV", `insert into session_projects (session_id, project_key) values ($1, $2)`,
+			[]any{hidden, seedPrivate}},
+	} {
+		if _, err := seed.database.Pool.Exec(ctx, write.statement, write.args...); err != nil {
+			t.Fatalf("write %s: %v", write.what, err)
+		}
+	}
+
+	path := knownSessionsPath(hidden)
+	// alice does not see PRIV, so hidden is answered as an unheld id: left out of sessions.
+	aliceResponse := seed.mustRequest(t, callerAlice, http.MethodGet, path, nil, http.StatusOK)
+	if got := decodeBody[knownSessions](t, aliceResponse).Sessions; len(got) != 0 {
+		t.Fatalf("alice (does not see %s) known sessions = %s, want none", seedPrivate, knownSessionsText(got))
+	}
+
+	want := []knownSession{{SessionID: hidden}}
+	for _, viewer := range []privateCaller{callerCarol, callerBob} {
+		response := seed.mustRequest(t, viewer, http.MethodGet, path, nil, http.StatusOK)
+		if got := decodeBody[knownSessions](t, response).Sessions; !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s (sees %s) known sessions = %s, want %s", viewer, seedPrivate, knownSessionsText(got), knownSessionsText(want))
+		}
+	}
+
+	// A person-scoped broker token for alice proving the hidden session itself holds the person
+	// scope and sees its own session even though alice does not see PRIV.
+	const ownToken = "broker-token-of-" + hidden
+	own := personScopedTokenAnswer(seed.agent.jkt)
+	own.Session = hidden
+	own.Person = seedAlice
+	seed.broker.Says(ownToken, own)
+	ownResponse := httptest.NewRecorder()
+	seed.handler.ServeHTTP(ownResponse, seed.agent.presenting(t, http.MethodGet, path, ownToken, nil))
+	if ownResponse.Code != http.StatusOK {
+		t.Fatalf("own session caller: status=%d body=%s, want 200", ownResponse.Code, ownResponse.Body.String())
+	}
+	if got := decodeBody[knownSessions](t, ownResponse).Sessions; !reflect.DeepEqual(got, want) {
+		t.Fatalf("own session caller known sessions = %s, want %s", knownSessionsText(got), knownSessionsText(want))
+	}
+}
+
 // knownSessionsText renders an answer for a failure message, a null title as -.
 func knownSessionsText(sessions []knownSession) string {
 	parts := make([]string, len(sessions))

@@ -6,6 +6,8 @@ import (
 	"slices"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -24,9 +26,11 @@ type knownSessions struct {
 }
 
 // knownSessionsStatement answers, in one statement, which of the session ids $1 names Dispatch
-// holds any record of, in the order of $1, with the title the registry copy holds. Each record is
-// read through an index keyed by the session, so a batch of a hundred ids costs a hundred probes
-// of each index and never a scan of a table that grows with use:
+// holds any record of and the viewer $2 sees (access.SessionClause), in the order of $1, with the
+// title the registry copy holds. A session the viewer does not see is left out, as one Dispatch
+// holds no record of is. Each record is read through an index keyed by the session, so a batch of
+// a hundred ids costs a hundred probes of each index and never a scan of a table that grows with
+// use:
 //
 //   - the registry copy: the route_roster row's sessions, the listener's last list of live and
 //     unresponsive sessions that GET /api/v1/agents lists (migration 0159), read whatever its age,
@@ -52,7 +56,7 @@ type knownSessions struct {
 // A session whose only trace is a live registration younger than the stored copy (at most
 // routeRosterTTL old) has no record here yet; a caller asks this route only for the sessions the
 // live registry, GET /api/v1/agents, does not list.
-const knownSessionsStatement = `
+var knownSessionsStatement = `
 	with listed as (
 		select distinct on (entry->>'session_id')
 		       entry->>'session_id' as id, nullif(entry->>'title', '') as title
@@ -62,7 +66,7 @@ const knownSessionsStatement = `
 	select asked.id, listed.title
 	from unnest($1::text[]) with ordinality as asked (id, position)
 	left join listed on listed.id = asked.id
-	where listed.id is not null
+	where (listed.id is not null
 	   or exists (select 1 from events e
 	              where e.actor->>'kind' = 'session' and e.actor->>'id' = asked.id)
 	   or exists (select 1 from messages m
@@ -70,7 +74,8 @@ const knownSessionsStatement = `
 	   or exists (select 1 from message_deliveries d where d.session_id = asked.id)
 	   or exists (select 1 from comment_deliveries c where c.session_id = asked.id)
 	   or exists (select 1 from artifacts a where a.session_id = asked.id)
-	   or exists (select 1 from ask_followers f where f.session_id = asked.id)
+	   or exists (select 1 from ask_followers f where f.session_id = asked.id))
+	  and ` + access.SessionClause("asked.id", "$2") + `
 	order by asked.position`
 
 // knownSessionIDMax is the longest session id, in bytes, GET /api/v1/agents/known answers for. The
@@ -86,12 +91,15 @@ const knownSessionIDMax = text.MaxTargetBytes
 // the id. A page asks once for every such reference it holds (knownSessionsStatement reads them
 // in one statement), naming each in `id`, 1 to contracts.KnownSessionsMax times.
 //
-// It answers only what its caller could already learn, so it admits exactly the callers GET
-// /api/v1/agents/{session_id}/messages admits: the `person` scope its row names (routeScopes),
-// and actingPerson, which that read opens with too. That read already tells such a caller whether
-// a session has a conversation, one id per request. So `session` means here what it means on
-// every route, the session the request acts for, and a credential that proved a session is
-// refused one naming another (403 ACTOR_SESSION_MISMATCH).
+// It answers only what its caller could already learn: it admits exactly the callers GET
+// /api/v1/agents/{session_id}/messages admits — the `person` scope its row names (routeScopes),
+// and actingPerson, which that read opens with too — and binds the query to the caller's reader
+// through access.SessionClause, the rule GET /api/v1/agents applies, so a session that acted in a
+// private project the caller does not see is left out as one with no record. That conversation
+// read already tells such a caller whether a session it sees has a conversation, one id per
+// request. So `session` means here what it means on every route, the session the request acts for,
+// and a credential that proved a session is refused one naming another (403
+// ACTOR_SESSION_MISMATCH).
 //
 // `id` is held to its rule before anything is read, each refusal 400 INVALID_QUERY naming it: no
 // `id` at all, more than contracts.KnownSessionsMax of them (counted as sent, duplicates
@@ -101,6 +109,10 @@ const knownSessionIDMax = text.MaxTargetBytes
 // TestTheStoreAddsNoReachAndNoReadChangesShape).
 func (s *server) listKnownSessions(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
+		return
+	}
+	reader, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	asked := r.URL.Query()["id"]
@@ -134,7 +146,7 @@ func (s *server) listKnownSessions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rows, err := s.deps.Store.Pool.Query(r.Context(), knownSessionsStatement, ids)
+	rows, err := s.deps.Store.Pool.Query(r.Context(), knownSessionsStatement, ids, refs.VisibilityArg(reader))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
