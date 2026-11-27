@@ -309,8 +309,8 @@ var LeftSettings = []LeftSetting{
 	toDefault("gin_pending_list_limit", "A write into a table with a GIN index moves the index's pending list into "+
 		"the index when the list passes this size, while the write holds its row locks.", "'64kB'"),
 	toDefault("hash_mem_multiplier", memoryReason, "1"),
-	exempt("icu_validation_level", "it acts only when CREATE COLLATION or CREATE DATABASE checks an ICU locale, and "+
-		"no statement of the client sends either.", "error"),
+	exempt("icu_validation_level", "it acts only when a statement that creates a collation or a database checks an "+
+		"ICU locale, and no statement of the client creates either.", "error"),
 	toDefault("idle_in_transaction_session_timeout", "It ends the session when a transaction of the client waits "+
 		"longer than this between two of its statements, as it does while the caller works out its next one.", "'50ms'"),
 	exemptBetween("idle_session_timeout", "it ends a session that is idle \"but not within an open transaction\" "+
@@ -456,8 +456,8 @@ var LeftSettings = []LeftSetting{
 		on(PostgreSQL17AndLater),
 	exempt("enable_self_join_elimination", "it acts only on a join of a table with itself, and the one join of the "+
 		"client, notTables', joins pg_class with pg_namespace.", "off").on(PostgreSQL18AndLater),
-	exempt("file_copy_method", "it acts only on CREATE DATABASE and ALTER DATABASE … SET TABLESPACE, and no statement "+
-		"of the client sends either.", "clone").on(PostgreSQL18AndLater),
+	exempt("file_copy_method", "it acts only when a statement creates a database or moves one to another "+
+		"tablespace, and no statement of the client does either.", "clone").on(PostgreSQL18AndLater),
 	setConfig("io_combine_limit", ioReason, "1", PostgreSQL17AndLater),
 	exempt("md5_password_warnings", "it only adds a warning when CREATE ROLE or ALTER ROLE sets an MD5 password, and "+
 		"no statement of the client sets a password.", "off").on(PostgreSQL18AndLater),
