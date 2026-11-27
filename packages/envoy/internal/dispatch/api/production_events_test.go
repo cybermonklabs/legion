@@ -41,7 +41,12 @@ func productionEventStatePath(project, id string) string {
 }
 
 // writeProductionDeploy stores a deploy of project through the store, as the GitHub adapter does:
-// source github, source_ref github:<run>, finished at finished.
+// source github, source_ref github:<run>, a run of acme/app finished at finished that ships no
+// pull request. Such a deploy counts for the project whose deploy source reads its repository
+// (evals' source key, INFRA-978 R12), so the helper also publishes acme/app as project's source
+// repository (publishDeployRepo), the record a refresher's page leaves of it, and the deploy counts
+// for project as the record's routes require of a deploy they name (evals.DeployCountsFor). A later
+// call for another project moves acme/app's source to that project, as a source moved there does.
 func writeProductionDeploy(t *testing.T, database *store.Store, project string, run int64, finished time.Time, commits ...string) prodevents.Event {
 	t.Helper()
 	stored, _, err := prodevents.Write(context.Background(), database.Pool, prodevents.Event{
@@ -52,6 +57,7 @@ func writeProductionDeploy(t *testing.T, database *store.Store, project string, 
 	if err != nil {
 		t.Fatalf("write deploy run %d of %s: %v", run, project, err)
 	}
+	publishDeployRepo(t, database, project, deployRule("acme/app", "production / apply"), finished)
 	return stored
 }
 
@@ -572,6 +578,266 @@ func TestARestoreCannotNameADeployThatFinishedBeforeTheFailedDeploy(t *testing.T
 	if stored := readProductionEvent(t, rig.database, brokerTestProject, failure.ID); restored.Code != http.StatusOK || stored.RestoredByDeploy == nil || *stored.RestoredByDeploy != later.ID {
 		t.Fatalf("a restore by the deploy an hour after the failed one: status=%d body=%s, want 200 naming %s", restored.Code, restored.Body.String(), later.ID)
 	}
+}
+
+// The same attribution rule holds for a public project's deploy, even for a caller that may
+// write both projects. By row ID, run, or commit, PRD cannot blame a deploy attributed only to PUB.
+// It gets the same response as a missing deploy and learns no ID from PUB's record.
+// deploy it was not sent, and writes no row; posted to PUB's own route, the same failure is taken.
+func TestAFailurePostedToOneProjectCannotBlameAPublicProjectsDeploy(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "PRD", "PUB")
+	const commit = "6666666666666666666666666666666666666666"
+	public := writeProductionDeploy(t, database, "PUB", 88, time.Now().UTC().Add(-time.Hour), commit)
+	post := func(project, ref string, names map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		body := map[string]any{"kind": "failure", "source_ref": ref, "actor": map[string]any{"kind": "session", "id": "ses-ci"}}
+		for key, value := range names {
+			body[key] = value
+		}
+		return bearerRequest(t, handler, http.MethodPost, productionEventsPath(project), body)
+	}
+	rows := countRows(t, database, `select count(*) from production_events`)
+	for _, selector := range []struct {
+		name, field, missing, public string
+		with                         map[string]any
+	}{
+		{"its row id", "deploy_id", "0195f2a8-0000-7000-8000-000000000000", public.ID, nil},
+		{"its run", "cicd.pipeline.run.id", "999", "88", map[string]any{"repo": "acme/app"}},
+		{"its commit", "commit_sha", "3333333333333333333333333333333333333333", commit, nil},
+	} {
+		names := func(value string) map[string]any {
+			named := map[string]any{selector.field: value}
+			for key, with := range selector.with {
+				named[key] = with
+			}
+			return named
+		}
+		missing := post("PRD", "alerts:no deploy by "+selector.name, names(selector.missing))
+		want := decodeBody[apiErrorBody](t, missing)
+		if missing.Code != http.StatusConflict || want.Code != prodevents.CodeNoDeploy {
+			t.Fatalf("a failure blaming no deploy by %s: status=%d body=%s, want 409 %s", selector.name, missing.Code, missing.Body.String(), prodevents.CodeNoDeploy)
+		}
+		refused := post("PRD", "alerts:PUB's deploy by "+selector.name, names(selector.public))
+		got, words := decodeBody[apiErrorBody](t, refused), strings.ReplaceAll(want.Error, selector.missing, selector.public)
+		if refused.Code != missing.Code || got.Code != want.Code || got.Error != words {
+			t.Errorf("a failure blaming PUB's deploy by %s: status=%d body=%s, want %d %s %q, as for a deploy no row holds",
+				selector.name, refused.Code, refused.Body.String(), missing.Code, want.Code, words)
+		}
+		if selector.field != "deploy_id" && strings.Contains(refused.Body.String(), public.ID) {
+			t.Errorf("the refusal of PUB's deploy by %s names its id %s: %s", selector.name, public.ID, refused.Body.String())
+		}
+	}
+	if after := countRows(t, database, `select count(*) from production_events`); after != rows {
+		t.Fatalf("the refused posts left %d rows, want the %d there were", after, rows)
+	}
+	if own := post("PUB", "alerts:PUB's own", map[string]any{"deploy_id": public.ID}); own.Code != http.StatusCreated {
+		t.Fatalf("the failure posted to PUB's own route: status=%d body=%s, want 201", own.Code, own.Body.String())
+	}
+}
+
+// TestARestoreCannotNameAnotherProjectsDeploy: Mark restored naming, as the restoring deploy, a
+// deploy posted to PUB, which counts for PUB alone and finished after the failed deploy, is
+// answered as a restoring deploy no row holds is, word for word but the id, and leaves the failure
+// unrestored. A deploy of the route's own project that finished at the same instant restores it.
+func TestARestoreCannotNameAnotherProjectsDeploy(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "PRD", "PUB")
+	now := time.Now().UTC().Truncate(time.Second)
+	public := writeProductionEvent(t, database.Pool, prodevents.Event{
+		ProjectKey: "PUB", Kind: prodevents.KindDeploy, Source: prodevents.SourceAPI, SourceRef: "ci:deploy-1", FinishedAt: new(now.Add(-time.Hour)),
+	})
+	failed := writeProductionDeploy(t, database, "PRD", 1, now.Add(-2*time.Hour))
+	same := writeProductionDeploy(t, database, "PRD", 2, now.Add(-2*time.Hour))
+	failure := writeProductionFailure(t, database, "PRD", "alerts:1", failed.ID, now.Add(-90*time.Minute))
+	path := productionEventStatePath("PRD", failure.ID)
+	restore := func(deploy string) *httptest.ResponseRecorder {
+		t.Helper()
+		return dispatchRequest(t, handler, http.MethodPut, path, map[string]any{"state": "restored", "restored_by_deploy": deploy}, "alice")
+	}
+	const none = "0195f2a8-0000-7000-8000-00000000000a"
+	missing := restore(none)
+	want := decodeBody[apiErrorBody](t, missing)
+	if missing.Code != http.StatusConflict || want.Code != prodevents.CodeNoDeploy {
+		t.Fatalf("a restore by a deploy no row holds: status=%d body=%s, want 409 %s", missing.Code, missing.Body.String(), prodevents.CodeNoDeploy)
+	}
+	refused := restore(public.ID)
+	got, words := decodeBody[apiErrorBody](t, refused), strings.ReplaceAll(want.Error, none, public.ID)
+	if refused.Code != missing.Code || got.Code != want.Code || got.Error != words {
+		t.Errorf("a restore by PUB's deploy: status=%d body=%s, want %d %s %q, as for a deploy no row holds",
+			refused.Code, refused.Body.String(), missing.Code, want.Code, words)
+	}
+	if stored := readProductionEvent(t, database, "PRD", failure.ID); stored.RestoredAt != nil || stored.RestoredByDeploy != nil {
+		t.Errorf("the refused restores left restored_at %v by deploy %v, want the failure unrestored", stored.RestoredAt, deref(stored.RestoredByDeploy))
+	}
+	restored := restore(same.ID)
+	if stored := readProductionEvent(t, database, "PRD", failure.ID); restored.Code != http.StatusOK || stored.RestoredByDeploy == nil || *stored.RestoredByDeploy != same.ID {
+		t.Fatalf("a restore by PRD's deploy that finished with the failed one: status=%d body=%s, want 200 naming %s", restored.Code, restored.Body.String(), same.ID)
+	}
+}
+
+// Invalid production event times and pull request references are refused without writing a row.
+// A post refuses backwards times, a finish or detection more than five minutes ahead of the
+// server, and malformed pull request references. Equal start and finish, a near-future detection,
+// and the largest stored pull request number are accepted.
+func TestAPostRefusesAnImpossibleTimeAndAMalformedPullRequest(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "PRD")
+	now := time.Now().UTC()
+	deploy := writeProductionDeploy(t, database, "PRD", 7, now.Add(-time.Hour))
+	event := func(base, fields map[string]any) map[string]any {
+		base["actor"] = map[string]any{"kind": "session", "id": "ses-ci"}
+		for key, value := range fields {
+			base[key] = value
+		}
+		return base
+	}
+	deployOf := func(fields map[string]any) map[string]any {
+		return event(map[string]any{"kind": "deploy", "source_ref": "ci:refused", "finished_at": now.Add(-time.Minute)}, fields)
+	}
+	failureOf := func(fields map[string]any) map[string]any {
+		return event(map[string]any{"kind": "failure", "source_ref": "alerts:refused", "deploy_id": deploy.ID}, fields)
+	}
+	pulls := func(refs ...string) map[string]any { return map[string]any{"pull_requests": refs} }
+	rows := countRows(t, database, `select count(*) from production_events`)
+	for _, refused := range []struct {
+		name, field string
+		body        map[string]any
+	}{
+		{"a deploy that finished before it started", "finished_at",
+			deployOf(map[string]any{"started_at": now.Add(-time.Minute), "finished_at": now.Add(-2 * time.Minute)})},
+		{"a deploy that finishes ten minutes past the server's clock", "finished_at", deployOf(map[string]any{"finished_at": now.Add(10 * time.Minute)})},
+		{"a failure found ten minutes past the server's clock", "detected_at", failureOf(map[string]any{"detected_at": now.Add(10 * time.Minute)})},
+		{"a deploy naming a repository and no number", "pull_requests", deployOf(pulls("acme/app"))},
+		{"a deploy naming a number and no owner", "pull_requests", deployOf(pulls("app#7"))},
+		{"a deploy naming pull request 0", "pull_requests", deployOf(pulls("acme/app#0"))},
+		{"a deploy naming a number no pull request's row holds", "pull_requests", deployOf(pulls("acme/app#2147483648"))},
+		{"a deploy naming a repository with a space in it", "pull_requests", deployOf(pulls("acme/my app#7"))},
+		{"a failure naming a pull request beside one that is no number", "pull_requests", failureOf(pulls("acme/app#7", "acme/app#seven"))},
+	} {
+		expectRefusal(t, refused.name, bearerRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), refused.body),
+			http.StatusBadRequest, prodevents.CodeInput, refused.field)
+	}
+	if after := countRows(t, database, `select count(*) from production_events`); after != rows {
+		t.Fatalf("the refused posts left %d rows, want the %d there were", after, rows)
+	}
+	for name, body := range map[string]map[string]any{
+		"a deploy that finishes at its start a minute past the server's clock": deployOf(map[string]any{
+			"source_ref": "ci:taken", "started_at": now.Add(time.Minute), "finished_at": now.Add(time.Minute), "pull_requests": []string{" acme/app#2147483647 "},
+		}),
+		"a failure found a minute past the server's clock": failureOf(map[string]any{
+			"source_ref": "alerts:taken", "detected_at": now.Add(time.Minute), "pull_requests": []string{"acme/app#2147483647"},
+		}),
+	} {
+		posted := bearerRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), body)
+		if posted.Code != http.StatusCreated {
+			t.Fatalf("%s: status=%d body=%s, want 201", name, posted.Code, posted.Body.String())
+		}
+		if row := decodeBody[prodevents.Event](t, posted); !slices.Equal(row.PullRequests, []string{"acme/app#2147483647"}) {
+			t.Errorf("%s: the row names pull requests %q, want acme/app#2147483647 alone", name, row.PullRequests)
+		}
+	}
+}
+
+// TestAFailurePostedThroughOneRouteOnASharedDeployCountsForThatProjectAlone: a GitHub deploy stored
+// under ALPHA's row ships ALPHA-1's and OMEGA-1's pull requests, so it counts for ALPHA and for
+// OMEGA, which both count posted failures and failing checks. A system's failure posted to OMEGA's
+// route that blames it by its GitHub run is taken though the row is ALPHA's. OMEGA reads 1 failed deploy
+// of 1 with 1 failure not restored, and ALPHA still 0 of 1 with none. A failing check on it, an
+// automatic signal written under ALPHA's row, counts for both: ALPHA then reads 1 of 1 with 1 not
+// restored, and OMEGA 1 of 1 with 2.
+func TestAFailurePostedThroughOneRouteOnASharedDeployCountsForThatProjectAlone(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	ctx, pool := t.Context(), database.Pool
+	now := time.Now().UTC()
+	today := now.Truncate(24 * time.Hour)
+	since := today.AddDate(0, 0, -3)
+	merged := now.Add(-3 * time.Hour)
+	const repo = "acme/shared"
+	if _, err := pool.Exec(ctx, `insert into projects (key, name, default_assignee, next_number)
+		values ('ALPHA', 'Alpha', 'alice', 2), ('OMEGA', 'Omega', 'alice', 2)`); err != nil {
+		t.Fatalf("seed the projects: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `insert into issues (key, project_key, number, title, status, rank, created_by, created_at)
+		values ('ALPHA-1', 'ALPHA', 1, 'Alpha work', 'in_progress', '00000001', '{"kind":"system","id":"shared-deploy-test"}', $1),
+		       ('OMEGA-1', 'OMEGA', 1, 'Omega work', 'in_progress', '00000001', '{"kind":"system","id":"shared-deploy-test"}', $1)`,
+		merged.AddDate(0, 0, -1)); err != nil {
+		t.Fatalf("seed the issues: %v", err)
+	}
+	for number, issue := range map[int]string{1: "ALPHA-1", 2: "OMEGA-1"} {
+		if err := delivery.UpsertPullRequest(ctx, pool, delivery.DeliveryPullRequest{
+			Repo: repo, Number: number, Title: fmt.Sprintf("%s: change %d", issue, number),
+			URL: fmt.Sprintf("https://github.com/%s/pull/%d", repo, number), Author: "octocat",
+			CreatedAt: new(merged.Add(-time.Hour)), MergedAt: new(merged), IssueKey: new(issue), Sessions: []string{},
+		}); err != nil {
+			t.Fatalf("write %s#%d: %v", repo, number, err)
+		}
+	}
+	for _, project := range []string{"ALPHA", "OMEGA"} {
+		saveProjectDelivery(t, pool, delivery.ProjectSettingsInput{
+			Project: project, Delivery: true, Sources: []delivery.SourceInput{{Kind: delivery.SourceKindEvents}},
+			PopulationAuthors: []string{"octocat"}, ExcludedRepos: []string{},
+			FailureSources: []string{delivery.FailureSourceEvents, delivery.FailureSourceCheckResults}, FailuresMeasuredSince: &since,
+		})
+	}
+	finished := now.Add(-time.Hour)
+	shared := writeProductionEvent(t, pool, prodevents.Event{
+		ProjectKey: "ALPHA", Kind: prodevents.KindDeploy, Status: prodevents.StatusSucceeded, Source: prodevents.SourceGitHub,
+		SourceRef: prodevents.GitHubSourceRef(31), StartedAt: new(finished.Add(-10 * time.Minute)), FinishedAt: &finished,
+		Repo: repo, PullRequests: []string{repo + "#1", repo + "#2"},
+	})
+
+	// requireFigures builds the day rows and reads each project's change fail rate (failed and
+	// total deploys) and failures not restored over the days around now, as the eval route answers
+	// them.
+	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
+	window := url.Values{"from": {today.AddDate(0, 0, -2).Format(time.RFC3339)}, "to": {today.AddDate(0, 0, 1).Format(time.RFC3339)}}
+	requireFigures := func(when string, want map[string][3]float64) {
+		t.Helper()
+		refreshEvalDays(t, registry, database, time.Now().UTC())
+		for project, figures := range want {
+			got := map[string]*float64{}
+			for _, item := range evalGet[evalListResponse](t, handler, "/api/v1/projects/"+project+"/evals?limit=200&"+window.Encode()).Items {
+				switch {
+				case len(item.Series) == 0:
+				case item.Definition.Slug == evals.SlugChangeFailRate:
+					got["failed"], got["total"] = item.Series[0].Window["failed"], item.Series[0].Window["total"]
+				case item.Definition.Slug == evals.SlugFailedDeployRecovery:
+					got["not_restored"] = item.Series[0].Window["not_restored"]
+				}
+			}
+			for i, name := range []string{"failed", "total", "not_restored"} {
+				if value := got[name]; value == nil || *value != figures[i] {
+					read := "null"
+					if value != nil {
+						read = fmt.Sprintf("%g", *value)
+					}
+					t.Errorf("%s: %s's %s reads %s, want %g", when, project, name, read, figures[i])
+				}
+			}
+		}
+	}
+
+	requireFigures("before any failure", map[string][3]float64{"ALPHA": {0, 1, 0}, "OMEGA": {0, 1, 0}})
+	posted := bearerRequest(t, handler, http.MethodPost, productionEventsPath("OMEGA"), map[string]any{
+		"kind": "failure", "source_ref": "alerts:1", "cicd.pipeline.run.id": "31", "repo": repo,
+		"actor": map[string]any{"kind": "session", "id": "ses-ci"},
+	})
+	if posted.Code != http.StatusCreated {
+		t.Fatalf("OMEGA's failure on the shared deploy: status=%d body=%s, want 201", posted.Code, posted.Body.String())
+	}
+	if failure := decodeBody[prodevents.Event](t, posted); failure.ProjectKey != "OMEGA" || failure.DeployID == nil || *failure.DeployID != shared.ID {
+		t.Fatalf("OMEGA's failure is a row of %s blaming %v, want OMEGA's blaming the shared deploy %s", failure.ProjectKey, failure.DeployID, shared.ID)
+	}
+	requireFigures("after OMEGA's posted failure", map[string][3]float64{"ALPHA": {0, 1, 0}, "OMEGA": {1, 1, 1}})
+	writeProductionEvent(t, pool, prodevents.Event{
+		ProjectKey: "ALPHA", Kind: prodevents.KindFailure, Source: prodevents.SourceCheckResults, SourceRef: "check:doc/c1@" + shared.ID,
+		DeployID: new(shared.ID), Signal: new(prodevents.SignalCheckFail), DetectedAt: new(finished.Add(30 * time.Minute)),
+	})
+	requireFigures("after a failing check on it", map[string][3]float64{"ALPHA": {1, 1, 1}, "OMEGA": {1, 1, 2}})
 }
 
 // TestTheStateRouteTakesAPersonAndTheProvenControllerAlone: a person rejects, re-counts and

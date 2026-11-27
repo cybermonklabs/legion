@@ -374,6 +374,68 @@ func TestAFailureCountsForEachProjectItsDeployCountsForWhoseSourcesIncludeItsSig
 	expectTruth(t, "after the revert on D", r.storedFigures(t), r.truthFigures(t))
 }
 
+// ALPHA's two GitHub deploys both ship ALPHA-1's and OMEGA-1's pull requests, so both count for
+// ALPHA and OMEGA. Both projects count posted failures and failing checks.
+// A failure posted to ALPHA's route on D1 counts for ALPHA alone, and a person's flag
+// through OMEGA's route on D2 for OMEGA alone, in the day rows and in the items of the record
+// behind them alike (FailureRecordIn, the one read of the counted failures); a failing check on
+// D1, an automatic signal whose row is OMEGA's, then counts for both.
+func TestAPostedFailureOfASharedDeployCountsForItsRoutesProjectAlone(t *testing.T) {
+	r := newRefresherRig(t)
+	ctx := t.Context()
+	r.seedFailureProjects(t)
+	sources := []string{delivery.FailureSourceEvents, delivery.FailureSourceCheckResults}
+	r.putFailures(t, "ALPHA", alphaJob, sources, failureDay)
+	r.putFailures(t, "OMEGA", omegaJob, sources, failureDay)
+	d1 := r.githubDeploy(t, "ALPHA", alphaApp, "github:1", failureAt(1, 10, 0), "", alphaApp+"#1", alphaApp+"#2")
+	d2 := r.githubDeploy(t, "ALPHA", alphaApp, "github:2", failureAt(1, 14, 0), "", alphaApp+"#1", alphaApp+"#2")
+	flag := prodevents.PersonSourceRef(d2.ID, "alice")
+	r.failure(t, "ALPHA", "page-1", prodevents.SourceAPI, prodevents.SignalAPI, d1, failureAt(1, 11, 0), nil, nil)
+	r.failure(t, "OMEGA", flag, prodevents.SourcePerson, prodevents.SignalPerson, d2, failureAt(1, 15, 0), nil, nil)
+	r.settle(t)
+	// itemFailures is the source_ref of each failure the items of project's failed-deploy-recovery
+	// rows over the three days answer, sorted.
+	itemFailures := func(project string) []string {
+		t.Helper()
+		tx, err := r.registry.BeginSnapshot(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, err := FailureRecordIn(ctx, tx, r.registry.attributor, project, SlugFailedDeployRecovery)
+		_ = tx.Rollback(ctx)
+		if err != nil {
+			t.Fatalf("FailureRecordIn(%s): %v", project, err)
+		}
+		var refs []string
+		for _, item := range record.Items(threeDays) {
+			if item.Event.Kind == prodevents.KindFailure {
+				refs = append(refs, item.Event.SourceRef)
+			}
+		}
+		slices.Sort(refs)
+		return refs
+	}
+	check := func(what string, want map[string][3]float64, items map[string][]string) {
+		t.Helper()
+		for project, figures := range want {
+			wantFigures(t, what+" "+project, r.failureValues(t, project, threeDays), map[string]*float64{
+				"change-fail-rate.failed": new(figures[0]), "change-fail-rate.total": new(figures[1]),
+				"failed-deploy-recovery.not_restored": new(figures[2]),
+			})
+			if got := itemFailures(project); !slices.Equal(got, items[project]) {
+				t.Errorf("%s: %s's failed-deploy-recovery items count the failures %v, want %v", what, project, got, items[project])
+			}
+		}
+		expectTruth(t, what, r.storedFigures(t), r.truthFigures(t))
+	}
+	check("the posted failures", map[string][3]float64{"ALPHA": {1, 2, 1}, "OMEGA": {1, 2, 1}},
+		map[string][]string{"ALPHA": {"page-1"}, "OMEGA": {flag}})
+	r.failure(t, "OMEGA", "check:1", prodevents.SourceCheckResults, prodevents.SignalCheckFail, d1, failureAt(1, 12, 0), nil, nil)
+	r.pass(t)
+	check("a failing check on D1 besides", map[string][3]float64{"ALPHA": {1, 2, 2}, "OMEGA": {2, 2, 2}},
+		map[string][]string{"ALPHA": {"check:1", "page-1"}, "OMEGA": {"check:1", flag}})
+}
+
 // TestAPostedDeployThatShipsNoPullRequestCountsForItsRoutesProjectAlone (R12, k12): a deploy posted
 // to OMEGA's route, which OMEGA's events source reads, with a posted failure on it, counts for
 // OMEGA alone, though ALPHA counts posted failures too; and one posted to ALPHA, which holds no

@@ -23,7 +23,12 @@ package api
 //     for who may write a state and what the row keeps is POST /api/v1/results/{id}/retract.
 //
 // The route class is scopeProject, which reads the path's key alone, so the state route holds the
-// row to that project itself: a row of another project is 404 PRODUCTION_EVENT_NOT_FOUND.
+// row to that project itself: a row of another project is 404 PRODUCTION_EVENT_NOT_FOUND. And both
+// writes hold the deploy they name, a failure's blamed deploy and a restore's restoring deploy, to
+// a deploy that counts for that project (evals.DeployCountsFor), whichever project's row it is,
+// asked in the write's transaction: a deploy that counts for other projects alone is answered as a
+// deploy no row holds, so neither write reaches another project's numbers through its deploy, nor
+// tells the caller which deploys another project made.
 
 import (
 	"context"
@@ -36,11 +41,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 const (
@@ -71,6 +78,10 @@ type productionEventList struct {
 // productionEventNoteBytes is the most a note may hold: a paragraph, not a log.
 const productionEventNoteBytes = 4096
 
+// productionEventClockSkew is how far past the server's clock a posted finished_at or
+// detected_at may be: a sender's clock a little ahead of it, not an event that has not happened.
+const productionEventClockSkew = 5 * time.Minute
+
 // productionEventInput is the body POST /api/v1/projects/{key}/production-events takes: one
 // event. Where OpenTelemetry names a field (the deployment and CI/CD semantic conventions), the
 // body may carry that name instead of the plain one, or both alike.
@@ -96,10 +107,12 @@ type productionEventInput struct {
 	// wrote for run PipelineRunID of Repo.
 	PipelineRunID string `json:"cicd.pipeline.run.id"`
 	// StartedAt and FinishedAt are a deploy's start and the moment it reached production, which
-	// a deploy needs; a failure carries no FinishedAt, since it counts on its deploy's day.
+	// a deploy needs, FinishedAt at or after StartedAt and at most productionEventClockSkew past
+	// the server's clock; a failure carries no FinishedAt, since it counts on its deploy's day.
 	StartedAt  *time.Time `json:"started_at"`
 	FinishedAt *time.Time `json:"finished_at"`
-	// DetectedAt is when a failure was found, the server's time of arrival where it names none.
+	// DetectedAt is when a failure was found, the server's time of arrival where it names none, and
+	// at most productionEventClockSkew past the server's clock.
 	DetectedAt *time.Time `json:"detected_at"`
 	// Repo is the deploy's repository, and the repository of a failure's PipelineRunID.
 	Repo string `json:"repo"`
@@ -108,12 +121,14 @@ type productionEventInput struct {
 	Note string `json:"note"`
 	// Commits are the commits a deploy shipped, compared in lower case.
 	Commits []string `json:"commits"`
-	// PullRequests are the pull requests a deploy shipped or a failure blames, owner/repo#n.
+	// PullRequests are the pull requests a deploy shipped or a failure blames, each owner/repo#n
+	// (pullRequestRef).
 	PullRequests []string `json:"pull_requests"`
-	// DeployID names a failure's deploy by its row's id: the uuid of a deploy row, of any project.
+	// DeployID names a failure's deploy by its row's id: the uuid of a deploy row that counts for
+	// the route's project, whichever project's row it is.
 	DeployID *string `json:"deploy_id"`
 	// CommitSHA names a failure's deploy by a commit: the first deploy of any project that
-	// shipped it.
+	// shipped it, which must count for the route's project.
 	CommitSHA string `json:"commit_sha"`
 	// Actor is a bearer's own session, as every bearer write names it (bearerSessionActor).
 	Actor *model.Actor `json:"actor"`
@@ -199,7 +214,11 @@ func parseProductionEventsQuery(query url.Values) (prodevents.ListQuery, error) 
 // POST /api/v1/projects/{key}/production-events  (a system's deploy or failure, a person's failure)
 //
 // Stores one event: 201 with the new row, or 200 with the row the project already holds under the
-// event's source_ref, writing nothing.
+// event's source_ref, writing nothing. A failure blames a deploy that counts for the route's
+// project (evals.DeployCountsFor), asked in the write's transaction once the store holds the
+// deploy's row (prodevents.DeployCheck): a deploy that counts for other projects alone, public or
+// private and whoever posts, is answered as a deploy no row holds is by the same selector, and the
+// failure, which counts for the route's project alone (evals' failure_days.go), writes nothing.
 func (s *server) postProductionEvent(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -240,24 +259,43 @@ func (s *server) postProductionEvent(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	var blamed blame
+	var check prodevents.DeployCheck
 	if event.Kind == prodevents.KindFailure {
-		deploy, err := s.blamedDeploy(r.Context(), input)
-		if err != nil {
+		if blamed, err = s.blamedDeploy(r.Context(), input); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		event.DeployID = &deploy
+		event.DeployID = &blamed.id
+		supplied := strings.TrimSpace(input.SourceRef)
 		if person {
-			event.SourceRef = prodevents.PersonSourceRef(deploy, actor.ID)
-			if supplied := strings.TrimSpace(input.SourceRef); supplied != "" && supplied != event.SourceRef {
-				writeError(w, prodevents.CodeInput, http.StatusBadRequest, fmt.Sprintf(
+			event.SourceRef = prodevents.PersonSourceRef(blamed.id, actor.ID)
+		}
+		// The deploy's own questions, once the store holds its row: whether it counts for the
+		// route's project, and only then whether a person's source_ref is the server's key of it,
+		// whose refusal names that deploy's id.
+		check = func(ctx context.Context, tx pgx.Tx, deploy prodevents.Event) error {
+			counts, err := evals.DeployCountsFor(ctx, tx, s.deps.Attributor, event.ProjectKey, deploy)
+			switch {
+			case err != nil:
+				return err
+			case !counts:
+				return blamed.none
+			case person && supplied != "" && supplied != event.SourceRef:
+				return productionEventInputError(
 					"a person's flag is keyed by the server, %s, so a second flag of one deploy writes nothing; send no source_ref, or that one",
-					event.SourceRef))
-				return
+					event.SourceRef)
 			}
+			return nil
 		}
 	}
-	stored, created, err := prodevents.Write(r.Context(), s.deps.Store.Pool, event)
+	stored, created, err := prodevents.WriteChecked(r.Context(), s.deps.Store.Pool, event, check)
+	// A blamed deploy the store holds no row of, or no deploy row of (a run's or a commit's row
+	// dropped since its lookup among them), is answered in the selector's words too.
+	var refused *prodevents.Error
+	if errors.As(err, &refused) && refused.Code == prodevents.CodeNoDeploy && blamed.none != nil {
+		err = blamed.none
+	}
 	if err != nil {
 		s.writeProductionEventError(w, err)
 		return
@@ -272,8 +310,10 @@ func (s *server) postProductionEvent(w http.ResponseWriter, r *http.Request) {
 // event is the row input asks for, before its project, its actor and a failure's deploy are
 // known: the plain and the OTel name of one field taken as one, a system's source_ref required and
 // refused where it starts with an automatic source's prefix (prodevents.AutomaticSourceRefPrefix),
-// the fields of a failure's deploy refused on a deploy, a failure's signal and source the caller's
-// (person or api), and its detected_at the server's time where the body names none.
+// the times no event has refused (checkedTimes) and each pull request it names held to
+// `owner/repo#n` (pullRequestRef), the fields of a failure's deploy refused on a deploy, a
+// failure's signal and source the caller's (person or api), and its detected_at the server's time
+// where the body names none.
 func (input productionEventInput) event(person bool) (prodevents.Event, error) {
 	if input.Kind != prodevents.KindDeploy && input.Kind != prodevents.KindFailure {
 		return prodevents.Event{}, productionEventInputError("kind must be deploy or failure, not %q", input.Kind)
@@ -304,13 +344,23 @@ func (input productionEventInput) event(person bool) (prodevents.Event, error) {
 	for index, commit := range input.Commits {
 		commits[index] = strings.ToLower(strings.TrimSpace(commit))
 	}
+	pulls := make([]string, len(input.PullRequests))
+	for index, pull := range input.PullRequests {
+		if pulls[index], err = pullRequestRef(pull); err != nil {
+			return prodevents.Event{}, err
+		}
+	}
 	event := prodevents.Event{
 		Kind: input.Kind, Source: prodevents.SourceAPI, Environment: environment, Status: status, SourceRef: input.SourceRef,
 		StartedAt: input.StartedAt, FinishedAt: input.FinishedAt, Repo: input.Repo, Commits: commits,
-		PullRequests: input.PullRequests, URL: link, Note: input.Note,
+		PullRequests: pulls, URL: link, Note: input.Note,
 	}
 	if len(input.Note) > productionEventNoteBytes {
 		return prodevents.Event{}, productionEventInputError("note holds %d bytes, past the %d a note may hold", len(input.Note), productionEventNoteBytes)
+	}
+	now := time.Now().UTC()
+	if err := input.checkedTimes(now); err != nil {
+		return prodevents.Event{}, err
 	}
 	if input.Kind == prodevents.KindDeploy {
 		if input.PipelineRunID != "" || input.CommitSHA != "" || input.DeployID != nil || input.DetectedAt != nil {
@@ -325,12 +375,45 @@ func (input productionEventInput) event(person bool) (prodevents.Event, error) {
 		event.Source = prodevents.SourcePerson
 	}
 	event.Signal = &signal
-	detected := time.Now().UTC()
+	detected := now
 	if input.DetectedAt != nil {
 		detected = *input.DetectedAt
 	}
 	event.DetectedAt = &detected
 	return event, nil
+}
+
+// checkedTimes refuses the times of input no event has, each naming its field: a finished_at
+// before started_at, and a finished_at or a detected_at past now, the server's clock, by more than
+// productionEventClockSkew.
+func (input productionEventInput) checkedTimes(now time.Time) error {
+	latest := now.Add(productionEventClockSkew)
+	switch {
+	case input.StartedAt != nil && input.FinishedAt != nil && input.FinishedAt.Before(*input.StartedAt):
+		return productionEventInputError("finished_at %s is before started_at %s: an event finishes at or after its start",
+			input.FinishedAt.Format(time.RFC3339Nano), input.StartedAt.Format(time.RFC3339Nano))
+	case input.FinishedAt != nil && input.FinishedAt.After(latest):
+		return productionEventInputError("finished_at %s is past the server's clock, %s, by more than %s: post an event once it has happened",
+			input.FinishedAt.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), productionEventClockSkew)
+	case input.DetectedAt != nil && input.DetectedAt.After(latest):
+		return productionEventInputError("detected_at %s is past the server's clock, %s, by more than %s: post a failure once it was found",
+			input.DetectedAt.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), productionEventClockSkew)
+	}
+	return nil
+}
+
+// pullRequestRef is ref, a pull request an event names, trimmed of the space around it, and
+// refuses one that is not `owner/repo#n` by the one reading of such a reference
+// (refs.ParseExternalRef) with n a number a pull request's row holds, a positive int32, as the
+// evals read the record's pull requests (evals' parsePullRequestRef).
+func pullRequestRef(ref string) (string, error) {
+	if _, number, ok := refs.ParseExternalRef(ref); ok {
+		if _, err := strconv.ParseInt(number, 10, 32); err == nil {
+			return strings.TrimSpace(ref), nil
+		}
+	}
+	return "", productionEventInputError("pull_requests holds %q, which is no pull request owner/repo#n with n a positive number",
+		evals.BoundedField(ref))
 }
 
 // otelField is one field the body may name twice, by its plain name and by OpenTelemetry's: the
@@ -345,14 +428,23 @@ func otelField(plainName, plain, otelName, otel string) (string, error) {
 	return otel, nil
 }
 
-// blamedDeploy is the id of the deploy a failure blames, named exactly one way: its row's id, in
-// its canonical spelling where it is a uuid, so a person's flag keys one deploy one way
+// blame is the deploy a failure blames (server.blamedDeploy), and none, the refusal the route
+// answers where no deploy the route's project counts is it, in the words of the selector the body
+// named it by, whether no deploy row is it or one that counts for other projects alone is.
+type blame struct {
+	id   string
+	none error
+}
+
+// blamedDeploy is the deploy a failure blames, named exactly one way: its row's id, in its
+// canonical spelling where it is a uuid, so a person's flag keys one deploy one way
 // (person:<deploy id>:<login>) however the body spells it, and which the store holds to a deploy
-// row as it writes (409 PRODUCTION_EVENT_NO_DEPLOY otherwise, a body's id that is no uuid
-// included); the GitHub run it was (prodevents.DeployForRun); or a commit it shipped
-// (prodevents.DeployForCommit). A run or a commit no deploy row holds is 409
-// PRODUCTION_EVENT_NO_DEPLOY, and the deploy may be another project's.
-func (s *server) blamedDeploy(ctx context.Context, input productionEventInput) (string, error) {
+// row as it writes (a body's id that is no uuid included); the GitHub run it was
+// (prodevents.DeployForRun); or a commit it shipped (prodevents.DeployForCommit), the first deploy
+// of any project to ship it. A run or a commit no deploy row holds is refused none at once, 409
+// PRODUCTION_EVENT_NO_DEPLOY, and the route refuses none as well a deploy found that does not count
+// for its project (postProductionEvent).
+func (s *server) blamedDeploy(ctx context.Context, input productionEventInput) (blame, error) {
 	named := 0
 	for _, set := range []bool{input.DeployID != nil, input.PipelineRunID != "", input.CommitSHA != ""} {
 		if set {
@@ -361,39 +453,42 @@ func (s *server) blamedDeploy(ctx context.Context, input productionEventInput) (
 	}
 	switch {
 	case named == 0:
-		return "", productionEventInputError("a failure names the deploy it blames: deploy_id, cicd.pipeline.run.id with repo, or commit_sha")
+		return blame{}, productionEventInputError("a failure names the deploy it blames: deploy_id, cicd.pipeline.run.id with repo, or commit_sha")
 	case named > 1:
-		return "", productionEventInputError("a failure names the deploy it blames one way: deploy_id, cicd.pipeline.run.id or commit_sha, not two of them")
+		return blame{}, productionEventInputError("a failure names the deploy it blames one way: deploy_id, cicd.pipeline.run.id or commit_sha, not two of them")
 	case input.DeployID != nil:
-		if id, err := uuid.Parse(*input.DeployID); err == nil {
-			return id.String(), nil
+		id := *input.DeployID
+		if parsed, err := uuid.Parse(id); err == nil {
+			id = parsed.String()
 		}
-		return *input.DeployID, nil
+		return blame{id: id, none: prodevents.NoDeploy(id)}, nil
 	case input.PipelineRunID != "":
 		run, err := strconv.ParseInt(input.PipelineRunID, 10, 64)
 		if err != nil || run <= 0 {
-			return "", productionEventInputError("cicd.pipeline.run.id %q is not a GitHub run id, a positive integer", input.PipelineRunID)
+			return blame{}, productionEventInputError("cicd.pipeline.run.id %q is not a GitHub run id, a positive integer", input.PipelineRunID)
 		}
 		if strings.TrimSpace(input.Repo) == "" {
-			return "", productionEventInputError("cicd.pipeline.run.id names a run of repo: name repo too")
+			return blame{}, productionEventInputError("cicd.pipeline.run.id names a run of repo: name repo too")
 		}
+		none := errorf(http.StatusConflict, prodevents.CodeNoDeploy, "no deploy row is run %d of %s", run, input.Repo)
 		deploy, found, err := prodevents.DeployForRun(ctx, s.deps.Store.Pool, input.Repo, run)
 		if err != nil {
-			return "", err
+			return blame{}, err
 		}
 		if !found {
-			return "", errorf(http.StatusConflict, prodevents.CodeNoDeploy, "no deploy row is run %d of %s", run, input.Repo)
+			return blame{}, none
 		}
-		return deploy.ID, nil
+		return blame{id: deploy.ID, none: none}, nil
 	}
+	none := errorf(http.StatusConflict, prodevents.CodeNoDeploy, "no deploy row holds commit %s", input.CommitSHA)
 	deploy, found, err := prodevents.DeployForCommit(ctx, s.deps.Store.Pool, input.CommitSHA)
 	if err != nil {
-		return "", err
+		return blame{}, err
 	}
 	if !found {
-		return "", errorf(http.StatusConflict, prodevents.CodeNoDeploy, "no deploy row holds commit %s", input.CommitSHA)
+		return blame{}, none
 	}
-	return deploy.ID, nil
+	return blame{id: deploy.ID, none: none}, nil
 }
 
 // productionEventInputError is the 400 PRODUCTION_EVENT_INPUT of a body no row can hold, naming
@@ -407,7 +502,11 @@ func productionEventInputError(format string, args ...any) *apiError {
 //
 // Rejects, re-counts or restores one failure of the project and answers the row: a reject and a
 // re-count keep their reason, writer and time; a restore sets the restore time, its writer and the
-// restoring deploy where the body names one.
+// restoring deploy where the body names one. A restoring deploy counts for the route's project
+// (evals.DeployCountsFor), asked in the write's transaction once the store holds its row
+// (prodevents.DeployCheck): one that counts for other projects alone is answered as a deploy no
+// row holds is (prodevents.NoDeploy), and one that finished before the failed deploy finished is
+// 400 PRODUCTION_EVENT_STATE_INPUT (prodevents.SetState).
 func (s *server) putProductionEventState(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -435,6 +534,13 @@ func (s *server) putProductionEventState(w http.ResponseWriter, r *http.Request)
 	}
 	updated, err := prodevents.SetState(r.Context(), s.deps.Store.Pool, project, id, prodevents.StateChange{
 		State: input.State, Reason: input.Reason, RestoredByDeploy: input.RestoredByDeploy,
+		Check: func(ctx context.Context, tx pgx.Tx, deploy prodevents.Event) error {
+			counts, err := evals.DeployCountsFor(ctx, tx, s.deps.Attributor, project, deploy)
+			if err == nil && !counts {
+				err = prodevents.NoDeploy(deploy.ID)
+			}
+			return err
+		},
 		Actor: actor, At: time.Now().UTC(),
 	})
 	if errors.Is(err, prodevents.ErrNotFound) {

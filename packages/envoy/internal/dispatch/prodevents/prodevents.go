@@ -113,6 +113,19 @@ func refuse(code, format string, args ...any) error {
 	return &Error{Code: code, Message: fmt.Sprintf(format, args...)}
 }
 
+// NoDeploy is the refusal of id, a deploy's id as the writer named it, a uuid in its canonical
+// spelling, where it names no deploy row the write may name: no row, a row of another kind, or a
+// deploy a DeployCheck refuses in these same words, so the refusal tells the writer nothing of a
+// row outside its reach.
+func NoDeploy(id string) error {
+	return refuse(CodeNoDeploy, "no deploy row has id %s", id)
+}
+
+// DeployCheck checks the attribution fields of a deploy that a route's write names.
+// The check runs in the write transaction while the deploy row is held for key share, so a drop
+// waits for the write. A nil check is used by automatic writers.
+type DeployCheck func(ctx context.Context, tx pgx.Tx, deploy Event) error
+
 // ErrNotFound is a row the project does not hold.
 var ErrNotFound = errors.New("no such production event")
 
@@ -185,12 +198,18 @@ func prepared(event Event) ([]byte, string, error) {
 // row and created false. A failure's blamed deploy must be a deploy row; a deploy names none. The
 // row's id, its creation time and its state are the server's, whatever event carries.
 func Write(ctx context.Context, pool *store.Pool, event Event) (Event, bool, error) {
+	return WriteChecked(ctx, pool, event, nil)
+}
+
+// WriteChecked is Write with check asked of each deploy event names (DeployCheck), nil for no
+// question: a route's post holds the failure's blamed deploy to its project with it.
+func WriteChecked(ctx context.Context, pool *store.Pool, event Event, check DeployCheck) (Event, bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return Event{}, false, fmt.Errorf("begin the write of production event %s: %w", event.SourceRef, err)
 	}
 	defer tx.Rollback(ctx)
-	stored, created, err := WriteIn(ctx, tx, event)
+	stored, created, err := writeIn(ctx, tx, event, check)
 	if err != nil {
 		return Event{}, false, err
 	}
@@ -208,18 +227,29 @@ func Write(ctx context.Context, pool *store.Pool, event Event) (Event, bool, err
 // nowhere either: the caller commits tx and then, where created, drains the change rows the write
 // left in the outbox (delivery.DrainAfterCommit), as Write does.
 func WriteIn(ctx context.Context, tx pgx.Tx, event Event) (Event, bool, error) {
+	return writeIn(ctx, tx, event, nil)
+}
+
+// writeIn is WriteIn's write with check asked of each deploy event names (WriteChecked).
+func writeIn(ctx context.Context, tx pgx.Tx, event Event, check DeployCheck) (Event, bool, error) {
 	actor, environment, err := prepared(event)
 	if err != nil {
 		return Event{}, false, err
 	}
 	commits, pulls := nonNil(event.Commits), nonNil(event.PullRequests)
+	named := make([]string, 0, 2)
 	if event.Kind == KindFailure {
-		if err := requireDeploy(ctx, tx, *event.DeployID); err != nil {
-			return Event{}, false, err
-		}
+		named = append(named, *event.DeployID)
 	}
 	if event.RestoredByDeploy != nil {
-		if err := requireDeploy(ctx, tx, *event.RestoredByDeploy); err != nil {
+		named = append(named, *event.RestoredByDeploy)
+	}
+	for _, id := range named {
+		deploy, err := requireDeploy(ctx, tx, id, check != nil)
+		if err == nil && check != nil {
+			err = check(ctx, tx, deploy)
+		}
+		if err != nil {
 			return Event{}, false, err
 		}
 	}
@@ -295,25 +325,31 @@ func validate(event Event) error {
 	return refuse(CodeInput, "signal %q is not one of the five", *event.Signal)
 }
 
-// requireDeploy refuses an id that names no deploy row. It reads the row for key share, the lock
-// the foreign key's check takes, so a drop of it (DropGitHubDeploy, which locks it for update)
-// waits for tx and then finds the row tx wrote that names it, and a write that comes after a drop
-// waits for the drop and then finds no row, which it refuses here rather than at the foreign key.
-func requireDeploy(ctx context.Context, tx pgx.Tx, id string) error {
-	if _, err := uuid.Parse(id); err != nil {
-		return refuse(CodeNoDeploy, "deploy %q is not a production event id", id)
+// requireDeploy holds the deploy row for key share, as the foreign key does, before a writer
+// references it. A concurrent drop must wait or leave no deploy to reference. Automatic writers
+// only need to know the row is a deploy; routes and restores also read its attribution and finish.
+func requireDeploy(ctx context.Context, tx pgx.Tx, id string, details bool) (Event, error) {
+	parsed, err := uuid.Parse(id)
+	if err != nil {
+		return Event{}, refuse(CodeNoDeploy, "deploy %q is not a production event id", id)
 	}
-	var kind string
-	err := tx.QueryRow(ctx, `select kind from production_events where id = $1 for key share`, id).Scan(&kind)
+	var deploy Event
+	if details {
+		err = tx.QueryRow(ctx, `select id::text, project_key, kind, source, status, repo, pull_requests, finished_at
+			from production_events where id = $1 and kind = 'deploy' for key share`, parsed.String()).
+			Scan(&deploy.ID, &deploy.ProjectKey, &deploy.Kind, &deploy.Source, &deploy.Status,
+				&deploy.Repo, &deploy.PullRequests, &deploy.FinishedAt)
+	} else {
+		err = tx.QueryRow(ctx, `select kind from production_events where id = $1 and kind = 'deploy' for key share`,
+			parsed.String()).Scan(&deploy.Kind)
+	}
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return refuse(CodeNoDeploy, "no deploy row has id %s", id)
+		return Event{}, NoDeploy(parsed.String())
 	case err != nil:
-		return fmt.Errorf("read deploy %s: %w", id, err)
-	case kind != KindDeploy:
-		return refuse(CodeNoDeploy, "row %s is a %s, not a deploy", id, kind)
+		return Event{}, fmt.Errorf("read deploy %s: %w", id, err)
 	}
-	return nil
+	return deploy, nil
 }
 
 // StateChange is one write of the state route (R8, R10): a reject, a re-count, or a restore.
@@ -324,8 +360,10 @@ type StateChange struct {
 	Reason string
 	// RestoredByDeploy names the deploy that restored the failure, where one did.
 	RestoredByDeploy *string
-	Actor            model.Actor
-	At               time.Time
+	// Check is the route's question of the restoring deploy (DeployCheck), nil for none.
+	Check DeployCheck
+	Actor model.Actor
+	At    time.Time
 }
 
 // StateRestored is the restore a state change may be, beside the two states a row holds.
@@ -333,7 +371,8 @@ const StateRestored = "restored"
 
 // SetState writes change to the failure id of project and answers the row. A deploy has no
 // state; a reject and a re-count keep the writer, the time and the reason (R8); a restore sets the
-// restore time and its writer, and the restoring deploy where change names one.
+// restore time and its writer, and the restoring deploy where change names one, a deploy that
+// finished at or after the failure's deploy finished.
 func SetState(ctx context.Context, pool *store.Pool, project, id string, change StateChange) (Event, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -363,6 +402,18 @@ func SetStateIn(ctx context.Context, tx pgx.Tx, project, id string, change State
 	if err != nil {
 		return Event{}, fmt.Errorf("encode the writer of production event %s's state: %w", id, err)
 	}
+	// A restore's restoring deploy is held before the failure, in the order a drop holds a deploy
+	// and then writes the failures that blame it (DropGitHubDeploy), so neither waits on the
+	// other's second lock. Its refusal waits for the failure's own: a row the project does not
+	// hold, a deploy's row.
+	var restoring Event
+	var noRestorer error
+	if change.State == StateRestored && change.RestoredByDeploy != nil {
+		var refused *Error
+		if restoring, noRestorer = requireDeploy(ctx, tx, *change.RestoredByDeploy, true); noRestorer != nil && !errors.As(noRestorer, &refused) {
+			return Event{}, noRestorer
+		}
+	}
 	current, err := scan(tx.QueryRow(ctx, `select `+columns+` from production_events
 		where project_key = $1 and id = $2 for update`, project, id))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -389,7 +440,7 @@ func SetStateIn(ctx context.Context, tx pgx.Tx, project, id string, change State
 			returning `+columns, project, id, change.State, change.Reason, by, change.At))
 	case StateRestored:
 		if change.RestoredByDeploy != nil {
-			if err := requireDeploy(ctx, tx, *change.RestoredByDeploy); err != nil {
+			if err := restorable(ctx, tx, current, restoring, noRestorer, change.Check); err != nil {
 				return Event{}, err
 			}
 		}
@@ -404,6 +455,34 @@ func SetStateIn(ctx context.Context, tx pgx.Tx, project, id string, change State
 		return Event{}, fmt.Errorf("write production event %s's state: %w", id, err)
 	}
 	return updated, nil
+}
+
+// restorable refuses restoring, the deploy a restore of failure names (held by requireDeploy, which
+// refused it noRestorer where it names no deploy row), where check refuses it, and where it finished
+// before the deploy failure blames: deployment-rework-rate counts a restoring deploy on its own
+// finish day (evals' failure_days.go), so a deploy that finished before the failed one would count
+// as rework in a window the failure is not in. The failed deploy is read and not locked: the
+// failure's foreign key keeps its row, and a lock of it after the failure's would take the two
+// rows in the order opposite to a drop's (DropGitHubDeploy).
+func restorable(ctx context.Context, tx pgx.Tx, failure, restoring Event, noRestorer error, check DeployCheck) error {
+	if noRestorer != nil {
+		return noRestorer
+	}
+	if check != nil {
+		if err := check(ctx, tx, restoring); err != nil {
+			return err
+		}
+	}
+	var failedAt time.Time
+	if err := tx.QueryRow(ctx, `select finished_at from production_events where id = $1`, *failure.DeployID).Scan(&failedAt); err != nil {
+		return fmt.Errorf("read the finish of production event %s's deploy: %w", failure.ID, err)
+	}
+	if restoring.FinishedAt.Before(failedAt) {
+		return refuse(CodeStateInput,
+			"restored_by_deploy %s finished before the deploy the failure blames finished: a deploy restores a failure of a deploy that finished at or before its own finish",
+			restoring.ID)
+	}
+	return nil
 }
 
 // Get reads the row id of project.

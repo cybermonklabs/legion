@@ -34,7 +34,10 @@ import (
 // deploy counts for its route's project alone, where that project holds an events source. A deploy
 // the GitHub adapter dropped counts in no numerator and no denominator. Unrejected failures on
 // those deploys count where their signals map to sources the project has on (signalSources); a
-// person's flag counts under any source. Of each day then:
+// person's flag counts under any source. A failure posted to a project's route, a system's (signal
+// api) or a person's flag, counts for that project alone, whatever other projects its deploy counts
+// for; an automatic signal's (check_fail, revert, incident_issue) counts for every project its deploy
+// counts for, whichever project's row it is (failureProject.counts). Of each day then:
 //
 //   - change-fail-rate: the deploys with a counted failure over the deploys
 //     (measures.ChangeFailRateDay);
@@ -73,6 +76,8 @@ func isFailureMeasure(definition Definition) bool {
 
 // signalSources is the failure source each signal of the record counts under
 // (delivery.FailureSources). A person's flag (prodevents.SignalPerson) counts under any of them.
+// Each of the two posted signals, api and person, counts for its route's project alone
+// (failureProject.counts).
 var signalSources = map[string]string{
 	prodevents.SignalCheckFail:     delivery.FailureSourceCheckResults,
 	prodevents.SignalRevert:        delivery.FailureSourceReverts,
@@ -110,16 +115,23 @@ func holdsEventsSource(settings delivery.ProjectSettings) bool {
 	})
 }
 
-// counts reports whether a failure of signal counts for p: a person's flag under any source, and
-// every other signal where p has its source on.
-func (p failureProject) counts(signal *string) bool {
-	if signal == nil {
+// counts reports whether failure counts for p: a failure posted to a route, a system's (signal api)
+// or a person's flag (signal person), where that route is p's, a flag under any source and a
+// system's under the events source; and an automatic signal's (check_fail, revert, incident_issue),
+// whichever project's row it is, where p has its source on.
+func (p failureProject) counts(failure prodevents.Event) bool {
+	if failure.Signal == nil {
 		return false
 	}
-	if *signal == prodevents.SignalPerson {
-		return true
+	switch *failure.Signal {
+	case prodevents.SignalPerson:
+		return failure.ProjectKey == p.project
+	case prodevents.SignalAPI:
+		if failure.ProjectKey != p.project {
+			return false
+		}
 	}
-	source, known := signalSources[*signal]
+	source, known := signalSources[*failure.Signal]
 	return known && slices.Contains(p.sources, source)
 }
 
@@ -174,27 +186,7 @@ func readFailureRecords(ctx context.Context, q delivery.Querier, attributor *del
 	if err != nil {
 		return failureRecords{}, err
 	}
-	attribute, err := readShippedAttribution(ctx, q, attributor, deploys)
-	if err != nil {
-		return failureRecords{}, err
-	}
-	keys := make([][]counted, len(deploys))
-	owners := map[string]bool{}
-	for i, deploy := range deploys {
-		keys[i] = attribute.recordProjects(deploy)
-		for _, key := range keys[i] {
-			if isOwner(key.project) {
-				owners[key.project] = true
-			}
-		}
-	}
-	ownerKeys := slices.Sorted(maps.Keys(owners))
-	readers, err := ownerReadersIn(ctx, q, ownerKeys)
-	if err != nil {
-		return failureRecords{}, err
-	}
-	ownerKeys = slices.DeleteFunc(ownerKeys, func(key string) bool { return len(readers[key]) > 0 })
-	missing, err := readUnrecordedOwners(ctx, q, ownerKeys, readers)
+	keys, readers, missing, err := readRecordReaders(ctx, q, attributor, deploys)
 	if err != nil {
 		return failureRecords{}, err
 	}
@@ -269,11 +261,11 @@ func addRestoreDays(named map[time.Time]bool, changed map[string]bool, deploys, 
 }
 
 // count adds to f, in their order, each of failures it counts: one that blames a deploy of f, is
-// counted, and is of a signal f's project counts.
+// counted, and counts for f's project (failureProject.counts).
 func (f *failureRecord) count(failures []prodevents.Event) {
 	for _, failure := range failures {
 		blamed := *failure.DeployID
-		if _, held := f.index[blamed]; !held || failure.State != prodevents.StateCounted || !f.project.counts(failure.Signal) {
+		if _, held := f.index[blamed]; !held || failure.State != prodevents.StateCounted || !f.project.counts(failure) {
 			continue
 		}
 		f.failed[blamed]++
@@ -331,7 +323,9 @@ func (a attribution) recordProjects(deploy prodevents.Event) []counted {
 }
 
 // readShippedAttribution reads the shared delivery attribution lists for the pull requests the
-// GitHub deploys ship, by key. All its queries run on the caller's read-only snapshot for items.
+// GitHub deploys ship, by key. All its queries run in sequence on the caller's one connection: the
+// read-only snapshot of the items, or the write's transaction of the record's routes
+// (DeployCountsFor).
 func readShippedAttribution(ctx context.Context, q delivery.Querier, attributor *delivery.Attributor, deploys []prodevents.Event) (attribution, error) {
 	var pulls []delivery.PullRequestKey
 	for _, deploy := range deploys {
@@ -352,6 +346,62 @@ func readShippedAttribution(ctx context.Context, q delivery.Querier, attributor 
 		}
 		return nil
 	})
+}
+
+// readRecordReaders reads each deploy's attribution keys (recordProjects), the projects that
+// read its owner keys under the published defaults and source selection (ownerReadersIn), and
+// which owner keys delivery has not registered yet (readUnrecordedOwners). Keep the readers
+// indexed by owner key so a batch does not make a copy of them for every deploy.
+func readRecordReaders(ctx context.Context, q delivery.Querier, attributor *delivery.Attributor, deploys []prodevents.Event) ([][]counted, map[string][]counted, []string, error) {
+	attribute, err := readShippedAttribution(ctx, q, attributor, deploys)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	keys := make([][]counted, len(deploys))
+	owners := map[string]bool{}
+	for i, deploy := range deploys {
+		keys[i] = attribute.recordProjects(deploy)
+		for _, key := range keys[i] {
+			if isOwner(key.project) {
+				owners[key.project] = true
+			}
+		}
+	}
+	ownerKeys := slices.Sorted(maps.Keys(owners))
+	readers, err := ownerReadersIn(ctx, q, ownerKeys)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	ownerKeys = slices.DeleteFunc(ownerKeys, func(key string) bool { return len(readers[key]) > 0 })
+	missing, err := readUnrecordedOwners(ctx, q, ownerKeys, readers)
+	return keys, readers, missing, err
+}
+
+// DeployCountsFor reads in q whether deploy, a deploy row of the record, counts for project under
+// the attribution the failure measures count it by (readFailureRecords, readRecordReaders): a
+// posted deploy for its route's project alone, a GitHub deploy for the projects the published
+// attribution of the pull requests it ships names or, shipping none, for the project whose deploy
+// source reads its repository, and a dropped deploy for none. It answers whether or not project's
+// failure measures are on, and reads deploy's own pull requests' attribution and its owner keys'
+// readers alone, so the record's routes ask it in the transaction of their write (api's
+// production events, prodevents.DeployCheck).
+func DeployCountsFor(ctx context.Context, q delivery.Querier, attributor *delivery.Attributor, project string, deploy prodevents.Event) (bool, error) {
+	if deploy.Status == prodevents.StatusDropped {
+		return false, nil
+	}
+	if deploy.Source == prodevents.SourceAPI {
+		return deploy.ProjectKey == project, nil
+	}
+	keys, readers, _, err := readRecordReaders(ctx, q, attributor, []prodevents.Event{deploy})
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(keys[0], func(key counted) bool {
+		if !isOwner(key.project) {
+			return key.project == project
+		}
+		return slices.ContainsFunc(readers[key.project], func(reader counted) bool { return reader.project == project })
+	}), nil
 }
 
 // deploysFrom is the index in f.deploys of the first deploy that finished at or after at.

@@ -628,7 +628,7 @@ func WriteFailures(ctx context.Context, pool *store.Pool, project string, now ti
 			failure.RestoredBy = new(names[*row.RestoredByDeploy])
 		}
 		for _, p := range byName[failure.Deploy].CountsFor {
-			if oracle.counts(p, signal) {
+			if oracle.counts(p, failure) {
 				failure.CountsFor = append(failure.CountsFor, p)
 			}
 		}
@@ -687,8 +687,9 @@ func expectsOf(result FailuresResult, oracle failureOracle, first string) Failur
 // events, person → counted whenever any source is on). Change fail rate: deploys with a counted
 // failure over deploys. Recovery: the median of restored_at less the deploy's finished_at over the
 // counted failures restored on D, beside the count of counted failures not restored. Rework rate:
-// deploys finished on D named as restoring a counted failure over deploys finished on D." sources
-// is each project's failure sources.
+// deploys finished on D named as restoring a counted failure over deploys finished on D."
+// A posted failure (api or person) counts for its route's project alone. An automatic one counts
+// for every project its deploy counts for. sources is each project's failure sources.
 type failureOracle struct {
 	sources map[string][]string
 }
@@ -701,12 +702,20 @@ var signalSource = map[string]string{
 	prodevents.SignalAPI:           delivery.FailureSourceEvents,
 }
 
-// counts reports whether project counts a failure of signal.
-func (o failureOracle) counts(project, signal string) bool {
-	if signal == prodevents.SignalPerson {
-		return len(o.sources[project]) > 0
+// counts reports whether project counts failure: a posted one (api or person) where it is a row of
+// project, the route it was posted to, and an automatic one whatever project's row it is; a
+// person's flag where project has any source on, and every other signal where project has its
+// source on.
+func (o failureOracle) counts(project string, failure FailureSignal) bool {
+	switch failure.Signal {
+	case prodevents.SignalPerson:
+		return failure.ProjectKey == project && len(o.sources[project]) > 0
+	case prodevents.SignalAPI:
+		if failure.ProjectKey != project {
+			return false
+		}
 	}
-	return slices.Contains(o.sources[project], signalSource[signal])
+	return slices.Contains(o.sources[project], signalSource[failure.Signal])
 }
 
 // measures is project's three measures over window, of deploys and the failures that blame them.
@@ -722,7 +731,7 @@ func (o failureOracle) measures(project string, deploys []FailureDeploy, failure
 	var minutes []float64
 	for _, failure := range failures {
 		deploy, held := in[failure.Deploy]
-		if !held || failure.State != prodevents.StateCounted || !o.counts(project, failure.Signal) {
+		if !held || failure.State != prodevents.StateCounted || !o.counts(project, failure) {
 			continue
 		}
 		failed[failure.Deploy] = true
