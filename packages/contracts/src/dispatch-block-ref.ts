@@ -217,6 +217,13 @@ export function parseCanonicalBlockReference(value: string): DispatchBlockRefere
 }
 
 /**
+ * The attribute that places a typed block under another block of its plan: a `block[]` attribute
+ * holding at most one reference, because a block has one parent. Go's twin is
+ * `pmdoc.ParentAttribute`.
+ */
+export const PARENT_ATTRIBUTE = "parent";
+
+/**
  * The pointers a typed block's `block[]` attribute holds, as markdown writes it: the empty string
  * for none, else canonical block references (`parseCanonicalBlockReference`) joined by exactly one
  * space, with none leading or trailing and none repeated. Undefined for any other value, which is
@@ -276,17 +283,35 @@ export function blockPointersProblem(values: readonly string[]): string | undefi
   return undefined;
 }
 
+/**
+ * Why `pointers`, the references the `block[]` attribute `name` holds, are no value of it beside
+ * what `blockPointersProblem` refuses: the parent (`PARENT_ATTRIBUTE`) holds at most one, because
+ * a block has one parent. Undefined for every other attribute and for one parent. The proof
+ * editor's `block[]` parser and commands call it; Go's twin is `pmdoc.parentCount`, and both are
+ * tested against the rows of DISPATCH_BLOCK_POINTER_VALUES that name an attribute.
+ */
+export function parentProblem(name: string, pointers: readonly string[]): string | undefined {
+  if (name !== PARENT_ATTRIBUTE || pointers.length <= 1) {
+    return undefined;
+  }
+  return `holds ${pointers.length} references; a block has one parent, so it holds at most one`;
+}
+
 const atIdBound = `dispatch://CORE-1/spec#b-${"x".repeat(MAX_BLOCK_ID_BYTES)}`;
 
 /**
  * Every value a `block[]` attribute may hold (`ok`) or not, and why; `problem`, where a row has
- * one, is a part of the reason both parsers must give for refusing it.
+ * one, is a part of the reason both parsers must give for refusing it. A row that names an
+ * `attribute` holds a well-formed value and tests that attribute's own rule (`parentProblem`):
+ * `ok` says whether the attribute takes the value. Every other row holds for any `block[]`
+ * attribute.
  */
 export const DISPATCH_BLOCK_POINTER_VALUES: readonly {
   value: string;
   ok: boolean;
   why: string;
   problem?: string;
+  attribute?: string;
 }[] = [
   {
     value: "dispatch://CORE-1/spec#b-x",
@@ -453,6 +478,26 @@ export const DISPATCH_BLOCK_POINTER_VALUES: readonly {
     ok: false,
     why: "a document's block, then an issue message's",
     problem: "is a block of a message: a block[] attribute points only at a block of a document",
+  },
+  {
+    attribute: "parent",
+    value: "dispatch://CORE-1/spec#b-x",
+    ok: true,
+    why: "a parent of one block",
+  },
+  { attribute: "parent", value: "", ok: true, why: "no parent" },
+  {
+    attribute: "parent",
+    value: "dispatch://CORE-1/spec#b-x dispatch://CORE/artifact/handbook-md#b-y",
+    ok: false,
+    why: "a parent of two blocks",
+    problem: "holds 2 references; a block has one parent, so it holds at most one",
+  },
+  {
+    attribute: "needs",
+    value: "dispatch://CORE-1/spec#b-x dispatch://CORE/artifact/handbook-md#b-y",
+    ok: true,
+    why: "a needs of two blocks, which only the parent's rule would refuse",
   },
 ];
 

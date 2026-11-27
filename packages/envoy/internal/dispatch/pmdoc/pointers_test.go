@@ -53,11 +53,11 @@ func useTestBlockSchema(t testing.TB, value BlockSchema) {
 
 // A block[] attribute's name is the kind of the links it makes, so it is one `?kind=` can name and
 // never a structural edge kind; its targets are types whose blocks the link graph holds; only it
-// carries targets. The shipped schema declares two: a plan task's serves and needs, the first of
-// which a check shares.
+// carries targets. The shipped schema declares three: a plan task's serves, needs and parent, the
+// first of which a check shares.
 func TestABlockPointerSchemaDeclaresANameAndTargets(t *testing.T) {
-	if kinds := LinkKinds(); !slices.Equal(kinds, []string{"needs", "serves"}) {
-		t.Fatalf("the shipped schema's link kinds = %v, want needs and serves", kinds)
+	if kinds := LinkKinds(); !slices.Equal(kinds, []string{"needs", "parent", "serves"}) {
+		t.Fatalf("the shipped schema's link kinds = %v, want needs, parent and serves", kinds)
 	}
 	if err := validateBlockSchema(blockPointerTestSchema(nil)); err != nil {
 		t.Fatalf("validate the test schema: %v", err)
@@ -97,8 +97,8 @@ func TestABlockPointerSchemaDeclaresANameAndTargets(t *testing.T) {
 		{Name: "note", BlockAttributeSchema: BlockAttributeSchema{Kind: BlockAttributeString}},
 	}})
 	useTestBlockSchema(t, twice)
-	if kinds := LinkKinds(); !slices.Equal(kinds, []string{"needs", "serves"}) {
-		t.Fatalf("link kinds of the types declaring serves = %v, want [needs serves]", kinds)
+	if kinds := LinkKinds(); !slices.Equal(kinds, []string{"needs", "parent", "serves"}) {
+		t.Fatalf("link kinds of the types declaring serves = %v, want [needs parent serves], serves once", kinds)
 	}
 	var served BlockSchema
 	if err := json.Unmarshal(SchemaJSON(), &served); err != nil || len(served.Types) != len(twice.Types) {
@@ -110,49 +110,47 @@ func TestABlockPointerSchemaDeclaresANameAndTargets(t *testing.T) {
 // read from markdown or checked in a tree, and a refused one with the reason its row's problem
 // names, where it names one: `testdata/block-pointer-values.json` is generated from
 // DISPATCH_BLOCK_POINTER_VALUES, which `packages/contracts/src/dispatch-block-ref.test.ts` holds
-// this file to.
+// this file to. A row that names an attribute holds a well-formed value and tests that
+// attribute's own rule (parentCount), on the attribute it names.
 func TestABlockPointerAttributeDecidesTheSharedCorpus(t *testing.T) {
 	t.Parallel()
-	raw, err := os.ReadFile("testdata/block-pointer-values.json")
-	if err != nil {
-		t.Fatalf("read table: %v", err)
-	}
-	var rows []struct {
-		Value   string `json:"value"`
-		OK      bool   `json:"ok"`
-		Why     string `json:"why"`
-		Problem string `json:"problem"`
-	}
-	if err := json.Unmarshal(raw, &rows); err != nil {
-		t.Fatalf("parse table: %v", err)
-	}
-	if len(rows) == 0 {
-		t.Fatal("the shared block pointer table is empty")
-	}
 	attr := BlockAttributeSchema{Kind: "block[]", Targets: []string{"requirement"}}
-	for _, row := range rows {
+	for _, row := range sharedPointerRows(t) {
 		parsed, err := ParseBlockPointerValue(row.Value)
-		if (err == nil) != row.OK {
-			t.Errorf("ParseBlockPointerValue(%q) (%s) = %v, want accepted %t", row.Value, row.Why, err, row.OK)
-		}
-		if err != nil {
-			// The refusal names what is wrong: the whole value, or the reference in it that is.
-			named := strings.Contains(err.Error(), strconv.Quote(row.Value))
-			for _, part := range strings.Split(row.Value, " ") {
-				named = named || part != "" && strings.Contains(err.Error(), strconv.Quote(part))
+		name := row.Attribute
+		if name == "" {
+			name = "serves"
+			if (err == nil) != row.OK {
+				t.Errorf("ParseBlockPointerValue(%q) (%s) = %v, want accepted %t", row.Value, row.Why, err, row.OK)
 			}
-			if !named {
-				t.Errorf("ParseBlockPointerValue(%q) (%s) = %v, want the refusal to name the value", row.Value, row.Why, err)
+			if err != nil {
+				// The refusal names what is wrong: the whole value, or the reference in it that is.
+				named := strings.Contains(err.Error(), strconv.Quote(row.Value))
+				for _, part := range strings.Split(row.Value, " ") {
+					named = named || part != "" && strings.Contains(err.Error(), strconv.Quote(part))
+				}
+				if !named {
+					t.Errorf("ParseBlockPointerValue(%q) (%s) = %v, want the refusal to name the value", row.Value, row.Why, err)
+				}
+				if !strings.Contains(err.Error(), row.Problem) {
+					t.Errorf("ParseBlockPointerValue(%q) (%s) = %v, want the refusal to say %q", row.Value, row.Why, err, row.Problem)
+				}
 			}
-			if !strings.Contains(err.Error(), row.Problem) {
-				t.Errorf("ParseBlockPointerValue(%q) (%s) = %v, want the refusal to say %q", row.Value, row.Why, err, row.Problem)
+			if row.OK && strings.Join(parsed, " ") != row.Value {
+				t.Errorf("ParseBlockPointerValue(%q) = %q, want the references as written", row.Value, parsed)
 			}
+		} else if err != nil {
+			t.Errorf("ParseBlockPointerValue(%q) (%s) = %v; a row of %s's own rule holds a well-formed value", row.Value, row.Why, err, name)
 		}
-		if row.OK && strings.Join(parsed, " ") != row.Value {
-			t.Errorf("ParseBlockPointerValue(%q) = %q, want the references as written", row.Value, parsed)
+		// Each row of an attribute's own rule is refused with its problem by every path; the other
+		// rows' problems are ParseBlockPointerValue's words, held above.
+		problem := ""
+		if row.Attribute != "" {
+			problem = row.Problem
 		}
-		if _, err := parseTypedAttributeValue(attr, row.Value); (err == nil) != row.OK {
-			t.Errorf("parseTypedAttributeValue(%q) (%s) = %v, want accepted %t", row.Value, row.Why, err, row.OK)
+		_, err = parseTypedAttributeValue(name, attr, row.Value)
+		if (err == nil) != row.OK || err != nil && !strings.Contains(err.Error(), problem) {
+			t.Errorf("parseTypedAttributeValue(%s, %q) (%s) = %v, want accepted %t, a refusal saying %q", name, row.Value, row.Why, err, row.OK, problem)
 		}
 		// A tree holds the value as the array Yjs gives back.
 		items := []any{}
@@ -161,10 +159,38 @@ func TestABlockPointerAttributeDecidesTheSharedCorpus(t *testing.T) {
 				items = append(items, item)
 			}
 		}
-		if err := validateAttributeValue(attr, items); (err == nil) != row.OK {
-			t.Errorf("validateAttributeValue(%q) (%s) = %v, want accepted %t", items, row.Why, err, row.OK)
+		err = validateAttributeValue(name, attr, items)
+		if (err == nil) != row.OK || err != nil && !strings.Contains(err.Error(), problem) {
+			t.Errorf("validateAttributeValue(%s, %q) (%s) = %v, want accepted %t, a refusal saying %q", name, items, row.Why, err, row.OK, problem)
 		}
 	}
+}
+
+// sharedPointerRow is one row of testdata/block-pointer-values.json (DISPATCH_BLOCK_POINTER_VALUES
+// in @legion/contracts).
+type sharedPointerRow struct {
+	Attribute string `json:"attribute"`
+	Value     string `json:"value"`
+	OK        bool   `json:"ok"`
+	Why       string `json:"why"`
+	Problem   string `json:"problem"`
+}
+
+// sharedPointerRows is every row of the shared block[] table, failing t where it reads none.
+func sharedPointerRows(t *testing.T) []sharedPointerRow {
+	t.Helper()
+	raw, err := os.ReadFile("testdata/block-pointer-values.json")
+	if err != nil {
+		t.Fatalf("read table: %v", err)
+	}
+	var rows []sharedPointerRow
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatalf("parse table: %v", err)
+	}
+	if len(rows) == 0 {
+		t.Fatal("the shared block pointer table is empty")
+	}
+	return rows
 }
 
 // A block[] attribute's targets name built-in blocks the link graph holds: each type the block list

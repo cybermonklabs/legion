@@ -14,6 +14,7 @@
 
 import {
   blockPointerValueProblem,
+  parentProblem,
   parseBlockPointerValue,
   parseCanonicalBlockReference,
 } from "@legion/contracts";
@@ -46,13 +47,16 @@ export function findBlock(
 /**
  * The pointers the typed block `typeName`'s `block[]` attribute `name` holds when markdown or a
  * pasted block writes it as `value`: none for the empty string, else canonical block references
- * joined by exactly one space. Any other value is refused, never normalised.
+ * joined by exactly one space. Any other value is refused, never normalised, and so is a parent
+ * holding more than one (`@legion/contracts`' `parentProblem`).
  */
 export function parseBlockPointers(typeName: string, name: string, value: string): string[] {
   const pointers = parseBlockPointerValue(value);
-  if (pointers === undefined) {
+  const problem =
+    pointers === undefined ? blockPointerValueProblem(value) : parentProblem(name, pointers);
+  if (problem !== undefined || pointers === undefined) {
     throw new Error(
-      `typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)}: ${blockPointerValueProblem(value)}`
+      `typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)}: ${problem}`
     );
   }
   return pointers;

@@ -1535,8 +1535,8 @@ So for each surface the two builds share, this is what build N+1 may change whil
   A new element is readable one release before it is creatable, unless the page admission below gates it: `legion-envoy-v29.1.0` first declares `requirement`, `plan_task` and `check`, at manifest version 3, and this build gives them `since` 3 and `creatable_since` 3 (Generations and holds, below).
   A server-side write (an agent's edit, a settlement, an import) is bound by this build's manifest alone, so one can still add such an element during a roll; a build of this manifest at an earlier version then answers `409 DOC_NEWER_CONTENT` for that document (the release before the manifest: Generations and holds, below).
   Every write path refuses an element this build reads but may not create yet (`pmdoc`, `refuseUncreatable`), unless the document already holds it, and the editor offers only the elements it may create.
-  This build reads `check`'s `subject` and `program` from manifest version 6 and creates them from version 7.
-  It refuses a write that adds either attribute to a document not already holding that attribute.
+  This build reads and creates `check`'s `subject` and `program`, which manifest version 6 reads and version 7 creates.
+  It reads `plan_task`'s `parent` from version 7 and creates it from version 8, so it refuses a write that adds `parent` to a document not already holding it.
   An element stays readable while stored documents may hold it: no release removes a readable element from the manifest.
   A build that still meets an element it does not know answers `409 DOC_NEWER_CONTENT` for that document, and its document socket closes with `4425` (Document errors, below).
   No route repairs, replaces or rebuilds such a document, since each of those would delete the element;
@@ -1769,6 +1769,8 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   Each is read from version 6 and created from version 7.
   It moves every block type to version 6, which `pmdoc/schema/blocks.json` declares.
   Like `20261123080000`, it uses bounded writes alone.
+  Migration `20261127114415` adds `plan_task`'s `parent` attribute node, read from version 7 and created from version 8, and moves every block type to version 7, the version `pmdoc/schema/blocks.json` declares, in the same shape.
+  It sorts above `20261125125703_btree_gin`, so it needs a store where `btree_gin` is applied already: its release follows the release that first holds `btree_gin`, as that migration's release note requires of every later migration, and `TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema` takes the census of each type migration with the migrations through `btree_gin` applied first.
   Each read runs in one read-only transaction at repeatable read, so a migration that commits while it reads is read whole by the next read, never half.
   A store schema above the version this binary was built for is a store the next release migrated: the process installs it at its own version, with the elements whose `since` is at or below that version and nothing else, and keeps serving, its boot and `/healthz` unaffected, so a release that ships a type migration takes no process of the previous build out of service.
   A read that moved the schema the process serves first writes the numbers it serves now into its registry row (`processes.Registration.RefreshSchema`), then closes every document socket it holds (`docs.Service.CloseDocumentSockets`); the browser connects again presenting the schema its own build compiled, and that admission decides against the schema installed now.

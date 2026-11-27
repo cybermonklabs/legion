@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  `PARENT_ATTRIBUTE` names the attribute that places a typed block under another block, which
+  holds at most one reference. The fixtures in `fixtures/dispatch-version-blocks` hold a version
+  read that lists each task block's `parent`, and the refusal of a build that cannot read it.
+time: 2026-11-27T11:44:15Z
+custom:
+    Issue: plan-task-parent

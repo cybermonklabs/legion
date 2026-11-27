@@ -1230,6 +1230,8 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  /** The one block a plan task stands directly under (`parent`, read from this release). */
+  parent: "stands under",
   program: "program",
   run: "run",
   selected: "selected",

@@ -3,7 +3,7 @@ import { DISPATCH_BLOCK_POINTER_VALUES } from '@legion/contracts';
 import { Schema } from '@milkdown/kit/prose/model';
 import { EditorState } from '@milkdown/kit/prose/state';
 
-import { typedBlockSpec, type BlockSchema, type BlockTypeSchema } from '../block-schema.js';
+import { typedBlockSpec, validateBlockSchema, type BlockSchema, type BlockTypeSchema } from '../block-schema.js';
 import { createHeadlessProof } from '../lib-headless.js';
 import { createTypedBlockCommands } from '../typed-block-commands.js';
 
@@ -385,6 +385,19 @@ const pointerSchema = {
   ],
 } as const;
 
+/** A plan task whose `needs` and `parent` are `block[]` attributes, as Dispatch's manifest declares them. */
+const planTaskSchema = {
+  version: 1,
+  types: [
+    {
+      name: 'plan_task',
+      content: 'paragraph+',
+      render: 'host',
+      attributes: { needs: { kind: 'block[]', targets: ['plan_task'] }, parent: { kind: 'block[]' } },
+    },
+  ],
+} as const;
+
 /** The error `run` throws, or undefined when it returns. */
 function thrownBy(run: () => unknown): Error | undefined {
   try {
@@ -396,24 +409,29 @@ function thrownBy(run: () => unknown): Error | undefined {
 }
 
 await test('a block pointer attribute reads and writes exactly the values the shared table accepts', async () => {
-  const proof = await createHeadlessProof({ blockSchema: pointerSchema });
-  for (const { value, ok, why } of DISPATCH_BLOCK_POINTER_VALUES) {
-    const markdown = `:::claim{#c1 serves="${value}"}\nBody.\n:::\n`;
+  const claims = await createHeadlessProof({ blockSchema: pointerSchema });
+  const tasks = await createHeadlessProof({ blockSchema: planTaskSchema });
+  for (const { value, ok, why, problem, attribute } of DISPATCH_BLOCK_POINTER_VALUES) {
+    // A row that names an attribute tests that attribute's own rule, on a plan task; every other
+    // row holds for any block[] attribute, tested on a claim's serves.
+    const name = attribute ?? 'serves';
+    const proof = attribute === undefined ? claims : tasks;
+    const markdown = attribute === undefined ? `:::claim{#c1 serves="${value}"}\nBody.\n:::\n` : `:::plan_task{#t2 ${name}="${value}"}\nBody.\n:::\n`;
     if (ok) {
-      const claim = proof.parseMarkdown(markdown).child(0);
+      const block = proof.parseMarkdown(markdown).child(0);
       const want = value === '' ? [] : value.split(' ');
-      assert(claim.type.name === 'claim', `${why}: parsed node type = ${claim.type.name}`);
-      assert(JSON.stringify(claim.attrs.serves) === JSON.stringify(want), `${why}: serves = ${JSON.stringify(claim.attrs.serves)}`);
+      assert(JSON.stringify(block.attrs[name]) === JSON.stringify(want), `${why}: ${name} = ${JSON.stringify(block.attrs[name])}`);
       // The editor writes an empty attribute as its bare name, which the server reads as `=""`
       // (pmdoc directive.go); every other value is written back exactly as it was read.
-      const expected = value === '' ? markdown.replace('serves=""', 'serves') : markdown;
+      const expected = value === '' ? markdown.replace(`${name}=""`, name) : markdown;
       const written = proof.serializeMarkdown(proof.parseMarkdown(markdown));
       assert(written === expected, `${why}: wrote ${JSON.stringify(written)}, want ${JSON.stringify(expected)}`);
       assert(proof.serializeMarkdown(proof.parseMarkdown(written)) === written, `${why}: ${JSON.stringify(written)} did not read back`);
     } else {
       const error = thrownBy(() => proof.parseMarkdown(markdown));
       assert(error !== undefined, `${why}: ${JSON.stringify(value)} was accepted`);
-      assert(error!.message.includes('"serves"'), `${why}: refusal = ${error!.message}`);
+      assert(error!.message.includes(`"${name}"`), `${why}: refusal = ${error!.message}`);
+      assert(problem === undefined || error!.message.includes(problem), `${why}: refusal = ${error!.message}, want it to say ${problem}`);
     }
   }
 });
@@ -512,4 +530,26 @@ await test('a pasted typed block carrying a refused block pointer is not read as
   const parsed = rule.getAttrs(section({ 'data-proof-block-attr-serves': value }));
   assert(parsed !== false && parsed !== null && JSON.stringify(parsed.serves) === JSON.stringify(value.split(' ')), `parsed = ${JSON.stringify(parsed)}`);
   assert(rule.getAttrs(section({ 'data-proof-block-attr-serves': 'dispatch://CORE-1/artifact/spec#b-x' })) === false, 'a refused pointer was parsed as the typed block');
+});
+
+await test('a plan task command takes or refuses each attribute row of the shared table, and only a block[] attribute is a parent', async () => {
+  const proof = await createHeadlessProof({ blockSchema: planTaskSchema });
+  let state = EditorState.create({ schema: proof.schema, doc: proof.parseMarkdown(':::plan_task{#t2}\nDo it.\n:::\n') });
+  const commands = createTypedBlockCommands({ blockSchema: planTaskSchema, getState: () => state, dispatch: (tr) => { state = state.apply(tr); } });
+  const rows = DISPATCH_BLOCK_POINTER_VALUES.filter((row) => row.attribute !== undefined);
+  assert(rows.length > 0, "the shared table holds no row of an attribute's own rule");
+  for (const { attribute, value, ok, why, problem } of rows) {
+    const pointers = value === '' ? [] : value.split(' ');
+    if (ok) {
+      assert(commands.setBlockAttributes('t2', { [attribute!]: pointers }), `${why}: the command refused it`);
+    } else {
+      const error = thrownBy(() => commands.setBlockAttributes('t2', { [attribute!]: pointers }));
+      assert(error !== undefined && (problem === undefined || error.message.includes(problem)), `${why}: the command answered ${error?.message}`);
+    }
+  }
+  for (const kind of ['string', 'string[]'] as const) {
+    const refused = { version: 1, types: [{ name: 'plan_task', content: 'paragraph+', render: 'host', attributes: { parent: { kind } } }] };
+    const invalid = thrownBy(() => validateBlockSchema(refused as unknown as BlockSchema));
+    assert(invalid?.message.includes('places a block in its tree, so it must be a block[] attribute') === true, `a ${kind} parent: ${invalid?.message}`);
+  }
 });

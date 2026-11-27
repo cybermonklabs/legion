@@ -4,7 +4,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"sync/atomic"
 )
+
+// createStaged is whether this process creates the elements its manifest stages for the next
+// version (CreateStagedForTest). It is apart from the manifest, so the store's installer, which
+// installs the manifest again at each wake, leaves it as it is.
+var createStaged atomic.Bool
+
+// CreateStagedForTest makes this process create each element its manifest reads but stages for
+// the next version, until restore is called: refuseUncreatable refuses none. It changes what a
+// write may create and nothing a reader is told (SchemaCreatable, the editor's offer). Dispatch's
+// test setting DISPATCH_TEST_CREATE_STAGED calls it, and only beside DISPATCH_TEST_HOOKS=1, so a
+// test process can write what the next release creates. restore may be called more than once.
+func CreateStagedForTest() (restore func()) {
+	previous := createStaged.Swap(true)
+	return func() { createStaged.Store(previous) }
+}
 
 // UseManifestForTest makes manifest, a schema manifest in blocks.json's format, the one this
 // package reads and writes by, in place of the installed one, until restore is called. A test
@@ -22,6 +39,41 @@ func UseManifestForTest(manifest []byte) (restore func(), err error) {
 	compiled.json = previous.json
 	compiled.install()
 	return previous.install, nil
+}
+
+// ManifestAsOfForTest is the installed manifest as the build of another release reads it, in
+// blocks.json's format: its version set to version, and every element it reads only from a later
+// one dropped. An element whose since is at most version stays as it is, creatable_since above
+// version included: that is an element that build already read and did not create. A version
+// above this build's keeps every element, as the next release's build declares them. A test
+// installs it with UseManifestForTest to act as that build. It lives here, beside the other test
+// hooks, and not in pmdoctest, because this package's own tests call it too, and they cannot
+// import pmdoctest, which imports this package: Go refuses that import cycle in a test.
+func ManifestAsOfForTest(version int) ([]byte, error) {
+	var value BlockSchema
+	if err := json.Unmarshal(SchemaJSON(), &value); err != nil {
+		return nil, fmt.Errorf("decode the installed manifest: %w", err)
+	}
+	later := func(since int) bool { return since > version }
+	value.Version = version
+	value.Nodes = slices.DeleteFunc(value.Nodes, func(node BlockSchemaElement) bool { return later(node.Since) })
+	value.Marks = slices.DeleteFunc(value.Marks, func(mark BlockSchemaElement) bool { return later(mark.Since) })
+	value.Types = slices.DeleteFunc(value.Types, func(typ BlockTypeSchema) bool { return later(typ.Since) })
+	for index := range value.Types {
+		typ := &value.Types[index]
+		typ.Attributes = slices.DeleteFunc(typ.Attributes, func(attr BlockAttribute) bool { return later(attr.Since) })
+		for attrIndex := range typ.Attributes {
+			attr := &typ.Attributes[attrIndex]
+			attr.Choices = slices.DeleteFunc(slices.Clone(attr.Choices), func(choice string) bool {
+				return later(attr.ChoiceVersions[choice].Since)
+			})
+		}
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("encode the manifest as of version %d: %w", version, err)
+	}
+	return encoded, nil
 }
 
 // SetBlockSchemaForTest makes value the block schema, as if the server had been built with it:

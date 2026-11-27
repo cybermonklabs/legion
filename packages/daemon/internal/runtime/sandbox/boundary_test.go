@@ -151,12 +151,7 @@ func newInitRigOf(t *testing.T, legion string, opts Options) *initRig {
 	return rig
 }
 
-// clone and workspace are where provisioning puts the issue's clone and an issue's workspace on the
-// pod's disk.
-func (pod *rigPod) clone() string {
-	return filepath.Join(pod.disk, "repos", "github.com", "sjawhar", "legion-smoke")
-}
-
+// workspace is where provisioning puts an issue's workspace on the pod's disk.
 func (pod *rigPod) workspace(issue string) string {
 	return filepath.Join(pod.disk, "workspaces", "sjawhar", "legion-smoke", strings.ToLower(issue))
 }
@@ -212,18 +207,6 @@ func (rig *initRig) volumeDir(pod *rigPod, volume corev1.Volume) string {
 		return rig.tree
 	}
 	return filepath.Join(pod.dir, "volumes", volume.Name)
-}
-
-// restart runs the pod's init containers again on what the pod keeps, as the kubelet does when it
-// recreates a running pod's sandbox: the pod's disk survives that with whatever its agents wrote on
-// it, and every other volume is made afresh. The disk is the pod's own ephemeral volume, whose
-// claim the Pod owns, or a kept volume. On a disk of the pod's own, a restart is the one way
-// provisioning meets a disk an agent of the issue has written — a retained clone and a workspace
-// that exists — so a test of provisioning against a planted disk opts into it by name. On a kept
-// volume, the issue's next pod meets that disk too.
-func (rig *initRig) restart(pod *rigPod) error {
-	rig.t.Helper()
-	return rig.initialize(pod)
 }
 
 // delete removes the pod, and with it every volume of its own, its disk included when the disk is
@@ -701,8 +684,6 @@ type gitHubStandIn struct {
 	caFile string
 	// remote is the bare repository the stand-in serves as boundaryRepo.
 	remote string
-	mu     sync.Mutex
-	count  int
 }
 
 func newGitHubStandIn(t *testing.T, root string) *gitHubStandIn {
@@ -738,11 +719,8 @@ func newGitHubStandIn(t *testing.T, root string) *gitHubStandIn {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		g.mu.Lock()
-		g.count++
-		g.mu.Unlock()
 		backend.ServeHTTP(w, r)
-	}, nil)
+	})
 	return g
 }
 
@@ -841,16 +819,9 @@ func cacheTar(remote string) ([]byte, error) {
 	return stream.Bytes(), err
 }
 
-// authorized is how many requests presented the provisioning token.
-func (g *gitHubStandIn) authorized() int {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.count
-}
-
 // tlsTerminatingProxy is an HTTP proxy that answers every CONNECT itself: it terminates TLS with
-// certificate and serves handler on the tunnel. onConnect, when set, runs for each CONNECT.
-func tlsTerminatingProxy(t *testing.T, certificate tls.Certificate, handler http.HandlerFunc, onConnect func()) *httptest.Server {
+// certificate and serves handler on the tunnel.
+func tlsTerminatingProxy(t *testing.T, certificate tls.Certificate, handler http.HandlerFunc) *httptest.Server {
 	t.Helper()
 	tunnels := &tunnelListener{conns: make(chan net.Conn), done: make(chan struct{})}
 	inner := &http.Server{Handler: handler, ReadHeaderTimeout: 30 * time.Second}
@@ -859,9 +830,6 @@ func tlsTerminatingProxy(t *testing.T, certificate tls.Certificate, handler http
 		if r.Method != http.MethodConnect {
 			http.Error(w, "CONNECT only", http.StatusMethodNotAllowed)
 			return
-		}
-		if onConnect != nil {
-			onConnect()
 		}
 		conn, _, err := w.(http.Hijacker).Hijack()
 		if err != nil {
