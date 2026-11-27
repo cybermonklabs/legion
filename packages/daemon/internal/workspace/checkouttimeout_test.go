@@ -36,14 +36,14 @@ const checkoutRunMargin = checkoutDelay + checkoutBudget + cutRunMargin
 // started it to its first line, before a command of it that took the runner's budget is one the
 // machine held there (budgetSpans.startedLate). An idle machine brings a shell to its first line
 // within milliseconds of its start, and a second is what main's rows gave a command to start and
-// report that it was running (startBound). Nothing the runner does before that start or after it
-// moves the mark (markStart), so a run in which the product held a command to the budget reads as
-// late only where the machine also brought that command's jj to its first line a second or more
-// after its start, which an idle machine never does.
+// report that it was running (ownBound). Nothing the runner does before that start or after it
+// moves the mark (testexec.MarkStart), so a run in which the product held a command to the budget
+// reads as late only where the machine also brought that command's jj to its first line a second
+// or more after its start, which an idle machine never does.
 const lateStart = time.Second
 
 // standInMark is the environment entry in which budgetSpans names, for each command, the file its
-// stand-in jj writes its start mark to (markStart).
+// stand-in jj writes its start mark to (testexec.MarkStart).
 const standInMark = "LEGION_TEST_STANDIN_MARK"
 
 // slowCheckoutTools is testTools with a jj that sleeps delay whenever its arguments hold `sparse
@@ -55,8 +55,8 @@ const standInMark = "LEGION_TEST_STANDIN_MARK"
 // --config=git.executable-path first on every jj it starts (execRunner.Run); no other jj
 // provisioning runs holds them side by side (`jj sparse list`, `jj sparse set --clear`). Where its
 // environment names a file under standInMark (budgetSpans), its first act writes its start mark
-// there (markStart): when the runner started it, as the kernel counts it, and when it reached that
-// line.
+// there (testexec.MarkStart): when the runner started it, as the kernel counts it, and when it
+// reached that line.
 func slowCheckoutTools(t *testing.T, delay time.Duration) map[string]string {
 	t.Helper()
 	tools := testTools(t)
