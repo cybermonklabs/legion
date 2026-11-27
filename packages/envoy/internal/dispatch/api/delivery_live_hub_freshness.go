@@ -10,19 +10,24 @@ import (
 )
 
 // readFreshness reads the settings row's freshness columns and applies them to g, as a
-// delivery_freshness notification carries them (applyFreshness). The intake runs it at each
-// connection of g's listener, the first included: Postgres sends a notification only to a
+// delivery_freshness notification carries them (applyFreshness). The listener runs it at each of
+// its connections, the first included, after the LISTEN and before it applies any notification of
+// that connection (OnConnected, pglisten.Listener.listen): Postgres sends a notification only to a
 // connection that listens, so one sent while the listener was down, or before its first LISTEN,
-// reaches nobody and nothing sends it again, and no other read moves the freshness - a view's
-// recompute sets it only before the first verdict (recomputed, g.known). Without this read the
-// Delivery page's banner, and the last reconcile and last event times beside it, stay as they
-// were until the next freshness change, an hour or more where that change is the reconcile pass's
-// own. The same window is already a defect for the Legion views, which the intake marks there for
-// exactly this reason (dirtyLegionViews).
+// reaches nobody and nothing sends it again. Without this read the Delivery page's banner, and the
+// last reconcile and last event times beside it, stay as they were until the next freshness
+// change, an hour or more where that change is the reconcile pass's own. The same window is
+// already a defect for the Legion views, which the intake marks at each connection for exactly
+// this reason (dirtyLegionViews).
 //
-// It reads the settings alone and judges them under the hub's lock, as applyFreshness does, so a
-// verdict that changed sends its frame to every open page. A read that fails is logged and left:
-// the next connection runs it again, and a notification that arrives first moves the same fields.
+// Three writers set g's freshness: this read, a notification (applyFreshness) and the first
+// recompute (recompute, while !g.known). This read and the notifications run on the listener's one
+// goroutine, so no notification of the connection is applied between this read and its write, and
+// each one committed after the read is applied after it. The first recompute keeps what either of
+// them wrote (g.heard), since its own read can be older than theirs. It judges under the hub's
+// lock, as applyFreshness does, so a verdict that changed sends its frame to every open page. A
+// read that fails is logged and left: the next connection runs it again, and a notification that
+// arrives first moves the same fields.
 func (h *deliveryHub) readFreshness(g *hubGeneration) {
 	settings, err := delivery.GetSettings(g.readContext(), h.server.deps.Store.Pool)
 	if err != nil {
@@ -35,6 +40,7 @@ func (h *deliveryHub) readFreshness(g *hubGeneration) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	g.fresh.lastEventAt, g.fresh.lastReconcileAt, g.fresh.lastError = settings.LastEventAt, settings.LastReconcileAt, settings.LastError
+	g.heard = true
 	h.judgeLocked(g, now)
 	// The threshold moved with the reconcile time: the worker re-arms its timer.
 	signal(g.wakeWork)
@@ -56,6 +62,7 @@ func (h *deliveryHub) applyFreshness(g *hubGeneration, payload string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	g.fresh.lastEventAt, g.fresh.lastReconcileAt, g.fresh.lastError = row.LastEventAt, row.LastReconcileAt, row.LastError
+	g.heard = true
 	h.judgeLocked(g, now)
 	// The threshold moved with the reconcile time: the worker re-arms its timer.
 	signal(g.wakeWork)

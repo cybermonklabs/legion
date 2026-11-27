@@ -268,10 +268,14 @@ type hubGeneration struct {
 	// p0 is the open P0 issues (OpenP0Keys), kept current from issue event payloads.
 	p0 map[string]struct{}
 	// fresh is the freshness row as last heard, and sent the verdict last sent; known is false
-	// until the first recompute sets them, silently.
+	// until the first recompute sets them, silently. heard is whether the listener has written
+	// fresh - a connection's read of the row (readFreshness) or a notification (applyFreshness) -
+	// which run on its one goroutine in the order the row's writes committed; the first recompute
+	// then keeps fresh's times and error, since its own read of the row can be older.
 	fresh deliveryFreshnessHeard
 	sent  deliveryFreshnessVerdict
 	known bool
+	heard bool
 }
 
 // hubClock is the hub's clock: what time it is, and a timer that calls f once the clock reaches
@@ -460,7 +464,7 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 		ListenIdle:  h.listenIdle,
 		PingTimeout: h.pingTimeout,
 		Backoff:     h.backoff,
-		OnConnected: func() { signal(g.connected) },
+		OnConnected: func() { h.readFreshness(g); signal(g.connected) },
 		OnNotify:    func(channel, payload string) { h.onNotify(g, channel, payload) },
 	}
 	h.running.Add(3)

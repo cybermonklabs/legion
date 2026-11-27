@@ -201,11 +201,16 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 			break
 		}
 		if !g.known {
-			// The first verdict is set silently, from the first settings read.
-			g.fresh = deliveryFreshnessHeard{
-				lastEventAt: read.settings.LastEventAt, lastReconcileAt: read.settings.LastReconcileAt,
-				lastError: read.settings.LastError, unfetchable: read.unfetchable,
+			// The first verdict is set silently, from the first settings read - unless the listener
+			// has written the row's times and error already (g.heard: a connection's read, or a
+			// notification applied while this recompute read), which are as new as this read or
+			// newer, since the listener applies them in the order the row's writes committed. This
+			// read's own could be older, and would roll back the pass or the error it missed.
+			if !g.heard {
+				g.fresh.lastEventAt, g.fresh.lastReconcileAt, g.fresh.lastError =
+					read.settings.LastEventAt, read.settings.LastReconcileAt, read.settings.LastError
 			}
+			g.fresh.unfetchable = read.unfetchable
 			g.sent = g.verdictLocked(now)
 			g.known = true
 		} else {
