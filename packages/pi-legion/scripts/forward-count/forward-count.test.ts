@@ -15,8 +15,8 @@ import {
   classifyMergeBlocked,
   type MergeBlockedRead,
   namesPersonRequest,
-  parseSession,
   type PersonRequestRead,
+  parseSession,
   type Reading,
   type ReturnFacts,
   type ReturnLine,
@@ -374,11 +374,11 @@ function backwardMove(at: string, id = "back-1"): Line[] {
 
 /** A session file of `lines`, as the store imports one. */
 function session(lines: Line[], id = "ses-made-1"): string {
-  return (
-    [JSON.stringify({ type: "session", id }), ...lines.map((line) => JSON.stringify(line))].join(
-      "\n"
-    ) + "\n"
-  );
+  const all = [
+    JSON.stringify({ type: "session", id }),
+    ...lines.map((line) => JSON.stringify(line)),
+  ];
+  return `${all.join("\n")}\n`;
 }
 
 /** GitHub's payload for the head: CONFLICTING and DIRTY, as `gh pr view --json` answers it. */
