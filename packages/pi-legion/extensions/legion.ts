@@ -73,12 +73,7 @@ import { classifySession, type LegionSessionKind, requiredEnvironment } from "..
 import { createControllerSession } from "../src/controller-session";
 import { createCyberPolicyLadder, cyberPolicyLadderSettings } from "../src/cyber-policy-ladder";
 import { createModelFallback } from "../src/model-fallback";
-import {
-  createModelRequestsReporter,
-  PINNED_HOST_EVENTS,
-  refusalPatterns,
-  reportsRetriedRefusals,
-} from "../src/model-requests";
+import { createModelRequestsReporter } from "../src/model-requests";
 import { applySessionTitle, legionSessionTitle } from "../src/session-title";
 import { daemonLaunchedController } from "../src/slack-channels";
 import { createStallAborter } from "../src/stall-abort";
@@ -443,18 +438,16 @@ export default function legionExtension(pi: PiApi): void {
   });
 
   // Reports each model request of this process's sessions to the daemon, for the provider's
-  // headroom and refusals (`src/model-requests.ts`): the claim's own session, each `task`
-  // subagent it starts, which is reported under the claim of the session the pane is on, and the
-  // controller's session under its registration. A session that holds neither, a person's own
-  // pane, reports nothing. Its timer is the process's own, unref'd so a pending report holds no
-  // exit, since a report is due whatever session the pane has moved to meanwhile. Each batch says
-  // whether this host reports the 429s its transport retries, which the pinned host does not.
+  // headroom (`src/model-requests.ts`): the claim's own session, each `task` subagent it starts,
+  // which is reported under the claim of the session the pane is on, and the controller's session
+  // under its registration. A session that holds neither, a person's own pane, reports nothing.
+  // Its timer is the process's own, unref'd so a pending report holds no exit, since a report is
+  // due whatever session the pane has moved to meanwhile.
   const modelRequests = createModelRequestsReporter({
     daemon: roleDaemon,
     credential: (sessionID) =>
       claimSession.capability(sessionID) ?? controllerSession.reportingCredential(sessionID),
     paneSession: () => paneContext?.sessionManager.getSessionId(),
-    patterns: refusalPatterns(process.env, logger),
     log: logger,
     now: () => Date.now(),
     schedule: (callback, delayMs) => {
@@ -463,7 +456,6 @@ export default function legionExtension(pi: PiApi): void {
       return () => clearTimeout(timer);
     },
     newId: () => randomUUID(),
-    retriedRefusalsReported: reportsRetriedRefusals(PINNED_HOST_EVENTS),
   });
 
   // A root architect's or phase worker's claim, and the operator-launched controller's.

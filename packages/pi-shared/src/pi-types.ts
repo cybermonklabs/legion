@@ -379,8 +379,8 @@ export interface AgentEndMessage {
   readonly responseId?: string;
   /** The tokens of the request this message ended (`Usage`, `packages/catalog/src/types.ts:211-221`
    * at the pinned tag): `input` is the fresh input, `cacheWrite` the input written to the prompt
-   * cache and `cacheRead` the input read from it. Each is 0 on a request the provider refused
-   * before it answered (measured: the capture in `packages/pi-legion/src/model-requests.ts`). */
+   * cache and `cacheRead` the input read from it. Each is 0 on a request the provider answered with
+   * HTTP 429 (measured: the capture in `packages/pi-legion/src/model-requests.ts`). */
   readonly usage?: {
     readonly input?: number;
     readonly output?: number;

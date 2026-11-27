@@ -1,19 +1,13 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   createModelRequestsReporter,
-  type HostEvents,
   MODEL_REQUEST_REPORT_BOUND_MS,
   type ModelRequestCredential,
   type ModelRequestsReporter,
-  PINNED_HOST_EVENTS,
-  refusalPatterns,
-  reportsRetriedRefusals,
 } from "./model-requests";
 import { createTurnOutcomeReporter } from "./turn-outcome";
 
@@ -45,28 +39,6 @@ const controller: ModelRequestCredential = {
 /** 2026-11-25T21:53:17.412Z, the moment every case's clock starts at. */
 const START = Date.parse("2026-11-25T21:53:17.412Z");
 
-/** The shared table of refusal texts and the class each host gives them
- * (`packages/contracts/fixtures/refusal-classes.json`), which the Claude Code bridge's test reads
- * too. */
-const REFUSAL_CLASSES: {
-  readonly patterns: { readonly own: string; readonly provider: string };
-  readonly cases: readonly {
-    readonly name: string;
-    readonly text: string;
-    readonly refusal: "own" | "provider" | "unknown";
-  }[];
-} = JSON.parse(
-  readFileSync(
-    path.resolve(import.meta.dir, "../../contracts/fixtures/refusal-classes.json"),
-    "utf8"
-  )
-);
-
-const PATTERN_ENV = {
-  LEGION_SIGNAL_OWN_REFUSAL: REFUSAL_CLASSES.patterns.own,
-  LEGION_SIGNAL_PROVIDER_REFUSAL: REFUSAL_CLASSES.patterns.provider,
-};
-
 interface Posted {
   readonly route: string;
   readonly body: Record<string, unknown>;
@@ -89,18 +61,15 @@ interface Rig {
  * The reporter over a stub daemon. `answer` answers each report of model requests, by the order it
  * arrived in, with the ids the daemon keeps, and defaults to every id of the batch; it may hold its
  * answer back by returning a promise. The clock and the timers are the rig's: nothing waits on the
- * wall clock. `retriedRefusalsReported` is what the detection read of the host, and defaults to
- * its reading of the pinned host, as the plugin builds the reporter.
+ * wall clock.
  */
 function rig(
   options: {
-    readonly env?: Readonly<Record<string, string | undefined>>;
     readonly answer?: (
       body: Record<string, unknown>,
       attempt: number
     ) => Promise<Response> | Response;
     readonly credential?: (sessionID: string) => ModelRequestCredential | undefined;
-    readonly retriedRefusalsReported?: boolean;
   } = {}
 ): Rig {
   const posted: Posted[] = [];
@@ -132,10 +101,6 @@ function rig(
       options.credential ??
       ((sessionID) => (sessionID === implementer.sessionID ? implementer : undefined)),
     paneSession: () => ROLE_SESSION,
-    patterns: refusalPatterns(options.env ?? PATTERN_ENV, {
-      debug: () => undefined,
-      warn: (message) => warned.push(message),
-    }),
     log: { debug: () => undefined, warn: (message) => warned.push(message) },
     now: () => clock,
     schedule: (callback, delayMs) => {
@@ -146,8 +111,6 @@ function rig(
       };
     },
     newId: () => `req-${++nextId}`,
-    retriedRefusalsReported:
-      options.retriedRefusalsReported ?? reportsRetriedRefusals(PINNED_HOST_EVENTS),
   });
   const advance = async (ms: number) => {
     const until = clock + ms;
@@ -193,16 +156,19 @@ function answered(
   };
 }
 
-/** A request the provider refused with HTTP 429, as Oh My Pi's `message_end` carries it: measured
+/** The provider's text of a 429. */
+const RATE_LIMITED_TEXT = "429 Too Many Requests: rate limit exceeded";
+
+/** A request the provider answered with HTTP 429, as Oh My Pi's `message_end` carries it: measured
  * on the pinned host, no usage, the provider's text and its status (the capture in
  * `./model-requests.ts`). */
-function refused(at: number, text: string): AgentEndMessage {
+function rateLimited(at: number): AgentEndMessage {
   return {
     role: "assistant",
     model: "standin-model",
     stopReason: "error",
     errorStatus: 429,
-    errorMessage: text,
+    errorMessage: RATE_LIMITED_TEXT,
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     completedAt: at,
   };
@@ -211,8 +177,7 @@ function refused(at: number, text: string): AgentEndMessage {
 const role = { session: ROLE_SESSION, subagent: false } as const;
 
 // A turn runs on for minutes; a request that ended is reported within the bound of its end while
-// the turn goes on, with the moment it ended and its fresh input plus its cache writes, in a batch
-// that says the pinned host does not report the 429s its transport retries.
+// the turn goes on, with the moment it ended and its fresh input plus its cache writes.
 test("partial while active", async () => {
   const { reporter, batches, advance, now } = rig();
 
@@ -236,7 +201,36 @@ test("partial while active", async () => {
           uncachedInputTokens: 18,
         },
       ],
-      retriedRefusalsReported: false,
+    },
+  ]);
+});
+
+// A request a limit answered with HTTP 429 counted no token and carries no response id, so it is no
+// request and is not reported, as the Claude Code bridge reports no `api_retry` line; the retry the
+// provider answered in the same turn is reported alone, with its time and its uncached input
+// tokens and no member more.
+test("a 429 is not reported, and the answered retry of the same turn is", async () => {
+  const { reporter, batches, now } = rig();
+
+  reporter.messageEnded(role, rateLimited(now()));
+  reporter.messageEnded(role, answered(now() + 1_000));
+  reporter.turnEnded();
+  await reporter.settled();
+  expect(batches()).toEqual([
+    {
+      claimToken: implementer.claimToken,
+      sessionId: ROLE_SESSION,
+      secret: implementer.secret,
+      generation: 3,
+      requests: [
+        {
+          id: "req-1",
+          session: ROLE_SESSION,
+          model: "standin-model",
+          endedAt: "2026-11-25T21:53:18.412Z",
+          uncachedInputTokens: 18,
+        },
+      ],
     },
   ]);
 });
@@ -379,18 +373,13 @@ test("an unanswered request expires without blocking fresh requests", async () =
   expect(warned).toEqual(["legion: dropped a model request past the daemon's keep window"]);
 });
 
-// Each kind of request the pinned host ends: an answered one, one refused by each limit or by one
-// its text does not name, one whose text both patterns match, one that read the cache, and one on
-// a model the project's limit does not count, which is still reported (the daemon selects).
+// Each kind of request the pinned host ends: an answered one, one that read the cache, and one on
+// a model the project's limit does not count, which is still reported (the daemon selects). Each
+// carries its id, session, model, time and uncached input tokens, and no member more.
 test("request variants", async () => {
   const { reporter, batches, now } = rig();
   const variants: [string, AgentEndMessage, Record<string, unknown>][] = [
     ["clean", answered(now()), { uncachedInputTokens: 18 }],
-    ...REFUSAL_CLASSES.cases.map((row): [string, AgentEndMessage, Record<string, unknown>] => [
-      row.name,
-      refused(now(), row.text),
-      { uncachedInputTokens: 0, refusal: row.refusal },
-    ]),
     [
       "cached input",
       answered(now(), { input: 3, output: 9, cacheRead: 52_000, cacheWrite: 1_200 }),
@@ -415,11 +404,13 @@ test("request variants", async () => {
         `${name} ${key}: ${JSON.stringify(value)}`
       );
     }
-    if (want.refusal === undefined) expect(request.refusal).toBeUndefined();
+    expect(`${name}: ${Object.keys(request).sort().join(" ")}`).toBe(
+      `${name}: endedAt id model session uncachedInputTokens`
+    );
   });
 
   // A message the host wrote itself, which no provider answered — a gate's stop, a request that
-  // never went out — is no request, and nor is a failure with another status and no tokens.
+  // never went out — is no request, and nor is a failure of any status with no tokens.
   const before = requests.length;
   reporter.messageEnded(role, { role: "assistant", model: "standin-model", stopReason: "stop" });
   reporter.messageEnded(role, {
@@ -438,10 +429,12 @@ test("request variants", async () => {
 
 // The sessions whose requests count against the project's limit: the role's own, each subagent's
 // it starts (reported through the role's claim, never a credential of its own), and the
-// controller's. Each is reported once, under its own session; a session that holds no claim of
-// this process — a person's own pane — reports nothing.
+// controller's. Each request is reported once, under its own session, with the moment it ended and
+// its own uncached input tokens, within the bound of its end while the turn goes on, and at once
+// at the turn's end; a session that holds no claim of this process — a person's own pane —
+// reports nothing.
 test("session inventory", async () => {
-  const { reporter, batches, now } = rig({
+  const { reporter, batches, advance, now } = rig({
     credential: (sessionID) =>
       sessionID === ROLE_SESSION
         ? implementer
@@ -453,116 +446,79 @@ test("session inventory", async () => {
     readonly name: string;
     readonly where: { readonly session: string; readonly subagent: boolean };
     readonly credential: ModelRequestCredential;
+    readonly usage: AgentEndMessage["usage"];
+    readonly uncachedInputTokens: number;
   }[] = [
-    { name: "role", where: role, credential: implementer },
+    {
+      name: "role",
+      where: role,
+      credential: implementer,
+      usage: { input: 11, output: 3, cacheRead: 100, cacheWrite: 7 },
+      uncachedInputTokens: 18,
+    },
     {
       name: "subagent",
       where: { session: SUBAGENT_SESSION, subagent: true },
       credential: implementer,
+      usage: { input: 5, output: 1, cacheRead: 9_000, cacheWrite: 0 },
+      uncachedInputTokens: 5,
     },
     {
       name: "controller",
       where: { session: CONTROLLER_SESSION, subagent: false },
       credential: controller,
+      usage: { input: 2, output: 8, cacheRead: 3, cacheWrite: 40 },
+      uncachedInputTokens: 42,
     },
   ];
-  for (const row of inventory) reporter.messageEnded(row.where, answered(now()));
-  reporter.messageEnded({ session: OTHER_SESSION, subagent: false }, answered(now()));
-  reporter.turnEnded();
-  await reporter.settled();
-  reporter.turnEnded();
-  await reporter.settled();
-
-  const reported = batches().flatMap((batch) =>
-    (batch.requests as { session: string }[]).map((request) => ({
-      session: request.session,
-      claimToken: batch.claimToken,
-      sessionId: batch.sessionId,
-      generation: batch.generation,
-    }))
-  );
-  expect(reported.sort((a, b) => a.session.localeCompare(b.session))).toEqual(
+  const reported = (from: number) =>
+    batches()
+      .slice(from)
+      .flatMap((batch) =>
+        (batch.requests as Record<string, unknown>[]).map((request) => ({
+          session: String(request.session),
+          endedAt: request.endedAt,
+          uncachedInputTokens: request.uncachedInputTokens,
+          claimToken: batch.claimToken,
+          sessionId: batch.sessionId,
+          generation: batch.generation,
+        }))
+      )
+      .sort((a, b) => a.session.localeCompare(b.session));
+  const want = (at: number) =>
     inventory
-      .map((row) => ({
+      .map((row, index) => ({
         session: row.where.session,
+        endedAt: new Date(at + index).toISOString(),
+        uncachedInputTokens: row.uncachedInputTokens,
         claimToken: row.credential.claimToken,
         sessionId: row.credential.sessionID,
         generation: row.credential.generation,
       }))
-      .sort((a, b) => a.session.localeCompare(b.session))
-  );
-});
+      .sort((a, b) => a.session.localeCompare(b.session));
+  const endEach = (at: number) => {
+    inventory.forEach((row, index) => {
+      reporter.messageEnded(row.where, answered(at + index, row.usage));
+    });
+    reporter.messageEnded({ session: OTHER_SESSION, subagent: false }, answered(at));
+  };
 
-// Each batch says whether its host reports the 429s its HTTP transport retries by itself, which
-// the plugin reads from the host's events and never from a version text: true only where the host
-// offers an event for each such attempt. The pinned host offers none, and no event is named until
-// the fork's change decides one, so even a host that offers every event is read as without; a
-// stand-in host that offers the event the detection is given is read as with it.
-test("retried refusals", async () => {
-  const STANDIN_EVENT = "standin_retried_attempt";
-  const offering = (offered: readonly string[]): HostEvents => ({
-    offers: (event) => offered.includes(event),
-  });
-  const everything: HostEvents = { offers: () => true };
-  expect(reportsRetriedRefusals(PINNED_HOST_EVENTS)).toBe(false);
-  expect(reportsRetriedRefusals(everything)).toBe(false);
-  expect(reportsRetriedRefusals(offering([STANDIN_EVENT]), [STANDIN_EVENT])).toBe(true);
-  expect(reportsRetriedRefusals(offering(["message_end"]), [STANDIN_EVENT])).toBe(false);
-  expect(reportsRetriedRefusals(PINNED_HOST_EVENTS, [STANDIN_EVENT])).toBe(false);
+  // While the turn goes on: nothing before the bound of the first request's end, every request at
+  // it.
+  const during = now();
+  endEach(during);
+  await advance(MODEL_REQUEST_REPORT_BOUND_MS - 1);
+  expect(batches()).toEqual([]);
+  await advance(1);
+  expect(reported(0)).toEqual(want(during));
 
-  const hosts: readonly (readonly [string, boolean, boolean])[] = [
-    ["the pinned host", reportsRetriedRefusals(PINNED_HOST_EVENTS), false],
-    [
-      "a host that offers the event",
-      reportsRetriedRefusals(offering([STANDIN_EVENT]), [STANDIN_EVENT]),
-      true,
-    ],
-  ];
-  for (const [host, said, want] of hosts) {
-    const { reporter, batches, now } = rig({ retriedRefusalsReported: said });
-    reporter.messageEnded(role, answered(now()));
-    reporter.messageEnded(role, refused(now(), "rate limited"));
-    reporter.turnEnded();
-    await reporter.settled();
-    expect(
-      `${host}: ${JSON.stringify(batches().map((batch) => batch.retriedRefusalsReported))}`
-    ).toBe(`${host}: ${JSON.stringify([want])}`);
-  }
-});
-
-// The two patterns come from the launch's environment; a pattern that is unset or empty classes
-// nothing as its limit's, so every refusal is unknown, and the own pattern alone classes only own.
-test("configured patterns", async () => {
-  const configurations: [
-    string,
-    Readonly<Record<string, string | undefined>>,
-    (row: (typeof REFUSAL_CLASSES.cases)[number]) => string,
-  ][] = [
-    ["both set", PATTERN_ENV, (row) => row.refusal],
-    ["unset", {}, () => "unknown"],
-    [
-      "empty",
-      { LEGION_SIGNAL_OWN_REFUSAL: "", LEGION_SIGNAL_PROVIDER_REFUSAL: "" },
-      () => "unknown",
-    ],
-    [
-      "own alone",
-      { LEGION_SIGNAL_OWN_REFUSAL: REFUSAL_CLASSES.patterns.own },
-      (row) => (row.refusal === "own" ? "own" : "unknown"),
-    ],
-  ];
-  for (const [name, env, want] of configurations) {
-    const { reporter, batches, now } = rig({ env });
-    for (const row of REFUSAL_CLASSES.cases) reporter.messageEnded(role, refused(now(), row.text));
-    reporter.turnEnded();
-    await reporter.settled();
-    const classes = batches().flatMap((batch) =>
-      (batch.requests as { refusal?: string }[]).map((request) => request.refusal)
-    );
-    expect(`${name}: ${classes.join(" ")}`).toBe(
-      `${name}: ${REFUSAL_CLASSES.cases.map(want).join(" ")}`
-    );
-  }
+  // At the turn's end: every request at once.
+  const sent = batches().length;
+  const atEnd = now();
+  endEach(atEnd);
+  reporter.turnEnded();
+  await reporter.settled();
+  expect(reported(sent)).toEqual(want(atEnd));
 });
 
 // The report of a turn's outcome the daemon takes today is sent as it always was, its body and
@@ -585,12 +541,12 @@ test("the turn-outcome report is unchanged beside the model requests", async () 
     log: { debug: () => undefined, warn: () => undefined },
     cyberPolicyRefusal: async () => false,
   });
-  const text = REFUSAL_CLASSES.cases[0]?.text ?? "";
-  const refusal = refused(now(), text);
-  reporter.messageEnded(role, refusal);
+  const limited = rateLimited(now());
+  reporter.messageEnded(role, answered(now() - 1_000));
+  reporter.messageEnded(role, limited);
   turnOutcomes.inputArrived(ROLE_SESSION, { text: "Continue the task.", source: "rpc" });
   turnOutcomes.runStarted(ROLE_SESSION);
-  const end: AgentEndEvent = { messages: [{ role: "user" }, refusal] };
+  const end: AgentEndEvent = { messages: [{ role: "user" }, limited] };
   reporter.turnEnded();
   await turnOutcomes.report(ROLE_SESSION, end);
   await reporter.settled();
@@ -605,7 +561,7 @@ test("the turn-outcome report is unchanged beside the model requests", async () 
         generation: 3,
         sequence: 1,
         outcome: "refused",
-        message: text,
+        message: RATE_LIMITED_TEXT,
         httpStatus: 429,
       },
     },

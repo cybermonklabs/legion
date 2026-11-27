@@ -377,7 +377,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     },
     part: {
       type: "string",
-      enum: ["headroom", "refusals"],
+      enum: ["headroom"],
       description:
         "The provider's part for set_signal_limit and clear_signal_limit; no other signal takes one",
     },
@@ -2940,8 +2940,8 @@ test("the controller changes admission by signals on a person's cited word and r
       { action: "on", reason },
     ],
     [
-      { op: "set_signal_limit", signal: "provider", part: "refusals", limit: 2, reason },
-      { action: "set-limit", signal: "provider", part: "refusals", limit: 2, reason },
+      { op: "set_signal_limit", signal: "provider", part: "headroom", limit: 2, reason },
+      { action: "set-limit", signal: "provider", part: "headroom", limit: 2, reason },
     ],
     [
       { op: "clear_signal_limit", signal: "kills", reason },
