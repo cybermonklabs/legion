@@ -99,17 +99,18 @@ ARG MISE_VERSION=v2026.8.12
 # command reports a good signature from release key 24853EC9F655CE80B48E6C3A8B81C9D17413A06D
 # (published at https://mise.jdx.dev/gpg-key.pub, and at keys.openpgp.org by the same fingerprint).
 ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
-# Sami's jj fork, at the release of sjawhar/jj#3 (INFRA-4036): jj 0.46 with a gix-pack that maps
-# each pack, index and multi-pack-index in 8 MiB chunks and keeps the chunks reads mark within
-# 512 MiB (JJ_PACK_MAPPED_LIMIT sets another budget). Under gVisor a whole mapping counts as the
-# pod's memory once one page of it is read, so a later pin must carry that patch, or one jj command
-# on a large pack fills an issue pod again. The builds that add sjawhar/jj#4 (a merge of two commits
-# with several merge bases keeps what both sides hold, jj-vcs/jj#6369), 0.46.0-sami.20261125-112159
-# and 20261125-125342, never finish a `jj git import` that makes conflicted commits visible: one
-# core spins until the process is killed, where this build imports the same 2,760 refs in 22 s
-# (INFRA-5926). So the pin stays here, without sjawhar/jj#4, until a build carries #4 without that
-# hang, and a role's merge with several merge bases can drop one side's change, as before #4565.
-ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261120-120102
+# Sami's jj fork, at a release built from sjawhar/jj#5 on top of sjawhar/jj#4 and sjawhar/jj#3.
+# sjawhar/jj#3 gives jj 0.46 a gix-pack that maps each pack, index and multi-pack-index in 8 MiB
+# chunks and keeps the chunks reads mark within 512 MiB (JJ_PACK_MAPPED_LIMIT sets another
+# budget): under gVisor a whole mapping counts as the pod's memory once one page of it is read.
+# sjawhar/jj#4 keeps, in a merge of two commits with several merge bases, what both sides hold
+# (jj-vcs/jj#6369). sjawhar/jj#5 makes a `jj git import` that brings in many conflicted merges of
+# many commits take 0.6 to 1.2 s, where 0.46.0-sami.20261120-120102 takes 15 to 27 s and the
+# builds with #4 alone, 0.46.0-sami.20261125-112159 and 20261125-125342, take about an hour
+# (INFRA-5926). Only the fork's tests hold #5's change: no Legion test bounds the import's time.
+# A later pin must carry all three, or one jj command on a large pack fills an issue pod again, a
+# role's merge silently reverts work, or a fresh workspace's import takes about an hour.
+ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261127-111037
 ARG GH_TOOL=gh@2.98.0
 # github/gh-stack, the `gh stack` extension (GitHub's stacked pull requests), at the release this
 # pin names, as a `github:<owner>/<repo>@<version>` pin the tools stage reads as it reads .omp-pin.
@@ -125,8 +126,8 @@ ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # archive of the gh release ARG GH_TOOL names (gh_<version>_linux_amd64.tar.gz of cli/cli). A pin
 # and its digest move in one commit: a bump of .omp-pin, ARG JJ_TOOL or ARG GH_TOOL that leaves its
 # digest fails the tools stage's sha256sum check in that pull request's own worker-image build.
-# Oh My Pi's was read on 2026-11-27 at its 18.18.6-sami.20261127-055727 pin, jj's on 2026-11-26 at
-# its 0.46.0-sami.20261120-120102 pin and gh's on 2026-11-22 at 2.98.0, each as the `digest`
+# Oh My Pi's was read on 2026-11-27 at its 18.18.6-sami.20261127-055727 pin, jj's on 2026-11-27 at
+# its 0.46.0-sami.20261127-111037 pin and gh's on 2026-11-22 at 2.98.0, each as the `digest`
 # GitHub's API gives the release asset (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq
 # '.assets[]'`), and each equals the sha256 of the archive downloaded from the address the tools
 # stage reads. gh's is also its line in the release's gh_<version>_checksums.txt, and `gh
@@ -136,7 +137,7 @@ ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # cybermonklabs/oh-my-pi`); the jj release carries no attestation (the command answers 404). A
 # bump repeats those reads.
 ARG OMP_SHA256=e17f13c83beb6ccc86820fb9517e4be2011d045739900fa23830aef1b466c830
-ARG JJ_SHA256=770b129af434b0b93edfea6de3960a34b82e4f77fda30960aa18f816d543a1de
+ARG JJ_SHA256=bde9d8cf39663db78701c6f74b137d5cbe327089ed93d75264815a3b2a18e752
 ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # The SHA-256 of the linux-amd64 binary of the gh-stack release ARG GH_STACK_TOOL names (the release
 # ships bare binaries, `linux-amd64`, no archive). Read on 2026-11-22 as the `digest` GitHub's API
