@@ -232,7 +232,7 @@ func TestAnEventOnAnIssueWithNoCardRecomputesNothingAndItsFactsSendOneDelta(t *t
 	seedLegionProjects(t, rig.handler, "INFRA")
 	nameLegionDaemon(t, rig.handler, "INFRA", "http://legion-infra.internal:13370")
 	seedLegionBoard(t, rig.database, "INFRA", rig.clock.Now())
-	issue := seedLegionIssue(t, rig.database, "INFRA", 50, "A parked issue", "z", nil, "")
+	issue := seedLegionIssue(t, rig.database, "INFRA", 50, "An issue in backlog", "z", nil, "")
 	workedAt := rig.clock.Now().Add(-5 * time.Hour)
 	writeIssueFacts(t, rig.database, "INFRA", issue, issue, workedAt, workedAt.Add(time.Hour), nil)
 	if _, carded := legionCardHeld(legionBoardOf(t, rig.handler, "INFRA"), issue); carded {
@@ -256,7 +256,7 @@ func TestAnEventOnAnIssueWithNoCardRecomputesNothingAndItsFactsSendOneDelta(t *t
 	// A title Dispatch rewrites: the event reaches the hub on the relay's feed, behind the event
 	// horizon, and the board's answer carries no title of an issue on no card.
 	renamed := rig.mark()
-	patchHubIssue(t, rig.handler, issue, map[string]any{"title": "A parked issue, renamed"})
+	patchHubIssue(t, rig.handler, issue, map[string]any{"title": "An issue in backlog, renamed"})
 	rig.waitForEventCursor(t, eventHead(t, rig.database), "the rename of "+issue)
 	rig.waitNoRecompute(t, viewMaxWait)
 	if n := rig.count(renamed, recomputeBegin("")); n != 0 {
@@ -391,10 +391,10 @@ const storedPrecision = 1e-4
 // writeGrowingLegionFacts writes three open rows of seedLegionBoard's project, each closed at a
 // moment before now with the growth the computation would store: INFRA-4, the child in a turn,
 // grows its work time, its slot hours, its implementing hours and the end of its open bar, and
-// facts the board does not carry (its parked hours, its implementer's bar, its reviewer's idle
-// hours); INFRA-8, the unstarted child, grows hours in the queue column it holds none in yet; and
-// INFRA-3, the design root, grows only its parked hours while it waits for a child, a fact the
-// board does not carry, so every value of its entry stands still.
+// facts the board does not carry (its hours in backlog or icebox, its implementer's bar, its
+// reviewer's idle hours); INFRA-8, the unstarted child, grows hours in the queue column it holds
+// none in yet; and INFRA-3, the design root, grows only its hours in backlog or icebox while it
+// waits for a child, a fact the board does not carry, so every value of its entry stands still.
 func writeGrowingLegionFacts(t *testing.T, database *store.Store, now time.Time) {
 	t.Helper()
 	childAsOf, queuedAsOf, rootAsOf := now.Add(-3*time.Hour), now.Add(-2*time.Hour), now.Add(-5*time.Hour)
@@ -411,7 +411,7 @@ func writeGrowingLegionFacts(t *testing.T, database *store.Store, now time.Time)
 			AsOf: childAsOf,
 			Growth: metrics.Growth{
 				"work_hours": 1, "slot_hours": 1, "phase_hours.implementing": 1, "work_last_at": 1,
-				"parked_hours": 1, "bars.implementer.hours": 1, "idle_by_role.reviewer": 1,
+				"backlog_or_icebox_hours": 1, "bars.implementer.hours": 1, "idle_by_role.reviewer": 1,
 			},
 		},
 	}, {
@@ -432,7 +432,7 @@ func writeGrowingLegionFacts(t *testing.T, database *store.Store, now time.Time)
 				WorkHours: 2, Root: true, Tree: "INFRA-3", SlotHours: 6,
 			},
 			AsOf:   rootAsOf,
-			Growth: metrics.Growth{"parked_hours": 1},
+			Growth: metrics.Growth{"backlog_or_icebox_hours": 1},
 		},
 	}}
 	if _, err := legionfacts.WriteProject(t.Context(), database.Pool,
@@ -515,7 +515,7 @@ func TestALegionBoardSendsAnIssuesEntryOnlyWhenItsStoredRowMoves(t *testing.T) {
 			child.AsOf, child.Growth, snapped.ComputedAt, wantGrowth)
 	}
 	if root := snapped.Issues["INFRA-3"]; root.AsOf != nil || root.Growth != nil {
-		t.Fatalf("INFRA-3's entry is of %v with the growth %+v, want null for both: its row grows only its parked hours, which the entry does not carry",
+		t.Fatalf("INFRA-3's entry is of %v with the growth %+v, want null for both: its row grows only its hours in backlog or icebox, which the entry does not carry",
 			root.AsOf, root.Growth)
 	}
 	rig.settle(t)

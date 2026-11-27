@@ -176,7 +176,7 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 	workFirstAt := make([]*time.Time, len(rows))
 	workLastAt := make([]*time.Time, len(rows))
 	updatedAt := make([]time.Time, len(rows))
-	parkedHours := make([]float64, len(rows))
+	backlogOrIceboxHours := make([]float64, len(rows))
 	queuedHours := make([]float64, len(rows))
 	startedAt := make([]*time.Time, len(rows))
 	mergedAt := make([]*time.Time, len(rows))
@@ -228,7 +228,7 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 		if !row.AsOf.IsZero() {
 			asOf[index] = &row.AsOf
 		}
-		parkedHours[index] = row.ParkedHours
+		backlogOrIceboxHours[index] = row.ParkedHours
 		queuedHours[index] = row.QueuedHours
 		startedAt[index] = row.StartedAt
 		mergedAt[index] = row.MergedAt
@@ -247,14 +247,14 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 			project_key, issue_key, opened_at, closed_at, hours_by_phase, work_hours,
 			review_rounds, root_key, tree_depth, slot_hours, waiting_reason,
 			work_first_at, work_last_at, updated_at,
-			parked_hours, queued_hours, started_at, merged_at, bars, idle_by_role,
+			backlog_or_icebox_hours, queued_hours, started_at, merged_at, bars, idle_by_role,
 			slot_wait_hours, sent_back, implementing_after_first_review,
 			testing_after_first_review, children, repo, as_of, growth, written_build)
 		select $1, given.issue_key, given.opened_at, given.closed_at, given.hours_by_phase::jsonb,
 		       given.work_hours, given.review_rounds, given.root_key, given.tree_depth,
 		       given.slot_hours, nullif(given.waiting_reason, ''), given.work_first_at,
 		       given.work_last_at, given.updated_at,
-		       given.parked_hours, given.queued_hours, given.started_at, given.merged_at,
+		       given.backlog_or_icebox_hours, given.queued_hours, given.started_at, given.merged_at,
 		       given.bars::jsonb, given.idle_by_role::jsonb, given.slot_wait_hours,
 		       given.sent_back, given.implementing_after_first_review,
 		       given.testing_after_first_review, given.children, nullif(given.repo, ''),
@@ -270,7 +270,7 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 			as given(issue_key, opened_at, closed_at, hours_by_phase, work_hours, review_rounds,
 			         root_key, tree_depth, slot_hours, waiting_reason, work_first_at, work_last_at,
 			         updated_at,
-			         parked_hours, queued_hours, started_at, merged_at, bars, idle_by_role,
+			         backlog_or_icebox_hours, queued_hours, started_at, merged_at, bars, idle_by_role,
 			         slot_wait_hours, sent_back, implementing_after_first_review,
 			         testing_after_first_review, children, repo, as_of, growth)
 		on conflict (project_key, issue_key) do update set
@@ -285,7 +285,7 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 			waiting_reason = excluded.waiting_reason,
 			work_first_at = excluded.work_first_at,
 			work_last_at = excluded.work_last_at,
-			parked_hours = excluded.parked_hours,
+			backlog_or_icebox_hours = excluded.backlog_or_icebox_hours,
 			queued_hours = excluded.queued_hours,
 			started_at = excluded.started_at,
 			merged_at = excluded.merged_at,
@@ -305,7 +305,7 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 		       issue_facts.work_hours, issue_facts.review_rounds, issue_facts.root_key,
 		       issue_facts.tree_depth, issue_facts.slot_hours, issue_facts.waiting_reason,
 		       issue_facts.work_first_at, issue_facts.work_last_at,
-		       issue_facts.parked_hours, issue_facts.queued_hours, issue_facts.started_at,
+		       issue_facts.backlog_or_icebox_hours, issue_facts.queued_hours, issue_facts.started_at,
 		       issue_facts.merged_at, issue_facts.bars, issue_facts.idle_by_role,
 		       issue_facts.slot_wait_hours, issue_facts.sent_back,
 		       issue_facts.implementing_after_first_review, issue_facts.testing_after_first_review,
@@ -316,7 +316,7 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 		       excluded.work_hours, excluded.review_rounds, excluded.root_key,
 		       excluded.tree_depth, excluded.slot_hours, excluded.waiting_reason,
 		       excluded.work_first_at, excluded.work_last_at,
-		       excluded.parked_hours, excluded.queued_hours, excluded.started_at,
+		       excluded.backlog_or_icebox_hours, excluded.queued_hours, excluded.started_at,
 		       excluded.merged_at, excluded.bars, excluded.idle_by_role,
 		       excluded.slot_wait_hours, excluded.sent_back,
 		       excluded.implementing_after_first_review, excluded.testing_after_first_review,
@@ -325,7 +325,7 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 		returning issue_key
 	`, project, keys, openedAt, closedAt, hoursByPhase, workHours, reviewRounds, rootKeys,
 		treeDepth, slotHours, waitingReason, workFirstAt, workLastAt, updatedAt,
-		parkedHours, queuedHours, startedAt, mergedAt, bars, idleByRole, slotWaitHours, sentBack,
+		backlogOrIceboxHours, queuedHours, startedAt, mergedAt, bars, idleByRole, slotWaitHours, sentBack,
 		implementingAfter, testingAfter, children, repos, asOf, growth, build)
 	if err != nil {
 		return nil, fmt.Errorf("write the Legion facts of %s: %w", project, err)
@@ -606,7 +606,7 @@ const (
 	boardColumns = `issue_key, opened_at, closed_at, hours_by_phase, work_hours, review_rounds,
 	       root_key, tree_depth, slot_hours, coalesce(waiting_reason, ''),
 	       work_first_at, work_last_at, updated_at, coalesce(as_of, updated_at), growth`
-	wideColumns = `parked_hours, queued_hours, started_at, merged_at, bars, idle_by_role,
+	wideColumns = `backlog_or_icebox_hours, queued_hours, started_at, merged_at, bars, idle_by_role,
 	       slot_wait_hours, sent_back, implementing_after_first_review,
 	       testing_after_first_review, children, coalesce(repo, '')`
 	boardSelect = `select ` + boardColumns + ` from issue_facts `
@@ -679,9 +679,10 @@ func scanRow(result pgx.Rows, project string, wide bool) (Row, error) {
 
 // narrow is row with every field of wideColumns at its zero value, which is the row the board's
 // read answers (Read) once At has closed it at the read's clock. At grows every fact the row's
-// growth names, and the board's read loaded none of these, so one of them that grows - the
-// parked, queued or slot-wait hours of an open issue, its hours after the first review - would
-// otherwise hold its rate times the hours elapsed, grown from a zero the read never loaded.
+// growth names, and the board's read loaded none of these, so one of them that grows - an open
+// issue's hours in backlog or icebox, its queued or slot-wait hours, its hours after the first
+// review - would otherwise hold its rate times the hours elapsed, grown from a zero the read never
+// loaded.
 func (row Row) narrow() Row {
 	row.ParkedHours, row.QueuedHours, row.StartedAt, row.MergedAt = 0, 0, nil, nil
 	row.Bars, row.IdleByRole, row.SlotWaitHours, row.SentBack = nil, nil, 0, false

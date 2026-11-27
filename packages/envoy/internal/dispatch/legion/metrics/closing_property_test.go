@@ -317,7 +317,7 @@ func growthDifferences(closed ClosedFacts, want IssueFacts, moment time.Time) []
 // difference of (a).
 func flatHours(facts IssueFacts) map[string]float64 {
 	flat := map[string]float64{
-		"work_hours": facts.WorkHours, "slot_hours": facts.SlotHours, "parked_hours": facts.ParkedHours,
+		"work_hours": facts.WorkHours, "slot_hours": facts.SlotHours, "backlog_or_icebox_hours": facts.ParkedHours,
 		"queued_hours": facts.QueuedHours, "slot_wait_hours": facts.SlotWaitHours,
 		"implementing_hours_after_first_review": facts.ImplementingHoursAfterFirstReview,
 		"testing_hours_after_first_review":      facts.TestingHoursAfterFirstReview,

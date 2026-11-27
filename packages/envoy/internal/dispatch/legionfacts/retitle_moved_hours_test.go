@@ -28,9 +28,9 @@ import (
 // the move touched holds the row a computation of it answers.
 //
 // It runs over two histories: the rig's own, with two of its three trees unobserved, and a richer
-// one (half of the trees unobserved, queued roots, parks, merges and filings), at 16 finished
-// issues. So a defect that drops the gained hours fails here, and not only in a re-run of the
-// check.
+// one (half of the trees unobserved, queued roots, backlog and icebox time, merges and filings),
+// at 16 finished issues. So a defect that drops the gained hours fails here, and not only in a
+// re-run of the check.
 func TestARetitleMovesPartOfAClosedRootsWorkToTheClosedChildItNames(t *testing.T) {
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 	for _, shape := range []struct {

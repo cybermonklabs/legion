@@ -88,9 +88,9 @@ type legionBoardResponse struct {
 	// the board shows, by issue key: the issue of every card, and every issue of a tree a card
 	// stands in (whose stored root is that card's tree), open or closed, whatever its hours are,
 	// the issues of such a tree that are on no card included, and an open issue on no card in no
-	// shown tree, a parked one, as well, since no other route serves an open issue's facts. A
-	// closed issue the board does not show carries no entry. An issue whose row is not written
-	// yet carries none either.
+	// shown tree, one in backlog or icebox, as well, since no other route serves an open issue's
+	// facts. A closed issue the board does not show carries no entry. An issue whose row is not
+	// written yet carries none either.
 	Issues map[string]legionBoardFacts `json:"issues"`
 	// Settings is the settings the daemon reports, which hold no secret: the daemon's own bytes,
 	// key by key, and {} until a read records them, so a project whose daemon has never answered
@@ -111,8 +111,8 @@ type legionBoardResponse struct {
 //   - ClosedAt is when it closed, null while it is open.
 //   - HoursByPhase is the hours it spent in each board column, by column id, a column with no
 //     hours left out.
-//   - WorkHours is its work time to merge, less the time it stood parked, queued and out of the
-//     workflow before its close.
+//   - WorkHours is its work time to merge, less the time it stood in backlog or icebox, queued and
+//     out of the workflow before its close.
 //   - ReviewRounds is how many times a reviewer sent its work back.
 //   - RootKey is the root of its tree.
 //   - TreeDepth is how far below that root it stands, 0 for the root itself.

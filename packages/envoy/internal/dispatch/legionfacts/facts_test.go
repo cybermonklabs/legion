@@ -281,6 +281,54 @@ func TestTheStoredRowsReadBackFieldByField(t *testing.T) {
 	t.Logf("%d rows read back by key, field by field", len(whole))
 }
 
+// TestAStoredRowsGrowthNamesTheBacklogOrIceboxHoursByTheirOwnKey: a stored row's growth keys the
+// hours an open issue spends in backlog or icebox by the name of their column,
+// backlog_or_icebox_hours, and by no earlier name. A name a release stores changes later only by
+// a migration that waits a release (packages/envoy/AGENTS.md), so the growth is read back as any
+// reader of the table reads it, the column's JSON by SQL, and not through Row, whose field names
+// would hide the stored key. The open child of the one tree moves to backlog two hours before the
+// history ends, after every other input of its own, so its hours there grow past the moment its
+// row is closed at.
+func TestAStoredRowsGrowthNamesTheBacklogOrIceboxHoursByTheirOwnKey(t *testing.T) {
+	seeded := seed(t, 1)
+	project, issue := seeded.fixture.Project, seeded.fixture.Open[0]
+	moved := seeded.now.Add(-2 * time.Hour)
+	if _, err := seeded.database.Pool.Exec(t.Context(), `
+		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		values ($1, (select coalesce(max(seq), 0) + 1 from events where issue_key = $1),
+		        'issue.updated', '{"kind":"user","id":"alice"}'::jsonb, '{"status":"backlog"}'::jsonb,
+		        false, $2)
+	`, issue, moved); err != nil {
+		t.Fatalf("move %s to backlog: %v", issue, err)
+	}
+
+	rows, _, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
+	if err != nil {
+		t.Fatalf("compute the project's facts: %v", err)
+	}
+	if _, err := WriteProject(t.Context(), seeded.database.Pool, ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
+		t.Fatalf("write the facts: %v", err)
+	}
+	var stored []byte
+	if err := seeded.database.Pool.QueryRow(t.Context(),
+		`select growth from issue_facts where project_key = $1 and issue_key = $2`, project, issue).Scan(&stored); err != nil {
+		t.Fatalf("read the stored growth of %s: %v", issue, err)
+	}
+	var growth map[string]float64
+	if err := json.Unmarshal(stored, &growth); err != nil {
+		t.Fatalf("decode the stored growth of %s, %s: %v", issue, stored, err)
+	}
+	t.Logf("%s, in backlog from %s, stores the growth %s", issue, moved.UTC(), stored)
+	if _, has := growth["parked_hours"]; has {
+		t.Errorf("%s's stored growth %s keys its hours in backlog or icebox by an earlier name, want backlog_or_icebox_hours",
+			issue, stored)
+	}
+	if rate := growth["backlog_or_icebox_hours"]; rate == 0 {
+		t.Errorf("%s's stored growth %s holds no rate of backlog_or_icebox_hours, want the hour an hour of an issue in backlog",
+			issue, stored)
+	}
+}
+
 // boardColumnsOf is row as the board's Read answers it: the fields of the columns the board shows
 // (boardColumns), with the moment its values are closed at and their growth, and every other
 // field at its zero value.
@@ -301,9 +349,10 @@ func boardColumnsOf(row Row) Row {
 // TestTheBoardsReadLeavesTheColumnsItDoesNotReadAtZero: the board's Read loads the columns the
 // board shows and leaves every other field of the row it answers at zero, for an open issue too,
 // whose stored growth names facts the read never loaded. The row here grows each hours fact an
-// hour an hour, its parked, queued and slot-wait hours and its hours after the first review
-// among them, and a read two hours after the row's moment answers the facts the board shows
-// grown by two hours and each of the others at zero, not grown from a zero it never read.
+// hour an hour, its hours in backlog or icebox, its queued and slot-wait hours and its hours after
+// the first review among them, and a read two hours after the row's moment answers the facts the
+// board shows grown by two hours and each of the others at zero, not grown from a zero it never
+// read.
 func TestTheBoardsReadLeavesTheColumnsItDoesNotReadAtZero(t *testing.T) {
 	seeded := seed(t, 1)
 	project, issue := seeded.fixture.Project, seeded.fixture.Keys[0]
@@ -322,7 +371,7 @@ func TestTheBoardsReadLeavesTheColumnsItDoesNotReadAtZero(t *testing.T) {
 			AsOf: asOf,
 			Growth: metrics.Growth{
 				"work_hours": 1, "phase_hours.implementing": 1, "slot_hours": 1, "work_last_at": 1,
-				"parked_hours": 1, "queued_hours": 1, "slot_wait_hours": 1,
+				"backlog_or_icebox_hours": 1, "queued_hours": 1, "slot_wait_hours": 1,
 				"implementing_hours_after_first_review": 1, "testing_hours_after_first_review": 1,
 			},
 		},
@@ -344,7 +393,7 @@ func TestTheBoardsReadLeavesTheColumnsItDoesNotReadAtZero(t *testing.T) {
 		name  string
 		hours float64
 	}{
-		{"parked_hours", got.ParkedHours}, {"queued_hours", got.QueuedHours}, {"slot_wait_hours", got.SlotWaitHours},
+		{"backlog_or_icebox_hours", got.ParkedHours}, {"queued_hours", got.QueuedHours}, {"slot_wait_hours", got.SlotWaitHours},
 		{"implementing_after_first_review", got.ImplementingHoursAfterFirstReview},
 		{"testing_after_first_review", got.TestingHoursAfterFirstReview},
 	} {
@@ -355,7 +404,7 @@ func TestTheBoardsReadLeavesTheColumnsItDoesNotReadAtZero(t *testing.T) {
 	if got.WorkHours != 4 {
 		t.Errorf("the board's read of %s answers %g work hours two hours on, want the stored 2 grown to 4", issue, got.WorkHours)
 	}
-	t.Logf("%s read two hours on: work hours %g, slot hours %g, implementing %g; parked %g, queued %g, slot wait %g, after first review %g and %g",
+	t.Logf("%s read two hours on: work hours %g, slot hours %g, implementing %g; backlog or icebox %g, queued %g, slot wait %g, after first review %g and %g",
 		issue, got.WorkHours, got.SlotHours, got.PhaseHours["implementing"], got.ParkedHours, got.QueuedHours,
 		got.SlotWaitHours, got.ImplementingHoursAfterFirstReview, got.TestingHoursAfterFirstReview)
 }
@@ -424,7 +473,7 @@ func rowDifference(got, want Row) string {
 		{"waiting_reason", got.WaitingReason == want.WaitingReason, got.WaitingReason, want.WaitingReason},
 		{"work_first_at", sameTime(got.WorkFirstAt, want.WorkFirstAt), utc(got.WorkFirstAt), utc(want.WorkFirstAt)},
 		{"work_last_at", sameTime(got.WorkLastAt, want.WorkLastAt), utc(got.WorkLastAt), utc(want.WorkLastAt)},
-		{"parked_hours", got.ParkedHours == want.ParkedHours, got.ParkedHours, want.ParkedHours},
+		{"backlog_or_icebox_hours", got.ParkedHours == want.ParkedHours, got.ParkedHours, want.ParkedHours},
 		{"queued_hours", got.QueuedHours == want.QueuedHours, got.QueuedHours, want.QueuedHours},
 		{"started_at", sameTime(got.StartedAt, want.StartedAt), utc(got.StartedAt), utc(want.StartedAt)},
 		{"merged_at", sameTime(got.MergedAt, want.MergedAt), utc(got.MergedAt), utc(want.MergedAt)},
@@ -461,7 +510,7 @@ func sameTime(got, want *time.Time) bool {
 // show is one row written for a failure message, its times in UTC so two zones read alike.
 func show(row Row) string {
 	return fmt.Sprintf("opened %s closed %v hours %v work %g rounds %d root %s depth %d slot %g waiting %q work %v to %v "+
-		"parked %g queued %g started %v merged %v bars %v idle %v slot wait %g sent back %t after review %g+%g children %d repo %q "+
+		"backlog or icebox %g queued %g started %v merged %v bars %v idle %v slot wait %g sent back %t after review %g+%g children %d repo %q "+
 		"as of %s growth %v updated %s",
 		row.OpenedAt.UTC(), utc(row.ClosedAt), row.PhaseHours, row.WorkHours, row.ReviewRounds,
 		row.Tree, row.TreeDepth, row.SlotHours, row.WaitingReason,

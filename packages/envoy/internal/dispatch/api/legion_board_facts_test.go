@@ -226,10 +226,10 @@ func TestTheBoardPushedLiveIsTheBoardTheGETAnswers(t *testing.T) {
 // issue (dispatch://INFRA-2916, R22): the issue of every card, every issue of a tree a card stands
 // in, whose stored root is that card's tree, and every open row. So a child of a shown tree the
 // daemon names on no card, or names nowhere at all, carries its entry, and so does an open issue
-// on no card in no shown tree, a parked one, whose facts no other route serves; a closed issue of
-// a tree the daemon no longer shows carries none, nor does any closed issue of a tree the daemon
-// never showed: their facts are the items route's, by close day, and the board's body follows the
-// open work and what the daemon runs rather than the project's history.
+// on no card in no shown tree, one in backlog or icebox, whose facts no other route serves; a
+// closed issue of a tree the daemon no longer shows carries none, nor does any closed issue of a
+// tree the daemon never showed: the board's body follows the open work and what the daemon runs
+// rather than the project's history.
 //
 // The header's facts_updated_at is the oldest updated_at of the rows the answer serves, so a row
 // the board does not serve, the oldest of the project's, moves it not at all.
@@ -266,7 +266,7 @@ func TestTheBoardCarriesTheFactsOfTheIssuesItShowsAndNoOther(t *testing.T) {
 		// A tree the daemon never showed, the oldest rows of the project.
 		row("INFRA-20", "INFRA-20", 0, 9*time.Minute, &closed),
 		row("INFRA-21", "INFRA-20", 1, 8*time.Minute, &closed),
-		// An open issue on no card and in no shown tree: parked, its own root.
+		// An open issue on no card and in no shown tree: in backlog or icebox, its own root.
 		row("INFRA-30", "INFRA-30", 0, time.Minute, nil),
 	}
 	if _, err := legionfacts.WriteProject(t.Context(), database.Pool,

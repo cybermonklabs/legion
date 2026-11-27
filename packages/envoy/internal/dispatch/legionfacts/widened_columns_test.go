@@ -8,10 +8,10 @@ import (
 )
 
 // TestTheFirstPassOfANewBuildFillsTheWidenedColumns: the per-issue part columns of issue_facts
-// (parked_hours to repo, migration 20261117100000) hold their defaults in every row the release
-// before this one wrote, and the filings table is empty, and the first pass of this release fills
-// both. It does because the project's record names the build that last read it whole
-// (computed_build, migration 20261117100003), and the first pass of a process whose build is
+// (backlog_or_icebox_hours to repo, migration 20261117100000) hold their defaults in every row the
+// release before this one wrote, and the filings table is empty, and the first pass of this
+// release fills both. It does because the project's record names the build that last read it
+// whole (computed_build, migration 20261117100003), and the first pass of a process whose build is
 // another one reads the project whole (legionProjects), which writes every column of every row
 // (upsert compares them all) and every filing (WriteFilings).
 //
@@ -31,8 +31,8 @@ func TestTheFirstPassOfANewBuildFillsTheWidenedColumns(t *testing.T) {
 	}
 
 	run.exec(t, "put every widened column back to its default, as the earlier release left it", `
-		update issue_facts set parked_hours = 0, queued_hours = 0, started_at = null, merged_at = null,
-			bars = '{}', idle_by_role = '{}', slot_wait_hours = 0, sent_back = false,
+		update issue_facts set backlog_or_icebox_hours = 0, queued_hours = 0, started_at = null,
+			merged_at = null, bars = '{}', idle_by_role = '{}', slot_wait_hours = 0, sent_back = false,
 			implementing_after_first_review = 0, testing_after_first_review = 0, children = 0, repo = null
 	`)
 	run.exec(t, "empty the filings, which the earlier release never wrote", `delete from issue_filings`)

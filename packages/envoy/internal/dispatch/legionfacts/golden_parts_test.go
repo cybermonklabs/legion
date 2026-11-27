@@ -48,15 +48,16 @@ type goldenParts struct {
 	} `json:"issues"`
 }
 
-// goldenWorkTime is one issue's work-time row as the golden file holds it.
+// goldenWorkTime is one issue's work-time row as the golden file holds it. The hours in backlog or
+// icebox are read under the key the recorded file holds them by, which stays as it was recorded.
 type goldenWorkTime struct {
-	Root        bool       `json:"root"`
-	StartedAt   time.Time  `json:"started_at"`
-	ClosedAt    time.Time  `json:"closed_at"`
-	MergedAt    *time.Time `json:"merged_at"`
-	Hours       float64    `json:"hours"`
-	ParkedHours float64    `json:"parked_hours"`
-	QueuedHours float64    `json:"queued_hours"`
+	Root                 bool       `json:"root"`
+	StartedAt            time.Time  `json:"started_at"`
+	ClosedAt             time.Time  `json:"closed_at"`
+	MergedAt             *time.Time `json:"merged_at"`
+	Hours                float64    `json:"hours"`
+	BacklogOrIceboxHours float64    `json:"parked_hours"`
+	QueuedHours          float64    `json:"queued_hours"`
 }
 
 // goldenBar is one bar of one issue as the golden file holds it: the bar of a population of that
@@ -134,7 +135,7 @@ func TestEveryStoredPartEqualsTheWindowAggregationsPartAtTheBaseHead(t *testing.
 		}
 		work := want.WorkTime
 		check.hours("work_hours", row.WorkHours, work.Hours)
-		check.hours("parked_hours", row.ParkedHours, work.ParkedHours)
+		check.hours("backlog_or_icebox_hours", row.ParkedHours, work.BacklogOrIceboxHours)
 		check.hours("queued_hours", row.QueuedHours, work.QueuedHours)
 		check.moment("started_at", row.StartedAt, &work.StartedAt)
 		check.moment("closed_at", row.ClosedAt, &work.ClosedAt)

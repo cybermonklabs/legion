@@ -35,8 +35,9 @@
 -- the part the metrics' window aggregation takes from one issue, computed once by
 -- legion/metrics.ProjectFactsClosed and stored, so an eval's day rows fold stored values and
 -- recompute no rule.
---   parked_hours     the hours the work time took out of the issue's life for backlog or
---   queued_hours     icebox, and for standing admitted with no slot after its first worker
+--   backlog_or_icebox_hours, queued_hours
+--                    the hours the work time took out of the issue's life for backlog or
+--                    icebox, and for standing admitted with no slot after its first worker
 --                    event: the rest of metric 1's row beside work_hours.
 --   started_at       the issue's first worker event, where its work time starts, null for an
 --                    issue with none; merged_at its pull request's merge, null where Dispatch
@@ -50,7 +51,7 @@
 --                    held its own slot, its observed phase was in that role's bar and the role's
 --                    newest claim state was not `working` (D3), every role present.
 --   slot_wait_hours  the hours of the issue's observed life in which its phase was `admitted`
---                    and it held no slot, parked hours left out (D3).
+--                    and it held no slot, backlog_or_icebox_hours left out (D3).
 --   sent_back        whether it moved back to implementing from testing, reviewing, accepting
 --                    or the merger's phases. With the two below, the rest of metric 3's row
 --                    beside review_rounds.
@@ -153,7 +154,7 @@ create table issue_facts (
     work_first_at timestamptz,
     work_last_at timestamptz,
     updated_at timestamptz not null default now(),
-    parked_hours double precision not null default 0,
+    backlog_or_icebox_hours double precision not null default 0,
     queued_hours double precision not null default 0,
     started_at timestamptz,
     merged_at timestamptz,
