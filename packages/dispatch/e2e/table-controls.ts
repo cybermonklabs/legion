@@ -1749,13 +1749,109 @@ async function expectNarrowingsListed(
   await expect(control(bar, CONTROL.panelTrigger)).toHaveAttribute("aria-expanded", "false");
 }
 
+/** `k-bar`'s **Clear filters** on a fault tab's bar, with the flag and the column filter of
+ *  `address` on (`expectFlagAndColumn`), read as the project List's: in the wide layout it is the
+ *  control right after the trigger, in the trigger's group, and a press on it takes both off - the
+ *  trigger counts nothing, the line draws no chip and no `+N more`, Clear filters goes, and the
+ *  address holds neither narrowing's key; in the narrow layout none is drawn. `at` names the page,
+ *  its width and the tab. */
+async function expectClearTakesBoth(
+  page: Page,
+  bar: Locator,
+  address: string,
+  at: string
+): Promise<void> {
+  const on = `${at}, a flag and a column on`;
+  // `expectFlagAndColumn` waited until the trigger counted the two, and two frames more, and shut
+  // its panel, so the bar read here stands for them.
+  const two = await readBar(bar);
+  const said = saidOf(two);
+  const clear = two.controls.filter((each) => each.control === "clear");
+  if (two.width < NARROW_BELOW) {
+    expect(clear.length, `${on}: ${said}, a Clear filters`).toBe(0);
+    return;
+  }
+  const trigger = two.controls.findIndex((each) => each.control === CONTROL.panelTrigger);
+  expect(
+    two.controls[trigger + 1]?.control,
+    `${on}: ${said}, no Clear filters after its trigger`
+  ).toBe("clear");
+  expect(clear[0]?.besideTrigger, `${on}: Clear filters is not in its trigger's group`).toBe(true);
+  // The narrowings' own keys, which the press takes out of the address. `tab` stays, so the press
+  // leads to the tab's unnarrowed address, which the row opened the tab at.
+  const keys = [...new URL(address, page.url()).searchParams.keys()].filter((key) => key !== "tab");
+  const button = bar.getByRole("button", { exact: true, name: "Clear filters" });
+  await button.click();
+  const cleared = `${at}, Clear filters pressed`;
+  await expect(
+    control(bar, CONTROL.panelTrigger),
+    `${cleared}: its trigger still counts a narrowing`
+  ).toHaveAccessibleName(/^Filters?$/);
+  const { line, more } = barChips(bar);
+  await expect(line, `${cleared}: chips left in the line`).toHaveCount(0);
+  await expect(more, `${cleared}: a +N more left in the line`).toHaveCount(0);
+  await expect(button, `${cleared}: Clear filters is still drawn`).toHaveCount(0);
+  await expect
+    .poll(() => [...new URL(page.url()).searchParams.keys()].filter((key) => keys.includes(key)), {
+      message: `${cleared}: the address still holds these of ${keys.join(", ")}`,
+    })
+    .toEqual([]);
+}
+
+/** `k-bar`'s reading of a fault tab's line under six narrowings, made before any panel is
+ *  opened: in the wide layout the six do not fit a bar at 1280x800, so one `+N more` holds at
+ *  least one of them, and each chip the line draws stands inside the bar, its right edge at most
+ *  the bar's within 1 px. The narrow layout draws no chip in the line (`expectNarrowingsListed`). */
+async function expectLineFits(bar: Locator, at: string): Promise<void> {
+  // `settledBar` waited until the trigger counted the six, and two frames more, which the line
+  // takes to read its chips' widths and draw again by them, so this is the line it settled on.
+  const box = await bar.evaluate((node) => {
+    const { left, right, width } = node.getBoundingClientRect();
+    return { left, right, width };
+  });
+  if (box.width < NARROW_BELOW) return;
+  const { line, more } = barChips(bar);
+  const chips = await line.evaluateAll((all) =>
+    all.map((chip) => {
+      const { left, right } = chip.getBoundingClientRect();
+      return { left, name: chip.getAttribute("aria-label") ?? "", right };
+    })
+  );
+  const n =
+    (await more.count()) === 0
+      ? 0
+      : Number.parseInt((await more.getAttribute("aria-label")) ?? "0", 10);
+  const drawn = chips.map(
+    (chip) => `"${chip.name}" at ${Math.round(chip.left)}-${Math.round(chip.right)}px`
+  );
+  const said = `a bar at ${Math.round(box.left)}-${Math.round(box.right)}px whose line draws ${drawn.length === 0 ? "no chip" : drawn.join(", ")}`;
+  expect(n, `${at}: ${said}, and no +N more holds the rest`).toBeGreaterThanOrEqual(1);
+  expect(
+    chips.filter((chip) => chip.right > box.right + 1).map((chip) => chip.name),
+    `${at}: ${said}, so these stand past its right edge`
+  ).toEqual([]);
+}
+
+/** `assertPageFits`, its failure naming `at`: one row reads both fault tabs in each layout, so the
+ *  page and the tab must be in the failure itself and not only in the line under it. */
+async function expectPageFitsAt(page: Page, at: string): Promise<void> {
+  try {
+    await assertPageFits(page);
+  } catch (cause) {
+    const said = cause instanceof Error ? cause.message : String(cause);
+    throw new Error(`${at}: the page scrolls sideways: ${said}`, { cause });
+  }
+}
+
 /** `k-bar` on the page `name` at `size`: its design's controls and no other in the layout its
  *  bar's width gives, each button quiet at rest and, at the phone's width, at least 44 px each
  *  way; and on a page with a trigger, **Filter**'s tint and count, **Clear filters** in its group
  *  where the page has one, and its chips in the line, behind `+N more` or - below 640 px - behind
  *  the trigger's badge, each listed at the top of its panel. On the priorities page the bar above
  *  each fault tab's issues table, which is the List's, is read as the List's is: under one flag
- *  and one column filter, and under six narrowings. */
+ *  and one column filter, which **Clear filters** takes off, and under six narrowings, whose chips
+ *  stand inside the bar, behind `+N more` in the wide layout, on a page that does not scroll
+ *  sideways. */
 export async function expectBarDesign(
   page: Page,
   name: SurfaceName,
@@ -1802,19 +1898,25 @@ export async function expectBarDesign(
       await tab.narrow();
       await expectPriorityIssueChips(page, tab.root, at, fault.word);
       // The bar above the tab's own issues table is the List's, read as the List's is: one flag
-      // and one column filter, then six narrowings, six at the phone's width too.
+      // and one column filter, which Clear filters takes off, then six narrowings, six at the
+      // phone's width too. Their line is read before any panel opens, so a line that draws every
+      // chip with no `+N more` fails at its own read and not at the panels' count.
+      const flagAndColumn = faultAddress(fault, 2);
       await expectFlagAndColumn(
         page,
         tab.row,
         tab.root,
-        faultAddress(fault, 2),
+        flagAndColumn,
         ["Needs you", `Status: ${fault.word}`],
         at
       );
+      await expectClearTakesBoth(page, tab.row, flagAndColumn, at);
       const six = `${at}, six narrowings on`;
       await page.goto(faultAddress(fault, 6));
       await settledBar(page, tab.name, tab.row, 6, six);
+      await expectLineFits(tab.row, six);
       await expectNarrowingsListed(page, tab.row, tab.root, 6, six);
+      await expectPageFitsAt(page, six);
     }
     // The work table now lives on the priority's own page. Read its status chip there.
     const work = await openPriorityPage(page, scene);
