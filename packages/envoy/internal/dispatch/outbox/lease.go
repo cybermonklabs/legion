@@ -28,7 +28,11 @@ const (
 	// the hold up, so that a process whose NATS works can publish instead.
 	natsLossGrace = 3 * time.Second
 	// probeTimeout bounds the flush that tells a connection that is gone or silent from one whose
-	// server still answers, after a batch's sends failed for the connection (scanBatch).
+	// server still answers: after a batch's sends failed for the connection (scanBatch), before a
+	// holder that gave the hold up for NATS lost tries it again (answering), and every probeTimeout
+	// through the expiry pass (passKeptExpiriesWhileNATSAnswers). It is also the bound of each
+	// kept-lane read of that pass (boundedKeptLanes), so a read a silence holds has given up by the
+	// time the pass's first probe answers.
 	probeTimeout = 2 * time.Second
 	// holdRetry is how long a standby waits to try the hold again after the database failed to
 	// answer the take or the read of the current hold's lapse, or after a probe of its own NATS
@@ -662,18 +666,16 @@ func (o *Outbox) passKeptExpiriesWhileNATSAnswers(ctx context.Context, hold fenc
 	// the process's, still tells a stop from an end of this pass's own making.
 	pass, endPass := context.WithCancel(ctx)
 	defer endPass()
-	// lost is the watcher's finding that the connection does not answer, stored before watched
-	// closes, which is when the watcher has returned.
-	var lost atomic.Bool
-	watched := make(chan struct{})
+	watched := make(chan bool, 1)
 	go func() {
-		defer close(watched)
+		silent := false
+		defer func() { watched <- silent }()
+		defer endPass()
 		probe := time.NewTimer(probeTimeout)
 		defer probe.Stop()
 		for {
 			select {
 			case <-changed:
-				endPass()
 				return
 			case <-pass.Done():
 				return
@@ -686,7 +688,6 @@ func (o *Outbox) passKeptExpiriesWhileNATSAnswers(ctx context.Context, hold fenc
 			var err error
 			select {
 			case <-changed:
-				endPass()
 				return
 			case err = <-answer:
 			}
@@ -694,19 +695,15 @@ func (o *Outbox) passKeptExpiriesWhileNATSAnswers(ctx context.Context, hold fenc
 				probe.Reset(probeTimeout)
 				continue
 			}
-			select {
-			case <-changed:
+			if connectionReplaced(changed) {
 				// A cut or a reconnect, which the connection's own event decides.
-				endPass()
 				return
-			default:
 			}
 			if ctx.Err() == nil {
-				lost.Store(true)
+				silent = true
 				slog.Error("dispatch outbox: the expiry pass's NATS connection does not answer, so the holder gives the publisher hold up",
 					"instance", o.instance, "error", err)
 			}
-			endPass()
 			return
 		}
 	}()
@@ -714,10 +711,10 @@ func (o *Outbox) passKeptExpiriesWhileNATSAnswers(ctx context.Context, hold fenc
 	ended := pass.Err() != nil
 	endPass()
 	select {
-	case <-watched:
+	case silent = <-watched:
 	case <-ctx.Done():
 	}
-	if lost.Load() {
+	if silent {
 		return full, failed, true
 	}
 	if ended && ctx.Err() == nil {

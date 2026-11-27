@@ -78,10 +78,10 @@ func (g *passGate) wait(ctx context.Context) error {
 // release opens the gate.
 func (g *passGate) release() { g.opened.Do(func() { close(g.open) }) }
 
-// gatedLanes is the bus client a process reads its kept lanes and the expiry notices through
+// gatedLanes is the kept-lane reader a process reads its kept lanes and the expiry notices through
 // (Deps.KeptLanes), with a gate in front of its stored-message reads of one subject.
 type gatedLanes struct {
-	*bus.Client
+	KeptLaneReader
 	subject string
 	gate    *passGate
 }
@@ -92,7 +92,7 @@ func (g gatedLanes) NextStoredMessage(ctx context.Context, subject string, seq u
 			return bus.StoredMessage{}, err
 		}
 	}
-	return g.Client.NextStoredMessage(ctx, subject, seq)
+	return g.KeptLaneReader.NextStoredMessage(ctx, subject, seq)
 }
 
 // gatedClaims is the role bucket a process reads a role's claim from (Deps.RoleClaims), with a gate
@@ -145,14 +145,14 @@ func (w gatedKeepWindow) PublishStoredAsync(subject string, item contracts.Envel
 }
 
 // expiryPassCall is one NATS call of the expiry pass (passKeptExpiries) that a row holds at a gate.
-// gateOn puts the gate in front of that call in the Deps of the process under test, built on that
-// process's own client; skip is how many calls of the same kind the gate lets through once armed,
-// before the one it holds. recorded says the call is the keep's (keepExpiredCopiesAgain), which
-// comes once the notice is recorded, so the row checks, when the call is held, that the notice's
-// expiry is recorded and still owed its keep.
+// gateOn puts the gate in front of that call in the Deps of the process under test, whose readers
+// and publisher the row has set to that process's own client; skip is how many calls of the same
+// kind the gate lets through once armed, before the one it holds. recorded says the call is the
+// keep's (keepExpiredCopiesAgain), which comes once the notice is recorded, so the row checks, when
+// the call is held, that the notice's expiry is recorded and still owed its keep.
 type expiryPassCall struct {
 	name     string
-	gateOn   func(deps *Deps, client *bus.Client, gate *passGate)
+	gateOn   func(deps *Deps, gate *passGate)
 	skip     int64
 	recorded bool
 }
@@ -164,8 +164,8 @@ type expiryPassCall struct {
 var expiryPassCalls = []expiryPassCall{
 	{
 		name: "the read of the expiry notices",
-		gateOn: func(deps *Deps, client *bus.Client, gate *passGate) {
-			deps.KeptLanes = gatedLanes{Client: client, subject: keptExpiryNotices, gate: gate}
+		gateOn: func(deps *Deps, gate *passGate) {
+			deps.KeptLanes = gatedLanes{KeptLaneReader: deps.KeptLanes, subject: keptExpiryNotices, gate: gate}
 		},
 	},
 	{
@@ -173,22 +173,22 @@ var expiryPassCalls = []expiryPassCall{
 		// the keep the notice owes reads it again (readExpiredCopy): the gate lets the first
 		// through.
 		name: "the read of an expired copy",
-		gateOn: func(deps *Deps, client *bus.Client, gate *passGate) {
-			deps.KeptLanes = gatedLanes{Client: client, subject: bus.KeptRoleSubject(expiryPassRole), gate: gate}
+		gateOn: func(deps *Deps, gate *passGate) {
+			deps.KeptLanes = gatedLanes{KeptLaneReader: deps.KeptLanes, subject: bus.KeptRoleSubject(expiryPassRole), gate: gate}
 		},
 		skip:     1,
 		recorded: true,
 	},
 	{
 		name: "the read of a role's holder",
-		gateOn: func(deps *Deps, _ *bus.Client, gate *passGate) {
+		gateOn: func(deps *Deps, gate *passGate) {
 			deps.RoleClaims = gatedClaims{ClaimStore: deps.RoleClaims, role: expiryPassRole, gate: gate}
 		},
 		recorded: true,
 	},
 	{
 		name: "the send of a keep",
-		gateOn: func(deps *Deps, _ *bus.Client, gate *passGate) {
+		gateOn: func(deps *Deps, gate *passGate) {
 			deps.Publisher = gatedKeeps{Publisher: deps.Publisher, subject: bus.KeptRoleSubject(expiryPassRole), gate: gate}
 		},
 		recorded: true,
@@ -225,7 +225,7 @@ func startExpiryPassRow(t *testing.T, name string, call expiryPassCall) *expiryP
 		row.client = client
 		holders := roles.NewBuckets(client, roles.Windows{})
 		deps.RoleClaims, deps.Sessions, deps.KeptLanes = holders, holders, client
-		call.gateOn(deps, client, row.gate)
+		call.gateOn(deps, row.gate)
 	})
 	waitFor(t, "the first process taking the publisher hold", row.held.outbox.Publishing)
 	row.working = startProcess(t, "working", storetest.SecondProcess(t, row.database), url, row.counter)
@@ -235,7 +235,7 @@ func startExpiryPassRow(t *testing.T, name string, call expiryPassCall) *expiryP
 	}
 	t.Cleanup(reader.Close)
 
-	routed := (&roleRig{database: row.database, broker: row.held.broker}).routedEvent(t, "T-2", expiryPassRole, model.Actor{Kind: "user", ID: "alice"})
+	routed := routedEvent(t, row.database, row.held.broker, "T-2", expiryPassRole, model.Actor{Kind: "user", ID: "alice"})
 	row.held.broker.Publish(routed)
 	waitFor(t, "the holder publishing the event routed to the role", func() bool {
 		return publishedAt(t, row.database, routed.ID) != nil
@@ -264,12 +264,13 @@ func startExpiryPassRow(t *testing.T, name string, call expiryPassCall) *expiryP
 // lane, the read of the role's holder and the send of the keep. cmd/dispatch gives the outbox one
 // bus client for all four (Deps.KeptLanes, Deps.Publisher, and the role and session buckets it
 // reads Deps.RoleClaims and Deps.Sessions through), and each call made while that client
-// reconnects waits for the reconnect up to a bound of its own: a stored-message read
-// storedMessageWait in internal/bus, 10 s; a read of the buckets readTimeout in internal/roles,
-// 2 s; a keep publishAcknowledgementTimeout in internal/bus, 5 s. A holder that waits such a call
-// out before it counts the loss releases the hold only after that bound and natsLossGrace, so the
-// other process takes the hold past the 10 s that TestAPublisherCutFromNATSHandsOverWithin10Seconds
-// (cmd/dispatch/multiprocess_test.go) holds.
+// reconnects waits for the reconnect up to a bound of its own: 2 s for a read, through
+// boundedKeptLanes or readTimeout in internal/roles; 5 s for a keep, publishAcknowledgementTimeout
+// in internal/bus. Before boundedKeptLanes a stored-message read waited storedMessageWait in
+// internal/bus, 10 s, past the 10 s of TestAPublisherCutFromNATSHandsOverWithin10Seconds
+// (cmd/dispatch/multiprocess_test.go). A holder that waits such a call out before it counts the
+// loss releases the hold only after that bound and natsLossGrace, past the natsLossGrace and
+// half-second this row allows.
 //
 // Not parallel: its subject is that bound, the release within natsLossGrace and a half-second of it.
 func TestAnOutboxCutFromNATSInItsExpiryPassReleasesThePublisher(t *testing.T) {
@@ -300,10 +301,10 @@ func TestAnOutboxCutFromNATSInItsExpiryPassReleasesThePublisher(t *testing.T) {
 // within silentTakeOver of the silence, as it does after a silence between passes
 // (TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther). Each call is a subtest, as in
 // TestAnOutboxCutFromNATSInItsExpiryPassReleasesThePublisher. No connection event comes, so the
-// holder has to find the silence itself: a holder that waits a call out to its own bound - 10 s
-// for a stored-message read (storedMessageWait in internal/bus) - before a batch's sends go
-// unanswered and their probe fails hands the hold over that bound later. The silent process then
-// does not take the hold back while its connection stays silent.
+// holder has to find the silence itself: a holder that waits a call out to its own bound - 2 s for
+// a stored-message read (boundedKeptLanes), 5 s for a keep, one call after another - before a
+// batch's sends go unanswered and their probe fails hands the hold over that bound later. The
+// silent process then does not take the hold back while its connection stays silent.
 //
 // Not parallel: its subject is the take-over within silentTakeOver of the silence.
 func TestAnOutboxWhoseNATSGoesSilentInItsExpiryPassGivesThePublisherToTheOther(t *testing.T) {

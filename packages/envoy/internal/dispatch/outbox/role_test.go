@@ -257,22 +257,29 @@ func failureReasons(t *testing.T, registry *metrics.Registry) string {
 // routedEvent seeds issue key routed to role:role and appends a human message on it.
 func (r *roleRig) routedEvent(t *testing.T, key, role string, actor model.Actor) model.Event {
 	t.Helper()
+	return routedEvent(t, r.database, r.broker, key, role, actor)
+}
+
+// routedEvent seeds issue key routed to role:role in database and appends a human message on it
+// through broker.
+func routedEvent(t *testing.T, database *store.Store, broker *events.Broker, key, role string, actor model.Actor) model.Event {
+	t.Helper()
 	route := "role:" + role
-	if _, err := r.database.Pool.Exec(context.Background(),
+	if _, err := database.Pool.Exec(context.Background(),
 		`insert into projects (key, name, default_assignee) values ('TT', 'Test', 'alice') on conflict do nothing`); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	var number int
-	if err := r.database.Pool.QueryRow(context.Background(), `select count(*) + 1 from issues`).Scan(&number); err != nil {
+	if err := database.Pool.QueryRow(context.Background(), `select count(*) + 1 from issues`).Scan(&number); err != nil {
 		t.Fatalf("number the issue: %v", err)
 	}
-	if _, err := r.database.Pool.Exec(context.Background(), `
+	if _, err := database.Pool.Exec(context.Background(), `
 		insert into issues (key, project_key, number, title, route, created_by, rank)
 		values ($1, 'TT', $2, 'Routed', $3, '{"kind":"user","id":"alice"}', 'U')
 	`, key, number, route); err != nil {
 		t.Fatalf("create issue %s: %v", key, err)
 	}
-	return appendEvent(t, r.database, r.broker, model.Event{
+	return appendEvent(t, database, broker, model.Event{
 		IssueKey: new(key), Type: "message.created", Actor: actor,
 		Payload: model.Message{ID: fmt.Sprintf("8f14e45f-ceea-467a-9c1e-%012d", number), IssueKey: new(key), Body: "for the role"},
 	})

@@ -545,9 +545,10 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 	return result, nil
 }
 
-// connectionReplaced reports whether changed, the client's connection-change channel taken before a
-// batch's first send (Publisher.ConnectionChanged), has closed: the connection the batch's window
-// pinned was lost or replaced since.
+// connectionReplaced reports whether changed, the client's connection-change channel taken before
+// the work it guards (Publisher.ConnectionChanged) - a batch's first send, or the expiry pass
+// (Outbox.passKeptExpiriesWhileNATSAnswers) - has closed: the connection that work started on was
+// lost or replaced since.
 func connectionReplaced(changed <-chan struct{}) bool {
 	select {
 	case <-changed:
