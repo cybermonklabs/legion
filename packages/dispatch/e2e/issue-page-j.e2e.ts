@@ -2736,6 +2736,74 @@ test("a press past inline HTML that ends a Spec statement of several lines keeps
   });
 });
 
+// The tester's finding at 983d5c9f: a press past a footnote's reference that ends a statement's
+// words puts the caret before the reference. The Spec view draws the reference as the text its
+// author wrote ("[^n1]"), since it draws the statement's block alone and the note's definition
+// stands elsewhere in the spec, while the editor holds it as an atom (`sup` of `footnote_reference`).
+// A press past the end of the words, where the reader sees "[^n1]" end them, then puts the caret
+// between the last word and the atom, and the reader's typing goes before the note. On a copy of
+// INFRA-1196, at 1440 x 900 and at 390 x 844, and at 422b723c as at 983d5c9f.
+// SLOW(>=2s): a seeded issue of sixty statements, a load of the Spec view and a press, each read
+// once the page has stopped moving.
+test("a press past a footnote's reference that ends a Spec statement puts the caret after it", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const seed = seedStatement(
+    () =>
+      `${statementBlock(LONG_BLOCK_ID, "The reader presses past the note that ends these words[^n1]")}\n\n[^n1]: The note the words end with.`
+  );
+  await phase(browser, seed, async (page, seeded) => {
+    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
+    // The press is 20 px past the end of the words' last line, at its middle.
+    const at = await long.locator("[data-node-words]").evaluate((words) => {
+      const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT);
+      let last: Text | null = null;
+      for (let text = walker.nextNode(); text !== null; text = walker.nextNode())
+        last = text as Text;
+      const end = document.createRange();
+      end.setStart(last ?? words, Math.max(0, (last?.data.length ?? 1) - 1));
+      end.setEnd(last ?? words, last?.data.length ?? 0);
+      const box = end.getBoundingClientRect();
+      return {
+        x: Math.round(Math.min(box.right + 20, words.getBoundingClientRect().right - 2)),
+        y: Math.round((box.top + box.bottom) / 2),
+      };
+    });
+    expect(
+      await long.evaluate((row, point) => {
+        const hit = document.elementFromPoint(point.x, point.y);
+        const words = row.querySelector("[data-node-words]");
+        return words?.contains(hit) === true && hit?.closest("a, button") === null;
+      }, at),
+      `the point (${at.x}, ${at.y}) is not on the statement's words past their end`
+    ).toBe(true);
+    await settledScrollTop(page);
+    await page.mouse.click(at.x, at.y);
+    await expect
+      .poll(() => caretInRowBlock(page, LONG_BLOCK_ID), {
+        message: "a press past the end of the statement's words does not put the caret in them",
+      })
+      .toBe(true);
+    const note = '[data-type="footnote_reference"]';
+    await expect(
+      long.locator(`[data-editor-box] ${note}`),
+      "the statement's editor holds no footnote's reference at the end of its words"
+    ).toHaveCount(1);
+    expect(
+      await long.evaluate((row, selector) => {
+        const placed = row.querySelector(`[data-editor-box] ${selector}`);
+        const caret = window.getSelection();
+        if (placed === null || caret?.anchorNode == null) return false;
+        const after = document.createRange();
+        after.setStartAfter(placed);
+        return after.comparePoint(caret.anchorNode, caret.anchorOffset) >= 0;
+      }, note),
+      "a press past the footnote's reference that ends the statement's words puts the caret before it"
+    ).toBe(true);
+  });
+});
+
 // The view row holds each filter control's place before the counts arrive. On a large issue the
 // reads the counts come from - the coverage, the decisions and the results - answered 5 to 7 s
 // after the row was drawn; each filter control then grew by its signal, and every control after
