@@ -761,15 +761,15 @@ func TestAKeptAnswerHoldsTheObjectsItsOwnIDsName(t *testing.T) {
 
 // answerEndedByDelete leaves out the block text a reply carries of the post it answers
 // (reply_block), as every repeat that could give it reads the post again: each keyed route whose
-// answer can hold a reply block, as routeShapes declares the answer's Go type, answers a repeat
+// answer can hold a reply block, as its declaration's Shape names the answer's Go type, answers a repeat
 // with the post read again (keyedRereads) or from its recovery point (keyedReplays), and no
 // refusal, which every route replays as kept, holds one.
 func TestEveryKeyedAnswerThatCanHoldAReplyBlockIsReadAfresh(t *testing.T) {
 	t.Parallel()
 	replays := (&server{}).keyedReplays()
 	found := 0
-	for route, shape := range routeShapes {
-		method, _, _ := strings.Cut(route, " ")
+	for _, declared := range routeRegistry {
+		route, shape, method := declared.Method+" "+declared.Pattern, declared.Shape, declared.Method
 		if !keyedMethod(method) {
 			continue
 		}

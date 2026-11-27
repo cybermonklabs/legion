@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"maps"
 	"reflect"
 	"slices"
@@ -14,9 +15,9 @@ var replyBlockMembers = []string{"reply_to_block", "in_reply_to_block"}
 
 // A reply to a block takes the words it quotes beside the block it names, quote and occurrence,
 // as model.AnchorInput holds them for a document anchor. The walk reads every route's request
-// type as routeShapes declares it, so a route that comes to name a block to reply to without
-// taking its quote fails here, and the routes it finds are held to the six the spec names, so a
-// seventh fails until the spec names it too.
+// type as its declaration states it (routeDecl.Shape), so a route that comes to name a block to
+// reply to without taking its quote fails here, and the routes it finds are held to the six the
+// spec names, so a seventh fails until the spec names it too.
 func TestEveryRouteThatNamesABlockToReplyToTakesItsQuote(t *testing.T) {
 	t.Parallel()
 	want := []string{
@@ -28,8 +29,11 @@ func TestEveryRouteThatNamesABlockToReplyToTakesItsQuote(t *testing.T) {
 		"POST /api/v1/messages/{id}/reply",
 	}
 	var found []string
-	for _, route := range slices.Sorted(maps.Keys(routeShapes)) {
-		request := routeShapes[route].Request
+	routes := slices.SortedFunc(slices.Values(routeRegistry), func(a, b routeDecl) int {
+		return cmp.Compare(a.Method+" "+a.Pattern, b.Method+" "+b.Pattern)
+	})
+	for _, declared := range routes {
+		route, request := declared.Method+" "+declared.Pattern, declared.Shape.Request
 		if request == nil {
 			continue
 		}
