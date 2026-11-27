@@ -1786,7 +1786,7 @@ func (s *Service) carryApprovalBeforeFill(ctx context.Context, tx pgx.Tx, versio
 		if open, err := earlierCarryOpen(ctx, tx, id, number); err != nil || !open {
 			return err
 		}
-		return s.carryUnmovedEarlier(ctx, tx, id, number, version.markdown, *newest, version.record.Digest)
+		return s.carryUnmovedEarlier(ctx, tx, id, number, *newest, version.record.Digest, func() (string, error) { return version.markdown, nil })
 	}
 	if newest.Version != number || newest.CarriedFromVersion != nil {
 		return nil
@@ -1819,25 +1819,36 @@ func earlierCarryOpen(ctx context.Context, tx pgx.Tx, id string, number int) (bo
 }
 
 // carryUnmovedEarlier carries newest, the document's newest review and an approval of a version
-// before number, to version number of the document id, stored as markdown, where digest - the
-// version's record digest, which the fill read at the version's cut or the first pass of a deferred
-// version recorded on its row - is the digest newest stands on (knownRecord, recordUnmoved): R14
-// carries every version whose record digest is the approved one. This is a version whose own
+// before number, to version number of the document id, only where digest - the version's record
+// digest, which the fill read at the version's cut or the first pass of a deferred version recorded
+// on its row - is the digest newest stands on (knownRecord, recordUnmoved), which it reads before
+// it reads the version's text through text: R14 carries every version whose record digest is the
+// approved one, and no version whose record moved, whatever its text. This is a version whose own
 // write's rule passed over it, unable to vouch for its record in its read phase: a mark of the
 // issue's queries stood, or the version before it still owed its digest (recordUnmoved's P1 and
 // P2), or the write hands its rule no facts (versionWriteRecord: the node route's move, the
 // decisions step), or its pass was deferred (R15), so no pass of its write stated it. Its caller
-// runs it only where earlierCarryOpen answers true, and it carries through
-// carryNewestApprovalNaming on that function's own conditions, so its reason names the version the
-// person approved (RecordCarryReason). Its artifact.approved follows the version's
-// artifact.version, which the version's write appended before its COMMIT, as the fill's carry of
-// an approval given before the fill does.
-func (s *Service) carryUnmovedEarlier(ctx context.Context, tx pgx.Tx, id string, number int, markdown string, newest model.ArtifactReview, digest string) error {
+// runs it only where earlierCarryOpen answers true, and once the digest holds it carries through
+// carryNewestApprovalNaming on that function's own conditions: the restore, carryVerdict's cases
+// and the record case, in that order, each reason naming the version the person approved
+// (approvalOrigin). Its artifact.approved follows the version's artifact.version, which the
+// version's write appended before its COMMIT, as the fill's carry of an approval given before the
+// fill does.
+func (s *Service) carryUnmovedEarlier(ctx context.Context, tx pgx.Tx, id string, number int, newest model.ArtifactReview, digest string, text func() (string, error)) error {
+	record := knownRecord(digest)
+	unmoved, err := recordUnmoved(ctx, tx, id, number, newest, record)
+	if err != nil || !unmoved {
+		return err
+	}
+	markdown, err := text()
+	if err != nil {
+		return err
+	}
 	tree, err := pmdoc.ParseRendering(markdown)
 	if err != nil {
 		return skipUnreadableVersion(id, number, err)
 	}
-	return carryNewestApprovalNaming(ctx, tx, s.events, id, number, markdown, tree, newest, s.serverURL, decisionStepCases{}, "", knownRecord(digest), eventSink(ctx))
+	return carryNewestApprovalNaming(ctx, tx, s.events, id, number, markdown, tree, newest, s.serverURL, decisionStepCases{}, "", record, eventSink(ctx))
 }
 
 // HoldFills sets hold to run at the start of every fill of the record digests a write left owed
@@ -2003,11 +2014,10 @@ func (s *Service) carryFirstStated(ctx context.Context, tx pgx.Tx, versions []fi
 			if !open {
 				continue
 			}
-			rendered, err := RenderVersion(ctx, tx, model.ServerReader, id, number)
-			if err != nil {
-				return nil, err
-			}
-			if err := s.carryUnmovedEarlier(ctx, tx, id, number, rendered.Markdown, *newest, stated.digest); err != nil {
+			if err := s.carryUnmovedEarlier(ctx, tx, id, number, *newest, stated.digest, func() (string, error) {
+				rendered, err := RenderVersion(ctx, tx, model.ServerReader, id, number)
+				return rendered.Markdown, err
+			}); err != nil {
 				return nil, err
 			}
 			continue

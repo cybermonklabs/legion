@@ -248,6 +248,19 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 // (arrivedResultsChange), which the drain's result carry names (carryAppendedResults). The reason
 // keeps the opening every carried reason has (carriedReasonPrefix), which the daemon matches.
 //
+// carryVerdict's cases and the restore compare the two versions' texts alone, so on a query
+// document of a converted issue a carry by them also keeps to the record newest stands on
+// (carryKeepsTheRecord): no case carries a version whose record the read phase shows moved since -
+// a version whose text differs in its ask blocks' attributes alone, after a criterion of the room's
+// tree that the drain's version before it recorded - and then no case after them is weighed, since
+// the record case would find the same record moved. The restore is held to it onto a version that
+// stands stored or whose digest is known (storedRecord, knownRecord), as the reopen's follow and
+// the fill carry it: a drain's version that holds the approved bytes over a moved record restores
+// the approved text and nothing the person approved of the record. A restore onto a version this
+// write makes is held to its record by carryRestored, where that version takes its row in the
+// write. A carry naming arrived keeps to the record its caller held to the approved one with the
+// arrived results alone (appendsResultsAlone).
+//
 // Where neither the restore nor carryVerdict's cases carry, and no result arrived, the record case
 // runs last (carryUnmovedRecord): a version whose record digest is the one newest stands on, as a
 // paragraph moved in the text before a requirement leaves it, carries by its reason
@@ -267,6 +280,12 @@ func carryNewestApprovalNaming(ctx context.Context, tx pgx.Tx, broker *events.Br
 		return err
 	}
 	if restored {
+		if record.stored || record.digest != nil {
+			kept, err := carryKeepsTheRecord(ctx, tx, artifactID, number, newest, record)
+			if err != nil || !kept {
+				return err
+			}
+		}
 		origin, err := approvalOrigin(ctx, tx, artifactID, newest)
 		if err != nil {
 			return err
@@ -306,6 +325,12 @@ func carryNewestApprovalNaming(ctx context.Context, tx pgx.Tx, broker *events.Br
 		}
 	}
 	if carried {
+		if arrived == "" {
+			kept, err := carryKeepsTheRecord(ctx, tx, artifactID, number, newest, record)
+			if err != nil || !kept {
+				return err
+			}
+		}
 		origin, err := approvalOrigin(ctx, tx, artifactID, newest)
 		if err != nil {
 			return err
