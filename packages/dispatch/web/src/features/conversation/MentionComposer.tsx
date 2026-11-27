@@ -46,6 +46,7 @@ import {
   dangerHoverBorder,
   dangerText,
   dismissButtonText,
+  focusBorder,
   focusRing,
   hoverToDangerText,
   linkHoverText,
@@ -53,7 +54,11 @@ import {
   pageComposer,
   pageComposerControl,
   pageFailedText,
+  pageHairBorder,
+  pageInkText,
   pageMutedText,
+  pagePaperBg,
+  pageQuietText,
   primaryButtonBg,
   quoteAccentBorder,
   quoteBodyText,
@@ -89,6 +94,7 @@ import { StopTrying } from "../writes/StopTrying";
 import { endedStopped, stoppedNote } from "../writes/useKeyedWrite";
 import { KEY_HOURS } from "../writes/write-words";
 import { type FollowedBlocks, followEdit, spansFromBlocks, textareaValue } from "./block-spans";
+import type { AgentNames } from "./CachedAuthor";
 import {
   type AskOptionDraft,
   type Draft,
@@ -430,6 +436,27 @@ function askOptionRows(ask: SentRequest["ask"] | undefined): AskOptionDraft[] {
       }));
 }
 
+/**
+ * The colours of a reply's quote, of the body's box with its label and the line under it, and of
+ * the composer's muted lines (`foot`: the line under Send, the paste line, the status lines,
+ * Cancel reply's ×), by the palette the host hands (`MentionComposerProps.palette`), as
+ * `issue-page/DecisionActions.tsx` keeps its own: `main`'s are the classes every surface of
+ * today's pages draws, and on the new issue page the quote is the page's (`ReplyQuote`'s
+ * `palette`), the box the page's field, which keeps `main`'s focus rule, its label the muted
+ * grey, and the line under the box and the muted lines the quiet grey, as the ask body's answer
+ * box draws them (`AskBody`'s `ON_PAGE`). Send is the page's inside `NoTooltips` whatever the
+ * host hands (`RefusableButton`'s `PAGE_LOOKS`).
+ */
+const TONES = {
+  main: { field: undefined, foot: textMutedOnSurfaceMuted, hint: undefined, label: undefined },
+  page: {
+    field: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
+    foot: pageQuietText,
+    hint: `text-xs ${pageQuietText}`,
+    label: `block text-sm font-medium ${pageMutedText}`,
+  },
+} as const;
+
 /** The key of a draft kept for another address than the composer shows, as its line or its offer
  *  is drawn: its whole address - the words a margin compose was at, the reply it answers and the
  *  statement the issue page's box was on - which no two drafts kept under one name share. Two the
@@ -656,6 +683,10 @@ function OutlineRefusal({
 
 interface MentionComposerProps {
   readonly agents?: readonly Agent[];
+  /** How the quote of the post a reply answers names its author: `live`, as everywhere, or
+   *  `cache`, from the registry the cache already holds, which starts no agents read when the
+   *  composer draws (`ReplyQuote`). */
+  readonly agentNames?: AgentNames;
   readonly anchor?: ComposerAnchor;
   /** What the host says in place of the server's words when it refused this send for a mark the
    *  document no longer holds (`ANCHOR_MISSING`) and could not write that mark again: the margin's
@@ -735,6 +766,10 @@ interface MentionComposerProps {
    *  that comes without a count is the host's move - another row, another thread, a Reply on a
    *  message - and what the composer holds stays with the address it was made for. */
   readonly ownMoves?: number;
+  /** The palette the reply's quote, the body's box with its label and the line under it, and the
+   *  composer's muted lines draw in (`TONES`): `main`'s, unless the host hands the new issue
+   *  page's, as Dashboard's thread items there do (dispatch://INFRA-3940 R13). */
+  readonly palette?: keyof typeof TONES;
   readonly replyTo?: ReplyTarget | null;
   /** The post `replyTo` quotes, as the host's read of it stands now (`ReplyParent`), whose
    *  deletion and edit the quote marks. `replyTo` is a copy taken when Reply was pressed, which a
@@ -769,6 +804,7 @@ interface MentionComposerProps {
 }
 
 export function MentionComposer({
+  agentNames = "live",
   agents: suppliedAgents,
   anchor,
   anchorRefusal,
@@ -793,6 +829,7 @@ export function MentionComposer({
   outline,
   owner,
   ownMoves = 0,
+  palette = "main",
   replyParent,
   replyTo = null,
   saveEdit,
@@ -1523,6 +1560,13 @@ export function MentionComposer({
       unsupportedOptions.every((option) => option.capabilities.includes(mode))
   );
 
+  const tones = TONES[palette];
+  // The theme's muted token, shadowed in this function by the palette's, so `main`'s lines that
+  // name it stay as they are (spec R26): on `main`'s palette it is the token itself (`TONES.main`
+  // reads the import, at module scope), and on the new page's every muted line of the composer -
+  // the line under Send, the paste line, the status lines, Cancel reply's × - is the page's quiet
+  // grey. Nothing in this function names it above this line.
+  const textMutedOnSurfaceMuted = tones.foot;
   // The parts both looks draw alike, each where its look puts it: the prompt that asks before a
   // draft is thrown away, the drafts kept beside the field, what a send to the mentioned sessions
   // would do, and the upload and the send's own state.
@@ -1606,6 +1650,9 @@ export function MentionComposer({
         ));
   // The colours the send's own lines are drawn in: the page's on the issue page's box, whose
   // whole look is the page's own, and the dashboard's on every other surface.
+  // Here `textMutedOnSurfaceMuted` is the palette's (its shadow above, `TONES[palette].foot`), so
+  // on `palette` `page` (Dashboard's thread item on the new page) `quietTone` is the page's quiet
+  // grey.
   const mutedTone = outlined ? pageMutedText : textMutedOnSurface;
   const quietTone = outlined ? pageMutedText : textMutedOnSurfaceMuted;
   const failedTone = outlined ? pageFailedText : dangerText;
@@ -1958,12 +2005,14 @@ export function MentionComposer({
       {replyTo === null ? null : (
         <div className="flex items-center gap-1">
           <ReplyQuote
+            agentNames={agentNames}
             author={replyTo.actor}
             className="min-w-0 flex-1"
             deleted={postDeletion(replyParent)}
             edited={replyParent?.edited_at}
             excerpt={replyParent === undefined ? "" : replyTo.excerpt}
             excerptTree={replyParent === undefined ? undefined : replyTo.excerptTree}
+            palette={palette}
             source={textSourceOf(
               replyTo.parentKind,
               replyTo.id,
@@ -2045,10 +2094,13 @@ export function MentionComposer({
       ) : null}
       <MentionField
         body={body}
+        fieldClassName={tones.field}
         fieldRef={field}
+        hintClassName={tones.hint}
         inline={inline}
         issueKey={pickerIssue}
         label={bodyLabel}
+        labelClassName={tones.label}
         labelHidden={compact}
         onChange={onBodyChange}
         onDrop={homes.drop}

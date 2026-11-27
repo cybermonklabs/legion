@@ -113,12 +113,13 @@ func TestSignOffInAcceptingStartsRetro(t *testing.T) {
 		t.Fatalf("status write = %q, %v; want retro", written, err)
 	}
 	task := startTask(t, pool, claim.RoleImplementer)
-	for _, want := range []string{"Phase: retro.", "Handoff: review version 1 (dispatch handoff-read --issue LEGION-208 --phase review --version 1).", "Pull request: #42."} {
+	for _, want := range []string{"Phase: retro.", "Pull request: #42."} {
 		if !strings.Contains(task, want) {
 			t.Fatalf("the implementer's retro task %q does not carry %q", task, want)
 		}
 	}
-	if strings.Contains(task, "Handoff commit:") {
+	assertNamesTheHandoff(t, task, "LEGION-208", "review", 1)
+	if strings.Contains(task, "Handoff commit:") || strings.Contains(task, "Where a later version") {
 		t.Fatalf("the implementer's retro task %q names a commit the seeded reviewer's completion never reported", task)
 	}
 	if pass := implementerPass(t, pool); pass != 0 {

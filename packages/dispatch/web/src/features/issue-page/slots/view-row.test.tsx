@@ -6,10 +6,11 @@ import { MemoryRouter } from "react-router-dom";
 import { api } from "../../../api/client";
 import { issueResultsQuery, referenceTargetsQuery } from "../../../api/queries";
 import type { ArtifactBlock, ReferenceTarget } from "../../../api/types";
+import { KEY } from "../../decision-card/decision-fixture";
 import { DESKTOP_WIDTH, stubViewport } from "../../margin/margin-fixture";
 import { buildDispatchReference } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
-import { issueDetails, KEY, SPEC_SLUG } from "../decisions-filter/decisions-fixtures";
+import { issueDetails, SPEC_SLUG } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import { readComment, TWO_THREADS } from "../outline-fixtures";
 import { FILTER_SIGNAL_WORDS, PRESET_NAMES, PRESET_ORDER, type Preset } from "../page-words";
@@ -61,8 +62,9 @@ function blocksWithStep(id: string): never {
 }
 
 /** What the row draws once every read has answered: the spec's two statements, and the two
- *  threads the reader began, which are Conversation's entries. */
-const ANSWERED_COUNTS: Readonly<Record<Preset, string>> = {
+ *  threads the reader began, which are Conversation's entries. Dashboard draws no count: what
+ *  waits on the reader is counted in the header. */
+const ANSWERED_COUNTS: Readonly<Partial<Record<Preset, string>>> = {
   conversation: "2",
   decisions: "0",
   plan: "0",
@@ -103,7 +105,7 @@ function answerReads() {
  *  the row of five. */
 function renderViewRow(client: QueryClient, path = presetPath(KEY, "conversation")) {
   const issue = issueDetails();
-  const route = { key: issue.key, kind: "issue" } as const;
+  const route = { key: issue.key, kind: "conversation" } as const;
   return render(
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={client}>

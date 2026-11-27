@@ -6893,7 +6893,12 @@ test("with no pin, Pinned reads None and sends no request", async () => {
     expect(within(pins).queryAllByRole("link")).toHaveLength(0);
     // The panel's reads have gone out by the time the Repository row has read the project list.
     await waitFor(() => expect(api.listProjects).toHaveBeenCalled());
-    expect(pinReads.asks, "Pinned read the issue's questions with no pin").not.toHaveBeenCalled();
+    // Details reads the issue's open asks of its own, for the approval requests that wait on the
+    // reader (`useWaitingRequests`); Pinned's read is of every ask.
+    expect(
+      pinReads.asks.mock.calls.filter(([, state]) => state === "all"),
+      "Pinned read the issue's questions with no pin"
+    ).toEqual([]);
     expect(
       pinReads.comments,
       "Pinned read the issue's comments with no pin"
@@ -6951,13 +6956,18 @@ test("with a pin, a window focus past 30 s reads none of Pinned's questions, com
   const { unmount } = renderDetails(undefined, undefined, client);
 
   try {
+    // Details reads the issue's open asks of its own, for the approval requests that wait on the
+    // reader (`useWaitingRequests`); Pinned's read is of every ask.
+    const pinnedAsks = () => pinReads.asks.mock.calls.filter(([, state]) => state === "all");
     await waitFor(() => {
-      for (const read of Object.values(pinReads)) expect(read).toHaveBeenCalledTimes(1);
+      expect(pinnedAsks()).toHaveLength(1);
+      expect(pinReads.comments).toHaveBeenCalledTimes(1);
+      expect(pinReads.messages).toHaveBeenCalledTimes(1);
       expect(client.isFetching()).toBe(0);
     });
     await focusPastStaleness(client);
     await waitFor(() => expect(getMyState).toHaveBeenCalledTimes(2));
-    expect(pinReads.asks, "a window focus read Pinned's questions again").toHaveBeenCalledTimes(1);
+    expect(pinnedAsks(), "a window focus read Pinned's questions again").toHaveLength(1);
     expect(pinReads.comments, "a window focus read Pinned's comments again").toHaveBeenCalledTimes(
       1
     );
@@ -7971,5 +7981,86 @@ test("Details' places for the people, the focused row's facts and the history dr
     const view = render(<Place issue={issue} state={undefined} />);
     expect(view.container.innerHTML, `${Place.name} drew something`).toBe("");
     view.unmount();
+  }
+});
+
+// dispatch://INFRA-5702/spec#b-r-header-count (R10): Details draws Approve and Request changes on
+// its Approval row wherever no approval request waits on the reader, and leaves them to the
+// header while one does, by the approval-request items of the one rule of what waits
+// (`useWaitingRequests`). An approval of the reader's that a newer version made stale is an item
+// of Dashboard's list but no request, so it moves no control: Details keeps both. An open request
+// on the document that waits on the reader takes them to the header.
+test("a stale approval moves no approval control", async () => {
+  const { getIssue, pinReads, restore } = stubIssueApi();
+  const stale: IssueDetails = {
+    ...issue,
+    artifacts: [
+      {
+        ...specArtifact,
+        approval: {
+          at: "2026-09-10T00:00:00Z",
+          by: { id: "alice", kind: "user" },
+          latest_version: 3,
+          state: "stale",
+          version: 2,
+        },
+      },
+    ],
+  };
+  getIssue.mockResolvedValue(stale);
+  const { queryClient, unmount } = renderDetails();
+  const actions = () =>
+    within(screen.getByTestId("issue-details-approval-steps")).queryAllByRole("button", {
+      name: /^(Approve|Request changes)\b/,
+    });
+
+  try {
+    await waitFor(() => expect(pinReads.asks).toHaveBeenCalledWith("CORE-1", "open"));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    await screen.findByTestId("issue-details-approval-steps");
+    expect(actions().length, "the stale approval moved Details' approval controls").toBeGreaterThan(
+      0
+    );
+
+    pinReads.asks.mockImplementation(async (_key, state) =>
+      state === "open"
+        ? [
+            {
+              anchor: null,
+              answer: null,
+              artifact_id: specArtifact.id,
+              asked_of: null,
+              asked_of_at: null,
+              asked_of_by: null,
+              author: { id: "session-1", kind: "session" },
+              block_id: null,
+              created_at: "2026-09-11T00:00:00Z",
+              edited_at: null,
+              id: "ask-approval",
+              issue_key: "CORE-1",
+              kind: "approval",
+              last_reply: null,
+              multiple: false,
+              options: [],
+              question: "Approve the spec?",
+              state: "open",
+              urgency: "med",
+              waiting_on: "human",
+              waiting_on_person: "alice",
+            },
+          ]
+        : []
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["asks", "CORE-1", "open"] });
+    });
+    await waitFor(() =>
+      expect(actions(), "a request waiting on the reader left Details' approval controls").toEqual(
+        []
+      )
+    );
+  } finally {
+    unmount();
+    restore();
   }
 });

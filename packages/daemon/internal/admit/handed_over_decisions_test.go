@@ -27,7 +27,8 @@ func keepDecision(t *testing.T, pool *pgxpool.Pool, root, issue, ref string) {
 			t.Fatalf("read the root %s: %v", root, err)
 		}
 		outcome, err := record.RelayKeptDecision(ctx, tx, records, issue, *stored, true,
-			record.KeptDecision{Ref: ref, Decision: record.DecisionAskAnswered, Actor: "user:alice", At: fixedNow}, 0, "", nil)
+			record.KeptDecision{Ref: ref, Decision: record.DecisionAskAnswered,
+				Actor: "user:alice", At: fixedNow}, record.Notice{}, nil)
 		if err != nil {
 			t.Fatalf("keep the decision %s: %v", ref, err)
 		}

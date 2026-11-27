@@ -14,41 +14,52 @@
  *  pauses between reads of the log cost nothing, and the rows count them; the script itself holds
  *  no variable a test sets for its waits. The three-hour wait and the two-hour window are read
  *  against the host's own clock, from the FLEET_SINCE and PROBE_AT a row gives. DISPATCH_URL names
- *  a host no row reaches.
+ *  a host no row reaches. What this file shares with `priorities-production.test.ts`, the stand-in
+ *  `gh` among it, is `production-look-fixture.ts`'s.
  *
  *  A row that replays an earlier probe (PROBE_ID, PROBE_AT and PROBE_STOPPED given) has a `curl`
  *  that fails and is recorded where it runs, so the row holds that the look sent nothing.
  */
 
 import { expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
-import { masked, rowLimit, runBounded } from "./bounded-subprocess";
-
-const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
+import { rowLimit, runBounded } from "./bounded-subprocess";
+import {
+  accessLogRead,
+  curlArguments,
+  dispatchPackage,
+  dispatchUrl,
+  distinct,
+  fleetCompare,
+  fleetSha,
+  gcloudCalls,
+  gcloudRecord,
+  gh,
+  healthz,
+  lookEnv,
+  mergeSha,
+  type Printed,
+  printed,
+  recorded,
+  requestLine,
+  requiredInputs,
+  said,
+  standInFunctions,
+  times,
+} from "./production-look-fixture";
 
 type Form = "page" | "open" | "whole";
 const forms: readonly Form[] = ["page", "open", "whole"];
 
-/** MERGE_SHA, and the commit production's fleet serves in every row that names none of its own. */
-const mergeSha = "4f1c2b9e8d7a6c5b4a39281706f5e4d3c2b1a090";
-const fleetSha = "9a8b7c6d5e4f30211203f4e5d6c7b8a9f0e1d2c3";
 /** The 16 hex digits of a probe id a replay row makes up. */
 const nonce = "0123456789abcdef";
-/** DISPATCH_URL in every row: a host no row reaches. */
-const dispatchUrl = "https://dispatch.internal.example";
-/** The arguments of `gh` for GitHub's compare of MERGE_SHA with `fleetSha`. */
-const fleetCompare = `api repos/cybermonklabs/legion/compare/${mergeSha}...${fleetSha} --jq .status`;
 
-/** The inputs every look requires. The bearer and the logging project are made up. */
+/** The inputs every look requires: both looks' own, and the bearer, which is made up. */
 const required: Readonly<Record<string, string>> = {
-  DISPATCH_URL: dispatchUrl,
+  ...requiredInputs,
   DISPATCH_TOKEN: "not-a-real-bearer",
-  MERGE_SHA: mergeSha,
-  LOGGING_PROJECT: "example-logging-project",
 };
 
 /** GET /api/v1/priorities as the stand-in answers it: the second priority holds the most open
@@ -86,57 +97,35 @@ interface Production {
   readonly lateReads?: number;
 }
 
-/** The four stand-ins of a look, as its environment carries them, and the log in `dir`/log. Each
- *  stand-in is a bash function in a `BASH_FUNC_<name>%%` variable, the form in which bash exports
- *  a function, so the script's bash imports it and runs it in place of the program of that name:
- *  each runs in the shell that calls it and starts no process. A look of 600 reads that started a
- *  process for each one took from 1.9 s to 60.1 s in one leg of the repeated harness lane (run
- *  45866491242, round 3), so its 60 s bound decided the row there. Executables of the same names
- *  come first on PATH and only fail, so a shell that did not import a function reaches nothing
- *  past this host. What the stand-ins record goes in `dir`, and lasts from one look of a row to the
- *  next; each also records the process and the subshell depth it ran in, which the row "each
- *  stand-in a look calls runs in the shell that calls it" reads. */
+/** The four stand-ins of a look, as its environment carries them (`standInFunctions`), and the
+ *  log in `dir`/log. Each runs in the shell that calls it and starts no process: a look of 600
+ *  reads that started a process for each one took from 1.9 s to 60.1 s in one leg of the repeated
+ *  harness lane (run 45866491242, round 3), so its 60 s bound decided the row there. What the
+ *  stand-ins record goes in `dir`, and lasts from one look of a row to the next; each also records
+ *  the process and the subshell depth it ran in, which the row "each stand-in a look calls runs in
+ *  the shell that calls it" reads. */
 function standIns(dir: string, production: Production): Record<string, string> {
   const time = (form: Form) => (production.slowForm === form ? "1.500000" : "0.040000");
   const status = production.issueStatus ?? 200;
   const issues = production.noIssue ? [] : [{ key: "ACME-1", title: "One issue" }];
   const page = JSON.stringify({ issues, total: issues.length, limit: 50, offset: 0 });
   const list = JSON.stringify(issues);
-  const fleet = production.fleetCommit === undefined ? fleetSha : production.fleetCommit;
-  const healthz = JSON.stringify({ ok: true, commit: fleet, fleet_commit: fleet });
   const shells = join(dir, "shells");
   const curl = [
-    "local out='' agent='' url=''",
-    'while [ "$#" -gt 0 ]; do',
-    "  case $1 in",
-    "    -o) out=$2; shift ;;",
-    "    -A) agent=$2; shift ;;",
-    "    -w | -H | --max-time) shift ;;",
-    "    -*) ;;",
-    "    *) url=$1 ;;",
-    "  esac",
-    "  shift",
-    "done",
+    ...curlArguments,
     `printf '%s %s\\n' "$agent" "$url" >>'${join(dir, "curl-calls")}'`,
     `printf 'curl %s %s\\n' "$BASHPID" "$BASH_SUBSHELL" >>'${shells}'`,
     ...(production.sendsNothing
       ? ["echo 'curl: this look was to send nothing' >&2", "return 7"]
       : []),
     "case $url in",
-    `  */healthz) printf '%s' '${healthz}' >"$out"; echo '200 0.012000' ;;`,
+    `  */healthz) printf '%s' '${healthz(production.fleetCommit)}' >"$out"; echo '200 0.012000' ;;`,
     `  */api/v1/priorities) printf '%s' '${priorities}' >"$out"; echo '200 0.031000' ;;`,
     `  *'/api/v1/issues?'*'&limit=50') printf '%s' '${page}' >"$out"; echo '${status} ${time("page")}' ;;`,
     `  *'/api/v1/issues?'*'&open=true') printf '%s' '${list}' >"$out"; echo '${status} ${time("open")}' ;;`,
     `  *'/api/v1/issues?advances='*) printf '%s' '${list}' >"$out"; echo '${status} ${time("whole")}' ;;`,
     `  *) echo "curl: no answer for $url" >&2; return 6 ;;`,
     "esac",
-  ];
-  const gh = [
-    `printf '%s\\n' "$*" >>'${join(dir, "gh-calls")}'`,
-    `printf 'gh %s %s\\n' "$BASHPID" "$BASH_SUBSHELL" >>'${shells}'`,
-    production.compare === "unanswered"
-      ? "echo 'HTTP 502: Bad Gateway (https://api.github.com/repos/cybermonklabs/legion/compare)' >&2; return 1"
-      : `echo '${production.compare ?? "ahead"}'`,
   ];
   // The probe id the filter names, a commit's 40 hex digits, a slash and 16 hex digits, is read
   // with a glob and not a regular expression, which would set the script's own BASH_REMATCH. The
@@ -146,7 +135,7 @@ function standIns(dir: string, production: Production): Record<string, string> {
   const probeId = `${"[0-9a-f]".repeat(40)}/${"[0-9a-f]".repeat(16)}`;
   const gcloud = [
     `local dir='${dir}' calls=0 probe='' argument='' text=''`,
-    `{ printf 'call\\0'; printf '%s\\0' "$@"; } >>"$dir/gcloud-calls"`,
+    gcloudRecord(dir),
     `printf 'gcloud %s %s\\n' "$BASHPID" "$BASH_SUBSHELL" >>'${shells}'`,
     'read -r calls 2>/dev/null <"$dir/gcloud-count" || calls=0',
     "calls=$((calls + 1))",
@@ -166,48 +155,24 @@ function standIns(dir: string, production: Production): Record<string, string> {
     `printf '%s\\n' "$*" >>'${join(dir, "sleeps")}'`,
     `printf 'sleep %s %s\\n' "$BASHPID" "$BASH_SUBSHELL" >>'${shells}'`,
   ];
-  const bin = join(dir, "bin");
-  mkdirSync(bin, { recursive: true });
-  const unreached = [
-    "#!/bin/sh",
-    `echo "$0: this row's stand-in function of that name did not reach the script's shell" >&2`,
-    "exit 127",
-    "",
-  ].join("\n");
-  const env: Record<string, string> = { PATH: `${bin}:${process.env.PATH ?? ""}` };
-  for (const [name, body] of Object.entries({ curl, gh, gcloud, sleep })) {
-    writeFileSync(join(bin, name), unreached, { mode: 0o755 });
-    env[`BASH_FUNC_${name}%%`] = ["() {", ...body.map((line) => `  ${line}`), "}"].join("\n");
-  }
-  writeFileSync(join(dir, "log"), (production.log ?? []).join("\n"));
-  return env;
+  return standInFunctions(
+    dir,
+    {
+      curl,
+      gh: gh(dir, production.compare, [
+        `printf 'gh %s %s\\n' "$BASHPID" "$BASH_SUBSHELL" >>'${shells}'`,
+      ]),
+      gcloud,
+      sleep,
+    },
+    production.log
+  );
 }
 
-/** The text of a file of `dir`, empty where the file is missing. Any other failure to read it
- *  throws. */
-function recordedText(dir: string, name: string): string {
-  try {
-    return readFileSync(join(dir, name), "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
-    throw error;
-  }
-}
-
-/** The lines a file of `dir` holds, none where the file is missing. */
-function recorded(dir: string, name: string): string[] {
-  return recordedText(dir, name).split("\n").slice(0, -1);
-}
-
-/** What one look did: its exit code and output, the lines of its stdout but the empty ones, and
- *  what the stand-ins recorded so far in the row's directory, this look's and any earlier look's of
- *  the row: each request `curl` was asked for, the arguments of each `gh` and `gcloud` call, and
- *  each pause `sleep` was asked for. */
-interface Look {
-  readonly code: number;
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly lines: readonly string[];
+/** What one look did: what it printed, and what the stand-ins recorded so far in the row's
+ *  directory, this look's and any earlier look's of the row: each request `curl` was asked for,
+ *  the arguments of each `gh` and `gcloud` call, and each pause `sleep` was asked for. */
+interface Look extends Printed {
   readonly requests: readonly { readonly agent: string; readonly url: string }[];
   readonly gh: readonly string[];
   readonly gcloud: readonly (readonly string[])[];
@@ -216,50 +181,31 @@ interface Look {
 
 /** One look: the script run from the package root with the stand-ins of `production` in its
  *  environment, the required inputs with `inputs` over them (an undefined one taken away), and
- *  `label` as DISPATCH_E2E_CASE, which the script never reads and which tells the cost lines apart. */
+ *  `label` as DISPATCH_E2E_CASE. */
 async function look(
   dir: string,
   label: string,
   production: Production,
   inputs: Readonly<Record<string, string | undefined>> = {}
 ): Promise<Look> {
-  const env: Record<string, string> = {
-    DISPATCH_E2E_CASE: label,
-    HOME: process.env.HOME ?? "",
-    ...standIns(dir, production),
-    ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
-  };
-  for (const [name, value] of Object.entries({ ...required, ...inputs })) {
-    if (value !== undefined) env[name] = value;
-  }
+  const functions = standIns(dir, production);
   const run = await runBounded({
     argv: ["bash", "e2e/acceptance/priority-list-production.sh"],
     bound: "short",
     cwd: dispatchPackage,
-    env,
+    env: lookEnv(label, functions, { ...required, ...inputs }),
     from: import.meta.url,
   });
   return {
-    code: run.code,
-    stdout: run.stdout,
-    stderr: run.stderr,
-    lines: run.stdout.split("\n").filter((line) => line !== ""),
+    ...printed(run),
     requests: recorded(dir, "curl-calls").map((line) => {
       const space = line.indexOf(" ");
       return { agent: line.slice(0, space), url: line.slice(space + 1) };
     }),
     gh: recorded(dir, "gh-calls"),
-    gcloud: recordedText(dir, "gcloud-calls")
-      .split("call\0")
-      .slice(1)
-      .map((call) => call.split("\0").slice(0, -1)),
+    gcloud: gcloudCalls(dir),
     sleeps: recorded(dir, "sleeps"),
   };
-}
-
-/** What a row's failure says of a look: its exit code and all it printed. */
-function said({ code, stdout, stderr }: Look): string {
-  return ` The script exited ${code}. Its stdout read:\n${stdout || "(nothing)"}\nIts stderr read:\n${masked(stderr) || "(nothing)"}`;
 }
 
 /** The epoch seconds of a time as the script prints one, and the reverse. */
@@ -277,8 +223,7 @@ function clock(): { from: number; to: () => number } {
   return { from, to: () => Math.ceil(Date.now() / 1000) };
 }
 
-/** One access log line as Dispatch's server writes it through slog's text handler (the example of
- *  "Access log" in `cmd/dispatch/README.md`), for a read of `form` by the probe `probe`. */
+/** One access log line (`requestLine`) for a read of `form` by the probe `probe`. */
 function accessLine(
   form: Form,
   elapsed: number,
@@ -289,21 +234,23 @@ function accessLine(
     probe = "@PROBE@",
   }: { status?: number; method?: string; route?: string; probe?: string } = {}
 ): string {
-  return `time=2026-11-25T09:00:00.000Z level=INFO msg="dispatch: request" method=${method} route=${route} path=/api/v1/issues caller_kind=shared-token caller="" address=203.0.113.9 peer=10.8.0.12 user_agent=priority-list-production/${probe}/${form} status=${status} elapsed_ms=${elapsed} bytes=48211`;
+  return requestLine({
+    method,
+    route,
+    path: "/api/v1/issues",
+    callerKind: "shared-token",
+    caller: '""',
+    agent: `priority-list-production/${probe}/${form}`,
+    status,
+    elapsed,
+    bytes: 48211,
+  });
 }
 
 /** The lines of `form`, one for each time of `elapsed`. */
 function formLines(form: Form, elapsed: readonly number[]): string[] {
   return elapsed.map((ms) => accessLine(form, ms));
 }
-
-/** `count` of `value`. */
-function times<T>(count: number, value: T): T[] {
-  return Array.from({ length: count }, () => value);
-}
-
-/** 200 distinct times from 200 down to 1 ms: their p90, the 180th in ascending order, is 180. */
-const distinct = Array.from({ length: 200 }, (_, index) => 200 - index);
 
 /** A log in which every read of the three forms took the times of `distinct`, interleaved. */
 const fastLog = distinct.flatMap((ms) => forms.map((form) => accessLine(form, ms)));
@@ -598,21 +545,11 @@ test(
         ),
       ],
       logReads: [
-        [
-          "logging",
-          "read",
-          [
-            'resource.type="k8s_container"',
-            'resource.labels.namespace_name="dispatch"',
-            'textPayload:"msg=\\"dispatch: request\\""',
-            `textPayload:"user_agent=priority-list-production/${probe.id}/"`,
-            `timestamp>="${probe.at}"`,
-            `timestamp<="${stamp(at + 7200)}"`,
-          ].join(" AND "),
-          "--project",
-          "example-logging-project",
-          "--format=value(textPayload)",
-        ],
+        accessLogRead(
+          `textPayload:"user_agent=priority-list-production/${probe.id}/"`,
+          `timestamp>="${probe.at}"`,
+          `timestamp<="${stamp(at + 7200)}"`
+        ),
       ],
       sleeps: [],
     });

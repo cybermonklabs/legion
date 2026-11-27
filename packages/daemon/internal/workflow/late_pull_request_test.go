@@ -267,7 +267,7 @@ func TestALateOpenedOfAPullRequestAnEarlierGenerationClearedRecordsNothing(t *te
 		t.Run(tc.name, func(t *testing.T) {
 			pool := appliedEvents(t, tc.seed)
 			seedRecord(t, pool, func(tx pgx.Tx) error {
-				return record.NewStore().ClearGeneration(t.Context(), tx, "LEGION-208", lateApplied.Add(2*time.Hour))
+				return clearLateGeneration(t, tx, lateApplied.Add(2*time.Hour))
 			})
 			apply := githubFacts(t, pool, tc.engine)
 			if !tc.reopened {
@@ -294,7 +294,7 @@ func TestALateOpenedUnderTheNewNameOfAPullRequestClearedUnderTheOldRecordsNothin
 	const from, to = "sjawhar/legion", "cybermonklabs/legion"
 	pool := appliedEvents(t, record.PullRequestClosed)
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		if err := record.NewStore().ClearGeneration(t.Context(), tx, "LEGION-208", lateApplied.Add(2*time.Hour)); err != nil {
+		if err := clearLateGeneration(t, tx, lateApplied.Add(2*time.Hour)); err != nil {
 			return err
 		}
 		if _, err := record.RenameIssueRepository(t.Context(), tx, "LEGION-208", from, to); err != nil {
@@ -309,4 +309,15 @@ func TestALateOpenedUnderTheNewNameOfAPullRequestClearedUnderTheOldRecordsNothin
 	apply := githubFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 	lateChangesNothing(t, pool, apply, "late", intake.PullRequestOpened{Repo: to, Number: 42, Branch: "legion/LEGION-208",
 		HeadSHA: "head-a", UpdatedAt: lateApplied.Add(-time.Hour)})
+}
+
+// clearLateGeneration clears the generation of LEGION-208, the issue these tests seed, as every
+// clear of the workflow does (Engine.ClearGeneration), with at as the engine's moment.
+func clearLateGeneration(t *testing.T, tx pgx.Tx, at time.Time) error {
+	t.Helper()
+	issue, err := record.NewStore().Issue(t.Context(), tx, "LEGION-208")
+	if err != nil {
+		return err
+	}
+	return testEngine(config.DesignGateRootIssues, nil).ClearGeneration(t.Context(), tx, *issue, at)
 }

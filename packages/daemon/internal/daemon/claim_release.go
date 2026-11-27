@@ -211,10 +211,7 @@ func (w *workflowRuntime) releaseOutOfWorkflowClaims(ctx context.Context, tx pgx
 	if err != nil {
 		return fmt.Errorf("read the records of the claimed issues of %s before their claim release: %w", w.dispatchProject, err)
 	}
-	recorded := make(map[string]*record.Issue, len(issues))
-	for i := range issues {
-		recorded[issues[i].Key] = &issues[i]
-	}
+	recorded := recordsByKey(issues)
 	for _, key := range keys {
 		issue := recorded[key]
 		if issue == nil || !record.Stopped(*issue) {
