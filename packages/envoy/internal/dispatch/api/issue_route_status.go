@@ -366,12 +366,14 @@ func (c *rosterCache) refreshLead(answered bool) time.Duration {
 
 // startRouteRosterRefresh starts this process's refresh loop (refreshRouteRosters) on the server's
 // lifetime at its first call; every later call costs one atomic load. The loop is counted in the
-// server's background work (detached), so the shutdown's wait sees it end before the pool closes.
+// server's roster loop work (rosterLoop), so the shutdown's wait sees it end before the pool closes
+// (waitBackground), and apart from the work requests leave running (detached), which a test's
+// barrier joins and which this loop, running for the server's whole lifetime, would hold open.
 func (s *server) startRouteRosterRefresh() {
 	cache := &s.rosters
 	cache.refresh.Do(func() {
 		cache.wake = make(chan struct{}, 1)
-		s.detached.goDetached(func() { s.refreshRouteRosters(s.lifetime) })
+		s.rosterLoop.goDetached(func() { s.refreshRouteRosters(s.lifetime) })
 	})
 }
 

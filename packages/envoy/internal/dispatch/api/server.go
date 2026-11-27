@@ -742,6 +742,11 @@ type server struct {
 	// http.Server.Shutdown finishes the requests in flight. A send bound to lifetime instead
 	// was cut off by SIGTERM, which cancels that context before the HTTP drain even begins.
 	detached backgroundWork
+	// rosterLoop is the route roster's refresh loop (startRouteRosterRefresh), which runs for the
+	// server's lifetime rather than past one request: shutdown waits for it beside detached
+	// (waitBackground), and a test's barrier for the work requests leave running joins detached
+	// alone, which a loop that never ends while the server serves would hold forever.
+	rosterLoop backgroundWork
 	// treeStores bounds the stores of display trees this server's reads leave running behind
 	// them, and starts one store for each set of texts at a time (displayTreeReader.storeOf).
 	treeStores treeStores
@@ -952,14 +957,16 @@ type Background struct {
 }
 
 // waitBackground waits for every keyed handler and every delivery a request left running past
-// its client, then for every live socket and the subscriptions it ran, serving none that opens from
-// then on (liveSocketSet.wait), then for the hub's goroutines, the relay's and the test hooks'
-// listener. The detached work comes first because it is the only work lifetime does not stop: a
-// keyed handler is bounded by keyedHandlerLimit, a delivery by the listener client's receipt
-// timeout per recipient, and each reads and writes through the database pool this wait is holding
-// open for it.
+// its client, then for the route roster's refresh loop, then for every live socket and the
+// subscriptions it ran, serving none that opens from then on (liveSocketSet.wait), then for the
+// hub's goroutines, the relay's and the test hooks' listener. The detached work comes first
+// because it is the only work lifetime does not stop: a keyed handler is bounded by
+// keyedHandlerLimit, a delivery by the listener client's receipt timeout per recipient, and each
+// reads and writes through the database pool this wait is holding open for it. The roster loop
+// ends with lifetime, and its last turn's write goes through the same pool.
 func (s *server) waitBackground() {
 	s.detached.wait()
+	s.rosterLoop.wait()
 	s.liveSockets.wait()
 	s.deliveryHub.wait()
 	s.eventRelay.wait()
