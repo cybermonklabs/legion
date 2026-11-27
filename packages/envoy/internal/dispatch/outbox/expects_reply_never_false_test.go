@@ -1,6 +1,7 @@
 package outbox
 
 //ci:reads packages/contracts/src/dispatch-api*.ts dispatchEventTypes globs ../../../../contracts/src/dispatch-api*.ts and reads each module the glob finds (the .test.ts files skips apart)
+//ci:reads packages/envoy/internal/dispatch/**/*.go !**/*_test.go TestNoDispatchServerPathWritesExpectsReplyFalse walks .. (internal/dispatch) and parses every non-test Go file it finds
 
 import (
 	"encoding/json"

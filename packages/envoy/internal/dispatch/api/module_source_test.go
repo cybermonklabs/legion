@@ -18,6 +18,8 @@
 
 package api
 
+//ci:reads packages/envoy/**/*.go !**/*_test.go scanModuleSources walks the module from moduleRoot (../../..) and parses every non-test Go file, for moduleSources, which item_writer_census_test.go's census calls in the race build too, where the tagged guards' copies of this line are not compiled
+
 import (
 	"fmt"
 	"go/ast"

@@ -58,13 +58,14 @@ jobs:
         if: ${{ !cancelled() }}
         run: .github/scripts/testcontainers_links.py
 
-      # Each read a Go legs test makes outside its package, held to a //ci: line that names it: a
-      # read no line names is a change to that file which selects no package of the legs
-      # (.github/scripts/go_legs_select.py, "--check-reads"). Its go list runs GOPROXY=off over an
-      # empty module cache, as the selection's does.
-      - name: Check every read a Go legs test makes outside its package is named by a //ci line
+      # Each read outside its package that a Go legs test's source shows (a `..` path, what a walk
+      # or a Join reads from where its path starts, a climb to a go.mod, go.work, .git or .github
+      # among them), held to a //ci: line that names it: a read no line names is a change to that
+      # file which selects no package of the legs (.github/scripts/go_legs_reads.py). Its go list
+      # runs GOPROXY=off over an empty module cache, as the selection's does.
+      - name: Check the reads outside its package a Go legs test's source shows are named by //ci lines
         if: ${{ !cancelled() }}
-        run: python3 .github/scripts/go_legs_select.py --check-reads
+        run: python3 .github/scripts/go_legs_reads.py
 
       - name: Check every workflow file GitHub can read and its size
         if: ${{ !cancelled() }}

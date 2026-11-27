@@ -2839,12 +2839,13 @@ started none. The jobs beside envoy-go's legs (alone, race-impossible, skip coun
 whenever envoy-go runs.
 
 **What selects a package.** For each legs job, one `go list -deps -test` of its packages under the
-build flags its legs pass go_legs.py (-race), over an empty module cache with GOPROXY=off, so the
-job downloads nothing. A job's packages are the file's and, in the job the module's `unlisted`
-names, each package `go list ./...` prints and no place names: a new package is selected like any
-other, and starts that job's last leg, which runs it. Each package's test binary is cut from that
-listing: the test main, the package, its test variants and everything they import. A changed path
-selects:
+build flags its legs pass go_legs.py (-race) and the architecture of the runner its legs run on
+(GOARCH: daemon-go's legs run on x86_64, the envoy legs on arm64, as does the `affected` job
+itself), over an empty module cache with GOPROXY=off, so the job downloads nothing. A job's
+packages are the file's and, in the job the module's `unlisted` names, each package `go list ./...`
+prints and no place names: a new package is selected like any other, and starts that job's last
+leg, which runs it. Each package's test binary is cut from that listing: the test main, the
+package, its test variants and everything they import. A changed path selects:
 
 - the package whose directory holds it (the nearest directory above it that go list knows as a
   package), when it is a `_test.go` file directly in that directory: go compiles a test file into
@@ -2860,9 +2861,19 @@ selects:
   names a set that holds it (the grammar is `ci_filter_sources.words`, and the sets are
   `ci_job_reads.READ_SETS`, which check-ci-filters.sh reads too). These lines are the only record
   of a test reading a file outside its package, so the ci-filters job runs
-  `go_legs_select.py --check-reads`: it reads each legs test for the paths it builds out of `..`
-  literals (`"../x"`, `filepath.Join("..", …)`, a walk of `..`) and fails on each that names a file
-  of the repository no rule above selects the package for, naming the `//ci:reads` line to add.
+  .github/scripts/go_legs_reads.py, which holds to a line each read outside its package it finds in
+  a legs package's source: a path built out of `..` literals (`"../x"`, `filepath.Join("..", …)`,
+  a walk of `..`); each walk, directory read and `filepath.Join` traced back through the variables,
+  parameters and string constants of the package's own files to where its path starts, a climb
+  among them (a function that steps up with `filepath.Dir` from `os.Getwd`, `filepath.Abs(".")` or
+  `runtime.Caller` to a go.mod, go.work, .git, .jj or .github, as fixtureenv, fixturegit and the
+  daemon's internal/api do); and an envoy command a test builds through `testbuild.EnvoyBinary`. A
+  tree above the package, and anything read from a climb's root, is named only by a glob that
+  covers it (its literal start the tree's directory or above, then `**`), so a line that names
+  something else outside the package does not name a walk. A read in a non-test file is made for
+  every package that imports it, so only a line of a non-test file of its package names it; a read
+  only a test the legs step skips reaches is in no leg and is not held. It fails on each read no
+  line names, naming the `//ci:` line to add. A read built some other way it does not see.
   check-ci-filters.sh's rule 9 holds each line to the files it names.
 
 **What selects every package, and what selects none.** Each is read from the change's base, as
@@ -2874,9 +2885,13 @@ content rather than as a touched path:
   `//ci:builds` build of it, compiles a package of any module outside the repository. Under
   GOPROXY=off a third-party package loads with no imports, so which of them a moved module reaches,
   directly or through another module, is not known, and each of them is selected;
-- a file a legs job runs - a script a step of its legs job names, and what that script runs or
-  sources, a local action that job uses, go_legs.py, go_legs_select.py, go-legs-select.sh - every
-  package of that job;
+- a file a legs job runs or reads before its tests do - a file a step of its legs job names, by a
+  path or by a bare name (`.omp-pin`), a local action that job uses and each file that action's
+  steps name, `$GITHUB_ACTION_PATH` read as the action's own directory, what each such script runs
+  or sources in turn, go_legs.py, go_legs_select.py, go-legs-select.sh - every package of that job.
+  So a tool pin the legs' tests run is one: install-jj reads worker.Dockerfile's `ARG JJ_TOOL` and
+  .github/ci-tools.yaml through ci-tools.sh, install-omp .omp-pin and `ARG OMP_SHA256`, install-uv
+  and setup-bun .github/ci-tools.yaml;
 - a legs workflow file: every package of its job only when the legs' definition changed, read as
   parsed YAML, so a comment or a reflow selects none: the legs job, and the file's `on:`, `env:` and
   `defaults:`, which every leg inherits; ci.yaml the same, for the `affected` job, the job that calls
@@ -2887,8 +2902,9 @@ content rather than as a touched path:
   unless a `//ci:` line names it. No legs test reads a fragment: the one Go test that reads one,
   cmd/spec-check's, runs in envoy-go-build.
 
-Any failure of the selection (a go command that fails, a package go list cannot load, a legs job no
-workflow step runs, an exception) selects every leg of every job with every package, and says why.
+Any failure of the selection (a go command that fails, a package go list cannot load, a
+first-party package a change deleted while another still imports it, a legs job no workflow step
+runs, an exception) selects every leg of every job with every package, and says why.
 When the `affected` job itself does not succeed (it runs out of time, its runner is lost), each
 legs job's caller in ci.yaml hands its file no selection (`needs.affected.result == 'success' &&
 … || ''`, its `if:` holding `!cancelled()`), which runs every leg with every package too.

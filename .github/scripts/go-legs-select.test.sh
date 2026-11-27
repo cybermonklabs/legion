@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
-# Tests for go_legs_select.py and go-legs-select.sh: which legs and packages a change selects, and
-# which reads outside a package --check-reads refuses, on fixture trees.
+# Tests for go_legs_select.py, go-legs-select.sh and go_legs_reads.py: which legs and packages a
+# change selects, and which reads outside a package go_legs_reads.py refuses, on fixture trees.
 #
 # Each case runs on a repository under a temporary directory built here: two modules (mod, with
-# packages a, shared, b and leaf; tool, one package), a .github/go-legs.yaml with a job for each
-# (unit, two legs, the second with a step of its own; tool-unit, one leg), a ci.yaml with an
-# affected job and a job of no legs, a legs workflow for each job, and copies of the scripts the
-# selection runs. A change is an edit of the working tree, measured from the commit the tree was
-# built at (`--base HEAD`, which reads the working tree), and is undone after each case. a imports
-# shared; b imports a module no module cache holds (example.com/far, which GOPROXY=off leaves
-# unloaded, as the selection's go commands do every third-party module); b's test declares, in a
-# //ci:reads line, the file fixtures/data.json; leaf imports nothing.
+# packages a, shared, b, leaf and solo; tool, one package), a .github/go-legs.yaml with a job for
+# each (unit, three legs: a and shared in the first, solo in the second, which alone carries a step
+# of its own, and b and leaf in the third and last, which runs the packages no place names;
+# tool-unit, one leg), a ci.yaml with an affected job and a job of no legs, a legs workflow for each
+# job (unit's uses a local action that reads the bare-named .tool-pin and sources a script through
+# $GITHUB_ACTION_PATH, and its go test skips TestSkipped), and copies of the scripts the selection
+# runs. Each leg's packages are where they are so that a case's legs say which rule started each:
+# the step of its own starts leg 2 alone, and leg 3 is no leg of a package of leg 1's. A change is
+# an edit of the working tree, measured from the commit the tree was built at (`--base HEAD`, which
+# reads the working tree), and is undone after each case. a imports shared; b imports a module no
+# module cache holds (example.com/far, which GOPROXY=off leaves unloaded, as the selection's go
+# commands do every third-party module); b's test declares, in a //ci:reads line, the file
+# fixtures/data.json; leaf and solo import nothing.
 #
 # Run from anywhere: .github/scripts/go-legs-select.test.sh
 # CI runs it in ci.yaml's test job, after setup-go.
@@ -33,8 +38,8 @@ put() { mkdir -p "$(dirname "$1")" && printf '%s\n' "$2" > "$1"; }
 tree() {
   local root="$work/$1"
   mkdir -p "$root/.github/scripts"
-  for script in go_legs_select.py go-legs-select.sh go_legs.py ci_filter_coverage.py ci_filter_sources.py \
-                go_build_tags.py workflow_paths.py; do
+  for script in go_legs_select.py go_legs_reads.py go-legs-select.sh go_legs.py ci_filter_coverage.py \
+                ci_filter_sources.py go_build_tags.py workflow_paths.py; do
     cp "$script_dir/$script" "$root/.github/scripts/"
   done
   cd "$root"
@@ -44,6 +49,8 @@ tree() {
       - a
       - shared
     2:
+      - solo
+    3:
       - b
       - leaf
   unlisted: unit
@@ -92,6 +99,7 @@ func TestB(t *testing.T) {}'
 import "testing"
 
 func TestLeaf(t *testing.T) {}'
+  put mod/solo/solo.go 'package solo'
   put fixtures/data.json '{}'
   put tool/go.mod 'module example.com/tool
 
@@ -101,6 +109,19 @@ go 1.21'
 func main() {}'
   put .github/scripts/leg-two.sh '#!/bin/sh
 echo leg two'
+  put .tool-pin 'tool@1.0.0'
+  put .github/scripts/tool.sh '#!/bin/sh
+echo the tool'
+  put .github/actions/tool/action.yml 'name: tool
+description: installs the tool .tool-pin pins
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        pin=$(<.tool-pin)
+        . "$GITHUB_ACTION_PATH/../../scripts/tool.sh" "$pin"'
+  put notes.txt 'notes no step reads'
   put .github/workflows/ci.yaml 'name: ci
 on: [pull_request]
 env:
@@ -139,12 +160,13 @@ jobs:
     timeout-minutes: 10
     strategy:
       matrix:
-        leg: [1, 2]
+        leg: [1, 2, 3]
     steps:
+      - uses: ./.github/actions/tool
       # The leg'"'"'s packages.
       - name: Run the leg
         working-directory: mod
-        run: python3 ../.github/scripts/go_legs.py mod unit ${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r go test -count=1
+        run: python3 ../.github/scripts/go_legs.py mod unit ${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r go test -count=1 -skip=^TestSkipped$
       - name: A step of leg two alone
         if: matrix.leg == 2
         run: .github/scripts/leg-two.sh'
@@ -195,9 +217,9 @@ echo '// a change' >> mod/shared/shared.go
 expect "shared.go" "$(select_change)" "1 2" "a shared" ""
 undo
 
-echo "case: a leaf package's own test file selects that package alone"
+echo "case: a leaf package's own test file selects that package alone, and starts its leg"
 echo '// a change' >> mod/leaf/leaf_test.go
-expect "leaf_test.go" "$(select_change)" "2" "leaf" ""
+expect "leaf_test.go" "$(select_change)" "2 3" "leaf" ""
 undo
 
 echo "case: a file of a package's testdata selects every package that imports it, as its source does"
@@ -212,7 +234,7 @@ undo
 
 echo "case: a file only a //ci:reads line names selects that line's package alone"
 echo '{"x": 1}' > fixtures/data.json
-expect "fixtures/data.json" "$(select_change)" "2" "b" ""
+expect "fixtures/data.json" "$(select_change)" "2 3" "b" ""
 check "the reason names the line's glob" "$(contains "$(cat "$work/said")" '  b: fixtures/data.json, which a //ci: line.s glob fixtures/data.json names')"
 undo
 
@@ -222,10 +244,10 @@ git add -N CHANGELOG.md
 expect "CHANGELOG.md" "$(select_change)" "2" "" ""
 undo
 
-echo "case: a package no line of go-legs.yaml names is selected, and starts its job's last leg"
+echo "case: a package no line of go-legs.yaml names is selected, and starts its job's last leg, which no other rule here starts"
 put mod/fresh/fresh.go 'package fresh'
 git add -N mod/fresh/fresh.go
-expect "a new package" "$(select_change)" "2" "fresh" ""
+expect "a new package" "$(select_change)" "2 3" "fresh" ""
 undo
 
 echo "case: go-legs.yaml selects the packages whose place it changes, and a comment there none"
@@ -248,15 +270,28 @@ sed -i "s/# The leg's packages./# The packages of the leg./" .github/workflows/l
 check "the comment edit changed legs.yaml" "$(is "$(git diff --quiet && echo same || echo changed)" changed)"
 expect "a comment in legs.yaml" "$(select_change)" "2" "" ""
 undo
-sed -i 's/xargs -r go test -count=1$/xargs -r go test -count=2/' .github/workflows/legs.yaml
-expect "the legs step" "$(select_change)" "1 2" "all" ""
+sed -i 's/xargs -r go test -count=1 -skip/xargs -r go test -count=2 -skip/' .github/workflows/legs.yaml
+check "the step edit changed legs.yaml" "$(is "$(git diff --quiet && echo same || echo changed)" changed)"
+expect "the legs step" "$(select_change)" "1 2 3" "all" ""
 undo
 sed -i 's/^  GOTOOLCHAIN: local$/  GOTOOLCHAIN: local\n  GOFLAGS: -tags=fixture/' .github/workflows/legs.yaml
 check "the env edit changed legs.yaml" "$(is "$(git diff --quiet && echo same || echo changed)" changed)"
-expect "the legs workflow's top-level env" "$(select_change)" "1 2" "all" ""
+expect "the legs workflow's top-level env" "$(select_change)" "1 2 3" "all" ""
 undo
 printf '#!/bin/sh\necho leg two, changed\n' > .github/scripts/leg-two.sh
-expect "a script a legs step runs" "$(select_change)" "1 2" "all" ""
+expect "a script a legs step runs" "$(select_change)" "1 2 3" "all" ""
+undo
+
+echo "case: a file a legs job's local action reads, by a bare name or through \$GITHUB_ACTION_PATH, selects every package of that job"
+echo 'tool@1.1.0' > .tool-pin
+expect ".tool-pin, which the tool action reads" "$(select_change)" "1 2 3" "all" ""
+check "the reason names the pin" "$(contains "$(cat "$work/said")" 'unit: every leg and every package: .tool-pin is a file its legs run')"
+undo
+printf '#!/bin/sh\necho the tool, changed\n' > .github/scripts/tool.sh
+expect "the script the tool action sources" "$(select_change)" "1 2 3" "all" ""
+undo
+echo 'notes, changed' > notes.txt
+expect "a root file no step names" "$(select_change)" "2" "" ""
 undo
 
 echo "case: ci.yaml selects every package where it defines the legs (the affected job), and no package elsewhere"
@@ -264,20 +299,27 @@ sed -i 's/      - run: echo other/      - run: echo another/' .github/workflows/
 expect "ci.yaml's other job" "$(select_change)" "2" "" ""
 undo
 sed -i 's/    timeout-minutes: 10$/    timeout-minutes: 11/' .github/workflows/ci.yaml
-expect "ci.yaml's affected job" "$(select_change)" "1 2" "all" "all"
+expect "ci.yaml's affected job" "$(select_change)" "1 2 3" "all" "all"
 undo
 
 echo "case: a go.mod change beyond its requirements selects every package of every job"
 sed -i 's/^go 1.21$/go 1.21\n\ngodebug default=go1.21/' mod/go.mod
-expect "a godebug line" "$(select_change)" "1 2" "all" "all"
+expect "a godebug line" "$(select_change)" "1 2 3" "all" "all"
+undo
+
+echo "case: a first-party package deleted while another still imports it selects every leg, as any failure does"
+git rm -rq mod/shared
+expect "shared deleted" "$(select_change)" "1 2 3" "all" "all"
+check "the reason names the package go list finds no directory for" \
+  "$(contains "$(cat "$work/said")" 'go list finds no directory for example.com/mod/shared, a package of this repository')"
 undo
 
 echo "case: a requirement or go.sum line selects every package that compiles a module outside the repository"
 sed -i 's/example.com\/far v1.0.0$/example.com\/far v1.1.0/' mod/go.mod
-expect "a requirement" "$(select_change)" "2" "b" ""
+expect "a requirement" "$(select_change)" "2 3" "b" ""
 undo
 printf 'example.com/near v1.0.0 h1:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=\n' >> mod/go.sum
-expect "a go.sum line" "$(select_change)" "2" "b" ""
+expect "a go.sum line" "$(select_change)" "2 3" "b" ""
 undo
 
 echo "case: a //ci:builds line selects its package for what the build compiles, third-party modules too"
@@ -288,15 +330,15 @@ open(p, "w").write(t.replace("package leaf\n", "package leaf\n\n//ci:builds mod 
 PY
 git commit -qam "leaf builds b"
 echo '// a change' >> mod/b/b.go
-expect "b.go, which leaf builds" "$(select_change)" "2" "b leaf" ""
+expect "b.go, which leaf builds" "$(select_change)" "2 3" "b leaf" ""
 undo
 sed -i 's/example.com\/far v1.0.0$/example.com\/far v1.1.0/' mod/go.mod
-expect "a requirement, which leaf's build compiles" "$(select_change)" "2" "b leaf" ""
+expect "a requirement, which leaf's build compiles" "$(select_change)" "2 3" "b leaf" ""
 undo
 git reset -q --hard HEAD~1
 
-echo "case: --check-reads refuses a read outside its package that no //ci: line names"
-check_reads() { python3 .github/scripts/go_legs_select.py --check-reads 2>&1; }
+echo "case: go_legs_reads.py refuses a read outside its package that no //ci: line names"
+check_reads() { python3 .github/scripts/go_legs_reads.py 2>&1; }
 status=0
 out=$(check_reads) || status=$?
 check "the fixture passes" "$(is "$status" 0)"
@@ -317,7 +359,7 @@ status=0
 out=$(check_reads) || status=$?
 check "with the line: passes" "$(is "$status" 0)"
 echo '{"y": 1}' > mod/shared/testdata/case.json
-expect "case.json, which leaf now reads" "$(select_change)" "1 2" "a shared leaf" ""
+expect "case.json, which leaf now reads" "$(select_change)" "1 2 3" "a shared leaf" ""
 undo
 put mod/leaf/leaf_test.go 'package leaf
 
@@ -333,11 +375,145 @@ func TestLeaf(t *testing.T) {
 status=0
 out=$(check_reads) || status=$?
 check "a walk above its own directory, no line: refused" "$(is "$status" 1)"
-check "naming the walk" "$(contains "$out" 'mod/leaf/leaf_test.go:10: walks .. (mod), above its own directory')"
-sed -i 's/^package leaf$/package leaf\n\n\/\/ci:reads mod\/**\/*.go TestLeaf walks the module'"'"'s source/' mod/leaf/leaf_test.go
+check "naming the walk and a glob that covers it" \
+  "$(contains "$out" 'mod/leaf/leaf_test.go:10: walks \.\. (mod) and a change to .*//ci:reads mod/\*\* <why>')"
+sed -i 's/^package leaf$/package leaf\n\n\/\/ci:reads fixtures\/data.json TestLeaf reads the shared fixture/' mod/leaf/leaf_test.go
+status=0
+out=$(check_reads) || status=$?
+check "with a line that names something else outside the package, not what it walks: refused" "$(is "$status" 1)"
+sed -i 's/^\/\/ci:reads fixtures\/data.json TestLeaf reads the shared fixture$/\/\/ci:reads mod\/**\/*.go TestLeaf walks the module'"'"'s source/' mod/leaf/leaf_test.go
 status=0
 out=$(check_reads) || status=$?
 check "with a line naming what it walks: passes" "$(is "$status" 0)"
+undo
+
+echo "case: a test that climbs from its working directory to go.mod and walks from there reads what it walks"
+put mod/leaf/leaf_test.go 'package leaf
+
+import (
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func moduleRoot(t *testing.T) string {
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		dir = filepath.Dir(dir)
+	}
+}
+
+func guardedTests(root string) int {
+	found := 0
+	_ = filepath.WalkDir(root, func(path string, _ fs.DirEntry, _ error) error {
+		if strings.HasSuffix(path, "_test.go") {
+			found++
+		}
+		return nil
+	})
+	return found
+}
+
+func TestLeaf(t *testing.T) { _ = guardedTests(moduleRoot(t)) }'
+status=0
+out=$(check_reads) || status=$?
+check "a climb to go.mod and a walk of its parameter, no line: refused" "$(is "$status" 1)"
+check "naming the walk from the climb" "$(contains "$out" 'mod/leaf/leaf_test.go:[0-9]*: walks mod from a climb')"
+sed -i 's/^package leaf$/package leaf\n\n\/\/ci:reads fixtures\/data.json TestLeaf reads the shared fixture/' mod/leaf/leaf_test.go
+status=0
+out=$(check_reads) || status=$?
+check "with a line that names something else outside the package: refused" "$(is "$status" 1)"
+sed -i 's/^\/\/ci:reads fixtures\/data.json TestLeaf reads the shared fixture$/\/\/ci:reads mod\/**\/*_test.go TestLeaf walks every test file of the module/' mod/leaf/leaf_test.go
+status=0
+out=$(check_reads) || status=$?
+check "with a line that covers what it walks: passes" "$(is "$status" 0)"
+git commit -qam "leaf walks every test file of the module"
+echo '// a guard dropped' >> mod/a/a_test.go
+expect "a's test file, which leaf now walks" "$(select_change)" "1 2 3" "a leaf" ""
+undo
+echo 'notes, changed' > notes.txt
+expect "a root file nothing reads, with leaf's line" "$(select_change)" "2" "" ""
+undo
+git reset -q --hard HEAD~1
+
+echo "case: a non-test file that climbs reads for every package that imports it, so only a non-test line names it"
+put .github/tools.yaml 'tool: 1.0.0'
+put mod/shared/pin.go 'package shared
+
+import (
+	"os"
+	"path/filepath"
+)
+
+func Pin() string {
+	dir, _ := os.Getwd()
+	for {
+		candidate := filepath.Join(dir, ".github", "tools.yaml")
+		if body, err := os.ReadFile(candidate); err == nil {
+			return string(body)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}'
+put mod/shared/shared_test.go 'package shared
+
+//ci:reads .github/tools.yaml TestShared reads the pin
+
+import "testing"
+
+func TestShared(t *testing.T) { _ = Pin() }'
+git add -A
+status=0
+out=$(check_reads) || status=$?
+check "a climb to .github in a non-test file, a test file's line only: refused" "$(is "$status" 1)"
+check "naming the read and where its line goes" \
+  "$(contains "$out" 'mod/shared/pin.go:[0-9]*: reads .github/tools.yaml .*after the package clause of mod/shared/pin.go')"
+sed -i 's/^package shared$/package shared\n\n\/\/ci:reads .github\/tools.yaml Pin climbs to .github and reads the pin/' mod/shared/pin.go
+status=0
+out=$(check_reads) || status=$?
+check "with the line in the non-test file: passes" "$(is "$status" 0)"
+git commit -qam "shared reads the pin"
+echo 'tool: 1.1.0' > .github/tools.yaml
+expect "the pin, which shared and every importer of it read" "$(select_change)" "1 2" "a shared" ""
+undo
+git reset -q --hard HEAD~1
+git clean -qfd
+
+echo "case: a read in a test the legs step skips runs in no leg, and is not held"
+put mod/leaf/leaf_test.go 'package leaf
+
+import (
+	"io/fs"
+	"path/filepath"
+	"testing"
+)
+
+func walkModule() {
+	_ = filepath.WalkDir("..", func(string, fs.DirEntry, error) error { return nil })
+}
+
+func TestLeaf(t *testing.T) {}
+
+func TestSkipped(t *testing.T) { walkModule() }'
+status=0
+out=$(check_reads) || status=$?
+check "a walk only a skipped test reaches: passes" "$(is "$status" 0)"
+sed -i 's/^func TestLeaf(t \*testing.T) {}$/func TestLeaf(t *testing.T) { walkModule() }/' mod/leaf/leaf_test.go
+status=0
+out=$(check_reads) || status=$?
+check "the same walk once a test the legs run reaches it: refused" "$(is "$status" 1)"
 undo
 put mod/leaf/leaf_test.go 'package leaf
 
@@ -372,4 +548,4 @@ check "a pull request: the merge commit against its first parent" "$(is "$(field
 check "an event it reads no change of: every package" "$(is "$(wrapper GITHUB_EVENT_NAME=push)" "$every")"
 git reset -q --hard HEAD~1
 
-summary "go_legs_select.py and go-legs-select.sh"
+summary "go_legs_select.py, go_legs_reads.py and go-legs-select.sh"

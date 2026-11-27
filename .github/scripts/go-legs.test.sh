@@ -895,6 +895,12 @@ check "an empty selection is every package, the matrix held to the file" "$(is "
 ./a/
 exit=0")"
 check "and a matrix short of the file's legs still fails" "$(contains "$(legs "$root" job 1 1)" '^exit=1$')"
+export GO_LEGS_SELECTED='{"job": {"legs": [1], "packages": ["a"]}}'
+gapped=${whole/    2:/    3:}
+root_gapped=$(tree selected-gapped "$gapped")
+check "a file whose legs skip a number fails under a selection" "$(contains "$(legs "$root_gapped" job 1 1)" '^exit=1$')"
+check "naming the file's numbering" "$(contains "$(err)" 'gives job job legs 1, 3: a job.s legs are numbered 1 to their count')"
+check "and not a matrix count the selection set" "$(is "$(contains "$(err)" 'its matrix runs legs 1 to')" false)"
 unset GO_LEGS_SELECTED
 
 echo "case: a leg that runs a group of a package's tests prints nothing when the package is not selected"

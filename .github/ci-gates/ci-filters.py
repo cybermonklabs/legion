@@ -23,10 +23,12 @@ GATE = gate("ci_filters", "ci-filters", runs=[
      at("ci-filters", "Check every workflow file GitHub can read and its size")),
     (".github/scripts/postgres-service-settings.sh", "check-workflow-files.sh runs its --command for rule 7, "
                                                      "the command line every Postgres service must carry"),
-    (".github/scripts/go_legs_select.py",
-     at("ci-filters", "Check every read a Go legs test makes outside its package is named by a //ci line")),
+    (".github/scripts/go_legs_reads.py",
+     at("ci-filters", "Check the reads outside its package a Go legs test's source shows are named by //ci lines")),
+    (".github/scripts/go_legs_select.py", "go_legs_reads.py lists every legs job's packages and what each one's test "
+                                          "binary reads through its Selector"),
     (".github/scripts/go_legs.py", "go_legs_select.py reads the legs file and each module's packages through it"),
-    (".github/go-legs.yaml", "go_legs_select.py --check-reads reads the packages of every legs job from it"),
+    (".github/go-legs.yaml", "go_legs_reads.py reads the packages of every legs job from it"),
     (".github/actionlint.yaml", f"{at('ci-filters', ACTIONLINT_STEP)}: actionlint reads its configuration "
                                 "from the project it runs in"),
     (".github/actions/**", f"{at('ci-filters', ACTIONLINT_STEP)}: actionlint reads the action.yml of every "

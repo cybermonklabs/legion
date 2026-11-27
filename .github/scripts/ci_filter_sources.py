@@ -121,17 +121,23 @@ def load_gate_files(namespace: dict) -> tuple:
     return gates, excluded_filters
 
 
+def go_text(path: str) -> str | None:
+    """A Go file's text, or None for one that cannot be read as UTF-8: not a Go file go would
+    compile either, so it holds no //ci: line that counts."""
+    try:
+        return (REPO / path).read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+
+
 def directive_files(files: list) -> list:
     """The Go files that hold a //ci: line, read as text."""
     found = []
     for path in files:
         if not path.endswith(".go"):
             continue
-        try:
-            text = (REPO / path).read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
-            continue  # not a Go file go would compile either
-        if "//ci:" in text:
+        text = go_text(path)
+        if text is not None and "//ci:" in text:
             found.append((path, text))
     return found
 
@@ -189,10 +195,29 @@ def words(kind: str, rest: str) -> Words:
     raise ValueError(f"//ci:{kind} is no kind of line this table reads ({', '.join(KINDS)})")
 
 
-def parse_directive(path: str, line: int, kind: str, rest: str, read_sets: dict) -> Directive:
-    """One //ci: line as a Directive, or a ValueError saying what is wrong with it. `line` is the
-    line the directive is on, which every read it declares names beside its why."""
-    read = words(kind, rest)
+def file_words(path: str, text: str | None = None) -> tuple:
+    """(line number, Words) of each //ci: line of the Go file at `path` (`text`, when the caller has
+    read it), in the order they are written: the one scan of a file, which load_directives and
+    .github/scripts/go_legs_select.py both read. A file go_text cannot read holds none. A line that
+    cannot be read is a ValueError naming its line."""
+    text = go_text(path) if text is None else text
+    if not text or "//ci:" not in text:
+        return ()
+    found = []
+    for number, line in enumerate(text.split("\n"), 1):
+        match = DIRECTIVE.match(line)
+        if not match:
+            continue
+        try:
+            found.append((number, words(match.group(1), match.group(2) or "")))
+        except ValueError as exc:
+            raise ValueError(f"line {number}: {exc}") from exc
+    return tuple(found)
+
+
+def parse_directive(path: str, line: int, read: Words, read_sets: dict) -> Directive:
+    """One //ci: line, read as Words, as a Directive, or a ValueError saying what is wrong with it.
+    `line` is the line the directive is on, which every read it declares names beside its why."""
     where = f"{path}:{line}"
     if read.kind == "reads":
         entries = (Read(read.globs[0], f"{where} {read.why}", tuple(g.removeprefix("!") for g in read.globs[1:])),)
@@ -213,12 +238,13 @@ def load_directives(files: list, read_sets: dict) -> tuple:
     it, since what its test reads is then unknown."""
     rules, directives = {}, []
     for path, text in directive_files(files):
-        for number, line in enumerate(text.split("\n"), 1):
-            match = DIRECTIVE.match(line)
-            if not match:
-                continue
+        try:
+            lines = file_words(path, text)
+        except ValueError as exc:
+            raise RepositoryInputError(path, exc) from exc
+        for number, read in lines:
             try:
-                directive = parse_directive(path, number, match.group(1), match.group(2) or "", read_sets)
+                directive = parse_directive(path, number, read, read_sets)
             except ValueError as exc:
                 raise RepositoryInputError(path, ValueError(f"line {number}: {exc}")) from exc
             directives.append(directive)

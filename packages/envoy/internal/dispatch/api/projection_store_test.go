@@ -1,5 +1,7 @@
 package api
 
+//ci:reads **/*.go !**/*_test.go !**/testdata/** !**/node_modules/** !**/vendor/** !**/dist/** !**/build/** readProjectionWriters walks the repository from repositoryRoot, which climbs from the package to the directory holding .git or .jj, and parses every non-test Go file but those under the directories it skips
+
 import (
 	"context"
 	"errors"

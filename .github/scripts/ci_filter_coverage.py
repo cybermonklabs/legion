@@ -464,13 +464,15 @@ class Session:
             path.write_text(json.dumps({"Replace": {str(REPO / a): str(REPO / b) for a, b in run_.overlay}}))
         return ["-overlay", str(path)]
 
-    def listing(self, run_: Run) -> list:
-        """`go list -deps` of the run, with -test for a run that compiles tests (test, vet). Kept
-        by the command it runs, so Runs that differ only in a mode that asks the same listing (a
-        test and a vet, a build and a run) share one. `--` ends go's flags before the packages, so
-        go reads a package that starts with `-` (a spec's selector can name one) as an import path,
-        which it refuses, and never as a flag such as -toolexec, which names a program go runs."""
-        args = ["list", "-e", f"-json={FIELDS}", "-deps"]
+    def listing(self, run_: Run, fields: str = FIELDS) -> list:
+        """`go list -deps` of the run, with -test for a run that compiles tests (test, vet), each
+        package with `fields` (FIELDS by default; .github/scripts/go_legs_select.py asks for its
+        imports and embedded files too). Kept by the command it runs, so Runs that differ only in a
+        mode that asks the same listing (a test and a vet, a build and a run) share one. `--` ends
+        go's flags before the packages, so go reads a package that starts with `-` (a spec's
+        selector can name one) as an import path, which it refuses, and never as a flag such as
+        -toolexec, which names a program go runs."""
+        args = ["list", "-e", f"-json={fields}", "-deps"]
         if run_.mode in ("test", "vet"):
             args.append("-test")
         if run_.tags:
@@ -483,13 +485,13 @@ class Session:
             self.cache[key] = decode_stream(self.go(run_, args))
         return self.cache[key]
 
-    def named(self, run_: Run) -> list:
+    def named(self, run_: Run, fields: str = FIELDS) -> list:
         """The packages the run's command names, out of its listing: each entry go list matched to
         one of its patterns (Match), but the test variants -test adds of them (ForTest). These are
         the ones whose test files a test or vet compiles; a package reached only as a dependency
         matches no pattern. The same entries a `go list` without -deps prints, field for field,
         since every field read of them comes from the package's directory and build context."""
-        return [pkg for pkg in self.listing(run_) if pkg.get("Match") and not pkg.get("ForTest")]
+        return [pkg for pkg in self.listing(run_, fields) if pkg.get("Match") and not pkg.get("ForTest")]
 
     def module_files(self, run_: Run) -> list:
         """go.work, go.work.sum and each bound module's go.mod and go.sum, or the one module's."""

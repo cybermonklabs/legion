@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/envoy/**/*.go !**/*_test.go !**/testdata/** TestTheListenerStartEndsAtTheCredentialBound walks the module from ../.. (credentialWaitCalls) and parses every non-test Go file that names WithCredentialWait, but those under testdata, node_modules, vendor and dot directories
+
 import (
 	"bytes"
 	"encoding/json"

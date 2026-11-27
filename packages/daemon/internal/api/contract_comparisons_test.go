@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/daemon/**/*.go !**/*_test.go !**/testdata/** walkContractComparisons walks the daemon module from daemonModuleRoot, which climbs from the working directory to its go.mod, and parses every non-test Go file but those under testdata
+
 import (
 	"go/ast"
 	"go/parser"

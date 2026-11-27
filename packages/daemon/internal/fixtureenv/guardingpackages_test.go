@@ -1,5 +1,7 @@
 package fixtureenv_test
 
+//ci:reads packages/daemon/**/*_test.go TestEveryGuardingPackagesTestMainGuardsItsProcess reads the test files of each package of guardingPackages (packageGuardFault) and walks every test file of the module (packagesGuardingOutsideTheList), from moduleRoot, which climbs from the working directory to its go.mod: a MustGuard dropped from any of them must run it
+
 import (
 	"fmt"
 	"go/ast"

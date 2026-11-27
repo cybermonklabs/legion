@@ -1,5 +1,7 @@
 package graphstore
 
+//ci:reads packages/**/*.go !**/*_test.go !**/testdata/** !**/node_modules/** !**/vendor/** TestNoStatementDeletesANodeOrATuple walks packages/ from goWorkRoot, which climbs from the package to go.work, and scans every non-test Go file but those under testdata, node_modules and vendor
+
 import (
 	"cmp"
 	"fmt"

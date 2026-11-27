@@ -1,5 +1,7 @@
 package daemon
 
+//ci:builds packages/envoy ./cmd/listener startIdleRigListenerOn starts the listener command testbuild.EnvoyBinary builds, which runs go build ./cmd/listener in packages/envoy (`packages/daemon/internal/testbuild/testbuild.go#buildEnvoy`)
+
 import (
 	"bytes"
 	"context"

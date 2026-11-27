@@ -1,5 +1,7 @@
 package fixturegit
 
+//ci:reads .github/ci-tools.yaml readJJPin climbs from the working directory of the test that calls PinnedJJ to the .github that holds it and reads the jj rows, so every package whose tests run the pinned jj reads it
+
 import (
 	"crypto/sha256"
 	"encoding/hex"

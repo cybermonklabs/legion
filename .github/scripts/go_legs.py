@@ -419,16 +419,21 @@ def group_problems(module: str, package: str, groups: dict, tests: list) -> tupl
     return running, errors, warnings
 
 
-def leg_problems(job: str, legs: dict, launched: int, legs_path: str = LEGS) -> list:
-    """What keeps a job's legs in the file from being the legs its matrix runs, 1 to `launched`,
-    each listing at least one package, and a leg that runs a group of a package's tests from
-    running anything else."""
+def leg_problems(job: str, legs: dict, launched: int | None, legs_path: str = LEGS) -> list:
+    """What keeps a job's legs in the file from being numbered 1 to their count, each listing at
+    least one package, and a leg that runs a group of a package's tests from running anything else;
+    and, with `launched` (the legs the job's matrix runs, 1 to it), from being the matrix's legs. With
+    a selection the matrix runs the selection's legs, which `selection` holds to the file's, so the
+    caller passes no `launched`."""
     found = []
     numbers = [str(number) for number in leg_numbers(legs)]
-    if numbers != [str(number) for number in range(1, launched + 1)]:
+    if launched is not None and numbers != [str(number) for number in range(1, launched + 1)]:
         found.append(f"{legs_path} gives job {job} legs {', '.join(numbers)}, and its matrix runs legs 1 to "
                      f"{launched}: a leg the file has and the matrix does not runs in no job, so make the two "
                      f"the same")
+    elif numbers != [str(number) for number in range(1, len(numbers) + 1)]:
+        found.append(f"{legs_path} gives job {job} legs {', '.join(numbers)}: a job's legs are numbered 1 to "
+                     f"their count, as its matrix's are, so number them so")
     for number, listed in legs.items():
         if not listed:
             found.append(f"{legs_path} gives leg {number} of job {job} no package, and xargs would hand go test "
@@ -532,8 +537,9 @@ def main(argv: list) -> int:
         return 1
     raw = os.environ.get(SELECTED, "").strip()
     chosen, unread = selection(raw, job, leg, legs, launched)
-    # With a selection, the matrix is held to it above, and the file's legs to their own numbers here.
-    found = unread + leg_problems(job, legs, len(legs) if raw else launched)
+    # With a selection the matrix is held to the selection's legs above; the file's legs are held to
+    # their own numbering here, and to the matrix only without one.
+    found = unread + leg_problems(job, legs, None if raw else launched)
     found += problems(module, entry, packages)
     if found:
         say(found, "error", LEGS)
