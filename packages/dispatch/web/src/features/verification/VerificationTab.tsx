@@ -29,9 +29,9 @@ import { Timestamp } from "../refs/Timestamp";
 
 /**
  * The one line that answers the gate's question for a check: whether a pass of it stands at
- * what the check compared its results with. The server reads it over every result of the
- * check, so no word here comes from the newest result alone: a pass recorded before a fail
- * still stands, and a fail recorded after a pass takes nothing away from it.
+ * what the check compared its results with. The server decides it, and no word here reads a
+ * result: a pass and a fail at one head of a `before_merge` check leave that head `unknown`, and
+ * a check compared with a branch takes its newest result that counts.
  */
 const PASS_STANDS_LABELS: Record<CheckBlock["pass_stands"]["answer"], string> = {
   no: "No pass stands",
@@ -62,6 +62,7 @@ const REASON_WORDS: Record<
   (repo: string | undefined) => string
 > = {
   no_pull_request_or_branch: () => "This issue holds no pull request and no branch.",
+  not_merged: () => "The work has no merge that Dispatch knows.",
   read_failed: (repo) =>
     repo === undefined
       ? "A read Dispatch made did not answer."
@@ -102,9 +103,12 @@ function Fact({
   testId: string;
 }): ReactNode {
   return (
-    <div className="flex flex-wrap items-baseline gap-x-2">
+    <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
       <dt className={`text-xs font-medium ${textMutedOnSurface}`}>{label}</dt>
-      <dd className={`text-sm ${textSecondaryOnSurface}`} data-testid={testId}>
+      <dd
+        className={`min-w-0 text-sm [overflow-wrap:anywhere] ${textSecondaryOnSurface}`}
+        data-testid={testId}
+      >
         {children === undefined || children === "" ? "—" : children}
       </dd>
     </div>
@@ -232,6 +236,7 @@ function Result({
           {result.run}
         </Fact>
         <Fact label="Observed" testId="verification-result-observed">
+          {/* What the run printed, as the characters it is: `check-result-observed`. */}
           {result.observed === "" ? "This result carries no reading." : result.observed}
         </Fact>
         <Fact label="Commit" testId="verification-result-commit">
@@ -246,6 +251,7 @@ function Result({
           {checkWordsText(result, checkVersion)}
         </Fact>
         <Fact label="Negative control" testId="verification-result-negative-control">
+          {/* As the characters it is: the reading list's `check-result-negative-control`. */}
           {result.negative_control}
         </Fact>
         <Fact label="Failed" testId="verification-result-failed">
@@ -260,6 +266,7 @@ function Result({
       </dl>
       {retracted === undefined ? null : (
         <p className={`text-sm ${dangerText}`} data-testid="verification-result-retraction">
+          {/* As the characters it is: the reading list's `check-retraction-reason`. */}
           Retracted: {retracted.reason}{" "}
           <span className={textMutedOnSurface}>
             · <AgentName actor={retracted.actor} inline /> · <Timestamp at={retracted.created_at} />
@@ -294,6 +301,10 @@ function ComparedWith({ check }: { check: CheckBlock }): ReactNode {
   ));
 }
 
+/** One check of the Verification document. Its head line's groups, in this order: its standing
+ *  (whether its pass stands, and from which roles), then its words; when the line is too narrow
+ *  the words move under the standing whole and wrap inside themselves. Its facts follow as a list
+ *  of names and values, then its results. */
 function Check({ check }: { check: CheckBlock }): ReactNode {
   const stands = check.pass_stands.answer;
   const roles = check.pass_stands.roles ?? [];
@@ -321,7 +332,10 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
             </span>
           )}
         </span>
-        <span className="font-medium">{check.text}</span>
+        {/* A check's words are shown as the characters they are, and so are its negative
+            control, a result's reading and a retraction's reason below: the reading list's
+            `check-text` (`DISPATCH_READING_SURFACES`) says why. */}
+        <span className="min-w-0 font-medium [overflow-wrap:anywhere]">{check.text}</span>
       </div>
       <dl className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
         <Fact label="When" testId="verification-check-when">
@@ -339,6 +353,7 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
           </Fact>
         )}
         <Fact label="Negative control" testId="verification-check-negative-control">
+          {/* As the characters it is: the reading list's `check-negative-control`. */}
           {check.negative_control}
         </Fact>
         <Fact label="Compared with" testId="verification-check-compared-with">

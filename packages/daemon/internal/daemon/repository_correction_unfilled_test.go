@@ -59,6 +59,7 @@ func applyCorrection(t *testing.T, w *workflowRuntime, fact intake.DispatchIssue
 // branch. Control: with the passes correcting such a record, each pass's preparation reads
 // GitHub for stranger/tools, and the correction fills the record onto Stranger/Tools.
 func TestNoPassCorrectsARecordWithNoRepositoryAndTheBackfillFillsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	implement := "implement " + strangerRepo
 	for _, tc := range []struct {
@@ -169,6 +170,7 @@ func (d *hookedListing) ListIssues(ctx context.Context, project string, statuses
 // record stays on strangerRepo while Dispatch resolves answeredRepo, and the issue's next pod is
 // built there until its next event or the next boot.
 func TestAMoveDuringTheRefreshersBackfillIsFollowedWhereItApplies(t *testing.T) {
+	t.Parallel()
 	const key = "LEGION-1122"
 	var hooked *hookedListing
 	w, client, _ := changingRig(t, &installations{}, func(w *workflowRuntime) {

@@ -22,6 +22,7 @@ const repositoryCorrectionVersion = 20261112012123
 // that reads them is refused. The record itself stands across the migration with its repository
 // unmoved, since a column added with a default changes no recorded fact.
 func TestAnIssuePredating20261112012123WasNeverCorrected(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, repositoryCorrectionVersion-1)
@@ -67,6 +68,7 @@ func TestAnIssuePredating20261112012123WasNeverCorrected(t *testing.T) {
 // TestAnIssuePredating20261112012123WasNeverCorrected's, and this is the other: every embedded
 // migration but this one first, then the upgrade.
 func TestTheRepositoryCorrectionAppliesAfterEveryHigherVersion(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	all, err := migrations.All()

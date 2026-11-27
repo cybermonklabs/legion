@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/clock"
 )
 
 // echoesTheToken answers a command whose argv holds word as a git does that echoed its credentialed
@@ -61,7 +63,7 @@ func TestARunUnderTheProvisioningCredentialReturnsItsTokenScrubbed(t *testing.T)
 				t.Fatal(err)
 			}
 			cloneDir := filepath.Join(t.TempDir(), "repos", "acme", "widgets")
-			err = ensureRepoClone(context.Background(), echoesTheToken{word: "clone", token: token, end: ending.end}, WallClock{}, cloneDir, "https://github.com/acme/widgets", "main", source)
+			err = ensureRepoClone(context.Background(), echoesTheToken{word: "clone", token: token, end: ending.end}, clock.Real(), cloneDir, "https://github.com/acme/widgets", source)
 			if err == nil || strings.Contains(err.Error(), token) || !strings.Contains(err.Error(), "x-access-token:***@github.com") {
 				t.Errorf("ensureRepoClone = %v, want the failure with its token scrubbed", err)
 			}

@@ -5,7 +5,12 @@ import { EnvoyApiError } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { claimFirstTurnBoundMs, DEFAULT_CLAIM_FIRST_TURN_BOUND_MS } from "./claim-first-turn-bound";
 import { createLegionDaemonClient } from "./daemon-client";
-import { bootLegionClaim, claimRoleAgainOnBusy, type LegionClaimHost } from "./legion-claim-core";
+import {
+  bootLegionClaim,
+  claimRoleAgainOnBusy,
+  claimStandsWithoutHandover,
+  type LegionClaimHost,
+} from "./legion-claim-core";
 import type { ClaimCapability } from "./legion-phase-ops";
 
 /** A contract the test's client states on every request. */
@@ -172,6 +177,66 @@ test("a 5xx at claims/register is logged and rejects without stopping; a request
   expect(unreachable.lines).toEqual([]);
 });
 
+// The host stops while its boot's `claims/register` is on the wire, and the daemon refuses it (R24
+// of dispatch://INFRA-3589): the refusal writes nothing on the host's log, a 4xx as a 5xx. The
+// host's stop ends the agent itself.
+for (const status of [403, 503]) {
+  test(`a ${status} at claims/register after the host's signal aborted writes nothing on the host's log`, async () => {
+    const stopping = new AbortController();
+    const { host, lines } = claimHost({
+      register: () => {
+        stopping.abort();
+        return Response.json({ error: "Invalid boot token" }, { status });
+      },
+      overrides: { signal: stopping.signal },
+    });
+
+    await bootLegionClaim(host).catch(() => undefined);
+
+    expect(lines).toEqual([]);
+  });
+}
+
+// An outage (`@legion/contracts/http-status`: a 5xx, a 408 or a 429) is no answer about the
+// registration or the ready. The daemon writes no 408 and no 429, so a proxy between the session
+// and the daemon sends either; the stand-in answers each as the daemon client's caller sees it.
+const OUTAGES = [408, 429, 500, 501, 503] as const;
+
+for (const status of OUTAGES) {
+  test(`a ${status} at claims/register is logged and rejects without stopping`, async () => {
+    const { host, steps, lines } = claimHost({
+      register: () => Response.json({ error: "register failed" }, { status }),
+    });
+    await expect(bootLegionClaim(host)).rejects.toThrow(
+      `POST /legion/v1/claims/register failed with ${status}: register failed`
+    );
+    expect(steps).toEqual([`claims/register ${JSON.stringify(registration)}`]);
+    expect(lines).toEqual([`claims/register registration failed (${status}): register failed`]);
+  });
+
+  test(`a ${status} at claims/ready is sent again, and the boot goes on to the claim once ready answers`, async () => {
+    let readies = 0;
+    const { host, steps, firstTurn } = claimHost({
+      ready: () =>
+        ++readies === 1
+          ? Response.json({ error: "ready failed" }, { status })
+          : new Response(null, { status: 204 }),
+    });
+    const booted = await bootLegionClaim(host);
+    firstTurn()?.();
+    await booted.claimed;
+    expect(steps).toEqual([
+      `claims/register ${JSON.stringify(registration)}`,
+      "onFirstTurn",
+      "setCapability",
+      `claims/ready ${readyBody()}`,
+      `claims/ready ${readyBody()}`,
+      "onRoleRegained",
+      `claimRole ${claimToken}`,
+    ]);
+  });
+}
+
 test("a claim the listener refuses is logged naming the claim token and what stop does, then stops the agent — after the daemon has been told ready", async () => {
   const { host, steps, lines, firstTurn } = claimHost({
     overrides: {
@@ -238,9 +303,9 @@ test("a claim the listener answers 503 is claimed again after a growing wait, an
   expect(steps).not.toContain("stop");
   expect(steps.filter((step) => step === `claimRole ${claimToken}`)).toHaveLength(4);
   expect(lines.map((line) => line.replace(/: .*$/, ""))).toEqual([
-    `claim of Envoy role ${claimToken} was answered 503 at attempt 1, so nothing was claimed; claiming it again in 1 ms`,
-    `claim of Envoy role ${claimToken} was answered 503 at attempt 2, so nothing was claimed; claiming it again in 2 ms`,
-    `claim of Envoy role ${claimToken} was answered 503 at attempt 3, so nothing was claimed; claiming it again in 4 ms`,
+    `claim of Envoy role ${claimToken} was answered 503 at attempt 1; claiming it again in 1 ms`,
+    `claim of Envoy role ${claimToken} was answered 503 at attempt 2; claiming it again in 2 ms`,
+    `claim of Envoy role ${claimToken} was answered 503 at attempt 3; claiming it again in 4 ms`,
   ]);
   for (const line of lines) {
     expect(line).toContain("the message bus refused the message because its stream is full");
@@ -355,6 +420,46 @@ test("a claim a person waits on gives up after its counted attempts, throwing th
   expect(unbounded).toBe(6);
 });
 
+/** The listener's 503 to a role claim with `body`, as envoy-client's `setRole` rejects with it. */
+function claimAnswered503With(body: Record<string, string>): EnvoyApiError {
+  return new EnvoyApiError({
+    method: "POST",
+    url: "http://listener.test/v1/roles/set",
+    status: 503,
+    responseBody: JSON.stringify(body),
+  });
+}
+
+// The one claim 503 that is no claim holding nothing: the claim landed and stands, and only the
+// handover of the session it replaces is not recorded. The listener names it by its code alone:
+// the same text with no code, or with another code, reads as a claim 503 that wrote nothing. Each
+// wait's log line hands the caller the 503 to tell them apart.
+test("a claim 503 whose claim stands is told from one that wrote nothing, and each wait hands its 503 to the log", async () => {
+  const handoverText =
+    "the claim landed, but the handover record of the session it replaces did not store, so claim again";
+  const handover = claimAnswered503With({ error: handoverText, code: "handover_unrecorded" });
+  expect(claimStandsWithoutHandover(handover)).toBe(true);
+  expect(claimStandsWithoutHandover(claimAnswered503())).toBe(false);
+  // The code names its 503 by itself: the handover's text with no code, or with any other code,
+  // is not this one.
+  expect(claimStandsWithoutHandover(claimAnswered503With({ error: handoverText }))).toBe(false);
+  expect(
+    claimStandsWithoutHandover(claimAnswered503With({ error: handoverText, code: "another_code" }))
+  ).toBe(false);
+  expect(claimStandsWithoutHandover(new Error(handoverText))).toBe(false);
+
+  const handed: unknown[] = [];
+  let tries = 0;
+  await claimRoleAgainOnBusy(
+    async () => {
+      if (++tries < 2) throw handover;
+    },
+    "controller",
+    { log: (_line, error) => handed.push(error), firstDelayMs: 1 }
+  );
+  expect(handed).toEqual([handover]);
+});
+
 test("a 4xx at claims/ready is not retried: one ready, then the agent stops, with no regain listener and no claim, whatever turn the registered signal reports", async () => {
   const { host, steps, firstTurn } = claimHost({
     ready: () => Response.json({ error: "Invalid session secret" }, { status: 403 }),
@@ -371,6 +476,100 @@ test("a 4xx at claims/ready is not retried: one ready, then the agent stops, wit
   // A boot that stopped before the claim step still settles its answer, so a caller that waits
   // on the claim is not left waiting for a step that is never coming.
   await booted.claimed;
+});
+
+// The host stops while its boot's `claims/ready` is on the wire, and the daemon answers 503 (R24
+// of dispatch://INFRA-3589): the boot sends no ready again, says nothing, and stops nothing; the
+// host's stop ends the agent itself.
+test("a 5xx at claims/ready after the host's signal aborted is not retried, says nothing and stops nothing", async () => {
+  const stopping = new AbortController();
+  const { host, steps, lines } = claimHost({
+    ready: () => {
+      stopping.abort();
+      return Response.json({ error: "the daemon is restarting" }, { status: 503 });
+    },
+    overrides: { signal: stopping.signal },
+  });
+  const booted = await bootLegionClaim(host);
+  await booted.claimed;
+
+  expect(steps.filter((step) => step.startsWith("claims/ready"))).toHaveLength(1);
+  expect(steps).not.toContain("stop");
+  expect(lines).toEqual([]);
+});
+
+// The heartbeat regains the role, and the host stops while the regain's `claims/ready` is on the
+// wire; the daemon answers 503 (R24 of dispatch://INFRA-3589). The regain sends no ready again
+// and writes nothing on the host's log: the host's stop ends the agent itself. The control is the
+// same regain with no abort: its ready is sent again, and each failure is written. A regain never
+// stops the agent, so neither run asks for `stop`.
+test("a regain whose claims/ready fails after the host's signal aborted writes nothing on the host's log; the control with no abort writes each failure", async () => {
+  const failingRegain = async (stops: boolean) => {
+    const stopping = new AbortController();
+    let readies = 0;
+    const { host, steps, lines, regain } = claimHost({
+      ready: () => {
+        readies += 1;
+        if (readies === 1) return new Response(null, { status: 204 });
+        if (stops) stopping.abort();
+        return Response.json({ error: "the daemon is restarting" }, { status: 503 });
+      },
+      overrides: { signal: stopping.signal },
+    });
+    const booted = await bootLegionClaim(host);
+    await regain()?.(claimToken, "reclaimed");
+    // The stop ends the claim step. With no stop, the step waits for a first turn that no run
+    // starts.
+    if (stops) await booted.claimed;
+    return { readies: steps.filter((step) => step.startsWith("claims/ready")), lines };
+  };
+
+  const stopped = await failingRegain(true);
+  expect(stopped.readies).toHaveLength(2);
+  expect(stopped.lines).toEqual([]);
+
+  // The boot's ready, then the regain's three attempts, a second apart.
+  const control = await failingRegain(false);
+  expect(control.readies).toHaveLength(4);
+  expect(control.lines).toHaveLength(4);
+  expect(control.lines.at(-1)).toStartWith(
+    `claims/ready after role ${claimToken} was reclaimed failed;`
+  );
+}, 10_000);
+
+// The heartbeat regains the role, and the host stops while the regain's `claims/ready` is on the
+// wire; the daemon answers it 204 (R24 of dispatch://INFRA-3589). That regain writes no line, and
+// the next regain, which starts after the stop, sends no ready. The control is the same two
+// regains with no stop: each sends its ready and writes its line.
+test("a regain whose claims/ready answers after the host's signal aborted writes nothing, and a regain after the abort sends no ready; the control with no abort writes both lines", async () => {
+  const twoRegains = async (stops: boolean) => {
+    const stopping = new AbortController();
+    let readies = 0;
+    const { host, steps, lines, regain } = claimHost({
+      ready: () => {
+        readies += 1;
+        // The boot's ready is the first; the first regain's ready is the second.
+        if (stops && readies === 2) stopping.abort();
+        return new Response(null, { status: 204 });
+      },
+      overrides: { signal: stopping.signal },
+    });
+    await bootLegionClaim(host);
+    await regain()?.(claimToken, "reclaimed");
+    await regain()?.(claimToken, "reregistered");
+    return { readies: steps.filter((step) => step.startsWith("claims/ready")), steps, lines };
+  };
+
+  const stopped = await twoRegains(true);
+  expect(stopped.readies).toHaveLength(2);
+  expect(stopped.lines).toEqual([]);
+
+  const control = await twoRegains(false);
+  expect(control.readies).toHaveLength(3);
+  expect(control.lines).toEqual([
+    `re-ran claims/ready after role ${claimToken} was reclaimed`,
+    `re-ran claims/ready after role ${claimToken} was reregistered`,
+  ]);
 });
 
 test("the name is taken at the host's first-turn callback and not before it", async () => {
@@ -480,6 +679,50 @@ test("two first-turn signals claim once", async () => {
   await booted.claimed;
 
   expect(steps.filter((step) => step.startsWith("claimRole"))).toEqual([`claimRole ${claimToken}`]);
+});
+
+// Contract entry 20261125170509: the registration names the session this one replaces, the claim's session the
+// daemon forgot, and the role claim carries it, so the listener hands that session's unread
+// messages here. A claim the listener answered 503 is made again naming it again.
+test("the role claim names the session the registration says this one replaces, on every try", async () => {
+  let answered503 = 0;
+  const claims: [string, string | undefined][] = [];
+  const { host, firstTurn } = claimHost({
+    register: () => Response.json({ ...registered, replaces: "ses_replaced" }),
+    overrides: {
+      roleClaimRetryFirstDelayMs: 1,
+      claimRole: async (role, replaces) => {
+        claims.push([role, replaces]);
+        if (answered503++ === 0) throw claimAnswered503();
+      },
+    },
+  });
+  const booted = await bootLegionClaim(host);
+  firstTurn()?.();
+  await booted.claimed;
+
+  expect(claims).toEqual([
+    [claimToken, "ses_replaced"],
+    [claimToken, "ses_replaced"],
+  ]);
+});
+
+test("control: a registration that replaces no session claims naming none", async () => {
+  const claims: [string, string | undefined][] = [];
+  const { replaces: _none, ...golden } = registered;
+  const { host, firstTurn } = claimHost({
+    register: () => Response.json(golden),
+    overrides: {
+      claimRole: async (role, replaces) => {
+        claims.push([role, replaces]);
+      },
+    },
+  });
+  const booted = await bootLegionClaim(host);
+  firstTurn()?.();
+  await booted.claimed;
+
+  expect(claims).toEqual([[claimToken, undefined]]);
 });
 
 /** The log the bound's reader warns to, with the warnings it was given. */

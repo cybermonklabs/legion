@@ -35,7 +35,8 @@
 // # The retry
 //
 // Both of the SDK's retry layers are off, and this package retries once itself: on a transport
-// error, a 429 or a 5xx, decided from the response status before any of the body is read, and
+// error or an outage status (a 408, a 429, a 5xx), decided from the response status before any of
+// the body is read, and
 // only while Bounds.Time is left. A stream that breaks after its first byte is FaultProviderError
 // and is never retried, so a caller's OnText never sees the same text twice.
 //

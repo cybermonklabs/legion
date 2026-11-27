@@ -21,7 +21,7 @@ var repositoryCorrectionKeys = []string{"repoBefore", "repoCorrectedAt", "repoCh
 // a correction leaves behind, so a reader of one record reads that the issue has open work on a
 // repository it has left.
 func TestTheStateShowsARepositoryCorrectionAndAChangeStillToBeApplied(t *testing.T) {
-	body := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion))
+	body := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion()))
 	issues := issueViews(t, body)
 
 	// LEGION-210 works zeta/tools because Dispatch corrected it off acme/widgets.
@@ -32,7 +32,7 @@ func TestTheStateShowsARepositoryCorrectionAndAChangeStillToBeApplied(t *testing
 	for field, want := range map[string]any{
 		"repo":            "zeta/tools",
 		"repoBefore":      "acme/widgets",
-		"repoCorrectedAt": "2026-09-22T07:40:00Z",
+		"repoCorrectedAt": "2126-09-22T07:40:00Z",
 	} {
 		if corrected[field] != want {
 			t.Errorf("LEGION-210's %s = %v, want %v", field, corrected[field], want)
@@ -53,7 +53,7 @@ func TestTheStateShowsARepositoryCorrectionAndAChangeStillToBeApplied(t *testing
 	if !shown {
 		t.Fatalf("LEGION-210 carries no pullRequest in %s", body)
 	}
-	for field, want := range map[string]any{"repo": "acme/widgets", "number": float64(1251), "state": "open"} {
+	for field, want := range map[string]any{"repo": "acme/widgets", "number": float64(1243), "state": "open"} {
 		if pull[field] != want {
 			t.Errorf("LEGION-210's pull request %s = %v, want %v: the repository the issue left, and the pull request still open on it", field, pull[field], want)
 		}
@@ -97,23 +97,18 @@ func TestTheStateShowsARepositoryCorrectionAndAChangeStillToBeApplied(t *testing
 // is placed as every caller is: by the contract its header states, which every build from
 // shapedAnswersContract on states, else by the claims of its pod, which count no claim at
 // shapedAnswersContract or above (podContracts). So the band reaches a caller that states a
-// contract below repositoryCorrectionContract, and a pod whose claims record one below
-// shapedAnswersContract. repositoryCorrectionContract is the contract whose entry in version.go
-// added the four keys, and this daemon's own contract is never below it: a caller at this
-// contract is served them.
-func TestTheRepositoryCorrectionContractIsTheContractThatAddedTheKeys(t *testing.T) {
-	const addedRepositoryCorrection = 269
-	if repositoryCorrectionContract != addedRepositoryCorrection {
-		t.Fatalf("repositoryCorrectionContract = %d, want %d, the contract whose entry in version.go added what a correction of an issue's repository left on its record",
-			repositoryCorrectionContract, addedRepositoryCorrection)
-	}
-	if repositoryCorrectionContract > DaemonAPIVersion {
-		t.Fatalf("repositoryCorrectionContract = %d, above DaemonAPIVersion %d: no caller could be served the four keys",
-			repositoryCorrectionContract, DaemonAPIVersion)
+// contract below entryNumber(repositoryCorrectionContract), the number this build gives the entry
+// that added the four keys, and a pod whose claims record one below shapedAnswersContract. This
+// daemon's own contract is never below that number: a caller at this contract is served them.
+func TestACallerBelowTheRepositoryCorrectionEntryIsServedNoneOfItsKeys(t *testing.T) {
+	added := entryNumber(repositoryCorrectionContract)
+	if added > DaemonAPIVersion() {
+		t.Fatalf("the repository correction's entry is numbered %d, above DaemonAPIVersion %d: no caller could be served the four keys",
+			added, DaemonAPIVersion())
 	}
 	handler := stateServer(t, populatedState(t), podClaims(pauseContract))
 	behind := map[string][]byte{
-		"a caller stating the contract below": stateStating(t, handler, "192.0.2.1:41000", repositoryCorrectionContract-1),
+		"a caller stating the contract below": stateStating(t, handler, "192.0.2.1:41000", added-1),
 		"a pod below shapedAnswersContract":   stateAsked(t, handler, statePodAddr+":41000"),
 	}
 	for caller, body := range behind {

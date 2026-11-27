@@ -1083,7 +1083,7 @@ func TestASuspendRowDropsOnlyTheBackstopOfTheRoleItStops(t *testing.T) {
 // request's head that has not landed (cybermonklabs/legion#4979). The merger the daemon asked to
 // merge forward owes the merge, its own open work, so both writers arm its backstop; the merger
 // the move into merging held rather than asked, since the implementer's ask made in reviewing had
-// not landed (workflow's holdMerger), is held by that ask (record.MergeForwardHolds), and gets
+// not landed (workflow's holdStartedWorker), is held by that ask (record.MergeForwardHolds), and gets
 // none from either writer: the landed message wakes its pod. Each reads the ask from the pull
 // request in the store (record.FillIdleClaims).
 //

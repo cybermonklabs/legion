@@ -3,13 +3,13 @@ package delivery
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"strconv"
 	"sync"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -100,7 +100,7 @@ func (realJobClock) At(at time.Time, f func()) jobTimer { return time.AfterFunc(
 // newJobIntake builds a JobIntake on natsClient, a connected client StartIntakes opens for it alone,
 // scheduling its reads by clock, checking each job event against settings, and holding its
 // durable and taking it over under a hold and a lease it takes on leases, timed by tuning.
-func newJobIntake(tuning *intakeTuning, natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, clock jobClock, settings *SettingsCache) *JobIntake {
+func newJobIntake(tuning *intakeTuning, natsClient *bus.Client, pool *store.Pool, leases DurableLeases, github *githubapp.Client, clock jobClock, settings *SettingsCache) *JobIntake {
 	j := &JobIntake{
 		pool: pool, github: github, clock: clock, settings: settings,
 		ctx: context.Background(), pending: map[runKey]*pendingRun{},
@@ -121,17 +121,19 @@ func jobKey(*natsgo.Msg) (string, *contracts.Envelope, bool) { return "job", nil
 // (heldDurable). A standby tries every durableBindInterval for the life of the process, so one
 // that outlives the holder takes the durable over seconds after the holder releases its hold or
 // its hold lapses. When ctx ends it stops delivering, under the stop deadline armed then
-// (stopContext), and releases the hold, then stops every burst's timer.
+// (stopContext), and releases the hold, then stops every burst's timer. Every read it makes of
+// GitHub is the intake's (intakeCaller).
 func (j *JobIntake) Run(ctx context.Context) {
-	j.ctx = ctx
+	j.ctx = githubrate.WithCaller(ctx, intakeCaller)
 	defer j.stopPending()
-	j.run(ctx, nil, func() bool { return true })
+	j.run(ctx)
 }
 
 // jobConsumerConfig is the durable's policy: deliveryConsumerConfig's shape with this consumer's
 // name and filter, starting at new messages, since a job event older than the process says nothing
-// the run's end event and the reconcile do not. A take-over recreates it at its ack floor
-// (takeOverConfig). Its FilterSubject, AckWait and MaxAckPending keep their values for the reason
+// the run's end event and the reconcile do not. A take-over creates it at the stream's next
+// sequence when it does not exist, and otherwise right after its ack floor (takeOver,
+// takeOverStart). Its FilterSubject, AckWait and MaxAckPending keep their values for the reason
 // deliveryConsumerConfig gives, so it takes none of the intake's tuning.
 func jobConsumerConfig(*intakeTuning) natsgo.ConsumerConfig {
 	return natsgo.ConsumerConfig{
@@ -163,7 +165,7 @@ func jobConsumerConfig(*intakeTuning) natsgo.ConsumerConfig {
 func (j *JobIntake) deliver(d *intakeDelivery, message intakeMessage) {
 	msg := message.msg
 	if j.ctx.Err() != nil || d.stopping.Load() {
-		slog.Warn("dispatch delivery: the job intake stopped before this event was handled; handing it back", "subject", msg.Subject)
+		d.tuning.log.Warn("dispatch delivery: the job intake stopped before this event was handled; handing it back", "subject", msg.Subject)
 		d.giveBack(msg)
 		return
 	}
@@ -173,7 +175,7 @@ func (j *JobIntake) deliver(d *intakeDelivery, message intakeMessage) {
 	callNATS(d.tuning, "acknowledge job message", func() (struct{}, error) { return struct{}{}, msg.Ack() }, "subject", msg.Subject)
 	var envelope contracts.Envelope
 	if err := json.Unmarshal(msg.Data, &envelope); err != nil {
-		slog.Error("dispatch delivery: decode job envelope", "subject", msg.Subject, "error", err)
+		d.tuning.log.Error("dispatch delivery: decode job envelope", "subject", msg.Subject, "error", err)
 		return
 	}
 	ctx, cancel := context.WithTimeout(j.ctx, jobCheckTimeout)
@@ -199,12 +201,12 @@ func (j *JobIntake) receive(ctx context.Context, payload string) {
 	}
 	runID, err := strconv.ParseInt(job.RunID, 10, 64)
 	if err != nil {
-		slog.Warn("dispatch delivery: job event with a malformed run_id", "run_id", job.RunID)
+		j.tuning.log.Warn("dispatch delivery: job event with a malformed run_id", "run_id", job.RunID)
 		return
 	}
 	tracked, err := RunTracked(ctx, j.pool, job.Repo, runID)
 	if err != nil {
-		slog.Error("dispatch delivery: read whether a job's run is tracked", "repo", job.Repo, "run_id", runID, "error", err)
+		j.tuning.log.Error("dispatch delivery: read whether a job's run is tracked", "repo", job.Repo, "run_id", runID, "error", err)
 		return
 	}
 	if !tracked {
@@ -263,17 +265,17 @@ func (j *JobIntake) fire(key runKey, run *pendingRun) {
 func (j *JobIntake) read(ctx context.Context, key runKey, production Production) {
 	owner, repo, err := refs.SplitGitHubRepo(key.repo)
 	if err != nil {
-		slog.Error("dispatch delivery: job run repository", "repo", key.repo, "error", err)
+		j.tuning.log.Error("dispatch delivery: job run repository", "repo", key.repo, "error", err)
 		return
 	}
 	fetched, err := ListWorkflowRunJobs(ctx, j.github, owner, repo, key.runID)
 	if err != nil {
-		slog.Warn("dispatch delivery: read the jobs of a running deploy run; its end reads them again", "repo", key.repo, "run_id", key.runID, "error", err)
+		j.tuning.log.Warn("dispatch delivery: read the jobs of a running deploy run; its end reads them again", "repo", key.repo, "run_id", key.runID, "error", err)
 		return
 	}
 	jobs := RunJobs(key.repo, key.runID, fetched, production)
 	if err := UpsertRunJobs(ctx, j.pool, key.repo, key.runID, jobs, JobsComplete(jobs)); err != nil {
-		slog.Error("dispatch delivery: store the jobs of a running deploy run", "repo", key.repo, "run_id", key.runID, "error", err)
+		j.tuning.log.Error("dispatch delivery: store the jobs of a running deploy run", "repo", key.repo, "run_id", key.runID, "error", err)
 	}
 }
 

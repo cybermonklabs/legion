@@ -25,9 +25,8 @@ type stopRow struct {
 	uri    string
 	hold   *testnats.HandshakeHold
 	client *bus.Client
-	// conn is the client's connection, read before any hold: Client.Connection takes the client's
-	// lock, which a caller of Client.Connected holds while it waits for nats.go's lock, as the
-	// stop's drain does during a held handshake.
+	// conn is the client's connection, read before any hold, so the row reads nats.go's state on
+	// it directly rather than through the client.
 	conn    *natsgo.Conn
 	durable *heldDurable
 	sub     *natsgo.Subscription
@@ -528,7 +527,8 @@ func TestAHandBackOutsideAStopReachesTheServerWhileAWriteHoldsTheLock(t *testing
 // outstanding for its ack wait. The negative control is a callNATS without the INFO case for
 // ErrReconnectBufExceeded.
 func TestAHandBackOnAReconnectingLinkLogsAtInfo(t *testing.T) {
-	logs := captureLogs(t)
+	t.Parallel()
+	logs := captureIntakeLogs(t)
 	handlerReady := make(chan struct{}, 1)
 	linkCut := make(chan struct{})
 	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {

@@ -25,6 +25,7 @@ import (
 // The design gate is read by none of it, which the two admitted cases below hold: one with no
 // gate row at all and one whose gate stands open are both inside the rule.
 func TestArchitectSweepReachReadsTheRecordAlone(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	store := record.NewStore()
 	root := func(key string, at phase.Phase, generation uint64) record.Issue {
@@ -158,6 +159,7 @@ func TestArchitectSweepReachReadsTheRecordAlone(t *testing.T) {
 // generation 2, and its architect's row names entry 3 (rowEntry) where the case does not say it
 // names none.
 func TestArchitectSweepStartPendingHoldsTheRowBackWhileOneIsOnItsWay(t *testing.T) {
+	t.Parallel()
 	const rowEntry = 3
 	queued := []record.QueuedSupervise{{ID: 7, Request: record.SuperviseRequest{Op: "start", Role: claim.RoleArchitect}}}
 	holding := func(state supervise.ClaimState, task supervise.Delivery) *record.RoleClaim {
@@ -286,6 +288,7 @@ func TestArchitectSweepStartPendingHoldsTheRowBackWhileOneIsOnItsWay(t *testing.
 // send renders the task from the record as it stands then (ResumeAwaitedRootTask), so a review the
 // person's approval answered since is not told as standing.
 func TestArchitectSweepSendRederivesTheTaskAtTheEntryTheRowNames(t *testing.T) {
+	t.Parallel()
 	const resumed = "A person answered your ask ask-q on LEGION-208, or replied in its thread; read it. Continue."
 	answered := &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 5}, AnsweredBy: record.AnsweredByAsk, AnsweredDetail: "ask-q"}
 	for _, tc := range []struct {
@@ -322,7 +325,7 @@ func TestArchitectSweepSendRederivesTheTaskAtTheEntryTheRowNames(t *testing.T) {
 				return engine.SendArchitectStart(t.Context(), tx, root, row)
 			})
 
-			start := architectStartOf(t, pool)
+			start := architectStartOf(t, pool, entryIssue)
 			if tc.awaiting != nil {
 				if start.Task != "" || start.Kept != nil || !sameWait(start.Awaiting, *tc.awaiting) {
 					t.Fatalf("the start the sweep sends for an entry a resume raised = task %q, kept %+v, answering %+v; want no text, no kept "+

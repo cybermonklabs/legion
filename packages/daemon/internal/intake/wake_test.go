@@ -19,7 +19,8 @@ import (
 // what this daemon cannot act on, and acknowledging it loses nothing. An envelope from another
 // source on that subject, and a payload that is not an object, are poison.
 func TestDecodeTheListenerWakeReport(t *testing.T) {
-	const role = "legion-legion-legion-208-implementer"
+	t.Parallel()
+	const role = "legion-capture-capture-208-implementer"
 	at := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
 	millis := at.UnixMilli()
 	for _, tc := range []struct {
@@ -88,6 +89,7 @@ func TestDecodeTheListenerWakeReport(t *testing.T) {
 // The wake subject is a new leaf under notifications.legion.>, which the stream already carries,
 // and the fourth durable's name is the project's own, beside the other three.
 func TestTheWakeConsumerNamesItsProjectOnItsOwnSubject(t *testing.T) {
+	t.Parallel()
 	if legionWakeSubject != "notifications.legion.wake" {
 		t.Fatalf("the wake subject is %q, want notifications.legion.wake", legionWakeSubject)
 	}
@@ -110,6 +112,7 @@ func TestTheWakeConsumerNamesItsProjectOnItsOwnSubject(t *testing.T) {
 // given (store.PodRecords.RecordListenerReady), and released pods would then miss every role
 // and agent message while the listener itself said nothing.
 func TestAListenerReportDatedInTheFutureIsReadAsNow(t *testing.T) {
+	t.Parallel()
 	const year9999 = 253370764800000
 	before := time.Now().UTC()
 	decoded, err := decodeMessage(legionWakeSubject, "CAPTURE", capturedRepositories,

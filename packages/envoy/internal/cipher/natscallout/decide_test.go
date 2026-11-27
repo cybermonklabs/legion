@@ -18,8 +18,12 @@ import (
 	"github.com/nats-io/nkeys"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
+	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
@@ -61,6 +65,21 @@ func newSession(t testing.TB, id string, life time.Duration) *session {
 			ExpiresAt:  time.Now().Add(life).Unix(),
 		},
 	}
+}
+
+// jobService is the service a job's token names: the identity its job entry lists, here a pod's
+// Kubernetes service account as the exchange spells its subject.
+const jobService = "system:serviceaccount:example-ns:example-job"
+
+// newJobSession is a job's session: its token names the job entry's identity as its service and
+// no person, the entry's project scope and whole list - named with its one project, or public
+// with the private projects its entry lists - and no OAuth scope, as the exchange mints it.
+func newJobSession(t testing.TB, id string, life time.Duration, scope string, projects ...string) *session {
+	t.Helper()
+	s := newSession(t, id, life)
+	s.answer.Person, s.answer.Service = "", jobService
+	s.answer.ProjectScope, s.answer.Projects = scope, projects
+	return s
 }
 
 // request is the authorization request the server sends for this session connecting with nonce:
@@ -113,15 +132,17 @@ func serviceRequest(raw string) Request {
 
 // The platform accounts this package's tests list in BROKER_NATS_SERVICES.
 const (
-	listenerAccount = "system:serviceaccount:example-ns:example-listener"
-	daemonAccount   = "system:serviceaccount:example-ns:example-daemon"
-	measureAccount  = "envoy-measure@example-project.iam.gserviceaccount.com"
-	edgeAccount     = "system:serviceaccount:example-ns:example-edge-listener"
+	listenerAccount        = "system:serviceaccount:example-ns:example-listener"
+	webhookListenerAccount = "system:serviceaccount:example-ns:example-webhook-listener"
+	daemonAccount          = "system:serviceaccount:example-ns:example-daemon"
+	measureAccount         = "envoy-measure@example-project.iam.gserviceaccount.com"
+	edgeAccount            = "system:serviceaccount:example-ns:example-edge-listener"
 )
 
 var exampleServices = []config.NATSService{
 	{Kind: config.NATSDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", AllProjects: true},
 	{Kind: config.NATSListener, MachineID: "example-hub", Account: listenerAccount, AllProjects: true},
+	{Kind: config.NATSWebhookListener, MachineID: "example-webhook", Account: webhookListenerAccount, AllProjects: true},
 	{Kind: config.NATSDaemon, Account: daemonAccount, AllProjects: true},
 	{Kind: config.NATSMeasure, Account: measureAccount, Google: true, AllProjects: true},
 	{Kind: config.NATSDaemon, Account: "system:serviceaccount:example-ns:held-daemon"},
@@ -143,22 +164,49 @@ func TestASessionTokenGetsItsOwnChannel(t *testing.T) {
 	require.NotContains(t, decision.Grant.Subscribe, "notifications.envoy.deliver.*")
 }
 
+// A job's live token, named with its one project or public with its entry's private projects,
+// beside a proof over this connection's nonce, is answered as a person's session's token is: with
+// natsgrant.Session's grant of its own session, named session/<id>, expiring with the token.
+func TestAJobsSessionTokenGetsItsOwnChannel(t *testing.T) {
+	for _, row := range []struct {
+		name     string
+		scope    string
+		projects []string
+	}{
+		{"a job's named token", ciphertoken.ProjectScopeNamed, []string{"ACME"}},
+		{"a job's public token", ciphertoken.ProjectScopePublic, []string{"PRIVA", "PRIVB"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			job := newJobSession(t, "ses_job", 15*time.Minute, row.scope, row.projects...)
+			decision, err := Decide(t.Context(), Deps{Introspect: introspector(job)}, nil, job.request(t, "nonce-of-this-connection"))
+			require.NoError(t, err)
+			want, err := natsgrant.Session("ses_job")
+			require.NoError(t, err)
+			require.Equal(t, want, decision.Grant)
+			require.Equal(t, "session/ses_job", decision.Name)
+			require.Equal(t, time.Unix(job.answer.ExpiresAt, 0), decision.Expires)
+		})
+	}
+}
+
 // A service's platform token, from an account the deployment lists, is answered with its kind's
 // grant from natsgrant, named <kind>/<machine id or account>, expiring with the token.
 func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	now := time.Now()
 	tokens := map[string]platformToken{
-		"dispatch-token": {account: "system:serviceaccount:dispatch:dispatch", issued: now, expiry: now.Add(time.Hour)},
-		"listener-token": {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)},
-		"daemon-token":   {account: daemonAccount, issued: now, expiry: now.Add(30 * time.Minute)},
-		"measure-token":  {account: measureAccount, google: true, issued: now, expiry: now.Add(time.Hour)},
+		"dispatch-token":         {account: "system:serviceaccount:dispatch:dispatch", issued: now, expiry: now.Add(time.Hour)},
+		"listener-token":         {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)},
+		"webhook-listener-token": {account: webhookListenerAccount, issued: now, expiry: now.Add(time.Hour)},
+		"daemon-token":           {account: daemonAccount, issued: now, expiry: now.Add(30 * time.Minute)},
+		"measure-token":          {account: measureAccount, google: true, issued: now, expiry: now.Add(time.Hour)},
 	}
 	deps := Deps{ServiceToken: serviceTokens(tokens)}
 	for raw, want := range map[string]Decision{
-		"dispatch-token": {Name: "dispatch/example-dispatch", Grant: natsgrant.Dispatch("example-dispatch"), Expires: now.Add(time.Hour)},
-		"listener-token": {Name: "listener/example-hub", Grant: natsgrant.Listener("example-hub"), Expires: now.Add(time.Hour)},
-		"daemon-token":   {Name: "daemon/" + daemonAccount, Grant: natsgrant.Daemon(), Expires: now.Add(30 * time.Minute)},
-		"measure-token":  {Name: "measure/" + measureAccount, Grant: natsgrant.Measure(), Expires: now.Add(time.Hour)},
+		"dispatch-token":         {Name: "dispatch/example-dispatch", Grant: natsgrant.Dispatch("example-dispatch"), Expires: now.Add(time.Hour)},
+		"listener-token":         {Name: "listener/example-hub", Grant: natsgrant.Listener("example-hub"), Expires: now.Add(time.Hour)},
+		"webhook-listener-token": {Name: "webhook-listener/example-webhook", Grant: natsgrant.WebhookListener("example-webhook"), Expires: now.Add(time.Hour)},
+		"daemon-token":           {Name: "daemon/" + daemonAccount, Grant: natsgrant.Daemon(), Expires: now.Add(30 * time.Minute)},
+		"measure-token":          {Name: "measure/" + measureAccount, Grant: natsgrant.Measure(), Expires: now.Add(time.Hour)},
 	} {
 		t.Run(raw, func(t *testing.T) {
 			decision, err := Decide(t.Context(), deps, exampleServices, serviceRequest(raw))
@@ -168,12 +216,67 @@ func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	}
 }
 
+// The lane deny reaches the services the auth service admits (check l5 of dispatch://INFRA-3589):
+// a listener's grant denies a publish on Dispatch's lane and on GitHub's lane, the webhook
+// listener's, the listener that receives GitHub's webhook, denies Dispatch's lane alone, and
+// Dispatch's denies GitHub's lane and the listener's resume lane. The deny is in the grant's
+// PublishDeny, which the answer's user carries (TestADenyEntryIsEncodedAndEnforced). An edge
+// listener's grant denies both lanes, as a listener's does
+// (TestTheAuthServiceAnswersTheEdgeItsGrant).
+func TestAServiceKindsGrantDeniesTheLanesItDoesNotPublish(t *testing.T) {
+	now := time.Now()
+	deps := Deps{ServiceToken: serviceTokens(map[string]platformToken{
+		"dispatch-token":         {account: "system:serviceaccount:dispatch:dispatch", issued: now, expiry: now.Add(time.Hour)},
+		"listener-token":         {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)},
+		"webhook-listener-token": {account: webhookListenerAccount, issued: now, expiry: now.Add(time.Hour)},
+	})}
+	for raw, deny := range map[string][]string{
+		"listener-token":         {"notifications.dispatch.>", "notifications.github.>"},
+		"webhook-listener-token": {"notifications.dispatch.>"},
+		"dispatch-token":         {"notifications.github.>", "notifications.envoy.resume.>"},
+	} {
+		t.Run(raw, func(t *testing.T) {
+			decision, err := Decide(t.Context(), deps, exampleServices, serviceRequest(raw))
+			require.NoError(t, err)
+			require.Equal(t, deny, decision.Grant.PublishDeny)
+			require.Contains(t, decision.Grant.Publish, "notifications.>")
+		})
+	}
+}
+
+// Check l16 of dispatch://INFRA-3589 (R18) at the auth service: a listener whose machine id is a
+// fully qualified host name is listed under that id, as the listener starts with it
+// (bus.CheckListenerMachineID), and the grant the service answers it with names the durable and
+// the queue group the listener creates, each with its dots escaped into one subject token
+// (bus.ListenerDurable, bus.ListenerQueue). cmd/listener's test of this name runs that listener.
+func TestADottedMachineIDStartsAndDelivers(t *testing.T) {
+	const machineID = "host.example.internal"
+	for _, kind := range []config.NATSServiceKind{config.NATSListener, config.NATSWebhookListener, config.NATSDispatch} {
+		t.Run(string(kind), func(t *testing.T) {
+			text := string(kind) + "/" + machineID + "/*=" + listenerAccount
+			services, err := config.ParseNATSServices(text)
+			require.NoError(t, err)
+			require.Equal(t, []config.NATSService{{Kind: kind, MachineID: machineID, Account: listenerAccount, AllProjects: true, Text: text}}, services)
+			require.Equal(t, string(kind)+"/"+machineID, services[0].Name())
+			grant := serviceGrant(services[0])
+			durable, queue := bus.ListenerDurable(machineID), bus.ListenerQueue(machineID)
+			require.False(t, strings.ContainsAny(durable, ".*> "), "the durable %q is not one token", durable)
+			require.Contains(t, grant.Publish, "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS."+durable)
+			require.Contains(t, grant.Publish, "$JS.ACK.ENVOY_NOTIFICATIONS."+durable+".>")
+			require.Contains(t, grant.Subscribe, "notifications.role.> "+queue)
+			_, found := natsgrant.NamesSystemSubject(grant)
+			require.False(t, found)
+		})
+	}
+}
+
 // An edge listener's entry, read as BROKER_NATS_SERVICES writes it, is answered with the edge's
 // grant for its machine id and the projects the entry lists (natsgrant.Edge), named for its
 // machine id and expiring with its token, and that grant passes the guard every answer passes. The
 // grant publishes the role subjects of those projects and no other project's: an entry of two
 // projects publishes both, an entry of one the one. It is not the listener's grant, which
-// publishes every notification topic.
+// publishes every notification topic. It denies Dispatch's lane and GitHub's lane, as the
+// listener's grant does (check l5 of dispatch://INFRA-3589).
 func TestTheAuthServiceAnswersTheEdgeItsGrant(t *testing.T) {
 	now := time.Now()
 	deps := Deps{ServiceToken: serviceTokens(map[string]platformToken{
@@ -200,9 +303,38 @@ func TestTheAuthServiceAnswersTheEdgeItsGrant(t *testing.T) {
 			}
 			require.NotContains(t, decision.Grant.Publish, "notifications.role.INFRA.>")
 			require.NotEqual(t, natsgrant.Listener("edge-a"), decision.Grant)
+			require.Equal(t, []string{"notifications.dispatch.>", "notifications.github.>"}, decision.Grant.PublishDeny)
 			require.Nil(t, guard(decision.Grant))
 		})
 	}
+}
+
+// Check l16 of dispatch://INFRA-3589 (R18) at the auth service, for an edge listener: an edge
+// listener whose machine id is a fully qualified host name is listed under that id, and the grant
+// the service answers it with spells the id as the listener does (bus.ListenerSpelling), each dot
+// as %2E: in its inbox prefix and its receipt family (natsgrant.EdgeInboxPrefix,
+// natsgrant.EdgeRelayReplyPrefix) and in its durable (bus.ListenerDurable). So each is one subject
+// token. cmd/listener's TestADottedEdgeMachineIDStartsUnderItsSpelledPrefix checks that the edge
+// start names its inboxes under the same prefix.
+func TestADottedEdgeMachineIDIsGrantedItsSpelledPrefix(t *testing.T) {
+	const machineID = "host.example.internal"
+	text := "edge-listener/" + machineID + "/PRIV=" + edgeAccount
+	services, err := config.ParseNATSServices(text)
+	require.NoError(t, err)
+	require.Equal(t, []config.NATSService{{Kind: config.NATSEdgeListener, MachineID: machineID, Account: edgeAccount, Projects: []string{"PRIV"}, Text: text}}, services)
+	require.Equal(t, "edge-listener/"+machineID, services[0].Name())
+	grant := serviceGrant(services[0])
+	require.Equal(t, []string{
+		"_INBOX_envoy_edge_host%2Eexample%2Einternal.>",
+		"notifications.envoy.deliver.*",
+		"notifications.envoy.relayreply.host%2Eexample%2Einternal.>",
+	}, grant.Subscribe)
+	durable := bus.ListenerDurable(machineID)
+	require.Equal(t, "listener-host%2Eexample%2Einternal", durable)
+	require.Contains(t, grant.Publish, "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS."+durable)
+	require.Contains(t, grant.Publish, "$JS.ACK.ENVOY_NOTIFICATIONS."+durable+".>")
+	require.Equal(t, []string{"notifications.dispatch.>", "notifications.github.>"}, grant.PublishDeny)
+	require.Nil(t, guard(grant))
 }
 
 // An edge listener's entry whose projects natsgrant.Edge refuses - one config.ParseNATSServices would not
@@ -241,6 +373,17 @@ func TestRefusals(t *testing.T) {
 	readOnly := newSession(t, "ses_reader", 15*time.Minute)
 	readOnly.answer.Person, readOnly.answer.Service = "", "example-reader"
 	readOnly.answer.ProjectScope, readOnly.answer.Scope = ciphertoken.ProjectScopeNone, ciphertoken.ScopeRead
+	// The broker's introspection answers a live token whose person Dispatch holds Held, with no
+	// error (oauth.Provider.Introspect); one whose not-held answer has a deadline names it in
+	// NotHeldUntil; and a gate that cannot tell is *oauth.HoldUncheckableError, with no answer.
+	held := newSession(t, "ses_held", 15*time.Minute)
+	held.answer.Held = true
+	lapsed := newSession(t, "ses_lapsed", 15*time.Minute)
+	lapsed.answer.NotHeldUntil = now.Add(-time.Second).Unix()
+	// A public token is a job's, which names a service and no person: one beside a person, which
+	// no entry that names a person mints, is no session's credential (ciphertoken.SessionCaller).
+	publicForPerson := newJobSession(t, "ses_public_person", 15*time.Minute, ciphertoken.ProjectScopePublic, "PRIVA")
+	publicForPerson.answer.Person = "person@example.com"
 	// A token narrowed to reading is read-only too, whatever project scope it narrows, so each
 	// answer of the golden file the broker's own test holds its narrowed answers to is no
 	// session's credential to the auth service either: each is a session of its own, presenting
@@ -257,10 +400,14 @@ func TestRefusals(t *testing.T) {
 		"two-hours-token": {account: daemonAccount, issued: now, expiry: now.Add(2 * time.Hour)},
 		"held-token":      {account: "system:serviceaccount:example-ns:held-daemon", issued: now, expiry: now.Add(time.Hour)},
 	}
-	introspected := append([]*session{a, expired, dotted, foreign, unbounded, readOnly}, narrowed...)
+	introspected := append([]*session{a, expired, dotted, foreign, unbounded, readOnly, publicForPerson, held, lapsed}, narrowed...)
 	deps := Deps{Introspect: introspector(introspected...), ServiceToken: serviceTokens(tokens)}
 	unreachable := Deps{Introspect: func(context.Context, string) (oauthwire.Introspection, error) {
 		return oauthwire.Introspection{}, errors.New("dial tcp: connection refused")
+	}}
+	uncheckable := Deps{Introspect: func(context.Context, string) (oauthwire.Introspection, error) {
+		return oauthwire.Introspection{}, &oauth.HoldUncheckableError{Verdict: hold.Verdict{Kind: hold.BrokerRefused, Person: "person@example.com",
+			Err: fmt.Errorf("hold: Dispatch refused the broker's account: %w", dispatchread.ErrBrokerRefused)}}
 	}}
 	// cancelled is what each of the broker's calls answers once the decision's context ends.
 	cancelled := Deps{
@@ -291,10 +438,14 @@ func TestRefusals(t *testing.T) {
 		{"a proof of another key", deps, nil, otherKey.request(t, "nonce"), labelKeyMismatch, "key mismatch"},
 		{"a live token that is no session's credential", deps, nil, foreign.request(t, "nonce"), labelNotASession, "token is no session's credential"},
 		{"a read-only token", deps, nil, readOnly.request(t, "nonce"), labelNotASession, "token is no session's credential"},
+		{"a public token beside a person", deps, nil, publicForPerson.request(t, "nonce"), labelNotASession, "token is no session's credential"},
 		{"a proof that is no base64url", deps, nil, badSig, labelProofInvalid, "proof invalid: jws"},
 		{"a token that names no expiry", deps, nil, unbounded.request(t, "nonce"), labelNoExpiry, "token names no expiry"},
 		{"a session id that is not one subject token", deps, nil, dotted.request(t, "nonce"), labelBadSessionID, "session id is not one subject token"},
 		{"a broker that does not answer", unreachable, nil, a.request(t, "nonce"), labelBrokerUnreachable, "broker unreachable"},
+		{"a token whose person's hold cannot be read", uncheckable, nil, a.request(t, "nonce"), labelHoldUncheckable, "hold unchecked: whether Dispatch holds the token's person cannot be read"},
+		{"a token whose person Dispatch holds", deps, nil, held.request(t, "nonce"), labelMembershipHeld, "membership held: Dispatch holds the token's person"},
+		{"a token whose person's not-held answer has passed its deadline", deps, nil, lapsed.request(t, "nonce"), labelDeadlinePassed, "hold unchecked: Dispatch's answer that the token's person is not held has passed its deadline"},
 		{"a budget spent in the token's introspection", cancelled, spent, a.request(t, "nonce"), labelBudget, "decision exceeded its budget at the token's introspection"},
 		{"a service token that does not verify", deps, nil, serviceRequest("forged"), labelServiceToken, "service token not verified"},
 		{"a budget spent in the service token's verification", cancelled, spent, serviceRequest("held-token"), labelBudget, "decision exceeded its budget at the service token's verification"},
@@ -325,6 +476,36 @@ func TestRefusals(t *testing.T) {
 		})
 	}
 	require.Equal(t, machine.MaxTokenLoginLifetime, time.Hour, "the refusal's text names the bound")
+}
+
+// A session whose person Dispatch does not hold is admitted, and its user expires no later than
+// the deadline of Dispatch's answer that the person is not held (the introspection's
+// not_held_until), which an IAP deployment's Dispatch puts on every such answer: a connection
+// admitted before the deadline must not outlive it, as the airlock cuts a call it carries then. A
+// deadline after the token's expiry changes nothing, and an answer naming none expires with the
+// token. The decider's clock is the broker's: Dispatch's unavailable answer, whose deadline is its
+// own as_of, never reaches it as a not-held answer (hold.Gate.Decide answers it uncheckable).
+func TestANotHeldSessionIsAdmittedNoLongerThanItsDeadline(t *testing.T) {
+	now := time.Now()
+	for name, row := range map[string]struct {
+		notHeldUntil int64
+		want         func(s *session) time.Time
+	}{
+		"no deadline": {0, func(s *session) time.Time { return time.Unix(s.answer.ExpiresAt, 0) }},
+		"a deadline before the token's expiry": {now.Add(5 * time.Minute).Unix(), func(*session) time.Time {
+			return time.Unix(now.Add(5*time.Minute).Unix(), 0)
+		}},
+		"a deadline after the token's expiry": {now.Add(24 * time.Hour).Unix(), func(s *session) time.Time { return time.Unix(s.answer.ExpiresAt, 0) }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newSession(t, "ses_served", 15*time.Minute)
+			s.answer.NotHeldUntil = row.notHeldUntil
+			decision, err := Decide(t.Context(), Deps{Introspect: introspector(s)}, nil, s.request(t, "nonce"))
+			require.NoError(t, err)
+			require.Equal(t, "session/ses_served", decision.Name)
+			require.Equal(t, row.want(s), decision.Expires)
+		})
+	}
 }
 
 // An error of the service's own, one that is no *Refusal, is refused as the service's failure,
@@ -448,4 +629,114 @@ func TestAGrantNamingASystemSubjectIsRefused(t *testing.T) {
 			require.NotEmpty(t, response.Jwt)
 		})
 	}
+}
+
+// The deployment's operator identity and the writer hold's probe, as BROKER_NATS_SERVICES lists
+// them (config.ParseNATSServices), beside exampleServices.
+const (
+	operatorAccount = "system:serviceaccount:envoy-operator:envoy-operator"
+	probeAccount    = "system:serviceaccount:envoy-operator:envoy-hold-probe"
+)
+
+var (
+	operatorEntry = config.NATSService{Kind: config.NATSOperator, Account: operatorAccount, AllProjects: true}
+	probeEntry    = config.NATSService{Kind: config.NATSProbe, Account: probeAccount, AllProjects: true}
+	// holdServices are exampleServices with the operator and the probe listed.
+	holdServices = append(append([]config.NATSService{}, exampleServices...), operatorEntry, probeEntry)
+)
+
+// The operator entry is answered with natsgrant.Operator of the hold row's phase while the row is
+// known, and with released's while it is unknown, so the hold never refuses it; its user expires
+// with its token or 10 minutes after the decision, whichever is first, in every phase. Every other
+// client a decision admits - a session, a listed service, the hold's probe - is refused
+// hold_unknown while the row is unknown, naming nothing but that, and is decided as before while it
+// is known, held included (refusing them under held is a later task's). A decision reads the row
+// once, and only for a client it would otherwise admit: a client with no credential or an unlisted
+// one costs the broker's Postgres nothing.
+//
+// It fails when the operator is refused for the hold (the unknown row's operator line), when a
+// client other than the operator is admitted while the row is unknown, or when the operator's user
+// outlives 10 minutes.
+func TestTheOperatorsGrantIsTheHoldsPhase(t *testing.T) {
+	now := time.Now()
+	signer := newHoldSigner(t)
+	a := newSession(t, "ses_a", 15*time.Minute)
+	tokens := map[string]platformToken{
+		"operator-token":       {account: operatorAccount, issued: now, expiry: now.Add(time.Hour)},
+		"short-operator-token": {account: operatorAccount, issued: now, expiry: now.Add(3 * time.Minute)},
+		"listener-token":       {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)},
+		"probe-token":          {account: probeAccount, issued: now, expiry: now.Add(time.Hour)},
+		"unlisted-token":       {account: "system:serviceaccount:example-ns:stranger", issued: now, expiry: now.Add(time.Hour)},
+	}
+	stub := &holdStub{}
+	deps := Deps{Introspect: introspector(a), ServiceToken: serviceTokens(tokens), Now: func() time.Time { return now },
+		Hold: NewHoldView(stub.read, signer.HoldKeys, nil, nil)}
+	operatorName := "operator/" + operatorAccount
+	for _, row := range []struct {
+		name   string
+		answer holdAnswer
+		// phase is the operator's grant's phase; known is whether every other client is admitted.
+		phase natsgrant.OperatorPhase
+		known bool
+	}{
+		{"released", rowOf(signer.reading(t, 1, natsgrant.OperatorPhaseReleased, "h-1")), natsgrant.OperatorPhaseReleased, true},
+		{"prepare", rowOf(signer.reading(t, 2, natsgrant.OperatorPhasePrepare, "h-1")), natsgrant.OperatorPhasePrepare, true},
+		{"held", rowOf(signer.reading(t, 3, natsgrant.OperatorPhaseHeld, "h-1")), natsgrant.OperatorPhaseHeld, true},
+		{"unknown: no row", holdAnswer{}, natsgrant.OperatorPhaseReleased, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			stub.set(row.answer)
+			for _, raw := range []string{"operator-token", "short-operator-token"} {
+				before := stub.called()
+				decision, err := Decide(t.Context(), deps, holdServices, serviceRequest(raw))
+				require.NoError(t, err, "the operator was refused under %s", row.name)
+				require.Equal(t, operatorName, decision.Name)
+				require.Equal(t, natsgrant.Operator(row.phase), decision.Grant, "%s's grant under %s", raw, row.name)
+				require.Equal(t, 1, stub.called()-before, "the operator's decision did not read the row once")
+				want := now.Add(10 * time.Minute)
+				if raw == "short-operator-token" {
+					want = tokens[raw].expiry
+				}
+				require.Equal(t, want, decision.Expires, "%s's user expires at %s", raw, decision.Expires)
+			}
+			others := []struct {
+				name string
+				req  Request
+				want Decision
+			}{
+				{"a session", a.request(t, "nonce"), Decision{Name: "session/ses_a", Grant: must(natsgrant.Session("ses_a")), Expires: time.Unix(a.answer.ExpiresAt, 0)}},
+				{"a listener", serviceRequest("listener-token"), Decision{Name: "listener/example-hub", Grant: natsgrant.Listener("example-hub"), Expires: now.Add(time.Hour)}},
+				{"the hold probe", serviceRequest("probe-token"), Decision{Name: "probe/" + probeAccount, Grant: natsgrant.HoldProbe(), Expires: now.Add(time.Hour)}},
+			}
+			for _, other := range others {
+				before := stub.called()
+				decision, err := Decide(t.Context(), deps, holdServices, other.req)
+				require.Equal(t, 1, stub.called()-before, "%s's decision did not read the row once", other.name)
+				if row.known {
+					require.NoError(t, err, "%s was refused under %s", other.name, row.name)
+					require.Equal(t, other.want, decision, "%s under %s", other.name, row.name)
+					continue
+				}
+				var refused *Refusal
+				require.True(t, errors.As(err, &refused), "%s was admitted while the hold was unknown: %+v", other.name, decision)
+				require.Equal(t, labelHoldUnknown, refused.Label)
+				require.Equal(t, "hold_unknown: the NATS writer hold cannot be read", refused.Reason)
+				require.ErrorIs(t, refused.Cause, errNoHoldRow, "the reporter's line does not say why")
+			}
+			for _, refusedFirst := range []Request{serviceRequest("unlisted-token"), {UserNkey: "UUSER", ServerID: "NSERVER"}} {
+				before := stub.called()
+				_, err := Decide(t.Context(), deps, holdServices, refusedFirst)
+				require.Error(t, err)
+				require.Zero(t, stub.called()-before, "a client refused before its grant read the hold row")
+			}
+		})
+	}
+}
+
+// must is value, failing the calling test's process on err: a grant a literal session id builds.
+func must[T any](value T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return value
 }

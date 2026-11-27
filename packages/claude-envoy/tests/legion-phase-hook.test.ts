@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { daemonContract } from "@legion/contracts/daemon-contract"
 import {
   EnvoyApiError,
   type PublishInput,
@@ -13,7 +14,7 @@ import { OWED_READ_BOUND_MS } from "@legion/pi-shared/phase-reminder"
 import { owedReminder } from "@legion/pi-shared/phase-stall"
 import { ACTIVITY_REPORT_BOUND_MS } from "@legion/pi-shared/session-activity"
 import { answersNever } from "@legion/pi-shared/test/daemon-state"
-import { legion } from "../package.json" with { type: "json" }
+import pkg from "../package.json" with { type: "json" }
 import {
   createPhaseHookEndpoint,
   PHASE_HOOK_REFUSAL,
@@ -26,6 +27,9 @@ import {
 import { waitFor } from "./channel-session-harness"
 
 const SESSION = "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
+/** The contract this build speaks, as `legion-claim.ts` reads it (`daemonContract`): this
+ * checkout's. */
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir)
 
 /** The pane's claim: the implementer of LEGION-208. */
 const implementer: ClaimCapability = {
@@ -145,7 +149,7 @@ async function harness(
     return Response.json({ error: "no stand-in route" }, { status: 404 })
   }) as typeof fetch
   const daemon = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: legion.daemonApiVersion,
+    pluginContract: PLUGIN_CONTRACT,
     fetch: fetchStub,
   })
   const lines: string[] = []
@@ -207,11 +211,18 @@ async function harness(
   }
 }
 
-test("the tool names itself Claude Code's hook endpoint and tells the model not to call it", () => {
+test("the tool is declared under its own name, describes itself with the refusal a model's call gets, and takes the hook events", () => {
   const definition = phaseHookToolDefinition()
   expect(definition.name).toBe(PHASE_HOOK_TOOL_NAME)
-  expect(definition.description).toContain("hook endpoint")
-  expect(definition.description).toContain("Do not call it")
+  expect(definition.description).toBe(PHASE_HOOK_REFUSAL)
+  expect(definition.inputSchema).toMatchObject({
+    properties: {
+      event: {
+        enum: ["Stop", "StopFailure", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit"],
+      },
+    },
+    required: ["event"],
+  })
 })
 
 test("a turn settling while the daemon says the claim owes work is blocked once, with the reminder naming that work, and the count is recorded before the answer", async () => {

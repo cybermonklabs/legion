@@ -14,7 +14,8 @@ import {
 } from "./api";
 import { paragraphsOf } from "./bodies";
 import { documentEditor, indexedBlockAsk } from "./editor";
-import { askCard, inboxPane, inboxRow, READING_PANE_WIDTH, selectRow } from "./inbox-pane";
+import { askCard, inboxPane, inboxRow, selectRow } from "./inbox-pane";
+import { READING_PANE_WIDTH } from "./reading-pane";
 import { resetDatabase } from "./seed";
 import { signIn } from "./users";
 
@@ -181,18 +182,21 @@ test("an approval request beside a question in one Inbox draws no Decline to ans
     )
   );
 
-  // Below the reading column's width every row draws its own card, so the question and the
-  // approval request stand as two cards in one list, which is what this row compares.
-  await page.setViewportSize({ height: 900, width: READING_PANE_WIDTH - 1 });
-  await page.goto("/");
-  await expect(page.locator("[data-inbox-row]")).toHaveCount(2);
+  // The drawer draws every row as its own card, so the question and the approval request stand
+  // as two cards in one list, which is what this row compares. The page itself reads an
+  // approval as the document under review, at every width (INFRA-575, INFRA-5200).
+  await page.goto("/agents");
+  await page.locator("body").focus();
+  await page.keyboard.press("i");
+  const drawer = page.getByRole("dialog", { name: "Inbox" });
+  await expect(drawer.locator("[data-inbox-row]")).toHaveCount(2);
 
-  const questionCard = await askCard(page, question.id);
+  const questionCard = drawer.getByTestId(`ask-${question.id}`);
   await expect(declineControl(questionCard)).toHaveCount(1);
 
   // The approval request is answered with Approve or Request changes, and the server refuses a
   // decline of one, so its card offers the person no such way out.
-  const approvalCard = await askCard(page, approval.ask.id);
+  const approvalCard = drawer.getByTestId(`ask-${approval.ask.id}`);
   await expect(approvalCard).toContainText("Approval requested");
   const options = approvalCard.getByRole("group", { name: "Answer options" });
   await expect(options.getByRole("radio", { name: /^Approve/ })).toHaveCount(1);

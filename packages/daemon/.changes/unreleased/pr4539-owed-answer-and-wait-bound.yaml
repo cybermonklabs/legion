@@ -3,12 +3,13 @@ body: |-
   `POST /legion/v1/claims/owed` answers that a claim owes a completion only where the completion
   route would take it: the claim serves the issue's current run, is not behind its phase entry,
   has no recorded completion of that entry, and no merge forward the daemon asked for holds its
-  role. A merge forward of the head the pull request stands at that has not landed holds the
-  tester in `testing` and the reviewer in `reviewing` when it was asked in that phase, and the
-  merger in `merging` when it was asked of another role in any phase but `implementing`; an ask
-  that a daemon before this one wrote with no asked role counts as the implementer's. It never
-  holds the role asked to make the merge, the implementer before `merging` and the merger in
-  `merging`, which owes that merge. A claim behind its entry, or serving no run of the issue's
+  role. A merge forward of the head an open pull request stands at that has not landed holds the
+  worker of the phase the issue stands in, the planner, the tester, the reviewer or the merger,
+  when it was asked of the implementer in any phase after `implementing`, in that phase or carried
+  into it, and was not withdrawn; an ask that a daemon before this one wrote with no asked role
+  counts as the implementer's. It never holds the role asked to make the merge, the implementer
+  before `merging` and the merger in `merging`, which owes that merge. A claim behind its entry,
+  or serving no run of the issue's
   generation, is answered that it owes nothing, and the daemon sends that entry's task itself. A
   fresh claim whose first task is not yet delivered serves that task's run and entry, so it owes
   its phase. The idle release holds a pod for a phase reminder that is due only while the claim

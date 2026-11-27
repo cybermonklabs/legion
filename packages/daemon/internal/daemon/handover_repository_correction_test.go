@@ -141,6 +141,7 @@ func (r *handOverCorrectionRig) readmitted(got record.Issue) {
 // it left. Both ways the executor reaches the fact carry it: the read that already shows the todo
 // and the label, where no write is made at all, and the read behind the hand-over's own PATCH.
 func TestRepositoryCorrectionFollowsAHandOverTheOutboxCompletes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		shown     dispatch.Issue
@@ -180,6 +181,7 @@ func TestRepositoryCorrectionFollowsAHandOverTheOutboxCompletes(t *testing.T) {
 // repository its own record holds: an absent resolution is no statement by Dispatch that the issue
 // is on no repository, so nothing is corrected and nothing is said to the issue.
 func TestRepositoryCorrectionIsNotWrittenWhenAHandOversDispatchReadAnswersNoRepository(t *testing.T) {
+	t.Parallel()
 	r := newHandOverCorrectionRig(t)
 
 	r.complete(dispatch.Issue{Key: handOverCorrectionChild, Status: "todo", HandedOver: true, Labels: []string{"legion"}})

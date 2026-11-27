@@ -46,9 +46,11 @@ func ownerStepsWayBack(t *testing.T) string {
 
 // noticeKindsBeforeOwnerSteps is the list of the notice kinds an architect is told in the release
 // this rollback goes back to (its validNoticeKinds): every kind of this release's list but the
-// three it adds. superviseOpsBeforeOwnerSteps is that release's list of supervise ops, which has
-// no step_stop. Both are copies because that release's code is not in the tree. Its list of the
-// kinds for the controller alone is this release's (controllerOnlyNoticeKind), unchanged.
+// three it adds and the two #4065 adds, merge-holds-changed and provider-errors.
+// superviseOpsBeforeOwnerSteps is that release's list of supervise ops, which has
+// no step_stop. Both are copies because that release's code is not in the tree, and so is its list
+// of the kinds for the controller alone (controllerKindsBeforeOwnerSteps): it names unslotted and
+// awaiting-person by their words, since that release reads both and this one no longer sends either.
 var (
 	noticeKindsBeforeOwnerSteps = []record.NoticeKind{
 		"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
@@ -59,8 +61,8 @@ var (
 		"session-lost", "session-forgotten", "session-store-fault",
 	}
 	controllerKindsBeforeOwnerSteps = []record.NoticeKind{
-		record.TriageNotice, record.SlotFreeNotice, record.TodoNotice, record.TickNotice, record.UnslottedNotice,
-		record.AwaitingPersonNotice, record.ParkedDecisionNotice, record.UpdateStalledNotice, record.ProviderErrorsNotice,
+		record.TriageNotice, record.SlotFreeNotice, record.TodoNotice, record.TickNotice, "unslotted",
+		"awaiting-person", record.ParkedDecisionNotice, record.UpdateStalledNotice, record.ProviderErrorsNotice,
 		record.TreeStalledNotice, record.ArchitectStalledNotice,
 	}
 	superviseOpsBeforeOwnerSteps = []record.SuperviseOp{"start", "suspend", "release", "tree_close", "issue_close", "pause_stop"}
@@ -114,6 +116,7 @@ func refusedBeforeOwnerSteps(t *testing.T, row record.OutboxRow) string {
 // And the same block with its project predicate taken off deletes OTHER's rows of the new kinds too:
 // that predicate, and nothing else, is what keeps them.
 func TestTheOwnerStepsWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCannotRead(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	queuedAt := time.Date(2026, 11, 17, 3, 0, 0, 0, time.UTC)
 	rowsOf := func(project string) []struct {
@@ -231,6 +234,7 @@ func TestTheOwnerStepsWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCannotRea
 // An escalated hold keeps its reason, and another project's hold of either reason stands. The
 // control: the update with its project predicate taken off clears the other project's too.
 func TestTheOwnerStepsWayBackClearsItsProjectsTwoNewHoldReasons(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const issuePredicate = " and split_part(key, '-', 1) = '<PROJECT>'"
 	scoped := ownerStepsWayBack(t)

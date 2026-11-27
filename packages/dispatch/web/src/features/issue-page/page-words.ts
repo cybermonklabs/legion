@@ -638,7 +638,7 @@ export const PROGRESS_NOUNS = joinWords("PROGRESS_NOUNS", {
 
 /** How the issue stands, in a line of its own where no control's word carries it: a closed
  *  issue, whose writes the identity block refuses, and an issue that advances as many
- *  priorities as one may, whose priority row offers no control that adds another
+ *  priorities as one may, whose priorities' picker refuses a further choice with this line
  *  (`features/priorities/IssuePriorityLine.tsx`). One line each, saying what is so. */
 export const STATE_LINES = joinWords("STATE_LINES", {
   advances_at_cap: `An issue advances at most ${MAX_ISSUE_ADVANCES} priorities.`,
@@ -676,9 +676,9 @@ export const STATE_LINES = joinWords("STATE_LINES", {
 /**
  * What the page says in answer to the reader's own act, and never on load: a copy they pressed,
  * a list they opened still being read, and a write of theirs still out (dispatch://INFRA-1196
- * R22). The page's other answers are tables of their own -
- * `BLOCKED_BY_REFUSALS` here, `HELP_LINES` and `KEY_REPORTS` in `page-structure.ts` - and
- * `ANSWER_SOURCES` gathers all four, so a test can tell what the page says unasked from what it
+ * R22). The page's other answers are tables of their own - `BLOCKED_BY_REFUSALS` here, `HELP_LINES`
+ * and `KEY_REPORTS` in `page-structure.ts`, `ADDRESS_FALLBACK_WORDS` in `page-words-l.ts` - and
+ * `ANSWER_SOURCES` gathers all five, so a test can tell what the page says unasked from what it
  * says when asked. Each is at most one sentence and names no schema token.
  */
 export const ANSWER_LINES = joinWords("ANSWER_LINES", {
@@ -835,8 +835,10 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** The labels control's word where the issue has no label yet, as `add_priority` is the
    *  priority's: the property's own name would draw "Labels" twice in its row of Details. */
   add_label: "Add a label",
-  /** The control that places an issue under a priority, where the issue advances none: the
-   *  words its name begins with, which `IssuePriorityLine.tsx` ends with the issue's key. */
+  /** What the priorities' picker trigger draws in a row of Details while the issue advances
+   *  none, and the words its name begins with, which `IssuePriorityLine.tsx`'s
+   *  `addPriorityControlName` writes out with `control_name_to` and the issue's key ("Add a
+   *  priority to CORE-1"). */
   add_priority: "Add a priority",
   /** What the priority row says of a priority the issue advances because an issue above it
    *  does, which is that issue's to remove (dispatch://INFRA-2947 R4). */
@@ -845,8 +847,8 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   also_under: "Also under",
   /** Names a person's answer, drawn in the ask's own row and body, never as a node of its own
    *  (R1); the answer itself is the person's own words (`NodeRow.tsx`'s `AskAnswer`). It is also
-   *  the focused open question's control that answers it, which sets the line at the foot of the
-   *  outline to answer it (R16, the prototype's `.acts`), as `a` does. */
+   *  the focused open question's control that sets the writer's answer to it, as `a` does (R16,
+   *  the prototype's `.acts`); nothing sends that answer yet (`OutlineWriter.answer`). */
   answer: "Answer",
   /** What the line at the foot of the outline says of the open question it answers, before the
    *  question's own first line (the prototype's `.tgt.ans`). */
@@ -873,8 +875,8 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   approval_version_of: "of",
   /** Leaves an editor with the value the issue had, in every editor the page opens. */
   cancel: "Cancel",
-  /** Changes the reader's own answer to a question, on its focused row: the line at the foot of
-   *  the outline answers it again over that answer (the old conversation's ask card's control). */
+  /** Changes the reader's own answer to a question, on its focused row: sets the writer's answer
+   *  to a change of it (`OutlineWriter.answer`; the old conversation's ask card's control). */
   change_answer: "Change answer",
   /** Answers an agent's decision with a change, on the decision's own node (R7). It opens the
    *  composer below, whose comment is anchored to the decision's own words. */
@@ -888,15 +890,15 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   control_name_of: "of",
   /** The word between the labels control's `add_label` and the issue's key, in the name it
    *  answers to inside `NoTooltips` while the issue has no label: "Add a label to CORE-1"
-   *  (`labelsControlName`). */
+   *  (`labelsControlName`). `IssuePriorityLine.tsx`'s `addPriorityControlName` writes this word
+   *  out as a literal in the name of the priorities' trigger in a row of Details while the issue
+   *  advances none ("Add a priority to CORE-1"). */
   control_name_to: "to",
   /** The two words that make a progress count read as a sentence in the header's properties
    *  line, around the issue's own numbers: "Children 2 of 7 done", "All issues under it 5 of 30
    *  done" (R13, the 1440 px picture). */
   count_of: "of",
   count_done: "done",
-  /** The priority picker's first choice, which picks nothing. */
-  choose_priority: "Choose a priority",
   /** Closes the Details panel and the Outline sheet, each in its own head (R14); Escape does
    *  the same. */
   close: "Close",
@@ -959,6 +961,11 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   editing: "Editing:",
   /** Gives an issue that has a parent a different one (R11, row one). */
   edit_parent: "Edit parent issue",
+  /** The name of the priorities' picker trigger, which adds one and takes one off alike, as the
+   *  labels' control beside it is named "Edit labels". `IssuePriorityLine.tsx`'s
+   *  `priorityTriggerName` says the same words inside `NoTooltips` and outside it; in a row of
+   *  Details, while the issue advances none, the trigger is named by `add_priority` instead. */
+  edit_priorities: "Edit priorities",
   /** What an external link says of an address the browser will not open. */
   external_link_unsafe: "unsafe external link",
   /** The box that narrows the outline to the rows whose words hold what is typed, which is
@@ -1223,6 +1230,7 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  program: "program",
   run: "run",
   selected: "selected",
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
@@ -1230,6 +1238,7 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   state: "state",
   /** The steps of Legion a plan task runs, in their order. */
   steps: "steps",
+  subject: "subject",
   surface: "surface",
   title: "title",
   urgency: "urgency",

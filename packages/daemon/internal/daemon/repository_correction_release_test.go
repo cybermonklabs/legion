@@ -19,8 +19,8 @@ import (
 )
 
 // correctedRepo is the repository Dispatch moved the rig's issue to, and correctedBranch its
-// default branch, which the pod that replaces the released one is built from. The rig's issue
-// starts on acme/widgets (newIdleRig), which is what its pod was built from.
+// default branch, which the pod the update round builds to replace the held one is built from.
+// The rig's issue starts on acme/widgets (newIdleRig), which is what its pod was built from.
 const (
 	correctedRepo   = "zeta/tools"
 	correctedBranch = "main"
@@ -48,9 +48,10 @@ func (r *idleRig) corrects(t *testing.T, repo, branch string) {
 // and no update round is open on the claim yet.
 //
 // The pod is the update round's to replace (supervision.reconcilePodUpdates, which opens a round
-// naming both repositories), and the round has every worker push its work before the pod goes.
+// naming both repositories), and the round asks every worker to push its work before the pod goes.
 // The hold is what leaves the pod standing for it.
 func TestRepositoryCorrectionHoldsTheIdlePodUntilTheRoundReplacesIt(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.podBuiltFrom(rig.issue.Repo)
@@ -88,6 +89,7 @@ func TestRepositoryCorrectionHoldsTheIdlePodUntilTheRoundReplacesIt(t *testing.T
 // that has drifted and nothing else, and a deployment where no issue has moved releases every
 // idle pod of it.
 func TestRepositoryCorrectionHoldsNoPodThatAgreesWithItsRecord(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.podBuiltFrom(rig.issue.Repo)

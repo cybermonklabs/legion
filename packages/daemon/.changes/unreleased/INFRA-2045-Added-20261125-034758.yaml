@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+    Under `controller: daemon` the keeper ends a controller turn that stays open longer than
+    `controller_turn_bound_minutes` (90 by default, `0` off), whether or not steps still arrive in
+    it, as the stall backstop ends a stalled turn; the end counts against the session, so two such
+    ends in a row with no finished turn between start a fresh session. Every launch the daemon
+    makes of its controller that no operator's request raised, after a death, a launch failure, a
+    pod update or displacement, a stale-plugin refresh, a turn ended past its bound, the keeper's
+    retry or resume, or a boot, starts a fresh session when the session's id says it is older than
+    `controller_session_max_age_hours` (72 by default, `0` off), and writes one Warn line naming
+    the claim, the old session and the reason. The daemon stops no live controller for its age,
+    and an operator's own resume, or a task an operator delivers to a suspended controller, keeps
+    the session. The state's `settings` carry both keys.
+time: 2026-11-25T03:47:58Z
+custom:
+    Issue: INFRA-2045

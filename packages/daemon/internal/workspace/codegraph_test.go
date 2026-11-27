@@ -1,9 +1,12 @@
 package workspace
 
+//ci:reads packages/daemon/internal/prompts/roles/**/*.md TestTheRolePromptsCheckTheLeaseTheWarmUpHolds reads the four role parts that tell a role to check the warm-up's lease
+
 import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -17,7 +20,10 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -87,7 +93,7 @@ func TestWarmCodegraphIndexBuildsAnIndexWhenTheCliIsOnPath(t *testing.T) {
 	stubCodegraph(t, callLog)
 	dir := t.TempDir()
 
-	warmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	if _, err := os.Stat(filepath.Join(dir, ".codegraph", ".codegraph-initialized")); err != nil {
 		t.Fatalf("workspace left uninitialized after warming: %v", err)
 	}
@@ -102,7 +108,7 @@ func TestWarmCodegraphIndexBuildsAnIndexWhenTheCliIsOnPath(t *testing.T) {
 	// Warming the same directory again is a no-op re-index: codegraph runs status again, but
 	// never a second init, since the marker already reports initialized.
 	before := len(strings.Split(strings.TrimSpace(string(calls)), "\n"))
-	warmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	calls, err = os.ReadFile(callLog)
 	if err != nil {
 		t.Fatalf("read codegraph call log after the second warm-up: %v", err)
@@ -142,14 +148,14 @@ esac
 	// The stub holds its init until the release below, so a call that waited on the build never
 	// returns and this wait fails.
 	testwait.Receive(t, "WarmCodegraphIndexInBackground to return while codegraph init still runs", inFlight(func() struct{} {
-		WarmCodegraphIndexInBackground(dir)
+		WarmCodegraphIndexInBackground(procgroup.NoReaper, dir)
 		return struct{}{}
 	}))
 	waitFor(t, func() bool {
 		calls, _ := os.ReadFile(callLog)
 		return strings.Contains(string(calls), "init")
 	}, "codegraph init to start")
-	WarmCodegraphIndexInBackground(dir)
+	WarmCodegraphIndexInBackground(procgroup.NoReaper, dir)
 	if err := os.WriteFile(release, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +186,7 @@ func TestWarmCodegraphIndexNeverFailsWhenTheCliIsMissing(t *testing.T) {
 	// machine (like this one) that has a real `codegraph` on its ordinary PATH.
 	t.Setenv("PATH", t.TempDir())
 
-	warmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	if _, err := os.Stat(filepath.Join(dir, ".codegraph", ".codegraph-initialized")); !os.IsNotExist(err) {
 		t.Fatalf("stat .codegraph/.codegraph-initialized = %v, want it absent with no codegraph on PATH", err)
 	}
@@ -207,7 +213,7 @@ func TestWarmCodegraphIndexGivesCodegraphNoSecretLikeVariable(t *testing.T) {
 	t.Setenv("LEGION_GRANT", grant)
 	dir := t.TempDir()
 
-	warmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	calls, err := os.ReadFile(callLog)
 	if err != nil {
 		t.Fatalf("read codegraph call log: %v", err)
@@ -264,7 +270,7 @@ esac
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	warmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	calls, err := os.ReadFile(callLog)
 	if err != nil {
 		t.Fatalf("read codegraph call log: %v", err)
@@ -303,7 +309,7 @@ esac
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	warmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	calls, err := os.ReadFile(callLog)
 	if err != nil {
 		t.Fatalf("read codegraph call log: %v", err)
@@ -332,19 +338,19 @@ func TestWarmCodegraphIndexInitializesAnUntrackedCodegraphDirectoryAgainstTheRea
 		t.Fatal(err)
 	}
 
-	warmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 
 	codegraphPath, err := exec.LookPath("codegraph")
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, err := runCodegraph(context.Background(), codegraphPath, dir, "status", "--json")
+	status, err := runCodegraph(context.Background(), clock.Real(), procgroup.NoReaper, codegraphPath, dir, "status", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	initialized, complete := codegraphStatus(status.stdout)
-	if !initialized || !complete {
-		t.Fatalf("status after warming = %q, want initialized and complete", status.stdout)
+	initialized, current := codegraphStatus(status.stdout)
+	if !initialized || !current {
+		t.Fatalf("status after warming = %q, want initialized and current", status.stdout)
 	}
 }
 
@@ -396,7 +402,7 @@ esac
 		t.Fatal(err)
 	}
 
-	warmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	calls, err := os.ReadFile(callLog)
 	if err != nil {
 		t.Fatalf("read codegraph call log: %v", err)
@@ -407,12 +413,14 @@ esac
 	}
 }
 
-// TestWarmCodegraphIndexJudgesAnEmptyLockByItsAge: CodeGraph creates `.codegraph/codegraph.lock`
-// before it writes the builder's PID into it, so a build that has only just started shows an
-// empty lock. A fresh empty lock is held, and warming skips the repair rather than start a second
-// writer beside that build. One older than codegraphEmptyLockGrace is what a builder that died
-// between the create and the write leaves behind: stale, so the repair runs. So is one dated
-// further than the grace into the future, which no starting build wrote.
+// TestWarmCodegraphIndexJudgesAnEmptyLockByItsAge: CodeGraph 1.6.4's FileLock hard-links into
+// place a lock that already holds the builder's PID, but where that link fails it falls back to
+// creating `.codegraph/codegraph.lock` before it writes the PID into it, so a build that has only
+// just started on that path shows an empty lock. A fresh empty lock is held, and warming skips the
+// repair rather than start a second writer beside that build. One older than
+// codegraphEmptyLockGrace is what a builder that died between the create and the write leaves
+// behind: stale, so the repair runs. So is one dated further than the grace into the future,
+// which no starting build wrote.
 func TestWarmCodegraphIndexJudgesAnEmptyLockByItsAge(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -457,7 +465,7 @@ esac
 			}
 			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-			warmCodegraphIndex(context.Background(), dir, time.Now())
+			WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 			calls, err := os.ReadFile(callLog)
 			if err != nil {
 				t.Fatalf("read codegraph call log: %v", err)
@@ -489,8 +497,8 @@ esac
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	warmCodegraphIndex(context.Background(), dir, time.Now())
-	warmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	calls, err := os.ReadFile(callLog)
 	if err != nil {
 		t.Fatalf("read codegraph call log: %v", err)
@@ -562,7 +570,7 @@ func TestWarmCodegraphIndexHoldsACrossProcessLease(t *testing.T) {
 		dir := t.TempDir()
 		lease := leaseOf(t, dir, 0)
 
-		warmCodegraphIndex(context.Background(), dir, time.Now())
+		WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 		if calls := stubCalls(t, callLog); calls != nil {
 			t.Fatalf("codegraph calls = %v, want none while another process holds the lease", calls)
 		}
@@ -576,7 +584,7 @@ func TestWarmCodegraphIndexHoldsACrossProcessLease(t *testing.T) {
 		dir := t.TempDir()
 		leaseOf(t, dir, warmLeaseStale+time.Minute)
 
-		warmCodegraphIndex(context.Background(), dir, time.Now())
+		WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 		if calls := stubCalls(t, callLog); !slices.Equal(calls, []string{"status --json", "init"}) {
 			t.Fatalf("codegraph calls = %v, want status --json then init behind the taken-over lease", calls)
 		}
@@ -589,7 +597,7 @@ func TestWarmCodegraphIndexHoldsACrossProcessLease(t *testing.T) {
 		stubCodegraph(t, callLog)
 		dir := t.TempDir()
 
-		warmCodegraphIndex(context.Background(), dir, time.Now())
+		WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 		if calls := stubCalls(t, callLog); !slices.Equal(calls, []string{"status --json", "init"}) {
 			t.Fatalf("codegraph calls = %v, want status --json then init", calls)
 		}
@@ -1049,7 +1057,7 @@ esac
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	warmCodegraphIndex(context.Background(), dir, time.Now())
+	WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 	calls, err := os.ReadFile(callLog)
 	if err != nil {
 		t.Fatalf("read codegraph call log: %v", err)
@@ -1106,7 +1114,7 @@ func TestWarmCodegraphIndexLogsOneSuccessLine(t *testing.T) {
 		dir := t.TempDir()
 		captured := captureStderr(t)
 
-		warmCodegraphIndex(context.Background(), dir, time.Now())
+		WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 		stderr := captured()
 		lines := success.FindAllStringSubmatch(stderr, -1)
 		if len(lines) != 1 {
@@ -1128,7 +1136,7 @@ func TestWarmCodegraphIndexLogsOneSuccessLine(t *testing.T) {
 		}
 		captured := captureStderr(t)
 
-		warmCodegraphIndex(context.Background(), dir, time.Now())
+		WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 		if stderr := captured(); success.MatchString(stderr) {
 			t.Fatalf("a warm-up that built nothing logged a success line:\n%s", stderr)
 		}
@@ -1151,7 +1159,7 @@ esac
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 		captured := captureStderr(t)
 
-		warmCodegraphIndex(context.Background(), dir, time.Now())
+		WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 		stderr := captured()
 		if success.MatchString(stderr) {
 			t.Fatalf("a warm-up whose init failed logged a success line:\n%s", stderr)
@@ -1162,13 +1170,14 @@ esac
 	})
 }
 
-// TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing: CodeGraph 1.5.0 dies
-// of the warm-up's own SIGTERM rather than exiting, and the kernel's out-of-memory kill ends one the
-// same way, so a signal's death is an ordinary end for a codegraph. A `status` so ended answered
-// nothing, and the warm-up falls back to the directory as for a `status` that exited non-zero: on a
-// workspace whose `.codegraph/` was there, `index`. A build so ended logs the signal and what it
-// printed; one the warm-up's own bound ended logs that it timed out, since the same build would
-// time out again. Read as a status, each was `exit -1`.
+// TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing: a signal ends a
+// CodeGraph 1.6.4 build at once — `codegraph init` killed mid-build by SIGTERM, the warm-up's own,
+// exits in 0.03 s (exit 143), and by SIGKILL in 0.02 s (exit 137) — and the kernel's out-of-memory
+// kill ends one the same way, so a signal's death is an ordinary end for a codegraph. A `status`
+// so ended answered nothing, and the warm-up falls back to the directory as for a `status` that
+// exited non-zero: on a workspace whose `.codegraph/` was there, `index`. A build so ended logs the
+// signal and what it printed; one the warm-up's own bound ended logs that it timed out, since the
+// same build would time out again. Read as a status, each was `exit -1`.
 func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t *testing.T) {
 	fake := func(t *testing.T, callLog, cases string) {
 		t.Helper()
@@ -1187,7 +1196,7 @@ func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t
 		}
 		fake(t, callLog, "status) kill -KILL $$ ;;\nindex) exit 0 ;;\n")
 
-		warmCodegraphIndex(context.Background(), dir, time.Now())
+		WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 		calls, err := os.ReadFile(callLog)
 		if err != nil {
 			t.Fatalf("read codegraph call log: %v", err)
@@ -1202,50 +1211,129 @@ func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t
 		fake(t, callLog, "status) echo '{\"initialized\":false}' ;;\ninit) echo 'parsing 512 files' >&2; kill -KILL $$ ;;\n")
 		captured := captureStderr(t)
 
-		warmCodegraphIndex(context.Background(), dir, time.Now())
+		WarmCodegraphIndex(context.Background(), procgroup.NoReaper, dir, time.Now())
 		want := "[legion] codegraph init for " + dir + " was ended by signal: killed: parsing 512 files\n"
 		if stderr := captured(); !strings.Contains(stderr, want) {
 			t.Fatalf("stderr lacks the line %q:\n%s", want, stderr)
 		}
 	})
+	// The two rows below hold the build's bound on a fake clock, and the test sets the order of
+	// everything the row's verdict reads (boundRow): the stub marks each step it reached, and waits
+	// for the test's mark before the next, so no real-clock span decides which of two things came
+	// first. Each row's cleanups let the stub's processes go whatever the row did, so a row that
+	// fails leaves none running.
 	t.Run("a build its own bound ended: the timeout named", func(t *testing.T) {
-		bound := codegraphTimeout
-		codegraphTimeout = time.Second
-		t.Cleanup(func() { codegraphTimeout = bound })
-		callLog := filepath.Join(t.TempDir(), "calls.log")
-		dir := t.TempDir()
-		fake(t, callLog, "status) echo '{\"initialized\":false}' ;;\ninit) echo 'parsing 512 files' >&2; exec sleep 30 ;;\n")
-		captured := captureStderr(t)
-
-		warmCodegraphIndex(context.Background(), dir, time.Now())
-		want := "[legion] codegraph init for " + dir + " timed out after 1s: parsing 512 files\n"
-		if stderr := captured(); !strings.Contains(stderr, want) {
-			t.Fatalf("stderr lacks the line %q:\n%s", want, stderr)
-		}
+		r := newBoundRow(t, fake, "echo 'parsing 512 files' >&2; : > '%[1]s/printed'; exec sleep 86400")
+		r.reached("the stub's init to print its line", "printed")
+		r.endTheBound()
+		r.answered("timed out after 1s: parsing 512 files")
 	})
 	// A build killed by some other signal before its bound, whose child then holds its pipes past
-	// the bound, was ended by that signal and not by the bound: the bound's cancel never ran.
+	// the bound, was ended by that signal and not by the bound: the bound's end SIGTERMs a shell
+	// that is gone. The stub's init prints, marks "printed" and waits for "go", which the test
+	// writes once it sees the init's bound armed; the stub then starts a child that holds its pipes
+	// until "release", and kills its own shell, and the child marks "gone" once the shell is
+	// reaped. Only then does the test end the bound, and only after that does it write "release".
+	// codegraphStopGrace, the real WaitDelay that would close the held pipes on its own, is
+	// lengthened to what is left of the test binary's deadline, so it is the release that ends the
+	// run, at the moment the test sets.
 	t.Run("a build a signal ended before its bound, its pipes held past it: the signal named", func(t *testing.T) {
-		bound := codegraphTimeout
-		codegraphTimeout = time.Second
-		t.Cleanup(func() { codegraphTimeout = bound })
-		callLog := filepath.Join(t.TempDir(), "calls.log")
-		dir := t.TempDir()
-		fake(t, callLog, "status) echo '{\"initialized\":false}' ;;\ninit) echo 'parsing 512 files' >&2; sleep 2 & kill -KILL $$ ;;\n")
-		captured := captureStderr(t)
-
-		warmCodegraphIndex(context.Background(), dir, time.Now())
-		want := "[legion] codegraph init for " + dir + " was ended by signal: killed: parsing 512 files\n"
-		if stderr := captured(); !strings.Contains(stderr, want) {
-			t.Fatalf("stderr lacks the line %q:\n%s", want, stderr)
-		}
+		grace := codegraphStopGrace
+		codegraphStopGrace = testwait.Remaining(t)
+		t.Cleanup(func() { codegraphStopGrace = grace })
+		r := newBoundRow(t, fake, "echo 'parsing 512 files' >&2; : > '%[1]s/printed'; while [ -d '%[1]s' ] && [ ! -f '%[1]s/go' ]; do sleep 0.01; done; "+
+			"( while kill -0 $$ 2>/dev/null; do sleep 0.01; done; : > '%[1]s/gone'; while [ -d '%[1]s' ] && [ ! -f '%[1]s/release' ]; do sleep 0.01; done; : > '%[1]s/left' ) & kill -KILL $$")
+		r.reached("the stub's init to print its line", "printed")
+		r.c.AwaitArmed(t, "the init's bound, while the build's shell still runs", 1)
+		r.mark("go")
+		r.reached("the build's shell to be gone with its pipes still held", "gone")
+		r.endTheBound()
+		r.mark("release")
+		r.answered("was ended by signal: killed: parsing 512 files")
 	})
 }
 
-// TestNextCodegraphStep table-tests the pure decision warmCodegraphIndex runs on: a parsed
+// boundRow is one row of TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing
+// whose build runs under a bound on a fake clock (c): the warm-up of dir on its own goroutine
+// (done), a stub whose init runs the row's script, a directory for the marks the stub and the
+// test leave each other (marks), and the stderr the warm-up wrote (captured).
+type boundRow struct {
+	t        *testing.T
+	c        *clocktest.Fake
+	dir      string
+	marks    string
+	done     chan struct{}
+	captured func() string
+}
+
+// newBoundRow starts the warm-up of a fresh workspace under a 1 s bound on a fake clock, with a
+// stub whose `init` runs script, which names the marks directory as %[1]s. Its cleanup, which runs
+// before the marks directory is removed, ends the warm-up's context and writes "release", waits
+// for the warm-up to return, and, once the test has written "go" (which lets a stub start a child
+// that holds its pipes), waits for that child's "left": the context's end SIGTERMs the build's
+// shell, and "release" lets the child go. So a stub the row left waiting is gone when the row is,
+// whatever the row did; a stub's loops also end once the marks directory is gone.
+func newBoundRow(t *testing.T, fake func(t *testing.T, callLog, cases string), script string) *boundRow {
+	t.Helper()
+	bound := codegraphTimeout
+	codegraphTimeout = time.Second
+	t.Cleanup(func() { codegraphTimeout = bound })
+	r := &boundRow{t: t, c: clocktest.New(time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)), dir: t.TempDir(), marks: t.TempDir(), done: make(chan struct{})}
+	fake(t, filepath.Join(t.TempDir(), "calls.log"), "status) echo '{\"initialized\":false}' ;;\ninit) "+fmt.Sprintf(script, r.marks)+" ;;\n")
+	r.captured = captureStderr(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		_ = os.WriteFile(filepath.Join(r.marks, "release"), nil, 0o600)
+		testwait.Receive(t, "the warm-up to return once its context ended and its stub was released", r.done)
+		if _, err := os.Stat(filepath.Join(r.marks, "go")); err == nil {
+			r.reached("the stub's child to leave once released", "left")
+		}
+	})
+	go func() { defer close(r.done); warmCodegraphIndexOn(ctx, r.c, procgroup.NoReaper, r.dir, time.Now()) }()
+	return r
+}
+
+// reached waits for the stub's mark name.
+func (r *boundRow) reached(what, name string) {
+	r.t.Helper()
+	testwait.Eventually(r.t, what, func() bool { _, err := os.Stat(filepath.Join(r.marks, name)); return err == nil })
+}
+
+// mark leaves the stub the mark name.
+func (r *boundRow) mark(name string) {
+	r.t.Helper()
+	if err := os.WriteFile(filepath.Join(r.marks, name), nil, 0o600); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// endTheBound waits for the build's bound to be armed on the fake clock and moves the clock past
+// it.
+func (r *boundRow) endTheBound() {
+	r.t.Helper()
+	r.c.AwaitArmed(r.t, "the build's bound", 1)
+	r.c.Advance(codegraphTimeout)
+}
+
+// answered waits for the warm-up to return and wants its stderr to carry the line of the build's
+// end, which ends in end.
+func (r *boundRow) answered(end string) {
+	r.t.Helper()
+	testwait.Receive(r.t, "the warm-up to return", r.done)
+	want := "[legion] codegraph init for " + r.dir + " " + end + "\n"
+	if stderr := r.captured(); !strings.Contains(stderr, want) {
+		r.t.Fatalf("stderr lacks the line %q:\n%s", want, stderr)
+	}
+}
+
+// TestNextCodegraphStep table-tests the pure decision warmCodegraphIndexOn runs on: a parsed
 // status decides outright (its `initialized:false` always means init, even when `.codegraph/`
-// exists); dirExists is consulted only when status failed or didn't parse; and a live lock
-// always wins over an index repair.
+// exists; an initialized index needs nothing only while it is current, `"complete"` and built by
+// the CLI version that reports it or with no builtWithVersion, which a build that indexed no file
+// leaves, so a complete one another version built gets an index repair); dirExists is consulted
+// only when status failed or didn't parse; and a live lock always wins over an index repair, of
+// either kind.
 func TestNextCodegraphStep(t *testing.T) {
 	for _, tc := range []struct {
 		name                string
@@ -1260,6 +1348,10 @@ func TestNextCodegraphStep(t *testing.T) {
 		{"status valid, complete, lock live: none (complete wins, lock irrelevant)", true, true, 0, `{"initialized":true,"index":{"state":"complete"}}`, codegraphStepNone},
 		{"status valid, partial, no live lock: index", true, false, 0, `{"initialized":true,"index":{"state":"indexing"}}`, codegraphStepIndex},
 		{"status valid, partial, live lock: none", true, true, 0, `{"initialized":true,"index":{"state":"indexing"}}`, codegraphStepNone},
+		{"status valid, complete, built by another version, no live lock: index", true, false, 0, `{"initialized":true,"version":"1.6.4","index":{"state":"complete","builtWithVersion":"1.5.0","reindexRecommended":false}}`, codegraphStepIndex},
+		{"status valid, complete, built by another version, live lock: none", true, true, 0, `{"initialized":true,"version":"1.6.4","index":{"state":"complete","builtWithVersion":"1.5.0","reindexRecommended":false}}`, codegraphStepNone},
+		{"status valid, complete, built by this version: none", true, false, 0, `{"initialized":true,"version":"1.6.4","index":{"state":"complete","builtWithVersion":"1.6.4","reindexRecommended":false}}`, codegraphStepNone},
+		{"status valid, complete, builtWithVersion null (a build that indexed no file), version set: none", true, false, 0, `{"initialized":true,"version":"1.6.4","index":{"state":"complete","builtWithVersion":null}}`, codegraphStepNone},
 		{"status failed, directory exists, no live lock: index", true, false, 1, ``, codegraphStepIndex},
 		{"status failed, directory exists, live lock: none", true, true, 1, ``, codegraphStepNone},
 		{"status failed, no directory: init", false, false, 1, ``, codegraphStepInit},
@@ -1271,5 +1363,35 @@ func TestNextCodegraphStep(t *testing.T) {
 				t.Fatalf("nextCodegraphStep(%v, %v, %d, %q) = %v, want %v", tc.dirExists, tc.lockLive, tc.statusExitCode, tc.statusStdout, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestTheRolePromptsCheckTheLeaseTheWarmUpHolds: a role's `status` during the warm-up's build makes
+// that build fail, so each prompt has the role check this lease, by its name and its age, before it
+// calls CodeGraph. A renamed lease or a changed stale age would leave the prompts checking the
+// wrong thing. The `2>/dev/null` keeps a missing lease silent, since both finds print the path in
+// their error.
+func TestTheRolePromptsCheckTheLeaseTheWarmUpHolds(t *testing.T) {
+	check := ".codegraph/" + warmLeaseName + " -mmin -1 2>/dev/null"
+	for _, part := range []string{
+		filepath.Join("..", "prompts", "roles", "core", "common.md"),
+		filepath.Join("..", "prompts", "roles", "merger.md"),
+		filepath.Join("..", "prompts", "roles", "architect.md"),
+		filepath.Join("..", "prompts", "roles", "architect-root.md"),
+	} {
+		body, err := os.ReadFile(part)
+		if err != nil {
+			t.Fatalf("read %s: %v", part, err)
+		}
+		text := strings.Join(strings.Fields(string(body)), " ")
+		if n := strings.Count(text, check); n != 1 {
+			t.Errorf("%s holds %q %d times, want once: the prompt must check the lease the warm-up holds", part, check, n)
+		}
+	}
+	if warmLeaseStale != time.Minute {
+		t.Errorf("warmLeaseStale is %s: `find -mmin -1` reads a file as fresh for under one minute, so the prompts' check and the lease's staleness must agree", warmLeaseStale)
+	}
+	if warmLeaseHeartbeat >= warmLeaseStale {
+		t.Errorf("warmLeaseHeartbeat is %s and warmLeaseStale is %s: a holder must refresh its lease before another process reads it as stale", warmLeaseHeartbeat, warmLeaseStale)
 	}
 }

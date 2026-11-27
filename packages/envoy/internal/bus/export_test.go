@@ -42,10 +42,28 @@ func WithAfterCoreSendFlush(after func()) ConnectOption {
 // returns beside it, when not nil, runs once the Request has settled a flush that returned before
 // its timeout fired, on the Request's own goroutine: a test that fires the timeout from it has the
 // Request settle the flush first, every time. A Request whose timeout fires while its flush has
-// not returned waits for the flush, which its deadline still bounds, so a test that fires the
-// timeout at once and gives the Request a long deadline has the flush's verdict in the answer
-// however late the scheduler runs the flush. It is compiled into the package's tests only; no
-// production connect can set it.
+// not returned waits for the flush. Its deadline bounds what follows the flush's take of nats.go's
+// connection lock, from the moment nats.go lets the flush take it (confirmFlushed): a flush that
+// waited X for the lock waits for the server's answer until X after the deadline. So a test that
+// fires the timeout at once and gives the Request a long deadline has the flush's verdict in the
+// answer however late the scheduler runs the flush. It is compiled into the package's tests only;
+// no production connect can set it.
 func WithRequestExpiry(expiry func(deadline time.Time) (expired <-chan time.Time, flushSettled func())) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.requestExpiry = expiry })
+}
+
+// WithClosedHook runs hook at the start of the client's handling of each close of a connection it
+// dialled (onClosed), before the recovery the close starts, so a test can hold that work and catch
+// a caller that returned before it ran. It is compiled into the package's tests only; no
+// production connect can set it.
+func WithClosedHook(hook func()) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.closedHook = hook })
+}
+
+// WithCloseSettleBound has the close of a failed start wait for its callbacks and its recovery for
+// up to bound (closeSettled), in place of failedStartCloseBound, so a test that holds that close
+// (WithClosedHook) decides when it ends, not the production bound. It is compiled into the
+// package's tests only; no production connect can set it.
+func WithCloseSettleBound(bound time.Duration) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.closeSettleBound = bound })
 }

@@ -171,7 +171,7 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 // Dispatch's listing (its followRecorded), which reads an issue again wherever a pass can leave
 // its record on another repository than Dispatch resolves (its requestFollow and requestFollowOf
 // say who asks for one; this asks for one below). The correction is one statement in that
-// transaction (record.Store.CorrectIssueRepository, whose one caller this is): no park, no rerun
+// transaction (record.Store.CorrectIssueRepository, whose one caller this is): no move to the backlog, no rerun
 // and no new generation, so an issue keeps its phase, its generation and whatever is running for
 // it while its repository moves.
 //

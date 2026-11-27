@@ -18,6 +18,7 @@ const deliveryResumeVersion = 20261112215432
 // awaiting_answered_step), and gives no wait either: an answer before it records neither. The
 // negative control is the same rows read before the migration, which hold no such column.
 func TestAWaitAChangesRequestAnsweredTakesItsVersionIn20261112215432(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, deliveryResumeVersion-1)

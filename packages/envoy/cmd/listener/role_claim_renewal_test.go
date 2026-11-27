@@ -18,8 +18,11 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/alonetest"
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/shapetest"
 	"github.com/sjawhar/envoy/internal/store"
 )
 
@@ -28,6 +31,7 @@ import (
 // this one left it, and reads back what the registration made of it.
 type roleClaimRenewalRig struct {
 	t         *testing.T
+	deps      *listenerDeps
 	registry  *store.Registry
 	roleKV    natsgo.KeyValue
 	logs      *bytes.Buffer
@@ -45,6 +49,7 @@ func newRoleClaimRenewalRig(t *testing.T) *roleClaimRenewalRig {
 	deps := withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)})
 	return &roleClaimRenewalRig{
 		t:         t,
+		deps:      deps,
 		registry:  registry,
 		roleKV:    registryRoleKV(t, registry),
 		logs:      logs,
@@ -73,7 +78,7 @@ func (r *roleClaimRenewalRig) seed(role string, claim store.RoleClaim) store.Rol
 	if _, err := r.registry.Upsert(store.Interest{SessionID: claim.HolderSessionID, MachineID: "test-machine"}, []string{contracts.RoleTopicPrefix + role}); err != nil {
 		r.t.Fatalf("register %s's interest in %s's lane: %v", claim.HolderSessionID, role, err)
 	}
-	waitFor(r.t, 5*time.Second, fmt.Sprintf("%s's claim to reach the role claim view", role), func() bool {
+	waitFor(r.t, fmt.Sprintf("%s's claim to reach the role claim view", role), func() bool {
 		held, err := r.registry.RolesHeldBy(claim.HolderSessionID)
 		return err == nil && slices.Contains(held, role)
 	})
@@ -159,39 +164,40 @@ func TestAnAdoptingRegistrationNamesItsProcessOnAClaimThatNamesNone(t *testing.T
 	}
 }
 
-// The largest registration production has seen (802 topics, 2026-11-16) is a holder following a
-// few hundred Dispatch issues, each as `<KEY>` and `<KEY>.>`, with the per-kind topics of one
-// issue that its `<KEY>.>` already holds, and the lane topic of the role it holds. This case
-// registers about twice that, on a claim that names no process, and the first registration must
-// adopt and renew the claim. The per-kind topics are those of an issue that sorts among the
-// others, as production's did, and not first: each is then found contained only after the pairs
-// before it are weighed.
+// largestShapeHolder is the session that registers shapetest.Topics in the cases below.
+const largestShapeHolder = "ses_largest_holder"
+
+// The first registration of a holder of the largest shape production has seen (shapetest.Topics),
+// on a claim that names no process, adopts and renews the claim, is answered 200 and stores every
+// topic it names. The renewal runs after the registration's topic work, on what that work left of
+// the registration's budget, and a registration of that many topics still reaches it and renews.
+// The registration is given the time left before the test binary's deadline
+// (budgetsUntilTheDeadline) in place of its 3.5 s (sendRequestBudget), so the case asserts what the
+// registration writes and not how soon, and its verdict is the same on any machine, serial or
+// parallel.
 //
-// What it guards: a registration's own work must leave its renewal the budget the renewal runs on.
-// The renewal runs after the registration's topic work, on what is left of the request's
-// sendRequestBudget. Work that grows with the number of topics, such as reducing them to the
-// consumer's filters (bus.ReduceFilterSubjects), spent that budget in production: every
-// registration was answered 200 and its renewal's claim read ran out of time, so the claim was
-// never renewed while its holder kept registering.
+// What spends that budget is topic work, and three counts hold it, none of them the machine's.
+// Reducing the topics to the consumer's filters spent it in production (INFRA-1555): every
+// registration was answered 200, its renewal's claim read ran out of time, and the claim was never
+// renewed while its holder kept registering. TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair
+// holds the allocations of a registration's reductions, which see a split of both subjects of every
+// pair, and internal/bus's TestReducingTheLargestRegistrationInProductionWeighsEachPairOnce holds the
+// pairs the reduction weighs, which see a scan started again after each drop. The third is here:
+// the configurations of this session's consumer that the registration hands the server, and the
+// filter subjects in them, held to largestShapeServerFilterCeiling. Those are the only inputs the
+// listener gives the server's check of a consumer's filters (checkConsumerCfg), which under the
+// race detector is the largest cost that grows with the topics. So the ceiling bounds what the
+// listener asks the server to check, and says nothing about how the server checks it. The
+// allocation count sees the allocations of the listener's own filter rules (sessionConsumerFilter),
+// and not their work that allocates nothing. No count sees the listener's topic work outside its
+// consumer filter (the plan's merge, the answer's warnings, the record's encoding), the server's
+// own algorithm, or the size of the KV records the registration writes.
 func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testing.T) {
 	t.Parallel()
-	const (
-		role      = "legion-controller"
-		sessionID = "ses_largest_holder"
-		issues    = 800
-	)
-	topics := make([]string, 0, 2*issues+9)
-	for issue := range issues {
-		topic := fmt.Sprintf("notifications.dispatch.issue.K-%d", issue)
-		topics = append(topics, topic, topic+".>")
-	}
-	for _, kind := range []string{"message", "issue", "comment", "ask"} {
-		topic := "notifications.dispatch.issue.K-400." + kind
-		topics = append(topics, topic, topic+".>")
-	}
-	topics = append(topics, contracts.RoleTopicPrefix+role)
+	const role = "legion-controller"
+	topics := shapetest.Topics(role)
 	body, err := json.Marshal(map[string]any{
-		"session_id":         sessionID,
+		"session_id":         largestShapeHolder,
 		"topics":             topics,
 		"delivery":           map[string]any{"consumer": true, "epoch": "e"},
 		"client_instance_id": holdingProcess,
@@ -199,20 +205,32 @@ func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testin
 	if err != nil {
 		t.Fatalf("encode the registration: %v", err)
 	}
+	consumer, ok := bus.SessionConsumerName(largestShapeHolder)
+	if !ok {
+		t.Fatalf("%s can have no session consumer", largestShapeHolder)
+	}
 	rig := newRoleClaimRenewalRig(t)
-	seeded := rig.seed(role, lapsedClaim(sessionID, ""))
+	budgetsUntilTheDeadline(t, rig.deps)
+	seeded := rig.seed(role, lapsedClaim(largestShapeHolder, ""))
+	creates := watchConsumerConfigs(t, rig.deps.client.Conn, consumer)
 
 	registered := time.Now()
 	recorder := httptest.NewRecorder()
 	rig.subscribe.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", bytes.NewReader(body)))
-	took := time.Since(registered)
-	// The renewal runs inside the registration, so the budget it had left is at least the budget
-	// less the whole registration's time.
-	t.Logf("registered %d topics in %s: at least %s of the %s budget was left when the renewal ran",
-		len(topics), took.Round(time.Millisecond), (sendRequestBudget - took).Round(time.Millisecond), sendRequestBudget)
+	configs, filters := creates.read(t)
+	// The time is for the reader only: the registration was given until the test's deadline, and
+	// nothing below reads it.
+	t.Logf("registered %d topics in %s; the product gives a registration %s (sendRequestBudget), and this case gave it until the test binary's deadline; the server was handed %d configurations of consumer %s, %d filter subjects in all",
+		len(topics), time.Since(registered).Round(time.Millisecond), sendRequestBudget, configs, consumer, filters)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("the registration of %d topics was answered %d %s, want 200", len(topics), recorder.Code, strings.TrimSpace(recorder.Body.String()))
+	}
+	if configs == 0 {
+		t.Fatalf("UNKNOWN: the watch of the JetStream API saw no configuration of consumer %s, the one this registration creates, so the count read nothing", consumer)
+	}
+	if ceiling := largestShapeServerFilterCeiling(len(topics)); filters > ceiling {
+		t.Fatalf("the registration of %d topics handed the server %d configurations of consumer %s, %d filter subjects in all, for it to check; want at most %d (largestShapeServerFilterCeiling)", len(topics), configs, consumer, filters, ceiling)
 	}
 	adopted := rig.stored(role)
 	if adopted.ClientInstanceID != holdingProcess || adopted.RenewedAt < registered.UnixMilli() {
@@ -224,6 +242,188 @@ func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testin
 		}
 		t.Fatalf("the claim is now %+v, want %+v adopted by the registering process %q and renewed at the registration, %d or later; the route logged %q",
 			adopted, seeded, holdingProcess, registered.UnixMilli(), unrenewed)
+	}
+	// A registration answered 200 may leave topics out of its row (subscribeHandler's warnings),
+	// and one that left most of these out would renew the claim as a far smaller shape.
+	row, _, err := rig.registry.RefreshAt(t.Context(), largestShapeHolder)
+	if err != nil {
+		t.Fatalf("read %s's record from the bucket: %v", largestShapeHolder, err)
+	}
+	stored := make(map[string]bool, len(row.Topics))
+	for _, topic := range row.Topics {
+		stored[topic] = true
+	}
+	for _, topic := range topics {
+		if !stored[topic] {
+			t.Fatalf("the bucket's record holds %d topics and lacks %s, one of the %d registered", len(row.Topics), topic, len(topics))
+		}
+	}
+}
+
+// largestShapeServerFilterCeiling is how many filter subjects a registration of topics may hand the
+// server, over all the configurations of its session consumer it sends: half as many again as its
+// topics. The registration of shapetest.Topics sends one configuration of 1,602 filters for its
+// 1,609 topics (five runs under the race detector), so the ceiling, 2,413, leaves it half again as
+// many. It refuses a doubling: a configuration sent twice, or every topic given a second filter,
+// hands the server about 3,200.
+func largestShapeServerFilterCeiling(topics int) int { return topics * 3 / 2 }
+
+// consumerConfigs counts the configurations of one consumer a JetStream server is handed to check,
+// with the filter subjects each carries.
+type consumerConfigs struct {
+	conn *natsgo.Conn
+	subs []*natsgo.Subscription
+	// subjects are the create subjects of the consumer counted: the create request names the
+	// consumer, and one that carries a single filter adds it after the name.
+	subjects []string
+}
+
+// watchConsumerConfigs subscribes, on conn's account, to the JetStream API's consumer create
+// requests, which carry every configuration a consumer is created or updated with: the session
+// consumers send both as a create with an action (bus.SessionConsumers.upsert), and a durable may
+// be created on the older durable subject. Every such request made on that account from here on
+// reaches the subscriptions as well as the server. Each test has an account of its own
+// (testnats.URL), so no other test's consumers are read.
+func watchConsumerConfigs(t *testing.T, conn *natsgo.Conn, consumer string) *consumerConfigs {
+	t.Helper()
+	w := &consumerConfigs{conn: conn, subjects: []string{
+		"$JS.API.CONSUMER.CREATE." + bus.Stream + "." + consumer,
+		"$JS.API.CONSUMER.DURABLE.CREATE." + bus.Stream + "." + consumer,
+	}}
+	for _, subject := range []string{"$JS.API.CONSUMER.CREATE.>", "$JS.API.CONSUMER.DURABLE.CREATE.>"} {
+		sub, err := conn.SubscribeSync(subject)
+		if err != nil {
+			t.Fatalf("subscribe to %s: %v", subject, err)
+		}
+		t.Cleanup(func() { _ = sub.Unsubscribe() })
+		w.subs = append(w.subs, sub)
+	}
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush the consumer create subscriptions: %v", err)
+	}
+	return w
+}
+
+// read counts the configurations of the watched consumer handed to the server since the watch
+// began, and the filter subjects they carried in all; creates of other consumers, a key-value
+// watcher's ordered consumer among them, are not counted. A create of the watched consumer that
+// does not decode, or carries no configuration, fails the case, since the count could not read it.
+// The flush comes first: the server queued each request's copy for this connection when it
+// received the request, before the reply its sender waited for, so after the flush's PONG every
+// request answered so far is in the subscriptions' queues.
+func (w *consumerConfigs) read(t *testing.T) (configs, filters int) {
+	t.Helper()
+	if err := w.conn.Flush(); err != nil {
+		t.Fatalf("flush the consumer create subscriptions: %v", err)
+	}
+	for _, sub := range w.subs {
+		queued, _, err := sub.Pending()
+		if err != nil {
+			t.Fatalf("count the consumer create requests: %v", err)
+		}
+		for range queued {
+			msg, err := sub.NextMsg(time.Second)
+			if err != nil {
+				t.Fatalf("read a queued consumer create request: %v", err)
+			}
+			if !slices.ContainsFunc(w.subjects, func(subject string) bool {
+				return msg.Subject == subject || strings.HasPrefix(msg.Subject, subject+".")
+			}) {
+				continue
+			}
+			var request struct {
+				Config *struct {
+					FilterSubject  string   `json:"filter_subject"`
+					FilterSubjects []string `json:"filter_subjects"`
+				} `json:"config"`
+			}
+			if err := json.Unmarshal(msg.Data, &request); err != nil || request.Config == nil {
+				t.Fatalf("a create request on %s did not decode to a configuration (%v): %q", msg.Subject, err, msg.Data)
+			}
+			configs++
+			filters += len(request.Config.FilterSubjects)
+			if request.Config.FilterSubject != "" {
+				filters++
+			}
+		}
+	}
+	return configs, filters
+}
+
+// reduceAllocsChildEnv marks the run of the test binary that counts a registration's reductions
+// alone (TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair).
+const reduceAllocsChildEnv = "ENVOY_TEST_LARGEST_SHAPE_REDUCE_ALLOCS_CHILD"
+
+// consumerFilterAllocsPerTopic is how many allocations sessionConsumerFilter may make for each
+// topic of shapetest.Planned: half again the 23.95 a topic it makes now (38,559 for 1,610 topics,
+// three runs under the race detector, alone). That is the filter rules read for each topic, the
+// forms and provenance of each, and one reduction with provenance (bus.SessionConsumerReduction).
+// It refuses that work done twice over. The reduction INFRA-1555 replaced made about 30,000 a topic
+// over this shape.
+const consumerFilterAllocsPerTopic = 36
+
+// reduceAllocsPerTopic is how many allocations the consumer's own reduction of that filter
+// (bus.SessionConsumerFilters) may make for each topic of shapetest.Planned: half again the 2.01 a
+// topic it makes now, the forms of each subject and one split of each form into its tokens, a
+// ceiling of 4,830 against 3,229. It is set to refuse a split of the subjects of every pair
+// weighed, which the reduction INFRA-1555 replaced made, about 30,300 a topic. A second split of
+// each form (1,612 allocations more, 4,841) is refused only by 11 allocations, so a saving of 12
+// elsewhere would let it through: the ceiling is no guard against a change that small.
+const reduceAllocsPerTopic = 3
+
+// A registration's consumer call computes its consumer's filter (sessionConsumerFilter: the
+// filter rules read for each planned topic, then one reduction with provenance through
+// bus.SessionConsumerReduction, to leave out wildcard topics whose merge reaches another session),
+// and then the consumer's own reduction of that filter (bus.SessionConsumerFilters, in
+// sessionConsumerTarget), inside the registration's budget and before the renewal that runs on
+// what is left of it. This case counts the allocations of each of those two calls, as the
+// registration makes them, over shapetest.Planned, the topics a registration of the largest shape
+// plans. So the list the second call reduces is the one the registration computes, and not a list
+// built to stand for it. sessionConsumerFilter leaves the role lane out by the same code that
+// leaves it out of a registration, and puts the session's agent subject first, so the agent subject
+// is in the list twice: 1,610 subjects in 1,612 forms, the agent subject's two forms counted twice,
+// which are 1,609 topics in 1,610 forms held once each. They reduce to the 1,602 filters
+// TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim counts on the server. A
+// registration makes this computation more than once (planWithoutLeftOut does it on the plan as
+// well), each time at this cost.
+//
+// INFRA-1555 was the reduction spending the budget in production. It split both subjects of every
+// pair it weighed (bus.SubjectContains), and it weighed them all again after each subject it
+// dropped. A count of allocations sees the first half. The second allocates nothing, and
+// internal/bus's TestReducingTheLargestRegistrationInProductionWeighsEachPairOnce sees it by the
+// pairs the reduction weighs. What the registration hands the server to check is
+// TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim's count.
+//
+// The count runs in a run of the test binary of its own (alonetest), since the package's other
+// tests leave servers and watchers running that allocate meanwhile. The run that starts it is
+// parallel: it measures nothing and only waits. The run alone is not, because
+// testing.AllocsPerRun refuses to measure in a parallel test.
+func TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair(t *testing.T) {
+	// Not parallel: its run alone counts allocations with testing.AllocsPerRun, which panics
+	// during a parallel test; only the run that starts it (alonetest.Run) calls t.Parallel.
+	if !alonetest.Child(reduceAllocsChildEnv) {
+		t.Parallel()
+		alonetest.Run(t, reduceAllocsChildEnv, 2)
+		return
+	}
+	topics := shapetest.Planned("legion-controller", largestShapeHolder)
+	var filter []string
+	filterAllocs := testing.AllocsPerRun(1, func() { filter = sessionConsumerFilter(largestShapeHolder, topics) })
+	forms := 0
+	for _, subject := range filter {
+		forms += len(contracts.TopicForms(subject))
+	}
+	alonetest.Measured(t, "%v allocations for the consumer filter of %d planned topics, %d subjects; %.2f a topic",
+		filterAllocs, len(topics), len(filter), filterAllocs/float64(len(topics)))
+	var filters []string
+	reduceAllocs := testing.AllocsPerRun(1, func() { filters = bus.SessionConsumerFilters(filter) })
+	alonetest.Measured(t, "%v allocations to reduce those %d subjects in %d forms to %d filters; %.2f a topic",
+		reduceAllocs, len(filter), forms, len(filters), reduceAllocs/float64(len(topics)))
+	if bound := float64(consumerFilterAllocsPerTopic * len(topics)); filterAllocs > bound {
+		t.Errorf("the consumer filter of %d planned topics made %v allocations, more than %v (%d a topic): it does more than the filter rules, forms, provenance and one reduction of each topic", len(topics), filterAllocs, bound, consumerFilterAllocsPerTopic)
+	}
+	if bound := float64(reduceAllocsPerTopic * len(topics)); reduceAllocs > bound {
+		t.Errorf("reducing the consumer filter of %d planned topics made %v allocations, more than %v (%d a topic): it allocates for more than the forms of each subject and one split of each, as INFRA-1555's split of every pair it weighed did", len(topics), reduceAllocs, bound, reduceAllocsPerTopic)
 	}
 }
 

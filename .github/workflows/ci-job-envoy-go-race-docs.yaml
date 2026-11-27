@@ -1,6 +1,6 @@
 name: CI job envoy-go-race-docs
 
-# The steps of ci.yaml's `envoy-go-race-docs` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#envoy-go-race-docs` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
@@ -9,13 +9,13 @@ name: CI job envoy-go-race-docs
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -30,8 +30,23 @@ env:
   GOPROXY: https://proxy.golang.org|direct
 
 jobs:
-  envoy-go-race-docs:
+  # The document service's tests run in three legs, all at the same time, each over the group of
+  # the package's tests .github/go-legs/packages/envoy/internal/dispatch/docs.yaml gives it;
+  # .github/scripts/go_legs.py prints that group as an anchored -run before the package. A test
+  # in two groups fails every leg; a test in none runs in the group go_legs.py places it in, the
+  # same in every leg, with a warning (.github/ci-notes/ci-job-daemon-go.md says which is which).
+  # The job
+  # envoy-go-race-docs below waits for the legs and keeps the check-run name. Each leg carries the
+  # memory sampler and the cleanup detector, as the one job did.
+  # why: .github/ci-notes/ci-job-envoy-go-race-docs.md#why-the-document-services-tests-run-in-three-legs
+  envoy-go-race-docs-legs:
+    name: envoy-go-race-docs (leg ${{ matrix.leg }})
     runs-on: ubuntu-24.04-arm
+    strategy:
+      # One leg's failure leaves the others running, so each reports its own tests.
+      fail-fast: false
+      matrix:
+        leg: [1, 2, 3]
     # The step's -timeout 60m must fire before the runner cancels the job, so a hung test prints
     # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race binary,
     # then the step's own 60 minutes, which is 66 under this limit of 70.
@@ -43,15 +58,20 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --shm-size=1g
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
     # Load-bearing, not boilerplate: this package's TestMain is storetest.Main
-    # (internal/dispatch/docs/persistence_test.go:19), and storetest.Open skips every test that
+    # (`packages/envoy/internal/dispatch/docs/persistence_test.go#TestMain`), and storetest.Open skips every test that
     # opens the store when DISPATCH_TEST_DATABASE_URL is unset
-    # (internal/dispatch/store/storetest/storetest.go:67-71). A skip is a pass, so without the
+    # (`packages/envoy/internal/dispatch/store/storetest/storetest.go#t.Skip(DatabaseURLEnv`). A skip is a pass, so without the
     # service this job would be green having run almost nothing.
     env:
       JOB_TIMEOUT_MINUTES: 70 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
@@ -67,16 +87,23 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
-      # go-envoy: its modules are the envoy module's, though this job builds the document
-      # service's race test binary rather than the listener and natsd ci-caches.yaml builds.
+      # go-envoy-race, restored only, as envoy-go-race restores it: it holds this job's race test
+      # binary's objects and its modules, where go-envoy held the modules alone.
+      # why: .github/ci-notes/ci-caches.md#the-envoy-race-lanes-family
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
-      - name: Size the service for this lane's Dispatch processes
+          key: go-envoy-race-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-race-{0}-{1}-', runner.os, runner.arch) }}
+      # The settings the service's command: line asks for, read back from the server; why each one
+      # is .github/scripts/postgres-service-settings.sh's header.
+      - name: Read the service's settings back
+        timeout-minutes: 2
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      - name: Check the service allows this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # Under the sampler, not bare: the race detector maps about four bytes of shadow memory per
       # byte of heap, and this package's race binary asked for more than the runner's 16 GiB,
@@ -96,12 +123,65 @@ jobs:
       # defect that held this package's memory (dispatch://INFRA-1085). This is the only package of
       # the repository that registers a cleanup. The detector is the runtime's own bookkeeping and
       # runs beside the race detector in this one run, so no job runs the package again plain for
-      # the detector alone. What this run cannot judge, or judges only at a smaller size, envoy-go's
-      # step "Test what the race build cannot run at all or at full size" runs plain, under the
-      # cleanup detector as well: the two render-reuse storms run in both, at two sizes.
+      # the detector alone. What this run cannot judge, or judges only at a smaller size, envoy-go
+      # runs plain, under the cleanup detector as well: the room-memory bounds and the two
+      # render-reuse storms, which run in both at two sizes, in envoy-go-race-impossible's step
+      # "Test what the race build cannot run at all or at full size", and the xid window rows in
+      # envoy-go-alone's step "Test the xid window rows, the API's issue-list bound and the auth
+      # service's storm, alone".
+      # Each leg runs the group of this package's tests .github/go-legs.yaml gives its number,
+      # piped from .github/scripts/go_legs.py into the go command as `-run=^(Name|...)$` before
+      # the package: the names are anchored, so a test whose name begins with another's runs in
+      # one leg only, and each test's subtests run with it. go_legs.py lists the package's tests
+      # under this step's own -race first: a test in two groups fails the step, and a test in none
+      # is placed with a warning. `set -o pipefail` fails the step when go_legs.py refuses, and
+      # `xargs -r` runs nothing on the empty output that leaves. `env` carries the two variables
+      # through xargs, which runs a program and not a shell.
       - name: Race-test the document service
-        run: GODEBUG=checkfinalizers=1 RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/
+        run: |
+          set -o pipefail
+          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race-docs ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r env GODEBUG=checkfinalizers=1 RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m
         working-directory: packages/envoy
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-go-race-docs
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  # The check run `envoy-go-race-docs / envoy-go-race-docs`, which the one job carried before it
+  # ran in legs: it waits for every leg and passes only when all passed, so ci-ok, the merge queue
+  # and every reader of that name read what they read before. A leg's own failure has already
+  # posted its early ci-ok from the leg.
+  # why: .github/ci-notes/ci-job-envoy-go-race-docs.md#why-the-document-services-tests-run-in-three-legs
+  envoy-go-race-docs:
+    needs: envoy-go-race-docs-legs
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      JOB_TIMEOUT_MINUTES: 5 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    steps:
+      # The ci-ok report below is an action of this repository's .github.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+
+      # The result is written into the run: rather than set in an env:, which check-ci-filters.sh
+      # reads as able to move what the legs' go commands compile. The error says this job restates
+      # its legs' result, in the words `.github/scripts/runner-shutdown.sh#RUNNER_SHUTDOWN_RESTATED`
+      # holds, so a leg the platform killed still reads as a runner shutdown: this job's failure
+      # only follows the leg's, and read as its own it would hide the leg's.
+      - name: Pass only when every leg passed
+        run: |
+          if [ "${{ needs.envoy-go-race-docs-legs.result }}" != success ]; then
+            echo "::error::envoy-go-race-docs's legs ended ${{ needs.envoy-go-race-docs-legs.result }}, and this job restates its legs' result: each leg's own check run says why it did not pass"
+            exit 1
+          fi
+          echo "envoy-go-race-docs's legs ended success"
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

@@ -90,10 +90,13 @@ func CalloutConfig(keys CalloutKeys, static ...StaticUser) string {
 // this one cannot import): JetStream holds JetStream and no client, and Clients holds every user
 // the configuration names, the auth service's among them, runs the auth callout, and imports from
 // JetStream each of Services as a service and each of Streams as a stream. Streamed are the
-// services of Services whose responses come as a stream rather than one reply.
+// services of Services whose responses come as a stream rather than one reply. ToJetStream are the
+// subjects Clients exports to JetStream as streams, which JetStream imports: a client's publish on
+// one reaches JetStream's own subscriptions as it was sent, where a service import adds a
+// Nats-Request-Info header to it.
 type CalloutAccounts struct {
-	JetStream, Clients          string
-	Services, Streamed, Streams []string
+	JetStream, Clients                       string
+	Services, Streamed, Streams, ToJetStream []string
 }
 
 // CalloutAccountsConfig is CalloutConfig in accounts' layout: the same users, grants and
@@ -101,6 +104,13 @@ type CalloutAccounts struct {
 // the global account, and JetStream on in accounts.JetStream alone.
 func CalloutAccountsConfig(keys CalloutKeys, accounts CalloutAccounts, static ...StaticUser) string {
 	return calloutConfig(keys, &accounts, static)
+}
+
+// calloutAuthorization is CalloutConfig's authorization block alone, every user in the global
+// account, which a cluster member's configuration takes after its own JetStream and cluster blocks
+// (StartClusterWithCallout).
+func calloutAuthorization(keys CalloutKeys, static ...StaticUser) string {
+	return strings.TrimPrefix(calloutConfig(keys, nil, static), "jetstream {}\n")
 }
 
 // calloutConfig is CalloutConfig, with every user in the global account when accounts is nil, and
@@ -134,7 +144,7 @@ authorization {
 }
 `, CalloutAuthTimeout, strings.Join(users, "\n    "), callout("$G"))
 	}
-	var exports, imports []string
+	var exports, imports, toJetStream, fromClients []string
 	for _, service := range accounts.Services {
 		export := fmt.Sprintf("{ service: %q }", service)
 		if slices.Contains(accounts.Streamed, service) {
@@ -147,29 +157,34 @@ authorization {
 		exports = append(exports, fmt.Sprintf("{ stream: %q }", stream))
 		imports = append(imports, fmt.Sprintf("{ stream: { account: %q, subject: %q } }", accounts.JetStream, stream))
 	}
+	for _, stream := range accounts.ToJetStream {
+		toJetStream = append(toJetStream, fmt.Sprintf("{ stream: %q }", stream))
+		fromClients = append(fromClients, fmt.Sprintf("{ stream: { account: %q, subject: %q } }", accounts.Clients, stream))
+	}
+	// list is an account's imports or exports entry, or nothing when there are none.
+	list := func(key string, entries []string) string {
+		if len(entries) == 0 {
+			return ""
+		}
+		return fmt.Sprintf("\n    %s: [\n      %s\n    ]", key, strings.Join(entries, "\n      "))
+	}
 	return fmt.Sprintf(`jetstream {}
 accounts {
   %q {
-    jetstream: enabled
-    exports: [
-      %s
-    ]
+    jetstream: enabled%s%s
   }
   %q {
     users = [
       %s
-    ]
-    imports: [
-      %s
-    ]
+    ]%s%s
   }
 }
 authorization {
   timeout: %d
 %s
 }
-`, accounts.JetStream, strings.Join(exports, "\n      "), accounts.Clients, strings.Join(users, "\n      "),
-		strings.Join(imports, "\n      "), CalloutAuthTimeout, callout(accounts.Clients))
+`, accounts.JetStream, list("exports", exports), list("imports", fromClients), accounts.Clients, strings.Join(users, "\n      "),
+		list("imports", imports), list("exports", toJetStream), CalloutAuthTimeout, callout(accounts.Clients))
 }
 
 // GrantedUsersConfig is the configuration of a server with JetStream whose whole authorization is
@@ -232,6 +247,32 @@ func StartWithCalloutServer(t testing.TB, keys CalloutKeys, static ...StaticUser
 	server := start(t, CalloutConfig(keys, static...), []string{"-js"})
 	awaitSeed(t, server.URL(), keys.ServiceSeed)
 	return server, server.URL()
+}
+
+// StartClusterWithCallout runs n members of a cluster (StartCluster), each configured as
+// StartWithCalloutServer configures its one server - the auth service's own user, each static user
+// with its grant, and the auth callout naming the issuer, $G and the curve key - and routed as
+// StartClusterConfig routes its members, with JetStream clustered across them, as the clustered hub
+// runs. Every member's relay and client port listen on a loopback address of their own, as every
+// server start makes. It returns once the cluster is ready as AwaitReady says, and every member
+// admits the service's own user.
+//
+// No member admits a client with no credential: a member holds such a client for its
+// authorization timeout, waiting for a service that answers nothing yet. So the configuration
+// lists one more static user, the fixture's own, which may ask JetStream for the account's info
+// and nothing else, and AwaitReady asks each member's JetStream as that user. A test reaches
+// JetStream through a static user of its own, or through a client the service it starts admits.
+func StartClusterWithCallout(t testing.TB, n int, keys CalloutKeys, static ...StaticUser) *Cluster {
+	t.Helper()
+	readySeed, readyKey := User(t)
+	ready := StaticUser{NKey: readyKey, Publish: []string{"$JS.API.INFO"}, Subscribe: []string{"_INBOX.>"}}
+	cluster := startCluster(t, n, calloutAuthorization(keys, append(slices.Clone(static), ready)...))
+	cluster.readySeed = readySeed
+	cluster.AwaitReady(t)
+	for _, server := range cluster.Servers {
+		awaitSeed(t, server.URL(), keys.ServiceSeed)
+	}
+	return cluster
 }
 
 // awaitSeed waits, until testDeadline, for the server at uri to admit the nkey user whose seed is

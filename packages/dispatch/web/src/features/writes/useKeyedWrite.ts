@@ -24,7 +24,7 @@ import {
   SendStoppedError,
   stoppedWriteNote,
 } from "./keyed-write";
-import { plainWrite, useWrites } from "./write-store";
+import { plainWrite, useWrites, type WriteKind } from "./write-store";
 
 /** A write a surface makes for the reader: `useMutation`'s options, but for `mutationFn`, which
  *  the write path makes from `write` or `request` and `label`. Its data is Dispatch's answer, or
@@ -32,7 +32,7 @@ import { plainWrite, useWrites } from "./write-store";
  *  replay of an answer it did not keep): a landing all the same, which `onSuccess` handles - a
  *  create form lets go of its draft and says what was made (`LandedWithoutAnswer`) rather than
  *  opening it. */
-export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
+export type KeyedWriteOptions<TData, TVariables, TContext, D = null, K = D> = Omit<
   UseMutationOptions<TData | null, DefaultError, TVariables, TContext>,
   "mutationFn" | "networkMode"
 > & {
@@ -55,7 +55,16 @@ export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
   readonly holds?: (variables: TVariables) => ReadHold;
   /** `false` for a write that goes under no key whatever its method (`WriteSpec.keyed`). */
   readonly keyed?: false;
-} & KeyedWriteMade<TData, TVariables>;
+} & KeyedWriteMade<TData, TVariables> &
+  KeyedWriteKind<TVariables, D, K>;
+
+/** The kind of write each press is (`WriteKind`), with its record made from the press's
+ *  variables: what the store keeps of it beyond its request, and what its kind reads - the
+ *  reader's own text, say, which a surface keeps when Dispatch refuses it. Left out, a plain
+ *  write with no record (`plainWrite`). */
+export type KeyedWriteKind<TVariables, D, K> =
+  | { readonly kind?: undefined; readonly detail?: undefined }
+  | { readonly kind: WriteKind<D, K>; readonly detail: (variables: TVariables) => D };
 
 /** How a write is made: by an attempt of its own (`write`, under the bounds the store gives it:
  *  its key, its login and its deadline), with the `method` of the request it makes, which the
@@ -270,7 +279,9 @@ function pressCallbacks<TData, TVariables, TContext>(
 /**
  * The one way a surface that is not a composer writes to Dispatch: each `mutate` is one press,
  * made under a key of its own and tried under it until Dispatch decides it, shown by the shell's
- * pending-writes indicator while it is out and, refused, with Retry and Discard (`Writes.run`).
+ * pending-writes indicator while it is out and, refused, with Retry and Discard (`Writes.run`) -
+ * no Retry for a conflict only the reader can settle (`isConflict`), which its kind's surface may
+ * take to settle with them (`WriteKind.claims`).
  * The mutation settles with Dispatch's answer - `null` for a landing without one - its refusal, or
  * `SendStoppedError` once the reader stops it, so the surface keeps its optimistic state until
  * then and rolls it back on anything but a landing.
@@ -319,12 +330,14 @@ function pressCallbacks<TData, TVariables, TContext>(
  * or `onError` returns, if its event or its deadline has not ended it first, rather than when the
  * write settles.
  */
-export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
+export function useKeyedWrite<TData, TVariables = void, TContext = unknown, D = null, K = D>({
+  detail,
   endsWithSession,
   file,
   holds,
   inline,
   keyed,
+  kind,
   label,
   method,
   onError,
@@ -335,7 +348,11 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   target,
   write,
   ...options
-}: KeyedWriteOptions<TData, TVariables, TContext>): KeyedWriteResult<TData, TVariables, TContext> {
+}: KeyedWriteOptions<TData, TVariables, TContext, D, K>): KeyedWriteResult<
+  TData,
+  TVariables,
+  TContext
+> {
   const writes = useWrites();
   /** Every press the reader stopped that is neither made again nor landed by the shell's Retry,
    *  newest first. Each is reached by its own object alone: `again` of the handle `stopped` gave,
@@ -361,13 +378,15 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
       const { key, variables } = press;
       setUnanswered(undefined);
       const spec = {
-        detail: null,
+        // A press names a kind and its record together, or neither (`KeyedWriteKind`): with
+        // neither it is a plain write, whose record is `D`'s default, `null`.
+        detail: (detail === undefined ? null : detail(variables)) as D,
         endsWithSession,
         file: file?.(variables),
         inline: typeof inline === "function" ? inline(variables) : inline,
         key,
         keyed,
-        kind: plainWrite,
+        kind: (kind ?? plainWrite) as WriteKind<D, K>,
         label: label(variables),
         presentation: "indicator",
       } as const;

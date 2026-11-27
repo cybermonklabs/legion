@@ -1,6 +1,7 @@
-// The policy for an agent delivery this listener cannot place: its retry bounds, the deferral set
-// that caps how many such messages are held at once and expires a slot whose message never comes
-// back, and the defer-or-give-up decision itself.
+// The policy for a message on the agent subject of a session this listener finds no record of:
+// the one wait before the session's wake is reported, the set that caps how many first deliveries
+// of such messages wait at once and expires a slot whose message never comes back, the report
+// itself, and a read of the session record that did not answer (unreadAgentDelivery).
 
 package main
 
@@ -9,116 +10,113 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 )
 
-// unplaceableRetryDelay is the delay an agent delivery this listener could not place asks for
-// before the stream redelivers it. It is short enough that a window's worth of them is a dozen
-// attempts rather than two - at the 30 s finalize(true) takes, a minute is one retry - and long
-// enough that a session whose record is still propagating, or whose process is restarting and
-// registering again, has time to finish between two of them.
-const unplaceableRetryDelay = 5 * time.Second
-
-// unplaceableMaxDeliveries is the hard stop on those retries beside the window's own count of
-// deferrals, two short of the durable's own MaxDeliver (consumerMaxDeliver, durable.go: 20, so
-// 18 here). JetStream stops redelivering at max_deliver silently - nothing in this repository
-// consumes its advisory - so this listener must give up, and write its give-up record, before
-// the stream does. The two-delivery margin covers the deliveries this handler does not ask for:
-// one whose process died before it finalized and whose AckWait therefore expired still counts
-// against max_deliver.
-const unplaceableMaxDeliveries = consumerMaxDeliver - 2
-
-// unplaceableDeferralCap bounds how many agent deliveries this listener holds deferred at one
-// time, across every handler it builds (unplaceableDeferrals). A deferred message is NAKed
-// rather than ACKed, so it keeps one of the durable's MaxAckPending slots
-// (consumerMaxAckPending, durable.go: 256) for the whole window instead of giving it back at
-// once: without a bound, enough concurrently unplaceable messages would hold every slot this
-// machine's durable has and stall it for every topic, including the deliveries that would land
-// on their first attempt. A quarter of the budget leaves three quarters for that traffic. A
-// message that arrives while the cap is reached is given up now, with the ordinary give-up
-// record. TestUnplaceableRetryWindowFitsTheBoundsItDependsOn pins the relation.
+// unplaceableDeferralCap bounds how many first deliveries of agent messages this listener holds
+// back for the agent wait at one time, across every handler it builds (unplaceableDeferrals). A
+// message that waits is NAKed rather than ACKed, so it keeps one of the durable's MaxAckPending
+// slots (consumerMaxAckPending, durable.go: 256) for the whole wait instead of giving it back at
+// once: without a bound, enough messages to sessions with no record would hold every slot this
+// machine's durable has and stall it for every topic. A quarter of the budget leaves three
+// quarters for that traffic. A first delivery that arrives while the cap is reached reports its
+// wake at once. A message sent back after a report the stream did not store, or after a read of
+// the record that did not answer, takes a free slot when there is one and is sent back whether or
+// not it got one (reportNoRecordWake, unreadAgentDelivery), so the cap bounds the first
+// deliveries' waits alone. TestUnplaceableRetryWindowFitsTheBoundsItDependsOn pins the relation.
 const unplaceableDeferralCap = consumerMaxAckPending / 4
 
-// defaultUnplaceableRetryWindow is the window main.go uses when ENVOY_UNPLACEABLE_RETRY_WINDOW
-// is unset or unreadable: a minute of retries, which at unplaceableRetryDelay is 12 deferrals
-// and so 13 deliveries, 15 with the margin above and so inside consumerMaxDeliver, and well
-// inside the attempt cache's TTL (attemptCacheTTL, main.go), the entry whose clearing keeps each
-// redelivery from being swallowed as an attempt-dedupe skip.
-// TestUnplaceableRetryWindowFitsTheBoundsItDependsOn pins both.
+// defaultUnplaceableRetryWindow is the agent wait main.go uses when ENVOY_UNPLACEABLE_RETRY_WINDOW
+// is unset or unreadable: a minute, long enough for a session whose process is restarting to
+// register again, so its consumer delivers the message and no wake is reported.
 const defaultUnplaceableRetryWindow = 60 * time.Second
 
-// unplaceableDeferralExpiry is how long a slot in unplaceableDeferrals lasts after the deferral
-// that took it, the longest a deferred message can legitimately stay pending before a delivery of
-// it reaches this listener's handler again and gives the slot back. It is the sum of three waits:
-//   - unplaceableRetryDelay (5 s), the NAK delay the deferral asks for: the stream redelivers no
-//     sooner;
+// unplaceableDeferralExpiry is how long a slot in unplaceableDeferrals lasts after the delivery
+// that took it, for a set whose wait is window: the longest a message that waits can stay pending
+// before a delivery of it reaches this listener's handler again and gives the slot back. It is the
+// sum of three waits:
+//   - the window (none when it is at or below zero), the NAK delay the wait asks for: the stream
+//     redelivers no sooner;
 //   - consumerAckWait (durable.go, 60 s): finalizeAfter's NAK is fire-and-forget, and one lost on
-//     the wire leaves the message pending until the AckWait of the delivery that was deferred
+//     the wire leaves the message pending until the AckWait of the delivery that took the slot
 //     runs out, which began before the slot was taken, so it ends inside this term;
 //   - a margin of one more consumerAckWait for the redelivery to wait in this listener's client
 //     buffer behind the deliveries ahead of it before its handler runs the release. A handler that
 //     is further behind than that has let the stream redeliver the message again in the meantime.
 //
-// 125 s in all. A slot older than that belongs to a message that is not coming back here - the
-// stream dropped or purged it, or its redelivery reached another subscriber - and take reclaims
-// it. TestUnplaceableRetryWindowFitsTheBoundsItDependsOn pins that it exceeds the first two
-// terms, so a message that is still legitimately pending never has its slot reclaimed early.
-const unplaceableDeferralExpiry = unplaceableRetryDelay + consumerAckWait + consumerAckWait
+// 180 s at the default window. A slot older than that belongs to a message that is not coming
+// back here - the stream dropped or purged it, or its redelivery reached another subscriber - and
+// take reclaims it. TestUnplaceableRetryWindowFitsTheBoundsItDependsOn pins that it exceeds the
+// first two terms, so a message that is still pending never has its slot reclaimed early.
+func unplaceableDeferralExpiry(window time.Duration) time.Duration {
+	return max(window, 0) + 2*consumerAckWait
+}
 
-// unplaceableDeferrals is the set of agent deliveries this listener holds deferred right now,
-// keyed on each message's stream sequence (nats.MsgMetadata.Sequence.Stream), and the budget
-// unplaceableDeferralCap bounds. It is keyed rather than counted so that only a slot this
-// listener took ever comes back: a redelivery is no evidence that this listener deferred the
-// message - the interest path's NAK of a failed resolution and an expired AckWait redeliver too,
-// and they come in step with deferrals (a local session whose server is down produces
-// interest-path NAKs and direct-path deferrals at once) - so a count released on every
-// redelivery could read zero while the cap's worth of messages were still held.
+// unplaceableDeferrals is the set of agent messages this listener holds back for the agent wait
+// right now, keyed on each message's stream sequence (nats.MsgMetadata.Sequence.Stream), and the
+// budget unplaceableDeferralCap bounds. It is keyed rather than counted so that only a slot this
+// listener took ever comes back: a redelivery is no evidence that this listener held the message
+// back - an expired AckWait redelivers too - so a count released on every redelivery could read
+// zero while the cap's worth of messages were still held.
 //
-// What the set guarantees: it never holds more than unplaceableDeferralCap live entries, and an
-// entry is added only by a deferral this listener made. It leaves by one of two routes: that same
-// message's next delivery releases it, or it expires unplaceableDeferralExpiry after the deferral
-// that took it, the longest that message can legitimately stay pending before a delivery of it
-// reaches this handler, and the next take or size sweeps it out. So at any moment the messages
-// this process is holding deferred, within that bound, number at most the cap. What it cannot
-// know, since it is this process's memory and not the stream's:
-//   - a listener restart forgets it. The previous process's deferrals stay pending in the durable
-//     until each one's NAK delay ends and it is redelivered, when the new process either takes a
-//     slot for it or gives it up; until then the durable can hold the old process's cap beside
-//     the new one's, which TestUnplaceableRetryWindowFitsTheBoundsItDependsOn keeps under
-//     consumerMaxAckPending (twice the cap is below it).
-//   - a message deferred and never delivered here again - one the stream drops or purges first,
-//     or whose redelivery reaches some other subscriber - keeps its entry until it expires. Such
-//     an entry holds no slot of the durable's; until it expires it holds one of the set's, so a
-//     cap's worth of them gives each unplaceable message up on its first delivery, with its
-//     record, for at most unplaceableDeferralExpiry before the retry resumes.
+// What the set guarantees: it never holds more than unplaceableDeferralCap live slots, and a slot
+// is added only by a wait this listener started. A slot leaves by one of two routes: that same
+// message's next delivery releases it, or it expires unplaceableDeferralExpiry after the delivery
+// that took it, and the next take or size sweeps it out. So at any moment the first deliveries
+// this process holds back, within that bound, number at most the cap. A message the not-stored
+// and unread paths send back is sent back whether or not it got a slot, so the cap does not bound
+// those messages. What it cannot know, since it is this process's memory and not the stream's:
+//   - a listener restart forgets it. The previous process's waiting messages stay pending in the
+//     durable until each one's NAK delay ends and it is redelivered; until then the durable can
+//     hold the old process's cap beside the new one's, which
+//     TestUnplaceableRetryWindowFitsTheBoundsItDependsOn keeps under consumerMaxAckPending (twice
+//     the cap is below it).
+//   - a message held back and never delivered here again - one the stream drops or purges first,
+//     or whose redelivery reaches some other subscriber - keeps its slot until it expires. Such a
+//     slot holds no slot of the durable's; until it expires it holds one of the set's, so a cap's
+//     worth of them has each new message report its wake at once, for at most
+//     unplaceableDeferralExpiry.
 //   - a message still pending past unplaceableDeferralExpiry - a handler further behind its
-//     redeliveries than the expiry's margin allows - loses its slot while the durable still
-//     holds it, and the set undercounts by one such message until its delivery arrives, takes
-//     nothing back on release, and is placed, deferred again or given up like any other.
+//     redeliveries than the expiry's margin allows - loses its slot while the durable still holds
+//     it, and the set undercounts by one such message until its delivery arrives.
+//
+// unread is the second record the set keeps, on the same keys and the same expiry: the messages
+// for which this listener has logged that a read of the session record did not answer, so it logs
+// that once per message however many deliveries the failing read spans (firstUnread).
 type unplaceableDeferrals struct {
 	mu sync.Mutex
+	// expiry is how long a slot or an unread mark lasts after the delivery that took it
+	// (unplaceableDeferralExpiry).
+	expiry time.Duration
 	// held maps each held message's stream sequence to the time its slot expires.
 	held map[uint64]time.Time
+	// unread maps the stream sequence of each message whose unanswered read was logged to the
+	// time that mark expires.
+	unread map[uint64]time.Time
 	// now is the clock the expiries are read against: time.Now, which a test replaces to step
 	// past an expiry without waiting it out.
 	now func() time.Time
 }
 
-func newUnplaceableDeferrals() *unplaceableDeferrals {
-	return &unplaceableDeferrals{held: make(map[uint64]time.Time, unplaceableDeferralCap), now: time.Now}
+// newUnplaceableDeferrals is the set for a listener whose agent wait is window.
+func newUnplaceableDeferrals(window time.Duration) *unplaceableDeferrals {
+	return &unplaceableDeferrals{
+		expiry: unplaceableDeferralExpiry(window),
+		held:   make(map[uint64]time.Time, unplaceableDeferralCap),
+		unread: make(map[uint64]time.Time),
+		now:    time.Now,
+	}
 }
 
-// take records the message at stream sequence seq as deferred and reports whether it fits inside
-// unplaceableDeferralCap. It first sweeps out every slot whose expiry has come
-// (unplaceableDeferralExpiry), so neither the cap check nor the held check below counts a message
-// that is not coming back; an expired entry for seq itself is swept like any other, and seq is
-// taken afresh. Past the cap it records nothing and reports false, and the caller gives the
-// message up. A sequence already held reports true without a second slot: one message holds one
-// slot however many deliveries of it race, and its expiry is counted again from this deferral,
-// whose NAK restarts the wait the expiry bounds. The sweep, the check and the insert are one
-// critical section, so two deliveries racing for the last slot cannot both take it.
+// take records the message at stream sequence seq as held back and reports whether it fits inside
+// unplaceableDeferralCap. It first sweeps out every slot and mark whose expiry has come, so
+// neither the cap check nor the held check below counts a message that is not coming back; an
+// expired entry for seq itself is swept like any other, and seq is taken afresh. Past the cap it
+// records nothing and reports false. A sequence already held reports true without a second slot:
+// one message holds one slot however many deliveries of it race, and its expiry is counted again
+// from this delivery, whose NAK restarts the wait the expiry bounds. The sweep, the check and the
+// insert are one critical section, so two deliveries racing for the last slot cannot both take it.
 func (d *unplaceableDeferrals) take(seq uint64) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -127,16 +125,30 @@ func (d *unplaceableDeferrals) take(seq uint64) bool {
 	if _, ok := d.held[seq]; !ok && len(d.held) >= unplaceableDeferralCap {
 		return false
 	}
-	d.held[seq] = now.Add(unplaceableDeferralExpiry)
+	d.held[seq] = now.Add(d.expiry)
 	return true
 }
 
 // release gives back the slot the message at stream sequence seq holds, and nothing when it holds
-// none: a delivery this listener never deferred has no slot to return.
+// none: a delivery this listener never held back has no slot to return.
 func (d *unplaceableDeferrals) release(seq uint64) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	delete(d.held, seq)
+}
+
+// firstUnread marks the message at stream sequence seq as one whose unanswered read this listener
+// logged, and reports whether it was not marked yet, which is when the caller logs it. A mark
+// already there is kept, its expiry counted again from this delivery, so a read that keeps failing
+// is logged once for as long as the message keeps coming back.
+func (d *unplaceableDeferrals) firstUnread(seq uint64) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	now := d.now()
+	d.sweepLocked(now)
+	_, marked := d.unread[seq]
+	d.unread[seq] = now.Add(d.expiry)
+	return !marked
 }
 
 // size reports how many live slots are held, for a test to read the budget back. It sweeps the
@@ -148,115 +160,126 @@ func (d *unplaceableDeferrals) size() int {
 	return len(d.held)
 }
 
-// sweepLocked deletes every slot whose expiry is at or before now. The caller holds d.mu.
+// sweepLocked deletes every slot and mark whose expiry is at or before now. The caller holds d.mu.
 func (d *unplaceableDeferrals) sweepLocked(now time.Time) {
-	for seq, expiry := range d.held {
-		if !now.Before(expiry) {
-			delete(d.held, seq)
+	for _, entries := range []map[uint64]time.Time{d.held, d.unread} {
+		for seq, expiry := range entries {
+			if !now.Before(expiry) {
+				delete(entries, seq)
+			}
 		}
 	}
 }
 
-// unplaceableAgentDelivery answers an agent delivery that nothing placed and nothing failed hard
-// enough to NAK (agentSubjectDelivery's undelivered, error-free result). It either defers the
-// message for redelivery or gives it up with its record, and finalizes the message either way.
-func unplaceableAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string, metadata *nats.MsgMetadata) {
-	// Nothing placed this message and nothing failed hard enough to NAK: this listener found no
-	// session record it could deliver through - no entry at all, or an entry that records no way
-	// the session receives a message (session.ErrNoSessionRecord). Either can be true of a
-	// session that is about to be placeable - a record still propagating from the bucket, a
-	// session process restarting and registering again - so the message is kept in the stream
-	// and redelivered for as long as cfg.unplaceableRetryWindow, and only then given up, with a
-	// record and a counter of its own rather than the ACKed skip that lost it.
-	//
-	// The window is counted from this message's first delivery, not from the time the
-	// stream stored it: a backlog replayed into a listener whose caches are still cold -
-	// after a restart, during a rolling deploy - is minutes old when it is first delivered,
-	// and that is the very case this retry exists for, which a store-timestamp clock gives
-	// up on at once. Each deferral costs unplaceableRetryDelay, so the window buys
-	// window/unplaceableRetryDelay of them, and md.NumDelivered counts them: the first
-	// delivery is 1, and the attempt after the last deferral the window paid for is given
-	// up. It is a bound, not a promise of that much wall-clock time - a delivery this
-	// handler never asked for, one whose AckWait expired because the handler holding it
-	// died, counts too.
-	var windowDeferrals uint64
-	if cfg.unplaceableRetryWindow > 0 {
-		windowDeferrals = uint64(cfg.unplaceableRetryWindow / unplaceableRetryDelay)
-	}
-	deferred := false
-	if metadata != nil && metadata.NumDelivered <= windowDeferrals &&
-		metadata.NumDelivered < unplaceableMaxDeliveries {
-		// The slot is this message's own, keyed on its stream sequence, so only this
-		// message's next delivery gives it back, or its expiry (unplaceableDeferralExpiry) when
-		// that delivery never reaches this listener. A full set takes nothing, and the delivery
-		// falls through to the ordinary give-up below.
-		deferred = cfg.deferredUnplaceable.take(metadata.Sequence.Stream)
-	}
-	if deferred {
-		// No exception and no delivery counter: the message is not disposed of yet, and
-		// publishing the no_holder notice per attempt would send a dozen of them, each one
-		// read back by every listener in the fleet. The attempt-cache entry agentSubjectDelivery
-		// recorded must go, or the redelivery this NAK asks for is swallowed as an attempt-dedupe
-		// skip before it reaches the session at all.
-		//
-		// The line carries the two numbers the decision was made on. It carried the
-		// message's stream age before, which no longer bounds anything: a line naming it
-		// would invite exactly the reading this clock was changed to end.
-		applyDeliveryOutcome(cfg, item, deliveryOutcome{
-			sessionID: sessionID,
-			log: func(logger *logging.Logger) {
-				logger.DeliveryLog(slog.LevelInfo, "listener agent delivery deferred", sessionID, item.Topic, item.EventID, "deferred",
-					slog.String("reason", "no_session_record"),
-					slog.Uint64("attempt", metadata.NumDelivered),
-					slog.Uint64("window_deferrals", windowDeferrals),
-				)
-			},
-			clearAttempt: true,
-		})
-		cfg.messagesNAKed.Inc()
-		message.finalizeAfter(unplaceableRetryDelay)
+// agentWait is the one wait of a message on the agent subject of a session with no record
+// (unplaceableRetryWindow), and zero for a window at or below zero, which is no wait.
+func (cfg listenerDeliveryHandlerConfig) agentWait() time.Duration {
+	return max(cfg.unplaceableRetryWindow, 0)
+}
+
+// noRecordAgentDelivery decides a message on the agent subject of a session with no record, or
+// with a record past the gone horizon (session.AgentNoRecord). Its first delivery waits once: it
+// takes a slot in the set and is sent back for the agent wait, with no line logged, so that a
+// session that is only restarting registers again and its consumer delivers the message with no
+// wake. Its next delivery reads the record again (agentSubjectDelivery), and when there is still
+// none it reports the session's wake (reportNoRecordWake). A message that has no wait to take
+// reports at once: under a window at or below zero; on a core delivery, or a durable one whose
+// metadata does not parse, since nothing bounds its wait; and on a first delivery that finds
+// unplaceableDeferralCap messages already waiting. Every later delivery reports at once too: the
+// one wait is spent, whether it was this path's or the one an unanswered read took
+// (unreadAgentDelivery).
+func noRecordAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string) {
+	if metadata := message.metadata; metadata != nil && metadata.NumDelivered == 1 && cfg.agentWait() > 0 &&
+		cfg.deferredUnplaceable.take(metadata.Sequence.Stream) {
+		sendAgentMessageBack(cfg, message, item, sessionID)
 		return
 	}
-	// Given up: the deferrals this cause is allowed are spent, the delivery count is reached,
-	// this listener is already holding unplaceableDeferralCap messages, the metadata could
-	// not be read, or this is a core delivery nothing would redeliver. The give-up is
-	// terminal whatever becomes of its no_holder notice: once the delivery allowance is spent,
-	// nothing here may restore the state that permits another attempt, and the record of the
-	// give-up must not depend on the bus that just failed to place the message.
-	//
-	// So applyDeliveryOutcome writes the counter and the give-up line first, then publishes
-	// the notice, once per message rather than once per attempt. A notice that does not go
-	// out is logged exceptionPublishFailedLine and nothing else: it neither NAKs the message
-	// nor clears its attempt-cache entry. The entry is kept rather than cleared because it is
-	// what stops a further delivery of this message being attempted again - the redelivery an ACK
-	// lost on the wire brings (finalize's ACK is fire-and-forget), which arrives after the
-	// durable's AckWait and well inside attemptCacheTTL - and this function ACKs the message once
-	// the give-up is applied.
-	//
-	// What this gives up is the notice itself, when it cannot be published. That is cheaper
-	// than the retry it replaces. For an agent subject nothing in this deployment reads the
-	// no_holder exception: the Legion daemon's NATS grant subscribes only to the role lanes'
-	// exception subjects (infra/core, DaemonPermissions), while the give-up line, its counter
-	// and exceptionPublishFailedLine are what an operator does read. The retry NAKed the
-	// message and cleared its attempt entry, so every redelivery ran the whole handler again
-	// for a message whose delivery allowance was already spent; and the failure it retried
-	// is correlated with the fault (the bus that will not take the notice is the one whose
-	// trouble made the message unplaceable) and can be permanent - the notice embeds the
-	// original payload, so an envelope near the server's max payload yields a notice refused
-	// bus.ErrTooLarge on every attempt - which ran the message to the durable's MaxDeliver
-	// with no give-up record at all.
-	applyDeliveryOutcome(cfg, item, deliveryOutcome{
-		sessionID:    sessionID,
-		metricStatus: "unplaceable_no_record",
-		log: func(logger *logging.Logger) {
-			logger.DeliveryLog(slog.LevelWarn, "listener agent delivery given up", sessionID, item.Topic, item.EventID, "unplaceable_no_record", slog.String("reason", "no_session_record"))
-		},
-		exceptionReason: "no_holder",
-		origin:          exceptionOrigin(message),
-	})
-	// Nothing could place the message, and a session of a released Legion issue pod is exactly
-	// that: gone from the bucket with its pod. The wake is reported once per message, beside the
-	// give-up, so the pod comes back and the sender's next attempt reaches it.
-	reportAgentWake(cfg.wakes, cfg.logger, sessionID)
+	reportNoRecordWake(cfg, message, item, sessionID)
+}
+
+// reportNoRecordWake reports the wake of sessionID, a session with no record, with one publish the
+// stream must store (storeAgentWake), and settles the message on its answer. A stored report is
+// logged and counted delivery_status="wake_reported", and the message is acknowledged; its attempt
+// entry stays, so a redelivery an acknowledgement lost on the wire brings is an attempt-dedupe
+// skip and reports no second wake. A report the stream did not store sends the message back for
+// the agent wait, so its next delivery reads the record again and tries the report again; it takes
+// a free slot when there is one, and is sent back whether or not it got one. At the stream's last
+// delivery (consumerMaxDeliver), or with nothing that redelivers or bounds the message - a core
+// delivery, or metadata that does not parse - a report not stored is logged and the message is
+// acknowledged, since the stream sends it no more.
+//
+// An edge listener reports no wake (cfg.edge): its grant may not publish the wake topic
+// (natsgrant.Edge), so the stream would never store the report and the message would be sent
+// back at every delivery. It acknowledges the message with no publish, logged and counted
+// delivery_status="wake_left_to_shared". The shared listeners read the same message from their own
+// durables and report the wake when no listener holds the session's interest row. A session whose
+// row the edge holds gets no wake from any listener.
+func reportNoRecordWake(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string) {
+	if cfg.edge != nil {
+		applyDeliveryOutcome(cfg, item, deliveryOutcome{
+			sessionID:    sessionID,
+			metricStatus: "wake_left_to_shared",
+			log: func(logger *logging.Logger) {
+				logger.DeliveryLog(slog.LevelInfo, "edge listener left the agent wake to the shared listeners", sessionID, item.Topic, item.EventID, "wake_left_to_shared")
+			},
+		})
+		message.finalize(false)
+		return
+	}
+	err := storeAgentWake(cfg.client, cfg.logger, sessionID)
+	if err == nil {
+		applyDeliveryOutcome(cfg, item, deliveryOutcome{
+			sessionID:    sessionID,
+			metricStatus: "wake_reported",
+			log: func(logger *logging.Logger) {
+				logger.DeliveryLog(slog.LevelInfo, "listener agent wake reported", sessionID, item.Topic, item.EventID, "wake_reported")
+			},
+		})
+		message.finalize(false)
+		return
+	}
+	if metadata := message.metadata; metadata != nil && metadata.NumDelivered < consumerMaxDeliver {
+		cfg.deferredUnplaceable.take(metadata.Sequence.Stream)
+		sendAgentMessageBack(cfg, message, item, sessionID)
+		return
+	}
+	cfg.logger.DeliveryLog(slog.LevelWarn, "listener agent wake not stored", sessionID, item.Topic, item.EventID, "wake_not_stored",
+		slog.String("error", err.Error()))
 	message.finalize(false)
+}
+
+// unreadAgentDelivery decides a message whose session record could not be read: the read erred or
+// timed out (session.AgentRecordUnread), so this listener cannot tell a live session from a gone
+// one. It logs first and then decides. The first such answer for a message logs one WARN with the
+// read's error, and no later one does (unplaceableDeferrals.firstUnread), at the last delivery
+// too. A core delivery, or a durable one whose metadata does not parse, has no stream sequence to
+// mark, so it logs the WARN at once. Below the stream's last delivery (consumerMaxDeliver) the
+// message takes a free slot when there is one, is sent back for the agent wait whether or not it
+// got one, and is decided again at its next delivery. At the last delivery the message is decided
+// as one with no record (reportNoRecordWake); so is a core delivery, or a durable one whose
+// metadata does not parse, which has no next delivery to decide it. The wake comes only from a
+// last delivery this process settles: JetStream stops at max_deliver with no word, so a 20th
+// delivery the server counted but this process never settled (a crash, a kill, the bounded
+// shutdown while it runs) ends the message with no wake and no line.
+func unreadAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string, readErr error) {
+	metadata := message.metadata
+	if metadata == nil || cfg.deferredUnplaceable.firstUnread(metadata.Sequence.Stream) {
+		cfg.logger.DeliveryLog(slog.LevelWarn, "listener agent record unread", sessionID, item.Topic, item.EventID, "record_unread",
+			slog.String("error", readErr.Error()))
+	}
+	if metadata == nil || metadata.NumDelivered >= consumerMaxDeliver {
+		reportNoRecordWake(cfg, message, item, sessionID)
+		return
+	}
+	cfg.deferredUnplaceable.take(metadata.Sequence.Stream)
+	sendAgentMessageBack(cfg, message, item, sessionID)
+}
+
+// sendAgentMessageBack asks the stream to deliver an agent message again after the agent wait. The
+// attempt entry agentSubjectDelivery recorded goes first, or the redelivery would be skipped as one
+// already on its way, and the message is counted NAKed.
+func sendAgentMessageBack(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string) {
+	cfg.attemptCache.Clear(item.DedupeKey, sessionID)
+	cfg.messagesNAKed.Inc()
+	message.finalizeAfter(cfg.agentWait())
 }

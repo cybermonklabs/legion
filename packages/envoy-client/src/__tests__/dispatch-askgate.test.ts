@@ -56,11 +56,15 @@ const server = Bun.serve({
     if (request.method === "GET" && pathname === ARTIFACTS) {
       return Response.json([]);
     }
-    // The markdown the store would hold for inline text: this stub stores it as it stands, so
-    // no upload below is refused for its spelling.
+    // The markdown the store would hold for inline text, and for a file's bytes: this stub stores
+    // each as it stands, so no upload below is refused for its spelling or its text.
     if (request.method === "POST" && pathname === "/api/v1/markdown/round-trip") {
       const asked: { markdown?: string } = await request.json();
       return Response.json({ markdown: asked.markdown });
+    }
+    if (request.method === "POST" && pathname === "/api/v1/markdown/file-round-trip") {
+      const asked: { file: string } = await request.json();
+      return Response.json({ markdown: Buffer.from(asked.file, "base64").toString("utf8") });
     }
     if (request.method === "POST" && (pathname === MESSAGES || pathname === COMMENTS)) {
       record(await request.json());

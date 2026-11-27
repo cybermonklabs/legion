@@ -103,6 +103,7 @@ func seedHandOverRace(t *testing.T, w *workflowRuntime) {
 // correction written whatever the record held at the preparation, the hand-over moves the record
 // onto strangerRepo and nothing reads the issue again.
 func TestAHandOverPreparedBeforeAFollowMovedTheRecordWritesNothingAndIsFollowed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// now is what Dispatch resolves the child to once the follow has moved it onto
@@ -196,6 +197,7 @@ func TestAHandOverPreparedBeforeAFollowMovedTheRecordWritesNothingAndIsFollowed(
 // Control: with the correction written whatever the record held at the preparation, the stamped
 // event moves the record back onto strangerRepo, the older resolution.
 func TestALateEventPreparedBeforeAFollowMovedTheRecordWritesNothingAndIsFollowed(t *testing.T) {
+	t.Parallel()
 	const key = "LEGION-1161"
 	for _, tc := range []struct {
 		name string

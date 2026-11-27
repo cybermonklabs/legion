@@ -1,6 +1,9 @@
 import {
+  type AskThreadPage,
+  type AskThreadRow,
   AUTH_NO_IDENTITY,
   answerNotKept,
+  type CommentThreadPage,
   DISPATCH_LOGIN_HEADER,
   everyBuildReadsSearch,
   ID_AMBIGUOUS,
@@ -11,6 +14,7 @@ import {
   IDEMPOTENCY_REPLAYED_HEADER,
   type IdempotencyLandedCode,
   type InboxThreadKind,
+  type MessageThreadPage,
   NO_ROUTE_MESSAGE_PREFIX,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
   REFERENCE_TARGETS_MAX,
@@ -39,13 +43,16 @@ import type {
   ArtifactVersionContent,
   ArtifactVersionText,
   AuthenticatedUser,
+  CommentWithTrees,
   CreateArtifactInput,
   DispatchEvent,
   DispatchUser,
   DuplicateCandidate,
   IDCandidate,
+  IssueAskRow,
   IssueAskThreadRow,
   IssueReferencesAnswer,
+  MessageRead,
   NewIssueSettings,
   ParentStatusConflictIssue,
   StatusChangeEntry,
@@ -81,6 +88,30 @@ export interface UploadProgress {
  *  caps every such request's body together at 64 KiB. */
 const maxKeepaliveBodyBytes = 30 * 1024;
 const utf8 = new TextEncoder();
+
+/** Whether the page is going: from its `pagehide` until the browser shows it again (`pageshow`,
+ *  a page it kept and brings back). A small write that starts then, its body under
+ *  `maxKeepaliveBodyBytes`, is let finish as the page goes (`keepalive`), under its key or not:
+ *  the write a field makes as the tab closes (`InPlaceField`, `PriorityDescription`) has no
+ *  reload after it to make it again. A larger one is not, and one that waits then behind a write
+ *  of the same target still out (`write-store.ts`'s `#advance`) does not start before the page is
+ *  gone. This module listens as it loads, before any field adds its own `pagehide` listener, so
+ *  a field's write finds the page going. */
+let pageGoing = false;
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", () => {
+    pageGoing = true;
+  });
+  window.addEventListener("pageshow", () => {
+    pageGoing = false;
+  });
+}
+
+/** Forgets that the page went: the unit-test preload, between tests, whose `pagehide` ends no
+ *  page. */
+export function resetPageGoing(): void {
+  pageGoing = false;
+}
 
 /** One item a refusal lists for the caller to choose between: the items an ambiguous id prefix
  *  names (`ID_AMBIGUOUS`), the issues a duplicate check found, or the positions an anchored
@@ -460,6 +491,25 @@ export function isNoRoute(error: unknown): boolean {
   );
 }
 
+/** What a page read of an issue's comments, messages or asks rejects with where the build that
+ *  answered serves no page: a build from before the pages answers `order=activity` with the
+ *  route's bare list, as one does while a release rolls out, so the read says what a route no
+ *  build answering it serves says once its attempts are spent (`answered`): the read is not
+ *  offered yet. */
+function threadPageNotOffered(): ApiError {
+  return new ApiError(404, { code: "NOT_FOUND", error: NO_ROUTE_ROLLING_RELEASE_MESSAGE });
+}
+
+/** The query a page read of one of an issue's three thread lists takes: the route's own, from
+ *  the document, but `order`, which the read sends itself as `activity`. */
+type ThreadPageQuery<P extends PathsOf<"get">> = Omit<Query<P, "get">, "order">;
+
+/** The ask page as `thread=1` answers it: each row carries its ask's thread, which the document
+ *  leaves optional since asking for it is what makes it present (`IssueAskThreadRow`). */
+type AskThreadPageWithThreads = Omit<AskThreadPage, "threads"> & {
+  threads: (AskThreadRow & IssueAskThreadRow)[] | null;
+};
+
 /** What every view says while Envoy's agent list refills: the server's own `ENVOY_REFILLING`
  *  message, shown wherever a view would otherwise say an agent is absent. */
 export const AGENT_LIST_REFILLING = "The agent list is refilling. Try again in a moment.";
@@ -564,6 +614,17 @@ function readUrl<P extends PathsOf<"get">>(pattern: P, params: PathParams<Op<P, 
 /** `PATCH /api/v1/issues/{key}`: one change of an issue's fields (`patchIssue`). */
 export function issuePatchRequest(key: string, input: Body<"/api/v1/issues/{key}", "patch">) {
   return writeRequest("patch", "/api/v1/issues/{key}", { key }, input);
+}
+
+/** `PATCH /api/v1/priorities/{id}`: the priority's title, description or owner, and its place in
+ *  the one order (`rank: {before, after}`, the priorities it lands between, as the issue board's
+ *  own drag names them). Each field left out is left alone. `expected` names the title or
+ *  description the write goes over: the newest of the page's own writes of it still out or not
+ *  yet drawn by a read, and else the text the field took in from a read (`usePriorityWrites`).
+ *  One the priority no longer stores refuses the write `409 PRIORITY_CHANGED`, and nothing is
+ *  written. */
+export function priorityPatchRequest(id: string, input: Body<"/api/v1/priorities/{id}", "patch">) {
+  return writeRequest("patch", "/api/v1/priorities/{id}", { id }, input);
 }
 
 /** `POST /api/v1/issues/{key}/status-change`: an issue's status with what happens to the issues
@@ -954,15 +1015,19 @@ export class DispatchApiClient {
    * The one path every write to Dispatch takes. A `POST` or a `PATCH` goes under `bounds.key`, the
    * `Idempotency-Key` that names the person's action, so a repeat of it - a retry after a dropped
    * answer, a reload resuming it - is answered with what the first did rather than done twice; a
-   * `PUT` or a `DELETE` is the same however often it is made, so it carries none, and one with a
-   * small body is let finish as the page goes (`keepalive`). The key is the caller's, minted when
-   * the person acts (`Writes.run`), never here; so is `bounds.login` (`Dispatch-Login`), the
-   * person who pressed it. A JSON body goes as JSON and a multipart form as itself, through the
-   * upload transport; `bounds.sent` is told the request as it goes out. Answers what Dispatch
-   * answered (nothing for an empty body), as the request's builder names it (`WriteRequest`), or
-   * rejects with its refusal; a 2xx whose body is not JSON rejects with `UnreadableAnswerError`, a
-   * 2xx whose body stops part way with `NetworkError`, and a replay of an answer Dispatch did not
-   * keep with `AnswerNotKeptError`.
+   * `PUT` or a `DELETE` is the same however often it is made, so it carries none. A write that
+   * carries no body, or a JSON body under `maxKeepaliveBodyBytes`, is let finish as the page goes
+   * (`keepalive`): a `PUT` or a `DELETE` whenever it is sent, and a `POST` or a `PATCH`, key and
+   * all, only when it starts as the page goes (`pageGoing`). A larger one is not, and one that
+   * waits behind a write of the same target still out (`write-store.ts`'s `#advance`) does not
+   * start before the page is gone. A keyed write the page did not let finish is made again under
+   * its key by a reload. The key is the caller's, minted when the person acts (`Writes.run`),
+   * never here; so is `bounds.login` (`Dispatch-Login`), the person who pressed it. A JSON body
+   * goes as JSON and a multipart form as itself, through the upload transport; `bounds.sent` is
+   * told the request as it goes out. Answers what Dispatch answered (nothing for an empty body),
+   * as the request's builder names it (`WriteRequest`), or rejects with its refusal; a 2xx whose
+   * body is not JSON rejects with `UnreadableAnswerError`, a 2xx whose body stops part way with
+   * `NetworkError`, and a replay of an answer Dispatch did not keep with `AnswerNotKeptError`.
    */
   send<T>(
     request: WriteRequest<T>,
@@ -973,7 +1038,8 @@ export class DispatchApiClient {
     const form = body instanceof FormData ? body : undefined;
     const json = body === undefined || form !== undefined ? undefined : JSON.stringify(body);
     const keepalive =
-      !keyed && (json === undefined || utf8.encode(json).byteLength < maxKeepaliveBodyBytes);
+      (!keyed || pageGoing) &&
+      (json === undefined || utf8.encode(json).byteLength < maxKeepaliveBodyBytes);
     const init: RequestInit = {
       ...(form !== undefined ? { body: form } : json !== undefined ? { body: json } : {}),
       headers: {
@@ -1201,7 +1267,9 @@ export class DispatchApiClient {
     return Array.isArray(answer) ? answer : (answer.issues ?? []);
   }
   /** `GET /api/v1/search/results`, or `GET /api/v1/search` for a request `everyBuildReadsSearch`
-   *  keeps there: the same search either way, from the same handler. `project`, `status`,
+   *  keeps there: the same search either way, from the same handler. `kind` names the kinds to
+   *  rank, count and page, one `kind=` per entry; with none named every kind the index holds is
+   *  searched. `project`, `status`,
    *  `author` (an actor id: a person's login or a session id) and `updated_since` (RFC 3339)
    *  each narrow every leg of the search rather than striking rows out of the page it answers.
    *  `number_project` narrows nothing: it is the project of the page the search was made from,
@@ -1210,13 +1278,15 @@ export class DispatchApiClient {
    *  makes no embedding call, whatever embedder the deployment configured, which is what the
    *  bar sends behind a keystroke; a request leaving it out searches by meaning too wherever an
    *  embedder is configured. The route refuses a value it cannot read under its own code
-   *  (`INVALID_PROJECT`, `INVALID_NUMBER_PROJECT`, `INVALID_STATUS`, `INVALID_AUTHOR`,
-   *  `INVALID_UPDATED_SINCE`, `INVALID_KEYWORDS_ONLY`). The bar searches while a person types,
+   *  (`INVALID_QUERY`, `INVALID_PROJECT`, `INVALID_NUMBER_PROJECT`, `INVALID_STATUS`,
+   *  `INVALID_AUTHOR`, `INVALID_UPDATED_SINCE`, `INVALID_KEYWORDS_ONLY`). The bar searches
+   *  while a person types,
    *  so it passes the `signal` of the search it is still interested in: an aborted request ends
    *  the route's own work with it, the embedding a search by meaning had asked for included.
    *  The path is `everyBuildReadsSearch`'s to pick, because a Dispatch released before the
    *  results route refuses that path outright rather than answering `GET /api/v1/search` with
-   *  the member dropped, which is unnarrowed rows under the filters a person chose. */
+   *  the member dropped, which is unnarrowed rows under the filters a person chose. A request
+   *  naming a `kind` is such a request, so it goes to the results route like the other five. */
   search(
     query: string,
     options: Omit<Query<"/api/v1/search/results", "get">, "q"> = {},
@@ -1302,16 +1372,14 @@ export class DispatchApiClient {
   }
 
   /** `POST /api/v1/priorities`: one new priority, which takes the last place of the order. Its
-   *  id defaults to its title as a slug. */
+   *  id defaults to its title as a slug, cut to `PRIORITY_ID_MAX` (200) characters at the end of
+   *  a word when it is longer, so a long title is written whole under a cut id. A title the slug
+   *  cannot name - one with no ASCII letter or digit, or one whose cut is `none` or `any`, which
+   *  the issue listing reads as the work under no priority and under any - takes `priority-` and
+   *  the first 12 hex characters of the title's SHA-256 instead (`priority-<12 hex>`), so every
+   *  title gives an id. */
   createPriority(input: Body<"/api/v1/priorities", "post">, bounds: WriteBounds) {
     return this.post("/api/v1/priorities", {}, input, bounds);
-  }
-
-  /** `PATCH /api/v1/priorities/{id}`: the priority's title, description or owner, and its place
-   *  in the one order (`rank: {before, after}`, the priorities it lands between, as the issue
-   *  board's own drag names them). Each field left out is left alone. */
-  patchPriority(id: string, input: Body<"/api/v1/priorities/{id}", "patch">, bounds: WriteBounds) {
-    return this.patch("/api/v1/priorities/{id}", { id }, input, bounds);
   }
 
   /** `GET /api/v1/priorities/{id}/history`: the priority's own history, newest first - each
@@ -1351,14 +1419,29 @@ export class DispatchApiClient {
     return this.read("/api/v1/agents", {});
   }
 
+  /** `GET /api/v1/agents/known`: which of `sessions` Dispatch holds any record of - listed in its
+   *  registry copy, or named by an event, a message, a delivery, an artifact or an ask it follows
+   *  - each with its registry title when listed, one `id=` per session. At most
+   *  `KNOWN_SESSIONS_MAX` ids per call, none longer than a `dispatch://agent/<session id>`
+   *  reference's target may be (`MAX_REFERENCE_TARGET_BYTES`); `known-sessions.ts` batches a
+   *  page's ids into one. */
+  getKnownSessions(sessions: readonly string[]) {
+    return this.read("/api/v1/agents/known", {}, { id: [...sessions] });
+  }
+
   createAsk(key: string, input: Body<"/api/v1/issues/{key}/asks", "post">, bounds: WriteBounds) {
     return this.post("/api/v1/issues/{key}/asks", { key }, input, bounds);
   }
 
   /** `GET /api/v1/issues/{key}/asks`: the issue's asks with their newest reply and no thread,
    *  for a reader that renders the ask itself. */
-  listIssueAsks(key: string, state: "all" | "open" | "answered" = "all") {
-    return this.read("/api/v1/issues/{key}/asks", { key }, { state });
+  async listIssueAsks(
+    key: string,
+    state: "all" | "open" | "answered" = "all"
+  ): Promise<IssueAskRow[]> {
+    const answer = await this.read("/api/v1/issues/{key}/asks", { key }, { state });
+    // The route pages only under `order=activity`, never sent here; a page reads as its rows.
+    return Array.isArray(answer) ? answer : (answer.threads ?? []);
   }
 
   /** `GET /api/v1/issues/{key}/asks?thread=1`: the same rows carrying each ask's thread. The
@@ -1372,6 +1455,33 @@ export class DispatchApiClient {
     return this.json<IssueAskThreadRow[]>(
       routeUrl("/api/v1/issues/{key}/asks", { key }, { state, thread: "1" })
     );
+  }
+
+  /** `GET /api/v1/issues/{key}/asks?order=activity`: one page of the issue's ask threads, the
+   *  newest last activity first, from `query.before` when it names the last page's position;
+   *  `state`, `thread`, `limit`, `before` and `author` as the route takes them. Under
+   *  `thread: "1"` each row carries its thread, typed as `listIssueAskThreads` types its rows. A
+   *  build from before the page answers the bare list, and the read rejects
+   *  (`threadPageNotOffered`). */
+  listAskThreads(
+    key: string,
+    query: ThreadPageQuery<"/api/v1/issues/{key}/asks"> & { thread: "1" }
+  ): Promise<AskThreadPageWithThreads>;
+  listAskThreads(
+    key: string,
+    query?: ThreadPageQuery<"/api/v1/issues/{key}/asks">
+  ): Promise<AskThreadPage>;
+  async listAskThreads(
+    key: string,
+    query: ThreadPageQuery<"/api/v1/issues/{key}/asks"> = {}
+  ): Promise<AskThreadPage> {
+    const answer = await this.read(
+      "/api/v1/issues/{key}/asks",
+      { key },
+      { ...query, order: "activity" }
+    );
+    if (Array.isArray(answer)) throw threadPageNotOffered();
+    return answer;
   }
 
   answerAsk(id: string, input: Body<"/api/v1/asks/{id}/answer", "post">, bounds: WriteBounds) {
@@ -1437,8 +1547,30 @@ export class DispatchApiClient {
     );
   }
 
-  listComments(key: string, artifact?: string) {
-    return this.read("/api/v1/issues/{key}/comments", { key }, { artifact });
+  async listComments(key: string, artifact?: string): Promise<CommentWithTrees[]> {
+    const answer = await this.read("/api/v1/issues/{key}/comments", { key }, { artifact });
+    // The route pages only under `order=activity`, never sent here; a page reads as its rows.
+    return Array.isArray(answer)
+      ? answer
+      : (answer.threads ?? []).flatMap(({ comment, replies }) => [comment, ...(replies ?? [])]);
+  }
+
+  /** `GET /api/v1/issues/{key}/comments?order=activity`: one page of the issue's comment threads,
+   *  the newest last activity first, from `query.before` when it names the last page's position;
+   *  `artifact`, `limit`, `before`, `author` and `person` (`in` alone) as the route takes them.
+   *  A build from before the page answers the bare list, and the read rejects
+   *  (`threadPageNotOffered`). */
+  async listCommentThreads(
+    key: string,
+    query: ThreadPageQuery<"/api/v1/issues/{key}/comments"> = {}
+  ): Promise<CommentThreadPage> {
+    const answer = await this.read(
+      "/api/v1/issues/{key}/comments",
+      { key },
+      { ...query, order: "activity" }
+    );
+    if (Array.isArray(answer)) throw threadPageNotOffered();
+    return answer;
   }
 
   createComment(
@@ -1539,8 +1671,27 @@ export class DispatchApiClient {
 
   /** `GET /api/v1/issues/{key}/messages`: every root message of the issue, oldest first, each
    *  with its deliveries and its replies. */
-  listIssueMessages(key: string) {
-    return this.read("/api/v1/issues/{key}/messages", { key });
+  async listIssueMessages(key: string): Promise<MessageRead[]> {
+    const answer = await this.read("/api/v1/issues/{key}/messages", { key });
+    // The route pages only under `order=activity`, never sent here; a page reads as its rows.
+    return Array.isArray(answer) ? answer : (answer.threads ?? []);
+  }
+
+  /** `GET /api/v1/issues/{key}/messages?order=activity`: one page of the issue's message threads,
+   *  the newest last activity first, from `query.before` when it names the last page's position;
+   *  `limit`, `before`, `author` and `person` (`in` or `none`) as the route takes them. A build
+   *  from before the page answers the bare list, and the read rejects (`threadPageNotOffered`). */
+  async listMessageThreads(
+    key: string,
+    query: ThreadPageQuery<"/api/v1/issues/{key}/messages"> = {}
+  ): Promise<MessageThreadPage> {
+    const answer = await this.read(
+      "/api/v1/issues/{key}/messages",
+      { key },
+      { ...query, order: "activity" }
+    );
+    if (Array.isArray(answer)) throw threadPageNotOffered();
+    return answer;
   }
 
   /** `GET /api/v1/issues/{key}/handoffs`: every phase handoff of the issue, newest first, without
@@ -1549,8 +1700,9 @@ export class DispatchApiClient {
     return this.read("/api/v1/issues/{key}/handoffs", { key });
   }
 
-  /** `GET /api/v1/issues/{key}/steps`: each run of each step Legion recorded of the issue, its
-   *  tasks in the order of their first step. An issue Legion never ran answers no task. */
+  /** `GET /api/v1/issues/{key}/steps`: the tasks of the issue's newest plan, each with its needs
+   *  and its planned steps, then each other task that ran, by its first run, each with every run of
+   *  its steps Legion recorded. An issue with no plan and no run answers no task. */
   listSteps(key: string) {
     return this.read("/api/v1/issues/{key}/steps", { key });
   }
@@ -1616,6 +1768,13 @@ export class DispatchApiClient {
       session_id: sessionId,
       slug,
     });
+  }
+
+  /** `GET /api/v1/agents/{session_id}/artifacts`: the newest 100 files and images of an agent's
+   *  conversation, newest first, each with its versions. It needs the `person` scope, as the
+   *  conversation it belongs to does. */
+  listAgentArtifacts(sessionId: string) {
+    return this.read("/api/v1/agents/{session_id}/artifacts", { session_id: sessionId });
   }
 
   getArtifactText(id: string) {
@@ -1902,6 +2061,15 @@ export class DispatchApiClient {
    *  rendered from, so this one read names its path and its answer itself. */
   whoAmI(): Promise<AuthenticatedUser> {
     return this.json<AuthenticatedUser>("/auth/whoami");
+  }
+
+  /** The scopes the caller's own credential holds, as `GET /api/v1/whoami` names them: for a
+   *  person at a browser, every scope of a person's own credential. `/auth/whoami` names none.
+   *  Settings offers Set P0 only where they name `p0`, which a build before it never does. A
+   *  list the answer leaves null holds none. */
+  async whoAmIScopes(): Promise<string[]> {
+    const whoami = await this.read("/api/v1/whoami", {});
+    return whoami.scopes ?? [];
   }
 
   /** Ends this browser's session. `/auth/logout` sits outside Dispatch's keyed layer and is the

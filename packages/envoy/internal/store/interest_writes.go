@@ -34,7 +34,7 @@ func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	revision := r.cache.FenceFor(epoch, sessionID)
 	held, _ := r.cache.Get(sessionID)
 	r.mu.RUnlock()
-	read, answered, err := bus.Bounded(ctx, func() (bus.LeaderEntry, error) { return kv.DeleteAtRead(ctx, sessionID) })
+	read, answered, err := bus.Bounded(ctx, kv.Conn(), func() (bus.LeaderEntry, error) { return kv.DeleteAtRead(ctx, sessionID) })
 	if !answered {
 		return fmt.Errorf("delete %s's interest record: %w", sessionID, err)
 	}
@@ -81,7 +81,7 @@ func (r *Registry) deleteInterestAt(ctx context.Context, sessionID string, revis
 		return false, nil
 	}
 	kv, epoch := r.watcher.Handle()
-	_, answered, err := bus.Bounded(ctx, func() (struct{}, error) {
+	_, answered, err := bus.Bounded(ctx, kv.Conn(), func() (struct{}, error) {
 		return struct{}{}, kv.Delete(sessionID, nats.LastRevision(revision))
 	})
 	if !answered {
@@ -462,7 +462,9 @@ func createInterest(ctx context.Context, kv bus.KeyValue, sessionID string, valu
 // planned it with these same roles (PlanInterest), and plans again when the row it stored is not
 // the one it filtered on. plan's Withheld topics are taken out of the row the write read before
 // the merge: a caller that holds a session to a rule of its own (cmd/listener's edge hold) takes
-// a stored topic out of the row that way.
+// a stored topic out of the row that way. The row keeps none of the plan's LeftOut either, the
+// topics that route keeps out of the row because the session's consumer filter leaves them out
+// (InterestPlan.LeftOut), so a row an earlier build stored with one is cleaned by the same write.
 //
 // The machine id and the directory are the requesting registration's, and the stored row is the
 // fallback for whichever of the two the request leaves empty. A session that registers again
@@ -491,6 +493,9 @@ func mergeForUpsert(cur Interest, getErr error, item Interest, now int64, plan I
 		stored = slices.DeleteFunc(slices.Clone(stored), func(topic string) bool { return slices.Contains(plan.Withheld, topic) })
 	}
 	item.Topics = MergedTopics(requested.SessionID, plan.Roles, stored, plan.Topics)
+	if len(plan.LeftOut) > 0 {
+		item.Topics = slices.DeleteFunc(item.Topics, func(topic string) bool { return slices.Contains(plan.LeftOut, topic) })
+	}
 	return item, nil
 }
 
@@ -647,9 +652,10 @@ func (h LaneHolders) Keeps(sessionID, topic string) bool {
 // in the record (releaseRoleClaims answers which topics those are), because one interest record
 // serves every process running under one session id and that topic is the interest half of a
 // claim that still stands, written there by the grant (SetRoleWithPrevious). No delivery rides
-// on it - a role lane is not stream-captured, so it never enters a session's consumer filter
-// (cmd/listener's sessionConsumerFilter), and a role message reaches its holder's agent subject
-// with the holder read off the claim (cmd/listener's resolveCoreRoleHolder) - but the record is
+// on it - a session's consumer filter leaves every role lane out (bus.RoleLane, which
+// cmd/listener's sessionConsumerFilter reads), since the stream never stores one, and a role
+// message reaches its holder's agent subject with the holder read off the claim (cmd/listener's
+// resolveCoreRoleHolder) - but the record is
 // where a deregistration of this session finds the role claims it frees (the empty-topics
 // branch below, releaseAllRoleClaims), so a release from a process that does not hold the claim
 // would otherwise take the lane topic out from under the process that does and leave the claim
@@ -659,12 +665,22 @@ func (h LaneHolders) Keeps(sessionID, topic string) bool {
 // whose every named topic was kept writes nothing at all, since an empty list is how
 // removeInterestTopics is told to delete the whole record.
 //
-// Remove answers the topics it took out of the record, and that list is what POST
-// /v1/interests/unsubscribe reports as removed. It is the removed list rather than the one the
-// caller named because the two part company over a kept lane topic: the caller named it, the
-// record still holds it, and an answer echoing the request would report a removal that did not
-// happen. A deregistration answers no list at all - it deletes the whole record, so there is no
-// list of named topics to report, and its route writes the empty list for it.
+// Remove answers each topic the caller named that the record no longer holds, one it never held
+// included, with the other forms of them the record held, and that list is what POST
+// /v1/interests/unsubscribe reports as removed. It is not the list the caller named because the
+// two part company over a kept lane topic: the caller named it, the record still holds it, and an
+// answer echoing the request would report a removal that did not happen. A deregistration answers
+// no list at all - it deletes the whole record, so there is no list of named topics to report, and
+// its route writes the empty list for it.
+//
+// A removal of named topics from a session the bucket holds no record for removes nothing and is
+// no error, as a deregistration of such a session is not. It answers no list, because no topic
+// left a record. This is the retry envoy-client makes of an unsubscribe that the route answered
+// 503 after its write (cmd/listener's unsubscribe route, when the consumer's filter update meets
+// a NATS reconnect). When the first attempt took the record's last topic, it deleted the record
+// (removeInterestTopics), and the retry finds none. An error there would report a failure for a
+// removal that did happen. The retry still releases the role claims its topics name, since that
+// release runs before the record is read.
 //
 // An empty topics is the whole of the session's interests, so a deregistration releases every
 // role either of two sources names, each once and each as its own claim record says
@@ -722,7 +738,11 @@ func (r *Registry) Remove(ctx context.Context, sessionID string, topics []string
 	// rather than finding it missing later. They are read from the row as it stands before the
 	// removal, which is the row the removal starts from unless another writer races it.
 	others := r.otherFormsHeld(ctx, sessionID, removed)
-	if err := r.removeInterestTopics(ctx, sessionID, removed); err != nil {
+	err = r.removeInterestTopics(ctx, sessionID, removed)
+	if errors.Is(err, nats.ErrKeyNotFound) {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, err
 	}
 	return slices.Concat(removed, others), nil
@@ -815,7 +835,9 @@ var ErrInterestTopicsNotMerged = errors.New("the interest record changed under e
 // registration's conditional write is: it stores over the one revision it read, so it cannot
 // undo a write that landed after it. A record this build cannot decode routes none of its topics
 // here, so there is nothing to remove from it: it is left for the session's next subscribe to
-// replace or a delete to remove, and the registry logs that at WARN naming the session.
+// replace or a delete to remove, and the registry logs that at WARN naming the session. A session
+// the bucket holds no record for answers nats.ErrKeyNotFound, at the first read or at a read after
+// another writer deleted the record. Remove reads that answer as nothing removed.
 func (r *Registry) removeInterestTopics(ctx context.Context, sessionID string, topics []string) error {
 	// Empty topics = unsubscribe from everything (delete the entry).
 	if len(topics) == 0 {

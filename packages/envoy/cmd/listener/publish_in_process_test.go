@@ -154,9 +154,10 @@ func (p inProcessPath) line() string {
 }
 
 // inProcessPaths are the publish route to a team topic and to a topic the stream captures for a
-// source, and the send route to target, a session the rig registers live.
+// source, and the send route to target, a session the rig registers live. The captured topic is
+// Slack's: the route refuses Dispatch's lane and GitHub's lane (publisherLanes).
 func inProcessPaths(target string) []inProcessPath {
-	const team, captured = "notifications.team.in-process", "notifications.github.legion-test.in_process.pr.1"
+	const team, captured = "notifications.team.in-process", "notifications.slack.legion-test.in_process.message"
 	return []inProcessPath{
 		{name: "publish to a team topic", route: "/v1/messages/publish", subject: team, body: func(sender, key string) map[string]any {
 			return map[string]any{"topic": team, "source": "agent", "source_session": sender, "message": "team, resent while in process", "idempotency_key": key}
@@ -202,14 +203,19 @@ func (rig *inProcessRig) hear(t *testing.T, subject string) *natsgo.Subscription
 	return heard
 }
 
-// awaitHanded waits until the leader has been handed n publishes on heard's subject.
-func awaitHanded(t *testing.T, heard *natsgo.Subscription, n int) {
+// awaitHanded waits until the leader has been handed n publishes on heard's subject, and returns
+// them in the order the leader was handed them.
+func awaitHanded(t *testing.T, heard *natsgo.Subscription, n int) []*natsgo.Msg {
 	t.Helper()
+	handed := make([]*natsgo.Msg, 0, n)
 	for i := range n {
-		if _, err := heard.NextMsg(10 * time.Second); err != nil {
+		msg, err := heard.NextMsg(10 * time.Second)
+		if err != nil {
 			t.Fatalf("the leader was handed %d of the %d publishes: %v", i, n, err)
 		}
+		handed = append(handed, msg)
 	}
+	return handed
 }
 
 // serve sends body to route, the publish route or the send route, under ctx, and returns its
@@ -249,7 +255,7 @@ func (rig *inProcessRig) copies(t *testing.T, subject string) uint64 {
 // the row read before it sent anything, and fails on any other count.
 func (rig *inProcessRig) requireOneCopy(t *testing.T, subject string, before uint64) {
 	t.Helper()
-	waitFor(t, 10*time.Second, "the stream to store the message on "+subject, func() bool { return rig.copies(t, subject) > before })
+	waitFor(t, "the stream to store the message on "+subject, func() bool { return rig.copies(t, subject) > before })
 	if got := rig.copies(t, subject) - before; got != 1 {
 		t.Fatalf("the stream stored %d copies on %s, want 1: both attempts carry one message id", got, subject)
 	}
@@ -308,6 +314,11 @@ func (rig *inProcessRig) forwardAttempts(key string) []float64 {
 // every confirmed forward, a duplicate's too (sendToRole), and the refused forward is sent again
 // inside that one forward, so each role send makes one attempt, where a refused forward counted
 // as one that failed makes a second.
+//
+// Both attempts the leader is handed carry one Nats-Msg-Id, which is what makes the stream refuse
+// the second as in process. That is the control of the delivery exception's row below
+// (TestADeliveryExceptionIsNeverRefusedAsInProcessAndItsFailureIsLoggedOnce), which requires
+// the header absent on what the leader is handed.
 func TestAResendWhoseEarlierAttemptIsStillInProcessIsAnsweredOnceThatAttemptIsStored(t *testing.T) {
 	t.Parallel()
 	rig := newInProcessRig(t)
@@ -329,7 +340,10 @@ func TestAResendWhoseEarlierAttemptIsStillInProcessIsAnsweredOnceThatAttemptIsSt
 				rig.attempt(context.Background(), path.route, body),
 				rig.attempt(context.Background(), path.route, body),
 			}
-			awaitHanded(t, heard, 2)
+			handed := awaitHanded(t, heard, 2)
+			if first, second := handed[0].Header.Get(natsgo.MsgIdHdr), handed[1].Header.Get(natsgo.MsgIdHdr); first == "" || first != second {
+				t.Errorf("the leader was handed the two attempts under Nats-Msg-Id %q and %q, want one id on both", first, second)
+			}
 			thaw()
 			for _, answer := range answers {
 				if answer := <-answer; answer.Code != http.StatusOK {
@@ -409,7 +423,7 @@ func TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward(t *
 	var firstForward ended
 	select {
 	case firstForward = <-first:
-	case <-time.After(10 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("the resend's first forward did not end")
 	}
 	thaw()
@@ -584,27 +598,26 @@ func TestATakeoverCopyPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing
 	}
 }
 
-// A delivery exception a clustered stream refuses as still in process under another listener's
-// publish of it (nats-server's 10158, bus.ErrDuplicateInProcess) is no failed publish: that
-// listener raised the same exception from its own durable under the same Nats-Msg-Id,
-// exception.<reason>.<origin> (publishDeliveryException), and its publish stores the one copy. So
-// it is logged at WARN, never the line the deployed publish-failure filter counts,
+// A delivery exception is published under no Nats-Msg-Id (publishDeliveryException), so a
+// clustered stream never refuses it as still in process (bus.ErrDuplicateInProcess). Two
+// listeners that raise an exception for one message each store a copy, and neither logs a line.
+// A failure of the same publish, an exception past the server's max payload, is still logged once
+// at ERROR as exceptionPublishFailedLine, which the deployed publish-failure filter counts:
 // `{ $.level = "ERROR" && $.msg = "listener exception publish failed" }`
-// (packages/envoy/infra/aws/rendering/metricfilters.go), while a failure of the same publish, an
-// exception past the server's max payload, is still logged that line. The in-process row freezes
-// the members' routes, waits until the leader holds the other listener's publish, and raises the
-// exception through applyDeliveryOutcome before the thaw, so the refusal comes by events.
-func TestADeliveryExceptionStillInProcessIsNotLoggedAsAFailedPublish(t *testing.T) {
+// (packages/envoy/infra/aws/rendering/metricfilters.go). The first row freezes the members'
+// routes and thaws them once the leader holds both publishes. Under one message id the stream
+// would refuse the second publish while the first is in process.
+func TestADeliveryExceptionIsNeverRefusedAsInProcessAndItsFailureIsLoggedOnce(t *testing.T) {
 	t.Parallel()
 	rig := newInProcessRig(t)
 	const topic, recipient, reason = "notifications.team.exception-in-process", "ses_exception_in_process", "delivery_failed"
 	lane := bus.ExceptionTopicPrefix + topic
 	for _, row := range []struct {
-		name      string
-		inProcess bool
+		name     string
+		tooLarge bool
 	}{
-		{"refused as still in process under another listener's publish", true},
-		{"past the server's max payload", false},
+		{"raised by two listeners while the routes are frozen", false},
+		{"past the server's max payload", true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			logs := &cmdtest.LockedBuffer{}
@@ -612,49 +625,60 @@ func TestADeliveryExceptionStillInProcessIsNotLoggedAsAFailedPublish(t *testing.
 			cfg.client = rig.d.client
 			cfg.logger = logging.NewWithWriter("test", logs)
 			item := listenerTestEnvelope(topic, "exception-in-process-"+id.New())
-			origin := "exception-in-process-origin-" + id.New()
-			outcome := deliveryOutcome{sessionID: recipient, exceptionReason: reason, fanoutRefusal: true, origin: origin}
-			want := bus.ErrTooLarge
-			if row.inProcess {
-				want = bus.ErrDuplicateInProcess
-				heard := rig.hear(t, lane)
-				before := rig.copies(t, lane)
-				thaw := rig.cluster.FreezeRoutes(t)
-				t.Cleanup(thaw)
-				other := make(chan error, 1)
-				go func() { other <- publishDeliveryException(rig.d.client, item, reason, recipient, origin) }()
-				awaitHanded(t, heard, 1)
-				applyDeliveryOutcome(cfg, item, outcome)
-				thaw()
-				if err := <-other; err != nil {
-					t.Fatalf("the other listener's publish of the exception: %v; want it stored", err)
-				}
-				rig.requireOneCopy(t, lane, before)
-			} else {
+			outcome := deliveryOutcome{sessionID: recipient, exceptionReason: reason, fanoutRefusal: true}
+			if row.tooLarge {
 				item.Payload = strings.Repeat("p", int(rig.d.client.Conn.MaxPayload()))
 				applyDeliveryOutcome(cfg, item, outcome)
-			}
-			var counted, refusals []string
-			for line := range strings.SplitSeq(strings.TrimSpace(logs.String()), "\n") {
-				var record map[string]any
-				if json.Unmarshal([]byte(line), &record) != nil || record["topic"] != topic {
-					continue
+				var counted, refusals []string
+				for line := range strings.SplitSeq(strings.TrimSpace(logs.String()), "\n") {
+					var record map[string]any
+					if json.Unmarshal([]byte(line), &record) != nil || record["topic"] != topic {
+						continue
+					}
+					if record["level"] == "ERROR" && record["msg"] == exceptionPublishFailedLine {
+						counted = append(counted, line)
+					}
+					if text, _ := record["error"].(string); strings.Contains(text, bus.ErrTooLarge.Error()) {
+						refusals = append(refusals, line)
+					}
 				}
-				if record["level"] == "ERROR" && record["msg"] == "listener exception publish failed" {
-					counted = append(counted, line)
+				if len(refusals) != 1 || len(counted) != 1 || counted[0] != refusals[0] {
+					t.Fatalf("an exception the server refused as too large logged %d lines naming %q and %d lines the publish-failure filter counts, want one line that is both:\n%s",
+						len(refusals), bus.ErrTooLarge, len(counted), logs.String())
 				}
-				if text, _ := record["error"].(string); strings.Contains(text, want.Error()) {
-					refusals = append(refusals, line)
+				return
+			}
+			rig.requireLeader(t)
+			heard, before := rig.hear(t, lane), rig.copies(t, lane)
+			thaw := rig.cluster.FreezeRoutes(t)
+			t.Cleanup(thaw)
+			other := make(chan error, 1)
+			go func() { other <- publishDeliveryException(rig.d.client, item, reason, recipient) }()
+			applied := make(chan struct{})
+			go func() {
+				defer close(applied)
+				applyDeliveryOutcome(cfg, item, outcome)
+			}()
+			for n := range 2 {
+				msg, err := heard.NextMsg(10 * time.Second)
+				if err != nil {
+					t.Fatalf("the leader was handed %d of the 2 publishes: %v", n, err)
+				}
+				if msgID := msg.Header.Get(natsgo.MsgIdHdr); msgID != "" {
+					t.Errorf("an exception was published under Nats-Msg-Id %q, want none", msgID)
 				}
 			}
-			if len(refusals) != 1 {
-				t.Fatalf("logged %d lines naming %q, want 1:\n%s", len(refusals), want, logs.String())
+			thaw()
+			if err := <-other; err != nil {
+				t.Fatalf("the other listener's publish of the exception: %v; want it stored", err)
 			}
-			if row.inProcess && len(counted) != 0 {
-				t.Fatalf("an exception still in process under another listener's publish logged the line the publish-failure filter counts:\n%s", strings.Join(counted, "\n"))
+			<-applied
+			waitFor(t, "the stream to store both exceptions on "+lane, func() bool { return rig.copies(t, lane) >= before+2 })
+			if got := rig.copies(t, lane) - before; got != 2 {
+				t.Fatalf("the stream stored %d copies on %s, want 2: each exception is an event of its own", got, lane)
 			}
-			if !row.inProcess && (len(counted) != 1 || counted[0] != refusals[0]) {
-				t.Fatalf("an exception the server refused as too large logged %d lines the publish-failure filter counts, want its one failure line:\n%s", len(counted), logs.String())
+			if text := strings.TrimSpace(logs.String()); text != "" {
+				t.Fatalf("the exception the stream stored logged lines, want none:\n%s", text)
 			}
 		})
 	}

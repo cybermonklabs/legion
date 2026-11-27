@@ -14,6 +14,7 @@ import {
 } from "./api";
 import { documentEditor } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
+import { openIssueDetails } from "./issue-details";
 import { sql } from "./psql";
 import { settledState } from "./settled";
 import { expect, test } from "./test";
@@ -34,6 +35,8 @@ test("an issue and its ask show a cross-project message and structural backlinks
 
   await page.setViewportSize({ height: 900, width: 1440 });
   await page.goto(`/issues/${target.key}`);
+  // What references the issue is a row of Details; its control draws the count.
+  await openIssueDetails(page);
   await page
     .getByTestId("issue-header")
     .getByRole("button", { name: /^Referenced by/ })
@@ -43,7 +46,10 @@ test("an issue and its ask show a cross-project message and structural backlinks
     name: "Referenced by",
   });
   await expect(issueReferences).toContainText(`Message · ${source.key}`);
-  await expect(issueReferences).toContainText(`Depends on dispatch://${target.key}`);
+  // The excerpt is the head of the message's own body, drawn by the renderer: each address in
+  // it reads as its target's name, and none is left as text.
+  await expect(issueReferences).toContainText(`Depends on ${target.key} Target issue and`);
+  await expect(issueReferences).not.toContainText("dispatch://");
   await expect(issueReferences).toContainText(`Child issue · ${child.key}`);
   await expect(issueReferences).toContainText("Child issue");
   await expect(issueReferences).toContainText(`Attached document · ${target.key}`);
@@ -70,7 +76,8 @@ test("an issue and its ask show a cross-project message and structural backlinks
   ).resolves.toBe(true);
 
   await page.goto("/");
-  const phoneCard = page.getByTestId(`ask-${decision.id}`);
+  // At 390 px the Inbox lists short rows; the question's card is read in the view its row opens.
+  const phoneCard = await askCard(page, decision.id);
   await phoneCard.getByRole("button", { name: /^Referenced by \(1\)$/ }).click();
   await expect(phoneCard.getByRole("region", { name: "Referenced by" })).toContainText(
     `Message · ${source.key}`
@@ -115,6 +122,7 @@ test("an open backlink panel follows a mention added, replied to, and removed", 
   // one per second (`MIN_REFETCH_INTERVAL_MS`): a page timer the page's own clock fires.
   await page.clock.install();
   await page.goto(`/issues/${target.key}`);
+  await openIssueDetails(page);
   await page.getByRole("button", { name: /^Referenced by/ }).click();
   const references = page.getByTestId("issue-header").getByRole("region", {
     name: "Referenced by",
@@ -126,7 +134,10 @@ test("an open backlink panel follows a mention added, replied to, and removed", 
 
   await createMessage(source.key, { body: `Blocked on dispatch://${target.key} today.` });
   await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
-  await expect(references).toContainText("Blocked on dispatch://", live);
+  // The excerpt is the message's stored text, drawn by the renderer, so the bare address reads as
+  // the target's current name once the target's read lands. Before that it shows
+  // the address as written, for a moment (76 ms measured in the pod), which is no claim to read.
+  await expect(references).toContainText(`Blocked on ${target.key} ${target.title} today.`, live);
 
   const reply = await createComment(source.key, {
     body: `Still blocked on dispatch://${target.key} after the rollback.`,
@@ -359,6 +370,7 @@ test("an issue header's count follows an ask whose question cites it", async ({ 
   await page.clock.install();
   await page.goto(`/issues/${target.key}`);
   const header = page.getByTestId("issue-header");
+  await openIssueDetails(page);
   // The issue's own spec document is attached to it, so it starts at one.
   await expect(header.getByRole("button", { name: /^Referenced by \(1\)$/ })).toBeVisible();
 
@@ -393,12 +405,14 @@ test("an issue's backlinks skip an edge of a node kind this build does not know"
   );
 
   await page.goto(`/issues/${target.key}`);
+  // What references the issue is a row of the header's Details (dispatch://INFRA-5200).
+  await openIssueDetails(page);
   const header = page.getByTestId("issue-header");
   // The issue's own spec document and the message: the unknown edge would make it three.
   await header.getByRole("button", { name: /^Referenced by \(2\)$/ }).click();
   const references = header.getByRole("region", { name: "Referenced by" });
   await expect(references).toContainText(`Message · ${source.key}`);
-  await expect(references).toContainText(`Waiting on dispatch://${target.key}`);
+  await expect(references).toContainText(`Waiting on ${target.key} Cited by two builds to land.`);
   await expect(references).not.toContainText("Referenced by unavailable.");
 });
 

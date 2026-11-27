@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -27,8 +28,13 @@ const maxMessageReplyPreview16 = 160
 type createMessageInput struct {
 	Body      string  `json:"body" required:"true"`
 	InReplyTo *string `json:"in_reply_to"`
-	// InReplyToBlock is the id of the block of message InReplyTo the reply answers ("b2").
+	// InReplyToBlock is the id of the block of message InReplyTo the reply answers ("b2"). Quote
+	// and Occurrence are the words of that block the reply quotes, in its plain text, and which
+	// of their matches in the block they are, counted from 0, as model.AnchorInput holds them for
+	// a document's text.
 	InReplyToBlock *string      `json:"in_reply_to_block"`
+	Quote          *string      `json:"quote"`
+	Occurrence     *int         `json:"occurrence"`
 	Target         *string      `json:"target"`
 	Delivery       *string      `json:"delivery"`
 	Urgency        *string      `json:"urgency"`
@@ -70,7 +76,7 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	issueKey := r.PathValue("key")
-	message, advice, err := s.createStoredMessage(r.Context(), &issueKey, input, delivery, false, actor)
+	message, advice, err := s.createStoredMessage(r.Context(), "", &issueKey, input, delivery, false, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -84,6 +90,10 @@ type createAgentMessageInput struct {
 	Delivery       string  `json:"delivery" required:"true"`
 	InReplyTo      *string `json:"in_reply_to"`
 	InReplyToBlock *string `json:"in_reply_to_block"`
+	// Quote and Occurrence are the words of block InReplyToBlock the reply quotes, as
+	// createMessageInput's.
+	Quote      *string `json:"quote"`
+	Occurrence *int    `json:"occurrence"`
 	// ConnectedOnly asks that this message reach a session that is running now or not at all:
 	// the send is made with the listener's connected_only, which refuses a session the listener
 	// knows and that is not running rather than storing the message for it, and the attempt
@@ -113,14 +123,14 @@ func (s *server) createAgentMessage(w http.ResponseWriter, r *http.Request) {
 	target := "session:" + r.PathValue("session_id")
 	messageInput := createMessageInput{
 		Body: input.Body, InReplyTo: input.InReplyTo, InReplyToBlock: input.InReplyToBlock,
-		Target: &target, Delivery: &input.Delivery,
+		Quote: input.Quote, Occurrence: input.Occurrence, Target: &target, Delivery: &input.Delivery,
 	}
 	delivery, err := validateCreateMessage(&messageInput)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	message, _, err := s.createStoredMessage(r.Context(), nil, messageInput, delivery, input.ConnectedOnly, actor)
+	message, _, err := s.createStoredMessage(r.Context(), "", nil, messageInput, delivery, input.ConnectedOnly, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -308,13 +318,55 @@ func (s *server) owedMessageAttempts(ctx context.Context, messageIDs []string) (
 	return owed, rows.Err()
 }
 
+// planMessageNode reads, in a request's read phase, the scope of message id, which the request
+// is about to store, and answers the write of its node (graphstore.MessageNode), held for the
+// event that records the message: the request queues the node write before the row's insert
+// (graphstore.QueueNodes) and its cause after the event (graphstore.QueueCaused), both in its
+// write phase. A message on an issue is in that issue's project. A message on none is between
+// its thread's parties (graphstore.ThreadParties): those of the root it answers, read up
+// in_reply_to as messageThreadCTE walks it, or, for a message that answers nothing, its own
+// author and target. at is the row's created_at, which the node is dated with.
+func planMessageNode(
+	ctx context.Context, tx pgx.Tx, id string, issueKey, inReplyTo *string, author model.Actor, target *string, at time.Time,
+) (graphstore.Uncaused, error) {
+	var project string
+	var parties []string
+	switch {
+	case issueKey != nil:
+		var err error
+		if project, _, err = graphstore.ScopeOf(ctx, tx, issueKey, nil); err != nil {
+			return graphstore.Uncaused{}, err
+		}
+	case inReplyTo != nil:
+		var rootAuthor []byte
+		var rootTarget *string
+		if err := tx.QueryRow(ctx, messageThreadCTE+`
+			select m.author, m.target from messages m join thread t on t.id = m.id
+			where t.in_reply_to is null
+		`, *inReplyTo).Scan(&rootAuthor, &rootTarget); err != nil {
+			return graphstore.Uncaused{}, fmt.Errorf("read the thread root of a reply to message %s: %w", *inReplyTo, err)
+		}
+		var root model.Actor
+		if err := json.Unmarshal(rootAuthor, &root); err != nil {
+			return graphstore.Uncaused{}, fmt.Errorf("decode the author of the thread root of message %s: %w", *inReplyTo, err)
+		}
+		parties = graphstore.ThreadParties(root, rootTarget)
+	default:
+		parties = graphstore.ThreadParties(author, target)
+	}
+	return graphstore.PlanUncaused([]graphstore.Node{graphstore.MessageNode(id, project, parties, author, at)}, nil), nil
+}
+
 // createStoredMessage writes one message in a single transaction, with it the keyed request's
 // recovery point (bindRequestKeyRecovery), so a repeat under the key is answered with this message
 // however this request ends, then sends a targeted message's first attempt. connectedOnly is the
 // request's connected_only, which only the agents route takes
-// (createAgentMessageInput.ConnectedOnly).
+// (createAgentMessageInput.ConnectedOnly). chosenID is the id the message is stored under: empty
+// for every request, whose message takes a fresh id, and the id a caller inside this process
+// chose for a post it may make again (postSystemMessage).
 func (s *server) createStoredMessage(
 	ctx context.Context,
+	chosenID string,
 	issueKey *string,
 	input createMessageInput,
 	delivery string,
@@ -352,7 +404,7 @@ func (s *server) createStoredMessage(
 	var block *namedBlock
 	var parentRepair refs.ItemRepair
 	if input.InReplyToBlock != nil {
-		if parentRepair, block, err = s.planReplyBlock(ctx, tx, actor, refs.ItemMessage, parent.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE"); err != nil {
+		if parentRepair, block, err = s.planReplyBlock(ctx, tx, actor, refs.ItemMessage, parent.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE", input.Quote, input.Occurrence); err != nil {
 			return model.Message{}, nil, err
 		}
 		parent.ReplyBody = messageReplyPreview(block.excerpt)
@@ -394,7 +446,7 @@ func (s *server) createStoredMessage(
 	// (writeAdvice).
 	var messageID string
 	var createdAt time.Time
-	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&messageID, &createdAt); err != nil {
+	if err := tx.QueryRow(ctx, `select coalesce(nullif($1, ''), gen_random_uuid()::text), now()`, chosenID).Scan(&messageID, &createdAt); err != nil {
 		return model.Message{}, nil, err
 	}
 	eventType := "message.created"
@@ -440,20 +492,31 @@ func (s *server) createStoredMessage(
 	if err != nil {
 		return model.Message{}, nil, err
 	}
-	// The parent's lock, the index its blocks owe, the insert, the recovery point, this message's
-	// own index, the event, its stamp and a targeted message's first delivery attempt go in one
-	// batch (store.WriteBatch): the message is known before the insert runs, and the stamp names
-	// the event's id as the id sequence left it.
+	// The message's node, in its issue's project or between its thread's parties, read here in
+	// the read phase; its write goes in before the row's insert, and what it states waits for the
+	// event below (graphstore.QueueCaused).
+	messageNode, err := planMessageNode(ctx, tx, messageID, issueKey, input.InReplyTo, actor, input.Target, createdAt)
+	if err != nil {
+		return model.Message{}, nil, err
+	}
+	// The parent's lock, the index its blocks owe, the message's node, the insert, the recovery
+	// point, this message's own index, the event, its stamp, what the node write stated and a
+	// targeted message's first delivery attempt go in one batch (store.WriteBatch): the message is
+	// known before the insert runs, and the stamp and the node's cause name the event's id as the
+	// id sequence left it. The insert stores the words of the block the reply quotes from the
+	// block it carries (replyQuote).
+	quote, occurrence := replyQuote(message.ReplyBlock)
 	var event model.Event
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		if block != nil {
 			queueReplyParentMessageLock(b, parent.ID)
 			parentRepair.Queue(b)
 		}
+		graphstore.QueueNodes(b, messageNode)
 		b.Queue("", `
-			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at)
-			values ($1, $2, $3, $4, $5, $6, $7, $8)
-		`, messageID, issueKey, author, input.Body, input.Target, input.InReplyTo, message.RepliesToBlock, createdAt)
+			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, replies_to_quote, replies_to_occurrence, created_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		`, messageID, issueKey, author, input.Body, input.Target, input.InReplyTo, message.RepliesToBlock, quote, occurrence, createdAt)
 		// The recovery point right after its message and before the event append: a repeat that
 		// took the key over meanwhile refuses it, and this transaction rolls back.
 		if err := queueRequestKeyRecovery(ctx, b, messageRecovery{MessageID: messageID, Delivery: delivery}); err != nil {
@@ -474,6 +537,7 @@ func (s *server) createStoredMessage(
 		}); err != nil {
 			return err
 		}
+		graphstore.QueueCaused(b, messageNode, graphstore.LatestEvent)
 		// A targeted message's attempt 1 is queued here, with the writes of the transaction that
 		// stores the message, unclaimed and naming no session yet, as writeBroadcast opens each
 		// recipient's: a process that dies, or a request whose connection is cut, between this
@@ -559,6 +623,9 @@ func validateCreateMessage(input *createMessageInput) (string, error) {
 	input.Target = target
 	if input.InReplyToBlock != nil && input.InReplyTo == nil {
 		return "", errorf(http.StatusBadRequest, "INVALID_MESSAGE", "in_reply_to_block requires in_reply_to, the message whose block it names")
+	}
+	if err := replyQuoteRefusal("INVALID_MESSAGE", "in_reply_to_block", input.InReplyToBlock, input.Quote, input.Occurrence); err != nil {
+		return "", err
 	}
 	if input.Urgency != nil && !validMessageUrgency(*input.Urgency) {
 		return "", errorf(http.StatusBadRequest, "MESSAGE_INPUT", "urgency must be one of low, med, high, blocking")
@@ -999,14 +1066,27 @@ var listIssueRootMessagesQuery = `
 		order by created_at, id
 	`
 
-// listIssueMessages is every root message of one issue, oldest first, each with its deliveries
-// and every message replying to it: one row per thread, the list a dashboard shows one card
-// from. It is unpaged, as an issue's comments are - the threads on an issue are the whole
-// conversation held there. A targeted message is an ordinary root and is listed like any
-// other.
+// listIssueMessages answers every root message of one issue, oldest first, with its deliveries
+// and every message replying to it: one row per thread. Without order the list is unpaged,
+// as the issue's comment list is. A targeted message is an ordinary root and is listed like
+// any other. An activity page limits the roots before building their threads.
 func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.actingReader(w, r)
 	if !ok {
+		return
+	}
+	page, err := parseThreadPage(r.URL.Query(), "in", "none")
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if page != nil {
+		result, err := s.readMessageThreadPage(r.Context(), who, r.PathValue("key"), *page, wantsDisplayTrees(r))
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, result)
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), listIssueRootMessagesQuery, r.PathValue("key"))

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,12 +143,12 @@ func newAdmissionDrawing(t *testing.T, project string, cap int, steps []record.D
 // architectStart is the task admission queues with the start of a root architect
 // (workflow.ArchitectStartTask), derived from the record exactly as admission derives it: what
 // workflow.ArchitectStartOf reads of the root as it stands now — whether a hand-over carried it in,
-// the design gate rows it holds and the run its architect claim last served — under the gate
-// steps its own admission runs, and what its tree is owed where a person decided something on it
-// while nobody in the tree could hear them (decided). A test about what admission writes names the
-// task through this helper; which shape each root gets, and the whole text of each shape, are
-// pinned in internal/workflow (TestTheArchitectTaskOfEachShape, TestTheArchitectTaskShapeRule)
-// and the delivery to a launched architect in internal/daemon
+// the design gate rows it holds, the run its architect claim last served and the roots that rest
+// on its approval — under the gate steps its own admission runs, and what its tree is owed where a
+// person decided something on it while nobody in the tree could hear them (decided). A test about
+// what admission writes names the task through this helper; which shape each root gets, and the
+// whole text of each shape, are pinned in internal/workflow (TestTheArchitectTaskOfEachShape,
+// TestTheArchitectTaskShapeRule) and the delivery to a launched architect in internal/daemon
 // (TestAFreshAdmissionGivesItsArchitectItsStartTask).
 func architectStart(t *testing.T, pool *pgxpool.Pool, admission *Admission, key, decided string) string {
 	t.Helper()
@@ -170,6 +171,18 @@ func apply(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID strin
 		t.Fatalf("ApplyFact %s: %v", eventID, err)
 	}
 }
+
+// notStateRows is the predicate that leaves the state lane's rows (record.LaneState) out of a read
+// of the whole outbox: a write of an issue, a slot, a claim or the admission block queues one when
+// the store's state events are on, and a test that counts or lists the outbox asserts the rows of
+// the other lanes.
+var notStateRows = func() string {
+	var kinds []string
+	for _, kind := range record.LaneKinds(record.LaneState) {
+		kinds = append(kinds, "'"+string(kind)+"'")
+	}
+	return "kind not in (" + strings.Join(kinds, ", ") + ")"
+}()
 
 type effect struct {
 	kind    record.OutboxKind
@@ -200,9 +213,12 @@ func assertEffects(t *testing.T, pool *pgxpool.Pool, want []effect) {
 // which the transition raised on the role's phases row: the record counts the entries a role has
 // been handed, so two runs of the same events write the same number and a comparison of two runs
 // reads it like any other field.
+//
+// The state lane's rows are left out too (notStateRows): these tests assert the effects of the
+// other lanes, and the state events are asserted where they are written.
 func effects(t *testing.T, pool *pgxpool.Pool) []effect {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `select kind, issue, payload from outbox order by id`)
+	rows, err := pool.Query(context.Background(), `select kind, issue, payload from outbox where `+notStateRows+` order by id`)
 	if err != nil {
 		t.Fatalf("list outbox: %v", err)
 	}

@@ -295,6 +295,7 @@ func correctRecord(t *testing.T, pool *store.Pool, records record.Store, key, re
 // default branch and GitHub's spelling of it, keeps the one the issue left with the moment it
 // moved, and the issue's generation and phase do not move.
 func TestRepositoryCorrectionFollowsALiveDispatchEvent(t *testing.T) {
+	t.Parallel()
 	r := newCorrectionRig(t)
 	r.event(2, "acme/tools")
 	issue := r.issue()
@@ -312,6 +313,7 @@ func TestRepositoryCorrectionFollowsALiveDispatchEvent(t *testing.T) {
 // its pass applies nothing to the record and says nothing; the follow after the boot, whose
 // preparation of the issue reads GitHub, corrects it.
 func TestRepositoryCorrectionFollowsTheBootListing(t *testing.T) {
+	t.Parallel()
 	r := newCorrectionRig(t)
 	r.listing(3, "acme/tools")
 	if issue := r.uncorrected(); issue.LastDispatchSeq != 3 || issue.RepoChange != nil {
@@ -331,10 +333,11 @@ func TestRepositoryCorrectionFollowsTheBootListing(t *testing.T) {
 // reaches the record through the move's live event (the engine's dispatchIssue), which follows
 // Dispatch's resolution before admission re-admits in the same fact, or, where the boot's listing
 // is the first read of the move, through the follow after that boot. dispatch://INFRA-2865
-// measured the absence: a park and a re-admission gave a new generation on the old repository,
+// measured the absence: a move to the backlog and a re-admission gave a new generation on the old repository,
 // because nothing re-resolved the repository, and the new run cloned the repository the issue had
 // left.
 func TestRepositoryCorrectionFollowsAReadmission(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		readmit func(*correctionRig)
@@ -347,13 +350,13 @@ func TestRepositoryCorrectionFollowsAReadmission(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newCorrectionRig(t)
-			// A person parks the running root, which takes its tree out of the workflow: the
+			// A person moves the running root to the backlog, which takes its tree out of the workflow: the
 			// issue is recorded on acme/widgets still, which is what Dispatch resolved it to then.
 			r.move(2, "backlog", "acme/widgets")
-			if parked := r.issue(); !parked.Lingers() || parked.Repo != "acme/widgets" {
-				t.Fatalf("the parked root = %#v, want its tree lingering out of the workflow on acme/widgets", parked)
+			if backlogged := r.issue(); !backlogged.Lingers() || backlogged.Repo != "acme/widgets" {
+				t.Fatalf("the root in the backlog = %#v, want its tree lingering out of the workflow on acme/widgets", backlogged)
 			}
-			// The repository is corrected in Dispatch while the issue is parked, and the move back
+			// The repository is corrected in Dispatch while the issue is in the backlog, and the move back
 			// to todo is the first thing the daemon reads of either change.
 			tc.readmit(r)
 
@@ -393,6 +396,7 @@ const gadgetsNote = "Legion did not move this issue off acme/widgets: the review
 // the change waits on the record with the reason it waits. The boot's listing, which reads GitHub
 // for nothing, writes nothing over it.
 func TestRepositoryCorrectionTellsAnIssueWhoseNewRepositoryLegionCannotWork(t *testing.T) {
+	t.Parallel()
 	r := newCorrectionRig(t)
 	r.reads["acme/gadgets"] = gadgetsRefused
 	r.event(2, "acme/gadgets")
@@ -412,6 +416,7 @@ func TestRepositoryCorrectionTellsAnIssueWhoseNewRepositoryLegionCannotWork(t *t
 // issue (prepareRecorded, requestFollowOf), which reads GitHub again until it answers
 // (TestACorrectionGitHubDidNotAnswerIsFollowedOnceGitHubAnswers).
 func TestRepositoryCorrectionWritesNothingForARepositoryGitHubHasNotAnsweredFor(t *testing.T) {
+	t.Parallel()
 	r := newCorrectionRig(t)
 	r.event(2, "stranger/tools")
 	r.listing(3, "stranger/tools")
@@ -433,6 +438,7 @@ func TestRepositoryCorrectionWritesNothingForARepositoryGitHubHasNotAnsweredFor(
 // that pass is the issue's next event or the follow after the next boot: each holds here. Nothing
 // is said of the correction itself.
 func TestRepositoryCorrectionAppliesTheWaitingChangeAtTheNextEventOrTheNextBoot(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		apply func(*correctionRig)
@@ -467,6 +473,7 @@ func TestRepositoryCorrectionAppliesTheWaitingChangeAtTheNextEventOrTheNextBoot(
 // correction, no note, and no repository note row to say one was posted. That is the common pass,
 // which every event and every listing of every recorded issue takes.
 func TestRepositoryCorrectionWritesNothingWhenDispatchNamesTheRecordedRepository(t *testing.T) {
+	t.Parallel()
 	r := newCorrectionRig(t)
 	r.event(2, "acme/widgets")
 	r.listing(3, "acme/widgets")
@@ -489,6 +496,7 @@ func TestRepositoryCorrectionWritesNothingWhenDispatchNamesTheRecordedRepository
 // performs no I/O, answers from that read. This rig is the runtime's own preparation over a GitHub
 // stand-in, rather than the reads the tests above hold in memory.
 func TestRepositoryCorrectionReadsTheDefaultBranchOfTheRepositoryItMovesTo(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r, w, branches := newRuntimeCorrectionRig(t)
 
@@ -521,6 +529,7 @@ func TestRepositoryCorrectionReadsTheDefaultBranchOfTheRepositoryItMovesTo(t *te
 // after the boot instead (requestFollow). That follow, over Dispatch's listing, reads the
 // repository and corrects the record, with Dispatch's resolution the only thing that moved.
 func TestRepositoryCorrectionReadsTheDefaultBranchForARecordedIssueTheBootsListingShowsOutOfTodo(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r, w, branches := newRuntimeCorrectionRig(t)
 	w.consumers = correctionConsumers(t, r.pool)

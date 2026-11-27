@@ -292,11 +292,20 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 		})
 	}
 
-	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), causeTimesContract-1)
+	// A caller below causeTimesContract is below dispatchCredentialContract too, the one frozen row
+	// above it, so its log holds the cause times' line first and the Dispatch credential's second,
+	// then the line of each band above them (narrowingsExpected), which is that band's test's to
+	// name. It reads carriedState, as TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps does.
+	carried := carriedState(t)
+	_, narrowings := stateNarrowedStating(t, carried, statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
-	if len(narrowings) == 0 || narrowings[0].Dropped != dropped || narrowings[0].PluginContract != causeTimesContract-1 {
-		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want its first line saying it dropped %q",
-			narrowings, causeTimesContract-1, dropped)
+	if len(narrowings) < 2 || narrowings[0].Dropped != dropped || narrowings[1].Dropped != "dispatchCredential" {
+		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want one that dropped %q and one that dropped %q first",
+			narrowings, causeTimesContract-1, dropped, "dispatchCredential")
 	}
-	wantNarrowings(t, narrowings, causeTimesContract-1, narrowingsExpected(populatedState(t), causeTimesContract-1))
+	wantNarrowings(t, narrowings, causeTimesContract-1, narrowingsExpected(carried, causeTimesContract-1))
+	if len(narrowings) > 0 && narrowings[0].PluginContract != causeTimesContract-1 {
+		t.Errorf("the line that dropped %q names contract %d, want the caller's %d",
+			dropped, narrowings[0].PluginContract, causeTimesContract-1)
+	}
 }

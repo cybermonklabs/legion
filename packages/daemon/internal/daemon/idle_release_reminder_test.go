@@ -93,7 +93,7 @@ func TestIdleOfAClaimThatOwesNothingArmsNoBackstopForItsRole(t *testing.T) {
 // landed, and its live merger, level with its row's entry, reported a reminder wake a minute
 // past due. The merger the daemon asked to merge forward owes the merge, its own open work, so
 // its pod is held reminder_due. The merger the move into merging held rather than asked, since
-// the implementer's ask made in reviewing had not landed (workflow's holdMerger), owes nothing
+// the implementer's ask made in reviewing had not landed (workflow's holdStartedWorker), owes nothing
 // while that ask holds it (record.MergeForwardHolds, read from the pull request in the store by
 // record.FillIdleClaims), so no reminder holds its pod, and quiet past the idle bound it is
 // released.
@@ -107,7 +107,7 @@ func TestIdleOfAClaimThatOwesNothingHoldsNoPodForAPastDueReminder(t *testing.T) 
 		token := rig.token(issue)
 
 		var quieted time.Time
-		idleRigEventually(t, idleRigReleaseWait, "the pod of "+issue.key+" released", func() bool {
+		idleRigEventually(t, "the pod of "+issue.key+" released", func() bool {
 			if time.Since(quieted) > 2*time.Second {
 				quieted = time.Now()
 				rig.quietWithPastDueReminder(issue)
@@ -139,7 +139,7 @@ func TestIdleOfAClaimThatOwesNothingHoldsNoPodForAPastDueReminder(t *testing.T) 
 		}
 		defer st.Close()
 		var quieted time.Time
-		idleRigEventually(t, idleRigRecordWait, "the pod of "+issue.key+" held for a due reminder over passes of the idle tick", func() bool {
+		idleRigEventually(t, "the pod of "+issue.key+" held for a due reminder over passes of the idle tick", func() bool {
 			if time.Since(quieted) > 2*time.Second {
 				quieted = time.Now()
 				rig.quietWithPastDueReminder(issue)
@@ -293,7 +293,7 @@ func TestIdleOfAClaimThatOwesNothingGetsItsPodBackForItsNextWork(t *testing.T) {
 	rig.moveBack(issue)
 
 	rig.awaitResumed(issue, registered+1)
-	idleRigEventually(t, idleRigRecordWait, "a task of "+issue.key+"'s phase given to its woken "+string(issue.role), func() bool {
+	idleRigEventually(t, "a task of "+issue.key+"'s phase given to its woken "+string(issue.role), func() bool {
 		return len(rig.newPrompts(issue)) > 0
 	})
 	rig.kube.requireServed(t)
@@ -364,7 +364,7 @@ func (r *idleWakeRig) quietWithPastDueReminder(issue idleRigIssue) {
 // arms is in the table.
 func (r *idleWakeRig) awaitReleaseStepDone(issue idleRigIssue) {
 	r.t.Helper()
-	idleRigEventually(r.t, idleRigRecordWait, "the release step of "+issue.key+" done", func() bool {
+	idleRigEventually(r.t, "the release step of "+issue.key+" done", func() bool {
 		var marks int
 		if err := r.pool.QueryRow(context.Background(),
 			`select count(*) from issue_releases where project = $1 and issue = $2`, r.project, issue.key).Scan(&marks); err != nil {

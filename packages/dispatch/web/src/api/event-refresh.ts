@@ -721,12 +721,8 @@ function issueWriteTargets(
   if (titleOrStatus) {
     targets.push(issueSummaryOf(key, event));
   }
-  // The Reference picker's project list and the Agents page's open-issue picker list titles and
-  // whether an issue is open.
+  // The Agents page's open-issue picker lists titles and whether an issue is open.
   if (created || closed || titleOrStatus) {
-    if (project !== undefined) {
-      targets.push({ exact: true, queryKey: ["issues", project] });
-    }
     targets.push({ exact: true, queryKey: ["agents", "issue-picker"] });
   }
   if (!created && titleOrStatus) {
@@ -1118,7 +1114,22 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // A create, a rename, a move, a description or a delete of a priority, by anybody.
     return priorityWriteTargets(event);
   }
+  if (event.type === "project.access_changed") {
+    // An owner given, or another change of who may see the project: no read of the dashboard
+    // carries a project's owner, visibility or access list yet, so nothing is refreshed.
+    return [];
+  }
   if (event.type === "subscription.remove_requested") {
+    return [];
+  }
+  // The outbox's report that an event's copy for a role reached no session. On a project itself
+  // it moves no read, since no page reads a project's own log; on a project document it takes the
+  // document's path below, and on an issue it is a line in the issue's log.
+  if (
+    event.type === "role.undelivered" &&
+    event.issue_key === null &&
+    (event.artifact_id === null || event.artifact_id === undefined)
+  ) {
     return [];
   }
   if (event.issue_key === null && isMessageEvent(event)) {
@@ -1196,17 +1207,28 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   if (
     event.type === "issue.claimed" ||
     event.type === "issue.released" ||
-    event.type === "issue.deployed"
+    event.type === "issue.deployed" ||
+    event.type === "issue.role_holders_changed"
   ) {
     // A claim changes who holds the issue, and its holder is a collaborator from then on: the
     // detail, the log, the project lists that render the claim, and the collaborators and the
     // steps the branches above named. No rollup, ask count or component attachment moves with it.
-    // A deploy is a line in the issue's log and nothing the lists or rollups read.
+    // A deploy, and a change of the sessions the Legion daemon gave the issue's roles, add only a
+    // line to the issue's log. They still refresh the issue's project list, as every issue event
+    // does, because they move the issue's `last_seq` and `updated_at` (events.Broker.QueueAppend,
+    // envoy's internal/dispatch/events/broker.go). So a role change lights the issue's unread dot
+    // (`issueIsUnread`, UnreadDot.tsx), and counts as activity of the priorities the issue
+    // advances, as the quiet `comment.delivery`, `comment.anchor_refreshed` and `ask.edited` do.
     return targets;
   }
   if (event.type === "artifact.human_edited") {
     // The notice a person's settled edits send to the document's agents, after each edit's own
     // `artifact.version` refreshed what it changed: a line in the issue's log and nothing more.
+    return targets;
+  }
+  if (event.type === "role.undelivered") {
+    // The outbox's report that an event's copy for a role reached no session: a line in the
+    // issue's log and nothing more.
     return targets;
   }
   if (event.type === "artifact.created" || event.type === "artifact.version") {
@@ -1287,9 +1309,9 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     }
     return targets;
   }
-  // A pull request that moves to another issue changes what this issue's results are compared
-  // with, and the event is on each of the two issues, so each refetches its own results read.
-  if (event.type === "issue.pull_request_attribution_changed") {
+  // Attribution changes arrive at both issues. Deploy events name each affected result owner.
+  // Each receiver refetches only its own verification results.
+  if (event.type === "issue.pull_request_attribution_changed" || event.type === "deploy.recorded") {
     targets.push({ exact: true, queryKey: ["issue", key, "results"] });
     return targets;
   }

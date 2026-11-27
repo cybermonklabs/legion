@@ -74,7 +74,7 @@ import (
 // has not landed (cybermonklabs/legion#4979). The merger the daemon asked to merge forward owes
 // the merge, which is its own open work, so the release arms its backstop. The merger the move
 // into merging held rather than asked, since the implementer's ask made in reviewing had not
-// landed (workflow's holdMerger), is held by that ask (record.MergeForwardHolds) and gets none:
+// landed (workflow's holdStartedWorker), is held by that ask (record.MergeForwardHolds) and gets none:
 // the landed message wakes its pod. Each reads the ask from the pull request in the store
 // (record.FillIdleClaims), so a rule that holds the merger asked, or not the merger held, fails
 // one of them.

@@ -9,15 +9,23 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/ciphertest"
+
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/testbinary"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testparallel"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
 
 // daemonTestParallelism is how many of this package's tests run at once when the command line
-// names no -parallel. Every test calls t.Parallel but those that change something the whole
-// process shares (each says what in a `Not parallel:` comment), which run first, one at a time.
+// names no -parallel. Every test calls t.Parallel as its first statement but those that cannot
+// run beside the others, each of which says why in a `Not parallel:` comment on its first line: it
+// changes something the whole process shares, it is a helper process that exits the binary, or it
+// holds a wall-clock bound the parallel tests' load could make it miss (docs/testing.md says
+// which). Those run first, one at a time. TestEveryTestCallsParallelOrSaysWhyNot fails a test that
+// does neither.
 // Each parallel test clones a database and boots daemons whose pools hold up to four connections
 // each, and go test's default of GOMAXPROCS would run as many at once as the machine has cores:
 // four on CI's runner, hundreds on a dev box, where it would open more connections than a test
@@ -42,7 +50,8 @@ var processDSN string
 // LEGION_NEWS_MODEL_SEED, LEGION_NEWS_MODEL_RUNS, LEGION_NEWS_MODEL_STEPS and
 // LEGION_NEWS_MODEL_TRACE, which prints each seed's steps. It
 // drops the migrated template testDSN and isolatedOutboxPool clone their databases from
-// (testpg.Main), removes the directory the tests' Envoy binaries were built into
+// (testpg.Main), drops the database of this binary's own that every secrets-broker rig makes its
+// schema in (ciphertest.Run), removes the directory the tests' Envoy binaries were built into
 // (testbuild.Main), and removes the NATS container the package's tests share (testnats.Main).
 //
 // It names one gh for every daemon the tests boot, LEGION_GH_PATH, this test binary: a boot
@@ -98,6 +107,23 @@ func TestMain(m *testing.M) {
 		}
 	}
 	os.Exit(testpg.Main("legion_daemon_test", func() int {
-		return testbuild.Main(func() int { return testnats.Main(m) })
+		return ciphertest.Run(func() int {
+			return testbuild.Main(func() int { return testnats.Main(m) })
+		})
 	}))
+}
+
+// Every test of this package calls t.Parallel() as its first statement or says why not
+// (daemonTestParallelism, testparallel.Require).
+func TestEveryTestCallsParallelOrSaysWhyNot(t *testing.T) {
+	t.Parallel()
+	testparallel.Require(t, ".")
+}
+
+// This test binary links no module of testcontainers-go (testbinary.LinksNoTestcontainers). It
+// starts itself again for each role process of the idle rig (TestIdleRigRoleProcess above), and
+// each of those starts paid that library's package init.
+func TestThisTestBinaryLinksNoTestcontainers(t *testing.T) {
+	t.Parallel()
+	testbinary.LinksNoTestcontainers(t)
 }

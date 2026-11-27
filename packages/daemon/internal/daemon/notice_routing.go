@@ -224,19 +224,23 @@ func (r *outbox) readNoticeRoute(ctx context.Context, tx pgx.Tx, key string, rou
 }
 
 // earlierNoticeFor is the oldest of tree's earlier notices that goes to architect as the claims
-// run now — its id and the moment it is due — or 0 and the zero moment when there is none. Each
-// earlier notice's architect is resolved again rather than recorded when it was held, since a
-// sub-architect can start or end while it waits, and by the rule its own publish follows
-// (noticeArchitect). An earlier row whose architect cannot be resolved is no architect's, so it
-// holds back no later notice; it finishes on its own attempt (notice).
+// run now — its id, the moment it is due, and whether it is a catch-up the wake pacing still
+// holds in its queue — or 0, the zero moment and false when there is none. Each earlier notice's
+// architect is resolved again rather than recorded when it was held, since a sub-architect can
+// start or end while it waits, and by the rule its own publish follows (noticeArchitect). An
+// earlier row whose architect cannot be resolved is no architect's, so it holds back no later
+// notice; it finishes on its own attempt (notice).
 //
 // The moment is what the row behind it waits for: an earlier row the wake pacing holds is due
 // minutes out — at the moment the pacing reserved for a catch-up (record.Notice.PacedAt), or, for
 // a row waiting out its architect's parked launch, at that launch's turn or parkedWakeBound on,
 // whichever comes first (parkedWait) — and the row behind it runs once, then (deliverNotice's
 // wait.Until), rather than climbing its backoff to it. So a park that ends before its turn holds
-// the row behind it for at most the bound as well.
-func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.Token) bool) (int64, time.Time) {
+// the row behind it for at most the bound as well. A catch-up the pacing still holds in its
+// queue is due at no moment until the pacer lets its place out (record.CatchUpIsHeld): held is
+// true for it and the moment is the zero time, and the row behind it waits for the pacer's
+// estimate of that place instead (deliverNotice).
+func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.Token) bool) (earlier int64, due time.Time, held bool) {
 	for _, other := range tree.earlier {
 		payload, err := record.DecodeOutboxPayload(other)
 		if err != nil {
@@ -251,10 +255,13 @@ func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.
 			continue
 		}
 		if owner, err := noticeArchitect(tree.project, tree.issues, issue, notice, runs); err == nil && owner == architect {
-			return other.ID, other.NextAt
+			if record.CatchUpIsHeld(other.NextAt) {
+				return other.ID, time.Time{}, true
+			}
+			return other.ID, other.NextAt, false
 		}
 	}
-	return 0, time.Time{}
+	return 0, time.Time{}, false
 }
 
 // noticeArchitect is the architect claim notice, of issue in tree, goes to. A catch-up goes to the
@@ -279,26 +286,27 @@ func noticeArchitect(project string, tree map[string]record.Issue, issue record.
 }
 
 // holdsRole is whether held's claim keeps its role through the decision in flight: the record's
-// rule holds (record.HoldsRole: it has not ended, and it is not suspended unless the idle release
-// suspended it), and that decision is not stopping its process for good (supervise.ClaimView's
-// Stopping) — a suspension, a failure, a release. The owner walk reads it, so no notice but a
-// catch-up is routed to a sub-architect whose session is being stopped: such a notice goes on up
-// the tree while the stop runs. It goes on up after the stop too, unless the stop is the idle
-// release's, whose released claim holds its role again (record.HoldsRole). A catch-up waits for
-// the architect of its own issue (noticeArchitect).
+// rule holds (supervise.HoldsRole: it has not ended, and it is not suspended unless the idle
+// release suspended it), and that decision is not stopping its process for good
+// (supervise.ClaimView's Stopping) — a suspension, a failure, a release. The owner walk reads it,
+// so no notice but a catch-up is routed to a sub-architect whose session is being stopped: such a
+// notice goes on up the tree while the stop runs. It goes on up after the stop too, unless the
+// stop is the idle release's, whose released claim holds its role again (supervise.HoldsRole). A
+// catch-up waits for the architect of its own issue (noticeArchitect).
 func holdsRole(held supervise.ClaimView) bool {
-	return record.HoldsRole(held.State, held.SuspendedBy) && !held.Stopping
+	return supervise.HoldsRole(held.State, held.SuspendedBy) && !held.Stopping
 }
 
 // claimEnded is whether a claim in state will not hold its role again: this daemon does not
 // supervise it (""), or it failed or retired. A child's own architect that failed does start again,
 // at its child's next phase start (workflow's reviveArchitect), but that launch's ready queues a
 // catch-up of its own, so nothing held for the failed claim waits for it. A suspended claim has
-// not ended: the operator's resume or deliver starts it again (`legion claims resume`), and so
-// does the workflow's next start of its role for a claim the workflow suspended, which for a
-// child's own architect is the child's next first phase start (workflow's StartFirstPhase), or,
-// after its tree's linger, the re-admission's start of a child past admitted (admit's
-// startMidPhaseMembers).
+// not ended: a resume starts its agent again — the operator's resume or deliver whoever suspended
+// it (`legion claims resume`), and the controller's any suspension but the operator's
+// (supervise.Claim.HeldAgainst) — and so does the workflow's
+// next start of its role for a claim the workflow suspended, which for a child's own architect is
+// the child's next first phase start (workflow's StartFirstPhase), or, after its tree's linger,
+// the re-admission's start of a child past admitted (admit's startMidPhaseMembers).
 func claimEnded(state supervise.ClaimState) bool {
 	return state == "" || state == supervise.StateFailed || state == supervise.StateRetired
 }

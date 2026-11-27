@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path"
 import { BROKER_VARIABLES } from "@legion/cipher-client/environment"
 import { METADATA_HOST_VAR } from "@legion/cipher-client/metadata-identity"
 import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts"
+import { forgetBrokerClients } from "@legion/envoy-client/broker-credential"
 import { ENVOY_INBOUND_VAR } from "@legion/envoy-client/envoy-settings"
 import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
@@ -28,6 +29,7 @@ import {
   MCP_SERVER_INFO,
   sessionCapabilities,
   startChannelSession,
+  userTurnDispatchClient,
 } from "../src/envoy-channel-server"
 import { modSession } from "../src/mod-session"
 import { roleStateFile, SessionIdentity } from "../src/session-identity"
@@ -90,6 +92,7 @@ test("writes each Envoy envelope into the session as the rendered card that name
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    stderr: (line) => void process.stderr.write(line),
   })
 
   await delivery.enqueue({ subject: directSubject, raw: deliveryRaw })
@@ -145,6 +148,7 @@ test("a cut comment's card keeps the part its frame carried and the note, and a 
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    stderr: (line) => void process.stderr.write(line),
   })
   const subject = "notifications.dispatch.issue.CORE-1.comment"
 
@@ -314,6 +318,7 @@ test("a card Envoy sends again is handed over again, under the one event id", as
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    stderr: (line) => void process.stderr.write(line),
   })
 
   expect(await delivery.enqueue({ subject: directSubject, raw: deliveryRaw })).toBe(true)
@@ -412,6 +417,7 @@ test("retains only the latest fifty inbound envelope summaries", async () => {
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    stderr: (line) => void process.stderr.write(line),
   })
 
   for (let index = 0; index < 51; index += 1) {
@@ -452,6 +458,7 @@ test("every frame with no event id is listed, since none of them names a copy", 
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    stderr: (line) => void process.stderr.write(line),
   })
   const unnamed = (summary: string): string =>
     JSON.stringify({
@@ -510,7 +517,7 @@ test("registers aside capability and soft-reclaims the role persisted for a resu
     },
     setRole: async (input) => {
       setRoles.push(input)
-      return { claimed: true, interest: noInterest() }
+      return { claimed: true, interest: noInterest(), warnings: [] }
     },
   })
 
@@ -753,6 +760,7 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
       identity: new SessionIdentity("ses_claude", process.cwd()),
       notifier,
       configFile: sessionConfigFile("claude", process.env),
+      stderr: (line) => void process.stderr.write(line),
     })
 
     // Not handed to Claude Code, so the forwarder releases its claim: Dispatch records the attempt
@@ -799,6 +807,7 @@ test("a rejected frame's report that landed with no answer back is not said to b
       identity: new SessionIdentity("ses_claude", process.cwd()),
       notifier: new FakeNotifier(),
       configFile: sessionConfigFile("claude", process.env),
+      stderr: (line) => void process.stderr.write(line),
     })
 
     expect(await delivery.enqueue({ subject: directSubject, raw: rejectedFrameRaw })).toBe(false)
@@ -911,6 +920,7 @@ test("answers a malformed targeted comment through its supplied comment reply ad
       identity: new SessionIdentity("ses_claude", process.cwd()),
       notifier,
       configFile: sessionConfigFile("claude", process.env),
+      stderr: (line) => void process.stderr.write(line),
     })
 
     await delivery.enqueue({ subject: directSubject, raw: rejectedCommentFrameRaw })
@@ -939,6 +949,7 @@ test("drops a malformed targeted frame that has no reply address", async () => {
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    stderr: (line) => void process.stderr.write(line),
   })
 
   await delivery.enqueue({
@@ -952,6 +963,83 @@ test("drops a malformed targeted frame that has no reply address", async () => {
 
   expect(notifier.notifications).toEqual([])
   expect(delivery.inbox()).toEqual([])
+})
+
+/** The variables a pod's broker trade reads beside DISPATCH_URL, which `isolatePaneEnvironment`
+ *  leaves alone: each test that sets one restores the process's own value after it. They are
+ *  cipher-client's own list, less the home directories every process keeps. */
+const brokerVariables = [
+  "DISPATCH_TOKEN_BROKER",
+  ...BROKER_VARIABLES.filter((name) => name !== "HOME" && name !== "XDG_STATE_HOME"),
+]
+
+test("the user-turn router's Dispatch client trades under the session's id", async () => {
+  const original = brokerVariables.map((name) => [name, process.env[name]] as const)
+  const servers: Server<undefined>[] = []
+  try {
+    // The session each trade asked the broker to write under, as its `session` form field.
+    const trades: string[] = []
+    servers.push(
+      Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch: async (request) => {
+          const form = new URLSearchParams(await request.text())
+          trades.push(form.get("session") ?? "no session")
+          return Response.json({
+            access_token: fixtureSecret("access"),
+            issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+            token_type: "DPoP",
+            expires_in: 600,
+            credential_id: "cred-1",
+          })
+        },
+      }),
+    )
+    const schemes: string[] = []
+    servers.push(
+      Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch: (request) => {
+          schemes.push((request.headers.get("authorization") ?? "").split(" ")[0] ?? "")
+          return Response.json({ kind: "agent", owner: null, service: null })
+        },
+      }),
+    )
+    const [broker, dispatch] = servers
+    // A pod launched under the broker setting: a projected token to trade, no bearer, and no
+    // AGENT_SECRETS_SESSION, which no pod sets.
+    const home = temporaryHome("router-dispatch")
+    const projected = join(home, "token")
+    await writeFile(projected, "projected.service.account.token\n")
+    for (const name of brokerVariables) delete process.env[name]
+    process.env["DISPATCH_URL"] = `http://127.0.0.1:${dispatch?.port}`
+    process.env["DISPATCH_TOKEN_BROKER"] = "1"
+    process.env["AGENT_SECRETS_URL"] = `http://127.0.0.1:${broker?.port}`
+    process.env["AGENT_SECRETS_MACHINE_IDENTITY"] = "kubernetes"
+    process.env["AGENT_SECRETS_MACHINE_TOKEN_FILE"] = projected
+    // Nobody signed in, so the trade is the pod's own.
+    process.env["AGENT_SECRETS_SIGNIN_DIR"] = join(home, "signins")
+
+    const client = await userTurnDispatchClient(
+      new SessionIdentity("ses_claude", home),
+      sessionConfigFile("claude", process.env),
+      5_000,
+    )
+    if (client === undefined) throw new Error("Dispatch is off for the router")
+    await client.whoami()
+
+    expect(trades).toEqual(["ses_claude"])
+    expect(schemes).toEqual(["DPoP"])
+  } finally {
+    forgetBrokerClients()
+    for (const server of servers) server.stop(true)
+    for (const [name, value] of original) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+  }
 })
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")

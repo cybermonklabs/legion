@@ -17,6 +17,7 @@ const phaseEntryVerbatimVersion = 20261114061900
 // of this release reads the wait that replaced the mark (20261118073048_phase_entry_awaiting,
 // whose own test reads what the mark becomes, and how a resume's entry round-trips).
 func TestThePhaseEntryVerbatimMigrationLeavesEveryRowUnmarked(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, phaseEntryVerbatimVersion-1)

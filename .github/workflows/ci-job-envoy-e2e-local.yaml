@@ -1,21 +1,33 @@
 name: CI job envoy-e2e-local
 
-# The steps of ci.yaml's `envoy-e2e-local` job, in a file of its own.
-# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
-# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+# The steps of two jobs, `.github/workflows/ci.yaml#envoy-e2e-local` and
+# `.github/workflows/ci.yaml#envoy-refill`, in a file of their own.
+# ci.yaml's job of each id calls this file and passes its own id as `job`, and the job of this
+# file named for it runs while the other is skipped. Each caller keeps `needs: changes` and the
+# whole `if:` that decides whether its job runs, so the `if:` here only picks which of the two
+# that is. The two share a file because ci.yaml already calls as many reusable workflows as
+# .github/scripts/check-workflow-files.sh allows it
+# (.github/ci-notes/ci.md#two-jobs-that-call-one-file), and both build the same listener and
+# natsd from the go-envoy cache.
 #
-# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
-# these steps selects this job alone, where a change to ci.yaml selects every job.
+# The split is for the filters. Each job's filter names this file beside ci.yaml, so a change to
+# these steps selects these two jobs alone, where a change to ci.yaml selects every job.
 #
-# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# Each job's last step reports ci-ok for its caller: on a merge-group run the job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
+      job:
+        description: >-
+          The id of ci.yaml's job that calls this file, `envoy-e2e-local` or `envoy-refill`: the
+          job of this file of that id runs, and the other is skipped.
+        type: string
+        required: true
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -31,6 +43,7 @@ env:
 
 jobs:
   envoy-e2e-local:
+    if: inputs.job == 'envoy-e2e-local'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     env:
@@ -49,6 +62,7 @@ jobs:
           token: ''
           cache: false
       # go-envoy: the listener and natsd e2e-local.sh builds.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -77,5 +91,61 @@ jobs:
         uses: ./.github/actions/ci-ok-report
         with:
           job: envoy-e2e-local
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  # The refill live proof (.github/ci-notes/ci.md#what-the-refill-live-proof-shows).
+  envoy-refill:
+    if: inputs.job == 'envoy-refill'
+    runs-on: ubuntu-24.04-arm
+    # The budget: in an agent pod with 2 shared CPUs, the reread scenario took 5 min 26 s and
+    # refuse 3 min 5 s, each with its builds on a warm Go cache. interrupt and recreate-live were
+    # not timed there. They wait mostly on the listener's 30 s self-health tick, and by the
+    # script's own waits each of their four runs takes about 2 to 4 minutes. 40 minutes is about
+    # twice the sum, which leaves room for a cold Go cache. recreate-live runs a shape again when
+    # its verdict is INVALID, up to 3 attempts in all. Timed later in such a pod, one attempt took
+    # 74 to 76 s, so the 4 attempts this can add (2 shapes, 2 more attempts each) take up to about
+    # 5 minutes. The budget adds 6 minutes for them.
+    timeout-minutes: 46
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+      # go-envoy: the listener and natsd e2e-refill.sh builds, as envoy-e2e-local's e2e-local.sh
+      # does.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      # Every scenario of the proof (INFRA-261): reread, interrupt (stop and restart),
+      # recreate-live (both shapes) and refuse. The script needs curl, flock, go, jq and setsid,
+      # which the runner image carries and setup-go adds. Its evidence directory is the runner's
+      # temporary directory, so the upload below finds it.
+      - name: Refill live proof
+        run: bash packages/envoy/scripts/e2e-refill.sh --out "$RUNNER_TEMP/envoy-e2e-refill"
+      # Each scenario's listener and NATS logs, polls and judge commands. The binaries the script
+      # built are left out.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: envoy-refill-evidence-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/envoy-e2e-refill
+            !${{ runner.temp }}/envoy-e2e-refill/bin
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-refill
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}

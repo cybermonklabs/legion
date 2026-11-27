@@ -11,8 +11,12 @@
 //
 // A second client is the plugin of the release before, which the driver builds itself
 // (olderClient): the newest commit of main's first-parent line whose daemon API contract is below
-// this one's, taken with `git archive` and given its own `bun install`. Its tester registers at that
-// contract and reads the answers of this daemon through that tree's client and schemas.
+// this one's, taken with `git archive` and given its own `bun install`. Its tester registers at this
+// daemon's contract, the store records the claim at that tree's contract before a restart, and the
+// tester reads the answers of this daemon through that tree's client and schemas. Which commit that
+// is follows main's contract and this checkout's, so what its client must have and what the daemon
+// must serve it are read from the contract its own tree declares, never from a contract this file
+// names for it.
 //
 // Each check prints `== <name>`, what the client answered, and `ok <name>`; each control runs the
 // same check's predicate on an answer it must refuse, and fails the run unless it does.
@@ -27,7 +31,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -75,11 +78,11 @@ func (o clientOutcome) String() string {
 }
 
 // heldOlder is nil when outcome, the state read of the release before's client of an issue held
-// task-stopped, is what that release can read: its own schema parsed the body (the read answered),
-// the issue is in it held from testing, and neither the issue's holdReason nor a row of
-// admission.held names a reason that arrived at api.OwnerPlanContract, which a contract below it
-// does not know. The daemon serves such a caller the issue with no holdReason and the row as
-// unclassified (api's withoutUnadmittedHoldReason and withoutUnadmittedHeldWords).
+// task-stopped, is what that release can read: its own schema parsed the body (the read answered)
+// and the issue is in it held from testing. A release below api.OwnerPlanContract must also be
+// served neither a holdReason nor a row of admission.held naming a reason that arrived at that
+// contract, which it does not know: the daemon serves such a caller the issue with no holdReason
+// and the row as unclassified (api's withoutUnadmittedHoldReason and withoutUnadmittedHeldWords).
 func heldOlder(outcome clientOutcome, contract int) error {
 	if !outcome.OK {
 		return fmt.Errorf("it %s; the release before's own schema must parse what this daemon serves it", outcome)
@@ -114,10 +117,11 @@ func heldOlder(outcome clientOutcome, contract int) error {
 }
 
 func TestOwnerStepsClientLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live, in newOwnerStepsClientLive).
 	l := newOwnerStepsClientLive(t)
 	planned, returnRefused, stopped, older := l.issues[0].key, l.issues[1].key, l.issues[2].key, l.issues[3].key
 	l.note("Dispatch %s, project %s, issues %s, %s, %s and %s; daemon at %s (contract %d); client of %s",
-		l.dispatch.base, l.cfg.Project, planned, returnRefused, stopped, older, l.d.base, api.DaemonAPIVersion, l.root)
+		l.dispatch.base, l.cfg.Project, planned, returnRefused, stopped, older, l.d.base, api.DaemonAPIVersion(), l.root)
 	l.check("older-client-tree", l.olderClient)
 
 	// register_plan with the architect's grant, and its control: the same call naming a version
@@ -217,9 +221,11 @@ func TestOwnerStepsClientLive(t *testing.T) {
 	// claim's recorded contract is set to the release before's while no daemon runs, as that release
 	// left it, and within that one turn its client, of that release's tree, reads this daemon's
 	// answers. The daemon serves each client the shape of the contract its request states
-	// (api's shapeAnswer and valueStrips): the release before reads an issue's holdReason with the
-	// one value `escalated`, so its read of the issue held task-stopped must parse in its own schema
-	// and carry no hold reason that arrived at api.OwnerPlanContract (heldOlder).
+	// (api's shapeAnswer and valueStrips), so its read of the issue held task-stopped must parse in
+	// its own schema (heldOlder). What else the case holds that release to follows from its contract
+	// alone: planRegister and taskStop arrived at api.OwnerPlanContract, so its client has them
+	// exactly when it speaks that contract or a later one, and a release below it reads an issue's
+	// holdReason with the one value `escalated` and must carry no hold reason that contract added.
 	l.check("older-client-reads", func() {
 		l.on(older)
 		l.givePlan(clientPlan...)
@@ -239,9 +245,10 @@ func TestOwnerStepsClientLive(t *testing.T) {
 			t.Fatalf("the older client's state read of %s, which stands on plan rows in testing, %s", older, state)
 		}
 		l.note("contract %d client's methods: %v", l.oldContract, state.Methods)
+		planRoutes := l.oldContract >= api.OwnerPlanContract
 		for _, route := range []string{"planRegister", "taskStop"} {
-			if slices.Contains(state.Methods, route) {
-				t.Fatalf("the contract %d client has %s; the release before has no such route", l.oldContract, route)
+			if has := slices.Contains(state.Methods, route); has != planRoutes {
+				t.Fatalf("the contract %d client has %s: %t, want %t, since the route arrived at contract %d", l.oldContract, route, has, planRoutes, api.OwnerPlanContract)
 			}
 		}
 		l.note("contract %d client state(): %s", l.oldContract, state)
@@ -267,7 +274,7 @@ func TestOwnerStepsClientLive(t *testing.T) {
 		// now launched nothing for it (each boot gets a fresh fake runtime).
 		registered := l.client(l.oldTree, tester, "register", map[string]any{"bootToken": tester.bootToken, "sessionId": tester.session,
 			"ompSessionFile": "/sessions/" + tester.session + ".jsonl", "agentId": tester.session, "pluginContract": l.oldContract}, nil)
-		if want := fmt.Sprintf("speaks daemon API contract %d; this daemon requires %d", l.oldContract, api.DaemonAPIVersion); registered.OK ||
+		if want := fmt.Sprintf("speaks daemon API contract %d; this daemon requires %d", l.oldContract, api.DaemonAPIVersion()); registered.OK ||
 			registered.Error != "LegionDaemonApiError" || registered.Status != http.StatusConflict || !strings.Contains(registered.Message, want) {
 			t.Fatalf("the contract %d client's own registration %s, want LegionDaemonApiError 409 saying it %s", l.oldContract, registered, want)
 		}
@@ -321,16 +328,18 @@ func newOwnerStepsClientLive(t *testing.T) *ownerStepsClientLive {
 	}
 	proof := newLiveProof(t, "scripts/e2e/owner-steps-client.sh")
 	// The plugin's client reads the state's settings with review_round_cap above 0, which the
-	// loader's default (3, config's keytable) always gives a deployment; the package's test config
-	// leaves the field 0, so the run names the default the loader would.
-	proof.cfg.ReviewRoundCap = 3
+	// loader's default always gives a deployment; the package's test config leaves the field 0, so
+	// the run names the default the loader would.
+	proof.cfg.ReviewRoundCap = config.DefaultReviewRoundCap
 	root := liveCLICheckout(t)
 	rig := newOwnerStepsRig(t, proof, startHandoffDispatch(t, root).scratchDispatch, 4, config.Project{DefaultSteps: steps})
 	return &ownerStepsClientLive{ownerStepsRig: rig, root: root}
 }
 
-// versionFile is the file whose DaemonAPIVersion line names a tree's daemon API contract.
-const versionFile = "packages/daemon/internal/api/version.go"
+// contractScript prints a commit's daemon API contract: the `const DaemonAPIVersion` of version.go
+// at a commit before the entries, the frozen list's greatest number plus the count of entry
+// fixtures at one after them.
+const contractScript = "scripts/daemon-contract.sh"
 
 // olderClient builds the plugin of the release before: the commit releaseBefore names, taken with
 // `git archive` into a directory of the run's own and given node_modules of its own with
@@ -346,57 +355,40 @@ func (l *ownerStepsClientLive) olderClient() {
 	l.run(tree, "bun", "install", "--frozen-lockfile")
 	l.oldTree, l.oldContract = tree, contract
 	l.note("the plugin of the release before: %s (%s), at contract %d, the newest commit below contract %d on the first-parent line of %s; its tree in %s with its own bun install",
-		commit, l.run(l.root, "git", "log", "-1", "--format=%cs %s", commit), contract, api.DaemonAPIVersion, ref, tree)
+		commit, l.run(l.root, "git", "log", "-1", "--format=%cs %s", commit), contract, api.DaemonAPIVersion(), ref, tree)
 }
 
-// releaseBefore answers the newest commit of main's first-parent line whose DaemonAPIVersion is
-// below this daemon's, its contract, and the ref the walk read main from. That is what is deployed
-// before this checkout: in a pull request's run, the main it merges into; on main, the commit
-// before the last change of the contract. main is origin/main in a clone that holds its history;
-// a shallow clone (CI's checkout) fetches main from origin, deeper each time the walk reaches the
-// end of what it fetched.
+// releaseBefore answers the newest commit of main's first-parent line whose daemon API contract is
+// below this daemon's, its contract, and the ref the walk read main from. That is the release before
+// this checkout's contract: in a run of a pull request that changes the contract, the main it merges
+// into; in a run of one that keeps main's contract, and on main, the commit before the last change of
+// the contract. main is refs/remotes/origin/main, whose whole history
+// scripts/e2e/owner-steps-client.sh fetched without blobs, with HEAD's, before it took this
+// driver's merge order: a shallow clone, as CI's checkout is, holds neither, and how far back the
+// last change of the contract is depends on how long main has kept it, which no depth bounds.
 func (l *ownerStepsClientLive) releaseBefore() (string, int, string) {
 	t := l.t
 	t.Helper()
-	if l.run(l.root, "git", "rev-parse", "--is-shallow-repository") != "true" {
-		ref := "refs/remotes/origin/main"
-		if commit, contract, ok := l.firstBelow(ref); ok {
+	const ref = "refs/remotes/origin/main"
+	if err := exec.Command("git", "-C", l.root, "rev-parse", "--verify", "--quiet", ref).Run(); err != nil {
+		t.Fatalf("this checkout holds no %s: scripts/e2e/owner-steps-client.sh fetches it before it builds this driver (%v)", ref, err)
+	}
+	for commit := range strings.FieldsSeq(l.run(l.root, "git", "rev-list", "--first-parent", ref)) {
+		if contract := l.contractAt(commit); contract < api.DaemonAPIVersion() {
 			return commit, contract, ref
 		}
-		t.Fatalf("no commit of %s's first-parent line declares a daemon API contract below %d", ref, api.DaemonAPIVersion)
 	}
-	const deepest = 4096
-	for depth := 64; depth <= deepest; depth *= 4 {
-		l.run(l.root, "git", "fetch", "--quiet", "--no-tags", "--depth="+strconv.Itoa(depth), "origin", "main")
-		if commit, contract, ok := l.firstBelow("FETCH_HEAD"); ok {
-			return commit, contract, "main fetched from origin " + strconv.Itoa(depth) + " commits deep"
-		}
-	}
-	t.Fatalf("no commit of the %d of main's first-parent line fetched from origin declares a daemon API contract below %d", deepest, api.DaemonAPIVersion)
+	t.Fatalf("no commit of %s's first-parent line declares a daemon API contract below %d", ref, api.DaemonAPIVersion())
 	return "", 0, ""
 }
 
-// firstBelow answers the newest commit of ref's first-parent line whose DaemonAPIVersion is below
-// this daemon's, and its contract.
-func (l *ownerStepsClientLive) firstBelow(ref string) (string, int, bool) {
-	for commit := range strings.FieldsSeq(l.run(l.root, "git", "rev-list", "--first-parent", ref)) {
-		if contract := declaredContract(l.t, commit, l.run(l.root, "git", "show", commit+":"+versionFile)); contract < api.DaemonAPIVersion {
-			return commit, contract, true
-		}
-	}
-	return "", 0, false
-}
-
-// declaredContract is the DaemonAPIVersion that source, the version file of what, declares.
-func declaredContract(t *testing.T, what, source string) int {
-	t.Helper()
-	match := regexp.MustCompile(`(?m)^const DaemonAPIVersion = (\d+)$`).FindStringSubmatch(source)
-	if match == nil {
-		t.Fatalf("%s's %s declares no DaemonAPIVersion", what, versionFile)
-	}
-	contract, err := strconv.Atoi(match[1])
+// contractAt is the daemon API contract of commit, as contractScript prints it.
+func (l *ownerStepsClientLive) contractAt(commit string) int {
+	l.t.Helper()
+	printed := l.run(l.root, "bash", contractScript, commit)
+	contract, err := strconv.Atoi(printed)
 	if err != nil {
-		t.Fatal(err)
+		l.t.Fatalf("%s %s printed %q, not one integer", contractScript, commit, printed)
 	}
 	return contract
 }

@@ -97,10 +97,16 @@ func newWorkingCopyRig(t *testing.T, runtimeName string) *workingCopyRig {
 	}
 }
 
-// line is the working copy line of a task of the issue on repo, under the directory the rig's
-// runtime places that repository's workspace of the issue in: the pod's under Kubernetes, the
-// pane's under tmux.
+// line is the working copy line of a task of the issue on repo (lineOn).
 func (r *workingCopyRig) line(repo string) string {
+	r.t.Helper()
+	return r.lineOn(ghrepo.MustParse(repo))
+}
+
+// lineOn is the working copy line of a task of the issue on repo, under the directory the rig's
+// runtime places that repository's workspace of the issue in: the pod's under Kubernetes, the
+// pane's under tmux. Every phase task opens with it.
+func (r *workingCopyRig) lineOn(repo ghrepo.Repository) string {
 	r.t.Helper()
 	place := func(repo ghrepo.Repository, issue string) (string, error) {
 		return tmux.WorkspaceDir(r.stateDir, repo, issue)
@@ -108,11 +114,11 @@ func (r *workingCopyRig) line(repo string) string {
 	if r.runtime == "kubernetes" {
 		place = sandbox.WorkspaceDir
 	}
-	dir, err := place(ghrepo.MustParse(repo), workingCopyIssue)
+	dir, err := place(repo, workingCopyIssue)
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	return " Working copy: branch legion/" + workingCopyIssue + ", directory " + dir + "."
+	return "Working copy: branch legion/" + workingCopyIssue + ", directory " + dir + "."
 }
 
 // start is the implementer's start the engine writes for the promotion's resume of its step
@@ -129,8 +135,8 @@ func (r *workingCopyRig) start(composedOn string) entryStartRow {
 		r.t.Fatal("the promotion wrote no start of the implementer")
 	}
 	start := rows[len(rows)-1]
-	if task := start.request.Task; !strings.Contains(task, r.line(composedOn)) || !strings.Contains(task, workingCopyOwnersLine) {
-		r.t.Fatalf("the implementer's start carries %q, want it composed naming %q and the owner's line %q: the case's own premise",
+	if task := start.request.Task; !strings.HasPrefix(task, r.line(composedOn)+"\nContinue ") || !strings.Contains(task, workingCopyOwnersLine) {
+		r.t.Fatalf("the implementer's start carries %q, want it composed opening with %q on a line of its own before its continue line, and holding the owner's line %q: the case's own premise",
 			task, r.line(composedOn), workingCopyOwnersLine)
 	}
 	return start
@@ -215,21 +221,29 @@ func (r *workingCopyRig) prompt(n int) string {
 
 // wantSent fails unless sent, a prompt of the implementer's task, and the task the claim holds
 // after it name the workspace of works in their working copy line and never the workspace of
-// other, with the owner's line inside the owner's text as the owner wrote it.
+// other, with the owner's line inside the owner's text as the owner wrote it. The held task opens
+// with that line, then a line break and its continue line, and the prompt holds the same: notes
+// can stand before the task in a prompt, so the prompt is read for that text anywhere. A send that
+// left part of the composed directory after the line would hold text between the line and its
+// line break, and fails here.
 func (r *workingCopyRig) wantSent(sent, works, other string) {
 	r.t.Helper()
 	want, wrong := r.line(works), r.line(other)
+	opening := want + "\n" + "Continue "
 	held := r.machine().Claim().Pending
 	if held == nil {
 		r.t.Fatal("the implementer holds no task after its send")
+	}
+	if !strings.HasPrefix(held.Task, opening) {
+		r.t.Fatalf("the task the claim holds after its send does not open with %q, its working copy line on a line of its own and then its continue line:\n%s", opening, held.Task)
 	}
 	for _, read := range []struct{ what, text string }{
 		{"the prompt", sent},
 		{"the task the claim holds after it", held.Task},
 	} {
-		if strings.Contains(read.text, wrong) || !strings.Contains(read.text, want) {
-			r.t.Fatalf("%s names the working copy %q, the workspace of %s, which the process it went to does not work in; want %q:\n%s",
-				read.what, wrong, other, want, read.text)
+		if strings.Contains(read.text, wrong) || !strings.Contains(read.text, opening) {
+			r.t.Fatalf("%s names the working copy %q, the workspace of %s, which the process it went to does not work in, or holds no %q, the working copy line of the process's workspace followed by a line break and the continue line:\n%s",
+				read.what, wrong, other, opening, read.text)
 		}
 		if !strings.Contains(read.text, "\n"+workingCopyOwnersLine+"\n") {
 			r.t.Fatalf("%s holds no owner's line %q inside the owner's text as the owner wrote it:\n%s", read.what, workingCopyOwnersLine, read.text)
@@ -249,8 +263,9 @@ func (r *workingCopyRig) wantSent(sent, works, other string) {
 // sent after it names the workspace of the repository the issue moved to. A role launched into a
 // live pod after the correction works that pod's clone whatever repository its spec names, so it
 // is sent that clone's directory. A claim no launch of this release recorded a repository for is
-// sent the line its task was composed with, and a launch that named no repository the branch alone.
-// The task's owner's text holds a line that reads like the daemon's working copy line, inside its
+// sent the line its task was composed with, and a launch that named no repository the directory
+// the runtime gives the zero Repository: a tmux pane's `<state_dir>/workspaces/<issue>`. The
+// task's owner's text holds a line that reads like the daemon's working copy line, inside its
 // fence, and every send leaves it as the owner wrote it.
 func TestAWorkerTaskNamesTheWorkspaceOfTheProcessItIsSentTo(t *testing.T) {
 	t.Parallel()
@@ -317,9 +332,10 @@ func TestAWorkerTaskNamesTheWorkspaceOfTheProcessItIsSentTo(t *testing.T) {
 
 		earlier.WorkingRepository = &ghrepo.Repository{}
 		task, _, err = r.workflow.workingCopy(r.ctx, earlier, held)
-		branchAlone := " Working copy: branch legion/" + workingCopyIssue + "."
-		if err != nil || !strings.Contains(task, branchAlone) || strings.Contains(task, r.line(left)) || strings.Contains(task, r.line(moved)) {
-			t.Fatalf("a claim whose launch named no repository is sent %q (error %v), want its line to name the branch alone, %q", task, err, branchAlone)
+		unnamed := r.lineOn(ghrepo.Repository{})
+		if want := unnamed + strings.TrimPrefix(composed, r.line(left)); err != nil || task != want {
+			t.Fatalf("a claim whose launch named no repository is sent %q (error %v), want its line to name the pane's workspace of no repository, %q:\n%s",
+				task, err, unnamed, want)
 		}
 	})
 }

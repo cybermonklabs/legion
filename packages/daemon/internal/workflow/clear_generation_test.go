@@ -48,6 +48,7 @@ func issuePhases(t *testing.T, pool *pgxpool.Pool, issue string) []record.PhaseR
 // the base forward goes with it, and a first conflicting read still waiting for its second stays:
 // that is GitHub's answer about the head and the base, which the new generation does not change.
 func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	issue := clearedIssue("LEGION-285")
 	seedIssue(t, pool, issue)
@@ -90,6 +91,7 @@ func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 // pass through a phase from the last in the handoff completion key, so the new run's completion at
 // a commit the old run already reported has to take a key of its own.
 func TestClearGenerationKeepsThePassAndResetsTheRounds(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	issue := clearedIssue("LEGION-286")
 	seedIssue(t, pool, issue)
@@ -108,6 +110,7 @@ func TestClearGenerationKeepsThePassAndResetsTheRounds(t *testing.T) {
 // It clears the implementer's counts of the moves back as well, and the cap value the row told
 // for, so the new generation counts and tells from its own first crossing.
 func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	issue := clearedIssue("LEGION-286")
 	seedIssue(t, pool, issue)
@@ -136,14 +139,25 @@ func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T)
 // promotion hands it, not the task of a run that ended. The number stays because it counts the
 // entries the role has been handed on this issue and nothing of a re-admission unhands one: the
 // promotion raises it again (StartPromotedWorker), so the entry the new work is sent under is
-// above every entry a completion still in flight could name.
+// above every entry a completion still in flight could name. The task the role was last given for
+// an entry, with that entry and the issue's generation it was given in (record.PhaseRow.Given,
+// record.GivenTask), is read back as it was written, and goes with the entry's task: it was the old
+// run's. The generation alone would not retire it on a member of a re-admitted tree, which keeps
+// its own generation.
 func TestClearGenerationClearsTheEntryTaskAndLeavesTheEntry(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	issue := clearedIssue("LEGION-287")
 	raised := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	const retried = "Continue the change. Issue: LEGION-287. Phase: implementing. Reason: the runner is back."
+	given := record.GivenTask{Task: retried, Entry: 3, Generation: issue.Generation}
 	seedIssue(t, pool, issue)
 	seedPhase(t, pool, record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "implementer",
-		Entry: 3, EntryTask: "Continue the change. Issue: LEGION-287. Phase: implementing.", EntryRaisedAt: raised})
+		Entry: 3, EntryTask: "Continue the change. Issue: LEGION-287. Phase: implementing.", EntryRaisedAt: raised, Given: given})
+	if rows := issuePhases(t, pool, issue.Key); len(rows) != 1 || rows[0].Given != given {
+		t.Fatalf("phases before ClearGeneration = %#v, want the one row carrying the retry's task %q for entry 3 in generation %d as it was put",
+			rows, retried, issue.Generation)
+	}
 	clearIssueGeneration(t, pool, issue)
 	rows := issuePhases(t, pool, issue.Key)
 	if len(rows) != 1 {
@@ -153,6 +167,10 @@ func TestClearGenerationClearsTheEntryTaskAndLeavesTheEntry(t *testing.T) {
 	if row.EntryTask != "" {
 		t.Fatalf("the implementer's row still names the work %q of the generation that ended, want none: its promotion writes the task it is given",
 			row.EntryTask)
+	}
+	if row.Given != (record.GivenTask{}) {
+		t.Fatalf("the implementer's row still names the retry's task %q for entry %d in generation %d of the generation that ended, want none",
+			row.Given.Task, row.Given.Entry, row.Given.Generation)
 	}
 	if row.Entry != 3 || !row.EntryRaisedAt.Equal(raised) {
 		t.Fatalf("the implementer's row after ClearGeneration = entry %d raised at %s, want the entry 3 raised at %s it stood on",
@@ -166,6 +184,7 @@ func TestClearGenerationClearsTheEntryTaskAndLeavesTheEntry(t *testing.T) {
 // Both clears a re-admission makes are read: of one issue (ClearGeneration) and of a whole tree
 // (ClearTreeGeneration). The entry and the moment it was raised stay, as they do for every role.
 func TestClearGenerationClearsTheWaitTheArchitectsEntryKept(t *testing.T) {
+	t.Parallel()
 	raised := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
 	const resumed = "A person answered your ask ask-1; read it. Continue."
 	for _, tc := range []struct {
@@ -209,6 +228,7 @@ func TestClearGenerationClearsTheWaitTheArchitectsEntryKept(t *testing.T) {
 // person's word. The start, the clear of the tree and the clear of each issue in turn all forget
 // the first and keep the second, so a clear that asked another rule, or none, would differ.
 func TestAClearForgetsTheKeptDecisionsAStartForgets(t *testing.T) {
+	t.Parallel()
 	approvedAt := time.Date(2026, 9, 22, 9, 0, 0, 0, time.UTC)
 	approved := record.EventMark{Seq: 10, At: approvedAt}
 	superseded := record.ParkedDecision{Issue: "LEGION-1", Ref: "dispatch://LEGION-1/spec", Decision: record.DecisionDesignChangesRequested,

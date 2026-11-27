@@ -266,7 +266,11 @@ func TestClaimOwedIsOwedOnlyWhereTheCompletionRouteTakesACompletion(t *testing.T
 
 	// The tester's completion at the asked head moves the issue to reviewing, and no move from
 	// testing to reviewing asks again, so the record still holds the ask made in testing, not
-	// landed. No hold of it reached the reviewer, which owes its phase.
+	// landed. That ask stays the implementer's into reviewing, and the move holds the reviewer it
+	// starts rather than leaving it to work the head (workflow's holdStartedWorker,
+	// record.MergeForwardHolds), so the reviewer owes nothing while that merge is outstanding. The
+	// hold is the daemon's word to the reviewer and no fence: its completion at the head the pull
+	// request stands at is taken all the same.
 	t.Run("merge forward asked in testing, issue now in reviewing", func(t *testing.T) {
 		h, engine, _ := newEntryHarness(t)
 		owedIssue(t, h)
@@ -276,13 +280,16 @@ func TestClaimOwedIsOwedOnlyWhereTheCompletionRouteTakesACompletion(t *testing.T
 		if asked := recordedMergeForward(t, h); asked == nil || asked.Head != headSHA || asked.Phase != phase.Testing || asked.Landed != "" {
 			t.Fatalf("the record's merge forward = %+v, want the ask of %s made in testing, not landed: the case's own premise", asked, headSHA)
 		}
-		reviewer.owes(t, "the reviewing phase of LEGION-208")
+		if !queuedMergeForward(t, h, claim.RoleReviewer, record.MergeForwardHold) {
+			t.Error("the move into reviewing did not hold the reviewer: the implementer's ask made in testing keeps the merge")
+		}
+		reviewer.owesNothing(t)
 		completion(t, h.complete(completionOf(t, reviewer, "review", headSHA, 1)))
 	})
 
 	// The implementer was asked in reviewing (record.MergeForwardAsker), and that ask held the
 	// reviewer; its merge has not landed when the retro's completion moves the issue into merging,
-	// so the move holds the merger rather than asking it (workflow's holdMerger), and the merger
+	// so the move holds the merger rather than asking it (workflow's holdStartedWorker), and the merger
 	// owes nothing while that merge is outstanding (cybermonklabs/legion#4979). The hold is the
 	// daemon's word to the merger and no fence: its completion at the head the pull request stands
 	// at is taken all the same.
@@ -836,8 +843,9 @@ func TestClaimOwedIsTheProductionCheckLookItsTesterHolds(t *testing.T) {
 	tester.owesNothing(t)
 }
 
-// The three sources disagree here, and the claim's own live assignment is what says which kind of
-// work its turn is on, as it says for the completion route. A merged close spares the tester's
+// The three sources disagree here. The look the claim serves decides only whether its turn is on
+// an open look, and a report reaches the check route only when it names its check
+// (checkOpenedAt). A merged close spares the tester's
 // claim and opens a look behind its running testing turn: the record holds the look open for the
 // tester, while the tester still serves its testing task. A report from that turn is refused as no
 // report on production (CHECK_LOOK_NOT_SERVED), so the turn owes nothing — not the look, and not
@@ -879,6 +887,32 @@ func TestClaimOwedReadsTheRelaunchDeliveryAsNoWork(t *testing.T) {
 		if got := owedBy(working, inPhase, "", workflow.RoleFor); got != (OwedResponse{}) {
 			t.Errorf("a tester in its open phase holding %s (confirmed %v) and serving no run owes %+v, want nothing", relaunch.ID, !confirmed.IsZero(), got)
 		}
+	}
+}
+
+// A phase task leaves the look a claim served in place (supervise's ServingCheck), and the
+// completion route takes a phase's completion from such a claim unless its report names its check
+// (checkOpenedAt). So a tester that served a look of a check that has since closed, and holds a
+// confirmed testing task in testing again, a root reopened in its linger, owes the testing phase,
+// not nothing; while the check still holds its served look open, it owes that look.
+func TestClaimOwedIsThePhaseOnceTheCheckHasLeftTheLookItsTesterServed(t *testing.T) {
+	opened := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	closed := opened.Add(2 * time.Hour)
+	testing := &supervise.Delivery{ID: "testing:3", Task: "Test the change.", Generation: 2, Entry: 3, ConfirmedAt: opened.Add(3 * time.Hour)}
+	tester := supervise.Claim{Role: claim.RoleTester, Pending: testing, GivenEntry: 3,
+		ServingCheckLook: supervise.CheckLook{Look: 2, OpenedAt: opened}}
+	if served := tester.ServingCheck(); served.Look != 2 {
+		t.Fatalf("the tester's confirmed testing task serves look %d, want the look it served before, 2, kept in place", served.Look)
+	}
+	check := func(closedAt *time.Time) completionPosition {
+		return completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Testing, Generation: 2}, entry: 3,
+			check: &record.ProductionCheck{Issue: "LEGION-208", OpenedAt: opened, ClosedAt: closedAt, Role: claim.RoleTester, Looks: 2, LookOpen: closedAt == nil}}
+	}
+	if got, want := owedBy(tester, check(&closed), "", workflow.RoleFor), (OwedResponse{Owes: true, Work: "the testing phase of LEGION-208"}); got != want {
+		t.Errorf("a tester whose served look's check closed, holding a confirmed testing task in testing, owes %+v, want %+v", got, want)
+	}
+	if got, want := owedBy(tester, check(nil), "", workflow.RoleFor), (OwedResponse{Owes: true, Work: "the production check of LEGION-208"}); got != want {
+		t.Errorf("a tester whose served look the check still holds open owes %+v, want %+v", got, want)
 	}
 }
 
@@ -995,7 +1029,7 @@ func TestClaimOwedNamesTheArchitectThatOwnsTheClaim(t *testing.T) {
 	if !ok {
 		t.Fatalf("no machine for %s", childArchitect.token)
 	}
-	if err := machine.Handle(h.ctx, supervise.RequestStop{Claim: childArchitect.token}); err != nil {
+	if err := machine.Handle(h.ctx, supervise.RequestStop{Claim: childArchitect.token, By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("stop %s: %v", childArchitect.token, err)
 	}
 	if state := h.stored(childArchitect.token).State; state != supervise.StateRetired {

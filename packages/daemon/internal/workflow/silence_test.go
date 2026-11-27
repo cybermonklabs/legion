@@ -284,6 +284,7 @@ func namesTheSilence(t *testing.T, reason string, outcome string, absent string)
 // worker behind that entry is sent the entry's own work instead
 // (TestASilentWorkerIsSentTheWorkOfTheEntryItIsBehind).
 func TestASilentWorkerIsSentItsPhasesTaskAgainOnTheEntryItsRowNames(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedSilence(t, pool, aSilentTester())
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -316,6 +317,7 @@ func TestASilentWorkerIsSentItsPhasesTaskAgainOnTheEntryItsRowNames(t *testing.T
 // case above, and together they are R6 of dispatch://INFRA-3163, the workers the daemon must
 // not prompt.
 func TestASilenceTheRecordAnswersForChangesNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		rec  silenceRecord
@@ -466,6 +468,7 @@ func (s refusingStore) EnqueueStart(ctx context.Context, tx pgx.Tx, row record.O
 // retry. A notice written in its place would be the last word on this silence for ever, the
 // fact's identity being the claim token and a last step that does not move.
 func TestAStartRowTheStoreRefusesWritesNoNoticeAndLeavesTheFactUnapplied(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedSilence(t, pool, aSilentTester())
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -499,6 +502,7 @@ func TestAStartRowTheStoreRefusesWritesNoNoticeAndLeavesTheFactUnapplied(t *test
 // will be. That is R6 of dispatch://INFRA-3163: nothing can tell a background job that hung
 // from a long one, so the daemon tells and the architect decides.
 func TestAStalledBackgroundWorkerIsToldToItsArchitectAndSentNothing(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedSilence(t, pool, aStalledTester())
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -534,6 +538,7 @@ func TestAStalledBackgroundWorkerIsToldToItsArchitectAndSentNothing(t *testing.T
 // is what the architect would be told about, so this fact writes nothing and the standing of the
 // new reading is for the fact the sweep mints under its own moment to carry.
 func TestAStandingReportTheSessionHasReplacedChangesNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		rec  silenceRecord
@@ -572,6 +577,7 @@ func TestAStandingReportTheSessionHasReplacedChangesNothing(t *testing.T) {
 // notice and no supervise row. Each row changes one term of the told case above: the report's
 // own terms, then one of the structural terms this handler shares with the silence handler.
 func TestABackgroundReportTheRecordAnswersForChangesNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		rec  silenceRecord
@@ -638,6 +644,7 @@ func TestABackgroundReportTheRecordAnswersForChangesNothing(t *testing.T) {
 // fact, which is the retry. The report does not move while the job hangs, so a fact marked
 // applied over a failed write would be the last word on that job for ever.
 func TestANoticeTheStoreRefusesLeavesTheBackgroundFactUnapplied(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedSilence(t, pool, aStalledTester())
 	engine := testEngine(config.DesignGateRootIssues, nil)

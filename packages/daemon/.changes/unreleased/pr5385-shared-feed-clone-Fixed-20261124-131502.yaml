@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  An issue pod holds its repository once. Its one init container, `workspace-init` running
+  `legion workspace-init provision`, fills the issue's clone directly from the repository cache and
+  GitHub, so the issue volume holds no second copy of the repository beside the clone. Before, a pod
+  kept a copy of the repository on the issue volume beside a clone of it, and a 19 GiB repository
+  and its copy filled a 50 GiB issue volume. The repository cache's own fetch still removes a clone
+  it did not write and fills it afresh.
+time: 2026-11-24T13:15:02Z
+custom:
+    Issue: pr5385

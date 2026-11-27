@@ -6,14 +6,16 @@ body: |-
     `MaxAge`, `Duplicates` or subjects. It ensures the stream on its connect and again after every
     reconnect, so a stream lost while it runs is created again; Dispatch's server keeps the stream's
     deployed replica count. Every client decides a topic's transport from the deployed stream's
-    subjects, read at each ensure, or at connect and every 60 s by a client that owns no stream.
-    The listener judges by those same deployed subjects whether to refuse a publish, which topics of
-    a registration to store, which go in a session's consumer filter, whether the fan-out leaves a
-    message to that consumer, and whether a delivery exception is stored under its one-copy id, so a
-    topic under a subject only the newer build adds reaches a session through either build, by the
-    session's consumer. The listener's own durable is the one read left on the subjects this build
-    compiles, deliberately: on an older build such a topic never reaches its fan-out, and during a
-    roll the session's consumer filter is what delivers it.
+    subjects, read at each ensure, or at connect and every 60 s by a client that owns no stream,
+    together with its own: a topic this build stores is never sent over core NATS, and a publish of
+    one the deployed stream does not capture is refused. The listener judges by those same deployed
+    subjects whether to refuse a publish, which topics of a registration to store, and whether the
+    fan-out leaves a message to that session's consumer, so a topic under a subject only the newer
+    build adds reaches a session through either build, by the session's consumer, whose filter drops
+    no topic of the session's row for what the deployed stream captures. The listener's own durable
+    is the one read left on the subjects this build compiles, deliberately: on an older build such a
+    topic never reaches its fan-out, and during a roll the session's consumer filter is what
+    delivers it.
 time: 2026-10-28T12:39:41.070133631Z
 custom:
     Issue: pr2461

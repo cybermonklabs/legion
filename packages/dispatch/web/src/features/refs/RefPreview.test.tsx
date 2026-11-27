@@ -1,4 +1,4 @@
-import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the hover-intent sites below need a pointer event user-event cannot send (a pointerType, a held button, a relatedTarget), and `scroll` has no user-event form at all.
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -18,10 +18,18 @@ import type {
   IssueDetails,
   IssueReferenceSummary,
 } from "../../api/types";
+import { MarkdownBody } from "./MarkdownBody";
+import { warmMarkdownRenderer } from "./markdown-engine";
 import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./ref-preview-card";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
 import { shortForm } from "./routes";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function issue(key: string, title: string): IssueDetails {
   return {
@@ -167,6 +175,35 @@ test("the card opens only after the hover delay, loads populated, and closes whe
     });
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
     expect(first).not.toHaveAttribute("aria-describedby");
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
+// The hover asks for its target before the card opens, so a card that opens on a target whose
+// read failed shows the reference's short form rather than asking the same read a second time.
+test("a hover over a target whose read fails asks for it once, not again when its card opens", async () => {
+  const getIssue = spyOn(api, "getIssue").mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: "no issue CORE-1" })
+  );
+  jest.useFakeTimers();
+  const view = render(<Harness />);
+  try {
+    // A hover-intent pointer: user-event's hover names no pointerType, which this site needs.
+    fireEvent.pointerOver(screen.getByRole("link", { name: "first" }), { pointerType: "mouse" });
+    // The mocked read settles on microtasks alone, which the async act flushes.
+    await act(async () => {});
+    expect(getIssue).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    await act(async () => {});
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      shortForm({ key: "CORE-1", kind: "issue" })
+    );
+    expect(getIssue).toHaveBeenCalledTimes(1);
   } finally {
     view.unmount();
     getIssue.mockRestore();
@@ -939,45 +976,48 @@ test.each([
     pinnedRead({ removed_version: 4, state: "removed", text: "Ship it on Friday." }),
     "Removed in version 4",
   ],
-] as const)("a pinned block's card names its document, the version it pins, how it stands since (%s), and that version's text", async (_state, read, standing) => {
-  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(summaryWithSpec());
-  const getIssue = spyOn(api, "getIssue");
-  const getReferences = spyOn(api, "getReferences").mockResolvedValue(read);
-  const route = { block: { id: "p1", pin: "2" }, key: "CORE-1", kind: "spec" as const };
-  const view = render(
-    <Harness>
-      <Link to="/issues/CORE-1/spec" {...referenceTriggerProps(route)}>
-        the block
-      </Link>
-    </Harness>
-  );
-  try {
-    act(() => {
-      screen.getByRole("link", { name: "the block" }).focus();
-    });
-    const card = screen.getByRole("tooltip");
-    await waitFor(() => expect(card).toHaveTextContent("Design.md"));
-    expect(getReferences).toHaveBeenCalledWith("dispatch://CORE-1/spec#b-p1@v2");
-    expect(card).toHaveTextContent("CORE-1 · Design.md");
-    expect(card).toHaveTextContent("Version 2");
-    expect(card).toHaveTextContent(standing);
-    await waitFor(() => expect(card).toHaveTextContent("Ship it on Friday."));
-    expect(card).not.toHaveTextContent("Monday");
-    // The card names the document from the issue's summary, never the full issue read.
-    expect(getIssueSummary).toHaveBeenCalledWith("CORE-1");
-    expect(getIssue).not.toHaveBeenCalled();
-    // The card opens the version it pins, under the spec's own slug.
-    expect(card.querySelector("a")).toHaveAttribute(
-      "href",
-      "/issues/CORE-1/artifacts/design-md?v=2"
+] as const)(
+  "a pinned block's card names its document, the version it pins, how it stands since (%s), and that version's text",
+  async (_state, read, standing) => {
+    const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(summaryWithSpec());
+    const getIssue = spyOn(api, "getIssue");
+    const getReferences = spyOn(api, "getReferences").mockResolvedValue(read);
+    const route = { block: { id: "p1", pin: "2" }, key: "CORE-1", kind: "spec" as const };
+    const view = render(
+      <Harness>
+        <Link to="/issues/CORE-1/spec" {...referenceTriggerProps(route)}>
+          the block
+        </Link>
+      </Harness>
     );
-  } finally {
-    view.unmount();
-    getReferences.mockRestore();
-    getIssue.mockRestore();
-    getIssueSummary.mockRestore();
+    try {
+      act(() => {
+        screen.getByRole("link", { name: "the block" }).focus();
+      });
+      const card = screen.getByRole("tooltip");
+      await waitFor(() => expect(card).toHaveTextContent("Design.md"));
+      expect(getReferences).toHaveBeenCalledWith("dispatch://CORE-1/spec#b-p1@v2");
+      expect(card).toHaveTextContent("CORE-1 · Design.md");
+      expect(card).toHaveTextContent("Version 2");
+      expect(card).toHaveTextContent(standing);
+      await waitFor(() => expect(card).toHaveTextContent("Ship it on Friday."));
+      expect(card).not.toHaveTextContent("Monday");
+      // The card names the document from the issue's summary, never the full issue read.
+      expect(getIssueSummary).toHaveBeenCalledWith("CORE-1");
+      expect(getIssue).not.toHaveBeenCalled();
+      // The card opens the version it pins, under the spec's own slug.
+      expect(card.querySelector("a")).toHaveAttribute(
+        "href",
+        "/issues/CORE-1/artifacts/design-md?v=2"
+      );
+    } finally {
+      view.unmount();
+      getReferences.mockRestore();
+      getIssue.mockRestore();
+      getIssueSummary.mockRestore();
+    }
   }
-});
+);
 
 test("an unpinned block's card shows its current text, and a block that cannot be read its short form", async () => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(summaryWithSpec());
@@ -1061,58 +1101,61 @@ test.each([
     pinnedRead({ removed_version: 4, state: "removed", text: "Ship it on Friday." }),
     ["Version 2", "Removed in version 4", "Ship it on Friday."],
   ],
-] as const)("an open card of %s shows what the refresh leaves it", async (_case, route, refresh, kept) => {
-  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(summaryWithSpec());
-  const getComment = spyOn(api, "getComment").mockResolvedValue(commentRead());
-  const first = pinnedRead({ state: "unchanged", text: "Ship it on Friday." });
-  const getReferences = spyOn(api, "getReferences")
-    .mockResolvedValueOnce({
-      ...first,
-      node: {
-        ...first.node,
-        made_by: [{ id: "alice", kind: "user" }],
-        pin: "pin" in route.block ? first.node.pin : undefined,
-        text: "Ship it on Friday.",
-      },
-    })
-    .mockImplementationOnce(() =>
-      refresh instanceof Error ? Promise.reject(refresh) : Promise.resolve(refresh)
+] as const)(
+  "an open card of %s shows what the refresh leaves it",
+  async (_case, route, refresh, kept) => {
+    const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(summaryWithSpec());
+    const getComment = spyOn(api, "getComment").mockResolvedValue(commentRead());
+    const first = pinnedRead({ state: "unchanged", text: "Ship it on Friday." });
+    const getReferences = spyOn(api, "getReferences")
+      .mockResolvedValueOnce({
+        ...first,
+        node: {
+          ...first.node,
+          made_by: [{ id: "alice", kind: "user" }],
+          pin: "pin" in route.block ? first.node.pin : undefined,
+          text: "Ship it on Friday.",
+        },
+      })
+      .mockImplementationOnce(() =>
+        refresh instanceof Error ? Promise.reject(refresh) : Promise.resolve(refresh)
+      );
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <Link to="/" {...referenceTriggerProps(route)}>
+            the block
+          </Link>
+          <RefPreviewHost />
+        </QueryClientProvider>
+      </MemoryRouter>
     );
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>
-        <Link to="/" {...referenceTriggerProps(route)}>
-          the block
-        </Link>
-        <RefPreviewHost />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  try {
-    act(() => {
-      screen.getByRole("link", { name: "the block" }).focus();
-    });
-    const card = screen.getByRole("tooltip");
-    await waitFor(() => expect(card).toHaveTextContent("Ship it on Friday."));
+    try {
+      act(() => {
+        screen.getByRole("link", { name: "the block" }).focus();
+      });
+      const card = screen.getByRole("tooltip");
+      await waitFor(() => expect(card).toHaveTextContent("Ship it on Friday."));
 
-    await act(() => queryClient.refetchQueries({ queryKey: ["references", "to"] }));
-    expect(getReferences).toHaveBeenCalledTimes(2);
-    const after = screen.getByRole("tooltip");
-    if (kept === undefined) {
-      await waitFor(() => expect(after.textContent).toBe(shortForm(route)));
-    } else {
-      for (const text of kept) {
-        expect(after).toHaveTextContent(text);
+      await act(() => queryClient.refetchQueries({ queryKey: ["references", "to"] }));
+      expect(getReferences).toHaveBeenCalledTimes(2);
+      const after = screen.getByRole("tooltip");
+      if (kept === undefined) {
+        await waitFor(() => expect(after.textContent).toBe(shortForm(route)));
+      } else {
+        for (const text of kept) {
+          expect(after).toHaveTextContent(text);
+        }
       }
+    } finally {
+      view.unmount();
+      getReferences.mockRestore();
+      getComment.mockRestore();
+      getIssueSummary.mockRestore();
     }
-  } finally {
-    view.unmount();
-    getReferences.mockRestore();
-    getComment.mockRestore();
-    getIssueSummary.mockRestore();
   }
-});
+);
 
 // A block of a comment or message heads with its item and author in place of a document; a pinned
 // comment block names the revision it pins and how the block stands since, and shows that
@@ -1639,5 +1682,78 @@ test("a block card marks its post's edit, and a block of a deleted post says the
     getReferences.mockRestore();
     getComment.mockRestore();
     getIssue.mockRestore();
+  }
+});
+
+/** A body that cites one block of `comment` by a worded link, drawn through the renderer, with
+ *  the block's own read answering 404 `NOT_FOUND` - what a block whose post's delete took it
+ *  answers, and what a block id the post never held answers. The post's read decides which. */
+function drawGoneBlock(comment: CommentRead) {
+  const getIssue = mockIssues();
+  const getComment = spyOn(api, "getComment").mockResolvedValue(comment);
+  const getReferences = spyOn(api, "getReferences").mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: "block gone" })
+  );
+  const view = render(
+    <Harness>
+      <MarkdownBody
+        markdown={`See [the second step](dispatch://CORE-1/comment/${comment.comment.id}#b-b3) first.`}
+      />
+    </Harness>
+  );
+  return {
+    getComment,
+    view,
+    restore() {
+      view.unmount();
+      getReferences.mockRestore();
+      getComment.mockRestore();
+      getIssue.mockRestore();
+    },
+  };
+}
+
+// A block of a post its author deleted is no missing target: Dispatch resolves the post and
+// knows the delete, so the reference keeps its link and its author's words, and its card says
+// the post was deleted (deleted-post R3; R8's state with no link is for a target Dispatch cannot
+// resolve). Drawn as missing, the link would be gone.
+test("a reference to a block of a deleted post keeps its link and its card says the post was deleted", async () => {
+  const deleted = "55555555-5555-4555-8555-555555555555";
+  const drawn = drawGoneBlock(
+    commentRead({
+      body: "",
+      deleted_at: "2026-09-09T02:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+      id: deleted,
+    })
+  );
+  try {
+    await waitFor(() => expect(drawn.getComment).toHaveBeenCalledWith(deleted));
+    const link = await screen.findByRole("link", { name: "the second step" });
+    act(() => {
+      link.focus();
+    });
+    await waitFor(() => expect(screen.getByRole("tooltip")).toHaveTextContent("Deleted by alice"));
+    expect(screen.getByRole("link", { name: "the second step" })).toBe(link);
+    expect(drawn.view.container.querySelector("[data-dispatch-missing]")).toBeNull();
+  } finally {
+    drawn.restore();
+  }
+});
+
+// A block id a standing post never held is a target that does not exist: the words its writer
+// wrote stand, with no link (R8). Drawn as a deleted post's block is, it would keep a link to
+// nothing.
+test("a reference to a block a standing post never held reads as the words written, with no link", async () => {
+  const standing = "66666666-6666-4666-8666-666666666666";
+  const drawn = drawGoneBlock(commentRead({ id: standing }));
+  try {
+    await waitFor(() =>
+      expect(drawn.view.container.querySelectorAll("[data-dispatch-missing]")).toHaveLength(1)
+    );
+    expect(screen.queryByRole("link", { name: "the second step" })).toBeNull();
+    expect(drawn.view.container.textContent).toContain("See the second step first.");
+  } finally {
+    drawn.restore();
   }
 });

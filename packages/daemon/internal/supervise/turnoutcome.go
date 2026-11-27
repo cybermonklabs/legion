@@ -139,13 +139,15 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 //
 // A turn that ran no prompt of the daemon's — a phase reminder the plugin sent (pi.sendMessage),
 // an Envoy message, a background job's result — is held to dispatch://INFRA-4508's R1 as a
-// prompt's turn is. A refusal whose status cannot clear (holdsTheIssue) fails the claim at once
-// with CauseProviderError, so the workflow holds the issue for its architect, and the plugin's
-// reminders end: the daemon answers their owed check that a failed claim owes nothing (api's
-// claimOwed), which drops every reminder. A refusal that can clear, or whose report carries no
-// status, fails nothing, and the reminders keep their pace; it counts in the claim's one run of
-// provider-error turns (ProviderErrorRun) beside refused prompts, so the project's controller is
-// told once when that run reaches providerErrorRunTold.
+// prompt's turn is. A refusal whose status cannot clear (classifyProviderError) fails the claim at
+// once with CauseProviderError, and one the producer classed as OpenAI's cyber-policy refusal
+// (RequestTurnOutcome.Code) with CauseCyberPolicy whatever its status, so the workflow holds the
+// issue for its architect, and the plugin's reminders end: the daemon answers their owed check
+// that a failed claim owes nothing (api's claimOwed), which drops every reminder. A refusal that
+// can clear, or whose report carries no status, fails nothing, and the reminders keep their pace;
+// it counts in the claim's one run of provider-error turns (ProviderErrorRun) beside refused
+// prompts, so the run is handed to Deps.ProviderErrorRunReached once when it reaches
+// providerErrorRunTold.
 //
 // A clean report ends that run whether or not it is marked unprompted (providerErrorRunOver), as
 // a clean prompt result does: the provider answered that turn either way. A turn the plugin reads
@@ -160,17 +162,17 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // prompt's error result, and before that prompt's own report, still ends the run that error began.
 // The reverse holds too: a clean prompt result ends the run with no such guard (promptResulted), so
 // one that arrives after a later plugin turn's refused report was counted ends the run that refusal
-// began. Either way the controller's notice comes later, or not at all for a run of exactly six,
-// and no claim fails or is held for it. A refused report marked prompted is still judged by
-// nothing: its prompt's result counts it. The same two bounds hold for every judgment: new to the
-// window, and of the generation the claim runs now.
+// began. Either way the notice at providerErrorRunTold comes later, or not at all for a run of
+// exactly six, and no claim fails or is held for it. A refused report marked prompted is still
+// judged by nothing: its prompt's result counts it. The same two bounds hold for every judgment:
+// new to the window, and of the generation the claim runs now.
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
 	m.turnOutcomeFailed = false
 	o := TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message}
 	kept := m.recordTurnOutcome(o)
 	m.log.Info("supervise: a turn ended", "generation", r.Generation, "sequence", r.Sequence,
-		"refused", r.Refused, "httpStatus", r.HTTPStatus, "unprompted", r.Unprompted,
+		"refused", r.Refused, "httpStatus", r.HTTPStatus, "code", r.Code, "unprompted", r.Unprompted,
 		"refusedRun", m.claim.RefusedRun())
 	switch {
 	case !kept || r.Generation != m.claim.Generation:
@@ -192,27 +194,46 @@ func (m *Machine) newestTurnOutcome(o TurnOutcome) bool {
 	return len(window) > 0 && compareTurnOutcomes(window[len(window)-1], o) == 0
 }
 
-// freshSession is whether a retry starts a new session rather than relaunching the recorded one,
-// and why, for the line it logs: only when the retry asks for one, with `legion claims retry
+// freshSession is whether a retry of c starts a new session rather than relaunching the recorded
+// one, and why, for the line it logs: when the retry asks for one, with `legion claims retry
 // --fresh-session` or the controller's fresh_session, since a new session is an operator's or the
-// controller's choice (dispatch://INFRA-956's Design). Every other retry — its architect's
-// retry_or_escalate, the next start of its role, an operator's retry that asks for nothing —
-// resumes the recorded session with fresh budgets, whatever the claim's run of refused turns
-// (dispatch://INFRA-4508's R5). That run is no sign that the session is bad: a refusal that cannot
-// clear fails the claim on the turn it ends, and holds the issue, so a run is mostly refusals that
-// can clear or carry no status, such as a team limit's 429, which refuses every session of the
-// team alike. A claim failed on a refusal that cannot clear resumes too; if its session is refused
-// again, it fails again at once.
-func freshSession(ev Event) (bool, string) {
+// controller's choice (dispatch://INFRA-956's Design), and for every retry of a claim held for
+// OpenAI's cyber-policy refusal (Claim.HeldForCyberPolicy), whoever makes it. Every other retry —
+// its architect's retry_or_escalate, the next start of its role, an operator's retry that asks for
+// nothing — resumes the recorded session with fresh budgets, but for the two cases at the end,
+// whatever the claim's run of refused turns (dispatch://INFRA-4508's R5). That run is no sign that
+// the session is bad: a refusal that cannot clear fails the claim on the turn it ends, and holds
+// the issue, so a run is mostly refusals that can clear or carry no status, such as a team limit's
+// 429, which refuses every session of the team alike. A claim failed on a refusal that cannot clear
+// resumes too; if its session is refused again, it fails again at once.
+//
+// A cyber-policy refusal is the one failure that a resume would repeat by itself: the retry's
+// first task is input from outside the session, which ends Oh My Pi's hold, so the session's
+// refused content goes to OpenAI again, the claim fails again, and its architect, told again,
+// retries again. The retries that reach such a claim are the ones someone decided (retry's
+// RetryHeld refuses the rest), and none of them decided to send that content again, so each
+// leaves the session behind: the claim's failure sentence is the reason the abandoned session is
+// recorded under (retry), and the run of provider-error turns starts over with it
+// (Machine.forgetSession).
+//
+// The two cases at the end are the project controller's, and each is decided in the launch, not
+// here: whatever this answers, the launch after the session's second end in a row since a
+// finished turn forgets the session and spawns a fresh agent (launchNow's replaceEndedSession,
+// dispatch://INFRA-2045 R1), and so does a launch no operator's request raised — the keeper's
+// retry among them — of a session older than its age (replaceAgedSession, R3).
+func freshSession(c Claim, ev Event) (bool, string) {
 	asked := false
 	switch ev := ev.(type) {
 	case RequestRetry:
 		asked = ev.FreshSession
-	case RequestOperatorRetry:
+	case RequestAskedRetry:
 		asked = ev.FreshSession
 	}
-	if asked {
+	switch {
+	case asked:
 		return true, "the retry asked for a new session"
+	case c.HeldForCyberPolicy():
+		return true, "the claim failed on OpenAI's cyber_policy refusal of its session's content, which a relaunch of that session would send again"
 	}
 	return false, ""
 }

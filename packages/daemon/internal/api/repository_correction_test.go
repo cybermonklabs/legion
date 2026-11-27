@@ -16,8 +16,8 @@ import (
 // has the record follow Dispatch's resolution (the engine's dispatchIssue,
 // workflow.Engine.ApplyRepositoryChange) in the same transaction that opens the child's next run.
 // No event of the repository change is ever delivered here: the route's own write is the whole of
-// what the daemon reads. dispatch://INFRA-2865 measured the absence of this, where a park and a
-// run again gave a new generation on the repository the issue had left. The child leaves the
+// what the daemon reads. dispatch://INFRA-2865 measured the absence of this, where a move to the backlog
+// and a run again gave a new generation on the repository the issue had left. The child leaves the
 // workflow first by its owning architect's own backlog in Dispatch (ownersBacklog), which the
 // daemon takes as it takes a person's move (dispatch://INFRA-3178).
 func TestRepositoryCorrectionFollowsRerunChild(t *testing.T) {

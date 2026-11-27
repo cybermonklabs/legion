@@ -1,8 +1,15 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { act, render } from "@testing-library/react";
 
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { CutWords } from "./CutWords";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /**
  * The page's one measurer of where each row's words are cut (`clamp-measurer.ts`). Each row once

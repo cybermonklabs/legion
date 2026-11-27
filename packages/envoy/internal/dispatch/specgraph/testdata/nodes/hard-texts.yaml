@@ -1,0 +1,56 @@
+---
+type: term
+id: hard-texts
+name: hard texts
+definition:
+  - a "quoted" word
+  - a & b
+  - a &amp; b
+  - a &lt; b
+  - a } b
+  - a { b
+  - 'a # b'
+  - a `code` b
+  - a b
+  - "a \U0001F600 b"
+  - '#a}'
+  - line one
+  - line two
+  - 'a: b'
+  - 'x #y'
+  - '- x'
+  - '? x'
+  - ': x'
+  - '|'
+  - '>'
+  - ''''
+  - '"'
+  - '#'
+  - '@at'
+  - '`'
+  - ' lead'
+  - "yes"
+  - "no"
+  - "Off"
+  - "0x1F"
+  - "1_000"
+  - ".inf"
+  - "2026-11-16"
+  - "a\tb"
+  - "a\Lb"
+  - "a\Pb"
+  - "a\Nb"
+  - "="
+  - "<<"
+  - "0x_"
+  - "1.2.3"
+  - "2026-11-16 10:00:00 +01:00"
+  - "a\uFEFFb"
+  - a 
+  - "a\x01b"
+  - "emoji \U0001F600"
+  - line three
+  - "2026-11-16T10:00:00"
+  - "2026-11-16 10:00:00 Z"
+  - "2026-11-16T10:00:00 +01:00"
+  - "2026-1-5 10:00:00"

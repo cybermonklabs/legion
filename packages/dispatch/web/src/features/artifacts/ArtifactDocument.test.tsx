@@ -1,4 +1,4 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { ID_AMBIGUOUS, itemFromSearch } from "@legion/contracts";
 import type { QueryClient } from "@tanstack/react-query";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -24,7 +24,14 @@ import { Margin } from "../margin/Margin";
 import { MarginProvider } from "../margin/margin-context";
 import { issue, SelectedItemLabel, specArtifact } from "../margin/margin-fixture";
 import type { MarginOwner } from "../margin/useMarginItems";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ArtifactDocument } from "./ArtifactDocument";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 answerTextReadsWithTheSeededText();
 
@@ -401,25 +408,28 @@ test("an ambiguous `?comment=` lists the matches instead of the document", async
 test.each([
   ["written short", SHORT_COMMENT, true],
   ["written whole", UNKNOWN_COMMENT, false],
-])("a `?comment=` %s that names nothing leaves the document as an unknown id does", async (_name, id, resolves) => {
-  const getReferences = spyOn(api, "getReferences").mockRejectedValue(
-    new ApiError(404, { code: "NOT_FOUND", error: `no comment at ${id}` })
-  );
-  const listComments = spyOn(api, "listComments").mockResolvedValue([
-    anchoredComment(OTHER_COMMENT),
-  ]);
-  const { view } = renderDocument({ path: `/issues/CORE-1/spec?comment=${id}` });
+])(
+  "a `?comment=` %s that names nothing leaves the document as an unknown id does",
+  async (_name, id, resolves) => {
+    const getReferences = spyOn(api, "getReferences").mockRejectedValue(
+      new ApiError(404, { code: "NOT_FOUND", error: `no comment at ${id}` })
+    );
+    const listComments = spyOn(api, "listComments").mockResolvedValue([
+      anchoredComment(OTHER_COMMENT),
+    ]);
+    const { view } = renderDocument({ path: `/issues/CORE-1/spec?comment=${id}` });
 
-  try {
-    await screen.findByLabelText("Document editor");
-    await waitFor(() => expect(listComments).toHaveBeenCalled());
-    expect(screen.queryByText("Several items match that link")).not.toBeInTheDocument();
-    // The address is left as written: there is no whole id to replace it with.
-    expect(route()).toBe(`/issues/CORE-1/spec?comment=${id}`);
-    expect(getReferences.mock.calls.length > 0).toBe(resolves);
-  } finally {
-    view.unmount();
-    listComments.mockRestore();
-    getReferences.mockRestore();
+    try {
+      await screen.findByLabelText("Document editor");
+      await waitFor(() => expect(listComments).toHaveBeenCalled());
+      expect(screen.queryByText("Several items match that link")).not.toBeInTheDocument();
+      // The address is left as written: there is no whole id to replace it with.
+      expect(route()).toBe(`/issues/CORE-1/spec?comment=${id}`);
+      expect(getReferences.mock.calls.length > 0).toBe(resolves);
+    } finally {
+      view.unmount();
+      listComments.mockRestore();
+      getReferences.mockRestore();
+    }
   }
-});
+);

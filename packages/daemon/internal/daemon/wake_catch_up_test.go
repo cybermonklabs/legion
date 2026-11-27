@@ -8,12 +8,14 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -46,20 +48,73 @@ func pacedWakes() *wakepace.Limiter {
 }
 
 // wakePaceOf is the supervise pacing the daemon hands its machines from limiter at the shipped
-// pace: its Reserve and its Interval from that one limiter, as openSupervision takes them.
-func wakePaceOf(limiter *wakepace.Limiter) supervise.WakePace {
-	return supervise.WakePace{Reserve: limiter.Reserve, Interval: limiter.Interval(), Rate: testWakeRate, Burst: testWakeBurst}
+// pace: a pacer over that one limiter on the machines' clock, and its Interval, as run and
+// openSupervision build them.
+func wakePaceOf(limiter *wakepace.Limiter, clock supervise.Clock) supervise.WakePace {
+	pacer := supervise.NewPacer(limiter, clock)
+	return supervise.WakePace{Pacer: pacer, Interval: limiter.Interval(), Rate: testWakeRate, Burst: testWakeBurst}
 }
 
-// wakeEngine is the workflow engine as the daemon builds it when the pacing is on: its clock held
-// at now, and its Reserve the limiter's (openWorkflow). A nil limiter is the pacing off, which is
-// the daemon giving the engine no Reserve at all.
-func wakeEngine(records record.Store, limiter *wakepace.Limiter, now func() time.Time) *workflow.Engine {
+// parkedFor is a wake pacing on clock that lets the first paced launch out wait after the clock's
+// now, wherever before that its place is joined, for a test that needs a launch held to a known
+// moment: a pacer over a limiter of one wake a minute, whose bucket is spent at that now for every
+// whole minute of wait, every paced release after that spread by the rest of wait. A place joined
+// later than the first waits a further interval and that spread behind the one before it. wait is
+// a minute or more. The rate and the burst the wake lines name are that limiter's. It stands where
+// these tests once handed the machines a Reserve that answered a fixed moment, which a pacer,
+// whose limiter gives the turns, has no equal of.
+func parkedFor(clock supervise.Clock, wait time.Duration) supervise.WakePace {
+	minutes := int(wait / time.Minute)
+	var spread atomic.Int64
+	limiter := wakepace.New(1, 1, func(time.Duration) time.Duration { return time.Duration(spread.Load()) })
+	now := clock.Now()
+	for range minutes {
+		limiter.Reserve(now)
+	}
+	spread.Store(int64(wait - time.Duration(minutes)*time.Minute))
+	pace := wakePaceOf(limiter, clock)
+	pace.Rate, pace.Burst = 1, 1
+	return pace
+}
+
+// lettingOutAtOnce is a wake pacing on clock that lets every paced launch out at its join: a pacer
+// over a limiter that paces nothing. The pacing is on all the same, so each launch is paced, as
+// the wake lines it writes say, and its let-out is told the daemon (supervise.Deps.WakeLetOut).
+func lettingOutAtOnce(clock supervise.Clock) supervise.WakePace {
+	pace := wakePaceOf(wakepace.New(0, 1, nil), clock)
+	pace.Interval, pace.Rate, pace.Burst = time.Minute, 1, 1
+	return pace
+}
+
+// testCatchUpPacing is the daemon's catch-up pacing over limiter on clock, as openWorkflow builds
+// it: the places of the catch-ups the engine writes held, in a pacer of their own here, with no
+// lane to wake.
+func testCatchUpPacing(t *testing.T, pool *store.Pool, limiter *wakepace.Limiter, clock *waveClock) *catchUpPacing {
+	t.Helper()
+	return &catchUpPacing{ctx: t.Context(), pool: pool, pacer: wakePaceOf(limiter, clock).Pacer,
+		now: clock.Now, log: quietLogger()}
+}
+
+// wakeEngine is the workflow engine as the daemon builds it when the pacing is on: its clock now,
+// and the catch-ups it holds joined to pacing (openWorkflow). A nil pacing is the pacing off, which
+// is the daemon giving the engine no HoldCatchUp at all.
+func wakeEngine(records record.Store, pacing *catchUpPacing, now func() time.Time) *workflow.Engine {
 	cfg := workflow.Config{Project: "legion", Repositories: testRepositories, Clock: now}
-	if limiter != nil {
-		cfg.Reserve = limiter.Reserve
+	if pacing != nil {
+		cfg.HoldCatchUp = pacing.hold
 	}
 	return workflow.New(records, cfg, quietLogger())
+}
+
+// letOutCatchUps moves clock to each of the pacer's next count turns, each of which lets out the
+// place at the head of its queue.
+func letOutCatchUps(t *testing.T, clock *waveClock, count int) {
+	t.Helper()
+	for range count {
+		if !clock.fireNext() {
+			t.Fatal("the pacer ran out of turns with catch-ups still held")
+		}
+	}
 }
 
 // runningArchitect records a root of its own tree, in_progress at generation 1, with an architect
@@ -126,10 +181,14 @@ func noticeRows(t *testing.T, pool *store.Pool) []noticeRow {
 	return held
 }
 
-// pacedCatchUp writes the catch-up a start row's ready writes when the pacing holds it to at, and
-// stamps the row as the engine's transaction would: composed at now, due at at. The stamp is the
-// test's, because the database writes created_at from its own clock while these tests hold theirs
-// still; everything else is workflow.QueueCatchUp's own work.
+// pacedCatchUp writes the catch-up a start row's ready writes for root, and makes its row one the
+// wake pacing holds to at, composed at now. record.CatchUpHeldAt is a row the pacing still holds
+// in its queue, which is how this release writes one (workflow's claimReady). Any other moment is
+// a row whose turn is at: one the pacer let out then, or one a release before the pacing's two
+// queues reserved for then, which this release still finds in an outbox it is upgraded over. The
+// stamp is the test's: the database writes created_at from its own clock while these tests hold
+// theirs still, and only the paced ready writes a held row. Everything else is
+// workflow.QueueCatchUp's own work.
 func pacedCatchUp(t *testing.T, pool *store.Pool, records record.Store, root string, launch uint64, now, at time.Time) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -138,13 +197,15 @@ func pacedCatchUp(t *testing.T, pool *store.Pool, records record.Store, root str
 		if err != nil || stored == nil {
 			return fmt.Errorf("read %s: %w", root, err)
 		}
-		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, launch, "", now, at)
+		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, launch, "", now)
 	}); err != nil {
 		t.Fatalf("queue the paced catch-up of %s: %v", root, err)
 	}
 	var id int64
-	if err := pool.QueryRow(ctx, `update outbox set created_at = $2 where id =
-		(select max(id) from outbox where kind = $1) returning id`, string(record.OutboxKindNotice), now).Scan(&id); err != nil {
+	if err := pool.QueryRow(ctx, `update outbox set created_at = $2, next_at = $3,
+		payload = payload || jsonb_build_object('paced_at', $4::text, 'paced_from', $5::text)
+		where id = (select max(id) from outbox where kind = $1) returning id`, string(record.OutboxKindNotice), now, at,
+		at.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano)).Scan(&id); err != nil {
 		t.Fatalf("stamp the paced catch-up of %s: %v", root, err)
 	}
 	return id
@@ -175,8 +236,9 @@ func TestFortyStartsOfRunningArchitectsWriteCatchUpsOnTheLimitersSchedule(t *tes
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	now := func() time.Time { return wakeOrigin }
-	engine := wakeEngine(records, pacedWakes(), now)
+	clock := &waveClock{now: wakeOrigin}
+	now := clock.Now
+	engine := wakeEngine(records, testCatchUpPacing(t, pool, pacedWakes(), clock), now)
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup,
 		trees: outboxTreeStore(t, pool), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
 		handlers: []intake.Handler{engine, admit.New(records, engine, 2, "legion", quietLogger())}, now: now}
@@ -189,6 +251,7 @@ func TestFortyStartsOfRunningArchitectsWriteCatchUpsOnTheLimitersSchedule(t *tes
 			t.Fatalf("start the running architect of %s: %v", key, err)
 		}
 	}
+	letOutCatchUps(t, clock, starts-1)
 
 	rows := noticeRows(t, pool)
 	if len(rows) != starts {
@@ -384,11 +447,10 @@ func TestAnOrdinaryCatchUpAndAHandOversAreNotDelayed(t *testing.T) {
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	now := wakeOrigin
+	clock := &waveClock{now: now}
 	limiter := pacedWakes()
-	engine := wakeEngine(records, limiter, func() time.Time { return now })
-	for range 10 {
-		limiter.Reserve(now)
-	}
+	limiter.Reserve(now)
+	engine := wakeEngine(records, testCatchUpPacing(t, pool, limiter, clock), clock.Now)
 
 	// The launch's own ready: the fact the supervision observation applies, which carries no
 	// pacing mark (workflowRuntime.applyTerminal).
@@ -434,7 +496,7 @@ func TestTheOutboxWritesTheWakeLineWhenItRunsAPacedNoticeRow(t *testing.T) {
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.WakePace = wakePaceOf(pacedWakes())
+	sup.deps.WakePace = wakePaceOf(pacedWakes(), sup.deps.Clock)
 	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	now := wakeOrigin
 	var logged bytes.Buffer
@@ -442,9 +504,17 @@ func TestTheOutboxWritesTheWakeLineWhenItRunsAPacedNoticeRow(t *testing.T) {
 		notices: &holderPublisher{}, supervisor: sup, project: "legion",
 		now: func() time.Time { return now }}
 
+	// Put the catch-up behind two other places. The first turn was spent before it joined.
+	clock := &waveClock{now: now}
+	pacing := testCatchUpPacing(t, pool, wakepace.New(testWakeRate, testWakeBurst, nil), clock)
+	pacing.pacer.Join(wakepace.Second)
+	pacing.pacer.Join(wakepace.Second)
+	pacing.pacer.Join(wakepace.Second)
+	id := pacedCatchUp(t, pool, records, "LEGION-1", 1, now, record.CatchUpHeldAt)
+	pacing.hold(id, "LEGION-1")
+	letOutCatchUps(t, clock, 3)
 	held := 3 * testWakeInterval
-	pacedCatchUp(t, pool, records, "LEGION-1", 1, now, now.Add(held))
-	now = now.Add(held)
+	now = clock.Now()
 	if err := runner.RunOnce(ctx); err != nil {
 		t.Fatalf("run the paced catch-up at its moment: %v", err)
 	}
@@ -456,6 +526,7 @@ func TestTheOutboxWritesTheWakeLineWhenItRunsAPacedNoticeRow(t *testing.T) {
 	want := map[string]any{
 		"level": "INFO", "msg": "supervise: wake ran", "claim": string(mustClaimToken(t, "LEGION-1", claim.RoleArchitect)),
 		"kind": "catch-up", "waited": true, "waitedFor": float64(held), "paced": true,
+		"queue": "other", "turnsWaited": float64(3),
 		"rate": float64(testWakeRate), "burst": float64(testWakeBurst),
 	}
 	got := lines[0]
@@ -465,18 +536,21 @@ func TestTheOutboxWritesTheWakeLineWhenItRunsAPacedNoticeRow(t *testing.T) {
 	}
 }
 
-// A catch-up the burst let straight out waited nothing, and its line says so. The wait is the
-// reservation's own — the moment it gave less the moment it was made, both read from the engine's
-// clock inside one transaction (record.Notice.PacedAt, PacedFrom) — rather than that moment less
-// the row's created_at, which is the database's clock at the start of that transaction. Read
-// against created_at, the first wake of every wave said it was held for as long as the
-// transaction took to reach the reservation, and under clock skew for a wait the other way
-// about; the operator's own check counts those lines and builds a window from each
+// A catch-up the burst let straight out waited nothing, and its line says so. The engine writes
+// the row held, and the row joins the pacing in the hook of the fact's commit, some time later on
+// the same clock (workflow's claimReady, catchUpPacing.hold); the pacer lets it out at that join.
+// The time between the write and the join is the commit's and no wait of the pacing's, so the
+// let-out records the moment the hold began as the row's PacedAt (record.ReleaseHeldCatchUp), and
+// the wait the line reads is PacedAt less PacedFrom (the outbox's wakeRan) rather than that
+// moment less the row's created_at, which is the database's clock at the start of the fact's
+// transaction. Read either way, the first wake of every wave would say it was held for as long
+// as the transaction and its commit took, and under clock skew for a wait the other way about;
+// the operator's own check counts those lines and builds a window from each
 // (scripts/wake-windows.py).
 //
-// The negative control is the wait reverted (wakeRan reading row.CreatedAt): the line then reads
-// waited=true with a quarter of a second as its waitedFor, where this test wants a line that
-// names no wait at all.
+// The negative controls are the wait read from row.CreatedAt in wakeRan, and the let-out's own
+// moment written as PacedAt for a row let out at its join: the line then reads waited=true with a
+// quarter of a second as its waitedFor, where this test wants a line that names no wait at all.
 func TestABurstReleasedCatchUpWritesAWakeLineThatWaitedNothing(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -484,19 +558,24 @@ func TestABurstReleasedCatchUpWritesAWakeLineThatWaitedNothing(t *testing.T) {
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.WakePace = wakePaceOf(pacedWakes())
+	sup.deps.WakePace = wakePaceOf(pacedWakes(), sup.deps.Clock)
 	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
-	now := wakeOrigin
+	clock := &waveClock{now: wakeOrigin}
 	var logged bytes.Buffer
 	runner := &outbox{log: slog.New(slog.NewJSONHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records,
-		notices: &holderPublisher{}, supervisor: sup, project: "legion",
-		now: func() time.Time { return now }}
+		notices: &holderPublisher{}, supervisor: sup, project: "legion", now: clock.Now}
 
-	// The limiter's burst reserves the moment it is asked at, so this catch-up is due as it is
-	// written; the database stamped the row a quarter of a second earlier, when the transaction
-	// that wrote it began.
-	id := pacedCatchUp(t, pool, records, "LEGION-1", 1, now, now)
-	stampCreated(t, pool, id, now.Add(-250*time.Millisecond))
+	// The engine writes the row held at the clock's now; the database stamped it a quarter of a
+	// second earlier, when the transaction began, and the commit's hook joins it a quarter of a
+	// second later, where a fresh bucket lets it out at once.
+	pacing := testCatchUpPacing(t, pool, pacedWakes(), clock)
+	id := pacedCatchUp(t, pool, records, "LEGION-1", 1, clock.Now(), record.CatchUpHeldAt)
+	stampCreated(t, pool, id, clock.Now().Add(-250*time.Millisecond))
+	clock.advanceTo(clock.Now().Add(250 * time.Millisecond))
+	pacing.hold(id, "LEGION-1")
+	if rows := noticeRows(t, pool); len(rows) != 1 || !rows[0].nextAt.Equal(clock.Now()) {
+		t.Fatalf("the catch-up rows after the join = %+v, want the one due at its let-out, %s", rows, clock.Now())
+	}
 	if err := runner.RunOnce(ctx); err != nil {
 		t.Fatalf("run the catch-up the burst let out: %v", err)
 	}
@@ -508,6 +587,7 @@ func TestABurstReleasedCatchUpWritesAWakeLineThatWaitedNothing(t *testing.T) {
 	want := map[string]any{
 		"level": "INFO", "msg": "supervise: wake ran", "claim": string(mustClaimToken(t, "LEGION-1", claim.RoleArchitect)),
 		"kind": "catch-up", "waited": false, "paced": true,
+		"queue": "other", "turnsWaited": float64(0),
 		"rate": float64(testWakeRate), "burst": float64(testWakeBurst),
 	}
 	got := lines[0]
@@ -535,7 +615,7 @@ func TestAReHeldPacedCatchUpWritesItsOneWakeLineWhenItsCopyPublishes(t *testing.
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.WakePace = wakePaceOf(pacedWakes())
+	sup.deps.WakePace = wakePaceOf(pacedWakes(), sup.deps.Clock)
 	architectClaimOn(t, sup, "LEGION-1", supervise.StateWorking, "ses_live")
 	now := wakeOrigin
 	var logged bytes.Buffer
@@ -595,7 +675,7 @@ func TestARetriedPacedCatchUpWritesOneWakeLineWithTheWaitItsReservationGave(t *t
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.WakePace = wakePaceOf(pacedWakes())
+	sup.deps.WakePace = wakePaceOf(pacedWakes(), sup.deps.Clock)
 	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	now := wakeOrigin
 	var logged bytes.Buffer
@@ -686,5 +766,57 @@ func TestAReadyReleasesAPacedCatchUpWhoseMomentHasPassed(t *testing.T) {
 	}
 	if !released.pacedAt.Equal(reserved) {
 		t.Fatalf("the released row reserved %s, want %s left as the pacing wrote it", released.pacedAt, reserved)
+	}
+}
+
+// The boot joins the catch-ups the previous daemon left held to the pacer's queue again, in the
+// order of their ids, which is the order they were written in whatever their issues' keys. The
+// state names each with the pacer's estimate for its place, never the held moment its row carries.
+// A held row that a newer catch-up drops gives its place up, so the rows behind it move one turn
+// up, and each row left is made due at the moment the pacer lets it out.
+func TestHeldCatchUpsRejoinInIDOrderAndADeletedRowGivesUpItsPlace(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	clock := &waveClock{now: wakeOrigin}
+	pacing := testCatchUpPacing(t, pool, wakepace.New(testWakeRate, testWakeBurst, nil), clock)
+	records := projectRecords{Store: record.NewStore(), project: "LEGION", catchUps: pacing}
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	// These rows were written before the restart and have no places yet. Their issue order is
+	// not their id order. The fresh pacer's first turn has already been spent.
+	pacing.pacer.Join(wakepace.Second)
+	keys := []string{"LEGION-3", "LEGION-2", "LEGION-1"}
+	var ids []int64
+	for _, key := range keys {
+		runningArchitect(t, pool, records, sup, key)
+		ids = append(ids, pacedCatchUp(t, pool, records, key, 1, wakeOrigin, record.CatchUpHeldAt))
+	}
+	if err := pacing.restore(t.Context(), records, "LEGION"); err != nil {
+		t.Fatal(err)
+	}
+	waiting, err := store.ReadOnly(t.Context(), pool, "read the catch-ups the pacing holds", func(ctx context.Context, tx pgx.Tx) ([]api.WakeWaiting, error) {
+		return pacedCatchUps(ctx, tx, records, "legion", "LEGION", clock.Now(), pacing)
+	})
+	if err != nil || len(waiting) != len(keys) {
+		t.Fatalf("the state names %+v, %v; want the three held catch-ups", waiting, err)
+	}
+	for i, wake := range waiting {
+		if turn := wakeOrigin.Add(time.Duration(i+1) * testWakeInterval); wake.Issue != keys[i] || !wake.DueAt.Equal(turn) {
+			t.Fatalf("the state names catch-up %d as %+v; want %s's, due at turn %d, %s", i, wake, keys[i], i+1, turn)
+		}
+	}
+	if err := store.Transact(t.Context(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := records.DropCatchUps(ctx, tx, keys[1], clock.Now())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if at := pacing.estimate(ids[2]); !at.Equal(wakeOrigin.Add(2 * testWakeInterval)) {
+		t.Fatalf("after the middle row was dropped the last row estimates %s; want turn 2", at)
+	}
+	letOutCatchUps(t, clock, 2)
+	rows := noticeRows(t, pool)
+	if len(rows) != 2 || rows[0].id != ids[0] || rows[1].id != ids[2] ||
+		!rows[0].nextAt.Equal(wakeOrigin.Add(testWakeInterval)) || !rows[1].nextAt.Equal(wakeOrigin.Add(2*testWakeInterval)) {
+		t.Fatalf("restored catch-ups after two turns = %+v; want the first at turn 1, the last at turn 2", rows)
 	}
 }

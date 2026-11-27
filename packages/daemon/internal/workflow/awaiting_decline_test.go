@@ -172,6 +172,7 @@ func seedDeclaredRoot(t *testing.T, pool *pgxpool.Pool) {
 // answers the next wait as the reply it is, by either path. Each root below runs on a record of
 // its own.
 func TestAPersonsDeclineStartsTheWaitingRootAndNamesTheDecline(t *testing.T) {
+	t.Parallel()
 	const note = "The vendor owns that date; I do not."
 
 	// The first root waits on the question a person then declines: the live path answers its wait

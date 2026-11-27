@@ -173,15 +173,20 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 // that takes a completion or moves a phase. The claim says only which kind of work its turn is on,
 // and which run and entry it is on, each read exactly as the completion route reads it.
 //
-// A claim serving a look of a production check owes that look and nothing of a phase. A look is
-// owed while the record holds it open — the check open, its look open, the look the claim serves
-// being the check's current one of this check instance, and the check the claim's role's — and a
-// look the check has left owes nothing. A look the record holds open for the claim's role while
-// the claim serves none — its task not yet taken, or a testing turn still running behind a merged
-// close — is not owed yet: a report sent from that turn is refused as no report on production
+// The claim decides one thing first: whether its turn is on a look of a production check. A claim
+// serving a look the record holds open — the check open, its look open, the look the claim serves
+// being the check's current one of this check instance, and the check the claim's role's — owes
+// that look. Every other claim owes its phase or nothing, by the rule below, and that includes a
+// claim whose served look the check has left: a phase task leaves the served look in place
+// (supervise's ServingCheck), so a tester that once served a look and holds testing work again,
+// a root reopened in its linger, owes its testing phase, and the completion route takes that
+// phase's completion from it, since only a report that names its check (checkOpenedAt) is taken
+// on the check route. A look the record holds open for the claim's role while the claim serves
+// none — its task not yet taken, or a testing turn still running behind a merged close — is not
+// owed yet: a report sent from that turn is refused as no report on production
 // (CHECK_LOOK_NOT_SERVED), and the look's task comes as the next prompt.
 //
-// Every other claim owes its phase while the five terms of R1 all hold, and nothing otherwise. The
+// Such a claim owes its phase while the five terms of R1 all hold, and nothing otherwise. The
 // second term is this function's own but for its last clause; that clause and the other four are
 // record.PhaseOwed, the one rule the idle release's reminder hold and the idle backstop read too
 // (workflow's IdleRelease, internal/daemon's getsBackstop), so a pod is held for a reminder only
@@ -200,8 +205,9 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 //     merged (record.MergedInMerging), which is what finishes merging (workflow.PhaseFinished)
 //     while a merged root stands in merging until the rest of its tree leaves. So a role whose
 //     phase has ended owes nothing, whatever it was handed: the issue moved to another role's
-//     phase, to one no role works (awaiting_person, done, held), or its tree closed. A merger in
-//     merging whose pull request is not merged owes the merge, since the merger merges.
+//     phase, to one no role works (awaiting_person, awaiting_children, done, held), or its tree
+//     closed. A merger in merging whose pull request is not merged owes the merge, since the
+//     merger merges.
 //   - The claim is neither behind nor above the entry its role's phases row stands on
 //     (record.PhaseRow.Entry), where both are set; where either is 0 nothing is compared. The
 //     route's entry fence (entryFence) reads the same predicate (record.EntriesDiffer). A claim
@@ -215,16 +221,18 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 //     reviewer whose round waits for a review, or a merger whose completion the workflow recorded
 //     without moving the issue, owes nothing, and the daemon sends a level claim no entry's work.
 //   - No merge forward holds the claim's role (record.MergeForwardHolds): the daemon asked
-//     another role to merge the base forward onto the head the pull request stands at, the merge
-//     has not landed, and the ask's hold told this role to stop and to wait for the new head: the
-//     tester in testing or the reviewer in reviewing, for an ask made in that phase, or the merger
-//     in merging, for an ask made in a phase other than implementing, one that records no asked
-//     role included. The completion fence of a merge forward (workflow's mergedForwardRefusal)
-//     reads that rule too, and so does the move into merging, which holds the merger by it rather
-//     than asking it (workflow's mergeForwardOnEntry). The hold never reaches the role the daemon
-//     asked to make the merge (record.MergeForward.Asked): the implementer, in implementing or in
-//     retro, and the merger in merging (cybermonklabs/legion#4979), whose merge forward is its own
-//     open work, which is what a reminder is for.
+//     another role to merge the base forward onto the head the pull request stands at, the pull
+//     request is open, the merge has not landed, the role asked still owes it where the issue
+//     stands, and the ask's hold told this role to stop and to wait for the new head: the
+//     planner, the tester, the reviewer or the merger of the phase the issue stands in, for an ask
+//     of the implementer made after implementing, in that phase or carried into it, one that
+//     records no asked role included, and not once the implementer was told the ask is withdrawn.
+//     The completion fence of a merge forward (workflow's mergedForwardRefusal) reads that rule
+//     too, and so does every start of the phase's worker, which holds that worker by it rather
+//     than asking it (workflow's holdStartedWorker, mergeForwardOnEntry). The hold never reaches
+//     the role the daemon asked to make the merge (record.MergeForward.Asked): the implementer, in
+//     implementing or in retro, and the merger in merging (cybermonklabs/legion#4979), whose merge
+//     forward is its own open work, which is what a reminder is for.
 //
 // A prompt of the task Oh My Pi acknowledged and has not answered (supervise's
 // Machine.outstanding) makes a late turn the task's, so the confirmation it gives is what
@@ -236,12 +244,10 @@ func owedBy(c supervise.Claim, position completionPosition, owner claim.Token, r
 	}
 	nothing := OwedResponse{Architect: owner}
 	if look := c.ServingCheck(); look.Look > 0 {
-		check := position.check
-		if check == nil || !check.Open() || !check.LookOpen || check.Looks != look.Look ||
-			!check.NamedBy(look.OpenedAt) || check.Role != c.Role {
-			return nothing
+		if check := position.check; check != nil && check.Open() && check.LookOpen && check.Looks == look.Look &&
+			check.NamedBy(look.OpenedAt) && check.Role == c.Role {
+			return OwedResponse{Owes: true, Work: "the production check of " + issue.Key, Architect: owner}
 		}
-		return OwedResponse{Owes: true, Work: "the production check of " + issue.Key, Architect: owner}
 	}
 	if position.lingers || roleFor(issue.Phase) != c.Role {
 		return nothing

@@ -29,6 +29,7 @@ import (
 // its mark alone, so the request's later mark makes it stand while its relay, which carries the
 // request's version, is dropped: one request, two answers.
 func TestAKeptAndARelayedChangesRequestAgreeOnAnApprovalOfALaterVersionMarkedBeforeIt(t *testing.T) {
+	t.Parallel()
 	reviewed := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
 	changes := intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "artifact-1",
 		Kind: intake.DispatchArtifactChangesRequested, Version: 1, Reason: "name the rollback path",

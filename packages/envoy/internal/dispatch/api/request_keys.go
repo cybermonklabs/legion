@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -34,9 +35,10 @@ import (
 // One keyed path for every write (INFRA-258). A caller names the intent behind a POST or PATCH with
 // an Idempotency-Key header, the same on every retry of that intent (the IETF Idempotency-Key
 // draft; Google AIP-155): the dashboard mints one per press and the agents' client one per command,
-// and both retry a failed fetch, a timeout, a 5xx, a 429 and a 409 KEY_IN_FLIGHT under it, none of
-// which says whether the first attempt ran. keyedWrites, which register wraps around every POST and
-// PATCH route, makes that retry safe with one request_keys row per key (migration 0137):
+// and both retry a failed fetch, a timeout, a 5xx, a 408, a 429 and a 409 KEY_IN_FLIGHT under it
+// (retriesUnderKey in packages/contracts), none of which says whether the first attempt ran.
+// keyedWrites, which register wraps around every POST and PATCH route, makes that retry safe with
+// one request_keys row per key (migration 0137):
 //
 //   - The row is inserted in flight, in a statement of its own, before the handler runs, and on a
 //     context the client's cancellation does not reach. A repeat that finds it answers from it
@@ -119,9 +121,9 @@ const (
 	// spill does, so a keyed 25 MiB upload costs no more memory than an unkeyed one.
 	keyedBodyInMemory = 1 << 20
 	// keyedBodyMax is the largest body an upload route reads: an upload's file and a megabyte of
-	// fields (uploadArtifactFor). The handoff write reads handoffRequestLimit, the markdown round
-	// trip markdownRoundTripLimit, and every other route a JSON body of at most
-	// maxJSONRequestBytes (routeBody).
+	// fields (uploadArtifactFor). The handoff write reads handoffRequestLimit, the inline and the
+	// file round trips markdownRoundTripLimit and fileRoundTripLimit, and every other route a JSON
+	// body of at most maxJSONRequestBytes (routeBody).
 	keyedBodyMax = maxArtifactBlobSize + 1<<20
 	// keyedBookkeeping bounds the layer's work around the handler - the claim before it, and each
 	// statement recording its answer after it - which runs on past a client that went away, since
@@ -345,17 +347,27 @@ type resolvedCaller struct {
 	err   error
 }
 
-// readOnlyCredential is the credential of the caller ctx carries (resolvedCallerKey) where that
-// caller resolved and its credential is read-only (model.Credential.ReadOnly), and nil otherwise,
-// as it is for a context that carries no caller. The read-only gate (refuseReadOnlyToken) and a
-// results read (newComparisonReader) both read the caller by it: the one the gate found decided
-// or resolved itself.
-func readOnlyCredential(ctx context.Context) *model.Credential {
+// resolvedCredential is the credential of the caller ctx carries (resolvedCallerKey) where that
+// caller resolved, and nil otherwise: for a context that carries no caller, for a caller whose
+// credential did not resolve (resolvedCaller.err), and for a caller with no credential. It is the
+// one read of the caller the two token gates share: readOnlyCredential and approveOnlyRequest.
+func resolvedCredential(ctx context.Context) *model.Credential {
 	caller, _ := ctx.Value(resolvedCallerKey{}).(resolvedCaller)
-	if caller.err != nil || caller.actor.Credential == nil || !caller.actor.Credential.ReadOnly {
+	if caller.err != nil {
 		return nil
 	}
 	return caller.actor.Credential
+}
+
+// readOnlyCredential is the credential of the caller ctx carries where that caller resolved and
+// its credential is read-only (model.Credential.ReadOnly), and nil otherwise (resolvedCredential).
+// The read-only gate (refuseReadOnlyToken) and a results read (newComparisonReader) both read the
+// caller by it: the one the gate found decided or resolved itself.
+func readOnlyCredential(ctx context.Context) *model.Credential {
+	if credential := resolvedCredential(ctx); credential != nil && credential.ReadOnly {
+		return credential
+	}
+	return nil
 }
 
 // keyedWrites wraps the handler of a POST or PATCH route, method and pattern, in the keyed path
@@ -494,8 +506,8 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 
 // routeBody is the largest body a route reads and the 413 it answers one past that with: an
 // upload's file and a megabyte of fields (uploadArtifactFor) for an upload route, a handoff
-// write's own limit (handoffRequestLimit) for that one, the markdown round trip's
-// (markdownRoundTripLimit) for that one, and a JSON body (decodeJSON) for every other. The
+// write's own limit (handoffRequestLimit) for that one, each round trip's (markdownRoundTripLimit,
+// fileRoundTripLimit) for those two, and a JSON body (decodeJSON) for every other. The
 // limit is the most the keyed layer spools before its handler runs - a body past it is
 // refused whatever its key, so the layer answers the 413 itself rather than spool it - and
 // the most an early answer discards before it is written (drainBeforeAnswer). One answer serves
@@ -508,6 +520,8 @@ func routeBody(method, pattern string) (limit int64, tooLarge *apiError) {
 		return handoffRequestLimit, errHandoffTooLarge
 	case route == markdownRoundTripRoute:
 		return markdownRoundTripLimit, errMarkdownRoundTripTooLarge
+	case route == fileRoundTripRoute:
+		return fileRoundTripLimit, errFileRoundTripTooLarge
 	default:
 		return maxJSONRequestBytes, errJSONTooLarge
 	}
@@ -1452,12 +1466,12 @@ func versionNumber(version any) (int64, bool) {
 	return value, err == nil
 }
 
-// storedStatus reports whether an answer of this status is a key's answer. A 5xx says nothing of
-// whether the write could succeed, and a 401 (a session that lapsed mid-write), a 408 and a 429 say
-// only that this attempt was not heard: each leaves the next attempt to run the request again.
+// storedStatus reports whether an answer of this status is a key's answer. An outage
+// (httpoutage.Is: a 5xx, which says nothing of whether the write could succeed, a 408 or a 429)
+// and a 401 (a session that lapsed mid-write) say only that this attempt was not heard: each
+// leaves the next attempt to run the request again.
 func storedStatus(status int) bool {
-	return status < http.StatusInternalServerError && status != http.StatusUnauthorized &&
-		status != http.StatusRequestTimeout && status != http.StatusTooManyRequests
+	return !httpoutage.Is(status) && status != http.StatusUnauthorized
 }
 
 // settleRequestKey records what claim's handler answered: a stored status finishes the row with

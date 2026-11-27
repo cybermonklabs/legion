@@ -9,7 +9,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
+	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,17 +25,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// The pod's init containers: workspace-fetch, the one container of the pod that holds the
-// provisioning token, which mounts nothing an agent of the issue can write; and workspace-init,
-// which works on the issue's volume without the token. The pod's one container is its kind's
-// (podKind.container).
-const (
-	fetchContainer = "workspace-fetch"
-	initContainer  = "workspace-init"
-)
+// The issue pod's one init container, workspace-init, provisions the repository clone with the
+// provisioning token. The pod's one main container is its kind's (podKind.container).
+const initContainer = "workspace-init"
 
 // The pod's volumes. ghVolume is the prefix of each launcher role's gh volume (roleVolume), the
 // projection of its role Secret's gh files, which only that role's namespace sees at GHConfigDir.
@@ -77,13 +76,13 @@ const (
 	agentSecretsExchangeVolume = "agent-secrets-exchange"
 )
 
-// The Legion pool every pod runs on: its taint, tolerated, and its label, selected
-// (the cluster's `legion` NodePool). The gVisor RuntimeClass's own selector also
-// matches another pool, so the pool label is what keeps a pod on Legion's nodes.
+// poolKey is the label of the retired Legion pool, a node pool that set Legion's pods apart from
+// the cluster's general nodes. Legion's pods share the general nodes, so no pod selects or
+// tolerates anything of the pool, and configure refuses a configured selector that names the key.
+// gvisor is the RuntimeClass of every pod that does not run in a microVM (placement).
 const (
-	poolKey   = "legion.dev/pool"
-	poolValue = "legion"
-	gvisor    = "gvisor"
+	poolKey = "legion.dev/pool"
+	gvisor  = "gvisor"
 )
 
 // A microVM pod's placement (placement): GKE Sandbox's microVM RuntimeClass, which adds the
@@ -97,10 +96,11 @@ const (
 	computeClassKey     = "cloud.google.com/compute-class"
 )
 
-// doNotDisruptAnnotation and safeToEvictAnnotation are the autoscaler stop-eviction annotation
-// keys podTemplate sets unconditionally (probeManifest sets only the first): Karpenter's own
-// (AWS), and the Cluster Autoscaler's, which GKE Autopilot honours as a request for
-// extended-duration protection.
+// doNotDisruptAnnotation and safeToEvictAnnotation are the autoscaler annotation keys:
+// Karpenter's own (AWS), and the Cluster Autoscaler's, which GKE Autopilot honours as a request
+// for extended-duration protection. podTemplate sets both against eviction, unconditionally;
+// probeManifest sets only the first; and cachePodTemplate sets the first and the second as "true",
+// so the cluster autoscaler may move a cache pod and remove the node it held.
 const (
 	doNotDisruptAnnotation = "karpenter.sh/do-not-disrupt"
 	safeToEvictAnnotation  = "cluster-autoscaler.kubernetes.io/safe-to-evict"
@@ -112,12 +112,15 @@ const podUser = 1000
 // runtimeOwned are the main container's variables the runtime sets itself, the whole of each
 // value: with the composed names (composed), whose value the operator begins and the runtime
 // finishes, and, where the deployment names an exchange audience, the exchange identity's two
-// (exchangeOwned), it is exactly what the container is told by the runtime
-// (TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime). The shared validator refuses a
-// name of any of them in a spec's Env and as a secret's pointer (Runtime.specOwned), and CheckPod
-// refuses a runtime-owned one, or an exchange one where the deployment names the audience, in the
-// operator's pod — a composed one is the operator's to set, since composing is what the runtime
-// does with it. The image probe's
+// (exchangeOwned), it is exactly what the container is told by the runtime under Dispatch's shared
+// bearer (TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime). Under
+// dispatch_token_broker a launch into a pod that carries an exchange identity is told
+// DISPATCH_TOKEN_BROKER (brokerOwned) in place of DISPATCH_TOKEN_FILE, which stays owned, since a
+// launch into a kept pod without that identity carries the transition token behind it. The shared
+// validator refuses a name of any of them in a spec's Env and as a secret's pointer
+// (Runtime.specOwned), and CheckPod refuses a runtime-owned one, or an exchange or broker one where
+// the deployment names the audience or sets the broker, in the operator's pod — a composed one is
+// the operator's to set, since composing is what the runtime does with it. The image probe's
 // container sets none of its own. The two CLAUDE_* names and claudelaunch.SessionVariable are told
 // a Claude role alone, as the controller's Slack channels are the controller's, and owned in every
 // pod: an operator that could place a Claude Code worker's configuration directory, let the clock
@@ -193,11 +196,34 @@ var runtimeOwnedComposedOrExchange = func() map[string]bool {
 	return names
 }()
 
+// brokerOwned is the one variable the runtime sets itself only where the deployment sets
+// dispatch_token_broker (Options.Dispatch.Broker), as exchangeOwned is only where it names an
+// exchange audience: a deployment without the setting tells no role DISPATCH_TOKEN_BROKER, so the
+// name stays the operator's pod env's and a launch spec's to set, as it was before the setting
+// existed. The runtime tells it, as 1, to every role of a pod that carries an exchange identity
+// under the setting (launch.brokersDispatch), and so never beside DISPATCH_TOKEN_FILE. It is no
+// address: a role started under another word holds its credential for its life and is never
+// relaunched for the word (handedAddresses leaves it out).
+var brokerOwned = map[string]bool{shimwire.DispatchTokenBrokerVariable: true}
+
+// runtimeOwnedComposedExchangeOrBroker is every variable a launch spec may not set under
+// dispatch_token_broker, which configure takes only beside an exchange audience:
+// runtimeOwnedComposedOrExchange and brokerOwned together, built once.
+var runtimeOwnedComposedExchangeOrBroker = func() map[string]bool {
+	names := maps.Clone(runtimeOwnedComposedOrExchange)
+	maps.Copy(names, brokerOwned)
+	return names
+}()
+
 // specOwned is every variable a launch spec may not set under r (runtime.ValidateSpawnSpec): the
-// runtime's own and the composed ones, and the exchange identity's two where the deployment names
-// an exchange audience (exchangeOwned).
+// runtime's own and the composed ones, the exchange identity's two where the deployment names
+// an exchange audience (exchangeOwned), and DISPATCH_TOKEN_BROKER where it sets
+// dispatch_token_broker as well (brokerOwned), as PodExchange reads the two.
 func (r *Runtime) specOwned() map[string]bool {
-	if r.agentSecrets != nil && r.agentSecrets.ExchangeAudience != "" {
+	switch exchangeOf(r.agentSecrets, r.dispatch.Broker) {
+	case ExchangeAndBroker:
+		return runtimeOwnedComposedExchangeOrBroker
+	case ExchangeIdentity:
 		return runtimeOwnedComposedOrExchange
 	}
 	return runtimeOwnedOrComposed
@@ -299,20 +325,19 @@ func legionVolumeNames(exchange bool) []string {
 // one: an operator's mount may be neither at, under, nor above one. AgentSecretsKeyDir and
 // AgentSecretsTokenDir are reserved whether or not this deployment enrolls, AgentSecretsExchangeDir
 // only where exchange says it names an exchange audience (one that names none keeps the path the
-// operator's, as it was before the key existed), GHConfigDir whether or
-// not the pod is an issue's, FeedDir, which TreeRoot already covers, is named for the read-only
-// mount every issue pod's container carries there, RolesDir is where an issue pod mounts every
-// role's own volumes, which each role's namespace covers whole, HomeMountsDir is where an issue
-// pod's roles container mounts what belongs under the home (homeMountsView), which each role's
-// namespace covers too once it has bound each back, RoleProbeDir is the image probe's volume
-// for its role-namespace check, ControllerWorkloadIdentityDir is where the controller's pod mounts
-// the metadata endpoint's token, reserved whether or not that pod runs in a microVM or the
-// deployment names the endpoint (an issue pod's, WorkloadIdentityDir, is under RolesDir), and
-// TestPGLogFile is reserved whether or not the deployment serves a test database: it is where each
-// role's namespace binds the pod's test server log when the pod serves one.
+// operator's, as it was before the key existed), GHConfigDir whether or not the pod is an issue's,
+// RolesDir is where an issue pod mounts every role's own volumes, which each role's namespace
+// covers whole, HomeMountsDir is where an issue pod's roles container mounts what belongs under the
+// home (homeMountsView), which each role's namespace covers too once it has bound each back,
+// RoleProbeDir is the image probe's volume for its role-namespace check, ControllerWorkloadIdentityDir
+// is where the controller's pod mounts the metadata endpoint's token, reserved whether or not that
+// pod runs in a microVM or the deployment names the endpoint (an issue pod's, WorkloadIdentityDir,
+// is under RolesDir), and TestPGLogFile is reserved whether or not the deployment serves a test
+// database: it is where each role's namespace binds the pod's test server log when the pod serves
+// one.
 func legionMountPaths(exchange bool) []string {
 	paths := []string{
-		TreeRoot, FeedDir, LauncherDir, LauncherPrivateDir, StateDir, xdgConfigHome, ProvidersDir,
+		TreeRoot, LauncherDir, LauncherPrivateDir, StateDir, xdgConfigHome, ProvidersDir,
 		AgentSecretsKeyDir, AgentSecretsTokenDir, GHConfigDir, RolesDir, HomeMountsDir, RoleProbeDir,
 		ControllerWorkloadIdentityDir, TestPGLogFile,
 	}
@@ -370,14 +395,17 @@ type launch struct {
 	// secrets are the claim's launch credentials, each reaching the agent as a `<NAME>_FILE`
 	// pointer into its generation's private directory: the boot token, the spec's but the providers
 	// Secret's own (Options.ProvidersSecrets, which the runtime points at the providers mount
-	// whatever the spec carries), and the Dispatch bearer when Dispatch is configured.
+	// whatever the spec carries), and the Dispatch bearer when Dispatch is configured with one
+	// (DispatchCredential.Bearer) — or, under dispatch_token_broker, the transition token for a
+	// launch that keeps a pod with no exchange identity (relaunch's dispatchCredential), and no
+	// Dispatch token at all for every other launch.
 	secrets map[string]string
 	// prompt is the launch's composed system prompt (runtime.ComposePrompt), which reaches the agent
 	// as a file and never as an argv string: launcherCommand carries it in the start command's Files
 	// (systemPromptPath says where the launcher writes it and who can read it).
 	prompt string
-	// cacheURL is the address of the issue's repository's cache (cacheURL, set by
-	// issuePod.provision), which its fetch container is told (fetchEnvironment).
+	// cacheURL is the address of the issue's repository's cache (cacheURL, set by prepare for every
+	// pod but the controller's), which workspace-init is told.
 	cacheURL string
 	// gitHubDirs are the directories of the pod's gh bundle, sorted, whose files each role's gh
 	// volume projects — a GitHub owner, or one of its repositories as `<owner>/<repo>` — and
@@ -391,6 +419,11 @@ type launch struct {
 	// claude is what a Claude Code launch needs beyond an Oh My Pi one, resolved once in prepare
 	// and zero for every other backend (claudeInputs).
 	claude claudeInputs
+	// omp is the session an Oh My Pi launch that trades an exchange identity starts its agent
+	// under (ompInputs): prepare fills it where the configuration trades, and relaunch clears it
+	// for a launch that keeps a pod that trades nothing, so it is zero for a Claude Code launch and
+	// for every launch that trades nothing, and its readers ask nothing else.
+	omp ompInputs
 	// kept is what the live pod this launch keeps rather than replaces already carries for its
 	// role, read from that pod's stored template (relaunch's keptBy). Nil is a launch that builds
 	// the pod itself — every replacing launch, and every caller that only builds a manifest — whose
@@ -524,6 +557,16 @@ func (l launch) trades(r *Runtime) bool {
 	return r.tradesIn(nil, l.spec.Role)
 }
 
+// brokersDispatch is whether this launch's role holds no Dispatch token and trades its pod's
+// exchange identity for one of its own: the deployment sets dispatch_token_broker and the pod the
+// role runs in carries that identity (trades). Such a role is told DISPATCH_TOKEN_BROKER=1
+// (mainEnvironment), and its launch carries neither the bearer nor the transition token; under
+// the setting, a launch that is not one keeps a pod built before the identity, and carries the
+// transition token or waits for that pod's round (relaunch's dispatchCredential).
+func (l launch) brokersDispatch(r *Runtime) bool {
+	return r.dispatch.Broker && l.trades(r)
+}
+
 // overlays are this launch's settings overlays, which its generation is told in PI_CONFIG_FILES
 // after the operator's own (roleOperatorEnv): the role's own overlays, then the overlays of each
 // arm this launch's unit was drawn into (runtime.SpawnSpec.Variants), in the order the project's
@@ -633,6 +676,113 @@ type claudeInputs struct {
 	mcp string
 }
 
+// ompInputs is the session an Oh My Pi launch that trades an exchange identity (launch.trades)
+// starts its agent under, decided before the pod is touched as a Claude Code launch's is
+// (claudeInputs): the id its agent command names (agentArgv) is the id the runtime answers for the
+// launch (nameSession, LaunchSession), which the daemon registers for the pod at the shim's hello,
+// before the agent registers (supervise's ensureRegistered). prepare fills it where the
+// configuration trades, and relaunch clears it, once it knows the pod it keeps, for a launch into
+// a kept pod that trades nothing (keptPod.trades). So an Oh My Pi launch's is zero exactly when
+// the launch trades nothing, and each reader decides from it alone (agentArgv, nameSession,
+// ompResumeRefusal), save the lane agentArgv's first case owns: a resume of a session the claim
+// records with no file (spec.ResumeSession), which agentArgv passes as the one word
+// `--resume=<id>` whether the launch trades or not, so that lane needs no resume. A launch that
+// trades nothing names no id the runtime chose and keeps the argv it had before the runtime chose
+// one, since its pod may run the Oh My Pi of an image older than `--session-id`, which refuses a
+// flag it does not know, and a role that trades nothing gains nothing from a chosen id.
+type ompInputs struct {
+	// session is the id the agent command names: the one the claim recorded when the launch
+	// resumes, and a fresh UUIDv7 otherwise (ompSessionOf). It is "" for a resume that has no id
+	// to resume by, which a launch that trades is refused for (ompResumeRefusal).
+	session string
+	// resume is whether agentArgv passes session as `--resume <id>`, a recorded session's id,
+	// rather than as `--session-id <id>`, a fresh one. It is false for a resume by
+	// spec.ResumeSession, which agentArgv's first case passes as `--resume=<id>` before it reads
+	// resume.
+	resume bool
+}
+
+// ompSessionOf is the session an Oh My Pi launch of spec starts its agent under when it trades: a
+// fresh UUIDv7 for a launch that starts a session, and for one that resumes, the session id the
+// resume names with no file (spec.ResumeSession: the claim records the session and no file of
+// it), else the session id the claim recorded beside its file (spec.ResumeSessionID), or, for a
+// claim that recorded none, the id the recorded file's name gives, "" where the name gives none. Oh My Pi names a session file
+// `<timestamp>_<id>.jsonl`, and the id is read by the rule the claim's file-id hold is
+// (supervise.RecordedHolds, HoldFileID), so the launch resumes by a name the supervisor held to the
+// claim before it asked for the resume (holdRecorded). Nothing is refused here: whether the
+// launch trades, and so needs an id at all, is known only once relaunch knows the pod it keeps
+// (ompResumeRefusal).
+func ompSessionOf(spec runtime.SpawnSpec) (ompInputs, error) {
+	if spec.ResumeSession != "" {
+		return ompInputs{session: spec.ResumeSession}, nil
+	}
+	if spec.ResumeSessionFile == "" {
+		id, err := uuid.NewV7()
+		if err != nil {
+			return ompInputs{}, fmt.Errorf("choose its Oh My Pi session id: %w", err)
+		}
+		return ompInputs{session: id.String()}, nil
+	}
+	if spec.ResumeSessionID != "" {
+		return ompInputs{session: spec.ResumeSessionID, resume: true}, nil
+	}
+	for _, hold := range supervise.RecordedHolds("", spec.ResumeSessionFile) {
+		if hold.Kind == supervise.HoldFileID {
+			return ompInputs{session: hold.Name, resume: true}, nil
+		}
+	}
+	return ompInputs{resume: true}, nil
+}
+
+// ompResumeRefusal refuses a launch that trades and resumes (l.omp.resume, which relaunch clears
+// for a launch that keeps a pod that trades nothing), when the id it would pass as `--resume <id>`
+// is none Oh My Pi reads as a session id: there is none, because the claim recorded none and its
+// file's name gives none (`--resume <id>` takes no path), or the id has a shape no session id has
+// (sessionIDFault), such as one an argument parser would take for a flag. relaunch asks it once
+// the pod it keeps is known and before anything of the pod is touched, so the refusal reaches the
+// supervisor as the launch's own. A launch that trades nothing resumes by the file as before and
+// is refused nothing, and a resume of a claim's session recorded with no file (spec.ResumeSession)
+// is not l.omp.resume at all (ompSessionOf): agentArgv's first case owns it, passing that id as
+// the one word `--resume=<id>`, which carries any id a two-word `--resume <id>` cannot, one that
+// begins with `-` included.
+func (l launch) ompResumeRefusal() error {
+	if !l.omp.resume {
+		return nil
+	}
+	if l.omp.session == "" {
+		return fmt.Errorf("the recorded session %s gives no session id to resume by: its name is not an Oh My Pi session file's, <timestamp>_<id>.jsonl",
+			l.spec.ResumeSessionFile)
+	}
+	fault := sessionIDFault(l.omp.session)
+	if fault == "" {
+		return nil
+	}
+	source := "the session id its claim recorded"
+	if l.spec.ResumeSessionID == "" {
+		source = "the session id the name of " + l.spec.ResumeSessionFile + " gives"
+	}
+	return fmt.Errorf("%s, %+q, %s: no `--resume <id>` can pass it", source, l.omp.session, fault)
+}
+
+// sessionIDFault is why id, the non-empty id ompResumeRefusal holds, cannot be passed as a word of
+// its own in Oh My Pi's argv and be read as the session id it is, and "" for an id that can: one
+// that begins with `-` (an argument parser reads such a word as a flag), or holds white space or a
+// control character. An empty id is a resume with no id at all, which ompResumeRefusal refuses
+// before it asks. No id the runtime chooses has any of them (ompSessionOf's UUIDv7). The bound on
+// a session name's length is the registration's (claim.MaxSessionNameBytes), and no recorded name
+// past it gets this far (holdRecorded refuses the resume first).
+func sessionIDFault(id string) string {
+	switch {
+	case strings.HasPrefix(id, "-"):
+		return "begins with -, which an argument parser reads as a flag"
+	case strings.ContainsFunc(id, unicode.IsSpace):
+		return "holds white space"
+	case strings.ContainsFunc(id, unicode.IsControl):
+		return "holds a control character"
+	}
+	return ""
+}
+
 // runsClaude is whether the launch's role runs Claude Code rather than the image's Oh My Pi: its
 // agent command, its launcher file and three of its variables are the Claude lane's.
 func (l launch) runsClaude() bool { return runtime.Of(l.spec.Backend) == runtime.BackendClaude }
@@ -701,6 +851,16 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 			l.claude.session, l.claude.resume = session, true
 		}
 	}
+	// An Oh My Pi launch that trades starts its agent under an id the runtime chose (ompInputs).
+	// Here trades is the configuration's answer, for the pod a launch builds; relaunch clears the
+	// choice for a launch that keeps a pod that trades nothing, once it knows that pod (keptBy).
+	if !l.runsClaude() && l.trades(r) {
+		omp, err := ompSessionOf(spec)
+		if err != nil {
+			return launch{}, refuse("%v", err)
+		}
+		l.omp = omp
+	}
 	if err := l.kind.prepare(&l); err != nil {
 		return launch{}, refuse("%v", err)
 	}
@@ -723,8 +883,11 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 	for _, name := range r.providersSecrets {
 		delete(secrets, name)
 	}
-	if r.dispatchToken != "" {
-		secrets[dispatchTokenKey] = r.dispatchToken
+	// The shared bearer, when Dispatch is configured with one. Under dispatch_token_broker no
+	// launch carries it: a launch that keeps a pod with no exchange identity is given the
+	// transition token instead, once relaunch knows it keeps that pod (dispatchCredential).
+	if r.dispatch.Bearer != "" {
+		secrets[dispatchTokenKey] = r.dispatch.Bearer
 	}
 	l.secrets, l.prompt = secrets, prompt
 	// The prompt travels to the pod in the start command's Files, one frame a launcher reads whole
@@ -766,16 +929,25 @@ func SessionFromVolume(file, root string) (string, error) {
 // agentArgv is the command the shim runs, the launch's own harness: the Claude Code command for a
 // Claude role (claudeArgv), and otherwise the image's Oh My Pi with its two explicit extensions,
 // the Envoy plugin first, `--model @default` so the session runs the model the pod's overlay puts
-// on the `default` role, `--resume` on the session being resumed — the recorded file, or for a
-// claim that records no file the session's id (ResumeSession), which the launcher replaces with the
-// file it looks up where it was told the id (launcherCommand) and which Oh My Pi resolves itself
-// where the launch has the agent resolve it (ResumeByAgent) — then RPC mode and
-// `--append-system-prompt` naming the file the launcher writes the launch's system prompt to
-// (systemPromptPath), never the text: Oh My Pi 18.16.0 reads a value with no newline as a path
-// and appends that file's contents, so the prompt meets no argv bound however long the
-// deployment's instructions grow (TestOhMyPiAppendsTheWholePromptFileItIsNamed). Were the file
-// missing, Oh My Pi would silently take the path itself as the prompt's text, which is why the
-// launcher writes every Files entry before it starts the child (launcherCommand). For a plain
+// on the `default` role, the session, then RPC mode and `--append-system-prompt` naming the file
+// the launcher writes the launch's system prompt to (systemPromptPath), never the text.
+//
+// The session: a launch that resumes a claim's session that records no file names the session's
+// id as one `--resume=<id>` (ResumeSession), which the launcher replaces with the file it looks up
+// where it was told the id (launcherCommand) and which Oh My Pi resolves itself where the launch
+// has the agent resolve it (ResumeByAgent); a launch that trades runs under that same id
+// (ompSessionOf). Otherwise the session is the one prepare chose where the launch trades an
+// exchange identity (ompInputs, which is zero for a launch that trades nothing): `--session-id
+// <id>` for a launch that starts a session and `--resume <id>` for one that resumes, and no path,
+// while the start command still names the recorded file (launcherCommand's ResumeFile), by which
+// the launcher looks the session up. A launch that trades nothing names no chosen id:
+// `--resume=<file>` on the recorded session when it resumes, and nothing when it starts one.
+//
+// Oh My Pi 18.16.0 reads an `--append-system-prompt` value with no newline as a path and appends
+// that file's contents, so the prompt meets no argv bound however long the deployment's
+// instructions grow (TestOhMyPiAppendsTheWholePromptFileItIsNamed). Were the file missing, Oh My
+// Pi would silently take the path itself as the prompt's text, which is why the launcher writes
+// every Files entry before it starts the child (launcherCommand). For a plain
 // launch the two roots are the image's own (envoyPlugin, legionPlugin); for an installing launch
 // (l.spec.Plugins set, LEGION-164) they are the pair launcherCommand's install wrapper lands under
 // this generation's own directory (pluginRoots), installed before Oh My Pi starts rather than the
@@ -808,10 +980,14 @@ func (l launch) agentArgv(agent []string) []string {
 	}
 	argv := append(slices.Clone(agent), "--extension", envoy, "--extension", legion, "--model", "@default")
 	switch {
-	case l.spec.ResumeSessionFile != "":
-		argv = append(argv, "--resume="+l.spec.ResumeSessionFile)
 	case l.spec.ResumeSession != "":
 		argv = append(argv, "--resume="+l.spec.ResumeSession)
+	case l.omp.resume:
+		argv = append(argv, "--resume", l.omp.session)
+	case l.omp.session != "":
+		argv = append(argv, "--session-id", l.omp.session)
+	case l.spec.ResumeSessionFile != "":
+		argv = append(argv, "--resume="+l.spec.ResumeSessionFile)
 	}
 	return append(argv, "--mode", "rpc", "--append-system-prompt", systemPromptPath(l.spec.Generation))
 }
@@ -910,17 +1086,18 @@ func (r *Runtime) sandboxManifest(l launch) sandbox {
 // podTemplate is the pod a launch runs (decisions 7 and 10). Every pod mounts one disk at the same
 // volume name (issueVolume), from the source its kind gives it (podKind.disk): an issue pod's is
 // its own ephemeral claim, made with the pod and deleted with it, or, where the pod keeps its
-// volume (keptVolume), the kept claim its Sandbox owns and that outlives the pod; the
-// controller's is the claim its Sandbox owns and that outlives every pod it makes. The pod runs as
-// the operator's ServiceAccount (the namespace's default when the operator names none), and its
-// launcher containers mount the providers Secret's configured keys and the operator's mounts, are
-// told the operator's variables, and start Oh My Pi on the pod's baseline (`--pod-safety`,
+// volume (keptVolume), the kept claim its Sandbox owns and that outlives the pod; the controller's
+// is the claim its Sandbox owns and that outlives every pod it makes. The pod runs as its kind's
+// ServiceAccount (podKind.serviceAccount: the operator's, the namespace's default when the operator
+// names none, and for the controller's pod the controller's own account where one is named), and
+// its launcher containers mount the providers Secret's configured keys and the operator's mounts,
+// are told the operator's variables, and start Oh My Pi on the pod's baseline (`--pod-safety`,
 // internal/podsafety). Its init containers and the volumes only they mount are its kind's
-// (podKind). Beyond the Legion pool's selector and tolerations, and a microVM pod's ComputeClass
-// (placement), it asks nothing of its placement: an ephemeral disk is made where the pod is
-// scheduled, so the scheduler puts such a pod wherever the pool has room. A claim that outlives
-// its pods binds each later pod to the zones of its volume. The controller applies a template only
-// to the next pod it creates, so the template is rebuilt for every relaunch. Its metadata
+// (podKind). Beyond the operator's scheduling and a microVM pod's ComputeClass (placement), it
+// asks nothing of its placement: an ephemeral disk is made where the pod is scheduled, so the
+// scheduler puts such a pod wherever a node has room. A claim that outlives its pods binds each
+// later pod to the zones of its volume. The controller applies a template only to the next pod
+// it creates, so the template is rebuilt for every relaunch. Its metadata
 // carries, beside the two stop-eviction annotations, the configuration the pod is built from
 // (podShapeAnnotation, podShape), its kind's in the sandbox the launch runs it in
 // (launch.shapeKey): the one write of it, so that a later sweep can read what a pod was built from
@@ -934,7 +1111,7 @@ func (r *Runtime) podTemplate(l launch) podTemplate {
 		RestartPolicy:                 corev1.RestartPolicyAlways,
 		TerminationGracePeriodSeconds: new(int64(math.Ceil(r.terminationGrace.Seconds()))),
 		AutomountServiceAccountToken:  new(false),
-		ServiceAccountName:            r.pod.ServiceAccount,
+		ServiceAccountName:            l.kind.serviceAccount(r),
 		EnableServiceLinks:            new(false),
 		// OnRootMismatch: every file on the pod's disk is already the pod user's, so the kubelet skips
 		// re-owning the whole volume at each mount; on a full volume that walk took about 35 s.
@@ -1264,15 +1441,42 @@ func (r *Runtime) mountsProviders() bool {
 	return len(r.providerKeys) > 0 || len(r.providersSecrets) > 0 || r.sessionStore.DSNSecretKey() != ""
 }
 
-// providersKeys are the providers Secret's keys every pod mounts, sorted: what the image probe
-// names when the kubelet cannot mount one.
-func (r *Runtime) providersKeys() []string {
-	keys := slices.Concat(slices.Collect(maps.Values(r.providerKeys)), r.providersSecrets)
-	if key := r.sessionStore.DSNSecretKey(); key != "" {
-		keys = append(keys, key)
+// providersEntries name the settings whose keys of the providers Secret every pod mounts, sorted:
+// what the image probe names when the kubelet cannot mount one. A provider key is named by its
+// variable (provider_keys.<VAR>) and the session database's URL by its setting, never by the key
+// of the Secret that holds it: a provider_keys value can be the provider's key itself, pasted
+// where its name goes, and this refusal is printed as it is. A providers secret is a launch
+// secret's fixed name.
+func (r *Runtime) providersEntries() []string {
+	entries := slices.Concat(slices.Collect(maps.Keys(r.providerKeys)), r.providersSecrets)
+	for i, entry := range entries[:len(r.providerKeys)] {
+		entries[i] = "provider_keys." + entry
 	}
-	slices.Sort(keys)
-	return keys
+	if r.sessionStore.DSNSecretKey() != "" {
+		entries = append(entries, "runtime.kubernetes.session_dsn_secret")
+	}
+	slices.Sort(entries)
+	return entries
+}
+
+// providersEntryOf is the settings whose key of the providers Secret is key, by providersEntries'
+// names, sorted and joined with " and ", so two provider_keys variables that read one key are
+// both named the same way each run; or "" when none is.
+func (r *Runtime) providersEntryOf(key string) string {
+	var entries []string
+	for variable, secretKey := range r.providerKeys {
+		if secretKey == key {
+			entries = append(entries, "provider_keys."+variable)
+		}
+	}
+	if slices.Contains(r.providersSecrets, key) {
+		entries = append(entries, key)
+	}
+	if dsn := r.sessionStore.DSNSecretKey(); dsn != "" && dsn == key {
+		entries = append(entries, "runtime.kubernetes.session_dsn_secret")
+	}
+	slices.Sort(entries)
+	return strings.Join(entries, " and ")
 }
 
 // sessionDSNPointer is OMP_SESSION_SQL_DSN_FILE naming the mounted session database URL, none
@@ -1441,9 +1645,8 @@ const (
 )
 
 // xdgEnvironment is the four XDG base directories on the image's HOME: what the issue pod's
-// workspace-init is told (initEnvironment), the one container of a pod told any of them besides
-// what each role is told — workspace-fetch is told none (fetchEnvironment). A role is told none of
-// them but the config home, at whose path it sees its own; its cache and data homes are the issue's
+// workspace-init is told (initEnvironment). A role is told none of the three home-directory ones
+// but the config home, at whose path it sees its own; its cache and data homes are the issue's
 // scratch's and its state home a directory per role there (roleEnvironment).
 func xdgEnvironment() []corev1.EnvVar {
 	return []corev1.EnvVar{
@@ -1580,64 +1783,44 @@ const (
 	goModCache   = TreeRoot + "/go/mod"
 )
 
-// fetchEnvironment is `workspace-init fetch`'s: the image's PATH alone, its own TMPDIR, the mounted
-// provisioning token, and, for an issue pod, its repository's cache — its address, which resolves
-// only while the cache is Ready, so the fetch waits for it, and its bearer token's file, from the
-// same Secret — which `fetch` streams a fresh feed from alone before it asks GitHub for the delta,
-// and the default branch the daemon recorded for the issue (LEGION_DEFAULT_BRANCH), which the
-// delta brings current beside the one GitHub names now, since `workspace-init provision` starts an
-// issue with no branch there. It is a variable and not a flag so that an image from before it
-// ignores it rather than refusing the command, and a daemon from before it leaves it unset, which
-// the fetch reads as no recorded default. Its git reads no configuration but its own, so it is
-// told no config home.
-func fetchEnvironment(l launch) []corev1.EnvVar {
-	return []corev1.EnvVar{
+// initEnvironment is workspace-init provision's contract: the image's PATH, its in-memory TMPDIR,
+// the mounted provisioning token, the repository cache URL and bearer-token file, and the four XDG
+// base directories (xdgEnvironment). Its PATH names no directory on the issue's disk, so the git
+// and jj it resolves are never ones an agent put there; it carries no tool-path variables. A pod's
+// own ephemeral disk is created with the pod and empty, so its provision is the first. A kept volume
+// (keptVolume) holds the clone and the workspace that the issue's earlier pods left, and its
+// provision reuses what the volume holds (workspace.Provision). Nothing here sizes a wait on
+// another pod: each issue pod provisions its own clone on the issue's own disk, which no other pod
+// mounts at the same time, so no two provisions share a repository.
+func (r *Runtime) initEnvironment(l launch) []corev1.EnvVar {
+	return append([]corev1.EnvVar{
 		{Name: "PATH", Value: imagePath},
 		{Name: "TMPDIR", Value: initTempDir},
 		{Name: "LEGION_PROVISION_TOKEN_FILE", Value: ProvisionDir + "/" + provisionTokenKey},
 		{Name: "LEGION_REPOSITORY_CACHE_URL", Value: l.cacheURL},
 		{Name: repocache.CacheTokenFileEnv, Value: ProvisionDir + "/" + cacheTokenKey},
-		{Name: "LEGION_DEFAULT_BRANCH", Value: l.spec.DefaultBranch},
-	}
-}
-
-// initEnvironment is `workspace-init provision`'s contract (research runtime §2.3), the one
-// provisioning every role of the issue pod shares. Its PATH is the image's alone, naming no
-// directory on the issue's disk, so the git and jj it resolves from PATH are never ones an agent
-// put there; it carries no tool-path variables, and it is never pointed at the provisioning token.
-// It carries no role's session path either: a missing transcript must not prevent sibling
-// launchers from starting, and no session lives on the disk at all (INFRA-80). It expects nothing
-// of the disk. A pod's own ephemeral disk is created with the pod and empty, so its provision is
-// the first. A kept volume (keptVolume) holds the clone and the workspace that the issue's
-// earlier pods left, and its provision reuses what the volume holds (workspace.Provision). Nothing
-// here sizes a wait on another pod: each issue pod provisions its own clone on the issue's own
-// disk, which no other pod mounts at the same time, so no two provisions share a repository.
-func (r *Runtime) initEnvironment(launch) []corev1.EnvVar {
-	return append([]corev1.EnvVar{{Name: "PATH", Value: imagePath}}, xdgEnvironment()...)
+	}, xdgEnvironment()...)
 }
 
 // ProvisionBound satisfies runtime.Runtime: workspace.FetchBudget plus workspace.CloneTimeout plus
 // workspace.CheckoutTimeout. Each term is the real bound of one step whose duration follows the
-// repository's size, and the three run one after the other: workspace-fetch's whole budget (its
-// wait for the repository cache, then one FetchTimeout for the verification of what the cache
-// streamed, then one of its own for the delta from GitHub), workspace-init's shared clone of
-// the feed, whose size-following steps share one CloneTimeout, and the issue's own checkout, the
-// one command that writes the whole working copy (`jj sparse reset`, workspace.Provision), under
-// CheckoutTimeout. It is how much longer than the boot timeout a launch may wait for its pod's
-// launcher, counted from when it first sees one of the pod's init containers running
-// (awaitRoleLauncher). The fetch started no later than that, the shared clone after the fetch
-// ended and the checkout after the clone, so the three end inside the bound, each failing on its
-// own, naming why, when it runs out, while the commands between them take the moments they do.
-// The stream from the repository cache is the one part of the fetch outside those bounds: it
-// ends when it falls below the low-speed bound rather than on any clock
+// repository's size: FetchBudget is the fill's wait for the repository cache, then one
+// BucketFetchTimeout for its attempt on the cache's bucket, then one FetchTimeout for the
+// verification of what the cache's /tar streamed when that attempt failed, then one of its own for
+// the GitHub transfer; CloneTimeout is the fill's jj steps; and CheckoutTimeout is the issue's
+// checkout, the one command that writes the whole working copy (`jj sparse reset`,
+// workspace.Provision). workspace-init runs them in that order. It is how much longer than the boot
+// timeout a launch may wait for its pod's launcher, counted from when it first sees workspace-init
+// running (awaitRoleLauncher). The stream from the repository cache is the one part of the fill
+// outside those bounds: it ends when it falls below the low-speed bound rather than on any clock
 // (workspace.CacheStreamLowSpeedBytes), so a stream that keeps receiving runs on into the slack
-// this bound holds over what its fetch actually waited and checked.
+// this bound holds over what its fill actually waited and checked.
 //
-// The sum counts no term for the commands that keep CommandTimeout, and never has: workspace-
-// init's dozen other commands, local work that waits on no other pod. What covers them is the
-// boot timeout past the sum, so the sum is no worst case: when the fetch and the clone each run
-// their whole bound, whatever those commands take comes out of the checkout's hour and that boot
-// timeout. A test shortens the sum (provisionBound).
+// The sum counts no term for the commands that keep CommandTimeout, and never has: workspace-init's
+// local work that waits on no other pod. What covers them is the boot timeout past the sum, so the
+// sum is no worst case: when the fill and the jj steps each run their whole bound, whatever those
+// commands take comes out of the checkout's hour and that boot timeout. A test shortens the sum
+// (provisionBound).
 func (r *Runtime) ProvisionBound() time.Duration {
 	return r.provisionBound
 }
@@ -1759,6 +1942,12 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	if l.trades(r) {
 		add(machineIdentityVariable, kubernetesIdentity)
 		add(machineTokenFileVariable, AgentSecretsExchangeDir+"/"+AgentSecretsExchangeFile)
+	}
+	// Under dispatch_token_broker, the word that this role's Dispatch credential is the token that
+	// identity trades for, and nothing else (brokersDispatch): its launch carries no Dispatch
+	// token, so it is told no DISPATCH_TOKEN_FILE either (the pointers below follow l.secrets).
+	if l.brokersDispatch(r) {
+		add(shimwire.DispatchTokenBrokerVariable, "1")
 	}
 	// The pod's own test database, when the deployment serves one (runtime.kubernetes.test_postgres):
 	// an issue pod's roles alone, whose launcher serves it before it accepts a role start
@@ -1958,38 +2147,39 @@ func podPath(legionDir string) string {
 	return strings.Join(entries, ":")
 }
 
-// nodeSelector is the Legion pool's label and the configured selector, which configure keeps off
-// the pool's key.
+// nodeSelector is a copy of the configured selector, which configure keeps off poolKey: a pod
+// selects no node label the operator did not name. It is a copy so that a pod's own selector
+// (placement's microVM class) never writes the operator's.
 func (r *Runtime) nodeSelector() map[string]string {
-	selector := map[string]string{poolKey: poolValue}
-	for key, value := range r.scheduling.NodeSelector {
-		selector[key] = value
-	}
-	return selector
+	return maps.Clone(r.scheduling.NodeSelector)
 }
 
-// tolerations are the Legion pool's taint, tolerated, then the configured ones.
+// tolerations are a copy of the configured tolerations: a pod tolerates no taint the operator did
+// not name. It is a copy so that a pod's own list (placement's microVM class) never writes the
+// operator's.
 func (r *Runtime) tolerations() []corev1.Toleration {
-	return append([]corev1.Toleration{{
-		Key: poolKey, Operator: corev1.TolerationOpEqual, Value: poolValue, Effect: corev1.TaintEffectNoSchedule,
-	}}, r.scheduling.Tolerations...)
+	return slices.Clone(r.scheduling.Tolerations)
 }
 
 // placement is where a launch's pod runs: its RuntimeClass, node selector and tolerations. A
 // gVisor pod's are every other pod's (the repository cache pods' and the image probe's, which run
-// in gVisor whatever the sandbox block says): gVisor, on the Legion pool (nodeSelector,
-// tolerations). A microVM pod (launch.microVM), an issue's or the controller's, runs under
-// microVMRuntimeClass on the Legion pool's nodes of its ComputeClass: its selector is the gVisor
-// pod's with computeClassKey set to that class, in place of any class the operator's selector
-// names, and its tolerations are the gVisor pod's, less any the operator gave of computeClassKey,
-// which tolerates the class being replaced, then the taint GKE puts on that class's nodes. The
-// RuntimeClass adds the sandbox's own selector and toleration at admission.
+// in gVisor whatever the sandbox block says): gVisor, under the operator's selector and
+// tolerations alone (nodeSelector, tolerations), on the cluster's general nodes. A microVM pod
+// (launch.microVM), an issue's or the controller's, runs under microVMRuntimeClass on the nodes of
+// its ComputeClass: its selector is the gVisor pod's with computeClassKey set to that class, in
+// place of any class the operator's selector names, and its tolerations are the gVisor pod's, less
+// any the operator gave of computeClassKey, which tolerates the class being replaced, then the
+// taint GKE puts on that class's nodes. The RuntimeClass adds the sandbox's own selector and
+// toleration at admission.
 func (r *Runtime) placement(l launch) (runtimeClass string, selector map[string]string, tolerations []corev1.Toleration) {
 	selector, tolerations = r.nodeSelector(), r.tolerations()
 	if l.microVM == nil {
 		return gvisor, selector, tolerations
 	}
 	class := l.microVM.ComputeClass
+	if selector == nil {
+		selector = map[string]string{}
+	}
 	selector[computeClassKey] = class
 	tolerations = slices.DeleteFunc(tolerations, func(t corev1.Toleration) bool { return t.Key == computeClassKey })
 	tolerations = append(tolerations, corev1.Toleration{

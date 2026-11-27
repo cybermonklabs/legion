@@ -7,7 +7,7 @@ GATE = gate("envoy_go_claim_model", CLAIM_MODEL_JOB, exact=[
     pinned_step(CLAIM_MODEL_JOB, CLAIM_MODEL_STEP, ENVOY, CLAIM_MODEL_SCRIPT, [
         (ENVOY, [CLAIM_MODEL_PACKAGE], f"go test -run of the sender claim model's two tests in {CLAIM_MODEL_PACKAGE}", {}),
     ]),
-], reads=setup_go(CLAIM_MODEL_JOB, f"{ENVOY}/go.mod"))
+], reads=service_settings_reads(CLAIM_MODEL_JOB) + setup_go(CLAIM_MODEL_JOB, f"{ENVOY}/go.mod"))
 GATE = with_reads(GATE, [
     Read('packages/envoy/**', "filter envoy_go_claim_model held packages/envoy/** by hand before the filters were computed: it selected 1564 file(s) no other read of this gate declares", but=('**/*_test.go',)),
 ])

@@ -24,6 +24,7 @@ const handoffLineExtract = "handoff_line_extract.txt"
 // words of the line: they assert what the line names (assertNamesTheHandoff), or read the line
 // from this copy (handoffPartOf, its second reader, through handoffSentence as this test does).
 func TestTheHandoffLineExtractIsTheSentenceTheTaskWrites(t *testing.T) {
+	t.Parallel()
 	sentence := handoffSentence(t)
 	for _, placeholder := range []string{"{word}", "{version}", "{issue}"} {
 		if !strings.Contains(sentence, placeholder) {
@@ -33,7 +34,8 @@ func TestTheHandoffLineExtractIsTheSentenceTheTaskWrites(t *testing.T) {
 	issue := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Testing}
 	handoff := record.PhaseRow{Role: claim.RoleImplementer, HandoffRecord: "implement-7", HandoffVersion: 7}
 	filled := strings.NewReplacer("{word}", handoffWord(handoff.Role), "{version}", strconv.Itoa(handoff.HandoffVersion), "{issue}", issue.Key).Replace(sentence)
-	if got, want := task(issue, Standing{}, handoff, nil, ""), continueLine(issue)+" "+filled; got != want {
+	at := WorkingCopy(issue, nil)
+	if got, want := task(issue, at, handoff, nil, ""), taskOpening(issue, at)+" "+filled; got != want {
 		t.Errorf("task writes\n%q\nand %s, filled, is\n%q\nchange the two in one commit", got, handoffLineExtract, want)
 	}
 }

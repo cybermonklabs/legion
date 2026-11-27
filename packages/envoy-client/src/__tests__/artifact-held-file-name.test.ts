@@ -7,15 +7,18 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 
-// `dispatch artifact` under a name its owner already holds is refused before anything is sent,
-// and the refusal names only a remedy Dispatch takes and prints no token. Of the stored kind, a
-// file or picture is replaced with --force and the token the writer's own `dispatch doc-read`
-// printed, so a writer whose read is stale is refused 409 rather than handed the newest token;
-// where the standing version states no token, --force alone. Of another kind, by Dispatch's rule
-// (declared Markdown is a document, PNG, JPEG, GIF or WebP bytes a picture, anything else a
-// file), the name cannot take it, so the refusal names another name and nothing else. Each row
-// runs the command whole, through runDispatchCli, against a stub Dispatch that keeps DSP-1's
-// artifacts and answers reads and uploads as Dispatch does.
+// `dispatch artifact` under a name its owner already holds is refused before the upload is sent,
+// and the refusal names only a remedy Dispatch takes and prints no token. The command checks a
+// Markdown text first, with a round trip that stores nothing, and then reads what the owner holds;
+// this stub answers that round trip 404, as a Dispatch without the route does, so the text goes
+// unchecked and the read of the held name decides. Of the stored kind, a file or picture is
+// replaced with --force and the token the writer's own `dispatch doc-read` printed, so a writer
+// whose read is stale is refused 409 rather than handed the newest token; where the standing
+// version states no token, --force alone. Of another kind, by Dispatch's rule (declared Markdown
+// is a document, PNG, JPEG, GIF or WebP bytes a picture, anything else a file), the name cannot
+// take it, so the refusal names another name and nothing else. Each row runs the command whole,
+// through runDispatchCli, against a stub Dispatch that keeps DSP-1's artifacts and answers reads
+// and uploads as Dispatch does.
 
 const makeDirectory = temporaryDirectories("artifact-held-file-name");
 
@@ -329,40 +332,43 @@ describe("dispatch artifact under a name the owner holds", () => {
   test.each([
     ["a file", "notes", "notes.txt", textOf],
     ["a picture", "chart", "chart.png", pictureOf],
-  ] as const)("for %s, prints no token, and a stale reader following it cannot overwrite the newer version", async (_label, name, file, contentOf) => {
-    const v1Token = await readToken(name);
-    const written = await upload(
-      name,
-      ["--path", pathOf(`b-${file}`, contentOf("from B"))],
-      ["--force"]
-    );
-    expect(written.code, written.stdout).toBe(0);
-    const standing = held.find((artifact) => artifact.name === name)?.versions.at(-1);
+  ] as const)(
+    "for %s, prints no token, and a stale reader following it cannot overwrite the newer version",
+    async (_label, name, file, contentOf) => {
+      const v1Token = await readToken(name);
+      const written = await upload(
+        name,
+        ["--path", pathOf(`b-${file}`, contentOf("from B"))],
+        ["--force"]
+      );
+      expect(written.code, written.stdout).toBe(0);
+      const standing = held.find((artifact) => artifact.name === name)?.versions.at(-1);
 
-    const refused = await upload(name, ["--path", pathOf(`a-${file}`, contentOf("from A"))]);
-    expect(refused.code, refused.stdout).toBe(2);
-    const text = refusalOf(refused.stdout, name);
-    expect(text).not.toContain("sha256:");
-    expect(text).toContain("dispatch doc-read");
-    expect(text).toContain("--force");
+      const refused = await upload(name, ["--path", pathOf(`a-${file}`, contentOf("from A"))]);
+      expect(refused.code, refused.stdout).toBe(2);
+      const text = refusalOf(refused.stdout, name);
+      expect(text).not.toContain("sha256:");
+      expect(text).toContain("dispatch doc-read");
+      expect(text).toContain("--force");
 
-    const stale = await upload(
-      name,
-      ["--path", pathOf(`a-${file}`, contentOf("from A"))],
-      advisedFlags(text, v1Token)
-    );
-    expect(stale.code, stale.stdout).toBe(1);
-    expect(stale.stdout).toContain("PRECONDITION_FAILED");
-    expect(held.find((artifact) => artifact.name === name)?.versions.at(-1)).toBe(standing);
+      const stale = await upload(
+        name,
+        ["--path", pathOf(`a-${file}`, contentOf("from A"))],
+        advisedFlags(text, v1Token)
+      );
+      expect(stale.code, stale.stdout).toBe(1);
+      expect(stale.stdout).toContain("PRECONDITION_FAILED");
+      expect(held.find((artifact) => artifact.name === name)?.versions.at(-1)).toBe(standing);
 
-    const fresh = await upload(
-      name,
-      ["--path", pathOf(`a-${file}`, contentOf("from A"))],
-      advisedFlags(text, await readToken(name))
-    );
-    expect(fresh.code, fresh.stdout).toBe(0);
-    expect(held.find((artifact) => artifact.name === name)?.versions).toHaveLength(3);
-  });
+      const fresh = await upload(
+        name,
+        ["--path", pathOf(`a-${file}`, contentOf("from A"))],
+        advisedFlags(text, await readToken(name))
+      );
+      expect(fresh.code, fresh.stdout).toBe(0);
+      expect(held.find((artifact) => artifact.name === name)?.versions).toHaveLength(3);
+    }
+  );
 
   // R3: where the standing version states no token, --force alone, read out of the refusal, is
   // taken: from a Dispatch without file tokens, and for a version stored with no hash.
@@ -381,22 +387,25 @@ describe("dispatch artifact under a name the owner holds", () => {
           notes.versions[0] = { ...(notes.versions[0] as StoredVersion), hashed: false };
       },
     ],
-  ] as const)("advises --force alone for %s, and the upload sending exactly that is taken", async (_label, arrange) => {
-    arrange();
-    const refused = await upload("notes", ["--path", pathOf("n.txt", textOf("second"))]);
-    expect(refused.code, refused.stdout).toBe(2);
-    const text = refusalOf(refused.stdout, "notes");
-    expect(text).toContain("(--force) alone");
-    expect(text).not.toContain("--precondition-json");
+  ] as const)(
+    "advises --force alone for %s, and the upload sending exactly that is taken",
+    async (_label, arrange) => {
+      arrange();
+      const refused = await upload("notes", ["--path", pathOf("n.txt", textOf("second"))]);
+      expect(refused.code, refused.stdout).toBe(2);
+      const text = refusalOf(refused.stdout, "notes");
+      expect(text).toContain("(--force) alone");
+      expect(text).not.toContain("--precondition-json");
 
-    const taken = await upload(
-      "notes",
-      ["--path", pathOf("n.txt", textOf("second"))],
-      advisedFlags(text, undefined)
-    );
-    expect(taken.code, taken.stdout).toBe(0);
-    expect(uploads).toEqual([{ name: "notes", precondition: undefined }]);
-  });
+      const taken = await upload(
+        "notes",
+        ["--path", pathOf("n.txt", textOf("second"))],
+        advisedFlags(text, undefined)
+      );
+      expect(taken.code, taken.stdout).toBe(0);
+      expect(uploads).toEqual([{ name: "notes", precondition: undefined }]);
+    }
+  );
 
   // R3: an upload of another kind than the name holds, by Dispatch's rule, is told to take another
   // name and is offered no flag: Dispatch refuses it under that name with --force too, and takes

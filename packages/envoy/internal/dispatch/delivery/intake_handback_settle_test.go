@@ -53,6 +53,8 @@ import (
 // hand-back was counted after beforeHandBackPublish, and a stop that does not seal, each fail the
 // second subtest with the standby's consumer delivering the message twice.
 func TestACallbacksHandBackAsTheStopEndsLandsBeforeTheStandbyTakesOver(t *testing.T) {
+	// Serial until the hang a reviewer saw once in requireHandBackBeforeCreation is explained
+	// (build-cluster Job legion-ci-handback-hang-4zwgk reproduces it at main).
 	t.Run("a callback's hand-back that lands before the stop's context ends", func(t *testing.T) {
 		callbackHandBackAsTheStopEnds(t, false)
 	})
@@ -64,7 +66,7 @@ func TestACallbacksHandBackAsTheStopEndsLandsBeforeTheStandbyTakesOver(t *testin
 // callbackHandBackAsTheStopEnds is one subtest of the row above: heldPastTheStop holds the callback's
 // hand-back until the stop has returned.
 func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -155,7 +157,7 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 		t.Fatal("the holder's stop did not return within 30 s of its context's end")
 	}
 
-	if heldPastTheStop && !holdLive(t, pool) {
+	if heldPastTheStop && !holdLive(t, pool, durable.holder) {
 		// The stop released its hold with the callback's hand-back still to be decided: the standby
 		// takes the durable over and starts the message, and only then does the hand-back go on.
 		waitFor(t, 30*time.Second, func() bool { return standby.fetches(number) == 1 }, func() string {
@@ -242,7 +244,7 @@ func TestAHandBackPendingWhenTheHoldIsLostNeverReachesTheStandbysDurable(t *test
 			if !row.handBackPending() {
 				t.Fatal("control: the stop's hand-back reached NATS while the write was held")
 			}
-			if !holdLive(t, row.pool) {
+			if !holdLive(t, row.pool, row.holder.intake.holder) {
 				t.Fatal("control: the stop released its hold with its hand-back pending")
 			}
 			if !tc.lose {

@@ -15,6 +15,7 @@ import (
 // neither does one of a document the step no longer records. Where it no longer stands the answer
 // names the approval the gate holds in its place, and none where the gate holds none.
 func TestAnApprovalStandsWhileTheGateStillRecordsItsVersionApproved(t *testing.T) {
+	t.Parallel()
 	gate := record.DesignGate{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: "artifact", LatestVersion: 4}
 	approved := classify.ApplyDesignGateEvent(gate, classify.DesignGateApproved, 4, record.EventMark{Seq: 10})
 	closed := classify.ApplyDesignGateEvent(approved, classify.DesignGateVersion, 5, record.EventMark{})
@@ -64,6 +65,7 @@ func TestAnApprovalStandsWhileTheGateStillRecordsItsVersionApproved(t *testing.T
 // the review stands, as it does where the issue holds no gate of its step at all. A step and a gate
 // naming none are the spec step's, as the record reads them (record.DesignStep.OrSpec).
 func TestADecisionIsAskedOnlyOfTheGateOfItsOwnStep(t *testing.T) {
+	t.Parallel()
 	approved := 3
 	gateAt := func(step record.DesignStep) *record.DesignGate {
 		return &record.DesignGate{Issue: "LEGION-208", Step: step, ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: &approved,
@@ -101,6 +103,7 @@ func TestADecisionIsAskedOnlyOfTheGateOfItsOwnStep(t *testing.T) {
 // Where no person approves criteria (a deployment that gates neither spec nor criteria), the gate's
 // approval is its registration's, and the request stands.
 func TestAChangesRequestOnTheVerificationDocumentIsAskedWhereAPersonApprovesIt(t *testing.T) {
+	t.Parallel()
 	approved := 3
 	gates := map[record.DesignStep]record.DesignGate{record.DesignStepCriteria: {Issue: "LEGION-208",
 		Step: record.DesignStepCriteria, ArtifactID: "verification-208", LatestVersion: 3, ApprovedVersion: &approved,

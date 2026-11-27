@@ -26,6 +26,7 @@ import {
   useAddressFallback,
   useAddressTarget,
 } from "../address-target";
+import { useCurrentPoint } from "../current-point";
 import { useOutlineEditing } from "../IssuePresetPanels";
 import { IssueTree } from "../IssueTree";
 import { issueAddress } from "../issue-address";
@@ -34,7 +35,7 @@ import { NoTooltips } from "../NoTooltips";
 import { useOutlineReads } from "../outline-reads";
 import { useOutlineRequest } from "../outline-request";
 import { KEY_REPORTS } from "../page-structure";
-import { EMPTY_STATE_LINES } from "../page-words";
+import { ADDRESS_FALLBACK_WORDS, EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { specSummary } from "../spec-summary";
@@ -61,8 +62,13 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // names as well (`namesHeld`): a plan task's or a callout's words come from them alone, so
   // before they are held such a node matches nothing, and the outline draws nothing in the
   // line's place. With no filter on the line reads no words, and does not wait on the names.
-  const { failed, namesHeld, reads, readsHeld, readsSettled, root } = useOutlineReads(issue);
+  // What the page publishes of its batched names read the tree hands its rows and crumbs in the
+  // render that draws them (`published`), so none of them reads a reference the page asks for.
+  const { failed, namesHeld, published, reads, readsHeld, readsSettled, root } =
+    useOutlineReads(issue);
   const key = issue.key;
+  // The conversation's current point (R12), read from the whole tree so a filter does not move it.
+  const point = useCurrentPoint(root);
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the words filter would not have matched still draws it. An item
   // the tree holds no node of falls back to the item's own page once the reads are held, unless
@@ -136,10 +142,9 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
         ) : fallback?.kind === "absent" ? (
           // Keyed on the following, as the item's own page is.
           <NotFoundLine
-            heading={ABSENT_LINES[fallback.target.kind].heading}
+            {...ADDRESS_FALLBACK_WORDS[fallback.target.kind]}
             issueKey={key}
             key={following}
-            line={ABSENT_LINES[fallback.target.kind].line(key)}
             takesFocus={takesFocus}
           />
         ) : (
@@ -163,6 +168,8 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
             isClosed={isClosed}
             {...(ancestor === undefined ? {} : { landingReport: KEY_REPORTS.agents_thread })}
             onEditing={onEditing}
+            point={point}
+            published={published}
             readsHeld={readsHeld}
             readsSettled={readsSettled}
             {...(request === undefined ? {} : { request })}
@@ -284,21 +291,14 @@ function ItemFallback({
   if (landing.kind === "ambiguous") {
     return <MatchList candidates={landing.candidates} route={route} takesFocus={takesFocus} />;
   }
-  const noun = ITEM_NOUNS[route.kind];
+  const words = ADDRESS_FALLBACK_WORDS.items[route.kind];
   if (landing.kind === "missing") {
-    return (
-      <NotFoundLine
-        heading={`${noun} not found`}
-        issueKey={route.key}
-        line={`That link doesn't name ${route.kind === "ask" ? "an" : "a"} ${noun.toLowerCase()} on ${route.key} — it may have been deleted.`}
-        takesFocus={takesFocus}
-      />
-    );
+    return <NotFoundLine {...words.missing} issueKey={route.key} takesFocus={takesFocus} />;
   }
   return (
     <ItemReadFailed
+      {...words.unreadable}
       failure={failure}
-      noun={noun}
       onRetry={landing.retry}
       retrying={retrying}
       takesFocus={takesFocus}
@@ -362,41 +362,15 @@ function useFocusOnDraw<T extends HTMLElement>(takesFocus: TakesFocus) {
   return element;
 }
 
-/** What each kind of item is called: a copy of `issue/IssuePage.tsx`'s `itemNoun`. */
-const ITEM_NOUNS: Readonly<Record<ItemRoute["kind"], string>> = {
-  ask: "Ask",
-  comment: "Comment",
-  message: "Message",
-};
-
-/** What the page says in the outline's place of a block or the children an address names that
- *  the tree holds no node of (`absent`), for the issue `key`. */
-const ABSENT_LINES: Readonly<
-  Record<
-    Extract<AddressFallback, { kind: "absent" }>["target"]["kind"],
-    { readonly heading: string; readonly line: (key: string) => string }
-  >
-> = {
-  // A block of a document the outline draws no row for - a paragraph, a heading, a table - is no
-  // node of the tree as much as a block id no document holds, so the words fit both.
-  block: {
-    heading: "No row for this block",
-    line: (key) => `That link names no row of ${key}'s outline.`,
-  },
-  children: {
-    heading: "No child issues",
-    line: (key) => `That link names the child issues of ${key}, which has none.`,
-  },
-};
-
 /**
  * What an address names that this issue's page does not hold - an item the issue holds none of,
  * a block no node carries, the children of an issue with none - said where the outline would
  * be, with the focus on its heading (`useFocusOnDraw`) and a way back to the issue's own address.
  *
  * A copy of the missing line of `issue/IssuePage.tsx`'s `ItemLandingFailure`, which that file
- * keeps to itself, with its words, as `IssueOutlinePage.tsx` copies today's failed states: today's
- * page is changed by additions alone, and the copy goes when that page is removed. It is drawn
+ * keeps to itself, as `IssueOutlinePage.tsx` copies today's failed states: today's page is
+ * changed by additions alone, and the copy goes when that page is removed. Its words are
+ * `ADDRESS_FALLBACK_WORDS`: `heading`, and `line`, cut where the issue's key goes. It is drawn
  * as the shell's `NotFoundPage` draws its line, but here: that page names the whole window "Not
  * found", where the issue's page stands around it. The heading is the page's second level, under
  * the issue's.
@@ -409,7 +383,7 @@ function NotFoundLine({
 }: {
   heading: string;
   issueKey: string;
-  line: string;
+  line: { readonly after: string; readonly before: string };
   takesFocus: TakesFocus;
 }): ReactNode {
   const title = useFocusOnDraw<HTMLHeadingElement>(takesFocus);
@@ -418,12 +392,12 @@ function NotFoundLine({
       <h2 className="mb-2 text-2xl font-semibold" ref={title} tabIndex={-1}>
         {heading}
       </h2>
-      <p className={textSecondaryOnCanvas}>{line}</p>
+      <p className={textSecondaryOnCanvas}>{`${line.before}${issueKey}${line.after}`}</p>
       <Link
         className={`mt-4 inline-block rounded-lg px-3 py-2 text-sm font-medium ${primaryButtonBg} ${primaryButtonHoverBg}`}
         to={buildIssuePath({ key: issueKey, kind: "issue" })}
       >
-        {`Back to ${issueKey}`}
+        {`${ADDRESS_FALLBACK_WORDS.back.before}${issueKey}${ADDRESS_FALLBACK_WORDS.back.after}`}
       </Link>
     </section>
   );
@@ -432,36 +406,34 @@ function NotFoundLine({
 /**
  * An address's item whose read failed (`unavailable`), named in the page, where the outline
  * would be, with the focus on its heading, as `issue/IssuePage.tsx`'s `ItemLandingFailure` names
- * it. Its Retry is the new page's failed read's line (`FailedReadLine`): busy while the read runs
- * again (`retrying`) and never disabled, and each failure (`failure`, the failures since the
- * address was followed) draws its alert afresh, so a screen reader says a second failure again.
+ * it, in its words (`ADDRESS_FALLBACK_WORDS`): `heading`, and `message`, its alert's. Its Retry
+ * is the new page's failed read's line (`FailedReadLine`): busy while the read runs again
+ * (`retrying`) and never disabled, and each failure (`failure`, the failures since the address
+ * was followed) draws its alert afresh, so a screen reader says a second failure again.
  */
 function ItemReadFailed({
   failure,
-  noun,
+  heading,
+  message,
   onRetry,
   retrying,
   takesFocus,
 }: {
   failure: number;
-  noun: string;
+  heading: string;
+  message: string;
   onRetry: () => void;
   retrying: boolean;
   takesFocus: TakesFocus;
 }): ReactNode {
-  const heading = useFocusOnDraw<HTMLHeadingElement>(takesFocus);
+  const title = useFocusOnDraw<HTMLHeadingElement>(takesFocus);
   return (
     <section>
-      <h2 className={`text-xl font-semibold ${textPrimaryOnCanvas}`} ref={heading} tabIndex={-1}>
-        Couldn&apos;t load this {noun.toLowerCase()}
+      <h2 className={`text-xl font-semibold ${textPrimaryOnCanvas}`} ref={title} tabIndex={-1}>
+        {heading}
       </h2>
       <div className="mt-2">
-        <FailedReadLine
-          failure={failure}
-          message={`Couldn't load this ${noun.toLowerCase()}.`}
-          onRetry={onRetry}
-          retrying={retrying}
-        />
+        <FailedReadLine failure={failure} message={message} onRetry={onRetry} retrying={retrying} />
       </div>
     </section>
   );

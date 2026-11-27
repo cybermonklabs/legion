@@ -337,17 +337,6 @@ func commitOf(t *testing.T, dir, rev string) string {
 	return strings.TrimSpace(runSetup(t, dir, "jj", "log", "-r", rev, "--no-graph", "-T", "commit_id", "--ignore-working-copy"))
 }
 
-// feedRequest is req provisioned as a pod provisions it: from a feed a fresh Fetch filled, with no
-// credential.
-func feedRequest(t *testing.T, run *recordingRunner, req Request) Request {
-	t.Helper()
-	fetch := fetchRequest(t)
-	if _, err := Fetch(context.Background(), run, fetch); err != nil {
-		t.Fatalf("Fetch: %v", err)
-	}
-	return Request{StateDir: req.StateDir, Repo: req.Repo, Issue: req.Issue, DefaultBranch: req.DefaultBranch, CredentialHelper: req.CredentialHelper, Source: FromFeed(fetch.Feed), Log: req.Log}
-}
-
 // pushRemoteBranch pushes one commit adding file to branch on the bare remote, from a clone of its
 // own: on top of the branch when the remote has it, on the remote's default branch otherwise. It
 // returns the commit's id.
@@ -462,44 +451,36 @@ func nothingProvisioned(t *testing.T, run *recordingRunner, before int, workspac
 
 // An issue branch another clone pushed before this workspace existed — a repository's fixture, or
 // the branch an earlier pod of the issue pushed before its disk went with it — is where the
-// workspace starts:
-// provisioning tracks legion/<KEY>@origin and adds the workspace at it, on the host's path and on
-// a pod's feed. The branch's commits are in the workspace, the local bookmark is the remote's, and
+// workspace starts: provisioning tracks legion/<KEY>@origin and adds the workspace at it, on the
+// host's path. The branch's commits are in the workspace, the local bookmark is the remote's, and
 // the issue's next push moves that branch.
 func TestProvisionAdoptsAnIssueBranchOnlyTheRemoteHas(t *testing.T) {
-	for _, path := range []string{"host", "feed"} {
-		t.Run(path, func(t *testing.T) {
-			run := newLocalRunner(t)
-			pushed := pushRemoteBranch(t, run.remote, "legion/WIDGETS-42", "fixture.txt")
-			req := provisionRequest(t)
-			if path == "feed" {
-				req = feedRequest(t, run, req)
-			}
-			working, err := Provision(context.Background(), run, req)
-			if err != nil {
-				t.Fatalf("Provision: %v", err)
-			}
-			if _, err := os.Stat(filepath.Join(working.Dir, "fixture.txt")); err != nil {
-				t.Errorf("the workspace does not hold the branch the remote already had: %v", err)
-			}
-			if parent := commitOf(t, working.Dir, "@-"); parent != pushed {
-				t.Errorf("the workspace's @- is %s, want the remote branch's %s", parent, pushed)
-			}
-			if local := commitOf(t, working.Dir, `bookmarks(exact:"legion/WIDGETS-42")`); local != pushed {
-				t.Errorf("the local legion/WIDGETS-42 is %q, want the remote's %s", local, pushed)
-			}
+	run := newLocalRunner(t)
+	pushed := pushRemoteBranch(t, run.remote, "legion/WIDGETS-42", "fixture.txt")
+	req := provisionRequest(t)
+	working, err := Provision(context.Background(), run, req)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(working.Dir, "fixture.txt")); err != nil {
+		t.Errorf("the workspace does not hold the branch the remote already had: %v", err)
+	}
+	if parent := commitOf(t, working.Dir, "@-"); parent != pushed {
+		t.Errorf("the workspace's @- is %s, want the remote branch's %s", parent, pushed)
+	}
+	if local := commitOf(t, working.Dir, `bookmarks(exact:"legion/WIDGETS-42")`); local != pushed {
+		t.Errorf("the local legion/WIDGETS-42 is %q, want the remote's %s", local, pushed)
+	}
 
-			if err := os.WriteFile(filepath.Join(working.Dir, "work.txt"), []byte("the implementer's change\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			runSetup(t, working.Dir, "jj", "describe", "-m", "the implementer's change")
-			runSetup(t, working.Dir, "jj", "bookmark", "set", "legion/WIDGETS-42", "-r", "@")
-			fromOrigin(t, run, working.Dir, "jj", "git", "push", "--bookmark", "legion/WIDGETS-42")
-			parents := strings.TrimSpace(runSetup(t, req.StateDir, "git", "--git-dir="+run.remote, "log", "-1", "--format=%P", "legion/WIDGETS-42"))
-			if parents != pushed {
-				t.Errorf("after the push the remote branch's head has parents %q, want the adopted %s", parents, pushed)
-			}
-		})
+	if err := os.WriteFile(filepath.Join(working.Dir, "work.txt"), []byte("the implementer's change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runSetup(t, working.Dir, "jj", "describe", "-m", "the implementer's change")
+	runSetup(t, working.Dir, "jj", "bookmark", "set", "legion/WIDGETS-42", "-r", "@")
+	fromOrigin(t, run, working.Dir, "jj", "git", "push", "--bookmark", "legion/WIDGETS-42")
+	parents := strings.TrimSpace(runSetup(t, req.StateDir, "git", "--git-dir="+run.remote, "log", "-1", "--format=%P", "legion/WIDGETS-42"))
+	if parents != pushed {
+		t.Errorf("after the push the remote branch's head has parents %q, want the adopted %s", parents, pushed)
 	}
 }
 
@@ -507,50 +488,43 @@ func TestProvisionAdoptsAnIssueBranchOnlyTheRemoteHas(t *testing.T) {
 // branch — an integration branch, whose root commit is its own, which is what one consumer of
 // Legion has — is where the workspace starts, as any other branch only the remote has:
 // provisioning tracks legion/<KEY>@origin and adds the workspace at that commit, on the host's
-// path and on a pod's feed, so the workspace holds the branch's files and none of main's.
+// path, so the workspace holds the branch's files and none of main's.
 // TestProvisionAdoptsAnIssueBranchOnlyTheRemoteHas says nothing about this shape: its branch is
-// pushed from the remote's default branch, so its commit is a descendant of main, and a
-// provisioning that walked main's history instead would still reach it.
+// pushed from the remote's default branch, so its commit is a descendant of main, and a provisioning
+// that walked main's history instead would still reach it.
 func TestProvisionStartsAtAnIssueBranchOffTheDefaultBranchsHistory(t *testing.T) {
-	for _, path := range []string{"host", "feed"} {
-		t.Run(path, func(t *testing.T) {
-			run := newLocalRunner(t)
-			// seedRemote's main is one empty commit, so main carries a file of its own here: a
-			// workspace started from main would hold it, and this one must not.
-			onMain := pushRemoteBranch(t, run.remote, "main", "main.txt")
-			orphan := pushOrphanBranch(t, run.remote, "legion/WIDGETS-42", "integration.txt")
-			req := provisionRequest(t)
-			if path == "feed" {
-				req = feedRequest(t, run, req)
-			}
-			working, err := Provision(context.Background(), run, req)
-			if err != nil {
-				t.Fatalf("Provision: %v", err)
-			}
-			if parent := commitOf(t, working.Dir, "@-"); parent != orphan {
-				t.Errorf("the workspace's @- is %s, want the orphan branch's %s", parent, orphan)
-			}
-			if _, err := os.Stat(filepath.Join(working.Dir, "integration.txt")); err != nil {
-				t.Errorf("the workspace does not hold the orphan branch's file: %v", err)
-			}
-			if _, err := os.Stat(filepath.Join(working.Dir, "main.txt")); !errors.Is(err, os.ErrNotExist) {
-				t.Errorf("the workspace holds main's file, so it did not start at the orphan branch: %v", err)
-			}
-			if local := commitOf(t, working.Dir, `bookmarks(exact:"legion/WIDGETS-42")`); local != orphan {
-				t.Errorf("the local legion/WIDGETS-42 is %q, want the remote's %s", local, orphan)
-			}
-			// What the neighbouring test's fixture cannot be: on the remote, main's tip is no
-			// ancestor of the issue branch. That the two share no commit at all is
-			// pushOrphanBranch's root commit.
-			ancestry := exec.Command("git", "--git-dir="+run.remote, "merge-base", "--is-ancestor", onMain, orphan)
-			ancestry.Dir = req.StateDir
-			ancestry.Env = setupEnvironment()
-			output, err := ancestry.CombinedOutput()
-			var exit *exec.ExitError
-			if !errors.As(err, &exit) || exit.ExitCode() != 1 {
-				t.Errorf("git merge-base --is-ancestor %s %s on the remote: %v, want exit 1, main's tip no ancestor of the issue branch\n%s", onMain, orphan, err, output)
-			}
-		})
+	run := newLocalRunner(t)
+	// seedRemote's main is one empty commit, so main carries a file of its own here: a
+	// workspace started from main would hold it, and this one must not.
+	onMain := pushRemoteBranch(t, run.remote, "main", "main.txt")
+	orphan := pushOrphanBranch(t, run.remote, "legion/WIDGETS-42", "integration.txt")
+	req := provisionRequest(t)
+	working, err := Provision(context.Background(), run, req)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if parent := commitOf(t, working.Dir, "@-"); parent != orphan {
+		t.Errorf("the workspace's @- is %s, want the orphan branch's %s", parent, orphan)
+	}
+	if _, err := os.Stat(filepath.Join(working.Dir, "integration.txt")); err != nil {
+		t.Errorf("the workspace does not hold the orphan branch's file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(working.Dir, "main.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the workspace holds main's file, so it did not start at the orphan branch: %v", err)
+	}
+	if local := commitOf(t, working.Dir, `bookmarks(exact:"legion/WIDGETS-42")`); local != orphan {
+		t.Errorf("the local legion/WIDGETS-42 is %q, want the remote's %s", local, orphan)
+	}
+	// What the neighbouring test's fixture cannot be: on the remote, main's tip is no
+	// ancestor of the issue branch. That the two share no commit at all is
+	// pushOrphanBranch's root commit.
+	ancestry := exec.Command("git", "--git-dir="+run.remote, "merge-base", "--is-ancestor", onMain, orphan)
+	ancestry.Dir = req.StateDir
+	ancestry.Env = setupEnvironment()
+	output, err := ancestry.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+		t.Errorf("git merge-base --is-ancestor %s %s on the remote: %v, want exit 1, main's tip no ancestor of the issue branch\n%s", onMain, orphan, err, output)
 	}
 }
 

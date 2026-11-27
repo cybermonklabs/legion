@@ -172,7 +172,8 @@ func ForgetSuperseded(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // KeptDecisionsTask is the text that names owed to the architect of tree, and the part of owed it
 // names (kept), rendered from gates (ReadKeptGates) and writing nothing. It is the one wording a
 // start task and a catch-up both use (ParkedDecisionTask), the one a held task is written back to
-// when the task waits to be sent (supervise's Deps.RootTask, the daemon's rootTask), and the one a
+// when the task waits to be sent (supervise's Deps.RootTask, the daemon's rootTask, NarrowRootTask),
+// beside the roots that rest on the root's approval (ArchitectStart.Resting), and the one a
 // catch-up is written again in when it is delivered (the daemon's readNoticeTree): a task that
 // names nothing is "", which is retired rather than sent.
 //
@@ -185,12 +186,13 @@ func ForgetSuperseded(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // gates.design off asks no person, and a step the deployment stopped gating asks no person either,
 // unless it is criteria the root registered beside a deployment that gates spec and not criteria),
 // on the document of that step (record.DesignStep.Document), which is the document the person
-// reviewed and the one whose approval the architect requests again. It is asked as the news asks
-// an approval it tells (StepApprovalStands, SupersedingApproval): of the document the re-admission
-// kept it of (record.KeptApproval's Artifact; a pair kept before that field is asked of whichever
-// document the gate holds), at the version the person approved, with no mark. It stands while the
-// step has no gate, which records nothing later, or while the gate holds that version of that
-// document approved. It is not named once a later approval replaced it, which is the person's
+// reviewed and the one whose approval the architect requests again. It is asked through the one
+// ask the news makes of an approval it tells (StepApprovalStands, SupersedingApproval), as a
+// person's approval: of the document the re-admission kept it of (record.KeptApproval's Artifact;
+// a pair kept before that field is asked of whichever document the gate holds), at the version the
+// person approved, with no mark. It stands while the step has no gate, which records nothing
+// later, or while the gate holds that version of that document approved by a person. It is not
+// named once a later approval replaced it, which is the person's
 // word in its place, so the sentence would ask them again for what they already decided; nor once
 // a later changes request cleared it, which is the person's word against that version; nor once
 // the step's gate holds another document.
@@ -202,6 +204,14 @@ func ForgetSuperseded(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // only from a stored gate of the same document (gateRegistered), which the clear deleted. The kept
 // approval is below the latest, so it is no longer named unless a person approves that same
 // version of that document again.
+//
+// The approval kept is a person's approval of an earlier version of the root's own document,
+// never the version an ancestor's approval opened a step at (Admission.keepStaleApproval reads
+// record.DesignGate.ApprovedByPerson), and it is asked as a person's (StepApprovalStands with no
+// basis), so the task names no approval of the root's document that a basis gave
+// (dispatch://INFRA-3320, R2 and R3). Beside the request of the latest version it names R1's path:
+// a registration on an approved ancestor's approval, where the root is written as a view on that
+// ancestor.
 func KeptDecisionsTask(gates KeptGates, steps []record.DesignStep, tree string, owed record.KeptDecisions) (string, record.KeptDecisions) {
 	var kept record.KeptDecisions
 	named := make([]string, 0, len(owed.Decisions))
@@ -214,7 +224,7 @@ func KeptDecisionsTask(gates KeptGates, steps []record.DesignStep, tree string, 
 	}
 	step := owed.Step.OrSpec()
 	if owed.Approved > 0 && record.TakesStep(steps, step) &&
-		StepApprovalStands(gates[tree], step, owed.Artifact, owed.Approved) {
+		StepApprovalStands(gates[tree], step, owed.Artifact, owed.Approved, false) {
 		kept.KeptApproval = owed.KeptApproval
 	}
 	var parts []string
@@ -223,9 +233,11 @@ func KeptDecisionsTask(gates KeptGates, steps []record.DesignStep, tree string, 
 			tree, strings.Join(named, "; ")))
 	}
 	if kept.Approved > 0 {
-		parts = append(parts, fmt.Sprintf("The %s is approved at version %d and is now at version %d: request approval of version %d, "+
-			"as skill://legion-architect/references/design-gate.md (\"The armed gate\") says.",
-			kept.Step.Document(), kept.Approved, kept.Latest, kept.Latest))
+		document := kept.Step.Document()
+		parts = append(parts, fmt.Sprintf("A person approved version %d of the %s, and the %s is now at version %d. "+
+			"Request approval of version %d, as skill://legion-architect/references/design-gate.md (\"The armed gate\") says. "+
+			"The other way is to write %s as a view on an approved ancestor and register the step on that ancestor's approval, as the same page says.",
+			kept.Approved, document, document, kept.Latest, kept.Latest, tree))
 	}
 	return strings.Join(parts, " "), kept
 }
@@ -259,18 +271,36 @@ func (e *Engine) ParkedDecisionTask(ctx context.Context, tx pgx.Tx, root record.
 // no architect hands them over (HandOverKept). A nil kept enqueues payload as enqueueAt does.
 func EnqueueNaming(ctx context.Context, tx pgx.Tx, store record.Store, issue, tree string, payload record.OutboxPayload,
 	kept *record.KeptDecisions, at time.Time) error {
+	if kept == nil {
+		row, err := queuedRow(ctx, tx, store, issue, payload, at)
+		if err != nil {
+			return err
+		}
+		return store.Enqueue(ctx, tx, row)
+	}
+	_, err := enqueueNamingID(ctx, tx, store, issue, tree, payload, kept, at)
+	return err
+}
+
+// enqueueNamingID is EnqueueNaming for a caller that needs the id of the row it writes: the row
+// is always written with that id kept (Store.EnqueueID), which refuses another project's key where
+// Store.Enqueue skips it, and kept, where it is not nil, is claimed for that row.
+func enqueueNamingID(ctx context.Context, tx pgx.Tx, store record.Store, issue, tree string, payload record.OutboxPayload,
+	kept *record.KeptDecisions, at time.Time) (int64, error) {
 	row, err := queuedRow(ctx, tx, store, issue, payload, at)
 	if err != nil {
-		return err
-	}
-	if kept == nil {
-		return store.Enqueue(ctx, tx, row)
+		return 0, err
 	}
 	id, err := store.EnqueueID(ctx, tx, row)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return store.ClaimKeptDecisions(ctx, tx, tree, *kept, id)
+	if kept != nil {
+		if err := store.ClaimKeptDecisions(ctx, tx, tree, *kept, id); err != nil {
+			return 0, err
+		}
+	}
+	return id, nil
 }
 
 // EnqueueNaming is EnqueueNaming over the engine's store.
@@ -341,7 +371,7 @@ func CatchUpTheTreesOwed(ctx context.Context, tx pgx.Tx, store record.Store, ste
 		if !hears {
 			continue
 		}
-		if err := QueueCatchUp(ctx, tx, store, steps, *root, launches[key], "", now, time.Time{}); err != nil {
+		if err := QueueCatchUp(ctx, tx, store, steps, *root, launches[key], "", now); err != nil {
 			return err
 		}
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -18,6 +17,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 
+	"github.com/sjawhar/envoy/httpoutage"
+
 	"github.com/sjawhar/legion/daemon/internal/backoff"
 )
 
@@ -29,9 +30,12 @@ import (
 // client-go's own Retry-After retries ran out, InternalError, such as the 500 etcd's throttle
 // reaches a client as (`rpc error: code = ResourceExhausted desc = etcdserver: throttle: too many
 // requests`), ServerTimeout, Timeout and ServiceUnavailable are busy, and every other reason refuses
-// the request; only a status that names no reason is judged by its code, 429 or 500 and up. A
-// status whose message says an admission webhook denied the request is a refusal whatever its
-// reason or code.
+// the request; only a status that names no reason is judged by its code, busy when it is an outage
+// (httpoutage.Is: a 408, a 429, or 500 and up). client-go names no reason for a 408 whose body
+// is no Kubernetes status (apierrors.NewGenericServerResponse has no case for it), and the API
+// server answers none of its own, so a 408 is a proxy in front of the server that did not take the
+// request in time. A status whose message says an admission webhook denied the request is a refusal
+// whatever its reason or code.
 func serverBusy(err error) bool {
 	if err == nil {
 		return false
@@ -49,7 +53,7 @@ func serverBusy(err error) bool {
 		metav1.StatusReasonTimeout, metav1.StatusReasonServiceUnavailable:
 		return true
 	case metav1.StatusReasonUnknown:
-		return s.Code == http.StatusTooManyRequests || s.Code >= http.StatusInternalServerError
+		return httpoutage.Is(int(s.Code))
 	}
 	return false
 }

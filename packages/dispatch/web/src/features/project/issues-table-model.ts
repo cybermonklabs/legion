@@ -421,7 +421,7 @@ export function mergeMembers(issues: readonly IssueSummary[], source: string): s
       while (parent !== null && parent !== source && !seen.has(parent)) {
         seen.add(parent);
         const intermediate = byKey.get(parent);
-        if (!intermediate || intermediate.status !== "done") return false;
+        if (intermediate?.status !== "done") return false;
         parent = intermediate.parent;
       }
       return parent === source;
@@ -650,6 +650,15 @@ function isDefaultStatus(value: unknown): boolean {
   const picked = Array.isArray(value) ? value.map(String) : [];
   const fallback = (defaultView.filters[0]?.value ?? []) as string[];
   return picked.length === fallback.length && fallback.every((status) => picked.includes(status));
+}
+/** Whether `view` narrows the rows by nothing the reader set: no filter but the statuses the
+ *  table opens with (or none, `nofilter=1`), no search and no issues picked (`only=`). */
+export function narrowsNothing(view: View): boolean {
+  return (
+    view.search.trim() === "" &&
+    view.selection === null &&
+    view.filters.every(({ id, value }) => id === "status" && isDefaultStatus(value))
+  );
 }
 export function writeUrl(params: URLSearchParams, state: View, stateKey?: string): URLSearchParams {
   const key = (name: string) => viewKey(name, stateKey);

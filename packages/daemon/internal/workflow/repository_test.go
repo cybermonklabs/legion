@@ -68,6 +68,7 @@ func readAt(fact intake.DispatchIssue, name, branch string) intake.DispatchIssue
 // A child is recorded on the repository its event resolves to, at that repository's default
 // branch, whatever the branch is named.
 func TestAChildIsRecordedOnItsResolvedRepositoryAndItsDefaultBranch(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	openTree(t, pool)
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
@@ -85,6 +86,7 @@ func TestAChildIsRecordedOnItsResolvedRepositoryAndItsDefaultBranch(t *testing.T
 // a role App reaches, is not recorded: the daemon says why on the child and tells the architect that
 // owns its parent, once for one resolution, so a repeated event says nothing again.
 func TestAChildOnARepositoryLegionDoesNotServeIsNotRecordedAndSaysWhy(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, resolved, note, reason string
 	}{
@@ -127,6 +129,7 @@ func TestAChildOnARepositoryLegionDoesNotServeIsNotRecordedAndSaysWhy(t *testing
 // (record.Store.PutIssue). The read the daemon keeps for admissions (fixedRepositories, at main)
 // is not what the correction writes: the preparation's read, at trunk, is.
 func TestARecordedIssuesRepositoryFollowsDispatchToARepositoryLegionServes(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	openTree(t, pool)
 	parent := "LEGION-208"
@@ -159,6 +162,7 @@ func TestARecordedIssuesRepositoryFollowsDispatchToARepositoryLegionServes(t *te
 // (intake.DispatchIssue.RepositoryRefusal): the record keeps sjawhar/legion, the issue is told
 // once, and the change waits on the record with that refusal.
 func TestARecordedIssueSaysNothingWhenItsResolutionIsItsRenamePartner(t *testing.T) {
+	t.Parallel()
 	const refusal = "the review App is not installed on cybermonklabs/legion"
 	for _, tc := range []struct {
 		name    string
@@ -217,6 +221,7 @@ func TestARecordedIssueSaysNothingWhenItsResolutionIsItsRenamePartner(t *testing
 // wrote is cleared rather than written again with an empty repository beside a reason
 // (record.Issue.RepoChange). The record keeps the repository it has.
 func TestARecordedIssueResolvedToNoRepositoryIsToldAndLeavesNoChangeWaiting(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	openTree(t, pool)
 	parent := "LEGION-208"
@@ -255,6 +260,7 @@ func TestARecordedIssueResolvedToNoRepositoryIsToldAndLeavesNoChangeWaiting(t *t
 // with ApplyRepositoryChange correcting such a record, the first event fills it onto acme/widgets
 // through the correction.
 func TestACorrectionLeavesARecordWithNoRepositoryToTheBackfill(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	openTree(t, pool)
 	parent := "LEGION-208"
@@ -304,6 +310,7 @@ func TestACorrectionLeavesARecordWithNoRepositoryToTheBackfill(t *testing.T) {
 // repository. Either ends with the passes that apply the change, the issue's next event or the
 // next boot: since dispatch://INFRA-4401 nothing else reads the repository again.
 func TestARecordedIssueWhoseChangeWaitsIsToldWhatAPersonCanDo(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, resolved, refusal, want string
 		kind                          intake.RepositoryRefusalKind
@@ -343,6 +350,7 @@ func TestARecordedIssueWhoseChangeWaitsIsToldWhatAPersonCanDo(t *testing.T) {
 // next event resolving it there says nothing again on the issue. Control: with noteOnce comparing
 // the stored resolution exactly, the second event posts the note again.
 func TestARepositoryNoteTheRenamePassRewroteIsNotSaidAgain(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	openTree(t, pool)
 	parent := "LEGION-208"
@@ -382,6 +390,7 @@ func TestARepositoryNoteTheRenamePassRewroteIsNotSaidAgain(t *testing.T) {
 // nothing is said. Control: with no pair configured, the same event moves the record back onto
 // the `from`.
 func TestAnEventNamingTheOldNameAfterTheRenamePassCorrectsNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		renames  ghrepo.Renames
@@ -431,6 +440,7 @@ func TestAnEventNamingTheOldNameAfterTheRenamePassCorrectsNothing(t *testing.T) 
 // refused, so the event is retried until its repository is read, and nothing is recorded on a
 // repository nobody read.
 func TestARetainedEventIsAppliedWithTheRecordsRepositoryAndNeverRecordsAnUnreadOne(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	openTree(t, pool)
 	parent := "LEGION-208"

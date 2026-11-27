@@ -22,4 +22,12 @@ body: |-
   the old repository's workspace until it is launched again, and a pod's roles until the update
   round's relaunch, so the line names the old workspace until that launch and the new one after
   it, and a role launched into a live pod is told that pod's workspace.
-  The send rewrites the line after the task's phase heading, not a similar phrase in its title.
+  Every phase task now opens with its `Working copy:` line, ahead of the Dispatch title, so no
+  title can hide the line or be rewritten in its place. The line ends with a line break, and the
+  continue line follows on the next line; each send replaces the line up to that line break, so a
+  directory that holds a full stop followed by a space is written whole. The daemon refuses at load
+  a `state_dir` that holds a line break, since under tmux the line names a directory under it. A
+  task an earlier release composed and kept across the upgrade holds the line after its continue
+  line, where the send finds it as before, and a title that repeats that continue line's own
+  ending can still hide the line in such a task; where the directory a send would write holds a
+  full stop followed by a space, the send leaves such a task's line as it was kept.

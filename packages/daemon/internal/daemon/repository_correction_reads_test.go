@@ -159,6 +159,7 @@ func keepAnEntry(t *testing.T, w *workflowRuntime, client *repositoryDispatch) {
 // does from a recording's. Every correction reads GitHub itself, so a second issue moved onto the
 // same repository reads it again rather than taking the read the first kept.
 func TestRepositoryCorrectionFollowsAnEventOntoARepositoryBothAppsAreInstalledOn(t *testing.T) {
+	t.Parallel()
 	w, client, installs, stream := preparationRig(t, &installations{})
 	const first, second = "LEGION-1001", "LEGION-1002"
 	recordCorrectionRoot(t, w.pool, w.records, first, first, 0)
@@ -192,6 +193,7 @@ func TestRepositoryCorrectionFollowsAnEventOntoARepositoryBothAppsAreInstalledOn
 // served such a repository applied a change waiting on it with no event; nothing reads a
 // repository no record names again now, so the next event is what applies it.
 func TestRepositoryCorrectionWaitsWhileARoleAppIsNotInstalledAndTheNextEventAppliesIt(t *testing.T) {
+	t.Parallel()
 	installs := &installations{}
 	installs.setMissing(true, "review "+strangerRepo)
 	w, client, installs, _ := preparationRig(t, installs)
@@ -227,6 +229,7 @@ func TestRepositoryCorrectionWaitsWhileARoleAppIsNotInstalledAndTheNextEventAppl
 // record taking its sequence; and a hand-over, whose preparation (prepareHandover) reads GitHub
 // at the hand-over, takes the renamed branch as an event does.
 func TestRepositoryCorrectionWritesGitHubsAnswerAtTheCorrection(t *testing.T) {
+	t.Parallel()
 	const key = "LEGION-1041"
 	for _, tc := range []struct {
 		name string
@@ -337,6 +340,7 @@ func handOverCorrection(t *testing.T, w *workflowRuntime, _ *repositoryDispatch)
 // correction, nothing in the running process read the change again, and the record stayed on the
 // repository the issue left until the issue's next event or the next boot.
 func TestACorrectionGitHubDidNotAnswerIsFollowedOnceGitHubAnswers(t *testing.T) {
+	t.Parallel()
 	const key = "LEGION-1041"
 	for _, tc := range []struct {
 		name string
@@ -396,6 +400,7 @@ func TestACorrectionGitHubDidNotAnswerIsFollowedOnceGitHubAnswers(t *testing.T) 
 // moves onto, the one whose repository answers first while the other's still does not, with no
 // event of either after the one GitHub did not answer, and the follow is settled once both are.
 func TestAFollowOwedForOneIssueReadsAnotherAskedForWhileItIsOwed(t *testing.T) {
+	t.Parallel()
 	const first, second = "LEGION-1091", "LEGION-1092"
 	installs := &installations{}
 	stranger, answered := "implement "+strangerRepo, "implement "+answeredRepo
@@ -445,6 +450,7 @@ func TestAFollowOwedForOneIssueReadsAnotherAskedForWhileItIsOwed(t *testing.T) {
 // makes once and nothing else makes. Control: with every ask waking the refresher, the second ask
 // of the owed issue starts a pass at once.
 func TestAnAskOfAnIssueAFollowIsOwedForWaitsTheFollowsClock(t *testing.T) {
+	t.Parallel()
 	const owed, added = "LEGION-1096", "LEGION-1097"
 	installs := &installations{}
 	implement := "implement " + strangerRepo
@@ -490,6 +496,7 @@ func TestAnAskOfAnIssueAFollowIsOwedForWaitsTheFollowsClock(t *testing.T) {
 // record at trunk, which the follow would then find on the repository Dispatch names and leave.
 // This is the next boot that applies a waiting change, as the next event does.
 func TestTheBootsListingLeavesARepositoryCorrectionToTheFollowAfterIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	installs := &bootCountedInstallations{installations: &installations{}}
 	w, client, github := changingRig(t, installs.installations, func(w *workflowRuntime) { w.installs = installs })
@@ -565,6 +572,8 @@ func (i *slowInstallations) InstalledUnder(ctx context.Context, role appauth.App
 // issues, and every read after it would fail on the expired context. The follow is asked for as a
 // boot's listing asks for it (requestFollow).
 func TestAFollowReadsARepositoryOnceForEveryIssueItMovesOntoIt(t *testing.T) {
+	// Not parallel: the follow's reads of fifteen issues must fit calls.attempt (two seconds) of real
+	// time, which the load of the package's parallel tests on a 4-CPU runner can take from them.
 	calls := productionAppCalls()
 	calls.attempt = 2 * time.Second
 	installs := &slowInstallations{installations: &installations{}, wait: 100 * time.Millisecond}
@@ -605,6 +614,9 @@ func TestAFollowReadsARepositoryOnceForEveryIssueItMovesOntoIt(t *testing.T) {
 // GitHub never failed. The follow stays owed, and the pass after GitHub answers corrects every
 // issue onto GitHub's spelling and default branch.
 func TestAFollowWhoseBoundEndsWhileItReadsARepositoryWritesNothingAndIsMadeAgain(t *testing.T) {
+	// Not parallel: the pass after GitHub answers must read and correct three issues within
+	// calls.attempt (half a second) of real time, which the load of the package's parallel tests on a
+	// 4-CPU runner can take from it.
 	calls := productionAppCalls()
 	calls.attempt = 500 * time.Millisecond
 	installs := &slowInstallations{installations: &installations{}}
@@ -653,6 +665,9 @@ func TestAFollowWhoseBoundEndsWhileItReadsARepositoryWritesNothingAndIsMadeAgain
 // pass already read, not even the one whose change still waits, which a full pass would read
 // again every time and ahead of them. Once GitHub answers, the next pass completes the follow.
 func TestAFollowWhoseBoundEndsWritesWhatItPreparedAndLeavesTheRestOwed(t *testing.T) {
+	// Not parallel: a pass must read the records, list the issues, prepare three of them and commit
+	// their corrections within calls.attempt (half a second) of real time, which the load of the
+	// package's parallel tests on a 4-CPU runner can take from it.
 	calls := productionAppCalls()
 	calls.attempt = 500 * time.Millisecond
 	const refusedRepo = "lambda/gadgets"
@@ -721,6 +736,7 @@ func TestAFollowWhoseBoundEndsWritesWhatItPreparedAndLeavesTheRestOwed(t *testin
 // (followReads): the refusal is GitHub's answer for the repository, not for either issue. Each
 // issue keeps its record's repository with the change waiting on it, and each is told once why.
 func TestAFollowMovingTwoIssuesOntoARepositoryMissingAnAppSharesItsRefusal(t *testing.T) {
+	t.Parallel()
 	installs := &installations{}
 	installs.setMissing(true, "review "+strangerRepo)
 	w, client, github := changingRig(t, installs)
@@ -760,6 +776,7 @@ func TestAFollowMovingTwoIssuesOntoARepositoryMissingAnAppSharesItsRefusal(t *te
 // store, which asks for nothing. Control: with the correction asking for no read, the cache set
 // keeps answeredNamed.
 func TestAFollowThatMovesARecordOffARepositoryReadsTheLiveRecordsAgain(t *testing.T) {
+	t.Parallel()
 	w, client, _ := changingRig(t, &installations{})
 	const key = "LEGION-1095"
 	bare := w.records.(projectRecords).Store
@@ -811,6 +828,7 @@ func followAtTheRecordsSequence(t *testing.T) (*workflowRuntime, record.Issue) {
 // sequence stays the event's. Control: with the follow asking whether its listing is older as of
 // an event, the record stays on acme/widgets.
 func TestAFollowAtTheRecordsOwnSequenceCorrectsTheRecord(t *testing.T) {
+	t.Parallel()
 	w, got := followAtTheRecordsSequence(t)
 	onStranger(t, w, sequenceKey, "trunk")
 	if got.LastDispatchSeq != 2 {
@@ -831,6 +849,7 @@ func TestAFollowAtTheRecordsOwnSequenceCorrectsTheRecord(t *testing.T) {
 // at sequence 2, with nothing waiting and nothing said. Control: with the engine's fence asking
 // whether the event is older as of a read, the event moves the record back onto acme/widgets.
 func TestAnEventDeliveredAgainAtTheRecordsSequenceLeavesTheFollowsCorrection(t *testing.T) {
+	t.Parallel()
 	w, followed := followAtTheRecordsSequence(t)
 	onStranger(t, w, sequenceKey, "trunk")
 	event := intake.DispatchIssue{Key: sequenceKey, Seq: 2, Type: "issue.updated", Status: "in_progress", Title: sequenceKey,

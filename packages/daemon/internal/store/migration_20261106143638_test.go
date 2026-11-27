@@ -29,6 +29,7 @@ const catchUpGatesVersion = 20261106143638
 // registered no gate reads as the unregistered step its architect has still to register, and a
 // notice that is no catch-up is untouched.
 func TestTheCatchUpMigrationRewritesTheGateKeyAsTheSpecStepsEntry(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, catchUpGatesVersion-1)

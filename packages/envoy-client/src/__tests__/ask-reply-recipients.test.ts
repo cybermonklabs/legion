@@ -183,9 +183,9 @@ describe("a reply too large for the bus, on an ask seven sessions own, as each s
         payload: Record<string, unknown>;
       };
       expect({
-        payload_omitted: payload["payload_omitted"],
-        body: payload["body"],
-        ask_sessions: payload["ask_sessions"],
+        payload_omitted: payload.payload_omitted,
+        body: payload.body,
+        ask_sessions: payload.ask_sessions,
       }).toEqual({ payload_omitted: true, body: undefined, ask_sessions: [...standIn.owners] });
     }
   });
