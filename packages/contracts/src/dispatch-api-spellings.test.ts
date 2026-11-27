@@ -279,8 +279,14 @@ const DIFFERENCES = SPELLED_TWICE.map(({ name, declaredName, schema }) =>
  *
  * One shape is not reached by this comparison at all: `ActorSchema` is a union, so each member
  * carries its own optionality and there is no one field to compare: the count passes it over.
+ *
+ * Two of the fields counted are `Issue.resolved_priority` and `Issue.priority_from`, the priority
+ * an issue takes from the nearest issue above it and the issue it takes it from. The server writes
+ * both on every issue read, null where there is none, so the document requires them; the bus
+ * reads them as optional, because a Dispatch older than that walk sends neither, and a reader of
+ * its answers and its retained events must still parse them.
  */
-const TOLERATED_ABSENCES = 22;
+const TOLERATED_ABSENCES = 24;
 
 /**
  * How many fields the bus reading requires and the document declares optional. That is the

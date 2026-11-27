@@ -1152,6 +1152,46 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
+  // A move under another parent, a clear of an issue's own priority and a new child with no
+  // priority each make work P0 where the issue they reach then takes P0 from an issue above, and
+  // Dispatch refuses them without p0 (J2 of dispatch://INFRA-5793). So the description of each
+  // argument that makes such a write, which a host shows and `dispatch <command> --help` prints,
+  // holds a sentence that names the write and says it needs p0. A sentence is the text cut at each
+  // full stop, and its words are the ones the route index test reads in the routes' own text
+  // (`TestTheRouteIndexSaysWhenAMoveAClearOrANewChildNeedsP0`), so each row reads the words and
+  // not a copy of one sentence.
+  const moves = /\bmov(?:e|es|ing)\b/i;
+  const clears = /\bclear(?:s|ing|ed)?\b/i;
+  const namesParent = /\bparent\b/i;
+  const readsP0 = /\bP0\b|\b[Pp]riority (?:of )?0\b/;
+  const needsP0 = /\bneeds? (?:the )?p0\b/i;
+  const namesArchitect = /\barchitect\b/i;
+  const newChild = [namesParent, readsP0, needsP0, namesArchitect] as const;
+  test.each([
+    ["dispatch_issue_update", "parent", "a move under it needs p0", [moves, needsP0]],
+    ["dispatch_issue_update", "priority", "a clear needs p0", [clears, needsP0]],
+    [
+      "dispatch_issue",
+      "parent",
+      "a new child of a P0 issue needs p0, but from its architect",
+      newChild,
+    ],
+    [
+      "dispatch_issue",
+      "priority",
+      "a new child of a P0 issue needs p0, but from its architect",
+      newChild,
+    ],
+  ] as const)("%s's %s says that %s", (name, field, _says, words) => {
+    const sentences = argumentDescription(name, field).split(/[.!?](?:\s+|$)/);
+
+    expect(
+      sentences.filter((sentence) => words.every((word) => word.test(sentence))),
+      `${name} --${field}: a sentence matching each of ${words.map(String).join(", ")}, among ` +
+        JSON.stringify(sentences)
+    ).not.toEqual([]);
+  });
+
   test("every nullable field describes last, the one order the OMP facade keeps", () => {
     const { api, fields } = recordingSchemaApi();
     for (const spec of dispatchToolSpecs) dispatchToolSchema(spec, api);
