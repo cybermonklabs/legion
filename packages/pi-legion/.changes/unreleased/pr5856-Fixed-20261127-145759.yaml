@@ -5,7 +5,10 @@ body: |-
   are rig errors. It takes the Job's count (`check-stored <dir> <count> <job log>...`) and reads
   every entry of the download's `runs/`. It exits 1 on any rig error, on any entry that is no
   run's object, and on any cell short of the Job's count. The pack of a scored run leaves out
-  every directory named `home`, nested ones too.
+  every directory named `home`, nested ones too. The cells must cover every case the runs name:
+  a run whose directory holds no world.json is in no cell, so a Job none of whose runs reached
+  one printed no cell line and read clean. The count is checked against the count the Job's own
+  logs name, and a download with no `runs/` directory says UNKNOWN.
 time: 2026-11-27T14:57:59Z
 custom:
     Issue: pr5856

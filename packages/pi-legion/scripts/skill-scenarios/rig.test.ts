@@ -11,6 +11,7 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -3500,7 +3501,8 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     expect({ code: differs.code, line: differs.stdout[1], last: differs.stdout.at(-1) }).toEqual({
       code: 1,
       line: `checked ${run(2)}: rig error: ${fault}`,
-      last: "check-stored: 1 of 2 runs are rig errors of the store, 0 entries of the download were left out, and 1 cells are UNKNOWN at count 2",
+      // Run 2 is in no cell, but run 1 of its case is, so the case is covered and no run counts here.
+      last: "check-stored: 1 of 2 runs are rig errors of the store, 0 entries of the download were left out, 1 cells are UNKNOWN at count 2, and 0 runs are in no cell",
     });
     const row = JSON.parse(readFileSync(path.join(changed, "checked", run(2), "row.json"), "utf8"));
     expect(row).toEqual({
@@ -3640,6 +3642,10 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       writeFileSync(path.join(dir, "runs", "notes.txt"), "a note\n");
       writeFileSync(path.join(dir, "runs", ".hidden"), "hidden\n");
       mkdirSync(path.join(dir, "runs", "extra"));
+      // Named like a run's object, but no regular file: a symlink to run 1's row, and a directory.
+      // Taken as run 6's and run 7's objects, each would be a run whose other object is missing.
+      symlinkSync(at(dir, 1, "row.json"), at(dir, 6, "row.json"));
+      mkdirSync(at(dir, 7, "tar.gz"));
     });
     const leftOut = check(extra);
     expect({
@@ -3652,10 +3658,10 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
         `UNKNOWN: .hidden in ${extra}/runs is no run's object: it is left out`,
         `UNKNOWN: extra in ${extra}/runs is no run's object: it is left out`,
         `UNKNOWN: notes.txt in ${extra}/runs is no run's object: it is left out`,
-        `checked ${run(1)}: as stored`,
-        `checked ${run(2)}: as stored`,
+        `UNKNOWN: ${run(6)}.row.json in ${extra}/runs is no run's object: it is left out`,
+        `UNKNOWN: ${run(7)}.tar.gz in ${extra}/runs is no run's object: it is left out`,
       ],
-      last: "check-stored: 0 of 2 runs are rig errors of the store, 3 entries of the download were left out, and 0 cells are UNKNOWN at count 2",
+      last: "check-stored: 0 of 2 runs are rig errors of the store, 5 entries of the download were left out, 0 cells are UNKNOWN at count 2, and 0 runs are in no cell",
     });
 
     // A pack with no row beside it and no line in any log: its run is named by the pack, and is a
@@ -3669,7 +3675,9 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
 
     // The cells are at the Job's count: at 3, two scored runs leave the cell UNKNOWN, and the check
     // exits 1; a count that is no positive whole number is refused.
-    const short = checkAt("3", download());
+    const countLog = path.join(pod, "count-3.log");
+    writeFileSync(countLog, readFileSync(log, "utf8").replace(/count 2;/g, "count 3;"));
+    const short = checkAt("3", download(), countLog);
     const shortCell = JSON.parse(short.stdout.at(-2) ?? "{}");
     expect({
       code: short.code,
@@ -3678,7 +3686,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     }).toEqual({
       code: 1,
       cell: ["guidance/root-B-claude", 3, 2, "UNKNOWN"],
-      last: "check-stored: 0 of 2 runs are rig errors of the store, 0 entries of the download were left out, and 1 cells are UNKNOWN at count 3",
+      last: "check-stored: 0 of 2 runs are rig errors of the store, 0 entries of the download were left out, 1 cells are UNKNOWN at count 3, and 0 runs are in no cell",
     });
     expect(JSON.parse(kept.stdout.at(-1) ?? "{}").count).toBe(2);
     const zero = checkAt("0", download());
@@ -3688,6 +3696,70 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     }).toEqual({
       code: 1,
       refused: true,
+    });
+
+    // A count the Job's own logs do not name is refused: a count below the Job's would leave every
+    // cell complete and read clean.
+    const jobLog = path.join(pod, "with-cell.log");
+    writeFileSync(
+      jobLog,
+      `${readFileSync(log, "utf8")}scored-job owner-walk head root-B-claude, label head: 2 runs, 2 scored, 0 rig errors, count 2; verdict fail\n`
+    );
+    const wrong = checkAt("1", download(), jobLog);
+    expect({ code: wrong.code, said: wrong.stderr.trim().split("\n").at(-1) }).toEqual({
+      code: 1,
+      said: "skill-scenarios: check-stored: the Job's logs name the count 2, not the 1 given",
+    });
+    expect(checkAt("2", download(), jobLog).code).toBe(0);
+
+    // Runs that reach no cell: three rig-error rows as scored_rig_error writes them, with no
+    // world.json, beside the two whole runs. The cells cover root-B-claude and not child-B-claude,
+    // so the check says so and exits 1, where counting UNKNOWN cells alone reads it as clean.
+    const childRuns = [1, 2, 3].map((n) => `owner-walk-child-B-claude-head-${n}`);
+    let childLog = "";
+    const children = download((dir) => {
+      childLog = path.join(dir, "child.log");
+      let lines = readFileSync(log, "utf8");
+      for (const name of childRuns) {
+        const made = freshDir(`child-${name}`);
+        mkdirSync(path.join(made, name));
+        const row = {
+          outcome: "rig-error",
+          run: name,
+          scenario: "owner-walk",
+          label: "head",
+          case: "child-B-claude",
+          error: "the launch failed",
+        };
+        writeFileSync(path.join(made, name, "row.json"), `${JSON.stringify(row)}\n`);
+        const pack = path.join(dir, "runs", `${name}.tar.gz`);
+        expect(childSpawn(["tar", "-czf", pack, "-C", made, name]).exitCode).toBe(0);
+        const stored = path.join(dir, "runs", `${name}.row.json`);
+        writeFileSync(stored, `${JSON.stringify({ ...row, pack: sha256(pack) })}\n`);
+        lines += `stored runs/${name}.tar.gz sha256 ${sha256(pack)}\nstored runs/${name}.row.json sha256 ${sha256(stored)}\n`;
+      }
+      writeFileSync(childLog, lines);
+    });
+    const uncovered = check(children, childLog);
+    expect({
+      code: uncovered.code,
+      covered: uncovered.stdout.filter((line) => line.startsWith("UNKNOWN: no cell covers")),
+      last: uncovered.stdout.at(-1),
+    }).toEqual({
+      code: 1,
+      covered: childRuns.map(
+        () =>
+          "UNKNOWN: no cell covers head child-B-claude: its runs are in none, so nothing was measured of it"
+      ),
+      last: "check-stored: 0 of 5 runs are rig errors of the store, 0 entries of the download were left out, 0 cells are UNKNOWN at count 2, and 3 runs are in no cell",
+    });
+
+    // A download with no runs/ at all, as an empty key gives: UNKNOWN, never a pass.
+    const bare = freshDir("check-bare");
+    expect(check(bare)).toEqual({
+      code: 1,
+      stdout: [`UNKNOWN: ${bare}/runs is no directory: nothing was checked`],
+      stderr: "",
     });
 
     // The store emptied before the check: UNKNOWN, never a pass, whatever the Job's log names.
