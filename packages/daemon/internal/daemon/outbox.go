@@ -2809,21 +2809,10 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	}
 	topic := notify.RoleTopicPrefix + string(token)
 	fields := []any{"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "claim", string(token), "role", payload.Role, "topic", topic}
-	asked := supervise.UpdatePush{Branch: payload.Branch, OwnFix: payload.OwnFix, FixReads: payload.FixReads}
+	_ = supervise.UpdatePush{Branch: payload.Branch, OwnFix: payload.OwnFix, FixReads: payload.FixReads}
 	outcome, err := machine.PublishUpdateAsk(ctx, payload.Round, func(ctx context.Context) (bool, error) {
-		var current supervise.UpdatePush
-		if r.updatePushes != nil {
-			pushes, err := r.updatePushes(ctx, row.Issue)
-			if err != nil {
-				return false, fmt.Errorf("read where the %s of %s pushes now: %w", payload.Role, row.Issue, err)
-			}
-			current = pushes[payload.Role]
-		}
-		if current != asked {
-			r.log.Info("outbox update ask finished without a publish: the role's push is no longer the one the ask names",
-				append(fields, "asked", asked, "current", current)...)
-			return false, nil
-		}
+		// CONTROL (fb8-ctl-7): where the role pushes now is not read again under the claim's
+		// lock, so the queued ask is published whatever its push is.
 		return r.publishToRole(ctx, row, topic, payload.Message(row.Issue),
 			"outbox update ask finished undelivered: no live session holds the role", fields...)
 	})
