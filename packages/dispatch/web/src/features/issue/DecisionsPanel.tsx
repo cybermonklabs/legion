@@ -26,6 +26,7 @@ import {
   DecisionCard,
   type DecisionCardProps,
 } from "../decision-card/DecisionCard";
+import { StatementNamesError } from "../decision-card/StatementNamesError";
 import { useStatementExcerpts } from "../decision-card/useStatementExcerpts";
 import { WritableDecisionCard } from "../decision-card/WritableDecisionCard";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -347,7 +348,7 @@ export function DecisionsPanel({
     queryKey: ["decisions", issueKey],
   });
   // The words of every statement the decisions shaped, from one read of their names. A failed
-  // read is shown as the tab shows its own, and each statement is still drawn as a link.
+  // read is shown by `StatementNamesError`, and each statement is still drawn as a link.
   const { failure: namesFailure, statementOf: statementExcerpt } = useStatementExcerpts(
     view.data?.decisions
   );
@@ -392,12 +393,7 @@ export function DecisionsPanel({
       {view.data.document === null ? (
         <p className={`text-sm ${textMutedOnSurface}`}>This issue has no decisions.md yet.</p>
       ) : null}
-      {namesFailure === undefined ? null : (
-        <QueryError
-          message="Could not load the statements these decisions shaped."
-          {...namesFailure}
-        />
-      )}
+      <StatementNamesError failure={namesFailure} />
       <Section empty="No open questions." title="Open questions">
         {questions.map((ask) => (
           <OpenQuestion ask={ask} issueKey={issueKey} key={ask.id} spec={spec} />

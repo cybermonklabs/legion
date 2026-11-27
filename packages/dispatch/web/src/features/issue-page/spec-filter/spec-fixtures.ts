@@ -7,10 +7,9 @@ import type {
   IssueDecisions,
   IssueDetails,
 } from "../../../api/types";
+import { DECISIONS_SLUG, KEY } from "../../decision-card/decision-fixture";
 import {
   artifact,
-  DECISIONS_SLUG,
-  KEY,
   node,
   READER,
   READER_ACTOR,

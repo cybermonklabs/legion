@@ -25,16 +25,13 @@ import type {
   IssueReferences,
   Version,
 } from "../../api/types";
+import { KEY } from "../decision-card/decision-fixture";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { DESKTOP_WIDTH } from "../margin/margin-fixture";
 import { buildIssuePath, parseIssuePath } from "../refs/routes";
 import { DOCUMENT_OPEN_ATTRIBUTE, DOCUMENTS_LIST_ATTRIBUTE } from "./DocumentsList";
-import {
-  artifact as issueArtifact,
-  issueDetails,
-  KEY,
-} from "./decisions-filter/decisions-fixtures";
+import { artifact as issueArtifact, issueDetails } from "./decisions-filter/decisions-fixtures";
 import { NoTooltips } from "./NoTooltips";
 import { OpenedDocument } from "./OpenedDocument";
 import { TWO_THREADS } from "./outline-fixtures";

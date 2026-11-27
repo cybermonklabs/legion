@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { Page, Request } from "@playwright/test";
 
-import { isLiveSocket, watchApiRequests, watchTraffic } from "../traffic";
+import { isLiveSocket, loadsDocument, watchApiRequests, watchTraffic } from "../traffic";
 
 // Like e2e/__tests__/sends.test.ts, this file drives a helper of the suite through a stand-in for
 // the part of a page the helper touches, so it starts no browser. Every row that drives a watcher
@@ -121,4 +121,15 @@ test("a path under /ws/ is the live socket, and no other path is", () => {
     { path: "/api/v1/ws/x", socket: false },
     { path: "/wsx", socket: false },
   ]);
+});
+
+// `e2e/refetch-budget.e2e.ts`'s own watcher drops what is in flight by `loadsDocument` too, so
+// that predicate is held here directly: a navigation of the page's main frame loads a new
+// document into it, and a navigation of a frame inside the page, or a read, does not.
+test("only a navigation of the page's main frame loads a new document into it", () => {
+  const { page } = eventPage();
+  const load = request("http://127.0.0.1/issues/LAY-3", true);
+  const framed = { ...load, frame: () => ({}) } as unknown as Request;
+  const read = request("http://127.0.0.1/api/v1/issues/LAY-3");
+  expect([load, framed, read].map((one) => loadsDocument(page, one))).toEqual([true, false, false]);
 });

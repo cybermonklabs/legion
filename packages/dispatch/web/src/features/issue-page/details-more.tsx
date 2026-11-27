@@ -526,8 +526,10 @@ function useLandedPlaceHold(open: boolean | undefined): (target: string, frames:
  * above the view. So as the focus lands, a focused element no taller than the view and not wholly
  * in it is brought into it first, by the least scroll that shows it whole (`nearest`). An element
  * taller than the view, as the history `t v` focuses, is left where it is: its heading's own
- * landing places it (below). That scroll is the hold's own, and the hold claims the box before
- * its event is raised, so neither the hold nor the history's anchor takes it for the reader's.
+ * landing places it (below). Where that landing already fired before the focus arrived and a row
+ * above the history changed height in between, the hold brings the heading back to the top of
+ * Details' box. That scroll is the hold's own, and the hold claims the box before its event is
+ * raised, so neither the hold nor the history's anchor takes it for the reader's.
  *
  * The top kept is where the reader last saw the element: where the focus found it, once brought
  * into the view, and again where each scroll of the box the hold did not make itself left it -
@@ -568,8 +570,28 @@ function useLandedPlaceHold(open: boolean | undefined): (target: string, frames:
 function holdLandedPlace(target: string, frames: number): () => void {
   let frame = 0;
   let stop: (() => void) | undefined;
+  // Whether the history's own landing already fired while the hold was waiting for the focus to
+  // reach it: when the log is cached, the heading can land on the first frame and a row above
+  // the history can change height before `findFocus` runs two frames later, pulling the heading
+  // out of the top of Details' view.
+  let headingLandedBeforeFocus = false;
+  const noteHeadingLanded = (event: Event) => {
+    if (
+      event.target instanceof Element &&
+      document.querySelector(HISTORY_IN_DETAILS)?.contains(event.target) === true
+    ) {
+      headingLandedBeforeFocus = true;
+    }
+  };
+  if (target === HISTORY_IN_DETAILS) {
+    document.addEventListener(HISTORY_HEADING_LANDED_EVENT, noteHeadingLanded);
+  }
+  const stopWatchingLanding = () => {
+    document.removeEventListener(HISTORY_HEADING_LANDED_EVENT, noteHeadingLanded);
+  };
   function release(): void {
     cancelAnimationFrame(frame);
+    stopWatchingLanding();
     stop?.();
     stop = undefined;
   }
@@ -579,9 +601,14 @@ function holdLandedPlace(target: string, frames: number): () => void {
       !(control instanceof HTMLElement) ||
       document.querySelector(target)?.contains(control) !== true
     ) {
-      if (left > 0) frame = requestAnimationFrame(() => findFocus(left - 1));
+      if (left > 0) {
+        frame = requestAnimationFrame(() => findFocus(left - 1));
+      } else {
+        stopWatchingLanding();
+      }
       return;
     }
+    stopWatchingLanding();
     // The box that scrolls the control, inside Details' own `aside`: the history's anchor finds
     // the box it keeps a place in by the same rule (`scrollingAncestor`), so the hold claims the
     // very box the anchor scrolls.
@@ -616,13 +643,22 @@ function holdLandedPlace(target: string, frames: number): () => void {
       scroller.scrollTop += by;
       own.move(before, scroller.scrollTop);
     };
-    // A focused element no taller than the view is brought into it before its top is kept, as
-    // this function's doc states: the opener brings the control's row into the view, not the
-    // control. It comes in by its top from above the view and by its foot from below it
-    // (`nearestScroll`). One taller than the view is left where it is.
+    // When the focused control is the history's section and its heading already landed before
+    // `findFocus` ran, restore the heading to the top of Details' box whatever the section's
+    // height: a row above the history can shrink or grow in that window and pull the heading off
+    // the top, and the section is taller than the view so `nearestScroll` would leave it there.
+    // Every other control no taller than the view is brought into it before its top is kept: the
+    // opener brings the control's row into the view, not the control, and `nearestScroll` brings
+    // it in by its top from above the view and by its foot from below it.
     const landing = control.getBoundingClientRect();
     const view = scroller.getBoundingClientRect();
-    if (landing.height <= view.height) {
+    if (headingLandedBeforeFocus) {
+      const heading = control.querySelector("h2");
+      if (heading !== null) {
+        const drift = heading.getBoundingClientRect().top - view.top;
+        if (drift !== 0) scrollOwn(drift);
+      }
+    } else if (landing.height <= view.height) {
       const by = nearestScroll(landing, view);
       if (by !== 0) scrollOwn(by);
     }

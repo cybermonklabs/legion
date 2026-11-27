@@ -14,9 +14,10 @@ const NO_WORDS: StatementWords = {};
 
 /** The statements' names, as `useStatementExcerpts` hands them to the card's caller. */
 export interface StatementExcerpts {
-  /** The read's failure as the caller draws a failed read (`QueryError`'s props but its message,
-   *  which each caller words as it words its other failed reads), with its Retry; undefined while
-   *  the read has not failed. */
+  /** The read's failure with its Retry (`QueryError`'s props but its message, which
+   *  `StatementNamesError` words): both callers hand it to that one component, which draws it as
+   *  the same failed read in the same words on each surface; undefined while the read has not
+   *  failed. */
   readonly failure: Omit<QueryErrorProps, "message"> | undefined;
   /** The words of the statement `reference` names: none until the read answers for it, where it
    *  failed, or where the read names it gone. */
@@ -30,9 +31,9 @@ export interface StatementExcerpts {
  * (`withStatementTexts`). A statement's words are its stored excerpt, a typed block's directive
  * left out (`blockWords`), with the server's reading of its text where the read sent one. The
  * read is kept fresh by the events that name its key, never by its age (`EVENT_FRESH`), and the
- * names in hand stand while a set that grew is read. A failed read is the caller's to show, as
- * it shows its other failed reads (`failure`), and each statement it holds no words for is still
- * drawn, by the card's word for a statement it shaped.
+ * names in hand stand while a set that grew is read. A failed read is shown by the caller with
+ * `StatementNamesError` (`failure`), and each statement it holds no words for is still drawn,
+ * by the card's word for a statement it shaped.
  */
 export function useStatementExcerpts(
   decisions: readonly Decision[] | null | undefined

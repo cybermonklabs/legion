@@ -37,6 +37,7 @@ import type {
   IssueDetails,
 } from "../../../api/types";
 import { pageFocusedRow } from "../../../theme/classes";
+import { KEY } from "../../decision-card/decision-fixture";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
@@ -48,14 +49,7 @@ import {
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { measureNearWords } from "../clamp-fixtures";
-import {
-  artifact,
-  issueTree,
-  KEY,
-  node,
-  openAsk,
-  READER,
-} from "../decisions-filter/decisions-fixtures";
+import { artifact, issueTree, node, openAsk, READER } from "../decisions-filter/decisions-fixtures";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { DocumentStage, DocumentStages } from "../document-stage";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";

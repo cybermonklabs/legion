@@ -36,7 +36,8 @@ message from Dispatch's Agents page as that person's own turn.
   Dispatch is on or off, a checkout's
   `.opencode/envoy.json`, which is not read, is one `envoy: <file> is not read: mkdir -p … && mv …`
   line while the checkout has no `.envoy/envoy.json`. The `dispatch` command reads the file
-  `ENVOY_CONFIG_FILE` names whenever `DISPATCH_HOST` is set. A subagent's Bash can lack what the
+  `ENVOY_CONFIG_FILE` names whenever `DISPATCH_HOST` is set (`dispatch login` reads none, and
+  `dispatch proxy` none without `DISPATCH_TOKEN_BROKER=1`). A subagent's Bash can lack what the
   hook writes there (Claude Code issue 46696); its `dispatch` command, finding no
   `DISPATCH_HOST`, then takes host `claude` from the `CLAUDE_CODE_CHILD_SESSION=1` Claude Code sets
   in every Bash, and reads `CLAUDE_CONFIG_DIR` itself. With Dispatch configured,
@@ -185,14 +186,16 @@ message from Dispatch's Agents page as that person's own turn.
   session's Bash first), with `ENVOY_URL` and `ENVOY_TOKEN_FILE` or `ENVOY_TOKEN` over its `envoy`
   section. With Envoy off it sends nothing and exits 1, saying why. It sends through envoy-client's
   own send (`createEnvoyClient().send`), the transport every other client uses: one idempotency key
-  on every attempt, so the listener stores the message at most once; an attempt with no answer or a
-  5xx sent again under that key; and the listener's URL named only as `urlForText` names it, never
-  its user info. It sends the session its shell names (`ENVOY_SESSION_ID`, else
+  on every attempt, so the listener stores the message at most once; an attempt with no answer, a
+  408 or a 5xx sent again under that key; and the listener's URL named only as `urlForText` names
+  it, never its user info. It sends the session its shell names (`ENVOY_SESSION_ID`, else
   `CLAUDE_CODE_SESSION_ID`) as `source_session`, so the listener's limit on each session's sending
   counts its messages. A send the listener stored without this machine's credential (a listener
   that asks for none takes one whose broker trade failed) prints its `Sent` line, exits 0, and
   writes one line to stderr naming why it went without the credential, and where the refusal is
-  final (a revoked sign-in) that it is, with its remedy. A send that may have arrived is not a
+  final (a revoked sign-in) that it is, with its remedy. A send that may have arrived (an attempt
+  that got no answer, a 408 or a 5xx: the listener writes no 408, and a hop in front of it can
+  answer one after it forwarded the send) is not a
   failure: it exits 75 (`EX_TEMPFAIL`), names the key, and prints the command that sends it again
   under that key, which the listener drops as a repeat if the first copy arrived: `cd <dir> &&
   [ENVOY_CONFIG_FILE=<file>] [ENVOY_URL=…] [ENVOY_TOKEN_FILE=…] [ENVOY_SESSION_ID=…] bun <the
@@ -248,7 +251,8 @@ which Claude Code sets fresh in every Bash command and moves to the new id on `/
 `DISPATCH_SESSION_ID` inherited from a parent session is ignored. A write that makes the session
 follow an ask prints `Following ask <id> on <issue>: …` once per ask, after its result; a result
 longer than 25,000 characters is written to a file the output names. It reads the envoy.json
-below on every call.
+below on every call. `dispatch login` acts as no session and reads no envoy.json, and
+`dispatch proxy` reads it only under `DISPATCH_TOKEN_BROKER=1`.
 
 Dispatch asks remain on native Dispatch.
 An Envoy delivery is one-way ingress, not a remote
@@ -573,7 +577,8 @@ socket carries no agent stream, so neither live view
 takes its control subject and the Agents page shows nothing of the session's turns, which the
 start notice says. The `open-asks` hook
 hands the file on to the session's Bash as `ENVOY_CONFIG_FILE` beside `DISPATCH_HOST=claude`, and
-the `dispatch` command reads the file `ENVOY_CONFIG_FILE` names whenever `DISPATCH_HOST` is set; a
+the `dispatch` command reads the file `ENVOY_CONFIG_FILE` names whenever `DISPATCH_HOST` is set
+(but for `dispatch login`, and for `dispatch proxy` without `DISPATCH_TOKEN_BROKER=1`); a
 Bash with neither, as a subagent's can be, has `CLAUDE_CODE_CHILD_SESSION=1` and takes this plugin's
 rule. With Envoy off the channel server lists no tool, refuses every call with
 `Envoy is off for this session: <why>` (the section's notice or error), subscribes nothing, and

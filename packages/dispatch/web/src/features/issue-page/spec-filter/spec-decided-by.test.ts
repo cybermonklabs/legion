@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { renderHook } from "@testing-library/react";
 
 import type { CheckBlock, Decision } from "../../../api/types";
-import { issueTree, KEY, node, READER, READER_ACTOR } from "../decisions-filter/decisions-fixtures";
+import { KEY } from "../../decision-card/decision-fixture";
+import { issueTree, node, READER, READER_ACTOR } from "../decisions-filter/decisions-fixtures";
 import type { TreeNode } from "../issue-tree";
 import { CHIP_LIMIT } from "../node-row-chip";
 import { type LineNames, useIssueNames } from "../one-line";

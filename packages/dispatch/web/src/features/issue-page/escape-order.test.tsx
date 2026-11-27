@@ -21,18 +21,13 @@ import type {
   IssueDetails,
   IssueReferences,
 } from "../../api/types";
+import { KEY } from "../decision-card/decision-fixture";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
 import { Margin } from "../margin/Margin";
 import { DESKTOP_WIDTH } from "../margin/margin-fixture";
 import { buildIssuePath, parseIssuePath } from "../refs/routes";
 import { DOCUMENT_OPEN_ATTRIBUTE, DOCUMENTS_LIST_ATTRIBUTE } from "./DocumentsList";
-import {
-  artifact,
-  issueDetails,
-  KEY,
-  SPEC_SLUG,
-  specRef,
-} from "./decisions-filter/decisions-fixtures";
+import { artifact, issueDetails, SPEC_SLUG, specRef } from "./decisions-filter/decisions-fixtures";
 import { presetPath } from "./issue-address";
 import {
   DETAILS_ATTRIBUTE,

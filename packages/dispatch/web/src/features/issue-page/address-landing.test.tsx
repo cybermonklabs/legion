@@ -4,13 +4,8 @@ import { act, cleanup, type RenderResult, waitFor } from "@testing-library/react
 import { nextFrame } from "../../__tests__/frames";
 import { ApiError, api } from "../../api/client";
 import type { ArtifactBlock, IssueCoverage, IssueDetails } from "../../api/types";
-import {
-  artifact,
-  issueDetails,
-  KEY,
-  SPEC_SLUG,
-  specRef,
-} from "./decisions-filter/decisions-fixtures";
+import { KEY } from "../decision-card/decision-fixture";
+import { artifact, issueDetails, SPEC_SLUG, specRef } from "./decisions-filter/decisions-fixtures";
 import { TWO_THREADS } from "./outline-fixtures";
 import { STATE_LINES } from "./page-words";
 import { FAILED_READ_RETRY } from "./slots/failed-read-line";

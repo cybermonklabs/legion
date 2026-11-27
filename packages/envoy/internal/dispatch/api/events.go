@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -23,10 +25,11 @@ const (
 	// maxEventPage is the most events one page of an issue's or a document's event log holds,
 	// and its default.
 	maxEventPage = 200
-	// maxEventReplay is the most events one page of the global event log holds (readEventsAfterID):
-	// the relay's read and GET /api/v1/events/log each page through the log at it, and it is that
-	// route's default. An events subscription's catch-up pages the same read at maxLiveReplay
-	// instead, the bound its resume is replayed within (replayThrough in live_events.go).
+	// maxEventReplay is the most events one page of the global event log holds: the relay's read
+	// (readEventsAfterIDOnLog) and GET /api/v1/events/log (readEventsAfterID) each page through the
+	// log at it, and it is that route's default. An events subscription's catch-up pages
+	// readEventsAfterID at maxLiveReplay instead, the bound its resume is replayed within
+	// (replayThrough in live_events.go).
 	maxEventReplay = 1000
 )
 
@@ -149,6 +152,9 @@ func (s *server) eventFeedETag(lastSeq int, createdAt time.Time, options eventLi
 	for _, id := range options.ids {
 		_, _ = fmt.Fprintf(hash, "id=%d\n", id)
 	}
+	for _, kind := range options.excludeTypes {
+		_, _ = fmt.Fprintf(hash, "exclude_type=%s\n", kind)
+	}
 	return s.listETag(hash, trees)
 }
 
@@ -238,16 +244,21 @@ func parseEventListOptions(r *http.Request) (eventListOptions, error) {
 	if err != nil {
 		return eventListOptions{}, err
 	}
+	excludeTypes, err := parseEventExcludeTypes(query.Get("exclude_types"))
+	if err != nil {
+		return eventListOptions{}, err
+	}
 	if query.Has("after") && (hasBefore || descending) {
 		return eventListOptions{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "after cannot be combined with before or order=desc")
 	}
 	return eventListOptions{
-		after:      after,
-		before:     before,
-		hasBefore:  hasBefore,
-		descending: descending || hasBefore,
-		ids:        ids,
-		limit:      limit,
+		after:        after,
+		before:       before,
+		hasBefore:    hasBefore,
+		descending:   descending || hasBefore,
+		ids:          ids,
+		limit:        limit,
+		excludeTypes: excludeTypes,
 	}, nil
 }
 
@@ -258,6 +269,22 @@ type eventListOptions struct {
 	descending bool
 	ids        []int64
 	limit      int
+	// excludeTypes are the event types the page leaves out, sorted with no repeat
+	// (parseEventExcludeTypes); nil leaves out none.
+	excludeTypes []string
+}
+
+// excludeTypesCondition is the where-clause condition that leaves options.excludeTypes out of a
+// readEvents statement, and that statement's arguments with the type list appended, which the
+// condition names by its place. readEvents puts it before order by and limit, so a page counts
+// only the events it keeps. With no excluded type it adds neither, and the statement is the one
+// it was without the filter.
+func (options eventListOptions) excludeTypesCondition(arguments ...any) (string, []any) {
+	if len(options.excludeTypes) == 0 {
+		return "", arguments
+	}
+	arguments = append(arguments, options.excludeTypes)
+	return fmt.Sprintf(" and not (e.type = any($%d))", len(arguments)), arguments
 }
 
 func (s *server) readEvents(ctx context.Context, who model.Actor, owner owner, options eventListOptions) ([]model.Event, error) {
@@ -271,27 +298,31 @@ func (s *server) readEvents(ctx context.Context, who model.Actor, owner owner, o
 		return nil, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
 	if len(options.ids) > 0 {
+		exclude, arguments := options.excludeTypesCondition(ownerValue, options.ids)
 		return s.readEventRows(ctx, who, eventSelect+`
-			where `+predicate+` and e.id = any($2)
+			where `+predicate+` and e.id = any($2)`+exclude+`
 			order by e.seq asc
-		`, ownerValue, options.ids)
+		`, arguments...)
 	}
 	if options.descending {
 		if options.hasBefore {
+			exclude, arguments := options.excludeTypesCondition(ownerValue, options.before, options.limit)
 			return s.readEventRows(ctx, who, eventSelect+`
-				where `+predicate+` and e.seq < $2
+				where `+predicate+` and e.seq < $2`+exclude+`
 				order by e.seq desc limit $3
-			`, ownerValue, options.before, options.limit)
+			`, arguments...)
 		}
+		exclude, arguments := options.excludeTypesCondition(ownerValue, options.limit)
 		return s.readEventRows(ctx, who, eventSelect+`
-			where `+predicate+`
+			where `+predicate+exclude+`
 			order by e.seq desc limit $2
-		`, ownerValue, options.limit)
+		`, arguments...)
 	}
+	exclude, arguments := options.excludeTypesCondition(ownerValue, options.after, options.limit)
 	return s.readEventRows(ctx, who, eventSelect+`
-		where `+predicate+` and e.seq > $2
+		where `+predicate+` and e.seq > $2`+exclude+`
 		order by e.seq asc limit $3
-	`, ownerValue, options.after, options.limit)
+	`, arguments...)
 }
 
 // readEventsAfterID reads one page of the global event log in id order: at most limit of the
@@ -303,6 +334,23 @@ func (s *server) readEventsAfterID(ctx context.Context, who model.Actor, after, 
 		where e.id > $1 and e.id <= $2
 		order by e.id asc limit $3
 	`, after, through, limit)
+}
+
+// readEventsAfterIDOnLog is readEventsAfterID for a reader whose cursor after is the id of an event
+// it read with created_at afterAt (0 and the zero time before the first): the page holds rows only
+// while that row still carries that created_at, in the statement's own snapshot. A reset of the log
+// (e2e/seed.ts's delete with the table's sequence restarted, or `truncate events restart
+// identity`) holds an ACCESS EXCLUSIVE lock on events until it commits, and the statement holds its
+// ACCESS SHARE lock until it ends, so the reset lands wholly before or wholly after this read. A
+// page read after a reset is therefore empty, never a page of the new log above the old cursor,
+// which the reader would take for the events after the ones it read (events.EventLogWasReset
+// tells the two cases apart).
+func (s *server) readEventsAfterIDOnLog(ctx context.Context, who model.Actor, after int64, afterAt time.Time, through int64, limit int) ([]model.Event, error) {
+	return s.readEventRows(ctx, who, eventSelect+`
+		where e.id > $1 and e.id <= $2
+		  and ($1 = 0 or exists (select 1 from events c where c.id = $1 and c.created_at = $4))
+		order by e.id asc limit $3
+	`, after, through, limit, afterAt)
 }
 
 // eventLogUnbrokenThrough is the id before the first one missing from the event log counted up
@@ -912,4 +960,33 @@ func parseEventIDs(raw string) ([]int64, error) {
 		ids[index] = id
 	}
 	return ids, nil
+}
+
+// parseEventExcludeTypes reads an event list's exclude_types: at most 50 comma-separated event
+// types, each one Dispatch writes (contracts.DispatchEventTypes), which the page leaves out. A
+// blank value leaves out none; an empty item or a type Dispatch does not write is refused 400
+// INVALID_QUERY. The types come back sorted with no repeat, so every spelling of one set is read,
+// and hashed into the feed's ETag, as the same list.
+func parseEventExcludeTypes(raw string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) > 50 {
+		return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "exclude_types must include at most 50 values")
+	}
+	kinds := make([]string, len(parts))
+	for index, part := range parts {
+		kind := strings.TrimSpace(part)
+		if kind == "" {
+			return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "exclude_types must not hold an empty value")
+		}
+		// contracts.DispatchEventTypes is sorted, which a binary search needs.
+		if _, known := slices.BinarySearch(contracts.DispatchEventTypes, kind); !known {
+			return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "exclude_types must be event types Dispatch writes: %q is not one", kind)
+		}
+		kinds[index] = kind
+	}
+	slices.Sort(kinds)
+	return slices.Compact(kinds), nil
 }

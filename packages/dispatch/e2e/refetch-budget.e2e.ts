@@ -20,7 +20,7 @@ import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxCountBadge, inboxCountText } from "./inbox-threads";
 import { COMPONENT_MODEL, COMPONENT_REFERENCE, COMPONENT_REPO } from "./reference-surfaces";
 import { expect, type Page, type Request, test } from "./test";
-import { isLiveSocket } from "./traffic";
+import { isLiveSocket, loadsDocument } from "./traffic";
 import { asUser } from "./users";
 
 // INFRA-492: how many reads one open tab sends while other sessions write. As #2324 wrote it, the
@@ -53,6 +53,7 @@ function watchTraffic(page: Page): Traffic {
   let lastSettledAt = Date.now();
   page.on("request", (request) => {
     const url = new URL(request.url());
+    if (loadsDocument(page, request)) inFlight.clear();
     if (!isLiveSocket(url)) inFlight.add(request);
     if (request.method() !== "GET" || !url.pathname.startsWith("/api/")) return;
     gets.push(`${url.pathname}${url.search}`);

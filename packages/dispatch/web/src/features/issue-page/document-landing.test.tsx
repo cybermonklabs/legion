@@ -21,16 +21,11 @@ import type {
   IssueDetails,
   IssueReferences,
 } from "../../api/types";
+import { KEY } from "../decision-card/decision-fixture";
 import { DocumentRuntime } from "../doc/runtime";
 import { parseIssuePath } from "../refs/routes";
 import { DOCUMENTS_LIST_ATTRIBUTE } from "./DocumentsList";
-import {
-  artifact,
-  issueDetails,
-  KEY,
-  SPEC_SLUG,
-  specRef,
-} from "./decisions-filter/decisions-fixtures";
+import { artifact, issueDetails, SPEC_SLUG, specRef } from "./decisions-filter/decisions-fixtures";
 import { CONTROL_LABELS } from "./page-words";
 import { ProvidersSlot } from "./slots/providers";
 import { StageSlot } from "./slots/stage";

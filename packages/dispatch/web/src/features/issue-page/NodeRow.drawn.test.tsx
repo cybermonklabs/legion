@@ -22,6 +22,7 @@ import { pageKindBullet, pageKindTag } from "../../theme/classes";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
+import { decision, KEY } from "../decision-card/decision-fixture";
 import { actorLabelText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import * as markdownEngine from "../refs/markdown-engine";
@@ -37,10 +38,8 @@ import { measureNearWords } from "./clamp-fixtures";
 import {
   artifact,
   DECISIONS_DOCUMENT,
-  decision,
   decisionsRead,
   issueDetails,
-  KEY,
   shaped,
 } from "./decisions-filter/decisions-fixtures";
 import { FIRST_LINE_LIMIT } from "./first-line";

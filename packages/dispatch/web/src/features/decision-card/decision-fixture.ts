@@ -3,9 +3,9 @@ import type { Decision } from "../../api/types";
 /**
  * One decision of the bare decisions read, built by hand, which the decision card's own tests
  * read (`DecisionCard.test.tsx`, `adapters.test.ts`, `change-anchor.test.ts`) and the Decisions
- * filter's fixtures take in and export again (`issue-page/decisions-filter/decisions-fixtures.ts`).
- * It lives here, so no file under `features/decision-card/` imports one under
- * `features/issue-page/` (R22).
+ * filter's fixtures and tests import from here
+ * (`issue-page/decisions-filter/decisions-fixtures.ts` exports none of it). It lives here, so no
+ * file under `features/decision-card/` imports one under `features/issue-page/` (R22).
  */
 
 export const KEY = "CORE-1";

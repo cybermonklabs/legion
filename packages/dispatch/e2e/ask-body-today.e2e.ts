@@ -14,9 +14,7 @@ import { DECISION_KIND_WORDS } from "../web/src/features/decision-card/decision-
 import {
   createAsk,
   createIssue,
-  createIssueArtifact,
   createProject,
-  editArtifact,
   getAsk,
   getInbox,
   getIssueDecisions,
@@ -27,11 +25,12 @@ import {
   ASK_TODAY,
   type AskTodayDecision,
   type AskTodaySeed,
+  awaitDecisions,
   type MainHolds,
   mainHolds,
   READER,
-  readDecisions,
   seedAskToday,
+  writeDecision,
 } from "./dashboard-seed";
 import { literal } from "./dashboard-support";
 import { documentEditor } from "./editor";
@@ -469,20 +468,6 @@ test("in today's comments margin an agent's ask keeps each word of its question 
   ).toEqual([]);
 });
 
-/** Whether the issue's decisions read holds the agent's decision `heading` with its tie indexed,
- *  as the seed reads and waits for its own (`readDecisions` and `awaitDecisions` in
- *  `dashboard-seed.ts`): on a bare main the bare member waiting for review with a link, and where
- *  decisions are nodes the entry of the `decision` block `block`. */
-async function decisionWritten(key: string, heading: string, block: string): Promise<boolean> {
-  const main = holds;
-  if (main === undefined) throw new Error("The server probe did not run");
-  return (await readDecisions(key, main)).some((decision) =>
-    main.decisionsAreNodes
-      ? decision.id === block
-      : decision.heading === heading && decision.waiting
-  );
-}
-
 // The same margin draws an agent's decision by the decision card, whose first line's end (the
 // kind and the time) stood beside its heading and left the heading some 120 px: too few for a
 // word such as "internationalization", which ran past the heading's line under the kind. The
@@ -502,36 +487,25 @@ test("in today's comments margin an agent's decision keeps each word of its head
     title: "Whole words",
   });
   const shaped = specBlockRef(issue.key, "r1");
-  // The decision as the seed writes its own on each main R27 names (`writeDecisions` in
-  // `dashboard-seed.ts`): a `decision` block of the spec that shapes r1, where the server refuses
-  // a new `decisions.md` with `409 DECISIONS_ARE_NODES`, and else a section of a `decisions.md`
-  // whose reference to r1 ties it.
-  if (holds.decisionsAreNodes) {
-    await editArtifact(
-      issue.primary_artifact_id ?? "",
-      {
-        ops: [
-          {
-            after: "end",
-            markdown: `:::decision{#d-whole shaped="${shaped}"}\n### ${heading}\n\n${why}\n:::`,
-            op: "insert",
-          },
-        ],
-      },
-      WHOLE_WORDS_AGENT
-    );
-  } else {
-    await createIssueArtifact(
-      issue.key,
-      { content: `## ${heading}\n\n${why} Shapes ${shaped}.\n`, name: "decisions.md" },
-      WHOLE_WORDS_AGENT
-    );
-  }
-  await expect
-    .poll(() => decisionWritten(issue.key, heading, "d-whole"), {
-      message: "the decisions read never held the seeded decision with its tie",
-    })
-    .toBe(true);
+  // The decision written through `writeDecision` in `dashboard-seed.ts`, as the seed writes its own
+  // on each main R27 names: a `decision` block of the spec that shapes r1 where decisions are
+  // nodes, and else a new `decisions.md` whose section ties r1 by `Shapes <address>` in its words.
+  const nodes = holds.decisionsAreNodes;
+  await writeDecision(
+    issue.key,
+    { spec: issue.primary_artifact_id ?? "" },
+    holds,
+    { heading, id: "d-whole", shaped, words: `${why} Shapes ${shaped}.` },
+    WHOLE_WORDS_AGENT
+  );
+  // The read holds the decision once the document service has indexed its tie: on a bare main
+  // the member waiting for review with a link, and where decisions are nodes the entry of the
+  // `decision` block.
+  await awaitDecisions(issue.key, holds, "the seeded decision with its tie", (decisions) =>
+    decisions.some((decision) =>
+      nodes ? decision.id === "d-whole" : decision.heading === heading && decision.waiting
+    )
+  );
   await wide(page);
   await page.goto(`/issues/${issue.key}/spec`);
   const card = margin(page).locator(CARD).filter({ hasText: heading }).first();

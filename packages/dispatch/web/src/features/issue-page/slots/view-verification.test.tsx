@@ -6,13 +6,8 @@ import type { NavigateFunction } from "react-router-dom";
 import { nextFrame } from "../../../__tests__/frames";
 import { api } from "../../../api/client";
 import type { ArtifactBlock, IssueDetails } from "../../../api/types";
-import {
-  artifact,
-  issueDetails,
-  KEY,
-  SPEC_SLUG,
-  specRef,
-} from "../decisions-filter/decisions-fixtures";
+import { KEY } from "../../decision-card/decision-fixture";
+import { artifact, issueDetails, SPEC_SLUG, specRef } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import { blockNodeId } from "../statement-rules";
 import { nodeRowSelectorOf } from "../tree-focus";

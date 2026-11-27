@@ -8,10 +8,10 @@ import { displayTree } from "../../__tests__/display-trees";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { Actor } from "../../api/types";
+import { KEY } from "../decision-card/decision-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { PublishedReferenceNames, ReferenceNamesProvider } from "../refs/reference-names";
 import { producingMessages } from "./contents-entries";
-import { KEY } from "./decisions-filter/decisions-fixtures";
 import {
   type FocusedNode,
   FocusedNodeProvider,

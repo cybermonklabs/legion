@@ -24,6 +24,7 @@ import {
   pageOwnWordsRule,
   pageStateText,
 } from "../../../theme/classes";
+import { decision, KEY } from "../../decision-card/decision-fixture";
 import { actorLabelText } from "../../refs/AgentName";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import type { PublishedReferences } from "../../refs/reference-names";
@@ -60,12 +61,10 @@ import {
   ask,
   closing,
   DECISIONS_DOCUMENT,
-  decision,
   decisionNode,
   decisionsRead,
   issueDetails,
   issueTree,
-  KEY,
   node,
   openAsk,
   READER,

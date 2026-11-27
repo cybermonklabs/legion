@@ -1,22 +1,28 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { renderToString } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
+import { precedes } from "../../__tests__/document-order";
+import { settle } from "../../__tests__/fake-clock";
+import { graphNode } from "../../__tests__/graph-fixture";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import { answerQuestionOf, NAMED_QUESTION } from "../../__tests__/question-answers";
 import { installResizeObserver } from "../../__tests__/scroll-box";
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import type {
   AskRead,
   Decision,
   DecisionKeep,
+  DecisionLink,
   IssueDecisions,
   IssueDetails,
+  ReferenceTarget,
+  ReferenceTargets,
 } from "../../api/types";
 import type { StatementWords } from "../decision-card/adapters";
 import { issueDecisionsQuery } from "../doc/spec-marks";
@@ -340,5 +346,118 @@ test("the decisions' region follows its card's height when the card resizes, wit
   } finally {
     view.unmount();
     resize.restore();
+  }
+});
+
+/** The two statements the cards below shaped: the address each tie names, where the card links
+ *  it, and the words the names read answers for it. */
+const SHAPED = [
+  {
+    block: "p1",
+    href: "/issues/CORE-1/spec#b-p1",
+    name: "Notices are stored.",
+    ref: "dispatch://CORE-1/spec#b-p1",
+  },
+  {
+    block: "p2",
+    href: "/issues/CORE-1/spec#b-p2",
+    name: "Old rows expire.",
+    ref: "dispatch://CORE-1/spec#b-p2",
+  },
+] as const;
+
+/** A refusal of a read, as Dispatch answers one it cannot serve now. */
+const REFUSED = new ApiError(503, { code: "UNAVAILABLE", error: "the read is refused" });
+
+/** Where the spec's blocks stand in the document, which the cards below are placed by. */
+const PLACED: ReadonlyMap<string, MarkPlacement> = new Map([
+  ["p-plan", { pos: 5, top: 120 }],
+  ["p-test", { pos: 9, top: 400 }],
+]);
+
+/** A tie to a statement by its address alone, as the bare decisions read has it, so the words of
+ *  the statement come from the read of the statements' names alone. */
+function tie({ block, ref }: (typeof SHAPED)[number]): DecisionLink {
+  return {
+    created_at: "2026-10-01T00:00:00Z",
+    created_version: 1,
+    from_block: "d-1",
+    stale: false,
+    to: graphNode({ block_id: block, id: `CORE-1/spec#${block}`, kind: "block", ref }),
+  };
+}
+
+// The statements the decisions shaped are named by one batched read for the whole list. With that
+// read refused the error stands after the Decisions region and outside it, every statement stays a
+// link to its block by the card's word for it, and pressing Retry names the statements and clears
+// the alert.
+test("a refused read of the statements' names is told after the decisions' region and outside it, and the Retry names the statements and clears the alert", async () => {
+  const user = userEvent.setup();
+  const held = Promise.withResolvers<ReferenceTargets>();
+  const names = spyOn(api, "getReferenceTargets")
+    .mockReturnValueOnce(held.promise)
+    .mockImplementation(async (refs) => ({
+      targets: refs.flatMap((ref): ReferenceTarget[] => {
+        const named = SHAPED.find((one) => one.ref === ref);
+        return named === undefined ? [] : [{ gone: false, kind: "block", name: named.name, ref }];
+      }),
+    }));
+  const decisions = [
+    item({ heading: "Store notices in a table", links: [tie(SHAPED[0])] }),
+    {
+      ...item({ block_id: "d-2", heading: "Name them notices", links: [tie(SHAPED[1])] }),
+      blockId: "p-test",
+      id: "decision:d-2:p-test",
+    },
+  ];
+  const view = render(
+    <MemoryRouter>
+      <DecisionList
+        blockPlacements={PLACED}
+        decisions={decisions}
+        hoveredItemId={undefined}
+        isClosed={false}
+        issueKey="CORE-1"
+        onSelect={() => {}}
+        selectedItemId={undefined}
+      />
+    </MemoryRouter>
+  );
+  try {
+    const region = screen.getByRole("region", { name: "Decisions" });
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    // The read refused: the error stands after the region and outside it, and every statement
+    // stays a link to its block by the card's word for it.
+    await act(async () => {
+      held.reject(REFUSED);
+      await settle();
+    });
+    const alert = await screen.findByRole("alert");
+    expect(
+      within(alert).getByText("Could not load the statements these decisions shaped.")
+    ).toBeInTheDocument();
+    expect(region.contains(alert)).toBe(false);
+    expect(precedes(region, alert)).toBe(true);
+    const unnamed = within(region).getAllByRole("link", { name: "A statement it shaped" });
+    expect(unnamed).toHaveLength(SHAPED.length);
+    for (const [index, { href }] of SHAPED.entries()) {
+      expect(unnamed[index]).toHaveAttribute("href", href);
+    }
+
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+    await waitFor(() => {
+      for (const { href, name } of SHAPED) {
+        expect(within(region).getByRole("link", { name })).toHaveAttribute("href", href);
+      }
+    });
+    expect(within(region).queryByRole("link", { name: "A statement it shaped" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    // One batched read of both statements, asked again by the Retry for the same two.
+    const asked = SHAPED.map(({ ref }) => ref).sort();
+    expect(names.mock.calls.map(([refs]) => [...refs])).toEqual([asked, asked]);
+  } finally {
+    view.unmount();
+    names.mockRestore();
   }
 });

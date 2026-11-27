@@ -12,12 +12,12 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
@@ -50,6 +50,7 @@ func (c noCI) RecordSuite(context.Context, contracts.CIObservation) error {
 // name, a segment of its subject, is the longest a filesystem keeps (255 bytes); a checks
 // settlement has its own bound, which the CI store's tests publish at.
 func TestTheLargestEnvelopeOfEachKindTheDaemonReadsIsStored(t *testing.T) {
+	t.Parallel()
 	owner, repo := strings.Repeat("o", 39), strings.Repeat("r", 100)
 	repository := object{"name": repo, "full_name": owner + "/" + repo, "owner": object{"login": owner}}
 	for _, filler := range []struct{ name, rune string }{{"4-byte runes", "𝔸"}, {"<", "<"}} {
@@ -64,9 +65,9 @@ func TestTheLargestEnvelopeOfEachKindTheDaemonReadsIsStored(t *testing.T) {
 				body: object{"action": over, "repository": repository, "pull_request": object{
 					"number": 42, "title": over, "body": over, "html_url": over, "user": object{"login": over},
 					"head": object{"sha": over, "ref": over}, "base": object{"ref": over},
-					"merged": true, "merge_commit_sha": over, "merged_by": object{"login": over}, "updated_at": over,
+					"merged": true, "merge_commit_sha": over, "merged_at": over, "merged_by": object{"login": over}, "updated_at": over,
 				}},
-				capped: []string{"action", "title", "body", "author", "url", "head_sha", "head_ref", "base_ref", "merge_commit_sha", "merged_by", "updated_at"},
+				capped: []string{"action", "title", "body", "author", "url", "head_sha", "head_ref", "base_ref", "merge_commit_sha", "merged_at", "merged_by", "updated_at"},
 			},
 			{
 				event: "pull_request_review",
@@ -127,9 +128,7 @@ func TestTheLargestEnvelopeOfEachKindTheDaemonReadsIsStored(t *testing.T) {
 					t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
 				}
 
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				stored, err := client.NextStoredMessage(ctx, contracts.GithubSubject(owner, repo, ">"), 0)
+				stored, err := client.NextStoredMessage(testwait.Context(t), contracts.GithubSubject(owner, repo, ">"), 0)
 				if err != nil {
 					t.Fatalf("read the stored %s: %v", tc.event, err)
 				}
