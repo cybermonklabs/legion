@@ -34,9 +34,6 @@ import (
 // newsPathRig cases do.
 
 const (
-	// carriedBusy is Oh My Pi's answer to a prompt while another prompt's turn is being prepared
-	// or run.
-	carriedBusy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
 	// carriedOpened is the opening sentence of the rig's gate at version 4 of its spec.
 	carriedOpened = "The design gate of LEGION-800 opened: a person approved version 4 of its spec document (artifact-800)"
 	// pathChecks is the Verification document a rig's root registers beside its spec.
@@ -211,7 +208,7 @@ func TestALateTurnOfAFirstPromptLeavesTheOpeningABusyResendRenderedOwed(t *testi
 		t.Fatalf("the reviewer holds %+v after the wait ran out, want the task taken back under a new id", held)
 	}
 
-	conn.RefusePrompt(carriedBusy)
+	conn.FailPrompt(keptBusy)
 	before := len(conn.Prompts())
 	r.hello(reviewer)
 	resent := promptsAfter(conn, before)

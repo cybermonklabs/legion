@@ -3,6 +3,7 @@ package testnats
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -119,4 +120,43 @@ func TestALameDuckMemberSendsItsClientsToAnotherMember(t *testing.T) {
 	}
 	cluster.Servers[0].Start(t)
 	cluster.AwaitReady(t)
+}
+
+// The cluster is not ready while a member has made no reply wildcard, nor while another member's
+// routes do not hold one it made, and is ready once AwaitReady has run: replyRoutesReady reads the
+// members' own subscriptions and their routes', so a request through any member can be answered
+// by any other. The routes are frozen while the first request through member n1 makes its
+// wildcard, so the other members cannot have heard it.
+func TestTheClusterIsNotReadyUntilEveryMembersReplyWildcardIsRouted(t *testing.T) {
+	cluster := startCluster(t, 3, 3, "")
+	cluster.awaitMeta(t)
+	if err := cluster.replyRoutesReady(); err == nil || !strings.Contains(err.Error(), "member n1 has no reply wildcard") {
+		t.Fatalf("before any request entered a member, replyRoutesReady = %v, want member n1 to have no reply wildcard", err)
+	}
+
+	thaw := cluster.FreezeRoutes(t)
+	defer thaw()
+	conn, err := ConnectSeed(t, cluster.Servers[0].URL(), "")
+	if err != nil {
+		t.Fatalf("connect to member n1: %v", err)
+	}
+	defer conn.Close()
+	// The answer is beside the point (the meta leader may be another member, which the frozen
+	// routes keep the request from): the request's crossing of the JetStream import makes n1's
+	// wildcard, and the flush returns once n1 has read it.
+	if err := conn.PublishRequest("$JS.API.INFO", natsgo.NewInbox(), nil); err != nil {
+		t.Fatalf("send the request through member n1: %v", err)
+	}
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush the request through member n1: %v", err)
+	}
+	if err := cluster.replyRoutesReady(); err == nil || !strings.Contains(err.Error(), "member n2 has not heard member n1's reply wildcard _R_.") {
+		t.Fatalf("with the routes frozen after n1 made its wildcard, replyRoutesReady = %v, want member n2 not to have heard it", err)
+	}
+
+	thaw()
+	cluster.AwaitReady(t)
+	if err := cluster.replyRoutesReady(); err != nil {
+		t.Fatalf("after AwaitReady, replyRoutesReady = %v, want nil", err)
+	}
 }

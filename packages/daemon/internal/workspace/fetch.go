@@ -54,9 +54,11 @@ var isolatedGit = func() []string {
 	return slices.Clip(argv)
 }()
 
-// FetchRequest is the repository cache's GitHub fetch: the repository, how to read the
-// provisioning token, the directory its one-shot credential goes under, and Root, the cache's
-// volume. Bound limits each GitHub transfer; the cache's initial clone uses CacheFetchTimeout.
+// FetchRequest is a fetch from GitHub: the repository cache's (Fetch), or an issue pod's fill's
+// (fetchIssuePod). It names the repository and, for Fetch alone, how to read the provisioning
+// token, the directory its one-shot credential goes under, and Root, the cache's volume. Bound is
+// the one deadline all of one fetch's transfers from GitHub share, counted from its first; zero is
+// FetchTimeout, and the repository cache gives its first fill CacheFetchTimeout.
 type FetchRequest struct {
 	Repo ghrepo.Repository
 	// Token answers the provisioning token as it stands when called, never a copy kept from an
@@ -387,7 +389,7 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) error {
 	if err := os.MkdirAll(filepath.Dir(cache), 0o700); err != nil {
 		return fmt.Errorf("create cache parent: %w", err)
 	}
-	held := &fetchCredential{remote: credential, env: merge(credential.env, isolatedGitConfig), read: request.Token, held: []string{token}}
+	held := newFetchCredential(credential, request.Token)
 	if present {
 		deadline := request.Clock.Now().Add(request.bound())
 		if _, err := fetchDefaultBranch(ctx, run, request, cache, held, deadline, false); err != nil {
@@ -433,8 +435,7 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) error {
 // repository gitDir (cacheFetchInto), both under the one-shot credential held, with Fetch's
 // retries, before deadline, and answers the branch's ref. With sweep set, each retry first removes
 // the locks and partial packs a failed attempt left in gitDir, so it starts from the repository as
-// the first attempt found it: the first fill's temporary sibling, as a clone's retry once started
-// from an empty directory.
+// the first attempt found it: the first fill's temporary sibling.
 func fetchDefaultBranch(ctx context.Context, run Runner, request FetchRequest, gitDir string, held *fetchCredential, deadline time.Time, sweep bool) (string, error) {
 	target, err := remoteHead(ctx, run, request, gitDir, held, deadline)
 	if err != nil {
@@ -712,7 +713,7 @@ func askCache(ctx context.Context, request CacheStream, path string, withToken b
 }
 
 // unpackCacheInto streams the repository cache's tar into the clone's existing .git directory.
-func unpackCacheInto(ctx context.Context, run Runner, request CacheStream, staging string) (int64, error) {
+func unpackCacheInto(ctx context.Context, run Runner, request CacheStream, gitDir string) (int64, error) {
 	bounded, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stream := &countingReader{window: time.After}
@@ -739,7 +740,7 @@ func unpackCacheInto(ctx context.Context, run Runner, request CacheStream, stagi
 		if err != nil {
 			return 0, fmt.Errorf("read the repository cache's tar: %w", err)
 		}
-		if err := unpackEntry(staging, header, archive); err != nil {
+		if err := unpackEntry(gitDir, header, archive); err != nil {
 			return 0, err
 		}
 	}
@@ -787,12 +788,12 @@ func unpackCacheInto(ctx context.Context, run Runner, request CacheStream, stagi
 // fails, naming the bound. A history check that what remained ended before it answered has shown
 // no object missing, so it is no history that is not whole: it fails naming the bound
 // (errHistoryCheckRanOut), with none of git's words.
-func verifyCache(ctx context.Context, run Runner, clock Clock, staging string, deadline time.Time, whose string, bound time.Duration, indexHere bool) error {
-	packs, err := filepath.Glob(filepath.Join(staging, "objects", "pack", "pack-*.pack"))
+func verifyCache(ctx context.Context, run Runner, clock Clock, gitDir string, deadline time.Time, whose string, bound time.Duration, indexHere bool) error {
+	packs, err := filepath.Glob(filepath.Join(gitDir, "objects", "pack", "pack-*.pack"))
 	if err != nil {
 		return err
 	}
-	hash, err := objectHash(ctx, run, staging)
+	hash, err := objectHash(ctx, run, gitDir)
 	if err != nil {
 		return err
 	}
@@ -815,7 +816,7 @@ func verifyCache(ctx context.Context, run Runner, clock Clock, staging string, d
 		if err != nil {
 			return err
 		}
-		if _, err := CacheGitWithin(ctx, run, staging, left, "index-pack", pack); err != nil {
+		if _, err := CacheGitWithin(ctx, run, gitDir, left, "index-pack", pack); err != nil {
 			return fmt.Errorf("the repository cache's pack %s, which does not verify: %w", filepath.Base(pack), err)
 		}
 	}
@@ -825,8 +826,8 @@ func verifyCache(ctx context.Context, run Runner, clock Clock, staging string, d
 	}
 	// The check runs as CacheGitWithin would, but keeps the run's Result: a checked run's error does
 	// not say whether its bound ended it.
-	fsck := slices.Concat(isolatedGit, []string{"--git-dir=" + staging, "fsck", "--connectivity-only", "--no-dangling", "--no-progress"})
-	result, err := runCommandTimeout(ctx, run, fsck, isolatedGitConfig, staging, left)
+	fsck := slices.Concat(isolatedGit, []string{"--git-dir=" + gitDir, "fsck", "--connectivity-only", "--no-dangling", "--no-progress"})
+	result, err := runCommandTimeout(ctx, run, fsck, isolatedGitConfig, gitDir, left)
 	if err == nil && result.TimedOut {
 		return fmt.Errorf("the %s %s bound %w", whose, bound, errHistoryCheckRanOut)
 	}
@@ -841,8 +842,9 @@ func verifyCache(ctx context.Context, run Runner, clock Clock, staging string, d
 var errHistoryNotWhole = errors.New("the repository cache's history is not whole")
 
 // errHistoryCheckRanOut is verifyCache's failure where what remained of the verification's bound
-// ended `git fsck --connectivity-only` before it answered, wrapped after that bound: "the fetch's
-// <bound> bound ran out while checking the repository cache's history is whole". It says nothing of
+// ended `git fsck --connectivity-only` before it answered, wrapped after that bound and the stage
+// it is (verifyCache's whose): "the cache stream's <bound> bound ran out while checking the
+// repository cache's history is whole", or the bucket attempt's. It says nothing of
 // the history, which a long one checked on a pod short of CPU outlasts while whole: 20 fetches at
 // once in one pod of 8 CPU each ran out of both the bucket attempt's bound and /tar's in this check
 // on firefox's history.
@@ -942,7 +944,8 @@ func trailingHash(path string, hash func() hash.Hash) ([]byte, error) {
 
 // remaining is what is left before deadline, by clock, for what runs next, or the failure naming
 // it and the bound of the stage (whose) it runs in once nothing is. It takes the clock and bound
-// rather than a request, so a cache stream's checks and a GitHub transfer share it.
+// rather than a request, so a cache stream's checks, a GitHub transfer and the shared clone's
+// steps (cloneSteps) share it.
 func remaining(clock Clock, deadline time.Time, whose string, bound time.Duration, what string) (time.Duration, error) {
 	left := deadline.Sub(clock.Now())
 	if left <= 0 {
@@ -953,7 +956,7 @@ func remaining(clock Clock, deadline time.Time, whose string, bound time.Duratio
 
 // unpackEntry writes one entry of the repository cache's tar into a clone's .git directory,
 // refusing one the clone does not take.
-func unpackEntry(staging string, header *tar.Header, body io.Reader) error {
+func unpackEntry(gitDir string, header *tar.Header, body io.Reader) error {
 	name := strings.TrimSuffix(header.Name, "/")
 	if !filepath.IsLocal(filepath.FromSlash(name)) || path.Clean(name) != name {
 		return fmt.Errorf("the repository cache's tar holds %q, which is not a path inside the clone's git directory", name)
@@ -965,7 +968,7 @@ func unpackEntry(staging string, header *tar.Header, body io.Reader) error {
 	if !CacheEntry(name, dir) {
 		return fmt.Errorf("the repository cache's tar holds %q, which is not one of a repository's refs or packs", name)
 	}
-	target := filepath.Join(staging, filepath.FromSlash(name))
+	target := filepath.Join(gitDir, filepath.FromSlash(name))
 	if dir {
 		return os.MkdirAll(target, 0o755)
 	}
@@ -1181,6 +1184,12 @@ type fetchCredential struct {
 	held   []string
 }
 
+// newFetchCredential is the fetchCredential of the one-shot credential r, renewed from read, which
+// has held r's own token.
+func newFetchCredential(r remote, read func() (string, error)) *fetchCredential {
+	return &fetchCredential{remote: r, env: merge(r.env, isolatedGitConfig), read: read, held: []string{r.token}}
+}
+
 // renew reads the provisioning token as it stands now and writes it over the credential's, so the
 // transfer about to start presents it: a token file the daemon refreshed during a long wait on the
 // repository cache, or a retry's backoff, is the one git is given, never the token the fetch began
@@ -1216,9 +1225,9 @@ type Clock interface {
 	Sleep(ctx context.Context, d time.Duration) error
 }
 
-// fetchBackoff is the wait before each retry of the fetch's clone, one retry per entry: a first
-// retry soon after a stream GitHub cut, the last a minute later. A clone still failing after the
-// last fails the fetch, so a GitHub outage holds a launch for a few attempts, not the whole
+// fetchBackoff is the wait before each retry of a transfer from GitHub, one retry per entry: a
+// first retry soon after a stream GitHub cut, the last a minute later. A transfer still failing
+// after the last fails the fetch, so a GitHub outage holds a launch for a few attempts, not the whole
 // FetchTimeout, which bounds a slow transfer instead.
 var fetchBackoff = []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second, time.Minute}
 

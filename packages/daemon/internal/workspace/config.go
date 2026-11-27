@@ -49,9 +49,11 @@ const (
 	CacheStreamLowSpeedTime  = 5 * time.Minute
 )
 
-// CloneTimeout is the one bound ensureRepoClone gives the Jujutsu setup after an issue clone's
-// GitHub delta: `jj git init --colocate`, the sparse clear and abandon, and default bookmark
-// tracking. FetchBudget separately bounds the cache wait and data transfers before those steps.
+// CloneTimeout is the one bound ensureRepoClone gives the shared clone's size-following steps
+// (cloneSteps): on the tmux runtime its whole `jj git clone` from GitHub; in a Kubernetes issue pod
+// its `git init`, and then afresh, once the fill's transfers are done, the Jujutsu setup after
+// them: `jj git init --colocate`, the sparse clear and abandon, and default bookmark tracking.
+// FetchBudget separately bounds the cache wait and data transfers between those steps.
 const CloneTimeout = 30 * time.Minute
 
 // CheckoutTimeout is the bound of a command that writes a whole working copy — every file of the
@@ -906,19 +908,18 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 		if source.issue.fetched {
 			return nil
 		}
-		bytes, refs, _, err := fetchIssuePod(ctx, run, cloneDir, source, false)
+		bytes, refs, defaults, err := fetchIssuePod(ctx, run, cloneDir, source, false)
 		if err != nil {
 			return err
 		}
 		if _, err := runCheckedOnClone(ctx, run, cloneDir, "git", "import"); err != nil {
 			return err
 		}
-		for _, ref := range source.issue.defaults {
-			if _, err := runCheckedOnClone(ctx, run, cloneDir, "bookmark", "track", originRow(strings.TrimPrefix(ref, "refs/heads/"))); err != nil {
+		for _, branch := range defaults {
+			if _, err := runCheckedOnClone(ctx, run, cloneDir, "bookmark", "track", originRow(branch)); err != nil {
 				return err
 			}
 		}
-		source.issue.fetched = true
 		source.issue.log(fmt.Sprintf("the clone holds %s already: %s bytes from GitHub for the delta (%s)",
 			source.issue.repository, groupedBytes(bytes), refCount(refs)))
 		return nil
@@ -1030,7 +1031,13 @@ func configureCloneReads(ctx context.Context, run Runner, cloneDir string) error
 // Jujutsu command from starting automatic maintenance in its issue pod. The tmux shared clone is
 // intentionally unchanged.
 func configureIssueCloneMaintenance(ctx context.Context, run Runner, cloneDir string) error {
-	for _, pair := range [][2]string{{"gc.auto", "0"}, {"maintenance.auto", "false"}} {
+	return replaceCloneConfig(ctx, run, cloneDir, [][2]string{{"gc.auto", "0"}, {"maintenance.auto", "false"}})
+}
+
+// replaceCloneConfig sets each of pairs in the shared clone's own configuration, in order, with
+// --replace-all, so one line of each key stays whatever the file held.
+func replaceCloneConfig(ctx context.Context, run Runner, cloneDir string, pairs [][2]string) error {
+	for _, pair := range pairs {
 		argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "--replace-all", pair[0], pair[1]}
 		if _, err := RunChecked(ctx, run, argv, nil, cloneDir); err != nil {
 			return err
@@ -1091,13 +1098,7 @@ func PackWindowConfig() [][2]string { return slices.Clone(packWindowConfig) }
 // provision. --replace-all leaves one line of each key whatever the file held, a key a role set
 // twice included. The repository cache does not take them, for the reason configureCloneReads gives.
 func configurePackWindows(ctx context.Context, run Runner, cloneDir string) error {
-	for _, pair := range packWindowConfig {
-		argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "--replace-all", pair[0], pair[1]}
-		if _, err := RunChecked(ctx, run, argv, nil, cloneDir); err != nil {
-			return err
-		}
-	}
-	return nil
+	return replaceCloneConfig(ctx, run, cloneDir, packWindowConfig)
 }
 
 // configureCloneDefaultRepository marks origin as gh's default repository in the shared clone's
