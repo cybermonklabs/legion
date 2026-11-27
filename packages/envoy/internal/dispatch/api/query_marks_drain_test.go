@@ -267,61 +267,163 @@ const (
 	versionInsertTag = "insert into artifact_versions"
 )
 
-// requireDrainTrace holds the statements the server sent for one result's write, from the write's
-// first on (sent), to the shape R7 and R12 give it: the write's batch upserts the mark and inserts
-// no version before its COMMIT; after that COMMIT the drain takes the issue's owner lock, then its
-// room's lock, reads the mark, and only then inserts the version and clears the mark, and commits.
-func requireDrainTrace(t *testing.T, what string, sent []storetest.SentStatement) {
+// requireDrainTrace holds the statements the server sent for one write whose queries a drain
+// follows, from the write's first on (sent), to the shape R7 and R12 give it: the write's batch
+// upserts the mark, and no statement of the write's own transaction, up to its COMMIT, inserts a
+// version of drained, the query document the drain revises (a DELETE inserts versions of the
+// documents whose text it changes, which are its own); after that COMMIT the drain takes the
+// issue's owner lock, then its room's lock, reads the mark, and only then inserts drained's version
+// and clears the mark, and commits.
+func requireDrainTrace(t *testing.T, what, drained string, sent []storetest.SentStatement) {
 	t.Helper()
-	shapes := make([]string, len(sent))
-	for index, statement := range sent {
-		shapes[index] = normalizedStatement(statement.SQL)
-	}
-	at := func(from int, match func(string) bool) int {
-		for index := from; index < len(shapes); index++ {
-			if match(shapes[index]) {
-				return index
-			}
-		}
-		return -1
-	}
-	containing := func(head string) func(string) bool {
-		return func(shape string) bool { return strings.Contains(shape, head) }
-	}
-	commit := func(shape string) bool { return shape == "commit" }
-	mark := at(0, containing(markUpsertHead))
+	trace := newDrainTrace(sent)
+	mark := trace.at(0, trace.containing(markUpsertHead))
 	if mark < 0 {
 		t.Errorf("%s: the write's batch upserts no issue_query_marks row", what)
 		return
 	}
-	written := at(mark, commit)
+	written := trace.at(mark, trace.commit)
 	if written < 0 {
 		t.Errorf("%s: no COMMIT follows the mark's upsert", what)
 		return
 	}
-	if inserted := at(mark, containing(versionInsertTag)); inserted >= 0 && inserted < written {
-		t.Errorf("%s: the write's own transaction inserts the drained version (statement %d) before its COMMIT (statement %d)", what, inserted, written)
+	if inserted := trace.at(0, trace.inserts(drained)); inserted >= 0 && inserted < written {
+		t.Errorf("%s: the write's own transaction inserts the drained version of %s (statement %d) before its COMMIT (statement %d)", what, drained, inserted, written)
 	}
+	trace.require(t, what+": after the write's COMMIT the drain", written+1, drained)
+}
+
+// requireFillCommitsBeforeTheDrain holds the statements the server sent from the first of a write
+// whose drain meets a record digest left owed (sent) to R7's order: after the write's COMMIT the
+// drain's fill records the digest and commits in a transaction of its own, and only after that
+// COMMIT does the drain take the issue's owner lock, then its room's lock, read the mark, insert
+// drained's version, clear the mark and commit; no statement of the drain's own transaction - its
+// room's lock, its read of the mark - comes before the fill's COMMIT.
+func requireFillCommitsBeforeTheDrain(t *testing.T, what, drained string, sent []storetest.SentStatement) {
+	t.Helper()
+	trace := newDrainTrace(sent)
+	mark := trace.at(0, trace.containing(markUpsertHead))
+	written := trace.at(max(mark, 0), trace.commit)
+	if mark < 0 || written < 0 {
+		t.Errorf("%s: the write's batch upserts no issue_query_marks row (statement %d) or no COMMIT follows it (statement %d)", what, mark, written)
+		return
+	}
+	fill := trace.at(written+1, trace.containing(sqlFillsDigest))
+	if fill < 0 {
+		t.Errorf("%s: after the write's COMMIT no fill records the owed digest", what)
+		return
+	}
+	filled := trace.at(fill, trace.commit)
+	if filled < 0 {
+		t.Errorf("%s: no COMMIT follows the fill's record of the digest (statement %d)", what, fill)
+		return
+	}
+	t.Logf("%s: the fill records the digest at statement %d and commits at %d", what, fill, filled)
+	if owner := trace.at(written+1, trace.containing(ownerLockHead)); owner < 0 || owner > fill {
+		t.Errorf("%s: the fill recorded the digest (statement %d) with no owner lock taken before it (first after the write's COMMIT: statement %d)", what, fill, owner)
+	}
+	for _, step := range []struct{ name, head string }{{"the lock of the issue's room", roomLockHead}, {"the read of the mark", markReadHead}} {
+		if early := trace.at(written+1, trace.containing(step.head)); early >= 0 && early < filled {
+			t.Errorf("%s: the drain sent %s (statement %d) before the fill's COMMIT (statement %d)", what, step.name, early, filled)
+		}
+	}
+	trace.require(t, what+": after the fill's COMMIT the drain", filled+1, drained)
+}
+
+// drainTrace is the statements a trace check reads (storetest.SentStatements), each lowered and
+// with its whitespace folded (normalizedStatement).
+type drainTrace struct {
+	sent   []storetest.SentStatement
+	shapes []string
+}
+
+func newDrainTrace(sent []storetest.SentStatement) drainTrace {
+	shapes := make([]string, len(sent))
+	for index, statement := range sent {
+		shapes[index] = normalizedStatement(statement.SQL)
+	}
+	return drainTrace{sent: sent, shapes: shapes}
+}
+
+// at is the index of the first statement from from on that match holds, -1 for none.
+func (d drainTrace) at(from int, match func(int) bool) int {
+	for index := from; index < len(d.shapes); index++ {
+		if match(index) {
+			return index
+		}
+	}
+	return -1
+}
+
+func (d drainTrace) containing(head string) func(int) bool {
+	return func(index int) bool { return strings.Contains(d.shapes[index], head) }
+}
+
+func (d drainTrace) commit(index int) bool { return d.shapes[index] == "commit" }
+
+// inserts matches the insert of a version of the document artifactID, its first bound value.
+func (d drainTrace) inserts(artifactID string) func(int) bool {
+	return func(index int) bool {
+		if !strings.Contains(d.shapes[index], versionInsertTag) {
+			return false
+		}
+		inserted, held := d.sent[index].Text(0)
+		return held && inserted == artifactID
+	}
+}
+
+// require fails t unless, from from on, the drain sends in its order the issue's owner lock, its
+// room's lock, the read of the mark, the insert of drained's version, the clear of the mark and
+// its COMMIT; what names the drain and where it starts.
+func (d drainTrace) require(t *testing.T, what string, from int, drained string) {
+	t.Helper()
 	steps := []struct {
 		name  string
-		match func(string) bool
+		match func(int) bool
 	}{
-		{"the issue's owner lock", containing(ownerLockHead)},
-		{"the lock of the issue's room", containing(roomLockHead)},
-		{"the read of the mark", containing(markReadHead)},
-		{"the version's insert", containing(versionInsertTag)},
-		{"the clear of the mark", containing(markClearHead)},
-		{"the drain's COMMIT", commit},
+		{"the issue's owner lock", d.containing(ownerLockHead)},
+		{"the lock of the issue's room", d.containing(roomLockHead)},
+		{"the read of the mark", d.containing(markReadHead)},
+		{"the insert of the version of " + drained, d.inserts(drained)},
+		{"the clear of the mark", d.containing(markClearHead)},
+		{"the drain's COMMIT", d.commit},
 	}
-	from := written + 1
 	for _, step := range steps {
-		found := at(from, step.match)
+		found := d.at(from, step.match)
 		if found < 0 {
-			t.Errorf("%s: after the write's COMMIT the drain sent no %s in its order: owner lock, room lock, mark read, version insert, mark clear, COMMIT", what, step.name)
+			t.Errorf("%s sent no %s in its order: owner lock, room lock, mark read, version insert, mark clear, COMMIT", what, step.name)
 			return
 		}
 		t.Logf("%s: %s is statement %d", what, step.name, found)
 		from = found + 1
+	}
+}
+
+// newestTupleSeq is the greatest graph_tuples.seq the store holds.
+func newestTupleSeq(t *testing.T, database *store.Store) int64 {
+	t.Helper()
+	var seq int64
+	if err := database.Pool.QueryRow(context.Background(), `select coalesce(max(seq), 0) from graph_tuples`).Scan(&seq); err != nil {
+		t.Fatalf("read the newest tuple sequence: %v", err)
+	}
+	return seq
+}
+
+// requireOwnerLockFree fails unless a transaction of the test's own takes the owner lock of the
+// issue key, which every fill takes first, within a second: what holds the lock waits for nothing.
+func requireOwnerLockFree(t *testing.T, database *store.Store, what, key string) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the take of %s's owner lock: %v", key, err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `select set_config('lock_timeout', '1s', true)`); err != nil {
+		t.Fatalf("bound the take of %s's owner lock: %v", key, err)
+	}
+	if err := store.LockOwner(ctx, tx, store.IssueOwner(key)); err != nil {
+		t.Errorf("%s: the owner lock of %s, which the fill takes, is held: %v", what, key, err)
 	}
 }
 
@@ -371,10 +473,30 @@ func requireDrainTrace(t *testing.T, what string, sent []storetest.SentStatement
 //     drain's system actor, advances the request and clears the mark. Two PATCHes then leave one
 //     eventless mark at the second's sequence, and the tick writes the spec query's version at
 //     graphstore.NoEvent; a second tick with no new mark writes nothing.
+//   - A node PATCH (the criterion moved under a lens, which changes the spec query's answer and no
+//     text) on an issue with an approval request open on the spec query: once it has committed and
+//     before its drain the move is visible at graphstore.NoEvent, and the mark stands with
+//     greatest_event null, greatest_seq the newest tuple sequence and alice its writer, and no new
+//     version does; the trace has the record's shape; at the publish nothing is published yet, the
+//     drained version stands with its artifact.version in alice's name, the request names it and
+//     the mark is gone; its node is caused at graphstore.NoEvent.
+//   - A node DELETE of a decision's reading, which takes it out of the spec's text and out of the
+//     decisions query's record: at the start of its drain (docs.Service.HoldDrains) nothing is
+//     published yet, the reading reads gone, the mark stands as the PATCH's does, the decisions
+//     query holds no new version, and the versions the DELETE itself wrote - the spec's - stand
+//     with their artifact.version in alice's name. Its trace inserts no version of the decisions
+//     query before its COMMIT; the drain then writes that version alone, under graphstore.NoEvent,
+//     in alice's name, published by the request, and clears the mark.
+//   - A drain behind an owed record digest: an edit of the spec leaves its version's digest owed,
+//     its own fill held, and a result is recorded; the result's drain runs its fill first, held
+//     too. While that fill waits the mark stands, the digest is owed, no version of the
+//     Verification document is written and the issue's owner lock, which the fill takes, is free.
+//     Released, the fill records the digest and commits, and only after that COMMIT does the
+//     drain take its locks, revise and clear the mark (the trace).
 //   - A result on an issue that has not converted marks nothing and runs no drain.
 //
-// The node PATCH's request drain (its trace and the mark before it) is held by
-// TestAMoveMarksItsIssuesQueriesOwedAndTheDrainWritesThem (api/node_move_drain_test.go).
+// TestAMoveMarksItsIssuesQueriesOwedAndTheDrainWritesThem (api/node_move_drain_test.go) holds the
+// PATCH's case on a server of its own, and a move on an issue that has not converted.
 func TestIssueQueryMarksDrainAfterCommit(t *testing.T) {
 	handler, database, deps, probe, sent := newDrainProbeServer(t)
 	documents := probe.Service
@@ -465,7 +587,7 @@ func TestIssueQueryMarksDrainAfterCommit(t *testing.T) {
 		if blind := sent.Blind(); len(blind) > 0 {
 			t.Fatalf("the statement recorder could not read %q", blind)
 		}
-		requireDrainTrace(t, "a recorded result", sent.Statements()[from:])
+		requireDrainTrace(t, "a recorded result", verification.id, sent.Statements()[from:])
 		if approval := readApproval(t, handler, verification.id).Approval; approval == nil || approval.State == "approved" {
 			t.Errorf("the Verification document reads approved %+v with no approval given", approval)
 		}
@@ -537,7 +659,7 @@ func TestIssueQueryMarksDrainAfterCommit(t *testing.T) {
 		if blind := sent.Blind(); len(blind) > 0 {
 			t.Fatalf("the statement recorder could not read %q", blind)
 		}
-		requireDrainTrace(t, "a retraction", sent.Statements()[from:])
+		requireDrainTrace(t, "a retraction", verification.id, sent.Statements()[from:])
 		version := newestQueryVersion(t, database, verification.id)
 		if version.number != before.number+1 || version.markdown != before.markdown {
 			t.Fatalf("the retraction leaves the Verification document at version %d holding %q, want version %d holding %q",
@@ -792,6 +914,326 @@ func TestIssueQueryMarksDrainAfterCommit(t *testing.T) {
 		}
 	})
 
+	t.Run("a node PATCH", func(t *testing.T) {
+		moved := createDigestIssue(t, handler, database, "QMD", "A move its request drains", moveDrainSpec, false)
+		key := moved.Key
+		criterion := readDecisionDocument(t, database, key, "spec").address("qk1")
+		lens := moveDrainLens(t, handler, key)
+		specQuery := queryArtifactOf(t, database, key, graphstore.QuerySpec)
+		specRequest := requestApproval(t, handler, specQuery)
+		before := newestQueryVersion(t, database, specQuery)
+		_, tag := placementOf(t, database, "block", criterion)
+		publishedSince(published)
+		from := len(sent.Statements())
+		var committed, drained bool
+		probe.before = func(drainedKey string) {
+			committed = true
+			if drainedKey != key {
+				t.Errorf("the PATCH drains %s, want the issue it moved a node of, %s", drainedKey, key)
+			}
+			placed, _ := placementOf(t, database, "block", criterion)
+			if storeAddress(placed.ToKind, placed.ToID) != lens || placed.SourceEvent != graphstore.NoEvent {
+				t.Errorf("once the PATCH committed %s stands under %s at event %d, want under %s at graphstore.NoEvent", criterion, storeAddress(placed.ToKind, placed.ToID), placed.SourceEvent, lens)
+			}
+			mark, marked := readQueryMarkRow(t, database, key)
+			newest := newestTupleSeq(t, database)
+			switch {
+			case !marked:
+				t.Errorf("the PATCH of %s committed and left no issue_query_marks row of %s", criterion, key)
+			case mark.event != nil:
+				t.Errorf("the PATCH's mark of %s holds greatest_event %d, want null: the move writes its tuples at graphstore.NoEvent", key, *mark.event)
+			case mark.seq != newest:
+				t.Errorf("PATCH mark cause sequence %d, want %d, the newest tuple sequence once the PATCH committed", mark.seq, newest)
+			case mark.writer.ID != "alice":
+				t.Errorf("the tuple at the PATCH's mark's greatest_seq %d was written by %+v, want alice", mark.seq, mark.writer)
+			}
+			if version := newestQueryVersion(t, database, specQuery); version.number != before.number {
+				t.Errorf("the spec query of %s stands at version %d once the PATCH committed and before its drain, want %d", key, version.number, before.number)
+			}
+		}
+		probe.after = func(drainedKey string, appended []model.Event) {
+			drained = true
+			if early := publishedSince(published); len(early) > 0 {
+				t.Errorf("%s published locally before the PATCH's drain committed", early[0].Type)
+			}
+			version := newestQueryVersion(t, database, specQuery)
+			if version.number != before.number+1 {
+				t.Errorf("the PATCH's drain left the spec query of %s at version %d, want %d", key, version.number, before.number+1)
+			}
+			if _, actor := requireVersionEvent(t, database, specQuery, version.number); actor.ID != "alice" {
+				t.Errorf("the artifact.version of the PATCH's drained version names %+v, want alice, who wrote the tuple at the mark's greatest_seq", actor)
+			}
+			if named := requestedVersionOf(t, database, specRequest.ID, specQuery); named != version.number {
+				t.Errorf("the request on %s names version %d at the publish of the PATCH, want %d", specQuery, named, version.number)
+			}
+			requireNoQueryMark(t, database, "at the publish of the PATCH", drainedKey)
+			if !slices.ContainsFunc(appended, func(event model.Event) bool { return event.Type == "artifact.version" }) {
+				t.Errorf("the PATCH's drain answers %+v for the route to publish, want its artifact.version among them", appended)
+			}
+		}
+		t.Cleanup(func() { probe.before, probe.after = nil, nil })
+		response := patchNode(t, handler, key, criterion, tag, map[string]any{"parent": lens}, "alice")
+		probe.before, probe.after = nil, nil
+		if response.Code != http.StatusOK {
+			t.Fatalf("the PATCH of %s under %s answered %d %s, want 200", criterion, lens, response.Code, response.Body.String())
+		}
+		if !committed || !drained {
+			t.Fatalf("the PATCH ran no drain of %s once it committed (before %t, after %t)", key, committed, drained)
+		}
+		if blind := sent.Blind(); len(blind) > 0 {
+			t.Fatalf("the statement recorder could not read %q", blind)
+		}
+		requireDrainTrace(t, "the PATCH of "+criterion, specQuery, sent.Statements()[from:])
+		version := newestQueryVersion(t, database, specQuery)
+		requireRecordedDigest(t, database, "the PATCH's drained version", key, graphstore.QuerySpec, version)
+		requireRevisedVersion(t, database, "the PATCH's drained version", specQuery, refKeyOf(t, database, specQuery), version.number, graphstore.NoEvent)
+	})
+
+	t.Run("a node DELETE", func(t *testing.T) {
+		removed := createDigestIssue(t, handler, database, "QMD", "A delete its request drains", drainDeleteSpec, false)
+		key := removed.Key
+		reading := blockAddressOf(t, database, key, "dr1")
+		decisions := queryArtifactOf(t, database, key, graphstore.QueryDecisions)
+		var decisionsSlug string
+		if err := database.Pool.QueryRow(ctx, `select slug from artifacts where id = $1::uuid`, decisions).Scan(&decisionsSlug); err != nil {
+			t.Fatalf("read the slug of the decisions query of %s: %v", key, err)
+		}
+		alice := personCaller(t, handler, "alice")
+		count := deletedCount(t, "the dry run of "+reading, deleteNodeAs(alice, key, reading, true, -1, ""))
+		_, tag := placementOf(t, database, "block", reading)
+		versions := issueVersionCounts(t, database.Pool, key)
+		before := newestQueryVersion(t, database, decisions)
+		publishedSince(published)
+		from := len(sent.Statements())
+		preceding := newestTupleSeq(t, database)
+		// The DELETE writes the spec's version through the document service's ledger, whose commit
+		// drains the mark (docs' Ledger.Commit, drainOwed) before the route's own drain, which then
+		// finds none; so the case reads the store at the start of the first drain of the issue
+		// (docs.Service.HoldDrains), once the DELETE and the drain's fill have committed.
+		var committed bool
+		var written map[string]int
+		documents.HoldDrains(func(drainedKey string) {
+			if drainedKey != key || committed {
+				return
+			}
+			committed = true
+			if early := publishedSince(published); len(early) > 0 {
+				t.Errorf("%s published locally before the DELETE's drain", early[0].Type)
+			}
+			if state := nodeStateOf(t, database, "block", reading); state != graphstore.StateGone {
+				t.Errorf("once the DELETE committed %s reads %s, want %s", reading, state, graphstore.StateGone)
+			}
+			mark, marked := readQueryMarkRow(t, database, key)
+			newest := newestTupleSeq(t, database)
+			switch {
+			case !marked:
+				t.Errorf("the DELETE of %s committed and left no issue_query_marks row of %s", reading, key)
+			case mark.event != nil:
+				t.Errorf("the DELETE's mark of %s holds greatest_event %d, want null: the delete writes its tuples at graphstore.NoEvent", key, *mark.event)
+			case mark.seq != newest:
+				t.Errorf("DELETE mark cause sequence %d, want %d, the newest tuple sequence once the DELETE committed", mark.seq, newest)
+			case mark.writer.ID != "alice":
+				t.Errorf("the tuple at the DELETE's mark's greatest_seq %d was written by %+v, want alice", mark.seq, mark.writer)
+			}
+			// The DELETE's own node write states its tuples at graphstore.NoEvent. The version it
+			// writes of the spec states the reading's block gone in its own index pass
+			// (node_delete.go's head), whose facts that version's write causes; the case names
+			// those facts and their cause in its log and asserts nothing of them (TickActor-r5.md,
+			// item 1: the spec's "The PATCH and the DELETE write their tuples and states at
+			// graphstore.NoEvent" against that pass).
+			rows, err := database.Pool.Query(ctx, `
+				select g.seq, g.kind, g.asserted, g.source_event, coalesce(e.type, ''), coalesce(e.payload->>'artifact_id', '')
+				from graph_tuples g left join events e on e.id = g.source_event
+				where g.from_kind = 'block' and g.from_id = $1 and g.seq > $2 order by g.seq`, reading, preceding)
+			if err != nil {
+				t.Fatalf("read the tuples the DELETE wrote out of %s: %v", reading, err)
+			}
+			unevented := 0
+			for rows.Next() {
+				var seq, cause int64
+				var kind, causeType, causeArtifact string
+				var asserted bool
+				if err := rows.Scan(&seq, &kind, &asserted, &cause, &causeType, &causeArtifact); err != nil {
+					rows.Close()
+					t.Fatalf("read a tuple the DELETE wrote out of %s: %v", reading, err)
+				}
+				if cause == graphstore.NoEvent {
+					unevented++
+					continue
+				}
+				t.Logf("the DELETE's transaction wrote the %s tuple %d out of %s (asserted %t) under event %d, %s of %s", kind, seq, reading, asserted, cause, causeType, causeArtifact)
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				t.Fatalf("read the tuples the DELETE wrote out of %s: %v", reading, err)
+			}
+			if unevented == 0 {
+				t.Errorf("the DELETE wrote no tuple out of %s at graphstore.NoEvent, want its own node write's there", reading)
+			}
+			var nodeCause int64
+			var nodeCauseType string
+			if err := database.Pool.QueryRow(ctx, `
+				select n.source_event, coalesce(e.type, '') from graph_nodes n left join events e on e.id = n.source_event
+				where n.kind = 'block' and n.id = $1`, reading).Scan(&nodeCause, &nodeCauseType); err != nil {
+				t.Fatalf("read the node of %s: %v", reading, err)
+			}
+			t.Logf("the node of %s, gone, is caused by event %d (%s)", reading, nodeCause, nodeCauseType)
+			if version := newestQueryVersion(t, database, decisions); version.number != before.number {
+				t.Errorf("the decisions query of %s stands at version %d once the DELETE committed and before its drain, want %d", key, version.number, before.number)
+			}
+			// The versions the DELETE itself writes, of each document whose text it changes, are
+			// committed with it, each with its artifact.version.
+			written = issueVersionCounts(t, database.Pool, key)
+			for slug, number := range written {
+				if number == versions[slug] {
+					continue
+				}
+				if slug == decisionsSlug {
+					t.Errorf("the DELETE's own transaction wrote version %d of the decisions query, which is its drain's to write", number)
+					continue
+				}
+				document := readDecisionDocument(t, database, key, slug)
+				for own := versions[slug] + 1; own <= number; own++ {
+					if _, actor, held := documentEventOf(t, database, "artifact.version", document.id, own); !held {
+						t.Errorf("version %d of %s, which the DELETE itself wrote, has no artifact.version once the DELETE committed", own, slug)
+					} else if actor.ID != "alice" {
+						t.Errorf("the artifact.version of version %d of %s, which the DELETE itself wrote, names %+v, want alice", own, slug, actor)
+					}
+				}
+			}
+			if written["spec"] != versions["spec"]+1 {
+				t.Errorf("the DELETE left the spec at version %d once it committed, want %d: it takes the reading out of the spec's text", written["spec"], versions["spec"]+1)
+			}
+		})
+		t.Cleanup(func() { documents.HoldDrains(nil) })
+		response := deleteNodeAs(alice, key, reading, false, count, tag)
+		documents.HoldDrains(nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("the DELETE of %s answered %d %s, want 200", reading, response.Code, response.Body.String())
+		}
+		if !committed {
+			t.Fatalf("the DELETE ran no drain of %s once it committed", key)
+		}
+		version := newestQueryVersion(t, database, decisions)
+		if version.number != before.number+1 {
+			t.Errorf("the DELETE's drain left the decisions query of %s at version %d, want %d", key, version.number, before.number+1)
+		}
+		versionEvent, actor := requireVersionEvent(t, database, decisions, version.number)
+		if actor.ID != "alice" {
+			t.Errorf("the artifact.version of the DELETE's drained version names %+v, want alice, who wrote the tuple at the mark's greatest_seq", actor)
+		}
+		if !slices.ContainsFunc(publishedSince(published), func(event model.Event) bool { return event.ID == versionEvent }) {
+			t.Errorf("the DELETE's request published no artifact.version %d of the drained version", versionEvent)
+		}
+		requireNoQueryMark(t, database, "once the DELETE answered", key)
+		want := maps.Clone(written)
+		want[decisionsSlug] = before.number + 1
+		if now := issueVersionCounts(t, database.Pool, key); !maps.Equal(now, want) {
+			t.Errorf("the DELETE's drain left the documents of %s at the versions %v, want %v: one version of the decisions query and no other", key, now, want)
+		}
+		if blind := sent.Blind(); len(blind) > 0 {
+			t.Fatalf("the statement recorder could not read %q", blind)
+		}
+		requireDrainTrace(t, "the DELETE of "+reading, decisions, sent.Statements()[from:])
+		requireRecordedDigest(t, database, "the DELETE's drained version", key, graphstore.QueryDecisions, version)
+		requireRevisedVersion(t, database, "the DELETE's drained version", decisions, refKeyOf(t, database, decisions), version.number, graphstore.NoEvent)
+	})
+
+	t.Run("a drain behind an owed record digest", func(t *testing.T) {
+		owing := createDigestIssue(t, handler, database, "QMD", "A drain behind an owed digest", revisedSpec, false)
+		key := owing.Key
+		spec := owing.PrimaryArtifactID
+		uploadDocument(t, handler, "/api/v1/issues/"+key, "verification.md", revisedChecks)
+		checks := readDecisionDocument(t, database, key, "verification-md")
+		awaitDigestsFilled(t, database, spec)
+		awaitDigestsFilled(t, database, checks.id)
+		requireNoQueryMark(t, database, "before the edit", key)
+		// The first fill of the issue is the edit's own, held at its start; the second is the fill
+		// the result's drain runs before its revision, held until the test has read the store.
+		editHeld, editRelease := make(chan struct{}), make(chan struct{})
+		fillHeld, fillRelease := make(chan struct{}), make(chan struct{})
+		var fills atomic.Int32
+		var letEdit, letFill sync.Once
+		releaseEdit := func() { letEdit.Do(func() { close(editRelease) }) }
+		releaseFill := func() { letFill.Do(func() { close(fillRelease) }) }
+		documents.HoldFills(func(issueKey string) {
+			if issueKey != key {
+				return
+			}
+			switch fills.Add(1) {
+			case 1:
+				close(editHeld)
+				<-editRelease
+			case 2:
+				close(fillHeld)
+				<-fillRelease
+			}
+		})
+		t.Cleanup(func() {
+			releaseFill()
+			releaseEdit()
+			documents.HoldFills(nil)
+		})
+		edited := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			edited <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+spec+"/edits", map[string]any{
+				"ops": []map[string]string{{"op": "replace", "find": "The spec's opening words.", "with": "The spec's first words."}},
+			}, "alice")
+		}()
+		testwait.Receive(t, "the edit's own fill, held", editHeld)
+		owedVersion := newestQueryVersion(t, database, spec).number
+		if row := versionFillRowOf(t, database, spec, owedVersion); !row.owed || row.at == nil {
+			t.Fatalf("the edit's version %d of the spec holds at %v and digest_owed %t, want a cut and its digest owed", owedVersion, row.at, row.owed)
+		}
+		checksBefore := newestQueryVersion(t, database, checks.id)
+
+		// The marked change: a result, whose request's drain runs the fill first.
+		from := len(sent.Statements())
+		recorded := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			recorded <- recordResult(t, handler, key, resultBody("c1", "fail", headCommit, map[string]any{"failed": 1}))
+		}()
+		testwait.Receive(t, "the fill the result's drain runs, held", fillHeld)
+		mark, marked := readQueryMarkRow(t, database, key)
+		row := versionFillRowOf(t, database, spec, owedVersion)
+		switch {
+		case !marked && row.owed:
+			t.Errorf("query mark cleared with digest_owed=true: %s, version %d of the spec, while the drain's fill waits", key, owedVersion)
+		case !marked:
+			t.Errorf("the mark of %s is gone while the drain's fill waits", key)
+		case !row.owed:
+			t.Errorf("version %d of the spec owes no digest while the drain's fill waits: something else filled it", owedVersion)
+		default:
+			t.Logf("while the drain's fill waits %s stands marked (greatest_event %v, greatest_seq %d) and version %d of the spec owes its digest", key, mark.event, mark.seq, owedVersion)
+		}
+		if held := newestQueryVersion(t, database, checks.id); held.number != checksBefore.number {
+			t.Errorf("the drain revised the Verification document to version %d while its fill waits, want it at %d", held.number, checksBefore.number)
+		}
+		requireOwnerLockFree(t, database, "while the drain's fill waits", key)
+		releaseFill()
+		if answer := testwait.Receive(t, "the result's answer", recorded); answer.Code != http.StatusCreated {
+			t.Fatalf("the result answered %d %s, want 201", answer.Code, answer.Body.String())
+		}
+		if row := versionFillRowOf(t, database, spec, owedVersion); row.owed || row.digest == nil {
+			t.Errorf("after the result's drain version %d of the spec holds record_sha256 %s and digest_owed %t, want its digest filled", owedVersion, versionFillWords(row.digest), row.owed)
+		}
+		version := newestQueryVersion(t, database, checks.id)
+		if version.number != checksBefore.number+1 {
+			t.Errorf("the result's drain left the Verification document at version %d, want %d", version.number, checksBefore.number+1)
+		}
+		requireRecordedDigest(t, database, "the version the drain wrote behind the fill", key, graphstore.QueryVerification, version)
+		requireNoQueryMark(t, database, "after the result's drain", key)
+		if blind := sent.Blind(); len(blind) > 0 {
+			t.Fatalf("the statement recorder could not read %q", blind)
+		}
+		requireFillCommitsBeforeTheDrain(t, "the result's drain behind the edit's owed digest", checks.id, sent.Statements()[from:])
+		releaseEdit()
+		if answer := testwait.Receive(t, "the edit's answer", edited); answer.Code != http.StatusOK {
+			t.Fatalf("the edit answered %d %s, want 200", answer.Code, answer.Body.String())
+		}
+		requireNoQueryMark(t, database, "after the edit answered", key)
+	})
+
 	t.Run("an unconverted issue takes no mark", func(t *testing.T) {
 		unconverted := createDigestIssue(t, handler, database, "QMD", "An issue that has not converted", revisedSpec, true)
 		uploadDocument(t, handler, "/api/v1/issues/"+unconverted.Key, "verification.md", revisedChecks)
@@ -809,6 +1251,13 @@ func TestIssueQueryMarksDrainAfterCommit(t *testing.T) {
 		}
 	})
 }
+
+// drainDeleteSpec is the spec of the DELETE's case: a requirement, then a decision with a reading
+// after it, as the reading tests write one. The DELETE of the reading takes it out of the spec's
+// text, a version the DELETE writes itself, and out of the decisions query's record, whose version
+// its drain writes.
+const drainDeleteSpec = ":::requirement{#r1}\nThe list comes first.\n:::\n\n" +
+	"::::decision{#dd1}\n" + readingDecisionOne + "\n\n:::reading{#dr1}\n" + readingOfOne + "\n:::\n::::\n"
 
 // fenceSpec is a spec of two requirements, and fenceChecks the Verification document of the issue
 // key, whose one check serves the first alone, so the second has no check.

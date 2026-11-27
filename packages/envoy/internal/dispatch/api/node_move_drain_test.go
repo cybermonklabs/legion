@@ -120,7 +120,7 @@ func TestAMoveMarksItsIssuesQueriesOwedAndTheDrainWritesThem(t *testing.T) {
 	if blind := sent.Blind(); len(blind) > 0 {
 		t.Fatalf("the statement recorder could not read %q", blind)
 	}
-	requireDrainTrace(t, "the move of "+criterion, sent.Statements()[from:])
+	requireDrainTrace(t, "the move of "+criterion, specQuery, sent.Statements()[from:])
 	requireRecordedDigest(t, database, "the drained version of the move", key, graphstore.QuerySpec, newestQueryVersion(t, database, specQuery))
 
 	unconverted := createDigestIssue(t, handler, database, "MVQ", "A move on an issue that has not converted", moveDrainSpec, true)

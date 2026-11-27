@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -23,12 +24,14 @@ import (
 // server publishes the write's events.
 
 // versionFillRow is the version_renders row of one version, as the fill case reads it on a
-// connection of its own: its cut, its record's digest and whether that digest is owed.
+// connection of its own: its cut, its record's digest, whether that digest is owed, and whether
+// the row is marked tree_mismatch.
 type versionFillRow struct {
-	at      *time.Time
-	readSeq *int64
-	digest  *string
-	owed    bool
+	at       *time.Time
+	readSeq  *int64
+	digest   *string
+	owed     bool
+	mismatch bool
 }
 
 // versionFillRowOf reads the version_renders row of version number of artifactID.
@@ -36,8 +39,8 @@ func versionFillRowOf(t *testing.T, database *store.Store, artifactID string, nu
 	t.Helper()
 	var row versionFillRow
 	if err := database.Pool.QueryRow(context.Background(), `
-		select at, read_seq, record_sha256, digest_owed from version_renders where artifact_id = $1::uuid and number = $2`,
-		artifactID, number).Scan(&row.at, &row.readSeq, &row.digest, &row.owed); err != nil {
+		select at, read_seq, record_sha256, digest_owed, tree_mismatch from version_renders where artifact_id = $1::uuid and number = $2`,
+		artifactID, number).Scan(&row.at, &row.readSeq, &row.digest, &row.owed, &row.mismatch); err != nil {
 		t.Fatalf("read the version_renders row of version %d of %s: %v", number, artifactID, err)
 	}
 	return row
@@ -422,4 +425,31 @@ func TestVersionRecordDigestFillsAfterCommit(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("rows that hold no record digest", func(t *testing.T) {
+		// A version of a document no query takes: its row holds its cut and no record digest, and
+		// owes none.
+		uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "notes.md", "Notes no query takes.\n")
+		notes := readDecisionDocument(t, database, issue.Key, "notes-md")
+		noted := renderAtVersionNewest(t, database, notes.id)
+		if row := versionFillRowOf(t, database, notes.id, noted); row.at == nil || row.digest != nil || row.owed || row.mismatch {
+			t.Errorf("the row of version %d of notes.md, a document no query takes, holds at %v, record_sha256 %s, digest_owed %t and tree_mismatch %t, want a time, no record digest, digest_owed false and no mismatch",
+				noted, row.at, versionFillWords(row.digest), row.owed, row.mismatch)
+		}
+		// A deferred version: no time and no mismatch, which a fill of the issue's owed digests
+		// passes over.
+		_, text := documentTexts(t, handler, spec)
+		uploadAs(t, handler, issue.Key, documentName(t, database, spec), text+"\n"+strings.Repeat("- an item\n", 2001), "alice")
+		deferred := renderAtVersionNewest(t, database, spec)
+		requireDeferred := func(when string) {
+			t.Helper()
+			if row := versionFillRowOf(t, database, spec, deferred); row.at != nil || row.readSeq != nil || row.digest != nil || row.mismatch {
+				t.Errorf("%s the row of the deferred version %d of the spec holds at %v, read_seq %v, record_sha256 %s and tree_mismatch %t, want no time, no seq, no digest and no mismatch",
+					when, deferred, row.at, row.readSeq, versionFillWords(row.digest), row.mismatch)
+			}
+		}
+		requireDeferred("once its upload answered")
+		service.DrainOwedQueries(ctx, issue.Key)
+		requireDeferred("after a fill of the issue's owed digests (docs.Service.DrainOwedQueries)")
+	})
 }
