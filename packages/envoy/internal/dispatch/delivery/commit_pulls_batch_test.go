@@ -482,6 +482,62 @@ func TestAReadThatStopsInsideAnAnsweredQueryGivesBackTheCommitsAfterIt(t *testin
 	}
 }
 
+// GitHub's REST list of a commit's pull requests can pass the client's cap on a response
+// (githubapp's responseLimit, 1 MiB): on 2026-11-27, 64 commits of one repository whose pull
+// requests carry long bodies failed that read 18 times each in under two hours, and 50 commits of
+// another once each, and each failure read as GitHub naming no pull request there. A read that
+// cannot complete must not answer as one that read nothing, and the read must not stop at a size
+// the cap sets: it asks a page small enough to fit.
+//
+// Here one commit heads forty open pull requests whose bodies are 40,000 bytes each, so a page of
+// thirty or more of them passes the cap. The read stores all forty, the newest (#539) among them,
+// and answers the commit at their head.
+func TestACommitWhosePullRequestsPassTheResponseCapIsReadWhole(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	issue, fake, github, shas := seedCommitPullsFixture(t, ctx, pool, 75, 1)
+	body := strings.Repeat("x", 40_000)
+	for number := 500; number < 540; number++ {
+		github.set("acme/widgets", number, "open", shas[0], fmt.Sprintf("legion/%s-%d", issue, number), body,
+			time.Date(2026, 3, 1, 10, number-500, 0, 0, time.UTC))
+		github.edit(number, func(pull map[string]any) { pull["title"] = issue + " long work" })
+	}
+	written, atHead, err := unrenamed().ReadThroughCommitPulls(ctx, pool, fake.newTestClient(), "acme/widgets", shas[0], time.Now())
+	if err != nil {
+		t.Fatalf("the read of a commit whose pull requests pass the response cap: %v", err)
+	}
+	stored := storedHeadsOf(t, ctx, pool, "acme/widgets")
+	if _, newest := stored[539]; written != 40 || !atHead || len(stored) != 40 || !newest {
+		t.Fatalf("the read wrote %d at head %t, and %d heads are stored, the newest #539 among them %t; want all 40, at the commit",
+			written, atHead, len(stored), newest)
+	}
+}
+
+// A commit GitHub names more pull requests for than one page holds is read to its last page:
+// GitHub lists them oldest first, so a read that stops at its first page stops short of the
+// newest, the ones a read of a result's commit exists to learn. Here seventy small pull requests
+// are at one commit, more than two of GitHub's default pages; the read stores all seventy, the
+// newest (#569) among them.
+func TestACommitOfMorePullRequestsThanOnePageIsReadToItsLastPage(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	issue, fake, github, shas := seedCommitPullsFixture(t, ctx, pool, 76, 1)
+	for number := 501; number < 570; number++ {
+		github.set("acme/widgets", number, "open", shas[0], fmt.Sprintf("legion/%s-%d", issue, number), "",
+			time.Date(2026, 3, 1, 10, 0, number-500, 0, time.UTC))
+		github.edit(number, func(pull map[string]any) { pull["title"] = issue + " more work" })
+	}
+	written, _, err := unrenamed().ReadThroughCommitPulls(ctx, pool, fake.newTestClient(), "acme/widgets", shas[0], time.Now())
+	if err != nil {
+		t.Fatalf("the read of a commit of seventy pull requests: %v", err)
+	}
+	stored := storedHeadsOf(t, ctx, pool, "acme/widgets")
+	if _, newest := stored[569]; written != 70 || len(stored) != 70 || !newest {
+		t.Fatalf("the read wrote %d, and %d heads are stored, the newest #569 among them %t; want all 70",
+			written, len(stored), newest)
+	}
+}
+
 // A repository the App cannot read writes nothing and answers the App's own error, as the read of
 // one commit does: the caller leaves each result where its stored rows leave it, and gives each
 // claim back, since no question named a commit.

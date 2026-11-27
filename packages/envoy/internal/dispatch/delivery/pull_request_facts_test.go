@@ -13,6 +13,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -49,8 +50,9 @@ func (g *githubPulls) edit(number int, change func(pull map[string]any)) {
 }
 
 // serveCommitPulls answers GET /repos/{repo}/commits/{sha}/pulls with each pull request g holds
-// that holds sha (holdsCommit), as GitHub names the pull requests of a commit, and counts each
-// read in g.commitPullsReads. A commit g.commitPullsRefused holds is refused with its status.
+// that holds sha (holdsCommit), as GitHub names the pull requests of a commit: oldest first, in
+// pages of per_page (GitHub's default 30, at most 100), the page'th of them. It counts each read
+// in g.commitPullsReads. A commit g.commitPullsRefused holds is refused with its status.
 func serveCommitPulls(t *testing.T, fake *fakeGitHub, g *githubPulls, repo string) {
 	t.Helper()
 	fake.handle("GET /repos/"+repo+"/commits/{sha}/pulls", func(w http.ResponseWriter, r *http.Request) {
@@ -70,7 +72,15 @@ func serveCommitPulls(t *testing.T, fake *fakeGitHub, g *githubPulls, repo strin
 			}
 		}
 		g.mu.Unlock()
-		mustEncode(t, w, pulls)
+		perPage, page := 30, 1
+		if asked, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil {
+			perPage = min(max(asked, 1), 100)
+		}
+		if asked, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && asked > 0 {
+			page = asked
+		}
+		from := min((page-1)*perPage, len(pulls))
+		mustEncode(t, w, pulls[from:min(from+perPage, len(pulls))])
 	})
 }
 
