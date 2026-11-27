@@ -297,9 +297,14 @@ func TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds(t *testing.T) {
 			t.Fatalf("starts of %s = %+v, want none", spParent, starts)
 		}
 		// The stopped worker's task of the phase goes with it, bounded by the entry the phase stood
-		// on, so the return's own start is never taken.
+		// on, so the return's own start is never taken. The retirement names the claim the
+		// phase-ended message names, read once when the move was written: a row that named none
+		// would reach whichever agent works the role's step when it runs.
+		if ended[0].Claim == "" {
+			t.Fatalf("the phase-ended message %+v names no claim, want the stopped worker's", ended[0])
+		}
 		retired := spRetired(t, pool, spParent)
-		if want := []record.SuperviseRequest{{Op: "retire_task", Tree: spParent, Role: claim.RoleImplementer, Generation: 1,
+		if want := []record.SuperviseRequest{{Op: "retire_task", Tree: spParent, Role: claim.RoleImplementer, Claim: ended[0].Claim, Generation: 1,
 			Phase: phase.Implementing, Entry: 3}}; !reflect.DeepEqual(retired, want) {
 			t.Fatalf("task retirements = %+v, want %+v", retired, want)
 		}
