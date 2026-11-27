@@ -12,9 +12,10 @@ import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { commentQuery } from "../refs/reference-target";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
-import { BOB, KEY, node, SPEC_SOURCE, STATEMENT_WORDS } from "./composer-fixture";
+import { BOB, commentRecord, KEY, node, SPEC_SOURCE, STATEMENT_WORDS } from "./composer-fixture";
 import { IssueTree } from "./IssueTree";
 import type { TreeNode } from "./issue-tree";
 import {
@@ -26,6 +27,7 @@ import {
   useOutlineWriter,
 } from "./outline-writer";
 import { publishedTree } from "./projection-fixture";
+import { nodesInOrder } from "./tree-keys";
 
 /**
  * A statement as a target of the page's writer: `r` on a focused
@@ -103,6 +105,15 @@ function renderPage(
   client.setQueryData(["asks", KEY, "thread"], asks);
   for (const read of ["comments", "issue-messages"]) client.setQueryData([read, KEY], []);
   client.setQueryData(["agents"], []);
+  // A Reply on a person's comment reads that comment alone (`commentQuery`, decision 538): each
+  // comment of the tree is answered under that read's key, as its own read sends it.
+  for (const drawn of nodesInOrder(root)) {
+    if (drawn.type !== "comment" || drawn.author === undefined) continue;
+    client.setQueryData(commentQuery(drawn.id).queryKey, {
+      comment: commentRecord(drawn.id, drawn.author, drawn.text),
+      replies: [],
+    });
+  }
   const held: { writer?: OutlineWriter } = {};
   const view = render(
     <MemoryRouter>

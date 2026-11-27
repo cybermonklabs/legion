@@ -53,6 +53,7 @@
  * | either · a phone width                                            | no (7) | no (7)  | no (7)  |
  * | box editing a comment · the box hidden                            | no (8) | no (8)  | no (8)  |
  * | box editing a comment · where the box puts the reader back        | no (9) | no (9)  | no (9)  |
+ * | box editing a comment · the outline's tree read again             | no (11)| no (11) | no (11) |
  *
  * (on) marks a move of the host's that keeps the box on screen at another address: a typed draft
  * is kept for the target it was written for, and a line says so and names it; a refused or
