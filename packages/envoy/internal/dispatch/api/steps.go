@@ -320,7 +320,7 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 	}
 	plan, err := workflowstore.NewestPlan(r.Context(), s.deps.Store.Pool, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	read := model.IssueSteps{Issue: key, Tasks: []model.StepTask{}}
