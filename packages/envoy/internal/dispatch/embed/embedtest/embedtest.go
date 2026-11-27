@@ -59,12 +59,26 @@ func ServingBedrockConfig(handler http.Handler) aws.Config {
 // from Handler, in this process.
 type ServingHTTPClient struct{ Handler http.Handler }
 
-// Do answers request from the handler. It writes the request as HTTP/1.1 and reads it back, so the
-// handler receives a server request as net/http's own server would build it (its URI, its host and
-// a body of exactly Content-Length bytes), and it honours the request's context as a transport
-// does: a handler that answers nothing before the context ends gives the context's error, and the
-// handler keeps the recorder it is writing to, which nothing here reads again.
+// Do answers request from the handler, as ServingTransport does.
 func (c ServingHTTPClient) Do(request *http.Request) (*http.Response, error) {
+	return ServingTransport{Handler: c.Handler}.RoundTrip(request)
+}
+
+// ServingTransport is the http.RoundTripper face of the same stand-in, for a client a place takes
+// as an *http.Client rather than as an aws.HTTPClient (embed.AzureConfig's). An http.Client around
+// it keeps its own Timeout, which it applies through the request's context, as it does over a
+// socket.
+type ServingTransport struct{ Handler http.Handler }
+
+// RoundTrip answers request from the handler. It writes the request as HTTP/1.1 and reads it back,
+// so the handler receives a server request as net/http's own server would build it (its URI, its
+// host and a body of exactly Content-Length bytes), and it honours the request's context as a
+// transport does: a handler that answers nothing before the context ends gives the context's
+// error, and the handler keeps the recorder it is writing to, which nothing here reads again.
+func (t ServingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if request.Body != nil {
+		defer func() { _ = request.Body.Close() }() // the RoundTripper contract: the body is this call's to close
+	}
 	var wire bytes.Buffer
 	if err := request.Write(&wire); err != nil {
 		return nil, fmt.Errorf("embedtest: write the request: %w", err)
@@ -78,7 +92,7 @@ func (c ServingHTTPClient) Do(request *http.Request) (*http.Response, error) {
 	answered := make(chan struct{})
 	go func() {
 		defer close(answered)
-		c.Handler.ServeHTTP(recorder, served.WithContext(ctx))
+		t.Handler.ServeHTTP(recorder, served.WithContext(ctx))
 	}()
 	select {
 	case <-answered:

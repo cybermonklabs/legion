@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -134,18 +133,7 @@ func TestAnAzureThrottleRetriesTheWholeBatchAndNeverDeadLetters(t *testing.T) {
 		seedIssue(t, database, "AZTH", id, "Title of "+id)
 	}
 	fake := &azureFake{throttling: true}
-	server := httptest.NewServer(fake)
-	defer server.Close()
-	client, err := embed.NewAzure(embed.AzureConfig{
-		Endpoint:        server.URL + "/models",
-		Deployment:      "embed-v-4-0",
-		TokensPerMinute: 300_000,
-		APIKey:          "test-key",
-		HTTPClient:      server.Client(),
-	})
-	if err != nil {
-		t.Fatalf("NewAzure: %v", err)
-	}
+	client := azureClientFor(t, fake, 0)
 	deps := Deps{Store: database, Embedder: client}
 	records := &logtest.Recorder{}
 	logtest.SetDefault(t, records)
@@ -287,15 +275,21 @@ func TestAThrottledGroupsWarningComesOnceItsRetryIsWritten(t *testing.T) {
 	}
 }
 
-// azureClientFor is a real AzureClient that calls server.
-func azureClientFor(t *testing.T, server *httptest.Server) *embed.AzureClient {
+// azureClientFor is a real AzureClient whose calls the stand-in azure answers in this process
+// (embedtest.ServingTransport), bounded by bound as a place's own client bounds a call (0: no
+// bound of the client's). The client, its request and response encodings and its reading of a
+// status are the real ones; only the loopback socket is gone, and with it a dial, a port, a file
+// descriptor or a connection the machine broke, any of which the queue would read as these rows'
+// own call failing - which is what bedrockClientFor's comment describes and what these rows then
+// report.
+func azureClientFor(t *testing.T, azure http.Handler, bound time.Duration) *embed.AzureClient {
 	t.Helper()
 	client, err := embed.NewAzure(embed.AzureConfig{
-		Endpoint:        server.URL + "/models",
+		Endpoint:        "http://azure.test/models",
 		Deployment:      "embed-v-4-0",
 		TokensPerMinute: 300_000,
 		APIKey:          strings.Repeat("k", 8),
-		HTTPClient:      server.Client(),
+		HTTPClient:      &http.Client{Transport: embedtest.ServingTransport{Handler: azure}, Timeout: bound},
 	})
 	if err != nil {
 		t.Fatalf("NewAzure: %v", err)
@@ -355,9 +349,7 @@ func TestATextAzureFailsOnEveryTimeHoldsUpNoOtherText(t *testing.T) {
 		seedIssue(t, database, "AZPO", id, "Title of "+id)
 	}
 	fake := &azureFake{poison: "AZPO-1"}
-	server := httptest.NewServer(fake)
-	defer server.Close()
-	client := azureClientFor(t, server)
+	client := azureClientFor(t, fake, 0)
 	deps := Deps{Store: database, Embedder: client}.Paced()
 	pace := deps.pace.Interval()
 
@@ -419,12 +411,13 @@ func TestAnAzureWideOutageCountsAgainstNoRow(t *testing.T) {
 				seedIssue(t, database, "AZOU", id, "Title of "+id)
 			}
 			fake := &azureFake{outage: tc.outage, hang: tc.hang}
-			server := httptest.NewServer(fake)
-			defer server.Close()
+			// The hang case's bound is the client's own, as a place's client bounds a call; the
+			// stand-in answers that case nothing at all, so the bound always decides it.
+			bound := time.Duration(0)
 			if tc.hang {
-				server.Client().Timeout = 100 * time.Millisecond
+				bound = 100 * time.Millisecond
 			}
-			client := azureClientFor(t, server)
+			client := azureClientFor(t, fake, bound)
 			deps := Deps{Store: database, Embedder: client}
 			for cycle := range retry.DeadLetterAttempts + 2 {
 				for _, id := range ids {
