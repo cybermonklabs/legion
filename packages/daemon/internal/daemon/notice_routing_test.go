@@ -965,6 +965,15 @@ func TestANoticeWaitsOrEndsByTheClaimsState(t *testing.T) {
 			t.Fatalf("create the architect claim of LEGION-1: %v", err)
 		}
 		machine.Wait()
+		if by == supervise.SuspendedByReleased {
+			// The rig's supervisor writes its claims to a store of its own (outboxClaimStore), and
+			// a delivery wake takes nothing for a claim the record holds no row of
+			// (store.Store.TakeDeliveryWake), so the released claim's row goes into st as a
+			// daemon's supervisor writes it (recordedReleasedClaim).
+			if err := st.PutClaim(ctx, machine.Claim()); err != nil {
+				t.Fatalf("record the released architect's claim of LEGION-1: %v", err)
+			}
+		}
 		// The suspended claim's session is gone, so the listener finds no holder of its role.
 		publisher := &holderPublisher{}
 		publisher.setAbsent(architectTopic(t, "LEGION-1"))

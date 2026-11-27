@@ -11,11 +11,13 @@ import (
 
 // passRead is one read of what an admission pass judges (reread): the project's live records,
 // every project's slots and the line facts over those records, beside the transaction it was taken
-// in and how many rows that transaction had written to the tables a judgement reads when the read
-// was taken (record.Store.JudgedWrites), with counted false where Postgres kept no such count. The
-// count is taken before the read, so a write anywhere in the transaction after it, by any code,
-// makes a later count differ; and a count is the transaction's own, so a read of another
-// transaction never stands in this one.
+// in and how many rows that transaction had written to the tables a judgement reads once the read
+// finished (record.Store.JudgedWrites), with counted false where Postgres kept no such count. The
+// count is taken right after reread, whose one write — marking roots that hold their own gate
+// (MarkHoldsGate) — changes no judgement (Chains.HoldsOwnGate answers the same for a root marked or
+// not), so the pass's own mark sits in the count's baseline while any later write in the
+// transaction, by any code, makes a later count differ; and a count is the transaction's own, so a
+// read of another transaction never stands in this one.
 type passRead struct {
 	tx      pgx.Tx
 	writes  int64
@@ -39,15 +41,16 @@ type lineJudgement struct {
 	dropped     []record.HeldIssue
 }
 
-// readPass is reread with the transaction's count of the rows a judgement reads taken first
-// (record.Store.JudgedWrites), and it is what every pass reads its records through, so the pass's
-// end can tell whether that read still stands (finalJudgement).
+// readPass is reread with the transaction's count of the rows a judgement reads taken right after
+// it (record.Store.JudgedWrites), and it is what every pass reads its records through, so the
+// pass's end can tell whether that read still stands (finalJudgement) without reread's own root
+// mark (MarkHoldsGate) making the judgement look stale.
 func (a *Admission) readPass(ctx context.Context, tx pgx.Tx) (passRead, error) {
-	writes, counted, err := a.store.JudgedWrites(ctx, tx)
+	issues, slots, facts, err := a.reread(ctx, tx)
 	if err != nil {
 		return passRead{}, err
 	}
-	issues, slots, facts, err := a.reread(ctx, tx)
+	writes, counted, err := a.store.JudgedWrites(ctx, tx)
 	if err != nil {
 		return passRead{}, err
 	}

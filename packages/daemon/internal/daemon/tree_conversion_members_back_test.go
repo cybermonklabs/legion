@@ -286,7 +286,9 @@ func roleStarts(t *testing.T, pool *store.Pool, key string, role claim.Role) []r
 // 46 of dispatch://INFRA-4730, R20 and R21 of dispatch://INFRA-3320). The world is the release
 // before's (seedMembersBackWorld), migrated and converted as the daemon boots. CAPTURE-11, whose
 // root CAPTURE-10 is back in Legion's work, and CAPTURE-21, whose root CAPTURE-20 a person set to
-// backlog, each resume their phase at a new phase entry, with the return's task. CAPTURE-12, whose
+// backlog, each resume their phase at a new phase entry, with the return's task, and each keeps the
+// P0 Dispatch resolves it to from an ancestor outside its tree with no priority of its own
+// (record.Resolved, which the return reads off the record: recordedReading). CAPTURE-12, whose
 // open Dispatch child holds the start of its phase, waits in awaiting_children with no worker
 // start. CAPTURE-13, which the operator suspended, CAPTURE-14, which the idle release suspended,
 // CAPTURE-15, which a person stopped, CAPTURE-16, whose Dispatch claim a person holds, and
@@ -297,6 +299,15 @@ func TestTheFirstBootBringsBackEachMemberItsRootsDepartureSuspended(t *testing.T
 	t.Parallel()
 	st, _ := storeWithholding(t, "legion_members_back", releaseBeforeMigrations...)
 	board := seedMembersBackWorld(t, st)
+	// The members the boot brings back have no priority of their own, and Dispatch resolves each to
+	// the P0 of an issue above it in another project, as the release before's schema holds it.
+	inherited := record.Resolved{Priority: record.P0, From: "OTHER-7", Known: true}
+	for _, key := range []string{backReturned, backTesting} {
+		if _, err := st.Pool().Exec(context.Background(), `update issues set resolved_known = $2, resolved_priority = $3, priority_from = $4 where key = $1`,
+			key, inherited.Known, inherited.Priority.Level(), inherited.From); err != nil {
+			t.Fatalf("seed the priority Dispatch resolves %s to: %v", key, err)
+		}
+	}
 	convertMembersBackWorld(t, st, board)
 	pool := st.Pool()
 
@@ -317,8 +328,13 @@ func TestTheFirstBootBringsBackEachMemberItsRootsDepartureSuspended(t *testing.T
 			!strings.Contains(starts[0].Task, "came back into Legion's work after a stop") {
 			t.Fatalf("the starts of %s's %s are %+v, want one of entry %d of run 1 in %s on the return's task", back.key, back.role, starts, back.entry, back.at)
 		}
-		if issue := memberRecord(t, pool, back.key); issue.Phase != back.at || issue.Generation != 1 {
+		issue := memberRecord(t, pool, back.key)
+		if issue.Phase != back.at || issue.Generation != 1 {
 			t.Fatalf("%s stands in %s at run %d after the first boot, want %s at run 1", back.key, issue.Phase, issue.Generation, back.at)
+		}
+		if issue.Priority != record.NoPriority || issue.Resolved != inherited {
+			t.Fatalf("%s is at its own priority %q resolved to %+v after the first boot, want none of its own and the inherited %+v its record held",
+				back.key, issue.Priority, issue.Resolved, inherited)
 		}
 	}
 

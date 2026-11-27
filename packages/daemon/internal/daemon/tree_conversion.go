@@ -432,8 +432,10 @@ func (w *workflowRuntime) bringMembersBack(ctx context.Context, tx pgx.Tx) error
 
 // recordedReading is issue's own record of Dispatch as an observation of it: the reading that a
 // return is handed where no event brings the issue back (bringMembersBack). It holds the status
-// that Dispatch last showed where that is a status in work, else the status the record holds, and
-// the sequence the record last read, so it moves no fence.
+// that Dispatch last showed where that is a status in work, else the status the record holds, the
+// issue's own priority and the one Dispatch resolves it to (record.Resolved), so a member with no
+// priority of its own under a P0 comes back at P0, and the sequence the record last read, so it
+// moves no fence.
 func recordedReading(issue record.Issue) intake.DispatchIssue {
 	status := issue.DispatchStatus
 	if !record.InWorkStatus(status) {
@@ -444,7 +446,7 @@ func recordedReading(issue record.Issue) intake.DispatchIssue {
 		parent = *issue.Parent
 	}
 	return intake.DispatchIssue{Key: issue.Key, Seq: issue.LastDispatchSeq, Status: status, Title: issue.Title, Parent: parent,
-		Rank: issue.Rank, Priority: issue.Priority, HandedOver: issue.HandedOver, ResolvedRepo: issue.Repo}
+		Rank: issue.Rank, Priority: issue.Priority, Resolved: issue.Resolved, HandedOver: issue.HandedOver, ResolvedRepo: issue.Repo}
 }
 
 // MembersBackListing is what `legion members-back` prints of a project (ListMembersBack): each

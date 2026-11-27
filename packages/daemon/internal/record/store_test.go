@@ -2305,7 +2305,8 @@ func TestAStartWaitsForItsIssuesReleaseTeardown(t *testing.T) {
 	records := NewStore()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload) {
-		row, err := NewOutboxRow(issue, payload, now)
+		// A writer of this release names the run and the phase entry it queues the row for (unrecordedRow).
+		row, err := unrecordedRow(issue, payload, now)
 		must(t, err)
 		must(t, records.Enqueue(ctx, tx, row))
 	}

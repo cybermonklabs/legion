@@ -2481,7 +2481,7 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 // transaction (OwesEntryWork, ArchitectStallArms) takes these and writes nothing; an unmarked root
 // still holds its own gate while it stands a root (record.Chains.HoldsOwnGate), so its answers are
 // the ones the next decision pass, which marks it, reads. A decision pass reads them through
-// readPass, which counts the rows a judgement reads first and marks the roots (reread).
+// readPass, which marks the roots (reread) and then counts the rows a judgement reads.
 func (a *Admission) readShared(ctx context.Context, tx pgx.Tx) ([]record.Issue, []record.Slot, record.LineFacts, error) {
 	issues, err := a.store.LiveIssues(ctx, tx, a.project)
 	if err != nil {
