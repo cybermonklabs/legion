@@ -439,6 +439,16 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[13],
   }),
   ...answers('useInboxKeymap | - | form | (mode === "reading") ? …', { reason: REASONS[13] }),
+  ...answers(
+    'useInboxKeymap | - | form | if (mode === "reading" && active !== null && active === paneScroller())',
+    { reason: REASONS[13] }
+  ),
+  ...answers("usePaneSelection | - | form | (began === undefined && shownRow && !columns) ? …", {
+    reason: REASONS[13],
+  }),
+  ...answers("usePaneSelection | - | form | if (read !== undefined && !acted.has(read)) return …", {
+    reason: REASONS[13],
+  }),
   ...answers("InboxBody | - | form | if (!rowLeft) return …", { reason: REASONS[13] }),
   ...answers("InboxBody | - | form | if (columns) return …", { reason: REASONS[13] }),
   ...answers("usePaneSelection | - | form | (columns || entry.inboxDefaultPick !== true) ? …", {
