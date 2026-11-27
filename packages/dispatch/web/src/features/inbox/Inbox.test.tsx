@@ -73,6 +73,8 @@ import {
   installInboxApiMocks,
   issueAsk,
   mockAskReads,
+  REPLY_BOX_THREADS,
+  serveReplyBoxThread,
   shortRow,
   widenToReadingPane,
   withWaitingOnPerson,
@@ -8477,6 +8479,44 @@ test("r puts the caret in the reply box of the thread in hand, and does nothing 
     getIssue.mockRestore();
   }
 });
+
+// R18 and Escape's way back from the column (`paneWayBack`), in the reply box `r` puts the caret
+// in: the box is the thread's own, whose reply nothing ends, so Escape there goes back to the row
+// in the list beside the column, as it does from the column's scroller, and the box keeps what
+// was typed in it.
+for (const kind of REPLY_BOX_THREADS) {
+  test(`beside the column, Escape in the reply box r opened in ${kind} puts the focus back on its row with the draft kept`, async () => {
+    const user = userEvent.setup();
+    const narrow = widenToReadingPane();
+    const served = serveReplyBoxThread(kind);
+    const { unmount } = renderInbox();
+
+    try {
+      await waitFor(() => expect(selectedIds()).toEqual([served.id]));
+      const box = await waitFor(() => {
+        const found = screen
+          .getByTestId("inbox-pane")
+          .querySelector<HTMLElement>("[data-inbox-thread-body] [data-reply-box]");
+        if (found === null) throw new Error("the column drew no reply box");
+        return found;
+      });
+      const row = shortRow(served.id);
+      act(() => row.focus());
+      await user.keyboard("r");
+      expect(box).toHaveFocus();
+      await user.keyboard("Half a reply");
+
+      await user.keyboard("{Escape}");
+      expect(row).toHaveFocus();
+      expect(box).toHaveValue("Half a reply");
+      expect(selectedIds()).toEqual([served.id]);
+    } finally {
+      unmount();
+      narrow();
+      served.restore();
+    }
+  });
+}
 
 // R18, and R11 for the answered question's Reply (#3729): an answered question's thread is a
 // Reply row whose card is the question's own card, its reply box under its record, and `r` puts

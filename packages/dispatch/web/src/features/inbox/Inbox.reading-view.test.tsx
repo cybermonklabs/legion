@@ -19,10 +19,18 @@ import {
 } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type { InboxRow, Issue, MyReplyRow } from "../../api/types";
+import { PRIORITY_TRIGGER_SELECTOR } from "../issue/PriorityControl";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { appKeymap } from "../shell/keymap";
 import { replyRow } from "../threads/replies-fixture";
-import { installInboxApiMocks, issueAsk, mockAskReads, shortRow } from "./inbox-fixture";
+import {
+  installInboxApiMocks,
+  issueAsk,
+  mockAskReads,
+  REPLY_BOX_THREADS,
+  serveReplyBoxThread,
+  shortRow,
+} from "./inbox-fixture";
 import {
   address,
   headings,
@@ -1853,6 +1861,237 @@ test("below 1280 px j and k from a thread to a question and back keep the focus 
     await user.keyboard("k");
     await waitFor(() => expect(reads()).toBe("reply:c1"));
     await waitFor(() => expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus());
+  } finally {
+    unmount();
+    getIssue.mockRestore();
+    listComments.mockRestore();
+    listMyReplies.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// R18 and Escape's "one level out", in the reply box `r` puts the caret in: the box is the
+// thread's own, whose reply nothing ends, so Escape there is the way out of it, as in a question's
+// answer box - to the view's scroller, with what was typed kept in the box - and the next Escape,
+// from the scroller, is the list at the row.
+for (const kind of REPLY_BOX_THREADS) {
+  test(`below 1280 px Escape in the reply box r opened in ${kind} puts the focus on the view's scroller with the draft kept, and the next Escape is the list at the row`, async () => {
+    const user = userEvent.setup();
+    const served = serveReplyBoxThread(kind);
+    const { unmount } = renderInbox();
+
+    try {
+      const row = await waitFor(() => shortRow(served.id));
+      act(() => row.focus());
+      await user.keyboard("r");
+      const view = await screen.findByTestId("inbox-reading-view");
+      const box = await waitFor(() => {
+        const field = view.querySelector<HTMLElement>("[data-inbox-thread-body] [data-reply-box]");
+        expect(field).toHaveFocus();
+        return field as HTMLElement;
+      });
+      await user.keyboard("Half a reply");
+
+      await user.keyboard("{Escape}");
+      expect(
+        screen.getByTestId("inbox-pane-scroller"),
+        `the focus is on ${placeOf(document.activeElement)}`
+      ).toHaveFocus();
+      expect(screen.getByTestId("inbox-reading-view")).toBe(view);
+      expect(box).toHaveValue("Half a reply");
+
+      await user.keyboard("{Escape}");
+      await waitFor(() =>
+        expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument()
+      );
+      expect(shortRow(served.id)).toHaveFocus();
+    } finally {
+      unmount();
+      served.restore();
+    }
+  });
+}
+
+// R18 on an answered question's thread: its reply box sits under the question's record, in the
+// question's card (`AskReplyComposer`), and leaves Escape to the page as a thread's own box does.
+// One level out of it is the view's scroller, with what was typed kept in the box, and the next
+// Escape, from the scroller, is the list at the row.
+test("below 1280 px Escape in the reply box r opened in an answered question's thread puts the focus on the view's scroller with the draft kept, and the next Escape is the list at the row", async () => {
+  const user = userEvent.setup();
+  const answered = issueAsk({
+    answer: { at: "2026-09-11T03:00:00Z", selected: [], text: "Ship it.", user: "alice" },
+    id: "ask-done",
+    issue: { assignee: "alice", key: "CORE-2", title: "Build question" },
+    issue_key: "CORE-2",
+    question: "Which build?",
+    state: "answered",
+  });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const getAsk = mockAskReads([answered]);
+  const getIssue = mockIssueReads();
+  const listMyReplies = threadsRead([
+    replyRow("ask-done", {
+      issue: { key: "CORE-2", title: "Build question" },
+      kind: "ask",
+      ref: "/issues/CORE-2/asks/ask-done",
+      subject: "Which build?",
+    }),
+  ]);
+  const { unmount } = renderInbox();
+
+  try {
+    const row = await waitFor(() => shortRow("reply:ask-done"));
+    act(() => row.focus());
+    await user.keyboard("r");
+    const view = await screen.findByTestId("inbox-reading-view");
+    const box = await waitFor(() => {
+      const field = view.querySelector<HTMLElement>("[data-inbox-thread-body] [data-reply-box]");
+      expect(field).toHaveFocus();
+      return field as HTMLElement;
+    });
+    await user.keyboard("Half a reply");
+
+    await user.keyboard("{Escape}");
+    expect(
+      screen.getByTestId("inbox-pane-scroller"),
+      `the focus is on ${placeOf(document.activeElement)}`
+    ).toHaveFocus();
+    expect(screen.getByTestId("inbox-reading-view")).toBe(view);
+    expect(box).toHaveValue("Half a reply");
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument());
+    expect(shortRow("reply:ask-done")).toHaveFocus();
+  } finally {
+    unmount();
+    listMyReplies.mockRestore();
+    getIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+/** Opens the reading view of `id`, a question, at the head's menu its key opens from the short
+ *  row (R4), `h` for its Snooze and `p` for its priority, and shuts the menu with Escape, which
+ *  gives the focus back to its trigger in the head. Answers the trigger. */
+async function shutHeadMenu(user: UserEvent, id: string, key: "h" | "p"): Promise<HTMLElement> {
+  act(() => shortRow(id).focus());
+  await user.keyboard(key);
+  const view = await screen.findByTestId("inbox-reading-view");
+  const trigger = await waitFor(() => {
+    const found = view.querySelector<HTMLElement>(
+      key === "h" ? "[data-inbox-snooze]" : `[data-inbox-pane-head] ${PRIORITY_TRIGGER_SELECTOR}`
+    );
+    expect(found).toHaveAttribute("aria-expanded", "true");
+    return found as HTMLElement;
+  });
+  await user.keyboard("{Escape}");
+  expect(trigger).toHaveFocus();
+  return trigger;
+}
+
+// `j` and `k` from a control of the reading view other than its scroller: the head is drawn for
+// the question it heads, so the control goes with the question `j` steps off. The next question's
+// scroller takes the focus, where Space and the arrows scroll it, never the page's body.
+for (const [origin, key] of [
+  ["the head's Snooze", "h"],
+  ["the head's priority", "p"],
+] as const) {
+  test(`below 1280 px j from ${origin}, its menu shut, reads the next question with the focus on its scroller`, async () => {
+    const user = userEvent.setup();
+    const rows = [
+      inboxIssue("ask-a", "CORE-1", "Which approach?"),
+      inboxIssue("ask-b", "CORE-2", "Which format?"),
+    ];
+    const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+    const getAsk = mockAskReads(rows);
+    const getIssue = mockIssueReads();
+    const { unmount } = renderInbox();
+
+    try {
+      await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-b"]));
+      const trigger = await shutHeadMenu(user, "ask-a", key);
+
+      await user.keyboard("j");
+      await waitFor(() => expect(viewRow()).toBe("ask-b"));
+      expect(trigger.isConnected).toBe(false);
+      await waitFor(() =>
+        expect(
+          screen.getByTestId("inbox-pane-scroller"),
+          `the focus is on ${placeOf(document.activeElement)}`
+        ).toHaveFocus()
+      );
+    } finally {
+      unmount();
+      getIssue.mockRestore();
+      getAsk.mockRestore();
+      getInbox.mockRestore();
+    }
+  });
+}
+
+// A step with no item to go to moves no focus: `j` on the last question's head, and `k` on the
+// first's, leave the reader on the control they pressed it on, with the view where it was.
+for (const [key, at, id] of [
+  ["j", "last", "ask-b"],
+  ["k", "first", "ask-a"],
+] as const) {
+  test(`below 1280 px ${key} from the head's Snooze on the ${at} question, its menu shut, steps nowhere and leaves the focus on the Snooze`, async () => {
+    const user = userEvent.setup();
+    const rows = [
+      inboxIssue("ask-a", "CORE-1", "Which approach?"),
+      inboxIssue("ask-b", "CORE-2", "Which format?"),
+    ];
+    const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+    const getAsk = mockAskReads(rows);
+    const getIssue = mockIssueReads();
+    const { unmount } = renderInbox();
+
+    try {
+      await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-b"]));
+      const trigger = await shutHeadMenu(user, id, "h");
+
+      await user.keyboard(key);
+      expect(viewRow()).toBe(id);
+      expect(trigger, `the focus is on ${placeOf(document.activeElement)}`).toHaveFocus();
+    } finally {
+      unmount();
+      getIssue.mockRestore();
+      getAsk.mockRestore();
+      getInbox.mockRestore();
+    }
+  });
+}
+
+// The same from the view's own Select: a thread's is the thread's, and a question draws its own.
+test("below 1280 px j from the view's Select checkbox on a thread reads the next question with the focus on its scroller", async () => {
+  const user = userEvent.setup();
+  const asks = [inboxIssue("ask-a", "CORE-2", "Which format?")];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(asks);
+  const getAsk = mockAskReads(asks);
+  const listMyReplies = threadsRead([replyRow("c1")]);
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox();
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "ask-a"]));
+    await user.click(shortRow("reply:c1").querySelector("time") as HTMLElement);
+    await waitFor(() => expect(viewRow()).toBe("reply:c1"));
+    const mark = viewMark();
+    act(() => mark.focus());
+    expect(mark).toHaveFocus();
+
+    await user.keyboard("j");
+    await waitFor(() => expect(viewRow()).toBe("ask-a"));
+    expect(mark.isConnected).toBe(false);
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("inbox-pane-scroller"),
+        `the focus is on ${placeOf(document.activeElement)}`
+      ).toHaveFocus()
+    );
   } finally {
     unmount();
     getIssue.mockRestore();

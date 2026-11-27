@@ -392,6 +392,7 @@ function CommentThreadBody({
           <MentionComposer
             box="inbox-thread-reply"
             closed={issue.data !== undefined && issue.data.closed_at !== null}
+            escapeToPage
             frame="mt-2"
             inline
             kind="comment"
@@ -518,6 +519,7 @@ function MessageThreadBody({
           <MentionComposer
             box="inbox-thread-reply"
             closed={issue.data !== undefined && issue.data.closed_at !== null}
+            escapeToPage
             frame="mt-2"
             inline
             key={`composer:${thread.thread_id}`}
@@ -689,6 +691,7 @@ function AgentThreadBody({
                   ones answering this thread. */}
               <AgentMessageComposer
                 agent={agent}
+                escapeToPage
                 hold={hold}
                 key={`composer:${thread.thread_id}`}
                 onCancelReply={noReturn}
@@ -727,7 +730,9 @@ function AgentThreadBody({
 }
 
 /** The composer has nothing to close here: the thread's reply box is the thread's, not a reply
- *  the reader opened and can leave. */
+ *  the reader opened and can leave. So Escape in the box is the page's (`escapeToPage`), whose
+ *  keys take the reader out of it with the draft kept in it: to the reading view's scroller, to
+ *  the row beside the reading column, and to the card in the drawer (`useInboxKeymap`). */
 function noReturn(): void {}
 
 export interface ThreadBodyProps {

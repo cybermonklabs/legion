@@ -691,6 +691,12 @@ interface MentionComposerProps {
    *  nothing of its own to show renders neither. */
   readonly frame?: string;
   readonly edit?: { readonly body: string; readonly id: string };
+  /** The box's reply is its own and nothing ends it - the Inbox thread's box, which stands for its
+   *  thread (`standing`) and whose host has no way back to give - so Escape in its field is the
+   *  page's: the composer neither takes the key nor ends the reply, and the page's keys take the
+   *  reader out of the box with the draft kept in it (the Inbox's `back` and `leave-reading`). An
+   *  open picker still takes the Escape that shuts it (`MentionField`). */
+  readonly escapeToPage?: boolean;
   /** Where the host hands this composer a draft the reader carried from another one with that
    *  composer's own control: the phone thread composer's Cancel reply, whose draft goes to the
    *  docked composer at the issue's own address (`usePhoneThread`'s `cancelReply`). */
@@ -758,8 +764,10 @@ interface MentionComposerProps {
    *  the reader types into a standing box and does not send is its thread's, kept under the
    *  box's send name (`unsent-drafts.ts`), so the box drawn when the column comes back to the
    *  thread shows it again, and a newer message the host moves the box onto leaves it in the
-   *  field rather than prefilling over it. Escape in its field leaves the draft there, since
-   *  nothing ends that reply. */
+   *  field rather than prefilling over it. Escape in its field ends the reply with the draft
+   *  kept where it is (`cancelReply`), which closes the Conversation tab's thread its Enter
+   *  opened (`ThreadCard`'s `endReply`), unless its host leaves the key to the page, as the
+   *  Inbox's does (`escapeToPage`). */
   readonly standing?: boolean;
   /** The send of this composer's that the reader stopped, waiting aside since its host gave the
    *  composer a newer address that carries nothing - the margin's compose at other words of the
@@ -799,6 +807,7 @@ export function MentionComposer({
   finishing = false,
   frame,
   edit,
+  escapeToPage = false,
   seedMentions = [],
   inline = false,
   intake,
@@ -1230,6 +1239,9 @@ export function MentionComposer({
         endTargetNow.current();
         return;
       }
+      // A box whose reply nothing ends leaves the key to the page, whose keys take the reader out
+      // of the box with the draft kept in its field (`escapeToPage`).
+      if (escapeToPage) return;
       event.preventDefault();
       if (replyTo !== null) {
         cancelReplyNow.current();
@@ -1243,6 +1255,7 @@ export function MentionComposer({
   }, [
     // A dormant composer renders no form; the one it renders when it wakes takes the listener.
     dormant,
+    escapeToPage,
     outlined,
     replyTo,
   ]);

@@ -17,7 +17,13 @@ import { catalogueEntry } from "../shell/keymap-catalogue";
 import { ShortcutHelp } from "../shell/ShortcutHelp";
 import { dialogOpen } from "../shell/useDialog";
 import { InboxDrawer } from "./InboxDrawer";
-import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
+import {
+  installInboxApiMocks,
+  issueAsk,
+  mockAskReads,
+  REPLY_BOX_THREADS,
+  serveReplyBoxThread,
+} from "./inbox-fixture";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -579,3 +585,41 @@ test("at 1440 px the drawer is still today's Inbox: the card in the row, no read
     getInbox.mockRestore();
   }
 });
+
+// R18 in the drawer: `r` on a thread's card puts the caret in the card's reply box, which is the
+// thread's own and whose reply nothing ends. Escape there is one level out, as from any other
+// control of the card (`back`): the card, with what was typed kept in the box and the drawer
+// open over the page.
+for (const kind of REPLY_BOX_THREADS) {
+  test(`Escape in the reply box r opened in ${kind}'s card puts the focus on the card with the draft kept, and the drawer stays`, async () => {
+    const user = userEvent.setup();
+    const served = serveReplyBoxThread(kind);
+    const view = renderDrawer();
+    try {
+      await user.click(screen.getByRole("button", { name: "Open inbox" }));
+      const dialog = await screen.findByRole("dialog", { name: "Inbox" });
+      const card = await waitFor(() => {
+        const found = dialog.querySelector<HTMLElement>(`[data-inbox-row="${served.id}"]`);
+        if (found === null) throw new Error(`the drawer lists no ${served.id}`);
+        return found;
+      });
+      const box = await waitFor(() => {
+        const found = card.querySelector<HTMLElement>("[data-inbox-thread-body] [data-reply-box]");
+        if (found === null) throw new Error("the card drew no reply box");
+        return found;
+      });
+      act(() => card.focus());
+      await user.keyboard("r");
+      expect(box).toHaveFocus();
+      await user.keyboard("Half a reply");
+
+      await user.keyboard("{Escape}");
+      expect(card).toHaveFocus();
+      expect(box).toHaveValue("Half a reply");
+      expect(screen.queryByRole("dialog", { name: "Inbox" })).not.toBeNull();
+    } finally {
+      view.unmount();
+      served.restore();
+    }
+  });
+}

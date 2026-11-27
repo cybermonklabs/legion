@@ -59,6 +59,7 @@ export function agentSendKey(sessionID: string): MutationKey {
  */
 export function AgentMessageComposer({
   agent,
+  escapeToPage = false,
   hold,
   listed,
   onCancelReply,
@@ -70,6 +71,9 @@ export function AgentMessageComposer({
   thread,
 }: {
   agent: Agent;
+  /** Escape in the box is the page's (`MentionComposer`'s `escapeToPage`): the Inbox thread's
+   *  box, whose reply nothing ends, where the Inbox's keys take the reader out of it. */
+  escapeToPage?: boolean;
   /** The row's hold on that send (`useSending(sendKey)`): while it is out the message is
    *  addressed, so the picker holds until it lands, from Send's own task on. The send's request is
    *  frozen at Send either way. */
@@ -295,6 +299,7 @@ export function AgentMessageComposer({
       ))}
       <MentionComposer
         box="agents-row-composer"
+        escapeToPage={escapeToPage}
         // The channel decides which mention the message needs - an issue comment reaches this
         // agent by mentioning it, a direct message does not. The composer takes a changed seed
         // into its live draft in place, so one instance holds the draft across every pick.

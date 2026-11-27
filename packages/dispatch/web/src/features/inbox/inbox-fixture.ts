@@ -1,8 +1,19 @@
 import { afterEach, beforeEach, type Mock, spyOn } from "bun:test";
 
+import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { api } from "../../api/client";
-import type { InboxRow } from "../../api/types";
+import type {
+  Agent,
+  Comment,
+  InboxRow,
+  IssueDetails,
+  Message,
+  MyRepliesResponse,
+  MyReplyRow,
+} from "../../api/types";
+import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 
 /** The mocks every Inbox render needs: the signed-in login, and the credential requests waiting
  *  on it; an open ask card also reads its owner's subscribers and its backlinks. */
@@ -164,4 +175,145 @@ export function shortRow(askId: string): HTMLElement {
   const row = document.querySelector<HTMLElement>(`[data-inbox-row="${askId}"]`);
   if (row === null) throw new Error(`${askId} row missing`);
   return row;
+}
+
+/** The threads whose reply box stands for the thread (`ThreadBody`'s `standing` boxes), each
+ *  drawn by a composer of its own kind: a comment thread on an issue, the same on an issue that
+ *  is closed, which still takes a comment, an issue's message conversation, and an Agent row's
+ *  one-off message to a live session. */
+export const REPLY_BOX_THREADS = [
+  "a comment thread",
+  "a comment thread on a closed issue",
+  "a message thread",
+  "an Agent row's thread",
+] as const;
+
+/** The session an Agent row's thread was sent to, live and taking a message in either mode. */
+const LIVE_PLANNER: Agent = {
+  capabilities: ["steer", "btw"],
+  dir: "/w",
+  host: "m",
+  last_activity: null,
+  last_seen: Date.now(),
+  machine_id: "m",
+  open_asks: 0,
+  roles: [],
+  session_id: "planner",
+  state: "live",
+  title: "Planner",
+};
+
+/** A message the reader sent on CORE-1, or, with `overrides`, another message. */
+function fixtureMessage(id: string, body: string, overrides: Partial<Message> = {}): Message {
+  return {
+    author: { id: "alice", kind: "user" },
+    body,
+    broadcast_id: null,
+    created_at: "2026-10-12T00:00:00Z",
+    deliveries: [],
+    ...messageCorrectionFields(),
+    id,
+    in_reply_to: null,
+    issue_key: "CORE-1",
+    reply_block: null,
+    target: null,
+    ...overrides,
+  };
+}
+
+/** A comment the reader wrote on CORE-1, or, with `overrides`, another comment. */
+function fixtureComment(id: string, body: string, overrides: Partial<Comment> = {}): Comment {
+  return {
+    anchor: null,
+    ask_id: null,
+    author: { id: "alice", kind: "user" },
+    body,
+    created_at: "2026-10-12T00:00:00Z",
+    edited_at: null,
+    id,
+    issue_key: "CORE-1",
+    reply_to: null,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: null,
+    ...commentDeliveryFields(),
+    ...overrides,
+  };
+}
+
+/** The Inbox's thread read holding `row` alone. */
+function threadsOf(row: MyReplyRow): MyRepliesResponse {
+  return { as_of: "2026-10-12T02:00:00Z", limit: 200, offset: 0, rows: [row], total: 1 };
+}
+
+/** Serves the Inbox one thread of `kind` (`REPLY_BOX_THREADS`) and no question, with every read
+ *  its body draws its reply box from: the issue and its comments or messages, or the Agent row's
+ *  conversation and its session in the live list. Answers the thread's row id and what puts the
+ *  reads back. */
+export function serveReplyBoxThread(kind: (typeof REPLY_BOX_THREADS)[number]): {
+  readonly id: string;
+  readonly restore: () => void;
+} {
+  const spies: { mockRestore(): void }[] = [spyOn(api, "getInbox").mockResolvedValue([])];
+  const restore = () => {
+    for (const spy of spies) spy.mockRestore();
+  };
+  if (kind === "an Agent row's thread") {
+    spies.push(
+      spyOn(api, "listMyReplies").mockResolvedValue(threadsOf(plannerAgentRow())),
+      spyOn(api, "listAgents").mockResolvedValue([LIVE_PLANNER]),
+      spyOn(api, "listAgentMessages").mockResolvedValue([
+        {
+          message: fixtureMessage("message-1", "Have a look at the build", {
+            issue_key: null,
+            target: "session:planner",
+          }),
+          replies: [
+            fixtureMessage("reply-1", "Looked at it.", {
+              author: { id: "planner", kind: "session" },
+              created_at: "2026-10-12T01:00:00Z",
+              in_reply_to: "message-1",
+              issue_key: null,
+              target: "session:planner",
+            }),
+          ],
+        },
+      ])
+    );
+    return { id: "agent:message-1", restore };
+  }
+  const closedAt = kind === "a comment thread on a closed issue" ? "2026-10-12T01:30:00Z" : null;
+  spies.push(
+    spyOn(api, "getIssue").mockResolvedValue({ closed_at: closedAt } as unknown as IssueDetails)
+  );
+  const reply = {
+    author: { id: "s1", kind: "session" },
+    created_at: "2026-10-12T01:00:00Z",
+  } as const;
+  if (kind === "a message thread") {
+    spies.push(
+      spyOn(api, "listMyReplies").mockResolvedValue(
+        threadsOf(replyRow("m1", { kind: "message", ref: "/issues/CORE-1?message=m1" }))
+      ),
+      spyOn(api, "listIssueMessages").mockResolvedValue([
+        {
+          message: fixtureMessage("m1", "Who owns the reply rollout?"),
+          replies: [
+            fixtureMessage("m1-reply", "Noted, I will look.", { ...reply, in_reply_to: "m1" }),
+          ],
+        },
+      ])
+    );
+    return { id: "reply:m1", restore };
+  }
+  spies.push(
+    spyOn(api, "listMyReplies").mockResolvedValue(threadsOf(replyRow("c1"))),
+    spyOn(api, "listComments").mockResolvedValue([
+      fixtureComment("c1", "Who owns the reply rollout?"),
+      fixtureComment("c1-reply", "Noted, I will look.", { ...reply, reply_to: "c1" }),
+    ])
+  );
+  return { id: "reply:c1", restore };
 }

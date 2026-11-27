@@ -204,8 +204,9 @@ export interface PaneSelection extends InboxHandOff {
   /** The selected row's own element, or null while the list holds none. */
   selectedRow: () => HTMLElement | null;
   /** Selects the row `delta` from the selected one, in the order the reader sees: what `j`, `k`
-   *  and the arrows do while the reading column or view is on, in place of roving the focus. */
-  step: (delta: 1 | -1) => void;
+   *  and the arrows do while the reading column or view is on, in place of roving the focus.
+   *  Answers whether it selected a row: false past either end of the list, which selects none. */
+  step: (delta: 1 | -1) => boolean;
   /**
    * Every row the list holds this commit, a folded band's included, and, from the rows the
    * reader can see, the row the column shows. Called once per commit, after `presented`
@@ -363,13 +364,13 @@ export function usePaneSelection({
     }
   };
 
-  const step = (delta: 1 | -1): void => {
+  const step = (delta: 1 | -1): boolean => {
     const visible = presented.current;
     const at = visible.findIndex((placed) => rowId(placed.row) === selectedId);
     if (at !== -1) {
       const next = visible[at + delta];
       if (next !== undefined) select(rowId(next.row));
-      return;
+      return next !== undefined;
     }
     // The column is holding a question past its row (their unsent answer), so there is no row to
     // step from: the place that row held is read off the rows it stood between, and the step runs
@@ -385,6 +386,7 @@ export function usePaneSelection({
         ? visible[delta === 1 ? 0 : visible.length - 1]
         : visible[delta === 1 ? stood : stood - 1];
     if (next !== undefined) select(rowId(next.row));
+    return next !== undefined;
   };
 
   /** The row the column is showing, or null while it is showing none. Held to the selection,
