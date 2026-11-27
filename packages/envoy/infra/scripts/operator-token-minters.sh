@@ -97,18 +97,22 @@
 #                     finding, a person included, but the Workload Identity member
 #                     serviceAccount:<pool>.svc.id.goog[<namespace>/<service account>], which is the
 #                     witness: the answer must list it.
-#                     The broker needs roles/iam.serviceAccountTokenCreator on that account to mint
-#                     the secret ENVOY_OPERATOR's token, so --broker-account allows that one binding,
-#                     on that account and in that role alone, and then the broker account's own
-#                     minters are checked the same way, its Workload Identity member
-#                     (--broker-workload) the witness and the one principal allowed.
+#                     The broker's roles/iam.serviceAccountTokenCreator on that account, by which it
+#                     mints the secret ENVOY_OPERATOR's token, is a finding too, as its account or as
+#                     its Workload Identity principal: the broker is a job that can mint with no second
+#                     person approving that use at that time, and no automated job holds the operator
+#                     identity (INFRA-840's R16). It is an open route until R16's grant door exists
+#                     (INFRA-840's check c-operator-grant-door, plan task t-e-55), and its finding
+#                     says so. The broker account's own minters are checked the same way, its Workload
+#                     Identity member (--broker-workload) the witness and the one principal allowed:
+#                     that member is the broker being itself, not a path to the operator's account.
 #   impersonation     Every IAM step analyses with --analyze-service-account-impersonation: who can
 #                     mint a holder's token, sign as it or act as it holds what the holder holds, so
 #                     the outermost principal of each such chain, through any number of service
 #                     accounts, is judged as a holder, its finding written as the chain
 #                     (serviceAccount:a -> impersonates serviceAccount:b (<role>) -> <b's role>).
 #                     The design's own links are no finding: a Workload Identity member acting as
-#                     the account it is bound to, and the broker minting --gsa's token.
+#                     the account it is bound to. The broker minting --gsa's token is no such link.
 #   live: RBAC        On the operator's cluster, one SubjectAccessReview per principal and right,
 #                     the principals being every ServiceAccount outside the system namespaces
 #                     (kube-system, gke-*, gmp-*), as on every other cluster of the pool, with the
@@ -366,10 +370,7 @@
 # review asks and create serviceaccounts/token for each guarded pair, and read in that cluster's
 # roles for each rule that gives one by name, each allowed a finding naming it (the certificate
 # chain only whole), an evaluation error UNKNOWN, and a list of pods that holds no pod UNKNOWN
-# (node-escape.sh). The broker's
-# minting grant on --gsa is allowed to its account and to its Workload Identity principal,
-# principal://iam.googleapis.com/projects/<pool project number>/locations/global/
-# workloadIdentityPools/<pool>.svc.id.goog/subject/ns/<ns>/sa/<name> of --broker-workload.
+# (node-escape.sh).
 #
 # In every IAM step a `user:` member, a person, is judged as every other holder is, a finding for
 # each checked permission it holds; a group is a finding as the group, whatever its members, since

@@ -51,9 +51,10 @@ fi
 # not list would read as none.
 #
 # The designed links are a Workload Identity member acting as the account it is bound to (the
-# operator's member as --gsa, the broker's as --broker-account) and the broker minting --gsa's
-# token, as its account or as its Workload Identity principal (BROKER_PRINCIPAL): its outermost
-# principal is the account it acts as, already judged, so it is no finding.
+# operator's member as --gsa, the broker's as --broker-account): the account being itself, whose
+# outermost principal is that account, already judged, so it is no finding. The broker minting
+# --gsa's token is no designed link: it is a path to the operator identity that no second person
+# approves at the time, so a chain through it is judged as any other (INFRA-840's R16).
 # A refused analysis names what Google requires for it (Policy Analyzer's "Required permissions",
 # read 2026-11-26): cloudasset.assets.analyzeIamPolicy, cloudasset.assets.searchAllResources and
 # cloudasset.assets.searchAllIamPolicies on the scope, iam.roles.get for a custom role
@@ -69,7 +70,7 @@ analyze() {
     ANALYZE_ERROR="Policy Analyzer refused the analysis (it needs cloudasset.assets.analyzeIamPolicy, cloudasset.assets.searchAllResources and cloudasset.assets.searchAllIamPolicies on $4, iam.roles.get for a custom role, and Google Workspace's groups.read to expand a group): $(first_line "$WORK/analysis.err")"
     return 1
   fi
-  if ! jq -r --arg wi "$WI_MEMBER" --arg gsa "$GSA" --arg bwi "$BROKER_WI_MEMBER" --arg broker "$BROKER" --arg bp "$BROKER_PRINCIPAL" \
+  if ! jq -r --arg wi "$WI_MEMBER" --arg gsa "$GSA" --arg bwi "$BROKER_WI_MEMBER" --arg broker "$BROKER" \
     -L "$LIB" -f "$LIB/analysis.jq" \
     "$WORK/analysis.json" >"$WORK/analysis.rec" 2>"$WORK/analysis.err"; then
     ANALYZE_ERROR="the analysis is not the JSON Policy Analyzer answers: $(first_line "$WORK/analysis.err")"

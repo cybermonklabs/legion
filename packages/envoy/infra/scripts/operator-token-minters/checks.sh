@@ -120,7 +120,7 @@ iam_verdict() {
       case "$how" in
         expanded) NOTE=" (a group: whoever is added to it holds this, so it is a finding whatever its members; each member is judged too)" ;;
         code) NOTE=" (a group: whoever is added to it holds this, so it is a finding whatever its members)" ;;
-        *) NOTE=" (a group whose members the analysis does not list)" ;;
+        *) NOTE=" (a group the analysis lists no member of: an empty group, or one whose members it could not read; a finding either way)" ;;
       esac
       return
       ;;
@@ -129,14 +129,16 @@ iam_verdict() {
   NOTE="$AGENT_NOTE"
   case "$check" in
     gsa)
+      # The operator's own Workload Identity member is the account being itself. The broker's
+      # roles/iam.serviceAccountTokenCreator here, by which it mints the secret ENVOY_OPERATOR's
+      # token, is no exception: the broker is a job that can mint with no second person approving
+      # that use at that time, and no automated job holds the operator identity (INFRA-840's R16).
+      # It is an open route until R16's grant door exists (INFRA-840's check c-operator-grant-door,
+      # plan task t-e-55), and the finding says so.
       if [ "$member" = "$WI_MEMBER" ]; then VERDICT=ok; return; fi
-      # The broker's minting grant: to its account, or, until the broker runs as that account, to
-      # its Workload Identity principal (BROKER_PRINCIPAL, from --broker-workload), each as
-      # roles/iam.serviceAccountTokenCreator on the operator's account alone.
-      if [ "$role" = roles/iam.serviceAccountTokenCreator ] && [[ "$attached" == */serviceAccounts/"$GSA" ]] &&
-        { { [ -n "$BROKER" ] && [ "$member" = "serviceAccount:$BROKER" ]; } ||
-          { [ -n "$BROKER_PRINCIPAL" ] && [ "$member" = "$BROKER_PRINCIPAL" ]; }; }; then
-        VERDICT=ok
+      if [ -n "$BROKER" ] && [ "$member" = "serviceAccount:$BROKER" ] && [ "$role" = roles/iam.serviceAccountTokenCreator ] &&
+        [[ "$attached" == */serviceAccounts/"$GSA" ]]; then
+        NOTE="$NOTE, the secrets broker's minting grant: it mints the operator's token with no second person approving each use, an open route until INFRA-840's grant door exists"
       fi
       ;;
     broker) if [ -n "$BROKER_WI_MEMBER" ] && [ "$member" = "$BROKER_WI_MEMBER" ]; then VERDICT=ok; fi ;;

@@ -444,17 +444,18 @@ build_world() {
   # No person holds anything here: nobody holds the operator identity standing, a person included
   # (INFRA-840's R16), so every person a row plants is a finding, and row (sp) plants each of the
   # shapes a person's grant takes. The group cluster-admins holds no binding here either; rows plant
-  # its binding where they need one. Every analysis must still list a holder, as a real one always
-  # does (an answer listing none reads UNKNOWN), so the organization's roles/owner is held by a
-  # principal the reading accepts: the project's Compute Engine service agent, Google's own, which
-  # nobody signs in as.
+  # its binding where they need one. No job mints the operator's token either: the broker's
+  # roles/iam.serviceAccountTokenCreator on the operator's account, live and declared, is a finding
+  # (R16 admits no automated job), which row (o) plants. Every analysis must still list a holder, as
+  # a real one always does (an answer listing none reads UNKNOWN), so the organization's
+  # roles/owner is held by a principal the reading accepts: the project's Compute Engine service
+  # agent, Google's own, which nobody signs in as.
   echo '[]' >"$world/iam.json"
   jq -n '{"group:cluster-admins@example.com": ["user:admin@example.com"]}' >"$world/groups.json"
   iam "$org_res" roles/owner "$compute_agent"
   iam "$project_res" roles/container.serviceAgent "serviceAccount:service-$number@container-engine-robot.iam.gserviceaccount.com"
   iam "$project_res" roles/viewer "serviceAccount:$ci_gsa"
   iam "$gsa_res" roles/iam.workloadIdentityUser "$wi_member"
-  iam "$gsa_res" roles/iam.serviceAccountTokenCreator "serviceAccount:$broker"
   iam "$control_gsa_res" roles/iam.workloadIdentityUser "$control_wi_member"
   iam "$broker_res" roles/iam.workloadIdentityUser "$broker_wi_member"
   iam "$signing_res" roles/secretmanager.secretAccessor "serviceAccount:$gsa"
@@ -496,14 +497,12 @@ build_world() {
   # declares it (a render that declares no Secret is UNKNOWN).
   jq -n '{apiVersion: "v1", kind: "List", items: [{apiVersion: "v1", kind: "Secret", type: "Opaque",
     metadata: {namespace: "example-db", name: "broker-db-login"}}]}' >"$world/secret-render.json"
-  jq -n --arg p "$project" --arg gsa "$gsa" --arg broker "$broker" --arg wi "$wi_member" --arg ci "$ci_gsa" '
+  jq -n --arg p "$project" --arg gsa "$gsa" --arg wi "$wi_member" --arg ci "$ci_gsa" '
     def step($name; $type; $inputs): {op: "same", urn: "urn:pulumi:example::iam::\($type)::\($name)", provider: "example-provider",
                                       newState: {urn: "urn:pulumi:example::iam::\($type)::\($name)", custom: true, type: $type, inputs: $inputs}};
     {steps: [
       step("operator-workload"; "gcp:serviceaccount/iAMMember:IAMMember";
            {serviceAccountId: "projects/\($p)/serviceAccounts/\($gsa)", role: "roles/iam.workloadIdentityUser", member: $wi}),
-      step("broker-mints-operator"; "gcp:serviceaccount/iAMMember:IAMMember";
-           {serviceAccountId: "projects/\($p)/serviceAccounts/\($gsa)", role: "roles/iam.serviceAccountTokenCreator", member: "serviceAccount:\($broker)"}),
       step("operator-reads-signing-key"; "gcp:secretmanager/secretIamMember:SecretIamMember";
            {project: $p, secretId: "projects/\($p)/secrets/hold-signing-example", role: "roles/secretmanager.secretAccessor", member: "serviceAccount:\($gsa)"}),
       step("ci-uses-a-key"; "gcp:kms/cryptoKeyIAMMember:CryptoKeyIAMMember";

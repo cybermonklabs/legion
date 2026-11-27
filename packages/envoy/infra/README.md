@@ -4821,12 +4821,13 @@ needs is named with `--service-agent service-<number>@gcp-sa-<product>.iam.gserv
 which takes no other address. An IAM group holding a checked permission is a finding as the group,
 whatever its members: whoever is added to it holds what it holds with no grant and no second
 person. Each member Policy Analyzer expands is judged besides, so a person in the group is a finding
-by name. The broker's grant to mint the operator's token,
-`roles/iam.serviceAccountTokenCreator` on `--gsa`, is allowed to `--broker-account` and to the
-Workload Identity principal of `--broker-workload`,
-`principal://iam.googleapis.com/projects/<pool project number>/locations/global/workloadIdentityPools/<pool>.svc.id.goog/subject/ns/<namespace>/sa/<name>`,
-which a deployment binds while the broker does not yet run as its account; another principal,
-or another role, is a finding. On another GKE cluster of the pool that
+by name. The broker's grant to mint the operator's token, `roles/iam.serviceAccountTokenCreator`
+on `--gsa`, is a finding, held by `--broker-account` or by the Workload Identity principal of
+`--broker-workload` alike: the broker is a job that mints with no second person approving that
+use at that time, and no automated job holds the operator identity (INFRA-840's R16). The finding
+says it is an open route until R16's grant door exists (INFRA-840's check `c-operator-grant-door`).
+The broker's own Workload Identity member acting as `--broker-account` is the account being itself
+and stays allowed, the witness of the broker account's own minters step. On another GKE cluster of the pool that
 `gcloud container clusters describe` reads as Standard (a refused describe is UNKNOWN), a
 privileged or hostPath pod reads every token on its node, so a system namespace's ServiceAccount
 that runs a pod on a node is reviewed for every right that cluster's review asks, and for each rule

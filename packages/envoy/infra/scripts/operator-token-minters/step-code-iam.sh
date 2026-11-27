@@ -53,19 +53,6 @@ if [ -z "${CHECK_MISSING[renders]:-}" ]; then
     CHECK_MISSING[renders]="the number of the renders bucket's project $RENDERS_PROJECT cannot be read (gcloud projects describe needs resourcemanager.projects.get there): $(first_line "$WORK/renders-project.err" 2>/dev/null)"
   fi
 fi
-# The broker's Workload Identity principal (principals.sh, BROKER_PRINCIPAL), from the pool project's
-# number: --project's when the pool is --project's, else the pool project's own. A number that
-# cannot be read leaves it unaccepted, so a binding to it reads as any other holder's.
-if [ -n "$BROKER_WORKLOAD" ]; then
-  pool_number=""
-  if [ "$POOL_PROJECT" = "$PROJECT" ]; then
-    pool_number="$PROJECT_NUMBER"
-  elif have gcloud && gcloud projects describe "$POOL_PROJECT" --format=json --quiet >"$WORK/pool-project.json" 2>/dev/null; then
-    pool_number="$(jq -r '.projectNumber // ""' "$WORK/pool-project.json" 2>/dev/null || true)"
-  fi
-  [[ ! "$pool_number" =~ ^[0-9]+$ ]] ||
-    BROKER_PRINCIPAL="principal://iam.googleapis.com/projects/$pool_number/locations/global/workloadIdentityPools/$POOL_PROJECT.svc.id.goog/subject/ns/${BROKER_WORKLOAD%%/*}/sa/${BROKER_WORKLOAD#*/}"
-fi
 
 step="code: IAM"
 if [ "${#IAM_PREVIEWS[@]}" -eq 0 ]; then

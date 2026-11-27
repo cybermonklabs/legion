@@ -51,11 +51,6 @@ BROKER_PROJECT="$ACCOUNT_PROJECT"
 WI_MEMBER="serviceAccount:$POOL_PROJECT.svc.id.goog[$NAMESPACE/$KSA]"
 BROKER_WI_MEMBER=""
 [ -z "$BROKER_WORKLOAD" ] || BROKER_WI_MEMBER="serviceAccount:$POOL_PROJECT.svc.id.goog[$BROKER_WORKLOAD]"
-# BROKER_PRINCIPAL: the same ServiceAccount as Workload Identity Federation's principal,
-# principal://iam.googleapis.com/projects/<pool project number>/locations/global/workloadIdentityPools/
-# <pool>.svc.id.goog/subject/ns/<namespace>/sa/<name>, which a deployment may bind in place of an
-# account; step-code-iam.sh sets it once the pool project's number is read, and "" leaves it unaccepted.
-BROKER_PRINCIPAL=""
 
 # resolve_unique_id NUMBER: sets UNIQUE_EMAIL to the email of the Google service account whose
 # uniqueId is NUMBER, or "" with UNIQUE_WHY saying what was tried. A ClusterRoleBinding may name a

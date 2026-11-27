@@ -18,8 +18,10 @@ body: |-
   `--audited-cluster` names. On another GKE Standard cluster of the pool, a system ServiceAccount
   with a pod on a node is reviewed for every right that cluster's review asks. A guarded namespace
   on another cluster of the pool now brings the operator's cluster's rights to that cluster's
-  review, each holder named, instead of being a finding of its own. The broker's Workload Identity
-  principal is accepted as the operator's token minter, a User named by a Google service account's
+  review, each holder named, instead of being a finding of its own. The secrets broker's grant to
+  mint the operator's token is now a finding, as its account or as its Workload Identity principal:
+  no automated job holds the operator identity (R16), and the finding names it an open route until
+  INFRA-840's grant door exists. A User named by a Google service account's
   uniqueId is judged as that account under the number too when the cluster also names it by email,
   and every finding, credit and residual labels the operator's cluster
   `cluster:<project>/<location>/<name>` as every other cluster is. A disabled GKE Hub API reads
