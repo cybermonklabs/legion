@@ -1095,9 +1095,9 @@ const liveSocketPattern = "/ws/live"
 //
 // The limited-token gate sits just inside decideBrokerToken, whose decision it reads, and ahead
 // of the upgrade. The socket is no row of the table and no read, since a socket delivers whatever
-// its views carry, so the gate takes a declaration that names the socket and states nothing
-// else: it classes nothing as a read and states neither ResultsScope nor ApproveOnly. A read-only
-// token of every kind is answered 403 before a socket is ever opened for it:
+// its views carry, so it passes the gate the zero declaration, which the gate names GET /ws/live
+// (liveSocketRoute): it classes nothing as a read and states neither ResultsScope nor ApproveOnly.
+// A read-only token of every kind is answered 403 before a socket is ever opened for it:
 // AS_OF_TOKEN_NOT_SERVED for a token that carries a cut, since the socket holds no past answer,
 // and READ_ONLY_TOKEN for every other. A results token is answered 403 RESULTS_ONLY_TOKEN and an
 // approve-only token 403 APPROVE_ONLY_TOKEN there too. The socket is admitted by whichever
@@ -1105,7 +1105,7 @@ const liveSocketPattern = "/ws/live"
 // its heartbeat resolves that same credential again (callerStillResolves).
 func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
 	return accesslog.HandlerOn(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
-		s.refuseLimitedToken(routeDecl{Method: http.MethodGet, Pattern: liveSocketPattern},
+		s.refuseLimitedToken(routeDecl{},
 			trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))), s.clock())
 }
 
@@ -1719,9 +1719,9 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 // (model.Credential.ResultsOnly) to the routes that state ResultsScope, and an approve-only one
 // (model.Credential.ApproveOnly) to the routes that state ApproveOnly. register wraps every route
 // of the table in it, with the route's own declaration, which states all three (routeDecl.Read,
-// routeDecl.ResultsScope, routeDecl.ApproveOnly), and GET /ws/live with a declaration that names
-// the socket alone, which classes nothing as a read and states neither. It reads every
-// credential that can be limited:
+// routeDecl.ResultsScope, routeDecl.ApproveOnly), and GET /ws/live with the zero declaration,
+// which the gate names GET /ws/live (liveSocketRoute) and which classes nothing as a read and
+// states neither. It reads every credential that can be limited:
 //
 //   - A broker-issued token is already decided by decideBrokerToken, which runs outside it and
 //     carries its decision on the context (resolvedCallerKey); verifying it again would present
@@ -1761,7 +1761,11 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 // (resultsOnlyRefusal, approveOnlyRefusal).
 func (s *server) refuseLimitedToken(route routeDecl, next http.HandlerFunc) http.HandlerFunc {
 	read := route.Read.Writes == readWritesNothing
-	name := route.Method + " " + route.Pattern
+	// The socket passes the zero declaration (liveSocketHandler); every row states a pattern.
+	name := liveSocketRoute
+	if route.Pattern != "" {
+		name = route.Method + " " + route.Pattern
+	}
 	// A cut holds no answer on the socket, nor on a read that holds no history (asOfNoHistory).
 	// whoami (asOfCaller) names the cut, and a row of kind answers answers at it.
 	refusesACut := name == liveSocketRoute || (read && route.Read.AsOf == asOfNoHistory)
