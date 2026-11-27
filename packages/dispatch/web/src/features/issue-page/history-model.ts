@@ -546,9 +546,7 @@ function threadsOf(input: HistoryInput, ids: ReadonlySet<string>): Dated[] {
   }
   for (const thread of input.messages ?? []) {
     if (!ids.has(thread.message.id)) continue;
-    threads.push(
-      threadEntry(messageTurn(thread.message), (thread.replies ?? []).map(messageTurn))
-    );
+    threads.push(threadEntry(messageTurn(thread.message), (thread.replies ?? []).map(messageTurn)));
   }
   // A thread stands at its first turn's time (`threadEntry`), so one whose first turn is older
   // than every event read so far is left out whole, its replies too however recent, until the

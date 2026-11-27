@@ -18,13 +18,13 @@ import {
   pinnedEventIds,
 } from "../issue/pins";
 import { fetchPinnedEvents } from "../margin/useMarginItems";
-import { historyLogKey } from "./history-log";
 import { EditedMark } from "../refs/PostMarks";
 import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath } from "../refs/routes";
 import { textSourceKind, textSourceOf } from "../refs/text-references";
 import { useListPages } from "./details-leaves";
+import { historyLogKey } from "./history-log";
 import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES } from "./page-words";
