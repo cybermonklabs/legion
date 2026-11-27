@@ -52,6 +52,7 @@ func accessLines(t *testing.T, logged *logBuffer) []string {
 // A person's read writes one line naming the route, the person and the answer, and no request
 // after it writes a second line for the same request.
 func TestAPersonsRequestWritesOneAccessLogLineNamingThem(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	handler, database := newTestHandlerWithStore(t)
 	seedTestProject(t, database)
 	logged := captureLog(t)
@@ -84,6 +85,7 @@ func TestAPersonsRequestWritesOneAccessLogLineNamingThem(t *testing.T) {
 // A bearer's write is named by the session it acts as, never by the token it sent, and the line
 // holds neither the token nor the body the caller wrote.
 func TestABearersRequestIsNamedByItsSessionAndCarriesNoToken(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	handler, database := newTestHandlerWithStore(t)
 	seedTestProject(t, database)
 	logged := captureLog(t)
@@ -124,6 +126,7 @@ func TestABearersRequestIsNamedByItsSessionAndCarriesNoToken(t *testing.T) {
 // A request no credential authenticates is logged with its refusal and no caller, so a flood of
 // refused requests is visible too.
 func TestARefusedRequestIsLoggedWithNoCaller(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	handler := newTestHandler(t)
 	logged := captureLog(t)
 
@@ -153,6 +156,7 @@ func TestARefusedRequestIsLoggedWithNoCaller(t *testing.T) {
 // replace the session the socket was admitted as with a nameless shared token. The socket stays
 // open until ten of those resolutions have returned, so the line is written after them.
 func TestASocketsHeartbeatLeavesTheSessionItWasAdmittedAs(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	_, _, deps := newTestServer(t, testServerOptions{streamHeartbeat: 10 * time.Millisecond})
 	logged := captureLog(t)
 	served := directServer(deps)

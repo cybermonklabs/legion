@@ -1632,6 +1632,7 @@ func TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned(t *te
 // read that gave up at its lock bound fails with lock_not_available (SQLSTATE 55P03), and one that
 // waited the statement bound out with query_canceled (57014), however loaded the server is.
 func TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRow(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	const project = "LCKD"
 	handler, database, _, issueKey, commentID := unlabelledFillWindow(t, project)
 	ctx := context.Background()

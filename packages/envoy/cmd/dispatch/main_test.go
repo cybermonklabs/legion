@@ -55,6 +55,7 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/natsurl"
 )
 
 // signInEnvironment is a cookie-identity boot environment with all four sign-in settings.
@@ -281,6 +282,8 @@ func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
 	const lead = "Google sign-in needs DISPATCH_SIGNIN_ISSUER, DISPATCH_SIGNIN_CLIENT_ID, DISPATCH_SIGNIN_CLIENT_SECRET and one of DISPATCH_SIGNIN_GROUP or DISPATCH_SIGNIN_DOMAIN: "
 	const both = "DISPATCH_SIGNIN_GROUP and DISPATCH_SIGNIN_DOMAIN are both set; set one: a Cognito pool's group, or a Google Workspace domain"
 	noSignIn := map[string]string{"DATABASE_URL": "postgres://dispatch", "DISPATCH_AGENT_TOKEN": "agent-token"}
+	issuerUserinfo := "madeUpIssuerUser0123:madeUpIssuerSecret0123" + "@"
+	const queryToken = "madeUpQueryToken0123456789"
 	with := func(base, overrides map[string]string) map[string]string {
 		values := map[string]string{}
 		for name, value := range base {
@@ -306,12 +309,30 @@ func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
 			lead + "DISPATCH_SIGNIN_ISSUER, DISPATCH_SIGNIN_CLIENT_ID set, DISPATCH_SIGNIN_CLIENT_SECRET, DISPATCH_SIGNIN_GROUP or DISPATCH_SIGNIN_DOMAIN missing"},
 		{"a domain under a Cognito pool", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/pool"}),
 			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is https://issuer.example/pool"},
+		// The issuer is printed through redact.URL: a value with no scheme is no plain http(s) URL.
 		{"a domain under Google's schemeless issuer", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "accounts.google.com"}),
-			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is accounts.google.com"},
+			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is (not printed: the value carries a credential or is not a plain http(s) URL)"},
+		// A made-up token percent-encoded in the issuer's path, which loads: the domain refusal
+		// prints no part of it.
+		{"a domain under an issuer with an encoded token in its path", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/%6DadeUpPathToken0123456789"}),
+			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is (not printed: the value carries a credential or is not a plain http(s) URL)"},
 		{"a malformed domain under another issuer", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/pool", "DISPATCH_SIGNIN_DOMAIN": "Example.com"}),
 			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is https://issuer.example/pool"},
 		{"a group under Google's issuer", signInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com"}),
 			"DISPATCH_SIGNIN_GROUP is a Cognito pool's group, and a token from https://accounts.google.com carries none; set DISPATCH_SIGNIN_DOMAIN instead"},
+		// A made-up user name and password in either issuer: refused naming the setting alone.
+		{"a sign-in issuer holding a credential", signInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://" + issuerUserinfo + "issuer.example/pool"}),
+			"DISPATCH_SIGNIN_ISSUER cannot be read: it holds a user name or a password, which no issuer URL has"},
+		{"a service-token issuer holding a credential", with(noSignIn, map[string]string{"DISPATCH_OIDC_ISSUER": "https://" + issuerUserinfo + "oidc.example/id/CLUSTER", "DISPATCH_OIDC_AUDIENCE": "dispatch"}),
+			"DISPATCH_OIDC_ISSUER cannot be read: it holds a user name or a password, which no issuer URL has"},
+		// A made-up token in an issuer's query or fragment, which no issuer identifier has: refused
+		// naming the setting alone, before the domain refusal would print the issuer.
+		{"a sign-in issuer with a token in its query", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/?token=" + queryToken}),
+			"DISPATCH_SIGNIN_ISSUER cannot be read: it holds a query or a fragment, which no issuer identifier has"},
+		{"a sign-in issuer with a token in its fragment", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/#" + queryToken}),
+			"DISPATCH_SIGNIN_ISSUER cannot be read: it holds a query or a fragment, which no issuer identifier has"},
+		{"a service-token issuer with a token in its query", with(noSignIn, map[string]string{"DISPATCH_OIDC_ISSUER": "https://oidc.example/id/CLUSTER?token=" + queryToken, "DISPATCH_OIDC_AUDIENCE": "dispatch"}),
+			"DISPATCH_OIDC_ISSUER cannot be read: it holds a query or a fragment, which no issuer identifier has"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := resolveBootConfig(envGetter(tc.env)); err == nil || err.Error() != tc.want {
@@ -520,7 +541,8 @@ func TestResolveBootConfigRejectsAgentSecretsURLWithPathOrBadScheme(t *testing.T
 
 // Both DISPATCH_AGENT_SECRETS_URL refusals - a shape refusal (a path, or a value that does not
 // parse) and the dev sign-in's refusal of a remote broker - name a clean URL as it is and any
-// other value as redact.NotPrinted: user info, a query, escapes, a control byte.
+// other value as redact.NotPrinted: escapes, a control byte. User info, an "@" past the host and a
+// query are refused before either, by the setting alone (agentSecretsURLRefusal).
 func TestResolveBootConfigRefusesAgentSecretsURLWithoutNamingItsCredential(t *testing.T) {
 	t.Parallel()
 	shape := func(brokerURL string) settingValues {
@@ -545,10 +567,10 @@ func TestResolveBootConfigRefusesAgentSecretsURLWithoutNamingItsCredential(t *te
 	}{
 		"a clean path":                     {shape("https://broker.example.com/v1"), `DISPATCH_AGENT_SECRETS_URL="https://broker.example.com/v1"`},
 		"a clean remote broker":            {remote("https://broker.example.com"), `DISPATCH_AGENT_SECRETS_URL="https://broker.example.com"`},
-		"a path":                           {shape("https://tokuser9f3:hunter2pw@broker.example.com/v1?token=qtok77"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"a remote broker":                  {remote("https://tokuser9f3:hunter2pw@broker.example.com?token=qtok77"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"an '@' in a query value":          {shape("https://broker.example.com/?password=hunter@2pwSECRET"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"a remote broker, '@' in a query":  {remote("https://broker.example.com?a=1&token=qtok@77SECRET&b=2"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
+		"a path":                           {shape("https://tokuser9f3:hunter2pw@broker.example.com/v1?token=qtok77"), "DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a user name or a password"},
+		"a remote broker":                  {remote("https://tokuser9f3:hunter2pw@broker.example.com?token=qtok77"), "DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a user name or a password"},
+		"an '@' in a query value":          {shape("https://broker.example.com/?password=hunter@2pwSECRET"), `DISPATCH_AGENT_SECRETS_URL cannot be read: an "@" stands after its host`},
+		"a remote broker, '@' in a query":  {remote("https://broker.example.com?a=1&token=qtok@77SECRET&b=2"), `DISPATCH_AGENT_SECRETS_URL cannot be read: an "@" stands after its host`},
 		"a literal '@' and an escaped one": {shape("https://ada@corp.example:hunter2pw%40127.0.0.1:1"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
 		"a double-escaped '@'":             {shape("https://tokuser9f3:hunter2pw%2540broker.example.com"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
 		"a newline forging a line":         {shape("https://broker.example.com\nFORGED"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
@@ -563,6 +585,172 @@ func TestResolveBootConfigRefusesAgentSecretsURLWithoutNamingItsCredential(t *te
 				t.Errorf("%s: refusal %q names %q", name, err, secret)
 			}
 		}
+	}
+}
+
+// A DISPATCH_AGENT_SECRETS_URL with no path that carries a credential booted, and Dispatch logged
+// it in every failed introspection, since net/http masks a password but not a user name or a
+// query: a made-up token as the user name, as a password, in the query, after an "@" past the host,
+// and in the fragment. Each is refused now by the setting alone, before anything connects.
+func TestResolveBootConfigRefusesACredentialInAgentSecretsURLByTheSettingAlone(t *testing.T) {
+	const token = "madeUpBrokerToken0123"
+	for name, row := range map[string]struct{ brokerURL, want string }{
+		"a token as the user name": {"http://" + token + "@127.0.0.1:1", "DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a user name or a password, which the broker's URL has none of"},
+		"a token as the password":  {"http://dispatch:" + token + "@127.0.0.1:1", "DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a user name or a password, which the broker's URL has none of"},
+		"a token in the query":     {"http://127.0.0.1:1?token=" + token, "DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a query or a fragment, which the broker's URL has none of"},
+		"an @ past the host":       {"http://127.0.0.1:1?" + token + "@broker.invalid", `DISPATCH_AGENT_SECRETS_URL cannot be read: an "@" stands after its host`},
+		"a token in the fragment":  {"http://127.0.0.1:1#" + token, "DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a query or a fragment, which the broker's URL has none of"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := resolveBootConfig(envGetter(map[string]string{
+				"DATABASE_URL":                              "postgres://dispatch",
+				"DISPATCH_AGENT_TOKEN":                      "agent-token",
+				"DISPATCH_IDENTITY":                         "header:X-Dispatch-User",
+				"DISPATCH_IDENTITY_HEADER_TRUSTED":          "1",
+				"DISPATCH_AGENT_SECRETS_URL":                row.brokerURL,
+				"DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": "/var/run/secrets/broker/token",
+			}))
+			if err == nil || !strings.HasPrefix(err.Error(), row.want) {
+				t.Fatalf("resolveBootConfig = %v, want %q", err, row.want)
+			}
+			if strings.Contains(err.Error(), token[:10]) {
+				t.Errorf("the refusal %q holds part of the token", err)
+			}
+		})
+	}
+}
+
+// Dispatch's shape refusals of a URL setting print the value through redact.URL, so a credential
+// in a value no credential refusal can read (one with no http scheme, written <name>:<secret>@<host>,
+// where net/url finds an opaque part and no user) prints in none: ENVOY_URL and the embeddings and
+// chat endpoints. Each still names its setting.
+func TestDispatchsURLRefusalsPrintNoCredential(t *testing.T) {
+	const secret = "madeUpEndpointSecret0123"
+	at := "@"
+	_, envoyErr := resolveBootConfig(envGetter(map[string]string{
+		"DATABASE_URL":                     "postgres://dispatch",
+		"DISPATCH_AGENT_TOKEN":             "agent-token",
+		"DISPATCH_IDENTITY":                "header:X-Dispatch-User",
+		"DISPATCH_IDENTITY_HEADER_TRUSTED": "1",
+		"ENVOY_URL":                        "dispatch:" + secret + at + "envoy.invalid:9020",
+	}))
+	_, embedErr := resolveAzureEmbedder(envGetter(map[string]string{"DISPATCH_AZURE_EMBED_ENDPOINT": "embed:" + secret + at + "resource.openai.azure.com/models"}))
+	_, chatErr := chatEndpoint(envGetter(map[string]string{"DISPATCH_CHAT_ENDPOINT": "chat:" + secret + at + "chat.example/v1"}), "DISPATCH_CHAT_ENDPOINT", "endpoint")
+	for setting, err := range map[string]error{"ENVOY_URL=": envoyErr, "DISPATCH_AZURE_EMBED_ENDPOINT=": embedErr, "DISPATCH_CHAT_ENDPOINT=": chatErr} {
+		if err == nil || !strings.Contains(err.Error(), setting) {
+			t.Errorf("the refusal = %v, want one naming %s", err, setting)
+			continue
+		}
+		if strings.Contains(err.Error(), secret[:10]) {
+			t.Errorf("the refusal %q holds part of the secret", err)
+		}
+	}
+}
+
+// ENVOY_URL, the three model endpoints and DISPATCH_GITHUB_API_BASE refuse a user name, a
+// password, an "@" past the host, a query and a fragment, each by the setting alone, as
+// DISPATCH_AGENT_SECRETS_URL does (credentialURLRefusal): each URL booted with any of them, and
+// Dispatch's clients printed it in their errors, which reach the API's answers (the listener
+// client's 503 and 502, the GitHub App client's 502) and, for the GitHub base, the GitHub read
+// record /healthz serves. A made-up token stands in each.
+func TestDispatchsURLSettingsRefuseACredentialByTheSettingAlone(t *testing.T) {
+	const token = "madeUpURLToken0123"
+	at := "@"
+	shapes := map[string]struct{ value, refusal string }{
+		"a token as the user name": {"https://" + token + at + "host.example/v1", "it holds a user name or a password"},
+		"a token as the password":  {"https://dispatch:" + token + at + "host.example/v1", "it holds a user name or a password"},
+		"an @ past the host":       {"https://host.example/" + token + at + "other.example/v1", natsurl.UserinfoPastHostReason},
+		"a token in the query":     {"https://host.example/v1?key=" + token, "it holds a query or a fragment"},
+		"a token in the fragment":  {"https://host.example/v1#" + token, "it holds a query or a fragment"},
+	}
+	settings := map[string]func(value string) map[string]string{
+		"ENVOY_URL": func(value string) map[string]string {
+			return signInEnvironment(map[string]string{"ENVOY_URL": value})
+		},
+		"DISPATCH_AZURE_EMBED_ENDPOINT": func(value string) map[string]string {
+			return azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_ENDPOINT": value})
+		},
+		"DISPATCH_AZURE_CHAT_ENDPOINT": func(value string) map[string]string {
+			return azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_ENDPOINT": value})
+		},
+		"DISPATCH_CHAT_ENDPOINT": func(value string) map[string]string {
+			return endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_ENDPOINT": value})
+		},
+		"DISPATCH_GITHUB_API_BASE": func(value string) map[string]string {
+			return signInEnvironment(map[string]string{"DISPATCH_GITHUB_API_BASE": value})
+		},
+	}
+	for setting, environment := range settings {
+		for shape, row := range shapes {
+			t.Run(setting+"/"+shape, func(t *testing.T) {
+				_, err := resolveBootConfig(envGetter(environment(row.value)))
+				if err == nil || !strings.HasPrefix(err.Error(), setting+" cannot be read: "+row.refusal) {
+					t.Fatalf("resolveBootConfig = %v, want a refusal by %s: %s", err, setting, row.refusal)
+				}
+				if strings.Contains(err.Error(), token[:10]) {
+					t.Errorf("the refusal %q holds part of the token", err)
+				}
+			})
+		}
+	}
+}
+
+// redeliver-webhooks reads DISPATCH_GITHUB_API_BASE too, and refuses a credential in it by the
+// setting alone before it opens the database or connects to NATS: the DATABASE_URL here names a
+// database that does not exist, which the run never reaches. A made-up token stands in the base.
+func TestRedeliverWebhooksRefusesACredentialInTheGitHubAPIBase(t *testing.T) {
+	const token = "madeUpGitHubToken0123"
+	at := "@"
+	for name, base := range map[string]string{
+		"a user name and a token":  "https://ghuser:" + token + at + "ghe.invalid/api/v3",
+		"a token as the user name": "https://" + token + at + "ghe.invalid/api/v3",
+		"a token in the query":     "https://ghe.invalid/api/v3?access_token=" + token,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			code := redeliverWebhooks(t.Context(), []string{"--since", "1h"}, envGetter(map[string]string{
+				"DATABASE_URL":             "postgres://dispatch@127.0.0.1:1/nonexistent",
+				"DISPATCH_GITHUB_API_BASE": base,
+			}), &out)
+			if code != 2 || !strings.HasPrefix(out.String(), "redeliver-webhooks: DISPATCH_GITHUB_API_BASE cannot be read: ") {
+				t.Fatalf("redeliverWebhooks = %d, %q; want 2 and the refusal by DISPATCH_GITHUB_API_BASE", code, out.String())
+			}
+			if strings.Contains(out.String(), token[:10]) {
+				t.Errorf("the output %q holds part of the token", out.String())
+			}
+		})
+	}
+}
+
+// With DISPATCH_DEV_SIGNIN=1 the fence that holds the database to this machine parses DATABASE_URL
+// before the store opens it. A DSN pgdsn refuses (a password holding an "@", or digits and a "/",
+// which pgx reads as the host or the port) is refused first, by the setting alone, and one pgx
+// cannot parse (a keyword DSN's `password = <secret>`, a password holding an escaped space) is
+// named through pgdsn.ConnectError, never by pgx's text, which quotes the DSN. Each password is
+// made up and built from parts.
+func TestDevSignInRefusesADatabaseURLPrintingNoPartOfItsPassword(t *testing.T) {
+	at := "@"
+	for name, row := range map[string]struct{ dsn, want string }{
+		"a password holding an @": {"postgres://dispatch:madeuphead0123" + at + "zqtail0123" + at + "127.0.0.1:5432/dispatch",
+			`DATABASE_URL cannot be read: it holds an "@" after its user name and password`},
+		"digits and a / in the password": {"postgres://dispatch:48213579/zqtail0123" + at + "127.0.0.1:5432/dispatch",
+			`DATABASE_URL cannot be read: it holds an "@" after its user name and password`},
+		"spaces around password's =": {"host=127.0.0.1 user=dispatch password = zqsecret0123 dbname=dispatch sslmode=requir",
+			"connect to Postgres: DATABASE_URL cannot be parsed as a Postgres DSN"},
+		"an escaped space in the password": {`host=127.0.0.1 password=zqhead\ zqtail0123 sslmode=bogus`,
+			"connect to Postgres: DATABASE_URL cannot be parsed as a Postgres DSN"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := resolveBootConfig(devSignInEnvironment(map[string]string{"DATABASE_URL": row.dsn}))
+			if err == nil || !strings.HasPrefix(err.Error(), row.want) {
+				t.Fatalf("resolveBootConfig = %v, want %q", err, row.want)
+			}
+			for _, part := range []string{"madeuphead", "zqtail", "zqsecret", "zqhead", "48213579"} {
+				if strings.Contains(err.Error(), part) {
+					t.Errorf("the refusal %q holds %q of the password", err, part)
+				}
+			}
+		})
 	}
 }
 
@@ -2030,16 +2218,25 @@ const devSignInOrigin = "http://127.0.0.1:8799"
 
 // With the flag a loopback client acts as any person it names, and a person can have the App probe
 // and import any repository it is installed on, so an App private key from the environment may
-// sign calls only to a loopback host.
+// sign calls only to a loopback host. The refusal quotes the base through redact.URL, which
+// prints a plain http(s) URL as written. A base with user info, a query or a fragment, and one
+// that is no absolute http(s) URL with a host (one that does not parse among them), never reaches
+// it: boot refuses each by the setting alone (TestDispatchsURLSettingsRefuseACredentialByTheSettingAlone,
+// TestGitHubAPIBaseRefusesAValueThatIsNoHTTPURL).
 func TestDevSignInRefusesAnAppKeyThatReachesGitHub(t *testing.T) {
 	t.Parallel()
 	withKey := &auth.AppConfig{ClientID: "Iv1.app", PEM: "app private key"}
 	fromEnv := appCredentialSource{}
 	// Unset, the App calls https://api.github.com.
-	for _, base := range []string{"", "https://api.github.com", "http://10.0.0.5:9022", "http://127.0.0.1@api.github.com"} {
+	for base, shown := range map[string]string{
+		"":                               "",
+		"https://api.github.com":         "https://api.github.com",
+		"http://10.0.0.5:9022":           "http://10.0.0.5:9022",
+		"https://ghe.example.com/api/v3": "https://ghe.example.com/api/v3",
+	} {
 		err := devSignInLoadedFence(devSignInBoot(t, map[string]string{"DISPATCH_GITHUB_API_BASE": base}), devSignInOrigin, withKey, fromEnv)
-		if err == nil || !strings.Contains(err.Error(), "DISPATCH_GITHUB_API_BASE="+strconv.Quote(base)) || !strings.Contains(err.Error(), "DISPATCH_APP_PEM_B64") {
-			t.Errorf("DISPATCH_GITHUB_API_BASE=%q: err = %v, want a refusal naming DISPATCH_GITHUB_API_BASE and DISPATCH_APP_PEM_B64", base, err)
+		if err == nil || !strings.Contains(err.Error(), "DISPATCH_GITHUB_API_BASE="+strconv.Quote(shown)) || !strings.Contains(err.Error(), "DISPATCH_APP_PEM_B64") {
+			t.Errorf("DISPATCH_GITHUB_API_BASE=%q: err = %v, want a refusal naming DISPATCH_GITHUB_API_BASE=%q and DISPATCH_APP_PEM_B64", base, err, shown)
 		}
 	}
 	// The e2e harness points the App at its fake GitHub on 127.0.0.1 (packages/dispatch/e2e/run-server.sh).

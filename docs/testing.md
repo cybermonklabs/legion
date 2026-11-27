@@ -353,15 +353,41 @@ itself, whose tests import its sources by relative path.
   third argument to `test` or `beforeAll` nor a `setDefaultTimeout`, because the shared wait reads
   the command's guard and not a row's. The exceptions are a row of `packages/dispatch/e2e/__tests__`
   that states its limit through `bounded-subprocess.ts`'s `rowLimit` or through
-  `outside-path-reach-fixtures.ts`'s `row` and `probingRow`, and a hook or a row whose work is one
-  measured download or one measured process run with no shared wait in it: such a hook or row
-  takes a guard of its own, at least twice its slowest reading on a machine that runs the suite
-  (CI's, or a dev box's), and the `"//"` note of its package's `package.json`, where the command's
-  guards are written, gives that number with the readings and their runs. A file whose rows need a
-  much larger guard than the rest runs in a second `bun test` command of the same script, with its
-  own `--timeout` and the same preload. Tests written before this rule still set guards of their
-  own (`git grep -n setDefaultTimeout -- '*.ts'` lists the files); each moves to its command's
-  guard as it is carried to the shared wait.
+  `outside-path-reach-fixtures.ts`'s `row` and `probingRow`; a row that needs more than the command's
+  guard by design, such as one that starts a cold role pane (5-6 s, more than Bun's 5000 ms default),
+  which calls `@legion/test-fixtures/deadline`'s `useRowGuard(ms)` for the shared wait's deadline and
+  passes the same value as `test`'s third argument, which Bun honours as the row's kill under
+  `bun test`, `--parallel` and `bun run test` alike, so the two agree in every mode (the guard is
+  forgotten at the next mark, so it belongs to that one row); and if that row's own cleanup runs past
+  the command's guard in raw awaits (no shared wait), its `afterEach` passes the same value as its
+  own hook timeout, which Bun arms a clock of its own for; and a hook or a row whose work is one
+  measured download or one measured process run with no shared wait in it. Such a row takes a guard
+  of its own, at least twice its slowest reading on a machine that runs the suite (CI's, or a dev
+  box's), and the `"//"` note of its package's `package.json`, where the command's guards are
+  written, gives that number with the readings and their runs. A file whose rows need a much larger
+  guard than the rest runs in a second `bun test` command of the same script, with its own
+  `--timeout` and the same preload. Tests written before this rule still set guards of their own
+  (`git grep -n setDefaultTimeout -- '*.ts'` lists the files); each moves to its command's guard as
+  it is carried to the shared wait.
+
+- The guard belongs on the command line, because Bun 1.4.4 gives no other way to raise it across a
+  whole non-parallel run. It reads no `[test] timeout` from `bunfig.toml`, and a `setDefaultTimeout`
+  from a preload holds only for the first file of a non-parallel (shared-process) `bun test`: a
+  two-file run with `setDefaultTimeout(20000)` in a preload passed the first file's 8 s row and
+  timed the second file's out at 5000 ms, and a `setDefaultTimeout` inside a `beforeEach` changes
+  nothing, because a row's guard is fixed when the row is registered. Under `--parallel` each file is
+  its own process and reloads the preload, so a preload's `setDefaultTimeout` does hold there. So
+  `packages/test-fixtures` and `packages/pi-envoy`, which run non-parallel, keep `--timeout` in their
+  `test` scripts, and a plain `bun test` in them (no `--timeout`) gives each row Bun's 5000 ms
+  default, not the script's guard. `packages/pi-legion` runs `--parallel=4`, so its `test` script
+  sets the guard through a preload instead (`test-timeout-preload.ts`): inside a `--test-worker` it
+  calls `setDefaultTimeout` beside `@legion/test-fixtures/deadline`'s `declareGuard`, so Bun's kill
+  and the shared wait's deadline are one length for every worker. It sets neither outside a worker,
+  because a non-parallel `bun test` would raise the deadline for the first file alone, so `bun test`
+  (and a `--parallel` run of a single file, which takes no worker) keeps Bun's 5000 ms, as on main;
+  only the `--parallel=4` `bun run test` gets the 300000 ms guard. The declared guard wins over the
+  command line, so the worker `--timeout=5000` that `--parallel` injects does not lower it; a package
+  that declares none takes the command line's `--timeout`, unchanged.
 
 ## A test that looks for a process it started
 
@@ -873,6 +899,19 @@ copy writes a few hundred bytes. `storetest`'s own test fails when a clone write
 hundredth of its template's size, and each module's `internal/textcheck` test
 `TestEveryCreatedDatabaseIsAFileCopy` fails on any line of the module's Go files that opens a
 database's creation in a string without `strategy file_copy` on the same line.
+
+The same test then runs `testdb.WithoutJIT(name)` on the database it made (`alter database … set
+jit = off`; `internal/testpg/testdb` in each module), so every session on it starts with JIT off,
+as production's database does: Dispatch runs on Cloud SQL, which does not support PostgreSQL's
+LLVM JIT (https://cloud.google.com/sql/docs/postgres/features, "Unsupported features"), and CI's
+Postgres image runs with `jit = on`. Under it a statement whose estimate passes `jit_above_cost`
+compiles before it runs: in `internal/dispatch/refs` one oracle statement spent 445-475 ms of each
+453-564 ms run compiling, 200 times a run. The setting is the database's, and a clone does not
+copy its template's, so each database takes it when it is made, a template included. Each
+module's `internal/textcheck` test `TestEveryCreatedDatabaseRunsWithoutJIT` fails on any function
+that opens a database's creation in a string and calls no `WithoutJIT`, and
+`TestEveryDatabaseRunsWithoutJIT` (Dispatch's `storetest`, the daemon's `testpg`) reads `jit = off`
+from the source `database` on each kind of database those harnesses hand out.
 
 In Envoy, a test that already holds a server's URL makes its database with
 `internal/testpg/testdb`'s `DatabaseOn`, never `internal/testpg`'s: `testpg` links

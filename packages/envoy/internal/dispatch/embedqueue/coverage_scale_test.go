@@ -25,6 +25,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // coverageScaleURLEnv names the Postgres server TestCoverageStatementScale builds its corpora on,
@@ -857,6 +858,11 @@ func copyForServerStart(t *testing.T, admin *pgx.Conn, server, name string) {
 	fmt.Printf("coverage-scale-database: %s\n", copied)
 	if _, err := admin.Exec(ctx, "alter database "+copied+" set synchronous_commit = on"); err != nil {
 		t.Fatalf("make %s commit synchronously: %v", copied, err)
+	}
+	// A clone takes none of its template's settings, so the copy the server starts on is set to
+	// run without JIT here, as production's database does (testdb.WithoutJIT).
+	if _, err := admin.Exec(ctx, testdb.WithoutJIT(copied)); err != nil {
+		t.Fatalf("turn JIT off on %s: %v", copied, err)
 	}
 	conn, err := pgx.Connect(ctx, serverDatabaseURL(t, server, copied))
 	if err != nil {
