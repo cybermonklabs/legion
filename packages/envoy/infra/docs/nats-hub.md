@@ -285,7 +285,7 @@ With `authCallout`, the server admits every client that is not one of its users 
 service, which reads the client's token and answers with that connection's
 grant, as [NATS authorization](../README.md#nats-authorization) renders it: one `auth_callout`
 block inside the authorization block, whose `auth_users` is the key of every user above, the
-session user's included (a hub with `authCallout` has no listener user, below). After the
+hub's own listener's and the session user's included. After the
 authorization block come the ping lines, `ping_interval: "20s"` and `ping_max: 2`, so a hung
 replica of the auth service leaves the callout's queue group within 80 s. A static user
 connects by its seed and the session user's client with no credential, and neither reaches the
@@ -302,10 +302,23 @@ with `privateProjects` the hub enforces it, refusing a service user of any other
 granted more (below). There is no `accounts` block: the service places each client in the global
 account, beside the static users, so turning the callout on moves no stream.
 
-A hub with `authCallout` runs no `listener` of its own yet: the listener connects as a user whose
-seed the hub stores, and its service identity, with which it would connect through the auth
-service instead, arrives in a later change. Until then `listener` beside
-`authCallout` is refused naming both, as `listener and authCallout: …`, before anything registers.
+A hub with `authCallout` keeps its own session listener (`listener`, or `gcp:ClusteredNatsHub`'s
+`tailnet.listener`). The listener connects as a user whose seed the hub stores, so its key is in
+`auth_users` beside every other static user's, and it is admitted by its nkey with its listener
+grant and never reaches the auth service (`gcp/clusteredhub_callout_live_test.go`,
+`TestAClusteredHubsSeededListenerSkipsTheCallout`). Its move to a service identity, with which it
+would connect through the auth service instead, is a later change. `privateProjects` refuses that
+seeded listener, as it refuses every user but the service's (below).
+
+**What the callout alone does not change.** While the hub has a `sessionUser`, a client presenting
+no credential still becomes it without reaching the auth service, with the session user's grant:
+publish to every `_INBOX.` subject and subscribe to every session's relay subject
+(`core.SessionPermissions`). nats-server gives a client that presents no user name, password,
+token or nkey the `no_auth_user`'s key, and skips the callout for a key in `auth_users`
+(nats-server v2.15.1 `server/auth.go:919-922` and `:756`); the same test measures it. So turning
+the callout on gives a client that presents a token its own grant, and narrows no client that
+presents none. That needs the `sessionUser` removed, which refuses every client that presents no
+credential: do it only once every client presents one.
 
 `privateProjects` says the deployment may make a Dispatch project private, which the deployment's
 requirement for private projects allows only while every client connects through the auth service. So it is

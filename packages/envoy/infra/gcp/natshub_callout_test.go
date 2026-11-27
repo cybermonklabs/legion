@@ -88,57 +88,107 @@ func TestAHubWithoutTheCalloutRendersNoCalloutLine(t *testing.T) {
 	require.NotContains(t, podAnnotations(values), "envoy-infra.sjawhar.dev/auth-callout")
 }
 
-// A hub behind the auth service runs no listener of its own until the listener has a service
-// identity to connect through the auth service with, which arrives with dispatch://INFRA-840's
-// t-e-13: today the listener connects as a NATS user whose seed the hub stores. So listener
-// (gcp:NatsHub) beside authCallout is refused, and so is gcp:ClusteredNatsHub's session listener
-// wherever it is declared: tailnet.listener, whose tailnet always runs one, or the hub's own
-// listener input, which the last subtest declares with no tailnet. Each refusal names both inputs,
-// and nothing registers. The refusal is this slice's stated behaviour until t-e-13 lands, and the
-// task that sets the listener's service identity removes it.
-func TestAHubBehindTheAuthServiceRunsNoListenerOfItsOwn(t *testing.T) {
+// A hub behind the auth service keeps its own session listener, which connects as a user whose
+// seed the hub stores (dispatch://INFRA-840): the listener's user is a keyed user, so core lists
+// its key in auth_users after the users' keys, and nats-server admits it by its nkey alone, as it
+// admits every static user, without asking the auth service. That holds for gcp:NatsHub's
+// listener and for gcp:ClusteredNatsHub's session listener wherever it is declared:
+// tailnet.listener, which the tailnet always runs, or the hub's own listener input. The clustered
+// hub's pods then carry the callout's annotation, whose digest covers auth_users, and the hub
+// registers. The listener moving to a service identity, with which it would connect through the
+// auth service instead, is dispatch://INFRA-840's t-e-13 and changes none of this.
+//
+// Controls: put back the refusal of a listener beside authCallout (gcp/clusteredhub.go, before
+// newClusteredHubTailnet; gcp/natshub.go, before hubListener) and every subtest fails with that
+// refusal; drop the listener's user from auth_users (core/nats_callout.go block: skip a user whose
+// Label is "listener") and each subtest fails on the listener's key.
+func TestAHubBehindTheAuthServiceKeepsItsSeededListener(t *testing.T) {
+	block := calloutBlock(keyA, keyB, keyC, keyD, keyAuth, keyListener, keySessions)
 	t.Run("gcp:NatsHub", func(t *testing.T) {
 		args := calloutNatsHub()
 		args.Listener = exampleArgs().Listener
+		conf, err := gcp.NatsHubAuthConf(args)
+		require.NoError(t, err)
+		require.Contains(t, conf, "  ]\n"+block+"}\n", "the listener's key is in auth_users, after the users' and before the session user's")
+		m, err := run(t, args, nil, true)
+		require.NoError(t, err)
+		require.Contains(t, m.Types(), hubType)
+	})
+	for _, row := range []struct {
+		name string
+		args func() *gcp.ClusteredNatsHubArgs
+	}{
+		{"gcp:ClusteredNatsHub's tailnet.listener", clusteredArgs},
+		{"gcp:ClusteredNatsHub's own listener", func() *gcp.ClusteredNatsHubArgs {
+			args := clusteredArgs()
+			standaloneListener(args)
+			return args
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := row.args()
+			args.Users = append(args.Users, authServiceUser())
+			args.AuthCallout = authCallout()
+			s, err := gcp.ResolveClusteredNatsHub(args)
+			require.NoError(t, err)
+			require.Contains(t, s.AuthConf, "  ]\n"+block+"}\n", "the listener's key is in auth_users, after the users' and before the session user's")
+			m, err := runClustered(t, "example-clustered-hub", args, nil)
+			require.NoError(t, err)
+			require.Contains(t, m.Types(), clusteredHubType)
+			sum := sha256.Sum256([]byte(block + calloutPingLines))
+			require.Equal(t, hex.EncodeToString(sum[:]), podAnnotations(chartValues(t, m))["envoy-infra.sjawhar.dev/auth-callout"],
+				"the pods' callout annotation is the digest of the callout's lines, the listener's key among them")
+		})
+	}
+}
+
+// privateProjects still refuses the hub's own session listener, which connects as a user whose
+// seed the hub stores: a private project needs every client but the auth service's own user to
+// connect through the auth service (c-private-needs-callout, R12). The refusal is core's, naming
+// privateProjects and the listener's user, and nothing registers. Control: make core's users loop
+// in validateCallout skip a user whose Label is "listener", and each subtest fails with
+// "privateProjects was taken beside the session listener".
+func TestAPrivateHubRefusesItsSeededListener(t *testing.T) {
+	const want = `: a stored client seed while a project is private; every client connects through the auth service, so callout.serviceUser "example-auth" is the only user`
+	t.Run("gcp:NatsHub", func(t *testing.T) {
+		args := privateNatsHub()
+		args.Listener = exampleArgs().Listener
 		err := gcp.ResolveNatsHub(args)
+		require.ErrorContains(t, err, `privateProjects: listener "example-hub"`+want, "privateProjects was taken beside the session listener")
 		var input *core.InputError
 		require.ErrorAs(t, err, &input)
-		require.Equal(t, "listener", input.Input)
-		require.ErrorContains(t, err, "listener and authCallout:")
-		require.ErrorContains(t, err, "its service identity arrives with dispatch://INFRA-840 (t-e-13)")
+		require.Equal(t, "privateProjects", input.Input)
 		m, err := run(t, args, nil, true)
-		require.ErrorContains(t, err, "listener and authCallout:")
+		require.ErrorContains(t, err, want)
 		require.Equal(t, []string{gcpProviderType}, m.Types(), "nothing registered beyond the test's provider")
 	})
-	t.Run("gcp:ClusteredNatsHub", func(t *testing.T) {
-		args := clusteredArgs()
-		args.Users = append(args.Users, authServiceUser())
-		args.AuthCallout = authCallout()
-		_, err := gcp.ResolveClusteredNatsHub(args)
-		var input *core.InputError
-		require.ErrorAs(t, err, &input)
-		require.Equal(t, "tailnet.listener", input.Input)
-		require.ErrorContains(t, err, "tailnet.listener and authCallout:")
-		require.ErrorContains(t, err, "its service identity arrives with dispatch://INFRA-840 (t-e-13)")
-		m, err := runClustered(t, "example-clustered-hub", args, nil)
-		require.ErrorContains(t, err, "tailnet.listener and authCallout:")
-		require.Empty(t, m.Registrations(), "nothing registered")
-	})
-	t.Run("gcp:ClusteredNatsHub's own listener", func(t *testing.T) {
-		args := clusteredArgs()
-		standaloneListener(args)
-		args.Users = append(args.Users, authServiceUser())
-		args.AuthCallout = authCallout()
-		_, err := gcp.ResolveClusteredNatsHub(args)
-		var input *core.InputError
-		require.ErrorAs(t, err, &input)
-		require.Equal(t, "listener", input.Input)
-		require.ErrorContains(t, err, "listener and authCallout:")
-		require.NotContains(t, err.Error(), "tailnet.listener")
-		m, err := runClustered(t, "example-clustered-hub", args, nil)
-		require.ErrorContains(t, err, "listener and authCallout:")
-		require.Empty(t, m.Registrations(), "nothing registered")
-	})
+	for _, row := range []struct {
+		name string
+		edit func(a *gcp.ClusteredNatsHubArgs)
+	}{
+		{"gcp:ClusteredNatsHub's tailnet.listener", func(a *gcp.ClusteredNatsHubArgs) {
+			full := clusteredArgs()
+			a.Tailnet, a.TailnetAuthKey = full.Tailnet, full.TailnetAuthKey
+		}},
+		{"gcp:ClusteredNatsHub's own listener", func(a *gcp.ClusteredNatsHubArgs) {
+			full := clusteredArgs()
+			standaloneListener(full)
+			a.Listener = full.Listener
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := privateClusteredHub()
+			row.edit(args)
+			_, err := gcp.ResolveClusteredNatsHub(args)
+			require.ErrorContains(t, err, `privateProjects: listener "envoy-hub"`+want, "privateProjects was taken beside the session listener")
+			var input *core.InputError
+			require.ErrorAs(t, err, &input)
+			require.Equal(t, "privateProjects", input.Input)
+			m, err := runClustered(t, "example-clustered-hub", args, nil)
+			require.ErrorContains(t, err, want)
+			require.Empty(t, m.Registrations(), "nothing registered")
+		})
+	}
 }
 
 // core's refusals of the callout reach the consumer as a core.InputError naming authCallout.
