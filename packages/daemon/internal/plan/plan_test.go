@@ -256,13 +256,13 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 	}
 }
 
-// MovesBackPairs is every pair MovePairs holds but the 16 no line of a task Supported takes makes
+// MovesBackPairs is every pair MovePairs holds but the 13 no line of a task Supported takes makes
 // as a move back, written out here rather than read from the checks: each step phase, step among
 // them, to retro or to merging, and retro to merging, since the retro and the merge end every
-// line, and implementing to testing, reviewing or accepting, since the steps that read the
-// implementer's pull request come after it. Among the 41: a move back of another order than
-// today's (testing-reviewing, on implementer reviewer tester), a planner's move back to the
-// implementer (planning-implementing, on implementer planner), the merge's move back to the
+// line, in that order. Among the 44: a move back of another order than today's
+// (testing-reviewing, on implementer reviewer tester), a planner's move back to the implementer
+// (planning-implementing, on implementer planner), a move back from the implementer's second step
+// (implementing-reviewing, on implementer reviewer implementer), the merge's move back to the
 // retro, and the moves of a step of a role the deployment defines, which may stand before the
 // implementer or after it: step-implementing (implementer checker), implementing-step (checker
 // implementer) and step-step (implementer checker linter). CanMoveBack answers each pair as the
@@ -271,7 +271,7 @@ func TestMovesBackPairsAreTheMovesBackOfEveryLineSupportedTakes(t *testing.T) {
 	never := []string{
 		"planning-retro", "implementing-retro", "testing-retro", "reviewing-retro", "accepting-retro",
 		"planning-merging", "implementing-merging", "testing-merging", "reviewing-merging", "accepting-merging",
-		"retro-merging", "implementing-testing", "implementing-reviewing", "implementing-accepting",
+		"retro-merging",
 		"step-retro", "step-merging",
 	}
 	var want []string
@@ -299,5 +299,68 @@ func TestMovesBackPairsAreTheMovesBackOfEveryLineSupportedTakes(t *testing.T) {
 	got[0] = "rubbish"
 	if MovesBackPairs()[0] == "rubbish" {
 		t.Fatal("MovesBackPairs returned the stored slice, which a caller can overwrite")
+	}
+}
+
+// eachTakenTask reads every task of at most MostEnumeratedSteps steps and none longer: the task
+// that names the implementer and the reviewer in turn up to the bound, implementer reviewer
+// implementer, is read, and the same task one step longer is not, though the checks take both and
+// a bound one step higher reads it. The fault is a bound that reads no task at it, or one past it.
+func TestEachTakenTaskReadsTasksOfAtMostMostEnumeratedSteps(t *testing.T) {
+	d := Deployment{Roles: BuiltinRoles()}
+	inTurn := func(n int) []Step {
+		steps := make([]Step, n)
+		for i := range steps {
+			steps[i] = Step{Role: []string{"implementer", "reviewer"}[i%2]}
+		}
+		return steps
+	}
+	atBound, pastBound := inTurn(MostEnumeratedSteps), inTurn(MostEnumeratedSteps+1)
+	for _, steps := range [][]Step{atBound, pastBound} {
+		p := Plan{Tasks: []Task{{ID: DefaultTask, Steps: steps}}}
+		if refused := append(Supported(p, d), Validate(p, d)...); len(refused) != 0 {
+			t.Fatalf("the task %q is refused %+v, want it taken: the case's premise", Words(steps), refused)
+		}
+	}
+	read := func(most int) (tasks map[string]bool, longest int) {
+		tasks = map[string]bool{}
+		eachTakenTask(most, func(steps []Step) {
+			tasks[strings.Join(Words(steps), " ")] = true
+			longest = max(longest, len(steps))
+		})
+		return tasks, longest
+	}
+	at, past := strings.Join(Words(atBound), " "), strings.Join(Words(pastBound), " ")
+	tasks, longest := read(MostEnumeratedSteps)
+	if !tasks[at] {
+		t.Errorf("eachTakenTask(%d) leaves out %q, a task at the bound", MostEnumeratedSteps, at)
+	}
+	if tasks[past] || longest > MostEnumeratedSteps {
+		t.Errorf("eachTakenTask(%d) reads a task of %d steps (%q read: %t), want none past the bound", MostEnumeratedSteps, longest, past, tasks[past])
+	}
+	if higher, _ := read(MostEnumeratedSteps + 1); !higher[past] {
+		t.Errorf("eachTakenTask(%d) leaves out %q, so the bound is not what keeps it out", MostEnumeratedSteps+1, past)
+	}
+}
+
+// MovesBackPairs loses no pair to its bound: the pairs are finite, and the tasks of one step more
+// than MostEnumeratedSteps make none that the tasks of at most MostEnumeratedSteps do not
+// (MostEnumeratedSteps says why), and MovesBackPairs is the pairs of those. The fault is a bound
+// one step too low: the tasks of at most two steps make 20 of the 44 pairs, implementing-reviewing
+// and testing-reviewing not among them, and the test then fails naming the 24 they lose.
+func TestMovesBackPairsLoseNoPairPastMostEnumeratedSteps(t *testing.T) {
+	at, past := movesBackPairsOf(MostEnumeratedSteps), movesBackPairsOf(MostEnumeratedSteps+1)
+	if !reflect.DeepEqual(at, past) {
+		var lost []string
+		for _, pair := range past {
+			if !slices.Contains(at, pair) {
+				lost = append(lost, pair)
+			}
+		}
+		t.Fatalf("the tasks of at most %d steps make %d pairs, and those of at most %d make %d: the bound loses %q",
+			MostEnumeratedSteps, len(at), MostEnumeratedSteps+1, len(past), lost)
+	}
+	if got := MovesBackPairs(); !reflect.DeepEqual(got, at) {
+		t.Fatalf("MovesBackPairs() = %q, want the pairs of the tasks of at most %d steps, %q", got, MostEnumeratedSteps, at)
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
 // A file that names `hooks:` runs the hooks it names and no default beside them, read whole and
@@ -108,18 +109,56 @@ func TestAHookNamesAMoveOfAnyOrder(t *testing.T) {
 	}
 }
 
+// A task can name one role at two steps, and its line then makes a move back from implementing:
+// `implementer reviewer implementer` goes back from its second implementer step to its reviewer
+// step, implementing-reviewing, and the engine counts that move (workflow's Walk.MovesBack), so a
+// hook that names it fires and the loader takes it. So do the tester and the owner's acceptance
+// between two implementer steps. Each row's steps are held to the plan's checks first
+// (plan.Supported and plan.Validate take them, and plan.Line puts the move's to before its from),
+// so the premise is theirs and not this file's.
+func TestAHookNamingAMoveBackOfARoleAtTwoStepsLoads(t *testing.T) {
+	d := plan.Deployment{Roles: plan.BuiltinRoles()}
+	for _, tc := range []struct{ move, steps string }{
+		{"implementing-testing", "implementer tester implementer"},
+		{"implementing-reviewing", "implementer reviewer implementer"},
+		{"implementing-accepting", "implementer acceptance:owner implementer"},
+	} {
+		steps, err := plan.ParseSteps(tc.steps)
+		if err != nil {
+			t.Fatalf("ParseSteps(%q): %v", tc.steps, err)
+		}
+		p := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
+		if refused := append(plan.Supported(p, d), plan.Validate(p, d)...); len(refused) != 0 {
+			t.Fatalf("the plan %q is refused %+v, want it taken: the row's premise", tc.steps, refused)
+		}
+		from, to, _ := phase.ParsePair(tc.move)
+		line := plan.Line(steps)
+		if at := slices.Index(line, to); at < 0 || !slices.Contains(line[at+1:], from) {
+			t.Fatalf("the line %v of %q makes no move back %s, want %s before a later %s: the row's premise", line, tc.steps, tc.move, to, from)
+		}
+		cfg, err := Load(writeConfigFile(t, aHook("{name: stuck, on: work_back, every: 1, moves: ["+tc.move+"], roles: [implementer], prompt: Words.}")), noEnv)
+		if err != nil {
+			t.Errorf("Load(moves: [%s]), the move back of %q: %v, want it loaded", tc.move, tc.steps, err)
+			continue
+		}
+		if len(cfg.Hooks) != 1 || !reflect.DeepEqual(cfg.Hooks[0].Moves, []string{tc.move}) {
+			t.Errorf("Hooks of moves: [%s] = %+v, want the one move", tc.move, cfg.Hooks)
+		}
+	}
+}
+
 // A hook that names a move no task's line makes back would never fire, so the loader refuses it,
-// naming the move: each step phase, step among them, to retro or to merging, and retro to merging,
-// since the retro and the merge end every line; and implementing to testing, reviewing or
-// accepting, since every tester, reviewer and acceptance step comes after the implementer's. These
-// 16 are written out here, not read from the code under test. The twin: each of the other 41
-// pairs of MovePairs loads, a move back of today's line, one of another order and one of a step of
-// a role the deployment defines alike.
+// naming the move and the bound of the tasks the moves back are read off
+// (plan.MostEnumeratedSteps): each step phase, step among them, to retro or to merging, and retro
+// to merging, since the retro and the merge end every line, in that order. These 13 are written
+// out here, not read from the code under test. The twin: each of the other 44 pairs of MovePairs
+// loads, a move back of today's line, one of another order, one from the implementer's second
+// step and one of a step of a role the deployment defines alike.
 func TestAHookNamingAMoveNoLineMakesBackIsRefused(t *testing.T) {
 	never := []string{
 		"planning-retro", "implementing-retro", "testing-retro", "reviewing-retro", "accepting-retro",
 		"planning-merging", "implementing-merging", "testing-merging", "reviewing-merging", "accepting-merging",
-		"retro-merging", "implementing-testing", "implementing-reviewing", "implementing-accepting",
+		"retro-merging",
 		"step-retro", "step-merging",
 	}
 	loaded := 0
@@ -132,12 +171,12 @@ func TestAHookNamingAMoveNoLineMakesBackIsRefused(t *testing.T) {
 			loaded++
 			continue
 		}
-		want := fmt.Sprintf(`hooks[0].moves names %q, which no task's line makes as a move back, so the hook would never fire: retro and merging end every line, and every tester, reviewer and acceptance step comes after the implementer's`, move)
+		want := fmt.Sprintf(`hooks[0].moves names %q, which no task's line makes as a move back, so the hook would never fire: retro and merging end every line, in that order; the moves back are read off each task of at most %d steps that Legion takes (plan.MostEnumeratedSteps), and a longer task makes no move back those do not`, move, plan.MostEnumeratedSteps)
 		if err == nil || err.Error() != want {
 			t.Errorf("Load(moves: [%s]) error = %v, want %q", move, err, want)
 		}
 	}
-	if loaded != 41 {
-		t.Errorf("%d pairs were read as moves back, want 41", loaded)
+	if loaded != 44 {
+		t.Errorf("%d pairs were read as moves back, want 44", loaded)
 	}
 }

@@ -258,16 +258,17 @@ func Line(steps []Step) []phase.Phase {
 // "<from>-<to>" (phase.Pair), in the order of phase.MovePairs: a pair whose to stands before its
 // from on the Line of some task that Supported and Validate take, since a task moves back from a
 // phase of its line to any phase before it (workflow's backwardRows). It is read off those two
-// checks, over every order of every choice of Legion's five roles and two roles of a deployment,
-// so a later release whose checks take another line moves the set with them. A step of a role the
-// deployment defines runs as step wherever it stands, whatever its name, so two such roles of the
-// type testing, which may stand before the implementer or after it, stand for every role a
+// checks, over every task of at most MostEnumeratedSteps steps, each step any of Legion's five
+// roles or two roles of a deployment, a role at any number of steps, so a later release whose
+// checks take another line moves the set with them. A task can name one role at two steps, so
+// implementer reviewer implementer moves back from implementing to reviewing. A step of a role
+// the deployment defines runs as step wherever it stands, whatever its name, so two such roles of
+// the type testing, which may stand before the implementer or after it, stand for every role a
 // deployment defines, and make the pairs of step, step-step among them. The other pairs are a move
 // back of no line: each step phase to retro or to merging, and retro to merging, since the retro
-// and the merge end every line; and implementing to testing, reviewing or accepting, since every
-// tester, reviewer and acceptance step comes after the implementer's (stepReasons). The
-// configuration loader takes a hook's moves from this set alone (config's readHookMoves), so no
-// hook names a move that never fires. The answer is a fresh slice.
+// and the merge end every line, in that order. The configuration loader takes a hook's moves from
+// this set alone (config's readHookMoves), so no hook names a move that never fires. The answer is
+// a fresh slice.
 func MovesBackPairs() []string {
 	return slices.Clone(movesBackPairs())
 }
@@ -278,7 +279,54 @@ func CanMoveBack(from, to phase.Phase) bool {
 }
 
 // movesBackPairs is MovesBackPairs, built at its first read.
-var movesBackPairs = sync.OnceValue(func() []string {
+var movesBackPairs = sync.OnceValue(func() []string { return movesBackPairsOf(MostEnumeratedSteps) })
+
+// MostEnumeratedSteps is the most steps of a task MovesBackPairs reads (eachTakenTask), which with
+// no bound would read tasks of every length. Three is enough. A move back leaves one place of a
+// line for an earlier one, each place a step or Legion's retro or merge, which end every line.
+// Taking steps out of a task Supported and Validate take gives them no cause, as long as its first
+// implementer step stays and the rest keep their order: each of their causes is of a step the task
+// holds, but no implementer at all and a step that reads a pull request with no implementer step
+// before it (stepReasons). So the task's first implementer step and the steps a move leaves and
+// reaches, at most three steps, are a task they take whose line makes that move back.
+// TestMovesBackPairsLoseNoPairPastMostEnumeratedSteps reads one step more and finds no pair more.
+// Two steps are too few: their tasks make 20 of the 44 pairs, since a move between two steps,
+// neither of them the first implementer step, needs that step too, as implementer reviewer
+// implementer does for implementing-reviewing.
+const MostEnumeratedSteps = 3
+
+// movesBackPairsOf is each pair of phase.MovePairs, in its order, whose to stands before its from
+// on the Line of some task of at most most steps that Supported and Validate take (eachTakenTask).
+func movesBackPairsOf(most int) []string {
+	found := map[string]bool{}
+	eachTakenTask(most, func(steps []Step) {
+		line := Line(steps)
+		for at, from := range line {
+			for _, to := range line[:at] {
+				found[phase.Pair(from, to)] = true
+			}
+		}
+	})
+	pairs := make([]string, 0, len(found))
+	for _, pair := range phase.MovePairs() {
+		if found[pair] {
+			pairs = append(pairs, pair)
+		}
+	}
+	return pairs
+}
+
+// stepKeys is the keys eachTakenTask gives a step: none, the owner's, and one key that every step
+// given it shares. A key changes no phase a step runs as (RunsAs reads the role alone), so it
+// changes the moves of a line only through whether the checks take its task, and these three give
+// three steps every way to be one agent or several, the owner among them.
+var stepKeys = []string{"", "owner", "a"}
+
+// eachTakenTask calls take with the steps of each task of 1 to most steps that Supported and
+// Validate take, each step of one of Legion's five roles or of two roles of a deployment, with
+// each key of stepKeys. A role may stand at any number of those steps: the two checks alone judge
+// which steps, and which repeats of a role, a task takes.
+func eachTakenTask(most int, take func(steps []Step)) {
 	roles := slices.Clone(builtinRoles)
 	for _, name := range []string{"deployment-a", "deployment-b"} {
 		roles = append(roles, RoleDef{Name: name, Type: TypeTesting})
@@ -287,35 +335,20 @@ var movesBackPairs = sync.OnceValue(func() []string {
 	for _, role := range roles {
 		d.Roles[role.Name] = role
 	}
-	found := map[string]bool{}
 	var choose func(steps []Step)
 	choose = func(steps []Step) {
 		p := Plan{Tasks: []Task{{ID: DefaultTask, Steps: steps}}}
 		if len(steps) > 0 && len(Supported(p, d)) == 0 && len(Validate(p, d)) == 0 {
-			line := Line(steps)
-			for at, from := range line {
-				for _, to := range line[:at] {
-					found[phase.Pair(from, to)] = true
-				}
-			}
+			take(steps)
+		}
+		if len(steps) == most {
+			return
 		}
 		for _, role := range roles {
-			if slices.ContainsFunc(steps, func(step Step) bool { return step.Role == role.Name }) {
-				continue
+			for _, key := range stepKeys {
+				choose(append(slices.Clone(steps), Step{Role: role.Name, Key: key}))
 			}
-			step := Step{Role: role.Name}
-			if role.Name == "acceptance" {
-				step.Key = "owner" // Supported takes acceptance with this key alone
-			}
-			choose(append(slices.Clone(steps), step))
 		}
 	}
 	choose(nil)
-	pairs := make([]string, 0, len(found))
-	for _, pair := range phase.MovePairs() {
-		if found[pair] {
-			pairs = append(pairs, pair)
-		}
-	}
-	return pairs
-})
+}
