@@ -38,6 +38,11 @@
 #   state    A requirement with a plan node set overtaken leaves the coverage gaps and the plan view.
 #   outline  The outline's moves through PATCH alone, chaining each answer's placement_seq; the text
 #            passes keep every stored place; the input refusals; the route rows.
+#   own-text In the room's own fragment, a requirement OR1 with its paragraph, a prose block P6 and a
+#            callout OC1 holding a paragraph and a list: the read with no view answers OR1 and OC1
+#            each as one node and no node of the blocks their text holds, and the dry run of the
+#            delete of each counts 1; once P6 moves under OR1 through the PATCH, the read answers it
+#            under OR1, and that dry run counts 2.
 #   bands    after: null puts a node first in its own rank band, the memo first throughout.
 #   request  An open approval request on the spec query node names the version the drain writes.
 #   delete   A criterion KD with a requirement RD under it, and a trade-off lens LD on KD with one
@@ -986,6 +991,129 @@ tree_node_value "$section" "$p3" placement
 [[ "$answer" == text ]] || fail "$section" "P3 takes the placement text" "it holds '$answer' under $p3_parent"
 pass "$section" "P3 stands under $p3_parent with the placement text"
 
+# --- own-text: a typed block's own text is no node of the read and no node a delete counts ----------
+
+section=own-text
+# In the room's own fragment alice writes a requirement OR1 with its paragraph, a prose block P6 and
+# a callout OC1 that holds a paragraph and a list. The store holds the blocks the text of OR1 and of
+# OC1 holds as nodes placed by the text under them; the read with no view answers OR1 and OC1 each
+# as one node, which holds that text whole, and no node of those blocks, and a delete counts none of
+# them (typedOwnText in api/issue_tree_read.go). P6, which no typed block holds, is a node; once it
+# moves under OR1 through the PATCH, the read answers it there and the delete of OR1 counts it. Each
+# set of words below is written once in the issue, so a node of the read that holds them holds that
+# block's text.
+readonly own_requirement_words="The own-text requirement keeps its words in its own paragraph."
+readonly own_callout_words="The own-text callout holds a paragraph of its own."
+readonly own_item_words="The first item of the own-text callout's list."
+readonly own_prose_words="The sixth prose block of the room, P6, which no typed block holds."
+rp_edit "$section" "alice writes OR1, P6 and OC1 into the room's own fragment" "$tree_doc" "$(jq -cn --arg r ":::requirement{#or1}
+$own_requirement_words
+:::" --arg p "$own_prose_words" --arg c ":::callout{#oc1 kind=\"note\" title=\"\"}
+$own_callout_words
+
+- $own_item_words
+- The second item of the own-text callout's list.
+:::" '[{op: "insert", after: "end", markdown: $r}, {op: "insert", after: "end", markdown: $p}, {op: "insert", after: "end", markdown: $c}]')"
+readonly or1="$(rp_block "$key" or1)" oc1="$(rp_block "$key" oc1)"
+rp_wait_indexed "$section"
+rp_wait_drained "$section"
+rp_paragraph "$section" "The sixth prose block"
+readonly p6="$answer"
+# rp_own_text SECTION NODE: the own text of the typed block NODE as the store holds it, as
+# typedOwnText reads it - each block whose placement is `text` and whose current part_of names NODE
+# or a block that is itself such text, at any depth - its node ids joined by commas in rp_own, and
+# the depth of the deepest of them below NODE in rp_own_depth, 0 where NODE holds none.
+rp_own_text() {
+  with_vars "$1" "read the blocks the store places under $2 by its text" \
+    "with recursive parts as (
+       select distinct on (t.from_id, t.to_kind, t.to_id) t.from_id, t.to_kind, t.to_id, t.asserted from graph_tuples t
+       where t.from_kind = 'block' and t.kind = 'part_of' and starts_with(t.from_id, :'issue' || '/')
+       order by t.from_id, t.to_kind, t.to_id, t.seq desc
+     ), placed as (
+       select distinct on (v.from_id) v.from_id, case when v.asserted then v.to_id end as placement from graph_tuples v
+       where v.from_kind = 'block' and v.kind = 'placement' and v.to_kind = 'value' and starts_with(v.from_id, :'issue' || '/')
+       order by v.from_id, v.seq desc
+     ), own (id, depth) as (
+       select p.from_id, 1 from parts p join placed d on d.from_id = p.from_id
+       where p.asserted and p.to_kind = 'block' and p.to_id = :'node' and d.placement = 'text'
+       union
+       select p.from_id, o.depth + 1 from own o
+       join parts p on p.to_kind = 'block' and p.to_id = o.id join placed d on d.from_id = p.from_id
+       where p.asserted and d.placement = 'text' and o.depth < 64
+     )
+     select coalesce(string_agg(distinct id, ',' order by id), '') || '|' || coalesce(max(depth), 0) from own" \
+    issue="$key" node="$2"
+  rp_own="${answer%|*}"
+  rp_own_depth="${answer##*|}"
+}
+# rp_own_read TYPED OWN WORDS…: what the tree read last kept answers wrong of the typed block TYPED,
+# appended to problems: TYPED as no single node whose text holds the first of WORDS; a node of a
+# block of OWN, TYPED's own text (rp_own_text); or a node other than TYPED whose text holds one of
+# WORDS.
+rp_own_read() {
+  local typed="$1" own="$2" words got
+  shift 2
+  words="$(jq -cn '$ARGS.positional' --args "$@")"
+  got="$(jq -c --arg n "$typed" '[.nodes[] | select(.id == $n) | .text]' "$work/tree.json")"
+  jq -e --arg w "$1" 'length == 1 and (.[0] // "" | contains($w))' <<<"$got" >/dev/null ||
+    problems+="${problems:+; }the read answers $typed as the nodes with the texts $got, want one node holding '$1'"
+  got="$(jq -c --arg own "$own" '($own | split(",")) as $ids
+    | [.nodes[] | select(.id as $id | $ids | index($id) != null) | {id, parent: .parent.id, text}]' "$work/tree.json")"
+  [[ "$got" == '[]' ]] ||
+    problems+="${problems:+; }the read answers the blocks of $typed's own text as the nodes $got, want none"
+  got="$(jq -c --arg n "$typed" --argjson w "$words" \
+    '[.nodes[] | select(.id != $n and ((.text // "") as $t | any($w[]; . as $x | $t | contains($x)))) | {kind, id, parent: .parent.id}]' "$work/tree.json")"
+  [[ "$got" == '[]' ]] ||
+    problems+="${problems:+; }the read answers the nodes $got holding the words of $typed, want none but $typed"
+}
+# rp_dry_count NODE WANT WHAT: the dry run of the delete of NODE, as the person; a status other than
+# 200, or a count other than WANT (WHAT, the nodes it counts), is appended to problems.
+rp_dry_count() {
+  local got
+  rp_delete person "$key" "$1" "" "dry_run=true"
+  got="$(jq -r '.count // "none"' "$work/body" 2>/dev/null)" || got=none
+  if [[ "$status" != 200 ]]; then
+    problems+="${problems:+; }the dry run $tree_last_request answered $status, want 200: $(body)"
+  elif [[ "$got" != "$2" ]]; then
+    problems+="${problems:+; }the dry run of the delete of $1 counts $got, want $2: $3"
+  fi
+}
+rp_own_text "$section" "$or1"
+[[ -n "$rp_own" ]] ||
+  fail "$section" "the store holds OR1's paragraph as a node under $or1 placed by the text" "no block stands under $or1 with the placement text, so this case proves nothing"
+readonly or1_own="$rp_own"
+rp_own_text "$section" "$oc1"
+((rp_own_depth >= 2)) ||
+  fail "$section" "the store holds OC1's list as nodes under $oc1 placed by the text, two levels deep and more" \
+    "the blocks under $oc1 by the text, '$rp_own', reach depth $rp_own_depth, so this case proves no depth"
+readonly oc1_own="$rp_own"
+pass "$section" "the store places $or1's paragraph $or1_own under it by the text, and $oc1's blocks $oc1_own down to depth $rp_own_depth"
+rp_tree "$section" "$key"
+# What the read answers wrong and both dry runs are read before the check fails, so its line names
+# them all.
+problems=""
+rp_own_read "$or1" "$or1_own" "$own_requirement_words"
+rp_own_read "$oc1" "$oc1_own" "$own_callout_words" "$own_item_words"
+rp_dry_count "$or1" 1 "OR1, and not its own paragraph"
+rp_dry_count "$oc1" 1 "OC1, and none of the blocks its text holds"
+[[ -z "$problems" ]] ||
+  fail "$section" "the read with no view answers OR1 and OC1 each as one node and no node of the blocks their text holds, and the dry run of the delete of each counts 1" "$problems"
+pass "$section" "the read with no view answers $or1 and $oc1 each as one node and no node of the blocks their text holds, and the dry run of the delete of each counts 1"
+p6_read="$(jq -c --arg n "$p6" '[.nodes[] | select(.id == $n) | .parent.id]' "$work/tree.json")"
+jq -e --arg r "$or1" 'length == 1 and .[0] != null and .[0] != $r' <<<"$p6_read" >/dev/null ||
+  fail "$section" "the read answers P6 before its move as one node, under the node its text places it under" "it answers $p6 under the parents $p6_read, want one, not $or1"
+rp_move "$section" person "$key" "$p6" "$or1"
+rp_stored "$section" "$p6" "$or1"
+rp_tree "$section" "$key"
+problems=""
+p6_read="$(jq -c --arg n "$p6" '[.nodes[] | select(.id == $n) | .parent.id]' "$work/tree.json")"
+[[ "$p6_read" == "$(jq -cn --arg r "$or1" '[$r]')" ]] || problems="the read answers $p6 under the parents $p6_read after its move, want $or1 alone"
+rp_own_read "$or1" "$or1_own" "$own_requirement_words"
+rp_dry_count "$or1" 2 "OR1 and P6"
+[[ -z "$problems" ]] ||
+  fail "$section" "after the move of P6 the read answers it under OR1 and no node of OR1's own text, and the dry run of the delete of OR1 counts 2" "$problems"
+pass "$section" "after the move of $p6 the read answers it under $or1 and no node of $or1's own text, and the dry run of the delete of $or1 counts 2"
+
 # --- bands: after: null puts a node first in its own band -----------------------------------------------
 
 section=bands
@@ -1183,4 +1311,4 @@ rp_node_rows "$api_dir"
 pass "$section" "the route files under /api/v1/issues/{key}/nodes/{id} are exactly $answer"
 
 pass "$driver" "made $moves moves through the PATCH"
-printf 'PASS: %s complete 14 sections\n' "$driver"
+printf 'PASS: %s complete 15 sections\n' "$driver"
