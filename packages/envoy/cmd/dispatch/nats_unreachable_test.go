@@ -24,7 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -430,7 +430,7 @@ func saveDeliveryRule(t *testing.T, database *store.Store, rule delivery.Deliver
 	`, deliveryProject); err != nil {
 		t.Fatalf("seed the project whose source reads %s: %v", rule.DeployRepo, err)
 	}
-	if _, err := deliverytest.SaveRules(ctx, database.Pool, deliveryProject, rule); err != nil {
+	if _, err := deliveryseed.SaveRules(ctx, database.Pool, deliveryProject, rule); err != nil {
 		t.Fatalf("seed the delivery settings of %s: %v", deliveryProject, err)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
@@ -107,7 +108,7 @@ func mustString(t *testing.T, raw json.RawMessage) string {
 func TestTheFailingJobsItemsAreThePipelinesFailingJobs(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 14})
+	fixture := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{Seed: 2916, OneProject: true, Days: 14})
 	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, fixture.To.Add(-time.Minute))
 
 	// A pull-request checks run that failed a job, ending the window one second past the 24 hours
@@ -232,7 +233,7 @@ func TestTwoRepositoriesFailingJobsOfOneNameAreTwoRows(t *testing.T) {
 func TestTheSlowestJobsItemsAreThePipelinesSlowestJobs(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 14})
+	fixture := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{Seed: 2916, OneProject: true, Days: 14})
 	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, fixture.To.Add(-time.Minute))
 	// The Pipeline's seven days ending on the history's eleventh, and the items' range of the
 	// same days.

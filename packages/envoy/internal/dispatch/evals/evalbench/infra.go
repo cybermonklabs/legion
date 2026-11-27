@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/evals/evalfixture"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
-	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -459,7 +459,7 @@ func copyIssues(ctx context.Context, pool *store.Pool, history projectHistory) e
 			route = new("session:s-" + current + "-" + issue.key)
 		}
 		if issue.claimed {
-			claimedBy = new(legiontest.SessionActor(current, issue.key))
+			claimedBy = new(legionseed.SessionActor(current, issue.key))
 			claimedAt = &issue.stretch[issue.reached-1]
 		}
 		updated := issue.end()
@@ -498,7 +498,7 @@ func (s *eventSource) Values() ([]any, error) {
 		if event.filing {
 			owner = s.history.issues[issue.parent].key
 		}
-		actorJSON = legiontest.SessionActor(roles[event.role], owner)
+		actorJSON = legionseed.SessionActor(roles[event.role], owner)
 	}
 	at := time.Unix(0, event.at).UTC()
 	s.values = append(s.values[:0], issue.key, event.seq, kindNames[event.kind], actorJSON, s.payload(event, issue), false, at, at)
@@ -509,7 +509,7 @@ func (s *eventSource) Values() ([]any, error) {
 // (an issue event's status and a filing's tree, and a comment's body) and the fields that
 // Dispatch's own event of that kind carries and that the keyword fill reads (textversions'
 // versionRules): an issue event's key and the issue's title, the one copyIssues writes, as api's
-// newIssueEventPayload writes them; and a comment's id (legiontest.CommentID) and issue_key. The
+// newIssueEventPayload writes them; and a comment's id (legionseed.CommentID) and issue_key. The
 // fill stops at the first event that lacks a field it needs, an issue event's title or a comment's
 // id or body, and tries that event again, at most a minute apart. It needs no key nor issue_key:
 // where the payload lacks one, issueKeyOf and postVersion read the event's own (events.issue_key).
@@ -534,7 +534,7 @@ func (s *eventSource) payload(event plannedEvent, issue plannedIssue) string {
 		fields = `"status":"done"`
 	default:
 		key := fmt.Sprintf("%s/%d", issue.key, event.seq)
-		return fmt.Sprintf(`{"id":%q,"issue_key":%q,"body":%q}`, legiontest.CommentID(issue.key, event.seq), issue.key,
+		return fmt.Sprintf(`{"id":%q,"issue_key":%q,"body":%q}`, legionseed.CommentID(issue.key, event.seq), issue.key,
 			text(key, 120+int(event.seq*37%360)))
 	}
 	return fmt.Sprintf(`{"key":%q,"title":%q,%s}`, issue.key, issue.title(), fields)
@@ -559,7 +559,7 @@ func copyHandoffs(ctx context.Context, pool *store.Pool, history projectHistory)
 				continue
 			}
 			at := issue.stretch[r+1].Add(-time.Minute)
-			rows = append(rows, []any{issue.key, phase, int32(1), text(issue.key+"/"+phase, 400), legiontest.SessionActor(roles[r], issue.key), at})
+			rows = append(rows, []any{issue.key, phase, int32(1), text(issue.key+"/"+phase, 400), legionseed.SessionActor(roles[r], issue.key), at})
 		}
 	}
 	slices.SortStableFunc(rows, func(a, b []any) int { return a[5].(time.Time).Compare(b[5].(time.Time)) })

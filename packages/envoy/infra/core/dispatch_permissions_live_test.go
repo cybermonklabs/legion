@@ -30,7 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -225,9 +225,12 @@ func startDispatchServer(t *testing.T, image string, grant core.Permissions) (di
 // own entry and it can create or delete none of the consumers it inspects. Added to the host's
 // set are the exact calls its checks make, so it leans on nothing of Dispatch's grant: each
 // Dispatch durable's consumer info and the redelivery bucket's reads, writes and watch — not the
-// bucket's create or the update that raises its copies, which are Dispatch's to make.
+// bucket's create or the update that raises its copies, which are Dispatch's to make. It also
+// plays the listener that receives GitHub's webhook, since requireDurablesAcknowledge publishes a
+// GitHub event, so GitHub's lane is taken off the host set's publish deny.
 func testClientPermissions() core.Permissions {
 	client := core.HostPermissions(testClientMachineID)
+	client.Publish.Deny = slices.DeleteFunc(client.Publish.Deny, func(lane string) bool { return lane == contracts.GithubTopicPrefix+">" })
 	redelivery := "KV_" + bus.WebhookRedeliveryBucket
 	client.Publish.Allow = append(client.Publish.Allow,
 		"$JS.API.CONSUMER.INFO."+bus.Stream+"."+bus.DispatchDeliveryDurable,
@@ -246,7 +249,7 @@ func testClientPermissions() core.Permissions {
 // seedDispatchDeliverySettings migrates a fresh Postgres and saves the delivery settings the
 // intakes route by: a project of its own, WIDGETS, with delivery on and one github_workflow source
 // reading acme/widgets, the repository the fake GitHub App answers for (newDispatchGitHub), saved
-// through delivery.PutProjectSettings (deliverytest.SaveSettings) as the settings route saves a
+// through delivery.PutProjectSettings (deliveryseed.SaveSettings) as the settings route saves a
 // project's.
 func seedDispatchDeliverySettings(t *testing.T, databaseURL string) {
 	t.Helper()
@@ -257,7 +260,7 @@ func seedDispatchDeliverySettings(t *testing.T, databaseURL string) {
 	require.NoError(t, database.Migrate(t.Context()))
 	_, err = database.Pool.Exec(t.Context(), `insert into projects (key, name, default_assignee) values ($1, $1, $2)`, project, dispatchPerson)
 	require.NoError(t, err)
-	_, err = deliverytest.SaveSettings(t.Context(), database.Pool, delivery.ProjectSettingsInput{
+	_, err = deliveryseed.SaveSettings(t.Context(), database.Pool, delivery.ProjectSettingsInput{
 		Project: project, Delivery: true, PopulationAuthors: []string{"octocat"},
 		Sources: []delivery.SourceInput{{
 			Kind: delivery.SourceKindGitHubWorkflow, Repo: new("acme/widgets"),

@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
@@ -77,7 +77,7 @@ func seedAttribution(t *testing.T, r rig) delivery.DeliverySettings {
 		DeployRepo: alphaRepo, DeployWorkflowPath: ".github/workflows/deploy.yml", ProductionJobNames: []string{production},
 		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml", PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{},
 	}
-	saved := putSources(t, pool, "OWNER", settings.PopulationAuthors, deliverytest.SourceOf(settings, new(alphaRepo)))
+	saved := putSources(t, pool, "OWNER", settings.PopulationAuthors, deliveryseed.SourceOf(settings, new(alphaRepo)))
 	stored := saved.Rules()[0]
 	for _, pr := range []struct {
 		repo   string
@@ -635,7 +635,7 @@ func TestARepositoryHoldsNoZeroRowAndARewriteThatEmptiesItsPartDeletesItsRow(t *
 	`, first.AddDate(0, 0, -1))
 	exec("the project OWNER", `insert into projects (key, name, default_assignee, next_number) values ('OWNER', 'Owner', 'alice', 1)`)
 	production := "production / apply"
-	putSources(t, pool, "OWNER", []string{"dev-ana"}, deliverytest.SourceOf(delivery.DeliverySettings{
+	putSources(t, pool, "OWNER", []string{"dev-ana"}, deliveryseed.SourceOf(delivery.DeliverySettings{
 		DeployWorkflowPath: ".github/workflows/deploy.yml", ProductionJobNames: []string{production},
 		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 	}, new(alphaRepo)))
@@ -1395,7 +1395,7 @@ func TestACIJobWithNoPullRequestAndAPushRunThatIsNoDeployCountForEachDefaultRepo
 	// A CI job with no pull request, through the refresher's whole pass.
 	r.exec(t, "the projects", `insert into projects (key, name, default_assignee, next_number, default_repo)
 		values ('ALPHA', 'Alpha', 'alice', 1, $1), ('BETA', 'Beta', 'alice', 1, $1), ('GAMMA', 'Gamma', 'alice', 1, $2)`, alphaRepo, zetaRepo)
-	putSources(t, pool, "ALPHA", []string{"dev-ana"}, deliverytest.SourceOf(ruleOfJob("production / apply"), nil))
+	putSources(t, pool, "ALPHA", []string{"dev-ana"}, deliveryseed.SourceOf(ruleOfJob("production / apply"), nil))
 	created := sourcesDay.Add(12 * time.Hour)
 	started, completed := created.Add(time.Minute), created.Add(20*time.Minute)
 	if err := delivery.UpsertRun(ctx, pool, delivery.DeliveryRun{

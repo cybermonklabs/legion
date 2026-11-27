@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 )
 
@@ -40,7 +41,7 @@ func TestTheTimelineAnswersWhatEveryJobOfItsRunsAnswers(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	pool := database.Pool
-	fixture := deliverytest.Seed(t, pool, deliverytest.Spec{})
+	fixture := deliverytest.Seed(t, pool, deliveryseed.Spec{})
 	ctx := t.Context()
 	repo := fixture.DeployRepo
 	productionJob := fixture.Settings.ProductionJobNames[0]

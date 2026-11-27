@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -134,7 +135,7 @@ func newStoredEvalsRig(t *testing.T) (*storedEvalsRig, func(statement string, ar
 		end = fixture.To
 	}
 	now := end.Add(-time.Minute)
-	long := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "LEGN", Trees: 30, Now: windows[0].Spec.Now, Spacing: 24 * time.Hour, Queued: true})
+	long := legiontest.Seed(t, database.Pool, legionseed.Spec{Project: "LEGN", Trees: 30, Now: windows[0].Spec.Now, Spacing: 24 * time.Hour, Queued: true})
 	storeLegionFacts(t, database, long.Project, windows[0].Spec.Now)
 	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
 	seedLoggedAggs(t, registry, fixture.Project, fixture.DeployRepo, measures.Midnight(now))

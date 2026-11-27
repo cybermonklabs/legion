@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -25,7 +26,7 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 // it wrote, and the moment every computation of it is made as of.
 type history struct {
 	database *store.Store
-	fixture  legiontest.Fixture
+	fixture  legionseed.Fixture
 	now      time.Time
 }
 
@@ -34,7 +35,7 @@ func seed(t *testing.T, trees int) history {
 	t.Helper()
 	database := storetest.Open(t)
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
-	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "LEGION", Trees: trees, Now: now})
+	fixture := legiontest.Seed(t, database.Pool, legionseed.Spec{Project: "LEGION", Trees: trees, Now: now})
 	return history{database: database, fixture: fixture, now: now}
 }
 

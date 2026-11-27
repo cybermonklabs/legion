@@ -14,7 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
@@ -99,7 +99,7 @@ func TestADeployCountsOnceInEachProjectWhoseIssueOrDefaultRepositoryItReaches(t 
 		values ('ALPHA-1', 'ALPHA', 1, 'Alpha work', 'in_progress', '00000001', $1, '{"kind":"system","id":"default-repository-test"}', $2)`,
 		alphaRepo, day.AddDate(0, 0, -1))
 	production := "production / apply"
-	putSources(t, pool, "ALPHA", []string{"dev-ana"}, deliverytest.SourceOf(delivery.DeliverySettings{
+	putSources(t, pool, "ALPHA", []string{"dev-ana"}, deliveryseed.SourceOf(delivery.DeliverySettings{
 		DeployWorkflowPath: ".github/workflows/deploy.yml", ProductionJobNames: []string{production},
 		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 	}, nil))
@@ -181,7 +181,7 @@ func seedPierAndQuay(t *testing.T, r *refresherRig) time.Time {
 		values ('PIER-1', 'PIER', 1, 'Pier work', 'in_progress', '00000001', '{"kind":"system","id":"default-repository-test"}', $1)`,
 		day.AddDate(0, 0, -1))
 	production := "production / apply"
-	putSources(t, pool, "QUAY", []string{"dev-ana"}, deliverytest.SourceOf(delivery.DeliverySettings{
+	putSources(t, pool, "QUAY", []string{"dev-ana"}, deliveryseed.SourceOf(delivery.DeliverySettings{
 		DeployWorkflowPath: ".github/workflows/deploy.yml", ProductionJobNames: []string{production},
 		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 	}, new(quayRepo)))
@@ -1417,7 +1417,7 @@ func TestAMoveJudgesByTheDeployRepositoryTheDeliverySettingsName(t *testing.T) {
 	ctx, pool := t.Context(), r.database.Pool
 	r.exec(t, "give ALPHA acme/next as its default", `
 		insert into projects (key, name, default_assignee, default_repo) values ('ALPHA', 'Alpha', 'alice', 'acme/next')`)
-	putSources(t, pool, "ALPHA", []string{"dev-ana"}, deliverytest.SourceOf(delivery.DeliverySettings{
+	putSources(t, pool, "ALPHA", []string{"dev-ana"}, deliveryseed.SourceOf(delivery.DeliverySettings{
 		DeployRepo: "acme/next", DeployWorkflowPath: ".github/workflows/deploy.yml", ProductionJobNames: []string{"production / apply"},
 		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 	}, nil))
@@ -1654,7 +1654,7 @@ func TestTheReadersOfASourceKeyAreTheProjectWhoseSourceReadsItsRepository(t *tes
 	check("the settled history", settled)
 	agree("the settled history")
 	putSources(t, r.database.Pool, "ALPHA", []string{"dev-ana"},
-		deliverytest.SourceOf(ruleOfJob(alphaJob), nil), deliverytest.SourceOf(ruleOfJob(opsJob), new(alphaNext)))
+		deliveryseed.SourceOf(ruleOfJob(alphaJob), nil), deliveryseed.SourceOf(ruleOfJob(opsJob), new(alphaNext)))
 	check("after the save that moves ALPHA's source, before the pass", settled)
 	r.settle(t)
 	check("after the pass", map[string]string{alphaApp: "ALPHA via=true", omegaApp: "OMEGA via=true", alphaNext: "ALPHA via=true"})
@@ -1782,8 +1782,8 @@ func (r *refresherRig) ruleRecords(t *testing.T) map[string]string {
 // rows and its rule, and one reaching it builds them again.
 func TestASourceMoveAwayAndBackWritesNoDayRow(t *testing.T) {
 	t.Parallel()
-	onOps := []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob(alphaJob), nil), deliverytest.SourceOf(ruleOfJob(opsJob), new(alphaOps))}
-	onNext := []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob(alphaJob), nil), deliverytest.SourceOf(ruleOfJob(opsJob), new(alphaNext))}
+	onOps := []delivery.SourceInput{deliveryseed.SourceOf(ruleOfJob(alphaJob), nil), deliveryseed.SourceOf(ruleOfJob(opsJob), new(alphaOps))}
+	onNext := []delivery.SourceInput{deliveryseed.SourceOf(ruleOfJob(alphaJob), nil), deliveryseed.SourceOf(ruleOfJob(opsJob), new(alphaNext))}
 	projects, shapes := []string{"ALPHA", "OMEGA"}, slices.Concat(moveShapes(), pastShapes())
 	// walked is the reads of a second database whose whole walk ran with ALPHA's sources.
 	walked := func(sources []delivery.SourceInput) map[string]string {
@@ -1905,8 +1905,8 @@ func TestAnOwnerChangeOfARepositoryWritesNoDayRow(t *testing.T) {
 	check("before the move", "ALPHA", "OMEGA", map[string]defaultTally{"ALPHA": {n: 2, via: 2}, "OMEGA": {n: 1, via: 1}})
 	rows, members := r.xmins(t, dayRowXmins), r.xmins(t, memberXmins)
 	authors := []string{"dev-ana"}
-	putSources(t, r.database.Pool, "ALPHA", authors, deliverytest.SourceOf(ruleOfJob(alphaJob), nil))
-	putSources(t, r.database.Pool, "OMEGA", authors, deliverytest.SourceOf(ruleOfJob(omegaJob), nil), deliverytest.SourceOf(ruleOfJob(opsJob), new(alphaOps)), eventsSource)
+	putSources(t, r.database.Pool, "ALPHA", authors, deliveryseed.SourceOf(ruleOfJob(alphaJob), nil))
+	putSources(t, r.database.Pool, "OMEGA", authors, deliveryseed.SourceOf(ruleOfJob(omegaJob), nil), deliveryseed.SourceOf(ruleOfJob(opsJob), new(alphaOps)), eventsSource)
 	r.settle(t)
 	show := func(xmin string) string { return "written by " + xmin }
 	if differ := sameValues(r.xmins(t, dayRowXmins), rows, show); len(differ) > 0 {
@@ -1975,7 +1975,7 @@ func TestADefaultMoveUnderASourceNamingNoRepositoryWritesNoDayRow(t *testing.T) 
 // the first names no repository (acme/alpha-app, its default, under alphaJob), the second names
 // repo, under opsJob.
 func opsSources(repo string) []delivery.SourceInput {
-	return []delivery.SourceInput{deliverytest.SourceOf(ruleOfJob(alphaJob), nil), deliverytest.SourceOf(ruleOfJob(opsJob), new(repo))}
+	return []delivery.SourceInput{deliveryseed.SourceOf(ruleOfJob(alphaJob), nil), deliveryseed.SourceOf(ruleOfJob(opsJob), new(repo))}
 }
 
 // seedOpsMoveBack writes the three-source history (seedSources) with an issue of OMEGA's that owns

@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/evals/evalfixture"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -251,14 +251,14 @@ func TestWindowsOfRefusesAFirstFinishedDayThatStartsAtTheFirstObservationOrAfter
 		{day.Add(10 * time.Hour), day.AddDate(0, 0, 1).Add(9 * time.Hour)},
 		{day, day.Add(9 * time.Hour)},
 	} {
-		_, err := evalfixture.WindowsOf(legiontest.Fixture{FirstObserved: refused.observed, FirstFinished: refused.finished, To: now},
+		_, err := evalfixture.WindowsOf(legionseed.Fixture{FirstObserved: refused.observed, FirstFinished: refused.finished, To: now},
 			refused.observed.Add(time.Hour), refused.observed.Add(time.Hour))
 		if err == nil || !strings.Contains(err.Error(), "starts at or after the first observation") {
 			t.Errorf("observed at %s, first finished at %s: answered %v, want a refusal naming a day that starts at or after the first observation",
 				refused.observed.Format(time.RFC3339), refused.finished.Format(time.RFC3339), err)
 		}
 	}
-	observed := legiontest.Fixture{FirstObserved: day.Add(10 * time.Hour), FirstFinished: day.Add(9 * time.Hour), To: now}
+	observed := legionseed.Fixture{FirstObserved: day.Add(10 * time.Hour), FirstFinished: day.Add(9 * time.Hour), To: now}
 	windows, err := evalfixture.WindowsOf(observed, day.Add(11*time.Hour), day.Add(11*time.Hour))
 	if err != nil || !windows.Before.From.Equal(day) {
 		t.Errorf("observed later on the first finished day: windows %+v, %v; want one starting at %s", windows, err, day.Format(time.DateOnly))
@@ -557,7 +557,7 @@ func TestTheDeliveryModeJoinsTheLegionProject(t *testing.T) {
 // moment named and logs that one change for the refresher. It names every day whose rows the move
 // changes: the day the pull request merged before and the day it merges now, and the start day of
 // the deploy run that shipped it before and of the one that ships it now, whose shipped sets the
-// move changes (delivery.ContainingRun, as the deliverytest history's own verdict reads it). The
+// move changes (delivery.ContainingRun, as the deliveryseed history's own verdict reads it). The
 // pull request merged is one a deploy run of another day shipped. It refuses a pull request no row
 // holds, a malformed name, and a moment before the pull request opened, each by its reason, and a
 // refusal moves nothing.

@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
@@ -408,7 +409,7 @@ type evalDaysWindow struct {
 // deploys_with_prs and with_prs_per_day included: a deploy with pull requests is one that ships
 // any, whenever it merged, on both sides (delivery.Deploys.ShippedBy). It answers the window's
 // tally and every difference found.
-func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *evals.Store, pool *store.Pool, fixture deliverytest.Fixture, settings delivery.DeliverySettings, entries []evals.Entry, stored []evals.DayRow, from, to time.Time) (evalDaysWindow, []string) {
+func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *evals.Store, pool *store.Pool, fixture deliveryseed.Fixture, settings delivery.DeliverySettings, entries []evals.Entry, stored []evals.DayRow, from, to time.Time) (evalDaysWindow, []string) {
 	t.Helper()
 	tally := evalDaysWindow{from: from, to: to}
 	var differences []string
@@ -529,7 +530,7 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true})
+	fixture := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{Seed: 2916, OneProject: true})
 	leaveAttributionInputsUnread(t, database.Pool)
 	ctx := t.Context()
 	settings, read := seededDeliveryRules(t, database.Pool).For(fixture.DeployRepo)
@@ -625,7 +626,7 @@ func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916})
+	fixture := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{Seed: 2916})
 	leaveAttributionInputsUnread(t, database.Pool)
 	ctx := t.Context()
 	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)

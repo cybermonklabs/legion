@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
@@ -84,7 +85,7 @@ func TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked(t *testing.T) {
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 	// Five trees, because this issue's check k4 counts at least twenty entries and fails below
 	// them: a seed that answers fifteen proves the rule and not the check.
-	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "LEGION", Trees: 5, Now: now})
+	fixture := legiontest.Seed(t, database.Pool, legionseed.Spec{Project: "LEGION", Trees: 5, Now: now})
 	nameLegionDaemon(t, handler, fixture.Project, "http://legion-legion.internal:13370")
 	rows, _, err := legionfacts.ComputeProject(t.Context(), database.Pool, fixture.Project, now)
 	if err != nil {

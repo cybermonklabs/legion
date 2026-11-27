@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -17,9 +18,9 @@ import (
 )
 
 // infraSizeTrees is the population these measurements run over: the trees of the facts' own rig
-// (legiontest.DefaultTrees, 42 of them), which is 252 issues and 210 of them with Legion phase
+// (legionseed.DefaultTrees, 42 of them), which is 252 issues and 210 of them with Legion phase
 // work. That is INFRA's size today.
-const infraSizeTrees = legiontest.DefaultTrees
+const infraSizeTrees = legionseed.DefaultTrees
 
 // firstPayloadBound is the size a first payload may reach, compressed: 300 KB, the bound the
 // root states (dispatch://INFRA-979/spec#b-r14, "the first payload is at most 300 KB
@@ -37,10 +38,10 @@ const boardEntriesFloor = 20
 //
 // The history ends now rather than at a fixed moment, so an open issue's hours are the hours the
 // consumer's own clock measures.
-func boardAtInfraSize(t *testing.T, options testServerOptions) (http.Handler, *store.Store, legiontest.Fixture) {
+func boardAtInfraSize(t *testing.T, options testServerOptions) (http.Handler, *store.Store, legionseed.Fixture) {
 	t.Helper()
 	handler, database, _ := newTestServer(t, options)
-	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "INFRA", Trees: infraSizeTrees})
+	fixture := legiontest.Seed(t, database.Pool, legionseed.Spec{Project: "INFRA", Trees: infraSizeTrees})
 	nameLegionDaemon(t, handler, fixture.Project, "http://legion-infra.internal:13370")
 	runLegionFactsConsumer(t, database, fixture.Project, len(fixture.PhaseWork))
 	return handler, database, fixture

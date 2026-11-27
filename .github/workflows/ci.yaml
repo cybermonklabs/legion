@@ -77,6 +77,7 @@ env:
       "envoy-smoke": "envoy_smoke",
       "envoy-e2e-local": "envoy_e2e_local",
       "envoy-session-stall": "envoy_session_stall",
+      "envoy-refill": "envoy_refill",
       "ci-filters": "ci_filters",
       "ci-images": "ci_images",
       "tool-fallback": "tool_fallback",
@@ -134,8 +135,7 @@ jobs:
       # read their own; `all` on a run that selects every job and when the filters fell open.
       # why: .github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates
       matched_filters: ${{ steps.scope.outputs.every_job && 'all' || steps.generate.outputs.every_filter == 'true' && 'all' || steps.filter.outputs.changes }}
-      # Selected like any other job now that no run of this workflow is a push to main.
-      # docs-pages.yaml still builds and deploys main's site, on a push trigger of its own.
+      # why: .github/ci-notes/ci.md#why-the-docs-output-is-selected-like-any-other
       docs: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.docs }}
       worker_image: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.worker_image }}
       # why: .github/ci-notes/ci.md#why-the-browser-images-build-carries-no-full-ci-term
@@ -188,6 +188,7 @@ jobs:
       envoy_smoke: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_smoke')) && steps.filter.outputs.envoy_smoke || 'false' }}
       envoy_e2e_local: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.envoy_e2e_local }}
       envoy_session_stall: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.envoy_session_stall }}
+      envoy_refill: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.envoy_refill }}
       go_notices: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.go_notices }}
       ci_filters: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.ci_filters }}
       ci_images: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.ci_images }}
@@ -879,6 +880,8 @@ jobs:
       checks: write
     uses: ./.github/workflows/ci-job-envoy-e2e-local.yaml
     with:
+      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file
+      job: envoy-e2e-local
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # why: .github/ci-notes/ci.md#the-session-stall-suites-the-session-state-rig-and-the-live-dispatch-stack
@@ -891,6 +894,20 @@ jobs:
       checks: write
     uses: ./.github/workflows/ci-job-envoy-session-stall.yaml
     with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
+  # why: .github/ci-notes/ci.md#what-the-refill-live-proof-shows
+  envoy-refill:
+    needs: changes
+    if: needs.changes.outputs.envoy_refill == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-envoy-e2e-local.yaml
+    with:
+      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file
+      job: envoy-refill
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # why: .github/ci-notes/ci.md#what-the-ci-filters-job-holds-every-filter-and-every-workflow-file-to
@@ -975,8 +992,7 @@ jobs:
           echo "::error::pr-title is failure on attempt $RUN_ATTEMPT of this merge-group run, whatever the pull request's text says: a merge group is tested once, the queue builds a new group rather than re-running one, and this attempt checks a tree the queue is no longer waiting on."
           exit 1
 
-      # The job reads nothing of the tree but find-pr-payload.sh, check-pr-text.sh and the
-      # check-private-names.sh that one runs, so the .github cone is the whole checkout it needs.
+      # why: .github/ci-notes/ci.md#what-the-pr-title-job-checks-out
       - if: github.event_name != 'workflow_dispatch'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1004,8 +1020,7 @@ jobs:
     permissions:
       actions: write
     steps:
-      # The job reads nothing of the tree but .github/scripts/cancel-started-act.sh and the
-      # merge-group-cancels.sh it runs, so the .github cone is the whole checkout it needs.
+      # why: .github/ci-notes/ci.md#what-the-cancel-started-job-checks-out
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: .github
@@ -1067,6 +1082,7 @@ jobs:
       - envoy-smoke
       - envoy-e2e-local
       - envoy-session-stall
+      - envoy-refill
       - ci-filters
       - proof-sdk-offline
       - worker-image
@@ -1123,9 +1139,6 @@ jobs:
       # why: .github/ci-notes/ci.md#why-a-failing-verdict-of-a-group-behind-the-front-waits-for-the-front
       - name: Hold a failing verdict until this group is the front of the queue
         if: ${{ !cancelled() && steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1' }}
-        # The age's 170 minutes, which a run created moments before this step could hold for
-        # nearly whole, and the last pause and read's ladder (30 s, then three attempts and their
-        # pauses, two minutes).
         timeout-minutes: 175
         env:
           STEP_TIMEOUT_MINUTES: 175 # this step's timeout-minutes, for gh-read.sh's wait

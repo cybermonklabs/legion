@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -23,7 +24,7 @@ import (
 // set.
 func TestAProjectWithNoSourceListsThePullRequestsItsDayRowsCount(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Days: 5})
+	fixture := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{Days: 5})
 	leaveAttributionInputsUnread(t, database.Pool)
 	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, fixture.To.Add(-time.Minute))
 	project := fixture.SecondProject
