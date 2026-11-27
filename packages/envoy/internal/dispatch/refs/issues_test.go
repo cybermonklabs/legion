@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -340,4 +341,220 @@ func TestIssueRepositoryStopsAtTheProjectEdge(t *testing.T) {
 			t.Errorf("%s, %s, resolved to %s, want %s", want.key, want.is, repoName(resolved), want.repo)
 		}
 	}
+}
+
+// issuePriorityStatement reads what IssuePriorityTerms resolve for every issue of the keys in $1,
+// as an issue read splices them: a subjects term of those keys, the terms, the join and the
+// columns.
+var issuePriorityStatement = `
+	with recursive subjects as (select unnest($1::text[]) as key), ` + IssuePriorityTerms + `
+	select i.key, ` + IssuePriorityColumns + `
+	from issues i ` + IssuePriorityJoin + `
+	where i.key = any($1)`
+
+// resolvedPriorities is what IssuePriorityTerms resolve for each of keys, rendered as a failure
+// line prints it: "P<n>, its own", "P<n> from <key>", or "none". A key no issue has gets no
+// entry.
+func resolvedPriorities(t *testing.T, database *store.Store, keys ...string) map[string]string {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), issuePriorityStatement, keys)
+	if err != nil {
+		t.Fatalf("resolve the priorities of %v: %v", keys, err)
+	}
+	defer rows.Close()
+	answers := map[string]string{}
+	for rows.Next() {
+		var key string
+		var priority *int
+		var source *string
+		if err := rows.Scan(&key, &priority, &source); err != nil {
+			t.Fatalf("scan a resolved priority: %v", err)
+		}
+		switch {
+		case priority == nil && source != nil:
+			t.Errorf("%s resolves no priority but names %s as its source, want neither", key, *source)
+			answers[key] = "none"
+		case priority == nil:
+			answers[key] = "none"
+		case source == nil:
+			answers[key] = fmt.Sprintf("P%d, its own", *priority)
+		default:
+			answers[key] = fmt.Sprintf("P%d from %s", *priority, *source)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("resolve the priorities of %v: %v", keys, err)
+	}
+	return answers
+}
+
+// An issue with no priority of its own takes the priority of the nearest issue above it that has
+// one, in any project, and names it; an issue with one takes its own and names none. ALPHA-1, at
+// P0, passes P0 down two links to ALPHA-3 and on into BETA-1 of another project; ALPHA-4, under
+// ALPHA-1 at its own P2, passes P2 to ALPHA-5 below it rather than the root's P0; ALPHA-6 takes
+// P1 from BETA-2 of another project above it; and ALPHA-7's chain, on which no issue sets a
+// priority, resolves none all the way down. A walk of the root's priority alone answers ALPHA-5
+// P0, and a walk that stops at the project's edge, as the repository's does, answers BETA-1 and
+// ALPHA-6 none: each fails its own line.
+func TestIssuePriorityTermsTakeTheNearestOwnPriorityInAnyProject(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the fixture: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	createReferenceProject(t, tx, "ALPHA")
+	createReferenceProject(t, tx, "BETA")
+	if _, err := tx.Exec(ctx, `
+		insert into issues (key, project_key, number, title, parent_key, priority, created_by, rank) values
+			('ALPHA-1', 'ALPHA', 1, 'A root at P0', null, 0, '{"kind":"user","id":"alice"}', '00000001'),
+			('ALPHA-2', 'ALPHA', 2, 'Its child', 'ALPHA-1', null, '{"kind":"user","id":"alice"}', '00000002'),
+			('ALPHA-3', 'ALPHA', 3, 'Its grandchild', 'ALPHA-2', null, '{"kind":"user","id":"alice"}', '00000003'),
+			('ALPHA-4', 'ALPHA', 4, 'A middle at P2', 'ALPHA-1', 2, '{"kind":"user","id":"alice"}', '00000004'),
+			('ALPHA-5', 'ALPHA', 5, 'Under the middle', 'ALPHA-4', null, '{"kind":"user","id":"alice"}', '00000005'),
+			('BETA-1', 'BETA', 1, 'Under the grandchild, in another project', 'ALPHA-3', null, '{"kind":"user","id":"alice"}', '00000001'),
+			('BETA-2', 'BETA', 2, 'A root at P1', null, 1, '{"kind":"user","id":"alice"}', '00000002'),
+			('ALPHA-6', 'ALPHA', 6, 'Under a root of another project', 'BETA-2', null, '{"kind":"user","id":"alice"}', '00000006'),
+			('ALPHA-7', 'ALPHA', 7, 'A root with none', null, null, '{"kind":"user","id":"alice"}', '00000007'),
+			('ALPHA-8', 'ALPHA', 8, 'Its child', 'ALPHA-7', null, '{"kind":"user","id":"alice"}', '00000008'),
+			('ALPHA-9', 'ALPHA', 9, 'Its grandchild', 'ALPHA-8', null, '{"kind":"user","id":"alice"}', '00000009')
+	`); err != nil {
+		t.Fatalf("write the issues: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the fixture: %v", err)
+	}
+
+	wants := []struct{ key, resolves, is string }{
+		{"ALPHA-1", "P0, its own", "a root at its own P0"},
+		{"ALPHA-2", "P0 from ALPHA-1", "a child with none under it"},
+		{"ALPHA-3", "P0 from ALPHA-1", "a grandchild two links below it"},
+		{"ALPHA-4", "P2, its own", "a middle at its own P2 under a P0 root"},
+		{"ALPHA-5", "P2 from ALPHA-4", "an issue under that middle, which the nearest priority decides"},
+		{"BETA-1", "P0 from ALPHA-1", "an issue of another project under the grandchild"},
+		{"ALPHA-6", "P1 from BETA-2", "an issue under a root of another project"},
+		{"ALPHA-7", "none", "a root with no priority"},
+		{"ALPHA-8", "none", "its child, on a chain that sets none"},
+		{"ALPHA-9", "none", "its grandchild, on a chain that sets none"},
+	}
+	keys := make([]string, 0, len(wants))
+	for _, want := range wants {
+		keys = append(keys, want.key)
+	}
+	resolved := resolvedPriorities(t, database, keys...)
+	for _, want := range wants {
+		if got := resolved[want.key]; got != want.resolves {
+			t.Errorf("%s, %s, resolves %q, want %q", want.key, want.is, got, want.resolves)
+		}
+	}
+}
+
+// The walk IssuePriorityTerms run climbs at most issueRepoCap links, as every walk of the chain
+// does: on a chain whose one priority is its root's P0, the issue exactly issueRepoCap links below
+// the root takes it, and the issue one link deeper reads none, answered rather than refused as
+// the repository walk refuses it, since no issue it can read sets a priority.
+func TestIssuePriorityTermsReadNonePastTheDepthCap(t *testing.T) {
+	t.Parallel()
+	database := newIssueRepoChain(t, issueRepoCap+2)
+	if _, err := database.Pool.Exec(context.Background(), `update issues set priority = 0 where key = 'CORE-1'`); err != nil {
+		t.Fatalf("set the chain's root at P0: %v", err)
+	}
+	atCap, pastCap := fmt.Sprintf("CORE-%d", issueRepoCap+1), fmt.Sprintf("CORE-%d", issueRepoCap+2)
+	resolved := resolvedPriorities(t, database, atCap, pastCap)
+	if got := resolved[atCap]; got != "P0 from CORE-1" {
+		t.Errorf("%s, %d links below the P0 root, resolves %q, want P0 from CORE-1", atCap, issueRepoCap, got)
+	}
+	if got := resolved[pastCap]; got != "none" {
+		t.Errorf("%s, %d links below the P0 root, resolves %q, want none", pastCap, issueRepoCap+1, got)
+	}
+}
+
+// descendantText renders an IssueDescendant as a failure line prints it.
+func descendantText(row IssueDescendant) string {
+	return fmt.Sprintf("%s under %s, %s, depth %d, in %s", row.Key, row.Parent, row.Status, row.Depth, row.Project)
+}
+
+// IssueInheritingDescendantRows descends from an issue through the children with no priority of
+// their own, at any status and into any project, and stops below an issue that has one, leaving
+// that issue out too. Under ALPHA-1: ALPHA-2, its done child ALPHA-3, BETA-1 of another project
+// under ALPHA-2 and BETA-2 under that are in; ALPHA-4, with its own P2, ALPHA-5 under it, and
+// ALPHA-6, with its own P0 under BETA-1, are not. The rows come nearest first, by project and
+// number at one depth, each with its parent, status, depth and project. A descent that passed
+// below an own priority lists ALPHA-5, and one that kept the issue with its own lists ALPHA-4 and
+// ALPHA-6. On a chain of issueRepoCap+1 issues below its root, none with a priority, the descent
+// reaches the issue issueRepoCap links down and no deeper. A leaf and the empty key answer none.
+func TestIssueInheritingDescendantRowsStopBelowAnOwnPriority(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the fixture: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	createReferenceProject(t, tx, "ALPHA")
+	createReferenceProject(t, tx, "BETA")
+	if _, err := tx.Exec(ctx, `
+		insert into issues (key, project_key, number, title, parent_key, priority, status, closed_at, created_by, rank) values
+			('ALPHA-1', 'ALPHA', 1, 'A root at P1', null, 1, 'todo', null, '{"kind":"user","id":"alice"}', '00000001'),
+			('ALPHA-2', 'ALPHA', 2, 'Its child', 'ALPHA-1', null, 'todo', null, '{"kind":"user","id":"alice"}', '00000002'),
+			('ALPHA-3', 'ALPHA', 3, 'A done grandchild', 'ALPHA-2', null, 'done', now(), '{"kind":"user","id":"alice"}', '00000003'),
+			('ALPHA-4', 'ALPHA', 4, 'A child at its own P2', 'ALPHA-1', 2, 'todo', null, '{"kind":"user","id":"alice"}', '00000004'),
+			('ALPHA-5', 'ALPHA', 5, 'Under that child', 'ALPHA-4', null, 'todo', null, '{"kind":"user","id":"alice"}', '00000005'),
+			('BETA-1', 'BETA', 1, 'A grandchild in another project', 'ALPHA-2', null, 'todo', null, '{"kind":"user","id":"alice"}', '00000001'),
+			('BETA-2', 'BETA', 2, 'Under it', 'BETA-1', null, 'todo', null, '{"kind":"user","id":"alice"}', '00000002'),
+			('ALPHA-6', 'ALPHA', 6, 'Under it at its own P0', 'BETA-1', 0, 'todo', null, '{"kind":"user","id":"alice"}', '00000006')
+	`); err != nil {
+		t.Fatalf("write the issues: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the fixture: %v", err)
+	}
+
+	rows, err := IssueInheritingDescendantRows(ctx, database.Pool, "ALPHA-1")
+	if err != nil {
+		t.Fatalf("read the descendants of ALPHA-1 that take its priority: %v", err)
+	}
+	got := make([]string, 0, len(rows))
+	for _, row := range rows {
+		got = append(got, descendantText(row))
+	}
+	want := []string{
+		"ALPHA-2 under ALPHA-1, todo, depth 1, in ALPHA",
+		"ALPHA-3 under ALPHA-2, done, depth 2, in ALPHA",
+		"BETA-1 under ALPHA-2, todo, depth 2, in BETA",
+		"BETA-2 under BETA-1, todo, depth 3, in BETA",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("the descendants of ALPHA-1 that take its priority are\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+
+	for _, key := range []string{"BETA-2", ""} {
+		rows, err := IssueInheritingDescendantRows(ctx, database.Pool, key)
+		if err != nil {
+			t.Fatalf("read the descendants of %q that take its priority: %v", key, err)
+		}
+		if rows == nil || len(rows) != 0 {
+			t.Errorf("the descendants of %q that take its priority are %v, want []", key, rows)
+		}
+	}
+
+	t.Run(fmt.Sprintf("a chain of %d links below its root", issueRepoCap+1), func(t *testing.T) {
+		t.Parallel()
+		chain := newIssueRepoChain(t, issueRepoCap+2)
+		rows, err := IssueInheritingDescendantRows(context.Background(), chain.Pool, "CORE-1")
+		if err != nil {
+			t.Fatalf("read the descendants of CORE-1 that take its priority: %v", err)
+		}
+		deepest := fmt.Sprintf("CORE-%d", issueRepoCap+1)
+		if len(rows) != issueRepoCap || rows[len(rows)-1].Key != deepest {
+			last := "none"
+			if len(rows) > 0 {
+				last = rows[len(rows)-1].Key
+			}
+			t.Errorf("the descent from CORE-1 reads %d issues ending at %s, want %d ending at %s, %d links down", len(rows), last, issueRepoCap, deepest, issueRepoCap)
+		}
+	})
 }

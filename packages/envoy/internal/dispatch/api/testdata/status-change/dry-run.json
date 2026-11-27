@@ -8,6 +8,8 @@
       "title": "Parent closed with its tree",
       "status": "in_progress",
       "priority": null,
+      "resolved_priority": null,
+      "priority_from": null,
       "rank": "X",
       "labels": [],
       "parent": null,

@@ -17,12 +17,15 @@ import (
 // and where it hangs. `loops` and `actual rows` are only in an ANALYZE plan, which is why these
 // tests run the statements rather than only plan them. The rows each filter threw away and the
 // shared buffers the node and the nodes below it accessed are what the speed test counts
-// (speedWork); the buffer counts are only in a plan run with BUFFERS.
+// (speedWork); the buffer counts are only in a plan run with BUFFERS. A term of the statement's
+// `with` list is planned as a subplan named "CTE <term>", and a scan of one names its term.
 type analyzedNode struct {
 	NodeType         string         `json:"Node Type"`
 	Relationship     string         `json:"Parent Relationship,omitempty"`
+	SubplanName      string         `json:"Subplan Name,omitempty"`
 	RelationName     string         `json:"Relation Name,omitempty"`
 	IndexName        string         `json:"Index Name,omitempty"`
+	CTEName          string         `json:"CTE Name,omitempty"`
 	Rows             float64        `json:"Actual Rows"`
 	Loops            float64        `json:"Actual Loops"`
 	RemovedByFilter  float64        `json:"Rows Removed by Filter,omitempty"`
@@ -150,17 +153,19 @@ func TestAPagedListingResolvesItsPageAlone(t *testing.T) {
 					t.Fatalf("%s has a parent walk with no base term:\n%s", name, text)
 				}
 				// A base term reported with no loop at all never ran, which is each walk of the
-				// advances filter on a request that names no priority: its seed is gated off
-				// (issueAdvancesFilterTerms), so it starts from no key rather than from many.
+				// advances filter on a request that names no priority, and the priority filter's on
+				// one that names no priority level: each seed is gated off (issueAdvancesFilterTerms,
+				// issuePriorityFilterTerms), so it starts from no key rather than from many.
 				if base := node.Plans[0]; base.Rows > float64(limit) || base.Loops > 1 {
 					t.Errorf("%s starts a parent walk from %.0f keys over %.0f loops, want at most the page's %d over one loop:\n%s",
 						name, base.Rows, base.Loops, limit, text)
 				}
 			}
-			if walks != 5 {
-				t.Errorf("%s runs %d parent walks, want the components walk, the repository walk, the walk up every"+
-					" page row's chain for its advances relations, the walk down from the advances filter's own"+
-					" relations and the walk up from them that `own` reads:\n%s", name, walks, text)
+			if walks != 7 {
+				t.Errorf("%s runs %d parent walks, want the components walk, the repository walk, the priority walk,"+
+					" the walk up every page row's chain for its advances relations, the walk down from the advances"+
+					" filter's own relations, the walk up from them that `own` reads and the priority filter's walk:\n%s",
+					name, walks, text)
 			}
 		})
 	}
@@ -244,7 +249,7 @@ func TestTheListingReadsTheMoveOnlyWhenAskedAndOnlyForParkedRows(t *testing.T) {
 		var plan analyzedNode
 		var text string
 		if listing.generic {
-			plan, text = analyzeGenericListingPlan(t, fixture.database, listing.moved)
+			plan, text = analyzeGenericListingPlan(t, fixture.database, "{}", false, listing.moved)
 		} else {
 			plan, text = analyzePlan(t, fixture.database, listIssuesQuery,
 				"LIST", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, listing.moved, false, "", "")
@@ -267,11 +272,103 @@ func TestTheListingReadsTheMoveOnlyWhenAskedAndOnlyForParkedRows(t *testing.T) {
 	}
 }
 
+// scans reports whether the node, or a node below it, scans the `with` term named cte.
+func (node analyzedNode) scans(cte string) bool {
+	return slices.ContainsFunc(node.everyNode(), func(below analyzedNode) bool { return below.CTEName == cte })
+}
+
+// The listing's priority filter climbs once for the request, and only when the request names a
+// priority (issuePriorityFilterTerms). A listing of project LIST by priority 0, and one by none,
+// start the filter's walk once, from at most LIST's issues with no priority of their own and from
+// none of another project's, and test each issue against the walk's answer through a subplan
+// that runs once, a hashed read of the answer rather than a read for each issue, whichever plan
+// they get. A listing that names no priority never starts the walk. Each of the fixture's two
+// projects holds several hundred issues with no priority of their own, so a walk from every issue
+// of the table, or a test that read the answer once for each issue, would show it.
+func TestThePriorityFilterClimbsOnceFromItsProjectsIssues(t *testing.T) {
+	t.Parallel()
+	fixture := newIssueListFixture(t)
+	var candidates float64
+	if err := fixture.database.Pool.QueryRow(context.Background(),
+		`select count(*) from issues where project_key = 'LIST' and priority is null`).Scan(&candidates); err != nil {
+		t.Fatalf("count LIST's issues with no priority of their own: %v", err)
+	}
+	for _, listing := range []struct {
+		name    string
+		levels  []int16
+		literal string
+		none    bool
+		generic bool
+	}{
+		{name: "a listing by priority 0", levels: []int16{0}, literal: "{0}"},
+		{name: "a listing by priority 0, under the generic plan", levels: []int16{0}, literal: "{0}", generic: true},
+		{name: "a listing by none", levels: []int16{}, literal: "{}", none: true},
+		{name: "a listing by none, under the generic plan", levels: []int16{}, literal: "{}", none: true, generic: true},
+		{name: "a listing that names no priority", levels: []int16{}, literal: "{}"},
+		{name: "a listing that names no priority, under the generic plan", levels: []int16{}, literal: "{}", generic: true},
+	} {
+		t.Run(listing.name, func(t *testing.T) {
+			var plan analyzedNode
+			var text string
+			if listing.generic {
+				plan, text = analyzeGenericListingPlan(t, fixture.database, listing.literal, listing.none, false)
+			} else {
+				plan, text = analyzePlan(t, fixture.database, listIssuesQuery,
+					"LIST", []string{}, "", nil, []string{}, false, listing.levels, listing.none, nil, nil, []string{}, false, false, false, false, "", "")
+			}
+			name, filtered := listing.name, len(listing.levels) > 0 || listing.none
+			walks := 0
+			for _, node := range plan.everyNode() {
+				if node.SubplanName != "CTE priority_inherited_chain" {
+					continue
+				}
+				walks++
+				if node.NodeType != "Recursive Union" || len(node.Plans) == 0 {
+					t.Fatalf("%s plans the priority filter's walk as %s with %d inputs, want a recursive union with its base term:\n%s",
+						name, node.name(), len(node.Plans), text)
+				}
+				base := node.Plans[0]
+				switch {
+				case !filtered && base.Loops != 0:
+					t.Errorf("%s starts the priority filter's walk over %.0f loops, want never:\n%s", name, base.Loops, text)
+				case filtered && (node.Loops != 1 || base.Loops != 1):
+					t.Errorf("%s runs the priority filter's walk over %.0f loops from a base term run over %.0f, want one each:\n%s",
+						name, node.Loops, base.Loops, text)
+				case filtered && (base.Rows == 0 || base.Rows > candidates):
+					t.Errorf("%s starts the priority filter's walk from %.0f issues, want at least one and at most LIST's %.0f with no priority of their own:\n%s",
+						name, base.Rows, candidates, text)
+				}
+			}
+			if walks != 1 {
+				t.Fatalf("%s plans %d walks of the priority filter, want one:\n%s", name, walks, text)
+			}
+			if !filtered {
+				return
+			}
+			tests := 0
+			for _, node := range plan.everyNode() {
+				if node.Relationship != "SubPlan" || !node.scans("priority_inherited") {
+					continue
+				}
+				tests++
+				if node.Loops > 1 {
+					t.Errorf("%s tests the issues against the priority filter's answer at %s over %.0f loops, want one:\n%s",
+						name, node.name(), node.Loops, text)
+				}
+			}
+			if tests == 0 {
+				t.Errorf("%s tests no issue against the priority filter's answer through a subplan:\n%s", name, text)
+			}
+		})
+	}
+}
+
 // analyzeGenericListingPlan runs the unpaged listing of project LIST under the generic plan a
 // prepared statement settles on, which is planned without its arguments, and answers its root
-// node as analyzePlan does. The arguments are the request that filters by nothing, with moved the
-// one that varies.
-func analyzeGenericListingPlan(t *testing.T, database *store.Store, moved bool) (analyzedNode, string) {
+// node as analyzePlan does. The arguments are the request that filters by nothing but the priority
+// levels (an array literal of smallints, '{}' for none) and none, with moved the one other that
+// varies.
+func analyzeGenericListingPlan(t *testing.T, database *store.Store, levels string, none, moved bool) (analyzedNode, string) {
 	t.Helper()
 	ctx := context.Background()
 	conn, err := database.Pool.Acquire(ctx)
@@ -297,8 +394,8 @@ func analyzeGenericListingPlan(t *testing.T, database *store.Store, moved bool) 
 	}()
 	var raw []byte
 	if err := conn.QueryRow(ctx, fmt.Sprintf(
-		"explain (analyze, format json) execute generic_listing('LIST', '{}', '', null, '{}', false, '{}', false, null, null, '{}', false, false, %t, false, '', '')",
-		moved)).Scan(&raw); err != nil {
+		"explain (analyze, format json) execute generic_listing('LIST', '{}', '', null, '{}', false, '%s', %t, null, null, '{}', false, false, %t, false, '', '')",
+		levels, none, moved)).Scan(&raw); err != nil {
 		t.Fatalf("explain the generic listing: %v", err)
 	}
 	var plans []struct {

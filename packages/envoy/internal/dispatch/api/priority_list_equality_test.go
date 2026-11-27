@@ -22,8 +22,10 @@ import (
 // from that scan. The optimized query tests each key's membership and reads the matched
 // rows back from an array. The oracle uses the current label-fold map at $16 and $17,
 // with the pinned login at $18, so both statements accept the same arguments and match
-// labels the same way. The term is written out independently so a change to the production
-// priority query cannot change both sides of the comparison.
+// labels the same way, and the priority filter's rule of dispatch://INFRA-5793, which matches
+// the priority each issue resolves to (mainInheritedPriority). The term is written out
+// independently so a change to the production priority query cannot change both sides of the
+// comparison.
 func mainListFilteredTerm(pinned bool) string {
 	pinnedJoin := ""
 	if pinned {
@@ -41,8 +43,8 @@ func mainListFilteredTerm(pinned bool) string {
 		  and ($5::text[] = '{}' or (select array_agg(translate(label, $16::text, $17::text)) from unnest(i.labels) as label) @> $5)
 		  and (not $6::boolean or i.closed_at is null)
 		  and ((cardinality($7::smallint[]) = 0 and not $8::boolean)
-		       or i.priority = any($7::smallint[])
-		       or ($8::boolean and i.priority is null))
+		       or coalesce(i.priority, (` + mainInheritedPriority + `)) = any($7::smallint[])
+		       or ($8::boolean and coalesce(i.priority, (` + mainInheritedPriority + `)) is null))
 		  and ($9::timestamptz is null or i.closed_at >= $9)
 		  and ($10::timestamptz is null or i.closed_at < $10)
 		  and ((cardinality($11::text[]) = 0 and not $12::boolean and not $13::boolean)
@@ -53,6 +55,20 @@ func mainListFilteredTerm(pinned bool) string {
 		           or ($13::boolean and originating.key is not null))))
 	)`
 }
+
+// mainInheritedPriority is the priority the issue aliased `i` takes from the nearest issue above
+// it that has one, in any project and within 32 links, else null: written as one climb for each
+// issue it is asked of, where the listing climbs from every candidate at once
+// (issuePriorityFilterTerms), so the oracle shares no text with the term it checks. 32 is written
+// as the number for the reason issueRepoCap gives it in refs' tests.
+const mainInheritedPriority = `with recursive above as (
+			select p.parent_key, p.priority, 1 as depth from issues p where p.key = i.parent_key
+			union all
+			select p.parent_key, p.priority, a.depth + 1
+			from above a join issues p on p.key = a.parent_key
+			where a.priority is null and a.depth < 32
+		)
+		select priority from above where priority is not null`
 
 // mainListStatement answers the merge base's text of sent, one of the four listing statements:
 // sent with its terms from `matched` up to the term after `filtered`, the page or the subjects,

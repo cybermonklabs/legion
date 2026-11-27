@@ -48,12 +48,13 @@ var (
 )
 
 // issueSummaryQuery writes one listing statement. `matched` applies every filter to `issues i`
-// alone, so `total` is a count over `filtered`, which runs none of the six joins that resolve a
-// row's values, and the paged text orders and cuts it before anything else is resolved: the six
-// joins then run for the page's rows alone, and a listing of twenty rows costs twenty issues'
-// blockers, specs, open asks, children, components and repository rather than every matching
-// issue's. Both counts come from the one statement, since two statements read two snapshots and
-// can disagree about a table a write is moving.
+// and to the terms the `advances` and `priority` filters compute once per request
+// (issueListFilters), so `total` is a count over `filtered`, which runs none of the joins that
+// resolve a row's values, and the paged text orders and cuts it before anything else is resolved:
+// those joins then run for the page's rows alone, and a listing of twenty rows costs twenty
+// issues' blockers, specs, open asks, children, components, repository and resolved priority
+// rather than every matching issue's. Both counts come from the one statement, since two
+// statements read two snapshots and can disagree about a table a write is moving.
 //
 // `filtered` is the matched issues read back by their places in one array (generate_subscripts)
 // rather than straight from the scan that matches them, so every plan sizes it at the 1,000 rows
@@ -89,7 +90,7 @@ func issueSummaryQuery(pinned, paged, readAdvances bool) string {
 		pinnedJoin = fmt.Sprintf("\n\t\tjoin user_issue_state s on s.issue_key = i.key and s.login = $%d and s.pinned", parameter)
 		parameter++
 	}
-	query := `with recursive ` + issueAdvancesFilterTerms + `, matched as (
+	query := `with recursive ` + issueAdvancesFilterTerms + `, ` + issuePriorityFilterTerms + `, matched as (
 		select i.ctid as address
 		from issues i` + pinnedJoin + `
 		` + issueListFilters + `
@@ -100,7 +101,7 @@ func issueSummaryQuery(pinned, paged, readAdvances bool) string {
 		join issues i on i.ctid = m.addresses[place.n]
 	)`
 	advancesColumns := issueAdvancesColumns
-	terms := issueComponentsTerms + `, ` + refs.IssueRepoTerms
+	terms := issueComponentsTerms + `, ` + refs.IssueRepoTerms + `, ` + refs.IssuePriorityTerms
 	if readAdvances {
 		terms = issueAdvancesTerms + `, ` + terms
 	} else {
@@ -133,21 +134,25 @@ func issueSummaryQuery(pinned, paged, readAdvances bool) string {
 // issueListFilters are the eleven filters a listing request carries, written as sixteen
 // parameters (the label filter takes its keys and the two strings of its map, the priority filter
 // a list and a flag for the unset, and the `advances` filter a list and a flag for each of its two
-// keywords), every one but the last written against `issues i` alone. The status filter ($2) is
-// a list of the statuses named, an issue standing in any of them, and the empty list is every
-// status. The label filter ($5) is the labelKey of each label named. An issue matches when it
-// carries a label of each key. The statement maps each stored label with translate() and the
-// two strings of labelFoldMap ($16, $17), so a stored label matches a key exactly where
-// strings.EqualFold matches it, whatever the collation of the column.
+// keywords), every one but the priority and `advances` filters written against `issues i` alone.
+// The status filter ($2) is a list of the statuses named, an issue standing in any of them, and
+// the empty list is every status. The label filter ($5) is the labelKey of each label named. An
+// issue matches when it carries a label of each key. The statement maps each stored label with
+// translate() and the two strings of labelFoldMap ($16, $17), so a stored label matches a key
+// exactly where strings.EqualFold matches it, whatever the collation of the column.
 // The closed window ($9, $10) is [closed_since, closed_before), and an open issue, closed at no
-// time, is outside every window. The last is the `advances` filter, which no column of an issue
-// holds and whose answer a relation of an issue above it can decide: it reads two terms computed
-// once per request (issueAdvancesFilterTerms) and tests each issue's key for membership in them,
-// so `matched` resolves no priority per row. The page and the count both read it. The named ids
-// ($11) and the work under any ($13) are one test of membership in `advancing`. The work under
-// none ($12) is every issue `advancing` does not hold. `?own=true` ($15) reads the arms over
-// `advances_originating` instead: the ids named and any, one test of membership over the issues
-// that state a matched priority no issue above them carries, and none over nothing.
+// time, is outside every window. The priority and `advances` filters are the two whose answer an
+// issue above the issue can decide, so no column of its own row holds it: each reads terms
+// computed once per request and tests each issue's key for membership in them, so `matched`
+// resolves nothing per row. The page and the count both read them. The priority filter matches
+// the priority each issue resolves to (refs.IssuePriorityTerms), not its own alone: a level of $7
+// matches each issue whose own priority it is and each one `priority_inherited` holds at it
+// (issuePriorityFilterTerms), and none ($8) each issue with no priority of its own that
+// `priority_inherited` does not hold. The `advances` filter reads issueAdvancesFilterTerms. Its
+// named ids ($11) and the work under any ($13) are one test of membership in `advancing`. The
+// work under none ($12) is every issue `advancing` does not hold. `?own=true` ($15) reads the
+// arms over `advances_originating` instead: the ids named and any, one test of membership over
+// the issues that state a matched priority no issue above them carries, and none over nothing.
 //
 // Each test is an `in` or a `not in` over a term, never a join to it. Postgres plans an
 // uncorrelated `in` as a hashed subplan whenever the term's estimated rows fit in hash_mem: the
@@ -170,7 +175,8 @@ const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		  and (not $6::boolean or i.closed_at is null)
 		  and ((cardinality($7::smallint[]) = 0 and not $8::boolean)
 		       or i.priority = any($7::smallint[])
-		       or ($8::boolean and i.priority is null))
+		       or i.key in (select key from priority_inherited where priority = any($7::smallint[]))
+		       or ($8::boolean and i.priority is null and i.key not in (select key from priority_inherited)))
 		  and ($9::timestamptz is null or i.closed_at >= $9)
 		  and ($10::timestamptz is null or i.closed_at < $10)
 		  and ((cardinality($11::text[]) = 0 and not $12::boolean and not $13::boolean)
@@ -367,16 +373,37 @@ func advancesOriginTerms(relations, keys string) string {
 	)`
 }
 
+// issuePriorityFilterTerms answer the listing's `priority` query key by the priority each issue
+// resolves to (J1 of dispatch://INFRA-5793), as terms computed once per request rather than a
+// read per row (issueListFilters says why): $7 is the levels the request named and $8 whether it
+// asked for the issues with none. An issue with a priority of its own resolves to it, which
+// `matched` tests on its row, so the walk climbs only from `priority_candidates`, the issues with
+// none of their own that `matched` can keep: it reads two of matched's own arms, the project ($1)
+// and `open` ($6), written as matched writes them, so it holds every such issue whatever the other
+// filters cut, and a project's listing climbs from that project's issues alone. The read is gated
+// on the request naming a priority at all: the clause holds no column, so the planner makes it a
+// one-time filter, and a listing that names none climbs from no issue and pays for no walk of the
+// filter. `priority_inherited` is refs.IssuePriorityTermsOver those candidates, the one rule every
+// issue read resolves a priority by: a row for each candidate that takes a priority from an issue
+// above it, with that priority, and none for a candidate that resolves none.
+var issuePriorityFilterTerms = `priority_candidates as (
+		select i.key from issues i
+		where (cardinality($7::smallint[]) > 0 or $8::boolean) and i.priority is null
+		  and ($1 = '' or i.project_key = $1) and (not $6::boolean or i.closed_at is null)
+	), ` + refs.IssuePriorityTermsOver("priority_candidates", "priority_inherited")
+
 // issueSummaryColumns are the columns a listing row scans, in issueSummaryRow's order, around
 // the three `advances` columns the text was built with: either the relation read's
 // (issueAdvancesColumns) or the constants of the text that leaves it out
 // (issueAdvancesColumnsUnread), which is why they are a parameter rather than spliced in here.
-// The two cells of the move (issueMovedColumns) stand right behind them.
+// The two cells of the move (issueMovedColumns) stand right behind them, and the priority the
+// issue resolves to and its source (refs.IssuePriorityColumns) behind those.
 func issueSummaryColumns(advances string) string {
 	return `i.key, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
 	       coalesce(blockers.keys, '{}'),
 	       ` + advances + `,
 	       ` + issueMovedColumns + `,
+	       ` + refs.IssuePriorityColumns + `,
 	       i.assignee, i.route, i.updated_at, i.last_seq, i.created_by, i.created_at,
 	       coalesce(spec.id, ''),
 	       ` + issueClaimColumns + `,
@@ -400,7 +427,7 @@ const issueMovedColumns = `moved.created_at, moved.actor`
 // have been moved there, since the cells say how the issue came to stand where it stands.
 var issueMovedJoin = backlogMoveLateral("i", `$14::boolean and i.status in (`+sqlStringList(priorityBacklogStatuses)+`)`)
 
-// issueSummaryJoins resolve the seven values a listing row carries beside the issue's own
+// issueSummaryJoins resolve the eight values a listing row carries beside the issue's own
 // columns, each for every issue of `subjects` at once rather than for one row at a time, and the
 // move a request asked for (issueMovedJoin), one issue at a time. The open-ask read keeps the
 // state filter in its own where clause, so it matches the partial asks_open(issue_key) where
@@ -438,6 +465,7 @@ func issueSummaryJoins(readAdvances bool) string {
 	}
 	return joins + issueComponentsJoin + `
 	` + refs.IssueRepoJoin + `
+	` + refs.IssuePriorityJoin + `
 	` + issueMovedJoin
 }
 
@@ -857,7 +885,7 @@ type issueSummaryRow struct {
 func (r *issueSummaryRow) targets(leading ...any) []any {
 	targets := append(leading, &r.issue.Key, &r.issue.Title, &r.issue.Status, &r.issue.Priority, &r.issue.Rank, &r.issue.Labels, &r.issue.Parent, &r.issue.BlockedBy)
 	targets = append(targets, r.advances.targets()...)
-	targets = append(targets, &r.issue.MovedAt, &r.issue.MovedBy)
+	targets = append(targets, &r.issue.MovedAt, &r.issue.MovedBy, &r.issue.ResolvedPriority, &r.issue.PriorityFrom)
 	targets = append(targets, &r.issue.Assignee, &r.issue.Route, &r.issue.UpdatedAt, &r.issue.LastSeq, &r.issue.CreatedBy, &r.issue.CreatedAt, &r.issue.PrimaryArtifactID)
 	targets = append(targets, r.claim.targets()...)
 	targets = append(targets, &r.issue.OpenAsks)
@@ -1174,17 +1202,20 @@ func (s *server) loadIssue(ctx context.Context, q queryer, key string) (model.Is
 // issueRowStatement reads one issue with its progress, $1 its key; scanIssueRow decodes it. It
 // is the issue read's first queued statement (getIssue), whose callback records a missing issue
 // for the read to answer as this row's pgx.ErrNoRows whatever the rest of the batch found. The
-// text is built once, at start, rather than on every read: its component and repository terms
-// are package-level values of their own, so the concatenation is work a request would repeat
-// for a statement that never differs, and pgx caches a prepared plan per statement text.
+// text is built once, at start, rather than on every read: its component, repository and
+// priority terms are package-level values of their own, so the concatenation is work a request
+// would repeat for a statement that never differs, and pgx caches a prepared plan per statement
+// text.
 var issueRowStatement = `
 		with recursive subjects as (select $1::text as key),
 		` + issueAdvancesTerms + `,
 		` + issueComponentsTerms + `,
-		` + refs.IssueRepoTerms + `
+		` + refs.IssueRepoTerms + `,
+		` + refs.IssuePriorityTerms + `
 		select i.key, i.project_key, i.number, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
 		       coalesce((select array_agg(l.target_key order by l.target_key) from issue_links l where l.issue_key = i.key and l.kind = 'blocked_by'), '{}'),
 		       ` + issueAdvancesColumns + `,
+		       ` + refs.IssuePriorityColumns + `,
 		       i.assignee, i.route, i.created_by, i.created_at, i.updated_at, i.closed_at,
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and a.is_primary), ''),
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedVerificationRole + `), ''),
@@ -1199,6 +1230,7 @@ var issueRowStatement = `
 		` + issueAdvancesJoin + `
 		` + issueComponentsJoin + `
 		` + refs.IssueRepoJoin + `
+		` + refs.IssuePriorityJoin + `
 		where i.key = $1
 	`
 
@@ -1235,6 +1267,7 @@ func scanIssueRow(row pgx.Row) (model.Issue, model.IssueProgress, error) {
 		&issue.Parent, &issue.BlockedBy,
 	}
 	targets = append(targets, advances.targets()...)
+	targets = append(targets, &issue.ResolvedPriority, &issue.PriorityFrom)
 	targets = append(targets,
 		&issue.Assignee, &issue.Route, &createdBy, &issue.CreatedAt, &issue.UpdatedAt, &issue.ClosedAt,
 		&issue.PrimaryArtifactID, &issue.VerificationArtifactID, &issue.PlanArtifactID, &issue.DecisionsArtifactID, &issue.LastSeq,
