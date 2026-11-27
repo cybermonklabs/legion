@@ -35,6 +35,10 @@
         "base": { "ref": "main" }
       }
     },
-    { "match": "^gh (api user|auth status)", "stdout": { "login": "rig[bot]" } }
+    { "match": "^gh (api user|auth status)", "stdout": { "login": "rig[bot]" } },
+    {
+      "match": "^gh api graphql -f query=\\{viewer\\{login\\}\\}( |$)",
+      "stdout": { "data": { "viewer": { "login": "rig[bot]" } } }
+    }
   ]
 }
