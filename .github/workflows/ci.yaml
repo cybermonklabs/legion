@@ -291,7 +291,7 @@ jobs:
           EVERY_JOB: ${{ steps.scope.outputs.every_job }}
           LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
           FILTER: ${{ toJSON(steps.filter.outputs) }}
-          SELECTED_BY: ${{ env.CI_OK_SELECTED_BY }}
+          FILTERS_FILE: ${{ runner.temp }}/ci-filters.yaml
         run: .github/scripts/lane-verdicts.py
 
   # Reads the whole tree, so it runs on every non-draft run, also when `changes` failed.

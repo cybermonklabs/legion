@@ -27,7 +27,7 @@ def selection($job; $map; $out; $pr; $event):
   | if $value != "true" then
       if $event == "pull_request" and $verdicts[$output] == "true" then
         {selected: false, gated: true,
-         why: "selected by paths, held back on a pull request: the merge queue runs it before the change lands"}
+         why: "selected by paths, held back on a pull request: the merge queue runs the suites its own generator selects against its own base, which may be fewer than this head's selection"}
       else {selected: false, why: "needs.changes.outputs.\($output) is \($value)"}
       end
     elif $pr_only and $event != "pull_request" then

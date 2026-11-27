@@ -66,8 +66,8 @@ lines, in place of running or modelling it (the generate step's, for one: ci-fil
 writes every_filter=true there when it falls open). --filter-step prints whether the filter step
 runs and the `base` and `ref` it is handed when it starts; --generate-step prints the
 CI_FILTERS_BASE the filter generation step is handed when it starts, its whole `env:` evaluated
-there; --step-env prints, as one JSON object, whether the changes job's step of that name runs
-and its whole `env:` evaluated when it starts; --concurrency prints the workflow's concurrency `group` and
+there; --step-env prints, as one JSON object, the whole `env:` of the changes job's step of that
+name, evaluated when it starts, and refuses a step that is skipped; --concurrency prints the workflow's concurrency `group` and
 `cancel-in-progress`. --steps <job> prints instead, for the workflow that job of <workflow>
 calls, `<step>=<true|false>` for each step whose `if:` reads an input the job fills from the
 changes job, with that job's `with:` evaluated over those outputs and needs.changes.result
@@ -100,7 +100,7 @@ class Refused(Exception):
 
 # The contexts an expression may read, whole: the event's name, the run's ref and commit, the pull
 # request's number, label names and base commit, the merge group's base commit, the runner's
-# temporary directory, an input, a variable of the workflow's own `env:`, and a
+# temporary directory, an input, and a
 # step's outputs or one of them; and under --steps the changes job's result and outputs, which only
 # that mode's context holds. A read of anything else, `github.event.pull_request` or `github.event`
 # as a whole among them, is refused, so an output can read the labels only through the path
@@ -108,7 +108,6 @@ class Refused(Exception):
 MODELLED = re.compile(r"github\.event_name|github\.ref|github\.sha|github\.event\.pull_request\.number"
                       r"|github\.event\.pull_request\.labels\.\*\.name|github\.event\.pull_request\.base\.sha"
                       r"|github\.event\.merge_group\.base_sha|runner\.temp|inputs\.[A-Za-z0-9_-]+"
-                      r"|env\.[A-Za-z0-9_]+"
                       r"|steps\.[A-Za-z0-9_-]+\.outputs(?:\.[A-Za-z0-9_-]+)?"
                       r"|needs\.changes(?:\.result|\.outputs(?:\.[A-Za-z0-9_-]+)?)?", re.I)
 # An `inputs.<name>` read, and a value naming the changes job: what makes a step's `if:` one --steps
@@ -376,6 +375,15 @@ def started_step(started, chosen, what):
     return found[0]
 
 
+def step_env(started, chosen, what):
+    """The whole `env:` of the one step `chosen` picks, every value evaluated as the runner evaluates
+    it when the step starts; a skipped step is refused, since it is handed no env."""
+    step, at_start, ran = started_step(started, chosen, what)
+    if not ran:
+        raise Refused(f"the {what} is skipped, so it is handed no env")
+    return {str(name): text_of(interpolate(value, Evaluator(at_start))) for name, value in (step.get("env") or {}).items()}
+
+
 def dispatch_inputs(document, event, given):
     """The `inputs` context: on a workflow_dispatch every input the workflow declares, at its
     default or the value given (a boolean input as a boolean), and on any other event every
@@ -512,7 +520,6 @@ def main():
                                                   "base": {"sha": (args.pull_base or args.base) if pull_request else None}},
                                  "merge_group": {"base_sha": args.base if args.event == "merge_group" else None}}},
             "inputs": dispatch_inputs(document, args.event, args.input),
-            "env": {str(name): text_of(value) for name, value in (document.get("env") or {}).items()},
             "steps": {step_id: {"outputs": {}} for step_id in ids},
         }
         evaluator = Evaluator(context)
@@ -530,21 +537,12 @@ def main():
                 print(f"{key}={text_of(interpolate(with_.get(key, ''), Evaluator(at_start)))}")
             return 0
         if args.generate_step:
-            step, at_start, ran = started_step(started, lambda s: "ci-filters-generate.sh" in str(s.get("run", "")),
-                                               "step that runs ci-filters-generate.sh")
-            if not ran:
-                raise Refused("the step that runs ci-filters-generate.sh is skipped, so it is handed no env")
-            # Every value of the step's env, as the runner evaluates it when the step starts.
-            env = {str(name): text_of(interpolate(value, Evaluator(at_start)))
-                   for name, value in (step.get("env") or {}).items()}
+            env = step_env(started, lambda s: "ci-filters-generate.sh" in str(s.get("run", "")),
+                           "step that runs ci-filters-generate.sh")
             print(f"filters-base={env.get('CI_FILTERS_BASE', '')}")
             return 0
         if args.step_env:
-            step, at_start, ran = started_step(started, lambda s: s.get("name") == args.step_env,
-                                               f"step named {args.step_env!r}")
-            env = {str(name): text_of(interpolate(value, Evaluator(at_start)))
-                   for name, value in (step.get("env") or {}).items()} if ran else {}
-            print(json.dumps({"runs": ran, "env": env}))
+            print(json.dumps(step_env(started, lambda s: s.get("name") == args.step_env, f"step named {args.step_env!r}")))
             return 0
     except Refused as refusal:
         print(f"ci_router_outputs: {refusal}", file=sys.stderr)

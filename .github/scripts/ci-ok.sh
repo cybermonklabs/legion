@@ -92,8 +92,9 @@
 # line reads `<job>: skipped (...)` among the jobs that ran, and the pass line says every job
 # changes selected succeeded, so a reader of a green ci-ok could take it for a job that passed.
 # So after the verdict, pass or fail, each such job gets a line of its own, `not run at this head:
-# <job> (selected by paths, held back on a pull request; the merge queue runs it before the change
-# lands, and lane:<output> runs it here only for a need the pull request names)`, naming the job's
+# <job> (selected by paths, held back on a pull request; the merge queue runs the suites its own
+# generator selects against its own base, which may be fewer than this head's selection, and
+# lane:<output> runs it here only for a need the pull request names)`, naming the job's
 # own `changes` output, the job summary lists those lines apart from the jobs that ran and passed,
 # and one notice annotation carries them all, which GitHub shows on the pull request's checks, so
 # the pull request's page says what a green ci-ok did not run. No job runs in part: each runs all
@@ -195,7 +196,7 @@ include "ci-ok";
       selection($job) as $s
       | ["info", "\($job): \($result) (\(if $s.selected then "selected" else "not selected" end): \($s.why))"],
         (select($s.gated and $result == "skipped")
-         | ["not_run", "not run at this head: \($job) (selected by paths, held back on a pull request; the merge queue runs it before the change lands, and lane:\($map[$job]) runs it here only for a need the pull request names)"]),
+         | ["not_run", "not run at this head: \($job) (selected by paths, held back on a pull request; the merge queue runs the suites its own generator selects against its own base, which may be fewer than this head's selection, and lane:\($map[$job]) runs it here only for a need the pull request names)"]),
         if $result == "absent" then
           ["error", "\($job) is absent from NEEDS, but SELECTED_BY maps it to needs.changes.outputs.\($map[$job]); the ci-ok job's toJSON(needs) and ci-ok-report.sh both give every SELECTED_BY job a result, so this is a defect of whichever of them built NEEDS"]
         elif $s.selected and $result != "success" then
@@ -252,7 +253,7 @@ fi
 # %0A is a workflow command's newline.
 if [ "${#not_run[@]}" -gt 0 ]; then
   notice=$(printf '%s%%0A' "${not_run[@]}")
-  echo "::notice title=ci-ok did not run every job its paths selected; the merge queue runs them::${notice%\%0A}"
+  echo "::notice title=ci-ok did not run every job this head's paths selected::${notice%\%0A}"
 fi
 
 if [ "${#errors[@]}" -gt 0 ]; then

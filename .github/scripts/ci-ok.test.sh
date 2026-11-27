@@ -235,7 +235,7 @@ echo "case: docs' paths matched and the pull request has no full-ci label, so ch
 run_ci_ok "$(needs success "$gated_selects" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"
 check "passes, as it does for any job changes did not select" "$(is "$status" 0)"
 check "says the pull request held it back, not the filter" \
-  "$(contains "$out" '^docs: skipped (not selected: selected by paths, held back on a pull request: the merge queue runs it before the change lands)$')"
+  "$(contains "$out" "^docs: skipped (not selected: selected by paths, held back on a pull request: the merge queue runs the suites its own generator selects against its own base, which may be fewer than this head's selection)\$")"
 check "reports no error" "$(is "$(contains "$out" '::error::')" false)"
 # The line above sits among the jobs that ran, in the same `<job>: <result>` shape, and the pass
 # line after it says every job changes selected succeeded: read together they let a green ci-ok
@@ -243,7 +243,7 @@ check "reports no error" "$(is "$(contains "$out" '::error::')" false)"
 # in a shape of its own, and the job summary sets it apart from the jobs that ran and passed.
 # Match each whole line: a prefix alone misses a lost merge-queue explanation or stated-need
 # condition, even when it still carries the right lane label.
-not_run_docs='not run at this head: docs (selected by paths, held back on a pull request; the merge queue runs it before the change lands, and lane:docs runs it here only for a need the pull request names)'
+not_run_docs="not run at this head: docs (selected by paths, held back on a pull request; the merge queue runs the suites its own generator selects against its own base, which may be fewer than this head's selection, and lane:docs runs it here only for a need the pull request names)"
 check "names docs after the pass line as not run at this head" \
   "$(contains "$(sed -n '/^changes and lint succeeded/,$p' <<<"$out")" "^$not_run_docs\$")"
 check "the job summary names docs as not run at this head" \
@@ -252,7 +252,7 @@ check "the job summary lists the jobs that ran and passed apart from it" \
   "$(contains "$step_summary" '^\*\*Ran and passed at this head:\*\* changes, lint, typecheck, worker-image$')"
 check "the job summary's headline says the verdict passed" "$(contains "$step_summary" '^### ci-ok: success, ')"
 check "one notice annotation names docs as not run, for the pull request's page" \
-  "$(contains "$out" "^::notice title=ci-ok did not run every job its paths selected; the merge queue runs them::$not_run_docs\$")"
+  "$(contains "$out" "^::notice title=ci-ok did not run every job this head's paths selected::$not_run_docs\$")"
 
 echo "case: docs held back by the label beside a selected job that failed"
 # A red ci-ok sends its reader to the failure, and the not-run line still says docs did not run,
@@ -264,7 +264,7 @@ check "and so does the job summary" "$(contains "$step_summary" "^- $not_run_doc
 check "which leaves the failed job out of the jobs that ran and passed" \
   "$(contains "$step_summary" '^\*\*Ran and passed at this head:\*\* changes, lint, worker-image$')"
 check "the job summary's headline says the verdict failed" "$(contains "$step_summary" '^### ci-ok: failure, ')"
-check "and so does the notice" "$(contains "$out" "^::notice title=ci-ok did not run every job its paths selected; the merge queue runs them::$not_run_docs\$")"
+check "and so does the notice" "$(contains "$out" "^::notice title=ci-ok did not run every job this head's paths selected::$not_run_docs\$")"
 
 echo "case: the not-run line names each held-back job's own lane label"
 # The label that turns one held-back job on is lane:<its changes output>, which is not its job id:
@@ -275,7 +275,7 @@ envoy_gated=$(with_verdicts "$selects" \
 run_ci_ok "$(needs success "$envoy_gated" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"
 check "passes" "$(is "$status" 0)"
 check "names envoy-client with its output's label" \
-  "$(contains "$out" '^not run at this head: envoy-client (selected by paths, held back on a pull request; the merge queue runs it before the change lands, and lane:envoy_client runs it here only for a need the pull request names)$')"
+  "$(contains "$out" "^not run at this head: envoy-client (selected by paths, held back on a pull request; the merge queue runs the suites its own generator selects against its own base, which may be fewer than this head's selection, and lane:envoy_client runs it here only for a need the pull request names)\$")"
 check "and no label named for the job id" "$(is "$(contains "$out" 'lane:envoy-client')" false)"
 # The line is what an author reads on a green ci-ok: it says where the suite runs and names the
 # one label that runs it here, never the label that runs every slow suite
@@ -283,6 +283,19 @@ check "and no label named for the job id" "$(is "$(contains "$out" 'lane:envoy-c
 check "and asks for no full-ci" "$(is "$(contains "$out" 'full-ci')" false)"
 check "and names docs, whose filter said no, nowhere as not run" \
   "$(is "$(contains "$out" 'not run at this head: docs')" false)"
+
+echo "case: two held-back jobs share one notice, joined by the workflow command's newline"
+# One annotation for all of them (ci-ok.sh's notice): its data is each not-run line joined by %0A,
+# with no %0A after the last. A version that wrote one notice per job, or kept the trailing %0A,
+# fails here.
+both_gated=$(with_verdicts "$selects" \
+  '{"typecheck": "true", "envoy_client": "true", "worker_image": "true", "docs": "true"}')
+run_ci_ok "$(needs success "$both_gated" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"
+check "passes" "$(is "$status" 0)"
+check "writes exactly one notice" "$(is "$(grep -c '^::notice' <<<"$out")" 1)"
+not_run_envoy="not run at this head: envoy-client (selected by paths, held back on a pull request; the merge queue runs the suites its own generator selects against its own base, which may be fewer than this head's selection, and lane:envoy_client runs it here only for a need the pull request names)"
+check "whose data is the two not-run lines joined by %0A, in NEEDS order" \
+  "$(is "$(grep '^::notice' <<<"$out")" "::notice title=ci-ok did not run every job this head's paths selected::$not_run_envoy%0A$not_run_docs")"
 
 echo "case: docs' paths did not match on a pull request, where the label would have changed nothing"
 run_ci_ok "$(needs success "$unmatched_selects" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"
@@ -292,6 +305,7 @@ check "keeps today's wording" \
 check "says nothing about a pull request holding it back" "$(is "$(contains "$out" 'held back on a pull request')" false)"
 check "names no job as not run at this head" "$(is "$(contains "$out" 'not run at this head')" false)"
 check "writes no job summary" "$(is "$step_summary" "")"
+check "and writes no notice" "$(is "$(contains "$out" '^::notice')" false)"
 
 echo "case: docs' paths matched and the pull request carries full-ci, so docs ran"
 labelled_selects=$(with_verdicts "$selects_docs" \
@@ -301,6 +315,7 @@ check "passes" "$(is "$status" 0)"
 check "prints docs as selected" "$(contains "$out" '^docs: success (selected: needs.changes.outputs.docs is true)$')"
 check "names no job as not run at this head" "$(is "$(contains "$out" 'not run at this head')" false)"
 check "writes no job summary" "$(is "$step_summary" "")"
+check "and writes no notice" "$(is "$(contains "$out" '^::notice')" false)"
 
 echo "case: a merge-group run never says full-ci, since the label term of those outputs is already true there"
 run_ci_ok "$(needs success "$gated_selects" success typecheck=success envoy-client=skipped worker-image=skipped docs=skipped)" merge_group
@@ -310,6 +325,7 @@ check "keeps today's wording" \
 check "says nothing about a pull request holding it back" "$(is "$(contains "$out" 'held back on a pull request')" false)"
 check "names no job as not run at this head" "$(is "$(contains "$out" 'not run at this head')" false)"
 check "writes no job summary" "$(is "$step_summary" "")"
+check "and writes no notice" "$(is "$(contains "$out" '^::notice')" false)"
 
 echo "case: changes failed"
 run_ci_ok "$(needs failure '{}' success typecheck=success envoy-client=skipped worker-image=skipped docs=skipped)"

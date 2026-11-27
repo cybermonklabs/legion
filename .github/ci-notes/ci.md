@@ -1571,8 +1571,10 @@ tests, and
 the list of those jobs whose `if:` also admits only pull_request (ci-ok.sh and ci-ok.jq say how
 they decide a job's selection). The ci-ok job's step takes both from this env; ci-ok-report.sh,
 which runs from a composite action this file hands its job's own inputs alone, reads both out
-of this file at the commit the run checked out. check-ci-filters.sh holds both to the jobs'
-`if:`s.
+of this file at the commit the run checked out, and so does lane-verdicts.py, which names each
+gated output's job by this map
+(.github/ci-notes/ci.md#the-changes-job-says-what-decided-each-slow-suite). check-ci-filters.sh
+holds both to the jobs' `if:`s.
 
 ## The jobs that run on every change
 
@@ -1835,7 +1837,8 @@ a job's time from its first leg's start to its last leg's end; the numbers below
   request wherever its paths select it.
 - A build, vet, format, typecheck or lint check runs on a pull request whatever its job's time,
   so a change that does not build or is not formatted fails while its author still has it.
-- Every other test is a slow suite: the merge queue runs it, and a pull request runs it only
+- Every other test is a slow suite: the merge queue runs it when the queue's own generator selects
+  it, and a pull request runs it only
   under its `lane:<output>` label, for a need the pull request names
   (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request says what
   `full-ci`, every slow suite, is for). A slow suite is held back through its job's `changes`
@@ -1889,8 +1892,8 @@ tree.
 ## How a slow suite is held back on a pull request
 
 A slow suite (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue)
-is held back through its job's `changes` output. The merge queue runs it on the
-tree the change lands as, and that is where its result normally comes from; a pull request runs
+is held back through its job's `changes` output. The merge queue runs it when the queue's own
+generator, against the queue's base, selects it, and that is where its result normally comes from; a pull request runs
 it only when it carries the label `full-ci`, or that one when it carries its `lane:<output>`
 label (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request). Each such output is false on a pull-request run without the label, so
 the skip is one `changes` chose: ci-ok reads it as it reads any other output, and no job's `if:`
@@ -1916,21 +1919,17 @@ run does: the suite's output is false and the suite does not run on this head. T
 decided each slow suite on this run" (`.github/scripts/lane-verdicts.py`) prints, for each output
 that reads the pull request's labels, what decided it: whether its paths matched, the label the
 pull request carries, whether the suite runs on this run, and, for one held back, that the merge
-queue runs it. The decision is the output's own expression, evaluated by ci_router_outputs.py's
-evaluator over what the step is handed; ci-router-outputs.test.sh hands the script the env
-ci.yaml's step evaluates to on each shape of run and holds its decisions to the outputs, so the
-line cannot say what the output does not. It writes no annotation, since ci-ok's notice already
-names the suites a run held back. A failure of the step is its own red mark and fails no job
-(`continue-on-error`): it only reads.
-
-Measured over the 276 pull requests merged 2026-11-23T23:53Z to 2026-11-26T23:31Z whose last run's
-computed filters could be read (each job's own result from the jobs API, its selection from that
-run's `ci-filters` artifact over the pull request's files): 244 had a slow suite their paths
-selected skipped at their last head, and in all 244 every such suite ran and passed in the merge
-group at the merge commit. That reading covers each pull request's latest completed run and its
-merge commit only, not its earlier heads or pull requests that never merged. So nothing here runs
-those suites on the pull request, and nothing stops a merge group that skips one: a skip in the
-queue is a hole no merged pull request in that window fell into.
+queue runs the suites its own generator selects against its own base, which may be fewer than
+this head's selection. Whether a line says its suite runs is the output's own expression,
+evaluated by ci_router_outputs.py's evaluator over what the step is handed, and the reason beside
+it is a fact the step is handed too: that the run selects every job, that the filters file dorny
+read was widened to every path (its first line, `# FAIL-OPEN:` or `# FORCED:`), that the paths
+matched, or the label carried. ci-router-outputs.test.sh hands the script the env ci.yaml's step
+evaluates to on pull requests with and without a label, a merge group, dispatches of main and of a
+branch, and a widened filters file, and holds each suite's line to its output. It writes no
+notice, since ci-ok's notice names the suites a run held back; it writes one `::error::` for an
+output it cannot evaluate or a line that would contradict the output. A failure of the step is
+its own red mark and fails no job (`continue-on-error`): it only reads.
 
 ## A citation names a symbol, never a line
 
@@ -2092,7 +2091,7 @@ a dispatch of a branch the step runs and this is its verdicts, which no label te
 
 A job a pull request held back did not run at this head, and ci-ok passes over its skip, so
 ci-ok.sh names it once more after its verdict, pass or fail, on a line of its own:
-`not run at this head: <job> (selected by paths, held back on a pull request; the merge queue runs it before the change lands, and lane:<output> runs it here only for a need the pull request names)`,
+`not run at this head: <job> (selected by paths, held back on a pull request; the merge queue runs the suites its own generator selects against its own base, which may be fewer than this head's selection, and lane:<output> runs it here only for a need the pull request names)`,
 where `<output>` is the job's own `changes` output, so the line names the one label that runs it
 on a pull request and never `full-ci`
 (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request). The same lines
