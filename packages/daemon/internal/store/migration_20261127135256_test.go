@@ -41,6 +41,7 @@ const (
 // as before and the test fails at the first, and the way back without its restore of the defects'
 // kind check, where the store after it holds that check with request in it.
 func TestTheMigrationOfMergedNewWork(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store := emptyStore(t)
 	migrateThrough(t, store, mergedNewWorkVersion-1)
