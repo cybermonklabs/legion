@@ -61,7 +61,8 @@ func (j *terminalJob) script(script string) string {
 	if j == nil {
 		return script
 	}
-	return "trap '' TSTP; trap 'interrupted=1' INT; (\n" + script + "\n); status=$?; [ -z \"${interrupted:-}\" ] || exit 130; exit $status"
+	// CONTROL: the regression the Ctrl-C row catches: the shell reads the launch's status alone.
+	return "trap '' TSTP; trap 'interrupted=1' INT; (\n" + script + "\n); status=$?; exit $status"
 }
 
 // attach makes cmd the terminal's foreground job, and copies its stderr to echo without the load
