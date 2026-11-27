@@ -358,7 +358,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	if natsUser != "" {
 		fmt.Fprintln(stdout, bootprobe.NATSUserLine(natsUser))
 	}
-	fmt.Fprintln(stdout, bootprobe.OKLine(omp, expected, agentModels, checked, modelFallback, ompVersion, sessionIDFlag))
+	fmt.Fprintln(stdout, bootprobe.OKLine(omp, expected, bootprobe.SessionStorageProbed, agentModels, checked, modelFallback, ompVersion, sessionIDFlag))
 	return 0
 }
 

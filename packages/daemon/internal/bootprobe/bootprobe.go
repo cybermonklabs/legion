@@ -177,10 +177,19 @@ func abandoned(name string, err error) error {
 	return fmt.Errorf("the %s probe was abandoned: it was stopped while it ran or waited to run again: %w", name, err)
 }
 
-// sessionStorageMark is on the OK line once the session-storage probe has passed
-// (SESSION_STORAGE_PROBE_MARK, boot-probes.ts:398-403): a CLI that predates that probe prints no
-// such token, having checked nothing about the setting.
-const sessionStorageMark = "session-storage=probed"
+// The session-storage mark's states: SessionStorageProbed once the session storage probe passed,
+// as it does in the image build's run, and SessionStorageSkipped in the daemon's boot run
+// (ImageProbeRunBoot), which does not make that probe.
+const (
+	SessionStorageProbed  = "probed"
+	SessionStorageSkipped = "skipped"
+)
+
+// sessionStorageMark carries one of those states on the OK line (SESSION_STORAGE_PROBE_MARK,
+// boot-probes.ts:398-403): a CLI that predates the session storage probe prints no such token,
+// having checked nothing about the setting. The daemon reads neither state: its probe Sandbox
+// passes the line of either run.
+const sessionStorageMark = "session-storage="
 
 // OKPrefix begins the line `legion probe-image` prints when every probe passed.
 const OKPrefix = "probe-image: OK"
@@ -258,25 +267,27 @@ const (
 	SessionIDFlagUnread = "unread"
 )
 
-// OKLine is the line OKPrefix begins: the OMP invocation probed, the session-storage mark, the
-// extensions mark, the agent-models mark (AgentModelsResolved or AgentModelsSkipped), the
-// capabilities mark (CapabilitiesAll or CapabilitiesBrowserSkipped), the model-fallback mark
-// (ModelFallbackOn, ModelFallbackOff, or ModelFallbackUnread), the omp-version mark (Oh My Pi's
-// own version, or OmpVersionUnread), the omp-session-id mark (SessionIDFlagTaken,
-// SessionIDFlagAbsent, or SessionIDFlagUnread), and the daemon API contract the image's plugin
-// declared, last. The version is Oh My Pi's own words, so each whitespace run in it is written as
-// one underscore and the mark stays one token; an empty one is written OmpVersionUnread. The
-// daemon's probe Sandbox passes the image only on a line that confirms the daemon's own contract
-// (ConfirmedContract) with the extensions mark (ExtensionsDiscovered), the agents' models resolved
-// (AgentModels), the whole capability list checked (Capabilities: CapabilitiesAll) and, under an
-// exchange audience, --session-id taken (SessionIDFlag: SessionIDFlagTaken). It keeps the
-// model-fallback mark (ModelFallback) in its ImageReport, and logs the omp-version and
+// OKLine is the line OKPrefix begins: the OMP invocation probed, the session-storage mark
+// (SessionStorageProbed once the session storage probe passed, or SessionStorageSkipped in the
+// daemon's boot run, which does not make it), the extensions mark, the agent-models mark
+// (AgentModelsResolved or AgentModelsSkipped), the capabilities mark (CapabilitiesAll or
+// CapabilitiesBrowserSkipped), the model-fallback mark (ModelFallbackOn, ModelFallbackOff, or
+// ModelFallbackUnread), the omp-version mark (Oh My Pi's own version, or OmpVersionUnread), the
+// omp-session-id mark (SessionIDFlagTaken, SessionIDFlagAbsent, or SessionIDFlagUnread), and the
+// daemon API contract the image's plugin declared, last. The version is Oh My Pi's own words, so
+// each whitespace run in it is written as one underscore and the mark stays one token; an empty
+// one is written OmpVersionUnread. The daemon's probe Sandbox passes the image only on a line that
+// confirms the daemon's own contract (ConfirmedContract) with the extensions mark
+// (ExtensionsDiscovered), the agents' models resolved (AgentModels), the whole capability list
+// checked (Capabilities: CapabilitiesAll) and, under an exchange audience, --session-id taken
+// (SessionIDFlag: SessionIDFlagTaken), whichever state its session-storage mark carries. It keeps
+// the model-fallback mark (ModelFallback) in its ImageReport, and logs the omp-version and
 // omp-session-id marks (OmpVersion, SessionIDFlag) with the pass.
-func OKLine(omp string, contract int, agentModels, capabilities, modelFallback, ompVersion, sessionIDFlag string) string {
+func OKLine(omp string, contract int, sessionStorage, agentModels, capabilities, modelFallback, ompVersion, sessionIDFlag string) string {
 	if ompVersion = strings.Join(strings.Fields(ompVersion), "_"); ompVersion == "" {
 		ompVersion = OmpVersionUnread
 	}
-	return fmt.Sprintf("%s (%s) %s %s %s%s %s%s %s%s %s%s %s%s daemon-api-version=%d", OKPrefix, omp, sessionStorageMark, extensionsMark, agentModelsMark, agentModels,
+	return fmt.Sprintf("%s (%s) %s%s %s %s%s %s%s %s%s %s%s %s%s daemon-api-version=%d", OKPrefix, omp, sessionStorageMark, sessionStorage, extensionsMark, agentModelsMark, agentModels,
 		capabilitiesMark, capabilities, modelFallbackMark, modelFallback, ompVersionMark, ompVersion, sessionIDFlagMark, sessionIDFlag, contract)
 }
 
@@ -404,6 +415,15 @@ func NATSUser(output string) string {
 	}
 	return match[1]
 }
+
+// ImageProbeRunVariable is the variable that tells `legion probe-image` which run it is, and
+// ImageProbeRunBoot its one value: the daemon's probe Sandbox sets the variable to that value in
+// its container's env for its boot run. A `legion probe-image` built before the variable ignores
+// it and makes every check of the image build's run. No value is the image build's run.
+const (
+	ImageProbeRunVariable = "LEGION_IMAGE_PROBE_RUN"
+	ImageProbeRunBoot     = "boot"
+)
 
 // RoleConfigFilesFlag is the `legion probe-image` flag the daemon's probe Sandbox passes once per
 // role per whole PI_CONFIG_FILES tail that role starts on — its own `role_config_files`, and

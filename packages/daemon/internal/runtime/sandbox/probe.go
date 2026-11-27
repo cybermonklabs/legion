@@ -1417,6 +1417,12 @@ type probeSpec struct {
 	ShutdownTime   metav1.Time `json:"shutdownTime"`
 }
 
+// probeOwned are the variables the runtime sets in the image probe's container and in no worker's:
+// bootprobe.ImageProbeRunVariable, which tells `legion probe-image` that it runs as the daemon's
+// boot run. podVariables names each, so CheckPod refuses it in runtime.kubernetes.pod.env and as a
+// provider key; it stays out of runtimeOwned and specOwned, since no worker carries it.
+var probeOwned = map[string]bool{bootprobe.ImageProbeRunVariable: true}
+
 // probeManifest is the probe Sandbox: Running from the start (it holds no Secret to write first),
 // deleted by the controller at shutdown, placed as a gVisor worker is placed — gVisor, the
 // configured scheduling alone — whatever runtime.kubernetes.sandbox says, as a repository
