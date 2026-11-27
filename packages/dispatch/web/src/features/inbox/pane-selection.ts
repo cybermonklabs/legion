@@ -6,7 +6,7 @@ import { useAddressNavigate, useHistoryEntry } from "../../lib/page-address";
 import { focusOnDocument } from "../shell/roving";
 import { answerDraft } from "./answer-drafts";
 import { buildInboxPath, type InboxRoute } from "./inbox-route";
-import { ROW_ATTRIBUTE } from "./inbox-row";
+import { EMPTY_ATTRIBUTE, ROW_ATTRIBUTE } from "./inbox-row";
 import { type InboxListRow, rowId } from "./list-row";
 import { PANE_SCROLLER_SELECTOR } from "./ReadingView";
 import type { InboxSection } from "./sections";
@@ -58,7 +58,7 @@ type AddressReading = "answered" | "listed" | "unlisted";
 
 /** The list's empty message: what a hand-off gives the focus to when the reader's press leaves no
  *  row (R8). */
-const EMPTY_SELECTOR = "[data-inbox-empty]";
+const EMPTY_SELECTOR = `[${EMPTY_ATTRIBUTE}]`;
 
 /** The reading view below 1280 px, marked with the row it shows (`ReadingView`). */
 const READING_VIEW_SELECTOR = "[data-inbox-reading-row]";
@@ -102,8 +102,8 @@ function itemAfter(drawn: readonly PlacedRow[], acted: ReadonlySet<string>): str
 }
 
 export interface PaneSelectionOptions {
-  /** How many rows a bulk snooze is deferring; zero while none is out. */
-  bulkSnoozing: number;
+  /** The asks a bulk snooze of the bar's is deferring; none while none is out. */
+  bulkSnoozing: ReadonlySet<string>;
   /** Every row the list could hold before its five fields narrow it (`Inbox`'s `candidates`). */
   candidates: readonly InboxListRow[];
   /** Whether the reading column stands beside the list (`READING_PANE_QUERY`, 1280 px). There a
@@ -146,6 +146,9 @@ export interface PaneSelectionOptions {
    *  hold, which closes the reading view below the column's width and has the column pick its top
    *  row beside the list. */
   rowsReady: boolean;
+  /** Whether Dispatch refused this ask's snooze in the bar's newest pick (`useInboxSelection`'s
+   *  `snoozeRefused`). */
+  snoozeRefused: (id: string) => boolean;
   /** Ask ids whose own snooze write is out. */
   snoozing: ReadonlySet<string>;
 }
@@ -184,16 +187,28 @@ export interface PaneSelection {
   /** Where the selection goes when the row it is on leaves the bands: the row below where that
    *  one stood, else the row above it, read off the list as it stood while it still held it. */
   nextAfterSelected: () => string | undefined;
-  /** At a press of the selection bar that takes rows away, before any optimistic write takes
-   *  its rows `ids` off the list: where the reader goes is read off the list as they pressed. */
-  beginHandOff: (ids: readonly string[]) => void;
-  /** Once the press has taken the rows `ids` away (every id it took): beside the column the row
-   *  after them is selected, and in a reading view below its width the view reads it, or gives
-   *  way to the list where no row is left; the hand-off waits for the bar's landing to take its
-   *  target (`takeHandOff`), while the reader has not moved on. */
-  landHandOff: (ids: readonly string[]) => void;
-  /** Dispatch refused the press on `ids` whole: its rows are back, and nobody is sent anywhere. */
-  dropHandOff: (ids: readonly string[]) => void;
+  /** The bar's Dismiss, or Move to Inbox, over the threads `ids`, which `dismiss` presses: its
+   *  optimistic removal is immediate and a refusal shows above the list, so the hand-off (R8) is
+   *  read off the list as the reader pressed, before `dismiss` takes the threads off it, and
+   *  lands at once after it: beside the column the row after them is selected, and in a reading
+   *  view below its width the view reads it, or gives way to the list where no row is left. The
+   *  bar's own landing gives that row the focus once the threads have gone (`takeHandOff`). */
+  dismissFromBar: (ids: readonly string[], dismiss: () => void) => void;
+  /** The bar's Snooze over the asks `ids`, whose write `snooze` sends: the hand-off is read off
+   *  the list as the reader picked, before the write's optimistic moment takes the asks off it,
+   *  and waits for that write to settle (`settleBarSnooze`). */
+  snoozeFromBar: (ids: readonly string[], snooze: () => void) => void;
+  /** The settling of the bar's Snooze (`snoozeFromBar`), for the page to run after every commit
+   *  as a layout effect: once the write is out over none of its asks (`bulkSnoozing`), the asks
+   *  Dispatch took land the hand-off as a Dismiss's threads do, and a pick it refused whole
+   *  (`snoozeRefused`) drops it: its rows are back, and nobody is sent anywhere. The settling is
+   *  one commit, which lets go of the asks, takes the bar away and runs the bar's own hand-off
+   *  with it (`flushSync` in `useInboxSelection`'s `snoozePick`), so it is read on the layout
+   *  lane: the hand-off has landed by the time the bar's going asks for its target
+   *  (`takeHandOff`). In the short-row list below the column's width and in the drawer the
+   *  landing reads where the focus stands, so the page runs this after its own layout effects
+   *  that move the focus (`Inbox.tsx`). */
+  settleBarSnooze: () => void;
   /** Takes the landed hand-off whose target has not taken the focus yet off the record, and
    *  answers that target - the row after the rows acted on, the reading view's scroller where
    *  the view reads that row, or the list's empty message - as a reading of the element this
@@ -211,7 +226,9 @@ export interface PaneSelection {
  * the press is on is selected beside the column, and its row takes the keyboard focus beside it
  * and in the short-row list below its width alike, through the bar's own landing; a reading view
  * below that width reads the row and its scroller takes the focus, and the view gives way to the
- * list where no row is left.
+ * list where no row is left. The bar's presses run their hand-off through it in its order
+ * (`dismissFromBar`, `snoozeFromBar`, `settleBarSnooze`): read off the list as the reader
+ * pressed, and landed once the press has taken its rows away.
  *
  * The address holds the selection (`?item=`), so a reload or a link keeps the reader's place.
  * From the column's width a row is always selected; below it a row is selected only while its
@@ -231,6 +248,7 @@ export function usePaneSelection({
   presented,
   region,
   rowsReady,
+  snoozeRefused,
   snoozing,
 }: PaneSelectionOptions): PaneSelection {
   const go = useAddressNavigate();
@@ -384,6 +402,12 @@ export function usePaneSelection({
   const begun = useRef<readonly HandOff[]>([]);
   /** The hand-off that has landed and whose target the bar's landing has not taken yet. */
   const focusTo = useRef<HandOff | undefined>(undefined);
+  /** What ends the landed hand-off's watch on the reader's next press (`landHandOff`): that
+   *  press, the bar's landing taking the hand-off, a newer landing, and the list's unmount. */
+  const landedWatch = useRef<AbortController | undefined>(undefined);
+  /** The asks of the bar's Snooze whose hand-off is begun (`snoozeFromBar`), from its pick until
+   *  its write settles (`settleBarSnooze`), else null. */
+  const barSnooze = useRef<readonly string[] | null>(null);
   /** The row a hand-off has just selected (`landHandOff`, and the settling effect's hand-on to a
    *  press still in the air), which the selection's keeping on screen (below) leaves to the bar's
    *  landing: it is selected as the reader acts, while the rows acted on may still stand above it,
@@ -448,10 +472,10 @@ export function usePaneSelection({
    * on the row the press sends them to, or where it was as they pressed - or on nothing, where
    * the press leaves no row and sends them to the empty message, since a bar's Snooze that takes
    * the selected row with the last of the rest has the settling effect leave the selection with
-   * nothing before its write's landing hands the reader on (`Inbox.tsx`); in the short-row list
-   * below it, and in the drawer, the focus is on nothing, in a row acted on or the row it sends
-   * them to, or still on what held it as they pressed. A reader who has walked off - another row
-   * selected, the focus somewhere of their own - is left where they are.
+   * nothing before its write's landing hands the reader on (`settleBarSnooze`); in the short-row
+   * list below it, and in the drawer, the focus is on nothing, in a row acted on or the row it
+   * sends them to, or still on what held it as they pressed. A reader who has walked off - another
+   * row selected, the focus somewhere of their own - is left where they are.
    */
   const stillThere = (handOff: HandOff): boolean => {
     const { acted, target } = handOff;
@@ -469,6 +493,8 @@ export function usePaneSelection({
     );
   };
 
+  /** At a press of the selection bar that takes rows away, before any optimistic write takes
+   *  its rows `ids` off the list: where the reader goes is read off the list as they pressed. */
   const beginHandOff = (ids: readonly string[]): void => {
     const acted = new Set(ids);
     begun.current = [
@@ -482,10 +508,15 @@ export function usePaneSelection({
     ];
   };
 
+  /** Dispatch refused the press on `ids` whole: its rows are back, and nobody is sent anywhere. */
   const dropHandOff = (ids: readonly string[]): void => {
     takeBegun(ids);
   };
 
+  /** Once the press has taken the rows `ids` away (every id it took): beside the column the row
+   *  after them is selected, and in a reading view below its width the view reads it, or gives
+   *  way to the list where no row is left; the hand-off waits for the bar's landing to take its
+   *  target (`takeHandOff`), while the reader has not moved on. */
   const landHandOff = (ids: readonly string[]): void => {
     const began = takeBegun(ids);
     const acted = began?.acted ?? new Set(ids);
@@ -527,20 +558,45 @@ export function usePaneSelection({
     }
     focusTo.current = handOff;
     // The target can wait on a commit still to come - the empty message is drawn once the acted
-    // rows go - and the reader's next press says they have moved on without it.
+    // rows go - and the reader's next press says they have moved on without it. The watch on that
+    // press goes with this hand-off, so a newer landing ends the one it replaces.
+    landedWatch.current?.abort();
+    const watch = new AbortController();
+    landedWatch.current = watch;
     const movedOn = () => {
       if (focusTo.current === handOff) focusTo.current = undefined;
-      document.removeEventListener("keydown", movedOn, true);
-      document.removeEventListener("pointerdown", movedOn, true);
+      watch.abort();
     };
-    document.addEventListener("keydown", movedOn, true);
-    document.addEventListener("pointerdown", movedOn, true);
+    document.addEventListener("keydown", movedOn, { capture: true, signal: watch.signal });
+    document.addEventListener("pointerdown", movedOn, { capture: true, signal: watch.signal });
+  };
+
+  const dismissFromBar = (ids: readonly string[], dismiss: () => void): void => {
+    beginHandOff(ids);
+    dismiss();
+    landHandOff(ids);
+  };
+
+  const snoozeFromBar = (ids: readonly string[], snooze: () => void): void => {
+    beginHandOff(ids);
+    barSnooze.current = ids;
+    snooze();
+  };
+
+  const settleBarSnooze = (): void => {
+    const ids = barSnooze.current;
+    if (ids === null || ids.some((id) => bulkSnoozing.has(id))) return;
+    barSnooze.current = null;
+    const taken = ids.filter((id) => !snoozeRefused(id));
+    if (taken.length === 0) dropHandOff(ids);
+    else landHandOff(taken);
   };
 
   const takeHandOff = (): LandingTarget | undefined => {
     const handOff = focusTo.current;
     if (handOff === undefined) return undefined;
     focusTo.current = undefined;
+    landedWatch.current?.abort();
     // The element the target names in this list - the row, the reading view's scroller, or the
     // empty message - read when the bar's landing asks for it.
     return () => targetElement(handOff.target);
@@ -599,7 +655,7 @@ export function usePaneSelection({
     // while the row was still there.
     if (selectedId === undefined) {
       stoodBetween.current = { above: undefined, below: undefined };
-    } else if (!snoozing.has(selectedId) && bulkSnoozing === 0) {
+    } else if (!snoozing.has(selectedId) && bulkSnoozing.size === 0) {
       const at = visible.findIndex(({ row }) => rowId(row) === selectedId);
       if (at !== -1) {
         stoodBetween.current = {
@@ -805,19 +861,22 @@ export function usePaneSelection({
     row?.scrollIntoView?.({ block: "center" });
   });
 
+  // A landed hand-off's watch on the reader's next press goes with the list.
+  useEffect(() => () => landedWatch.current?.abort(), []);
+
   return {
-    beginHandOff,
     close: leaveView,
-    dropHandOff,
+    dismissFromBar,
     id: openId,
-    landHandOff,
     nextAfterSelected,
     open: (id) => select(id, columns ? "replace" : "push"),
     // Below the column's width, nothing selected is the way back to the list.
     select: (id) => (id === undefined && !columns ? leaveView() : select(id)),
     selectedNow,
     selectedRow,
+    settleBarSnooze,
     showing,
+    snoozeFromBar,
     step,
     takeHandOff,
   };

@@ -132,7 +132,7 @@ import {
 } from "./grouping";
 import { GROUP_PAGE, groupItems } from "./InboxGroups";
 import { buildInboxPath, type InboxRoute, useInboxRoute } from "./inbox-route";
-import { LIST_ATTRIBUTE, ROW_ATTRIBUTE, ROW_SELECTOR } from "./inbox-row";
+import { EMPTY_ATTRIBUTE, LIST_ATTRIBUTE, ROW_ATTRIBUTE, ROW_SELECTOR } from "./inbox-row";
 import { matchesInboxSearch } from "./inbox-search";
 import {
   type InboxListRow,
@@ -1619,7 +1619,7 @@ function InboxBody({
     repliesBefore.current = repliesOut;
   });
   const paneSelection = usePaneSelection({
-    bulkSnoozing: bulkSnoozing.size,
+    bulkSnoozing,
     candidates,
     columns,
     filter,
@@ -1644,6 +1644,7 @@ function InboxBody({
     presented,
     region: regionRef,
     rowsReady: threads.ready,
+    snoozeRefused,
     snoozing,
   });
   // After the selection has settled on this render (`usePaneSelection`'s effect runs first), a
@@ -1718,16 +1719,6 @@ function InboxBody({
       paneSelection.select(paneSelection.nextAfterSelected());
     }
     release();
-  };
-  /** The bar's Dismiss, or Move to Inbox, over the threads it counts: its optimistic removal is
-   *  immediate and a refusal shows above the list, so the reader is handed on to the item after
-   *  them at once (R8), and the bar's own landing gives that item's row the focus once the
-   *  threads have gone (`returnFocus`, below). */
-  const dismissFromBar = () => {
-    const ids = selectedThreads.map(({ id }) => id);
-    paneSelection.beginHandOff(ids);
-    dismissPick();
-    paneSelection.landHandOff(ids);
   };
   const rows = () => [...(listRef.current?.querySelectorAll<HTMLElement>(ROW_SELECTOR) ?? [])];
   /** One step of the focus over the rows. In the Dismissed view that is over every loaded row in
@@ -2513,22 +2504,13 @@ function InboxBody({
     },
     shown: bulkBarShown,
   });
-  /** The asks of the bar's Snooze whose hand-off is begun (`paneSelection.beginHandOff`), from its
-   *  pick until its write settles, else null. */
-  const barSnoozeHandOff = useRef<readonly string[] | null>(null);
-  // The bar's Snooze hands the reader on (R8) once its write settles: the asks Dispatch took land
-  // the hand-off, and a pick it refused whole drops it. The settling is one commit, which lets go
-  // of the asks, takes the bar away and runs the bar's own hand-off with it (`flushSync` in
-  // `useInboxSelection`'s `snoozePick`), so it is read here, on the layout lane: the hand-off has
-  // landed by the time the bar's going asks for its target (`returnFocus`, below).
-  useLayoutEffect(() => {
-    const ids = barSnoozeHandOff.current;
-    if (ids === null || ids.some((id) => bulkSnoozing.has(id))) return;
-    barSnoozeHandOff.current = null;
-    const taken = ids.filter((id) => !snoozeRefused(id));
-    if (taken.length === 0) paneSelection.dropHandOff(ids);
-    else paneSelection.landHandOff(taken);
-  });
+  // The bar's Snooze hands the reader on (R8) once its write settles (`paneSelection`'s
+  // `settleBarSnooze`), read on the layout lane after every commit. Declared here, after the
+  // layout effects above that can move the focus in that commit - the reading view's landing
+  // (`useReadingViewLanding`), the column's own hand-off and the bar's (`landAtPlace`) - because
+  // in the short-row list below 1280 px and in the drawer the landing reads where the focus
+  // stands.
+  useLayoutEffect(paneSelection.settleBarSnooze);
 
   // The bar's Snooze is held from its pick through the commit after its write's answer
   // (`useHeldThroughAnswer`), as a row's own Snooze is, and the hold keeps the armed hand-off of
@@ -3081,11 +3063,8 @@ function InboxBody({
           marks={BULK_PICKER_MARKS}
           onPick={(until) => {
             // The reader is handed on to the item after the last of the asks once Dispatch has
-            // taken them (R8): the write's settling lands the hand-off (`barSnoozeHandOff`).
-            const ids = [...selectedAsks];
-            paneSelection.beginHandOff(ids);
-            barSnoozeHandOff.current = ids;
-            void snoozePick(until);
+            // taken them (R8): the write's settling lands the hand-off (`settleBarSnooze`, above).
+            paneSelection.snoozeFromBar([...selectedAsks], () => void snoozePick(until));
           }}
           onTriggerFocus={(from) => {
             pickerOrigin.current = rowAround(from)?.dataset.inboxRow ?? null;
@@ -3097,7 +3076,14 @@ function InboxBody({
           aria-label={`${dismissLabel} selected threads`}
           className={BAR_CONTROL_CLASS}
           data-inbox-bulk-dismiss=""
-          onClick={dismissFromBar}
+          // The reader is handed on to the item after the threads at once (R8), and the bar's own
+          // landing gives that item's row the focus once they have gone (`returnFocus`, above).
+          onClick={() =>
+            paneSelection.dismissFromBar(
+              selectedThreads.map(({ id }) => id),
+              dismissPick
+            )
+          }
           type="button"
         >
           {dismissLabel}
@@ -3314,7 +3300,7 @@ function InboxBody({
         {emptyMessage === undefined ? null : (
           <EmptyState
             label="Inbox empty state"
-            marks={{ "data-inbox-empty": "" }}
+            marks={{ [EMPTY_ATTRIBUTE]: "" }}
             message={emptyMessage}
             tabIndex={-1}
           />
