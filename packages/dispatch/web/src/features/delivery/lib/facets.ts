@@ -41,6 +41,26 @@ export function ownEntry<T>(table: Readonly<Record<string, T>>, key: string): T 
   return Object.hasOwn(table, key) ? table[key] : undefined;
 }
 
+/** A priority as Dispatch reads one in the address (`api/delivery.go`'s
+ *  `deliveryPrioritySelection`): `P1` as the page writes it, or `p1` or the bare digit `1` as a
+ *  person types it, each the priority P1. */
+const PRIORITY_SELECTION = /^[pP]?([0-3])$/;
+
+/** The `?priority=` values `values` names, as Dispatch reads them: a spelling of P0-P3 as the
+ *  page names that priority (`P1` for `p1` and for `1`), any other value as it is - a placeholder
+ *  (`NO_PRIORITY`) is a value of its own, and a word such as `P9` selects no row, so the page draws
+ *  it by its own word - and each value once, so two spellings of one priority are one value. */
+export function priorityValues(values: readonly string[]): string[] {
+  return [
+    ...new Set(
+      values.map((value) => {
+        const digit = PRIORITY_SELECTION.exec(value)?.[1];
+        return digit === undefined ? value : `P${digit}`;
+      })
+    ),
+  ];
+}
+
 /** Drops the "owner/" prefix from a repo label when the bare repo name is unique among
  *  `allRepoKeys` — e.g. "widgets" instead of "acme/widgets" — but keeps the full "owner/repo"
  *  wherever two different owners share a repo name, so labels stay unambiguous. */
