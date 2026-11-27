@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"maps"
 	"reflect"
 	"slices"
@@ -175,16 +174,22 @@ func TestAnOlderCallerReadsTheEndHoldWordsAsUnclassified(t *testing.T) {
 // fixAndCIHolds, each of the two holds before a retro served with no holdReason, and each of their
 // held rows as unclassified with no heldBy, the row that reader read for those issues before.
 // `packages/contracts/src/legion-api.test.ts` parses the body with a frozen copy of the hold
-// reasons and the held list that reader knows, which is the reader the strip is written for.
+// reasons and the held list that reader knows, which is the reader the strip is written for. The
+// mark's `daemon` names this daemon's own contract, which an entry moves, so it is taken out
+// before the golden is compared or written and held to that number here, as TestStateGolden takes
+// out its marks; the daemon API contract check refuses a golden that holds it.
 func TestStateBeforeTheFixHoldsGolden(t *testing.T) {
 	fix := entryNumber(FixBesideReviewContract)
 	server := stateServer(t, fixAndCIHolds(t), podClaims(fix-1))
-	body := stateStating(t, server, statePodAddr+":41000", fix-1)
+	body, taken := withoutOwnContractMarks(t, stateStating(t, server, statePodAddr+":41000", fix-1))
+	if want := map[string]int{"daemon": DaemonAPIVersion()}; !maps.Equal(taken, want) {
+		t.Errorf("the state served before FixBesideReviewContract has the marks %v naming this daemon's own contract, want its daemon mark alone at %d", taken, DaemonAPIVersion())
+	}
 	holds := holdsServed(t, body)
 	for _, key := range []string{fixHeldIssue, ciHeldIssue} {
 		if holds[key] != [2]string{"", "retro"} {
 			t.Errorf("%s is served held %q to a caller before the contract, want no reason and heldFrom retro", key, holds[key])
 		}
 	}
-	golden(t, "state-before-fix-holds.json", json.RawMessage(body))
+	golden(t, "state-before-fix-holds.json", body)
 }
