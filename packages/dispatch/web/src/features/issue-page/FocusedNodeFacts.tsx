@@ -113,10 +113,7 @@ export function FocusedNodeFacts({
     >
       <h2 className={`text-sm font-semibold ${pageInkText}`} {...pageChrome}>
         {PROPERTY_LABELS.focused_node}
-      </h2>{" "}
-      {/* Spaces between the rows, and between each label and value (`Fact`), keep `textContent`
-          readable word by word (`Kind: Question Status: Open` rather than
-          `Kind:QuestionStatus:Open`), while the flex layout ignores whitespace text nodes. */}
+      </h2>
       <dl className="mt-1 flex min-w-0 flex-col gap-1 text-sm">
         {node.type === "issue" ? (
           <Fact label={sentenceCase(NODE_TYPE_NAMES.issue)} value={issueTitle} />
@@ -128,36 +125,29 @@ export function FocusedNodeFacts({
           />
         )}
         {node.state === undefined ? null : (
-          <>
-            {" "}
-            <Fact chrome label={PROPERTY_LABELS.status} value={node.state} />
-          </>
+          <Fact chrome label={PROPERTY_LABELS.status} value={node.state} />
         )}
-        {node.author === undefined ? null : (
-          <>
-            {" "}
-            {asker === undefined ? (
-              <Fact label={CONTROL_LABELS.written_by} value={agentText.author(node.author)} />
-            ) : (
-              <div className={FACT}>
-                <FactLabel label={CONTROL_LABELS.written_by} />{" "}
-                <dd className="flex min-w-0 flex-col items-start gap-1">
-                  <button
-                    aria-expanded={handlesOpen}
-                    className={`dispatch-inline-link min-w-0 break-words text-left ${pageInkText} ${pageRowAct}`}
-                    onClick={() => setHandlesOn(handlesOpen ? undefined : node.id)}
-                    type="button"
-                    {...authorText}
-                  >
-                    {agentText.author(asker)}
-                  </button>
-                  {handlesOpen ? <AskerHandles asker={asker} /> : null}
-                </dd>
-              </div>
-            )}
-          </>
+        {node.author === undefined ? null : asker === undefined ? (
+          <Fact label={CONTROL_LABELS.written_by} value={agentText.author(node.author)} />
+        ) : (
+          <FactRow label={CONTROL_LABELS.written_by}>
+            <dd className="flex min-w-0 flex-col items-start gap-1">
+              <button
+                aria-expanded={handlesOpen}
+                className={`dispatch-inline-link min-w-0 break-words text-left ${pageInkText} ${pageRowAct}`}
+                onClick={() => setHandlesOn(handlesOpen ? undefined : node.id)}
+                type="button"
+                {...authorText}
+              >
+                {agentText.author(asker)}
+              </button>
+              {handlesOpen ? <AskerHandles asker={asker} /> : null}
+            </dd>
+          </FactRow>
         )}
       </dl>{" "}
+      {/* The space after the list keeps its last value apart from the words drawn after it, as
+          each row's own spaces keep the facts apart (`FactRow`). */}
       {askId === undefined ? null : (
         <AskThreadFacts
           askId={askId}
@@ -588,9 +578,6 @@ function ItemControls({
   );
 }
 
-/** The line of one fact: its name, then its value. */
-const FACT = "flex min-w-0 flex-wrap items-baseline gap-2";
-
 /** One fact: its name in the page's words, its value in whoever's words it came from. A kind
  *  and a state word are the page's own (`NODE_TYPE_NAMES`, `NODE_STATE_WORDS`); a title and an
  *  author's name are not. */
@@ -604,20 +591,29 @@ function Fact({
   value: string;
 }): ReactNode {
   return (
-    <div className={FACT}>
-      <FactLabel label={label} />{" "}
+    <FactRow label={label}>
       <dd className="min-w-0 break-words" {...(chrome ? pageChrome : authorText)}>
         {value}
       </dd>
-    </div>
+    </FactRow>
   );
 }
 
-/** A fact's name, in the page's words. */
-function FactLabel({ label }: { label: string }): ReactNode {
+/** The line of one fact, each fact's row of the list: a space, its name in the page's words, a
+ *  space, and its value, the `dd` it is given. The line lays out with flex, which draws no
+ *  whitespace text, so the spaces change nothing on screen; they keep `textContent` reading word
+ *  by word (`Kind: Question Status: Open`, not `Kind:QuestionStatus:Open`), the heading's words
+ *  apart from the first fact's among them. */
+function FactRow({ children, label }: { children: ReactNode; label: string }): ReactNode {
   return (
-    <dt className={`font-medium ${pageQuietText}`} {...pageChrome}>
-      {label}:
-    </dt>
+    <>
+      {" "}
+      <div className="flex min-w-0 flex-wrap items-baseline gap-2">
+        <dt className={`font-medium ${pageQuietText}`} {...pageChrome}>
+          {label}:
+        </dt>{" "}
+        {children}
+      </div>
+    </>
   );
 }

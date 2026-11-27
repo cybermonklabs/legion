@@ -2,25 +2,20 @@ import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { onFakeClock } from "../../__tests__/fake-clock";
 import { useDetailsFocusKeeper } from "../margin/details-focus-keeper";
-import { Margin } from "../margin/Margin";
-import { MarginProvider } from "../margin/margin-context";
 import { DESKTOP_WIDTH, issue, stubViewport } from "../margin/margin-fixture";
 import { standsFailed } from "../refs/reference-target";
 import { buildIssuePath } from "../refs/routes";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
+import { DetailsDrawerShell, detailsDrawerClient } from "./details-drawer-fixture";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
-import { useDrawerPage } from "./drawer-page";
 import {
   DETAILS_ATTRIBUTE,
-  type MarginDrawer,
-  type MarginDrawerPage,
   type MarginFill,
-  MarginSlotProvider,
   useFillMarginSlot,
   useMarginDrawer,
 } from "./margin-slot";
@@ -1024,10 +1019,10 @@ const fillDetails: MarginFill = (content) => (
   </>
 );
 
-/** What the new issue page's root does for Details: it sets the drawer's words and fills the
- *  margin's slot with its panel; and the page's own control that opens the drawer. */
+/** What the new issue page's root does for Details beside the drawer's words, which the shell
+ *  registers (`DetailsDrawerShell`): it fills the margin's slot with its panel; and the page's own
+ *  control that opens the drawer. */
 function NewPageRoot(): ReactNode {
-  useDrawerPage(issue);
   useFillMarginSlot(fillDetails);
   const drawer = useMarginDrawer();
   return (
@@ -1037,46 +1032,16 @@ function NewPageRoot(): ReactNode {
   );
 }
 
-/** The shell as it draws the new issue page's frame (`app.tsx`'s `ShellProviders`): the margin's
- *  providers, with Details as the margin's drawer, closed on the load, and the margin itself. */
-function NewPageShell(): ReactNode {
-  const [open, setOpen] = useState(false);
-  const [page, setPage] = useState<MarginDrawerPage | undefined>(undefined);
-  const drawer = useMemo<MarginDrawer>(() => ({ open, page, setOpen, setPage }), [open, page]);
-  return (
-    <MarginProvider>
-      <MarginSlotProvider drawer={drawer} drawsSlot>
-        <NewPageRoot />
-        <Margin />
-      </MarginSlotProvider>
-    </MarginProvider>
-  );
-}
-
-/** What the margin reads of the issue, answered before it asks. */
-function issueClient(): QueryClient {
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      mutations: { retry: false },
-      queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
-    },
-  });
-  queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], []);
-  queryClient.setQueryData(["asks", issue.key], []);
-  queryClient.setQueryData(["user-state"], {});
-  queryClient.setQueryData(["comments", issue.key], []);
-  return queryClient;
-}
-
 test("Details' own drawer keeps the focus inside it when the control that held it goes", async () => {
   const restore = chromiumLayout();
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const user = userEvent.setup();
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
-      <QueryClientProvider client={issueClient()}>
-        <NewPageShell />
+      <QueryClientProvider client={detailsDrawerClient()}>
+        <DetailsDrawerShell>
+          <NewPageRoot />
+        </DetailsDrawerShell>
       </QueryClientProvider>
     </MemoryRouter>
   );

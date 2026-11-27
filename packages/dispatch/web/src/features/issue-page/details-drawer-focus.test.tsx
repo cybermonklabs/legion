@@ -1,57 +1,15 @@
 import { expect, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type ReactNode, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { Margin } from "../margin/Margin";
-import { MarginProvider } from "../margin/margin-context";
 import { DESKTOP_WIDTH, issue, stubViewport } from "../margin/margin-fixture";
 import { buildIssuePath } from "../refs/routes";
-import { useDrawerPage } from "./drawer-page";
+import { DetailsDrawerShell, detailsDrawerClient } from "./details-drawer-fixture";
 import { IssueIdentityRow } from "./IssueIdentityRow";
-import {
-  type MarginDrawer,
-  type MarginDrawerPage,
-  MarginSlotProvider,
-  useMarginDrawer,
-} from "./margin-slot";
-
-function client(): QueryClient {
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      mutations: { retry: false },
-      queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
-    },
-  });
-  queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], []);
-  queryClient.setQueryData(["asks", issue.key], []);
-  queryClient.setQueryData(["user-state"], {});
-  queryClient.setQueryData(["comments", issue.key], []);
-  return queryClient;
-}
-
-/** Registers the new issue page's `MarginDrawerPage` on the shell's drawer (`useDrawerPage`). */
-function NewPageDrawerRoot(): null {
-  useDrawerPage(issue);
-  return null;
-}
-
-/** The shell's Details drawer as `app.tsx` holds it, closed on load, with the new page's
- *  `MarginDrawerPage` registered on it. */
-function DetailsHost({ children }: { children: ReactNode }): ReactNode {
-  const [open, setOpen] = useState(false);
-  const [page, setPage] = useState<MarginDrawerPage | undefined>(undefined);
-  const drawer = useMemo<MarginDrawer>(() => ({ open, page, setOpen, setPage }), [open, page]);
-  return (
-    <MarginSlotProvider drawer={drawer} drawsSlot>
-      <NewPageDrawerRoot />
-      {children}
-    </MarginSlotProvider>
-  );
-}
+import { useMarginDrawer } from "./margin-slot";
 
 /** The new page's Details control (`IssueIdentityRow.tsx`: the request, then the open), and an
  *  open with no request, as `Shift+M` makes one. */
@@ -74,15 +32,12 @@ function Controls(): ReactNode {
 function renderBesideDetails(): RenderResult {
   return render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
-      <QueryClientProvider client={client()}>
-        <MarginProvider>
-          <DetailsHost>
-            <Controls />
-            <textarea aria-label="Your answer" />
-            <button type="button">Elsewhere</button>
-            <Margin />
-          </DetailsHost>
-        </MarginProvider>
+      <QueryClientProvider client={detailsDrawerClient()}>
+        <DetailsDrawerShell>
+          <Controls />
+          <textarea aria-label="Your answer" />
+          <button type="button">Elsewhere</button>
+        </DetailsDrawerShell>
       </QueryClientProvider>
     </MemoryRouter>
   );
