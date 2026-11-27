@@ -7,13 +7,14 @@ import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock } from "../../__tests__/fake-clock";
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { pickNamed } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import type { Artifact, GraphEdge, Subscriber } from "../../api/types";
+import type { Artifact, GraphEdge, Subscriber, Version } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -506,6 +507,59 @@ test("after a refused unsubscribe, the next document's page shows no refusal and
   } finally {
     view.unmount();
     queryClient.clear();
+    for (const mock of mocks) mock.mockRestore();
+  }
+});
+
+// The header's Name version is held, not disabled, while the version its dialog names is
+// saving. A reader who cancels the dialog while that save is out is given the focus back on
+// Name version as the dialog closes, which is still held then; a disabled one took no focus
+// there, and it fell to the page's body.
+test("the header's Name version takes the focus back from its dialog cancelled while the save is out", async () => {
+  const user = userEvent.setup();
+  const mocks = [
+    spyOn(api, "getProjectArtifact").mockResolvedValue(artifact),
+    spyOn(api, "getArtifact").mockResolvedValue(artifact),
+    spyOn(api, "getArtifactSubscribers").mockResolvedValue([]),
+    spyOn(api, "getArtifactText").mockResolvedValue({
+      markdown: "# Design notes",
+      version: 1,
+      token: "sha256:design-notes",
+    }),
+  ];
+  const answer = Promise.withResolvers<Version>();
+  const createArtifactVersion = spyOn(api, "createArtifactVersion").mockReturnValue(answer.promise);
+  const { queryClient, runtime, view } = renderDocumentPage();
+  const opener = () =>
+    within(screen.getByTestId("artifact-header")).getByRole<HTMLButtonElement>("button", {
+      name: "Name version",
+    });
+  try {
+    await screen.findByTestId("artifact-header");
+    await waitFor(() => expect(runtime.connections).toHaveLength(1));
+    runtime.sync();
+    await user.click(await waitFor(opener));
+    const dialog = await screen.findByRole("dialog", { name: "Name this version" });
+    const summary = within(dialog).getByLabelText("What changed?");
+    await waitFor(() => expect(document.activeElement === summary).toBe(true));
+    await user.paste("Settled the rollout");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(createArtifactVersion).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(opener().getAttribute("aria-disabled")).toBe("true"));
+    expect(opener().disabled).toBe(false);
+
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Name this version" })).not.toBeInTheDocument()
+    );
+    await afterFrameAndTasks();
+    // What holds the focus, as a string a failed check prints whole.
+    const active = document.activeElement;
+    expect(active === document.body ? "the body" : active?.textContent).toBe("Name version");
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    createArtifactVersion.mockRestore();
     for (const mock of mocks) mock.mockRestore();
   }
 });

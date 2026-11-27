@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Artifact, Version } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { MultiSelect } from "../../components/MultiSelect";
 import { useAddressNavigate } from "../../lib/page-address";
 import {
@@ -136,13 +137,16 @@ export function ArtifactHeader({
   }, [highlight]);
 
   // One button, placed by the branch below: it leads the row's non-wrapping box where there is
-  // no version to diff, and sits before that box where there is one.
+  // no version to diff, and sits before that box where there is one. It is held, not disabled,
+  // while the version it names is saving: the naming dialog gives the focus back to it as it
+  // closes, in the commit before the page learns that the save has ended (`isNamingVersion`), and
+  // a disabled button there would drop that focus onto the page's body.
   const nameVersion =
     toolbar === undefined ? null : (
       <button
         className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-        disabled={isClosed || toolbar.isNamingVersion}
-        onClick={toolbar.requestNamedVersion}
+        disabled={isClosed}
+        {...heldPress(toolbar.isNamingVersion, toolbar.requestNamedVersion)}
         type="button"
       >
         Name version
