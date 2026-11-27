@@ -51,6 +51,9 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		dir := t.TempDir()
 		lock, ready := filepath.Join(dir, "index.lock"), filepath.Join(dir, "ready")
 		budget := time.Second
+		// CONTROL (never merged): the machine holds the command on CPU 0's run queue, at nice 19
+		// behind 16 busy loops, until it reports that it is running.
+		holdOnCPU0(t, 16, ready)
 		ctx, cancel := context.WithTimeout(context.Background(), budget)
 		defer cancel()
 		// The lock is taken before the command reports that it is running, so a lock that is gone
@@ -58,7 +61,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		script := `: >"$1"; trap 'rm -f "$1"; exit 0' TERM; : >"$2"; ` + commandLives
 
 		started := time.Now()
-		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready})
+		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"nice", "-n", "19", "taskset", "-c", "0", "sh", "-c", script, "sh", lock, ready})
 		elapsed := time.Since(started)
 
 		if _, statErr := os.Stat(ready); statErr != nil {
