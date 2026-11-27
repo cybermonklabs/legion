@@ -2290,9 +2290,10 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 // by the claims of its pod: true for the release records, for a refusal whose body is a
 // PauseFailure or a PlanRefusal, and for a registration, a role's or the controller's, that
 // carries `replaces`, and false for every other answer. Those answers' shapes moved at
-// pauseContract, at OwnerPlanContract and at the replaces entry, and the PauseFailure's moved
-// again at the project release entry's number (entryNumber(projectReleaseContract)), when that
-// entry added `heldPods` (withoutHeldPods); their writers answer from no snapshot of their own, so
+// pauseContract, at OwnerPlanContract and at the replaces entry's number
+// (entryNumber(replacesContract)), and the PauseFailure's moved again at the project release
+// entry's number (entryNumber(projectReleaseContract)), when that entry added `heldPods`
+// (withoutHeldPods); their writers answer from no snapshot of their own, so
 // writeAnswer reads the claims for them (placingClaims). A registration that replaces no session
 // is the same body at every contract, so it reads none. Every other answer writeAnswer writes is
 // the identity at every contract, and so is a plain refusal (a claim.Refusal or a Failure), so a

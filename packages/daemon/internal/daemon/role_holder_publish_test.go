@@ -553,13 +553,13 @@ func TestASuspensionKeepsItsClaimsRoleOnlyWhereItsSourceDoes(t *testing.T) {
 // another session, and each of those changes queues its publication: a failure and a retirement
 // send the set without the session; a suspension by any other source over the released claim,
 // which changes its source alone (supervise's suspendedAgain: a linger, a leave, a park, an
-// operator's or the controller's suspend), sends the set without it too, one row for each such
-// source (suspensionsKeepTheirRole), but for the project release's take-over of the released
-// claim, which keeps its role, since the daemon's next boot starts the claim on that session, and
-// so queues nothing and leaves the set naming the session; a session the claim forgot, as a fresh
-// start forgets it, sends the set without it; and a resume whose agent registers under another
-// session sends the set naming the new session in the old one's place, with no empty set between
-// them.
+// operator's or the controller's suspend), sends the set without it too, but the project release's
+// take-over of the released claim keeps its role, since the daemon's next boot starts the claim on
+// that session, so it queues nothing and leaves the set naming the session; one row for each
+// source but the idle release's own (suspensionsKeepTheirRole); a session the claim forgot, as a
+// fresh start forgets it, sends the set without it; and a resume whose agent registers under
+// another session sends the set naming the new session in the old one's place, with no empty set
+// between them.
 //
 // The control is the code before this change, under which the release had already sent the empty
 // set: there no end of a released claim queues a publication, and the resume names no session
