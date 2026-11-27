@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -174,7 +175,7 @@ func TestAGrantOfThisBrokerLogsNoFailedChain(t *testing.T) {
 		t.Fatalf("Values = %+v, %v; want DEEL_API_KEY released behind the airlock", release, err)
 	}
 	values, _, err := m.AirlockValues(t.Context(), grantID)
-	if err != nil || values["DEEL_API_KEY"].Slots[SlotValue] != "deel-v1" {
+	if err != nil || values["DEEL_API_KEY"].Slots[slot.Value] != "deel-v1" {
 		t.Fatalf("AirlockValues = %v, %v; want DEEL_API_KEY's value", values, err)
 	}
 	compact := signRequest(t, m, key, "asked again", "DEEL_API_KEY")

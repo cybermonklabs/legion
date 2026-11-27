@@ -4,13 +4,15 @@ import (
 	"encoding/base64"
 	"errors"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 )
 
 // accessSlot is one slot the proxy encodes an exchange into, in the shape proxy's
 // azure.go writes: the prefix, and base64url with no padding of the endpoint, the scope and the
 // application. It is written out here rather than built, because this package must never
 // import the proxy that writes it - the proxy imports this one.
-var accessSlot = SlotAzureAccessPrefix + base64.RawURLEncoding.EncodeToString([]byte(
+var accessSlot = slot.AzureAccessPrefix + base64.RawURLEncoding.EncodeToString([]byte(
 	`{"endpoint":"https://login.microsoftonline.com/the-tenant/oauth2/v2.0/token","scope":"https://management.azure.com/.default","client_id":"the-application"}`))
 
 // TestAnAccessPlaceholderIsMintedOnceAndGoesWithTheGrant: the proxy exchanges a federated token
@@ -35,7 +37,7 @@ func TestAnAccessPlaceholderIsMintedOnceAndGoesWithTheGrant(t *testing.T) {
 		t.Fatalf("AirlockAccessPlaceholder: %v", err)
 	}
 	wellFormed(t, "the access placeholder", first)
-	if first == release.Airlock.Names["AUTO_TOKEN"].Slots[SlotValue] {
+	if first == release.Airlock.Names["AUTO_TOKEN"].Slots[slot.Value] {
 		t.Fatalf("the access placeholder is the name's own value placeholder %q; want one of its own", first)
 	}
 	second, err := m.AirlockAccessPlaceholder(t.Context(), grantID, "AUTO_TOKEN", accessSlot)
@@ -67,8 +69,8 @@ func TestAnAccessPlaceholderIsMintedOnceAndGoesWithTheGrant(t *testing.T) {
 
 	// A slot that is no access slot is refused: every other slot of a name is the broker's own
 	// to mint, and this is the one the proxy writes.
-	if _, err := m.AirlockAccessPlaceholder(t.Context(), grantID, "AUTO_TOKEN", SlotValue); err == nil {
-		t.Fatalf("AirlockAccessPlaceholder minted a %q slot; want a refusal", SlotValue)
+	if _, err := m.AirlockAccessPlaceholder(t.Context(), grantID, "AUTO_TOKEN", slot.Value); err == nil {
+		t.Fatalf("AirlockAccessPlaceholder minted a %q slot; want a refusal", slot.Value)
 	}
 
 	// And it ends with the grant, as every placeholder of it does.

@@ -30,21 +30,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 	"github.com/sjawhar/envoy/internal/fileowner"
-)
-
-// The slots of an airlock name, spelled as the broker's answer spells them
-// (requests.SlotAWSAccessKeyID and its neighbours). They are three short strings of a wire
-// contract, written out here rather than imported: internal/cipher/requests is the broker's
-// database machine, and this CLI — which every agent box and pod installs — would link a
-// Postgres driver into its binary to borrow three constants. The set is open, and a slot this
-// file does not know is not a mistake: it is passed through in the name's own value and read by
-// whatever takes that value apart. slotAWSSecretAccessKey is written in two halves because the
-// public leak check reads the whole name as an AWS secret key; its value is the wire name.
-const (
-	slotAWSAccessKeyID     = "aws-access-key-id"
-	slotAWSSecretAccessKey = "aws-" + "secret-access-key"
-	slotAWSSessionToken    = "aws-session-token"
 )
 
 // airlockProxyUser is the user name of the Proxy-Authorization credential. The proxy reads the
@@ -781,32 +768,36 @@ var airlockBundleVars = []string{
 }
 
 // airlockVars are the environment variables an airlock release adds to the command's
-// environment: one per name held back, the AWS pair's own three when a name has them, and then
-// the grant's own — the proxy, the NO_PROXY the proxy needs, Node's switch for reading them, and,
-// where prepareProxyFilesFor wrote one, the bundle every client family reads.
+// environment: one per name held back, the variables of each slot.EnvSets set whose slots a
+// name holds, and then the grant's own — the proxy, the NO_PROXY the proxy needs, Node's switch
+// for reading them, and, where prepareProxyFilesFor wrote one, the bundle every client family
+// reads.
 //
-// It refuses a grant that holds two names with AWS slots: one environment has one
-// AWS_ACCESS_KEY_ID, so one of the two pairs would silently win. Nobody has that configuration
-// today, and a refusal is the answer a person can act on where a silent choice is not.
+// It refuses a grant that holds two names filling one set: one environment holds one of each
+// variable, so one name's placeholders would silently win. Nobody has that configuration today,
+// and a refusal is the answer a person can act on where a silent choice is not.
 func airlockVars(environ []string, release *AirlockRelease, files airlockFiles) (map[string]string, error) {
 	vars := make(map[string]string, len(release.Names)+len(airlockBundleVars)+6)
-	awsFrom := ""
+	filledBy := make([]string, len(slot.EnvSets))
 	for _, name := range slices.Sorted(maps.Keys(release.Names)) {
 		held := release.Names[name]
 		vars[name] = held.Value
-		id, hasID := held.Slots[slotAWSAccessKeyID]
-		secret, hasSecret := held.Slots[slotAWSSecretAccessKey]
-		if !hasID || !hasSecret {
-			continue
-		}
-		if awsFrom != "" {
-			return nil, fmt.Errorf("the grant releases an AWS key pair through the airlock for both %s and %s, and one environment holds one AWS_ACCESS_KEY_ID; ask for them in separate calls", awsFrom, name)
-		}
-		awsFrom = name
-		vars["AWS_ACCESS_KEY_ID"] = id
-		vars["AWS_SECRET_ACCESS_KEY"] = secret
-		if token, ok := held.Slots[slotAWSSessionToken]; ok {
-			vars["AWS_SESSION_TOKEN"] = token
+		for i, set := range slot.EnvSets {
+			if !fillsEnvSet(held.Slots, set) {
+				continue
+			}
+			if filledBy[i] != "" {
+				return nil, fmt.Errorf("the grant releases %s through the airlock for both %s and %s, and one environment holds one %s; ask for them in separate calls", set.What, filledBy[i], name, set.Required[0].Name)
+			}
+			filledBy[i] = name
+			for _, v := range set.Required {
+				vars[v.Name] = held.Slots[v.Slot]
+			}
+			for _, v := range set.Optional {
+				if placeholder, ok := held.Slots[v.Slot]; ok {
+					vars[v.Name] = placeholder
+				}
+			}
 		}
 	}
 
@@ -829,6 +820,16 @@ func airlockVars(environ []string, release *AirlockRelease, files airlockFiles) 
 		vars["WGETRC"] = files.wgetrc
 	}
 	return vars, nil
+}
+
+// fillsEnvSet reports whether a name's slots hold every slot set requires.
+func fillsEnvSet(slots map[string]string, set slot.EnvSet) bool {
+	for _, v := range set.Required {
+		if _, ok := slots[v.Slot]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // airlockProxyURL is the proxy URL the command gets: the broker's own, with this grant's proxy

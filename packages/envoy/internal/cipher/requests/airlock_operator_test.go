@@ -1,6 +1,10 @@
 package requests
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/sjawhar/envoy/internal/cipher/slot"
+)
 
 // TestAirlockConnectionAnswersTheEnrollmentsOperator: the airlock proxy asks the hold about the
 // person a grant's session acts for (proxy's holdRefusal), and this read is where that
@@ -9,7 +13,7 @@ import "testing"
 // answers the empty string rather than refusing the connection, so the proxy asks nobody about it.
 func TestAirlockConnectionAnswersTheEnrollmentsOperator(t *testing.T) {
 	m, enr, _, release := twoNameGrant(t, "reach the service")
-	placeholder := release.Airlock.Names["LOGIN_KEY"].Slots[SlotValue]
+	placeholder := release.Airlock.Names["LOGIN_KEY"].Slots[slot.Value]
 	var operator string
 	if err := m.Store.Pool.QueryRow(t.Context(),
 		`select operator from enrollments where id=$1`, enr).Scan(&operator); err != nil {

@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -168,7 +169,7 @@ func newHeldRigWith(t *testing.T, registry *metrics.Registry, answers *metrics.C
 	h.grants.setConnection(workerPlaceholder, ada)
 	bob := testConnection()
 	bob.GrantID, bob.EnrollmentID, bob.Operator = bobGrantID, bobEnrollID, servedPerson
-	bob.Names = map[string]requests.AirlockGrantName{workerName: {Slots: map[string]string{requests.SlotValue: bobPlaceholder}}}
+	bob.Names = map[string]requests.AirlockGrantName{workerName: {Slots: map[string]string{slot.Value: bobPlaceholder}}}
 	h.grants.setConnection(bobPlaceholder, bob)
 	h.grants.setValues(bobGrantID, storedValues(workerName, bobValue))
 	// Every path the stand answers, filled in before it serves anything, so its maps are only

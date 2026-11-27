@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 )
 
 // twoNameRules are the names the connection tests release behind the proxy: a stored key pair,
@@ -105,7 +106,7 @@ func TestAirlockConnectionRefusesWhatOpensNothing(t *testing.T) {
 // would also have ended (withhold).
 func TestAirlockConnectionDropsAWithheldName(t *testing.T) {
 	m, enr, _, release := twoNameGrant(t, "read both")
-	placeholder := release.Airlock.Names["AWS_KEY"].Slots[SlotAWSAccessKeyID]
+	placeholder := release.Airlock.Names["AWS_KEY"].Slots[slot.AWSAccessKeyID]
 	withhold := func(name string) {
 		t.Helper()
 		if _, err := m.Store.Pool.Exec(t.Context(), `insert into withheld_secrets (enrollment_id, name) values ($1,$2)`, enr, name); err != nil {
@@ -309,7 +310,7 @@ func TestAirlockValuesAnswersTheRealValuesOfTheAirlocksNames(t *testing.T) {
 		t.Fatalf("AirlockValues = %v, want the airlock's name alone: the session already holds the rest", values)
 	}
 	held := values["AUTO_TOKEN"]
-	if want := map[string]string{SlotValue: "auto-v1"}; !maps.Equal(held.Slots, want) {
+	if want := map[string]string{slot.Value: "auto-v1"}; !maps.Equal(held.Slots, want) {
 		t.Fatalf("AUTO_TOKEN's slots = %v, want %v: a stored secret is its value slot alone", held.Slots, want)
 	}
 	if !held.Expires.IsZero() || held.Type != "" {
@@ -334,7 +335,7 @@ func TestAirlockValuesEndsAGrantWhoseAirlockEntryChanged(t *testing.T) {
 	if by, audits := endedForGood(t, m, grantID); by != GrantEndedActor || audits != 1 {
 		t.Fatalf("grant revoked_by = %q with %d grant.revoked rows by it; want %s and 1, as Values ends it", by, audits, GrantEndedActor)
 	}
-	if _, err := m.AirlockConnection(t.Context(), placeholderRows(t, m, grantID)["AUTO_TOKEN/"+SlotValue]); !errors.Is(err, ErrGrantNotLive) {
+	if _, err := m.AirlockConnection(t.Context(), placeholderRows(t, m, grantID)["AUTO_TOKEN/"+slot.Value]); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("AirlockConnection after the grant ended = %v; want ErrGrantNotLive", err)
 	}
 }
@@ -368,7 +369,7 @@ func TestTheSweeperDeletesThePlaceholdersOfGrantsThatHaveEnded(t *testing.T) {
 // session answers the empty string rather than refusing the connection.
 func TestAirlockConnectionAnswersTheEnrollmentsSessionAndRuntime(t *testing.T) {
 	m, enr, _, release := twoNameGrant(t, "reach the service")
-	placeholder := release.Airlock.Names["LOGIN_KEY"].Slots[SlotValue]
+	placeholder := release.Airlock.Names["LOGIN_KEY"].Slots[slot.Value]
 	// The fixture enrolls with no session, so the row names one: a read that answered the empty
 	// string for the session, or read another table's session column, would otherwise pass.
 	session := "session-" + t.Name()

@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 )
 
 // podThumbprint stands for the pod key's RFC 7638 thumbprint, which Machine.MintedKey holds.
@@ -207,7 +208,7 @@ func TestAMintedPlaceholderIsAnsweredFromItsGrant(t *testing.T) {
 	id := testMintedWord + ":" + grant.ID
 	slots := conn.Names[testMintedName].Slots
 	if conn.GrantID != id || conn.SessionID != grant.Session || !conn.Minted || conn.EnrollmentID != "" ||
-		conn.Expires == nil || !conn.Expires.Equal(grant.ExpiresAt) || len(conn.Names) != 1 || len(slots) != 1 || slots[SlotValue] != held {
+		conn.Expires == nil || !conn.Expires.Equal(grant.ExpiresAt) || len(conn.Names) != 1 || len(slots) != 1 || slots[slot.Value] != held {
 		t.Fatalf("the minted connection = %+v; want grant %s, session %s, minted, no enrollment, its end and %s's value slot alone", conn, id, grant.Session, testMintedName)
 	}
 	values, version, err := m.AirlockValues(t.Context(), id)
@@ -216,10 +217,10 @@ func TestAMintedPlaceholderIsAnsweredFromItsGrant(t *testing.T) {
 	}
 	want := "minted:" + grant.ID + ":" + podThumbprint
 	got := values[testMintedName]
-	if len(values) != 1 || got.Slots[SlotValue] != want || !got.Expires.IsZero() || tokens.count() != 1 {
+	if len(values) != 1 || got.Slots[slot.Value] != want || !got.Expires.IsZero() || tokens.count() != 1 {
 		t.Fatalf("the minted values = %+v after %d mints; want the token minted for the grant and the pod key, %q, with no end, minted once", values, tokens.count(), want)
 	}
-	if _, err := m.AirlockAccessPlaceholder(t.Context(), id, testMintedName, SlotAzureAccessPrefix+"scope"); !errors.Is(err, ErrGrantNotLive) {
+	if _, err := m.AirlockAccessPlaceholder(t.Context(), id, testMintedName, slot.AzureAccessPrefix+"scope"); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("AirlockAccessPlaceholder(%s) = %v; want ErrGrantNotLive", id, err)
 	}
 	if _, _, err := m.AirlockValues(t.Context(), testMintedWord+":"+uuid.NewString()); !errors.Is(err, ErrGrantNotLive) {

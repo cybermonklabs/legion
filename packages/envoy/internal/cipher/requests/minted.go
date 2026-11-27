@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 )
 
 // MintedGrants reads one minted kind's grants from the table the kind keeps them in: by the
@@ -123,7 +124,7 @@ func (m *Machine) mintedConnection(ctx context.Context, kind *MintedKind, presen
 	expires := grant.ExpiresAt
 	return AirlockConnection{
 		GrantID: kind.Word + ":" + grant.ID, SessionID: grant.Session, Minted: true, Expires: &expires,
-		Names: map[string]AirlockGrantName{kind.Name: {Slots: map[string]string{SlotValue: presented}}},
+		Names: map[string]AirlockGrantName{kind.Name: {Slots: map[string]string{slot.Value: presented}}},
 	}, nil
 }
 
@@ -146,5 +147,5 @@ func (m *Machine) mintedValues(ctx context.Context, kind *MintedKind, id string)
 	if err != nil {
 		return nil, "", err
 	}
-	return map[string]AirlockSecret{kind.Name: {Slots: map[string]string{SlotValue: token}}}, m.PolicyVersion(), nil
+	return map[string]AirlockSecret{kind.Name: {Slots: map[string]string{slot.Value: token}}}, m.PolicyVersion(), nil
 }

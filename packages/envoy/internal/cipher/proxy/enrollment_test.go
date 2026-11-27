@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 )
 
 // A second grant of the rig's enrollment, and one grant of another enrollment, each holding one
@@ -59,7 +60,7 @@ func (r *rig) addGrant(placeholder, grantID, enrollmentID, name, value string) {
 	r.grants.setConnection(placeholder, requests.AirlockConnection{
 		GrantID: grantID, EnrollmentID: enrollmentID, RequestID: "request-" + grantID, Issue: testIssue,
 		SessionID: testSession, RuntimeID: testRuntime,
-		Names: map[string]requests.AirlockGrantName{name: {Slots: map[string]string{requests.SlotValue: placeholder}}},
+		Names: map[string]requests.AirlockGrantName{name: {Slots: map[string]string{slot.Value: placeholder}}},
 	})
 	r.grants.setValues(grantID, storedValues(name, value))
 }

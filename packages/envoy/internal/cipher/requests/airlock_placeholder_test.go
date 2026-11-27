@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 )
 
 // The proxy the fixture's releases name, and the certificate they hand over: any two strings the
@@ -205,7 +206,7 @@ func TestAReleaseHoldsBackTheAirlocksNameAndHandsOverTheRest(t *testing.T) {
 		t.Fatalf("airlock names = %v; want AUTO_TOKEN alone", release.Airlock.Names)
 	}
 	wellFormed(t, "AUTO_TOKEN's placeholder", held.Value)
-	if got := held.Slots; len(got) != 1 || got[SlotValue] != held.Value {
+	if got := held.Slots; len(got) != 1 || got[slot.Value] != held.Value {
 		t.Errorf("AUTO_TOKEN's slots = %v; want the value slot holding %q", got, held.Value)
 	}
 	if !slices.Equal(held.Hosts, []string{"api.example.com"}) {
@@ -236,7 +237,7 @@ func TestASecondReleaseHandsBackTheSamePlaceholders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Values: %v", err)
 	}
-	if got, want := second.Airlock.Names["AUTO_TOKEN"], first.Airlock.Names["AUTO_TOKEN"]; got.Value != want.Value || got.Slots[SlotValue] != want.Slots[SlotValue] {
+	if got, want := second.Airlock.Names["AUTO_TOKEN"], first.Airlock.Names["AUTO_TOKEN"]; got.Value != want.Value || got.Slots[slot.Value] != want.Slots[slot.Value] {
 		t.Errorf("the second release = %+v, want the first's placeholders %+v", got, want)
 	}
 	if second.Airlock.ProxyPassword != first.Airlock.ProxyPassword {
@@ -274,10 +275,10 @@ func TestTheReleasedShapeOfEachKind(t *testing.T) {
 			name:   "a stored secret",
 			secret: policytest.Secret("SHAPE_KEY", fixtureOperator, policy.TierAgent, "stored-real-value"),
 			real:   "stored-real-value",
-			want:   []string{SlotValue},
+			want:   []string{slot.Value},
 			check: func(t *testing.T, held AirlockName) {
-				if held.Value != held.Slots[SlotValue] {
-					t.Errorf("value = %q; want the value slot's placeholder %q", held.Value, held.Slots[SlotValue])
+				if held.Value != held.Slots[slot.Value] {
+					t.Errorf("value = %q; want the value slot's placeholder %q", held.Value, held.Slots[slot.Value])
 				}
 			},
 		},
@@ -286,10 +287,10 @@ func TestTheReleasedShapeOfEachKind(t *testing.T) {
 			secret: policytest.TypeSecret("SHAPE_KEY", fixtureOperator, policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)),
 			minted: googleToken,
 			real:   googleToken,
-			want:   []string{SlotValue},
+			want:   []string{slot.Value},
 			check: func(t *testing.T, held AirlockName) {
-				if held.Value != held.Slots[SlotValue] {
-					t.Errorf("value = %q; want the value slot's placeholder %q", held.Value, held.Slots[SlotValue])
+				if held.Value != held.Slots[slot.Value] {
+					t.Errorf("value = %q; want the value slot's placeholder %q", held.Value, held.Slots[slot.Value])
 				}
 			},
 		},
@@ -298,16 +299,16 @@ func TestTheReleasedShapeOfEachKind(t *testing.T) {
 			kind:   "aws",
 			secret: policytest.Secret("SHAPE_KEY", fixtureOperator, policy.TierAgent, awsStored),
 			real:   "real-secret-access-key",
-			want:   []string{SlotAWSAccessKeyID, SlotAWSSecretAccessKey, SlotAWSSessionToken},
+			want:   []string{slot.AWSAccessKeyID, slot.AWSSecretAccessKey, slot.AWSSessionToken},
 			check: func(t *testing.T, held AirlockName) {
 				var got map[string]string
 				if err := json.Unmarshal([]byte(held.Value), &got); err != nil {
 					t.Fatalf("the released key pair is not a JSON object: %v", err)
 				}
 				want := map[string]string{
-					"access_key_id":     held.Slots[SlotAWSAccessKeyID],
-					"secret_access_key": held.Slots[SlotAWSSecretAccessKey],
-					"session_token":     held.Slots[SlotAWSSessionToken],
+					"access_key_id":     held.Slots[slot.AWSAccessKeyID],
+					"secret_access_key": held.Slots[slot.AWSSecretAccessKey],
+					"session_token":     held.Slots[slot.AWSSessionToken],
 					"region":            "us-west-2",
 				}
 				for field, value := range want {
@@ -325,7 +326,7 @@ func TestTheReleasedShapeOfEachKind(t *testing.T) {
 			secret: policytest.TypeSecret("SHAPE_KEY", fixtureOperator, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
 			minted: githubMint,
 			real:   "ghs_realinstallationtoken",
-			want:   []string{SlotGitHubPrefix + "acme"},
+			want:   []string{slot.GitHubPrefix + "acme"},
 			check: func(t *testing.T, held AirlockName) {
 				var got struct {
 					Installations map[string]struct {
@@ -341,8 +342,8 @@ func TestTheReleasedShapeOfEachKind(t *testing.T) {
 				if !named || len(got.Installations) != 1 {
 					t.Fatalf("released installations = %+v; want the minted Acme alone, under the key GitHub answered with", got.Installations)
 				}
-				if acme.Token != held.Slots[SlotGitHubPrefix+"acme"] {
-					t.Errorf("released Acme token = %q; want its owner's placeholder %q", acme.Token, held.Slots[SlotGitHubPrefix+"acme"])
+				if acme.Token != held.Slots[slot.GitHubPrefix+"acme"] {
+					t.Errorf("released Acme token = %q; want its owner's placeholder %q", acme.Token, held.Slots[slot.GitHubPrefix+"acme"])
 				}
 				if acme.ID != 42 || acme.ExpiresAt != "2100-01-01T00:00:00Z" {
 					t.Errorf("released Acme = %+v; want every other field as minted", acme)
@@ -403,15 +404,15 @@ func TestTheReleasedShapeOfAnAzureLogin(t *testing.T) {
 		t.Fatalf("Values: %v", err)
 	}
 	held := release.Airlock.Names["AZURE_LOGIN"]
-	if got := slices.Sorted(maps.Keys(held.Slots)); !slices.Equal(got, []string{SlotAzureFederated}) {
+	if got := slices.Sorted(maps.Keys(held.Slots)); !slices.Equal(got, []string{slot.AzureFederated}) {
 		t.Fatalf("slots = %v, want the federated token's alone", got)
 	}
-	wellFormed(t, "the federated token's placeholder", held.Slots[SlotAzureFederated])
+	wellFormed(t, "the federated token's placeholder", held.Slots[slot.AzureFederated])
 	var got map[string]string
 	if err := json.Unmarshal([]byte(held.Value), &got); err != nil {
 		t.Fatalf("the released login is not a JSON object: %v", err)
 	}
-	want := map[string]string{"tenant_id": "tenant", "client_id": "client", "federated_token": held.Slots[SlotAzureFederated], "expires_at": "2100-01-01T00:00:00Z"}
+	want := map[string]string{"tenant_id": "tenant", "client_id": "client", "federated_token": held.Slots[slot.AzureFederated], "expires_at": "2100-01-01T00:00:00Z"}
 	if !maps.Equal(got, want) {
 		t.Errorf("released login = %v, want %v: the federated token replaced and every other field as minted", got, want)
 	}
@@ -448,23 +449,23 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 		{
 			name:   "a stored secret",
 			secret: policytest.Secret("SHAPE_KEY", fixtureOperator, policy.TierAgent, "stored-real-value"),
-			want:   map[string]string{SlotValue: "stored-real-value"},
+			want:   map[string]string{slot.Value: "stored-real-value"},
 		},
 		{
 			name:   "a stored AWS key pair",
 			kind:   "aws",
 			secret: policytest.Secret("SHAPE_KEY", fixtureOperator, policy.TierAgent, awsStored),
 			want: map[string]string{
-				SlotAWSAccessKeyID:     "AKIAREALKEYID",
-				SlotAWSSecretAccessKey: "re" + "al-secret-access-key",
-				SlotAWSSessionToken:    "real-session-token",
+				slot.AWSAccessKeyID:     "AKIAREALKEYID",
+				slot.AWSSecretAccessKey: "re" + "al-secret-access-key",
+				slot.AWSSessionToken:    "real-session-token",
 			},
 		},
 		{
 			name:     "a GitHub App of two installations",
 			secret:   policytest.TypeSecret("SHAPE_KEY", fixtureOperator, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
 			mint:     githubMint,
-			want:     map[string]string{SlotGitHubPrefix + "acme": "ghs_acme_token", SlotGitHubPrefix + "zed": "ghs_zed_token"},
+			want:     map[string]string{slot.GitHubPrefix + "acme": "ghs_acme_token", slot.GitHubPrefix + "zed": "ghs_zed_token"},
 			wantType: policy.TypeGitHubApp,
 		},
 		{
@@ -473,7 +474,7 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 			secret:    policytest.TypeSecret("SHAPE_KEY", fixtureOperator, policy.TierHuman, policy.TypeAzureLogin, `{"tenant_id":"tenant","client_id":"client"}`),
 			mint:      azureMint,
 			approve:   true,
-			want:      map[string]string{SlotAzureFederated: "real-federated-token"},
+			want:      map[string]string{slot.AzureFederated: "real-federated-token"},
 			wantType:  policy.TypeAzureLogin,
 			wantAzure: secrets.AzureLoginValue{TenantID: "tenant", ClientID: "client"},
 		},
@@ -553,8 +554,8 @@ func TestTheProxyPasswordIsTheFirstPairInSortedOrder(t *testing.T) {
 		t.Fatalf("Values: %v", err)
 	}
 	// AWS_KEY sorts before ZULU_TOKEN, and aws-access-key-id before aws-secret-access-key.
-	want := release.Airlock.Names["AWS_KEY"].Slots[SlotAWSAccessKeyID]
+	want := release.Airlock.Names["AWS_KEY"].Slots[slot.AWSAccessKeyID]
 	if release.Airlock.ProxyPassword != want {
-		t.Fatalf("proxy password = %q; want AWS_KEY's %s placeholder %q", release.Airlock.ProxyPassword, SlotAWSAccessKeyID, want)
+		t.Fatalf("proxy password = %q; want AWS_KEY's %s placeholder %q", release.Airlock.ProxyPassword, slot.AWSAccessKeyID, want)
 	}
 }

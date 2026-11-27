@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 )
 
 // The one grant of this file: a Google login whose access token the proxy holds and whose
@@ -56,7 +57,7 @@ func (gcpAirlockGrant) AirlockConnection(_ context.Context, placeholder string) 
 	return requests.AirlockConnection{
 		GrantID: gcpAirlockGrantID,
 		Names: map[string]requests.AirlockGrantName{
-			gcpAirlockName: {Type: "google-login", Slots: map[string]string{requests.SlotValue: gcpAirlockPlaceholder}},
+			gcpAirlockName: {Type: "google-login", Slots: map[string]string{slot.Value: gcpAirlockPlaceholder}},
 		},
 	}, nil
 }
@@ -66,7 +67,7 @@ func (gcpAirlockGrant) AirlockValues(_ context.Context, grantID string) (map[str
 		return nil, "", requests.ErrGrantNotLive
 	}
 	return map[string]requests.AirlockSecret{
-		gcpAirlockName: {Type: "google-login", Slots: map[string]string{requests.SlotValue: gcpAirlockToken}, Expires: time.Now().Add(time.Hour)},
+		gcpAirlockName: {Type: "google-login", Slots: map[string]string{slot.Value: gcpAirlockToken}, Expires: time.Now().Add(time.Hour)},
 	}, gcpAirlockPolicy, nil
 }
 

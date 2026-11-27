@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
@@ -246,10 +247,10 @@ func (k *anthropicRig) grant(t *testing.T, name string) (grantID string, release
 		t.Fatalf("the release of %s holds a string that opens %s", name, anthropicTokenPrefix)
 	}
 	slots := release.Airlock.Names[name].Slots
-	if len(slots) != 1 || slots[requests.SlotValue] == "" {
+	if len(slots) != 1 || slots[slot.Value] == "" {
 		t.Fatalf("the release names %s's slots %v; want the one value slot", name, slots)
 	}
-	return decision.GrantID, release.Airlock, slots[requests.SlotValue]
+	return decision.GrantID, release.Airlock, slots[slot.Value]
 }
 
 // The four sets of requests of the check: (a) the Admin API's reads and writes, which both lists
@@ -380,7 +381,7 @@ func TestTheAnthropicKindCarriesTheAdminAPIAlone(t *testing.T) {
 				if line.fields["secret"] != s.name {
 					continue
 				}
-				if line.fields["way"] != proxyrules.WayMint || line.fields["type"] != policy.TypeAnthropicFederation || line.fields["slot"] != requests.SlotValue || line.fields["grant"] != grantID {
+				if line.fields["way"] != proxyrules.WayMint || line.fields["type"] != policy.TypeAnthropicFederation || line.fields["slot"] != slot.Value || line.fields["grant"] != grantID {
 					t.Errorf("a mint line of %s = %v; want way mint, type %s, the value slot and grant %s", s.name, line.fields, policy.TypeAnthropicFederation, grantID)
 				}
 				proxyMint = proxyMint || line.fields["sha256"] == sha256Hex(token)

@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 )
 
 // storedTokens is a github-installations value holding a token of each of accounts, keyed by the
@@ -139,12 +140,12 @@ func TestAMintedInstallationsProfileIsCheckedAgainstItsStoredTokensBeforeAnyoneI
 // stored token in where the session holds its placeholder, and a command's log is redacted of it.
 func TestAMintedInstallationsValueSplitsAsAGitHubAppValue(t *testing.T) {
 	split, err := airlockSplitOf("", policy.TypeGitHubInstallations, githubname.ValueToken, "ghs_stored_ada")
-	if err != nil || !maps.Equal(split.values, map[string]string{SlotValue: "ghs_stored_ada"}) {
+	if err != nil || !maps.Equal(split.values, map[string]string{slot.Value: "ghs_stored_ada"}) {
 		t.Fatalf("the split of a bare token = %v, %v; want the one value slot holding it", split.values, err)
 	}
 	installations := `{"installations":{"Ada":{"installation_id":42,"token":"ghs_stored_ada","expires_at":"2026-11-22T13:00:00Z"}}}`
 	split, err = airlockSplitOf("", policy.TypeGitHubInstallations, githubname.ValueInstallations, installations)
-	if err != nil || !slices.Equal(split.slots(), []string{SlotGitHubPrefix + "ada"}) || split.values[SlotGitHubPrefix+"ada"] != "ghs_stored_ada" {
+	if err != nil || !slices.Equal(split.slots(), []string{slot.GitHubPrefix + "ada"}) || split.values[slot.GitHubPrefix+"ada"] != "ghs_stored_ada" {
 		t.Fatalf("the split of an installations object = %v, %v; want ada's slot holding its token", split.values, err)
 	}
 }
@@ -157,11 +158,11 @@ func TestAMintedInstallationsValueSplitsAsAGitHubAppValue(t *testing.T) {
 // and give it the slot of the ASCII login "kelvin-org".
 func TestAnInstallationsSlotIsTheOneTheProxyReadsForItsOwner(t *testing.T) {
 	const kelvin = "\u212aelvin-org"
-	if got := GitHubSlot("Acme-Org"); got != SlotGitHubPrefix+"acme-org" {
-		t.Fatalf("GitHubSlot(Acme-Org) = %q; want %q", got, SlotGitHubPrefix+"acme-org")
+	if got := GitHubSlot("Acme-Org"); got != slot.GitHubPrefix+"acme-org" {
+		t.Fatalf("GitHubSlot(Acme-Org) = %q; want %q", got, slot.GitHubPrefix+"acme-org")
 	}
-	if got := GitHubSlot(kelvin); got != SlotGitHubPrefix+kelvin {
-		t.Fatalf("GitHubSlot(%q) = %q; want the owner kept, %q: only A-Z is lowered", kelvin, got, SlotGitHubPrefix+kelvin)
+	if got := GitHubSlot(kelvin); got != slot.GitHubPrefix+kelvin {
+		t.Fatalf("GitHubSlot(%q) = %q; want the owner kept, %q: only A-Z is lowered", kelvin, got, slot.GitHubPrefix+kelvin)
 	}
 	installations := `{"installations":{"Acme-Org":{"installation_id":42,"token":"ghs_acme","expires_at":"2026-11-22T13:00:00Z"},` +
 		`"` + kelvin + `":{"installation_id":43,"token":"ghs_kelvin","expires_at":"2026-11-22T13:00:00Z"}}}`

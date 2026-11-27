@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 )
 
 // The key pair behind the airlock: what the broker holds, and what the command holds in its
@@ -74,16 +75,16 @@ func newAWSRig(t *testing.T, session bool) *rig {
 // with an option of its own.
 func awsGrant(r *rig, session bool) {
 	slots := map[string]string{
-		requests.SlotAWSAccessKeyID:     awsKeyPlaceholder,
-		requests.SlotAWSSecretAccessKey: awsSecretPlaceholder,
+		slot.AWSAccessKeyID:     awsKeyPlaceholder,
+		slot.AWSSecretAccessKey: awsSecretPlaceholder,
 	}
 	values := map[string]string{
-		requests.SlotAWSAccessKeyID:     awsRealKeyID,
-		requests.SlotAWSSecretAccessKey: awsRealSecret,
+		slot.AWSAccessKeyID:     awsRealKeyID,
+		slot.AWSSecretAccessKey: awsRealSecret,
 	}
 	if session {
-		slots[requests.SlotAWSSessionToken] = awsSessionPlaceholder
-		values[requests.SlotAWSSessionToken] = awsRealSession
+		slots[slot.AWSSessionToken] = awsSessionPlaceholder
+		values[slot.AWSSessionToken] = awsRealSession
 	}
 	r.grants.connections[awsKeyPlaceholder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,

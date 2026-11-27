@@ -186,6 +186,7 @@ on:
       - 'packages/envoy/internal/cipher/reread/**'
       - 'packages/envoy/internal/cipher/rulehost/**'
       - 'packages/envoy/internal/cipher/secrets/*'
+      - 'packages/envoy/internal/cipher/slot/**'
       - 'packages/envoy/internal/cipher/store/*'
       - 'packages/envoy/internal/cipher/store/migrations/**'
       - 'packages/envoy/internal/cipher/wake/**'

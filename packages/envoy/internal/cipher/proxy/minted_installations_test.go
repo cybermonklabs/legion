@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
 
@@ -121,7 +122,7 @@ func TestTheProxySwapsInTheStoredTokenOfAMintedInstallationsProfile(t *testing.T
 		t.Fatalf("the release hands over %s's value itself; want it behind the proxy alone", profileName)
 	}
 	slots := release.Airlock.Names[profileName].Slots
-	placeholder := slots[requests.SlotValue]
+	placeholder := slots[slot.Value]
 	if placeholder == "" || len(slots) != 1 {
 		t.Fatalf("the release names %s's slots %v; want the one value slot", profileName, slots)
 	}

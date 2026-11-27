@@ -13,9 +13,9 @@ index 6206de0dfba..75665e2f2ce 100644
  	// The placeholder the command sent for this slot, before accountSlot may change which
  	// account's token the swap puts in. The scan swaps this one out of the headers.
  	commandPlaceholder := info.grant.Names[chosen.name].Slots[chosen.slot]
--	if holdsPlaceholder && strings.HasPrefix(chosen.slot, requests.SlotGitHubPrefix) {
+-	if holdsPlaceholder && strings.HasPrefix(chosen.slot, slot.GitHubPrefix) {
 +	// MUTANT: the token is the carried placeholder's account's alone.
-+	if false && holdsPlaceholder && strings.HasPrefix(chosen.slot, requests.SlotGitHubPrefix) {
++	if false && holdsPlaceholder && strings.HasPrefix(chosen.slot, slot.GitHubPrefix) {
  		// Which account's token a GitHub call gets: the account its path names, where the
  		// name holds an installation on it, whichever account's placeholder the command sent
  		// (accountSlot). The placeholder in the request stays the one swapped out, and the

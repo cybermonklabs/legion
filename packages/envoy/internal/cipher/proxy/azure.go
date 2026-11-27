@@ -48,6 +48,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 	"github.com/sjawhar/envoy/internal/fold"
 )
 
@@ -62,7 +63,7 @@ const (
 // azureExchange is one exchange at a token endpoint: where it is made, what it asks a token
 // for, and which application it is made as. It is what an azure-access slot carries.
 //
-// An access slot - requests.SlotAzureAccessPrefix and what azureAccessSlot writes after it -
+// An access slot - slot.AzureAccessPrefix and what azureAccessSlot writes after it -
 // names one access token the proxy exchanged a grant's federated token for. What follows the
 // prefix is everything a broker pod needs to make that exchange for itself: this object as
 // JSON, base64url with no padding.
@@ -120,13 +121,13 @@ func (x azureExchange) form(federated string) url.Values {
 func azureAccessSlot(x azureExchange) string {
 	// Four strings, so the marshal cannot fail.
 	encoded, _ := json.Marshal(x)
-	return requests.SlotAzureAccessPrefix + base64.RawURLEncoding.EncodeToString(encoded)
+	return slot.AzureAccessPrefix + base64.RawURLEncoding.EncodeToString(encoded)
 }
 
 // azureExchangeOf reads a slot back into the exchange it names, and answers false for a slot
 // that is no access slot and for one whose text this encoding did not write.
-func azureExchangeOf(slot string) (azureExchange, bool) {
-	encoded, ok := strings.CutPrefix(slot, requests.SlotAzureAccessPrefix)
+func azureExchangeOf(s string) (azureExchange, bool) {
+	encoded, ok := strings.CutPrefix(s, slot.AzureAccessPrefix)
 	if !ok {
 		return azureExchange{}, false
 	}
@@ -141,11 +142,11 @@ func azureExchangeOf(slot string) (azureExchange, bool) {
 	return x, true
 }
 
-// isAzureAccessSlot reports whether slot is one of the proxy's own, which the broker's read of
+// isAzureAccessSlot reports whether s is a slot of the proxy's own, which the broker's read of
 // a grant answers no value for: the value behind it is an access token this pod exchanged or
 // will exchange.
-func isAzureAccessSlot(slot string) bool {
-	return strings.HasPrefix(slot, requests.SlotAzureAccessPrefix)
+func isAzureAccessSlot(s string) bool {
+	return strings.HasPrefix(s, slot.AzureAccessPrefix)
 }
 
 // isTokenRequest reports whether r is a request to a token endpoint. Microsoft's are
@@ -283,7 +284,7 @@ func (s *Server) exchangeToken(w http.ResponseWriter, info connInfo, r *http.Req
 		s.refuse(w, r, info.callFor(chosen), http.StatusBadRequest, codeTokenRequest, "this token request's body is no application/x-www-form-urlencoded form")
 		return
 	}
-	placeholder := info.grant.Names[chosen.name].Slots[requests.SlotAzureFederated]
+	placeholder := info.grant.Names[chosen.name].Slots[slot.AzureFederated]
 	if placeholder == "" || form.Get("client_assertion") != placeholder {
 		// Refused rather than forwarded: an assertion that is not this grant's placeholder is
 		// a credential the command holds of its own, and the airlock carries no such thing.
@@ -308,7 +309,7 @@ func (s *Server) exchangeToken(w http.ResponseWriter, info connInfo, r *http.Req
 		// The v1 endpoint reads the resource a token is for, where v2.0 reads a scope.
 		x.Resource = form.Get("resource")
 	}
-	status, answer, err := s.exchangeAt(r.Context(), x.Endpoint, x.form(secret.Slots[requests.SlotAzureFederated]))
+	status, answer, err := s.exchangeAt(r.Context(), x.Endpoint, x.form(secret.Slots[slot.AzureFederated]))
 	if err != nil {
 		s.refuse(w, r, info.callFor(chosen), http.StatusBadGateway, codeExchangeFailed, "the exchange of this grant's federated token could not be made at "+x.Endpoint+": "+err.Error())
 		return
@@ -380,7 +381,7 @@ func (s *Server) azureAccess(ctx context.Context, info connInfo, chosen pair, se
 		// written before the check existed is held to it all the same.
 		return "", err
 	}
-	federated := secret.Slots[requests.SlotAzureFederated]
+	federated := secret.Slots[slot.AzureFederated]
 	if federated == "" {
 		return "", errors.New("the broker released no federated token for " + chosen.name + ", so no access token can be exchanged for it")
 	}

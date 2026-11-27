@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
 
@@ -596,7 +597,7 @@ func TestAnUntaggedDeploymentAsksDispatchNothing(t *testing.T) {
 			if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 				t.Fatalf("Values: %v", err)
 			}
-			if _, err := m.AirlockConnection(t.Context(), placeholderRows(t, m, grantID)["AUTO_TOKEN/"+SlotValue]); err != nil {
+			if _, err := m.AirlockConnection(t.Context(), placeholderRows(t, m, grantID)["AUTO_TOKEN/"+slot.Value]); err != nil {
 				t.Fatalf("AirlockConnection: %v", err)
 			}
 			if _, _, err := m.AirlockValues(t.Context(), grantID); err != nil {
@@ -739,7 +740,7 @@ func TestNoK3CallRunsInsideATransaction(t *testing.T) {
 	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
-	if _, err := m.AirlockConnection(t.Context(), placeholderRows(t, m, grantID)["PRIV_KEY/"+SlotValue]); err != nil {
+	if _, err := m.AirlockConnection(t.Context(), placeholderRows(t, m, grantID)["PRIV_KEY/"+slot.Value]); err != nil {
 		t.Fatalf("AirlockConnection: %v", err)
 	}
 	if _, _, err := m.AirlockValues(t.Context(), grantID); err != nil {

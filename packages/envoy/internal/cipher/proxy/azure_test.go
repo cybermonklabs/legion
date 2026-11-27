@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 )
 
 // The azure-login secret behind the airlock: the federated token the broker holds, the
@@ -76,7 +77,7 @@ func newAzureRuledRig(t *testing.T, rules proxyrules.Rules, o Options) (*rig, *p
 	r.grants.connections[azureFederatedPlaceholder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 		Names: map[string]requests.AirlockGrantName{
-			azureName: {Type: "azure-login", Slots: map[string]string{requests.SlotAzureFederated: azureFederatedPlaceholder}},
+			azureName: {Type: "azure-login", Slots: map[string]string{slot.AzureFederated: azureFederatedPlaceholder}},
 		},
 	}
 	// No expiry on the federated token itself: what these rows are about is the life of the
@@ -85,7 +86,7 @@ func newAzureRuledRig(t *testing.T, rules proxyrules.Rules, o Options) (*rig, *p
 	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
 		azureName: {
 			Type:  "azure-login",
-			Slots: map[string]string{requests.SlotAzureFederated: azureRealFederated},
+			Slots: map[string]string{slot.AzureFederated: azureRealFederated},
 			Azure: secrets.AzureLoginValue{TenantID: azureTenantID, ClientID: azureClientID},
 		},
 	})
@@ -351,21 +352,21 @@ func TestAnAccessTokenNearItsExpiryIsExchangedAgain(t *testing.T) {
 // whole of the two-pod case.
 func TestAnAccessSlotCarriesTheExchangeItWasMadeFor(t *testing.T) {
 	made := azureExchange{Endpoint: "https://" + boundHost + azureTokenPath, Scope: azureScope, ClientID: azureClientID}
-	slot := azureAccessSlot(made)
-	if !strings.HasPrefix(slot, requests.SlotAzureAccessPrefix) {
-		t.Fatalf("the slot %q does not open with %q", slot, requests.SlotAzureAccessPrefix)
+	accessSlot := azureAccessSlot(made)
+	if !strings.HasPrefix(accessSlot, slot.AzureAccessPrefix) {
+		t.Fatalf("the slot %q does not open with %q", accessSlot, slot.AzureAccessPrefix)
 	}
-	if !isAzureAccessSlot(slot) {
-		t.Fatalf("%q does not read as an access slot", slot)
+	if !isAzureAccessSlot(accessSlot) {
+		t.Fatalf("%q does not read as an access slot", accessSlot)
 	}
-	if again := azureAccessSlot(made); again != slot {
-		t.Fatalf("one exchange encoded to %q and then to %q; want one slot, so two pods name one", slot, again)
+	if again := azureAccessSlot(made); again != accessSlot {
+		t.Fatalf("one exchange encoded to %q and then to %q; want one slot, so two pods name one", accessSlot, again)
 	}
-	read, ok := azureExchangeOf(slot)
+	read, ok := azureExchangeOf(accessSlot)
 	if !ok || read != made {
 		t.Fatalf("the slot read back as %+v, %v; want %+v", read, ok, made)
 	}
-	for _, no := range []string{"value", requests.SlotAzureFederated, requests.SlotAzureAccessPrefix + "not base64url!", requests.SlotAzureAccessPrefix + "e30"} {
+	for _, no := range []string{"value", slot.AzureFederated, slot.AzureAccessPrefix + "not base64url!", slot.AzureAccessPrefix + "e30"} {
 		if read, ok := azureExchangeOf(no); ok {
 			t.Errorf("%q read as the exchange %+v; want no exchange", no, read)
 		}
@@ -376,7 +377,7 @@ func TestAnAccessSlotCarriesTheExchangeItWasMadeFor(t *testing.T) {
 // slot names no exchange reaches no service, because there is nothing to exchange for it.
 func TestAnAccessPlaceholderTheBrokerDoesNotKnowIsRefused(t *testing.T) {
 	r, stand := newAzureRig(t, Options{})
-	brokenSlot := requests.SlotAzureAccessPrefix + "not-the-encoding"
+	brokenSlot := slot.AzureAccessPrefix + "not-the-encoding"
 	strange := placeholder.Prefix + "strangeAccessStrangeAccess000001"
 	r.grants.connections[azureFederatedPlaceholder].Names[azureName].Slots[brokenSlot] = strange
 	answer, body := r.get(r.client(azureFederatedPlaceholder), "https://"+boundHost+"/v1/subscriptions", "Authorization", "Bearer "+strange)

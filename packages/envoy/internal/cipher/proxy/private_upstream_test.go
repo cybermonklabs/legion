@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/testport"
@@ -419,7 +420,7 @@ func TestEachPrivateDestinationTakesItsOwnHostAlone(t *testing.T) {
 	r.grants.setValues(mintedGrantID, storedValues(mintedName, mintedToken))
 	r.grants.setConnection(secondPlaceholder, requests.AirlockConnection{
 		GrantID: secondGrantID, SessionID: mintedSession, Minted: true,
-		Names: map[string]requests.AirlockGrantName{secondMinted: {Slots: map[string]string{requests.SlotValue: secondPlaceholder}}},
+		Names: map[string]requests.AirlockGrantName{secondMinted: {Slots: map[string]string{slot.Value: secondPlaceholder}}},
 	})
 	r.grants.setValues(secondGrantID, storedValues(secondMinted, mintedToken))
 	r.addresses[privateHost], r.addresses[secondHost] = []netip.Addr{publicAddress}, []netip.Addr{publicAddress}

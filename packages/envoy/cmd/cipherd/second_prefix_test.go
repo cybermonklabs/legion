@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -434,10 +435,10 @@ func (m *storeMove) airlockRelease(pod podclient.Pod, grantID string) (password,
 		} `json:"airlock"`
 	}
 	_ = json.Unmarshal(body, &release)
-	if status != http.StatusOK || release.Airlock == nil || release.Airlock.Names[moveAppRead].Slots[requests.SlotValue] == "" || release.Airlock.ProxyPassword == "" {
+	if status != http.StatusOK || release.Airlock == nil || release.Airlock.Names[moveAppRead].Slots[slot.Value] == "" || release.Airlock.ProxyPassword == "" {
 		m.t.Fatalf("the release of %s's grant %s = %d %s; want 200 with its placeholder behind the airlock", moveAppRead, grantID, status, body)
 	}
-	return release.Airlock.ProxyPassword, release.Airlock.Names[moveAppRead].Slots[requests.SlotValue]
+	return release.Airlock.ProxyPassword, release.Airlock.Names[moveAppRead].Slots[slot.Value]
 }
 
 // callThroughProxy opens an airlock connection on broker's proxy port with password and sends one

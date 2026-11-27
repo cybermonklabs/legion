@@ -40,6 +40,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -149,7 +150,7 @@ func testConnection() requests.AirlockConnection {
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 		SessionID: testSession, RuntimeID: testRuntime,
 		Names: map[string]requests.AirlockGrantName{
-			workerName: {Slots: map[string]string{requests.SlotValue: workerPlaceholder}},
+			workerName: {Slots: map[string]string{slot.Value: workerPlaceholder}},
 		},
 	}
 }
@@ -157,14 +158,14 @@ func testConnection() requests.AirlockConnection {
 // storedValues is one grant's values as the fake answers them: one name, one value slot, no
 // expiry, which is what a stored secret's release looks like.
 func storedValues(name, value string) map[string]requests.AirlockSecret {
-	return map[string]requests.AirlockSecret{name: {Slots: map[string]string{requests.SlotValue: value}}}
+	return map[string]requests.AirlockSecret{name: {Slots: map[string]string{slot.Value: value}}}
 }
 
 // The github-app shape of the rig's one name, for the rows about a slot the broker stops
 // releasing: one token per installation, acme's and zed's, and the worker placeholder is acme's.
 const (
-	githubAcmeSlot  = requests.SlotGitHubPrefix + "acme"
-	githubZedSlot   = requests.SlotGitHubPrefix + "zed"
+	githubAcmeSlot  = slot.GitHubPrefix + "acme"
+	githubZedSlot   = slot.GitHubPrefix + "zed"
 	githubZedHolder = placeholder.Prefix + "zedzedzedzedzedzedzedzedzedzed02"
 	githubAcmeToken = "ghs_the-real-acme-installation-token"
 	githubZedToken  = "ghs_the-real-zed-installation-token"

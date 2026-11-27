@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
@@ -287,7 +288,7 @@ func (a slackAnswer) refused(t *testing.T, what string, p slackPost) {
 func grantSlack(r *rig, placeholder, grantID string, secret requests.AirlockSecret) {
 	r.grants.setConnection(placeholder, requests.AirlockConnection{
 		GrantID: grantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
-		Names: map[string]requests.AirlockGrantName{slackName: {Slots: map[string]string{requests.SlotValue: placeholder}}},
+		Names: map[string]requests.AirlockGrantName{slackName: {Slots: map[string]string{slot.Value: placeholder}}},
 	})
 	r.grants.setValues(grantID, map[string]requests.AirlockSecret{slackName: secret})
 }
@@ -299,7 +300,7 @@ func grantSlack(r *rig, placeholder, grantID string, secret requests.AirlockSecr
 // carries every one of those requests as it did before the limit existed.
 func TestAPrivateProjectsSlackGrantPostsOnlyToItsChannels(t *testing.T) {
 	r := newRuledRig(t, slackRules(), Options{})
-	value := map[string]string{requests.SlotValue: slackValue}
+	value := map[string]string{slot.Value: slackValue}
 	grantSlack(r, limitedPlaceholder, "grant-slack-limited", requests.AirlockSecret{Slots: value, Limited: true, Channels: []string{channelA, channelB}})
 	grantSlack(r, unlimitedPlaceholder, "grant-slack-unlimited", requests.AirlockSecret{Slots: value})
 	grantSlack(r, noListPlaceholder, "grant-slack-no-list", requests.AirlockSecret{Slots: value, Limited: true})
@@ -329,7 +330,7 @@ func TestAPrivateProjectsSlackGrantPostsOnlyToItsChannels(t *testing.T) {
 
 	t.Run("a Limited name whose binding is no header swap", func(t *testing.T) {
 		aws := newAWSRig(t, false)
-		values := map[string]string{requests.SlotAWSAccessKeyID: awsRealKeyID, requests.SlotAWSSecretAccessKey: awsRealSecret}
+		values := map[string]string{slot.AWSAccessKeyID: awsRealKeyID, slot.AWSSecretAccessKey: awsRealSecret}
 		aws.grants.setValues(testGrantID, map[string]requests.AirlockSecret{awsName: {Slots: values, Limited: true, Channels: []string{channelA}}})
 		// A call signed with the placeholder key, which the sign way would sign again and send on.
 		post := jsonPost(postTo(channelA))

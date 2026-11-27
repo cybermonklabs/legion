@@ -29,8 +29,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
-
-	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 )
 
 // The two signature schemes an Authorization header of an AWS call opens with: Signature
@@ -93,7 +92,7 @@ var connectionHeaders = []string{
 // host is the Host the request leaves with, which is the host the signature covers; its
 // placeholders are the grant's three slots and values the real key behind them.
 func (s *Server) signAWS(ctx context.Context, r *http.Request, host string, placeholders, values map[string]string) (http.Header, string, func(), string) {
-	keyID, secretKey := values[requests.SlotAWSAccessKeyID], values[requests.SlotAWSSecretAccessKey]
+	keyID, secretKey := values[slot.AWSAccessKeyID], values[slot.AWSSecretAccessKey]
 	if keyID == "" || secretKey == "" {
 		return nil, "", nil, "the broker released no AWS key id and secret key for this name, so there is no key to sign this request with"
 	}
@@ -121,16 +120,16 @@ func (s *Server) signAWS(ctx context.Context, r *http.Request, host string, plac
 	if len(scope) != 5 {
 		return nil, "", nil, "refusing a Credential that is no KEY/date/region/service/aws4_request scope"
 	}
-	if scope[0] != placeholders[requests.SlotAWSAccessKeyID] {
+	if scope[0] != placeholders[slot.AWSAccessKeyID] {
 		return nil, "", nil, "refusing a request signed with another key id: the Credential of this request does not name this grant's placeholder key id"
 	}
 	region, service := scope[2], scope[3]
-	sessionPlaceholder, hasSession := placeholders[requests.SlotAWSSessionToken]
+	sessionPlaceholder, hasSession := placeholders[slot.AWSSessionToken]
 	if hasSession {
 		if r.Header.Get("X-Amz-Security-Token") != sessionPlaceholder {
 			return nil, "", nil, "refusing a request whose X-Amz-Security-Token is not this grant's placeholder: this key pair has a session token, and the call must carry the placeholder the command was given"
 		}
-		if values[requests.SlotAWSSessionToken] == "" {
+		if values[slot.AWSSessionToken] == "" {
 			return nil, "", nil, "the broker released no AWS session token for this name, whose placeholder this request carries"
 		}
 	}
@@ -197,7 +196,7 @@ func (s *Server) signAWS(ctx context.Context, r *http.Request, host string, plac
 		Header:        header,
 		ContentLength: r.ContentLength,
 	}
-	credentials := aws.Credentials{AccessKeyID: keyID, SecretAccessKey: secretKey, SessionToken: values[requests.SlotAWSSessionToken]}
+	credentials := aws.Credentials{AccessKeyID: keyID, SecretAccessKey: secretKey, SessionToken: values[slot.AWSSessionToken]}
 	signer := v4.NewSigner(func(o *v4.SignerOptions) {
 		// S3 canonicalizes the path as the client wrote it, where every other service escapes
 		// it a second time. It is the one difference between S3's canonical request and the

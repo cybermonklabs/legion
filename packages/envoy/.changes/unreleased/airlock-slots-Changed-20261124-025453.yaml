@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  `agent-secrets` and the broker read the airlock's slot names from one package; the command's environment is unchanged.
+time: 2026-11-24T02:54:53Z
+custom:
+    Issue: airlock-slots

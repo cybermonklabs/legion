@@ -32,7 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
-	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -206,7 +206,7 @@ func (r *airlockRereadRig) grant(name string) proxied {
 		r.t.Fatalf("the pod's request for %s = %+v, want a grant at once", name, granted)
 	}
 	password, slots := airlockOf(r.api, r.pod, *granted.GrantID)
-	placeholder := slots[requests.SlotValue]
+	placeholder := slots[slot.Value]
 	if password == "" || placeholder == "" {
 		r.t.Fatalf("the release of %s carries no proxy password or no value placeholder: %q, %v", name, password, slots)
 	}

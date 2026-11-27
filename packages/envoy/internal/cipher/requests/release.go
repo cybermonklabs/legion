@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 )
 
 // MintMessage is logged, at INFO, once for each credential the broker mints for a grant: each
@@ -97,11 +98,11 @@ func logMinted(grantID, enrollmentID, name, way string, released releasedName) {
 	for _, permission := range slices.Sorted(maps.Keys(from.permissions)) {
 		permissions = strings.TrimSpace(permissions + " " + permission + ":" + from.permissions[permission])
 	}
-	for _, slot := range split.slots() {
-		sum := sha256.Sum256([]byte(split.values[slot]))
-		fields := []any{"enrollment", enrollmentID, "grant", grantID, "secret", name, "way", way, "type", released.secretType, "slot", slot}
+	for _, minted := range split.slots() {
+		sum := sha256.Sum256([]byte(split.values[minted]))
+		fields := []any{"enrollment", enrollmentID, "grant", grantID, "secret", name, "way", way, "type", released.secretType, "slot", minted}
 		account := from.account
-		if owner, ok := strings.CutPrefix(slot, SlotGitHubPrefix); ok {
+		if owner, ok := strings.CutPrefix(minted, slot.GitHubPrefix); ok {
 			account = owner
 		}
 		if from.app != "" {

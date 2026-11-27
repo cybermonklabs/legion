@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 )
 
 // privateProfiles is the profiles file of these rows: PRIV_READ, a profile of PRIV_KEY; TEAM_READ,
@@ -67,7 +68,7 @@ func TestTheAirlockRefusesAConnectionOfAProfileOfALostProject(t *testing.T) {
 	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
-	placeholder := placeholderRows(t, m, grantID)["TEAM_READ/"+SlotValue]
+	placeholder := placeholderRows(t, m, grantID)["TEAM_READ/"+slot.Value]
 	if placeholder == "" {
 		t.Fatalf("grant %s minted no placeholder for TEAM_READ", grantID)
 	}

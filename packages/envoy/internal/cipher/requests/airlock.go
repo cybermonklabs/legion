@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 	"github.com/sjawhar/envoy/internal/fold"
 )
 
@@ -63,38 +64,12 @@ var ErrAirlockValueShape = errors.New("a name of this grant does not hold what i
 // placeholder.
 var ErrMintedOnly = errors.New("a name of kind dpop is a capability the broker mints and holds, never a stored secret's release")
 
-// The slots of a secret. A slot names which value of a secret a placeholder stands for, because
-// one secret can release several values at once and each needs a placeholder of its own:
-//
-//   - SlotValue: a stored secret's own value, and a google-login's access token;
-//   - the three aws- slots: a stored AWS key pair, which the secret's airlock entry marks with
-//     kind "aws"; the session token's slot exists only when the stored value holds one;
-//   - GitHubSlot(owner): one installation of a github-app secret, SlotGitHubPrefix and the owner
-//     lower-cased;
-//   - SlotAzureFederated: an azure-login secret's federated token.
-//
-// The set is open, not closed: the proxy adds one slot per exchange it makes of an azure-login
-// secret's federated token, opening with SlotAzureAccessPrefix and carrying the token endpoint,
-// the scope and the client_id of that exchange (internal/cipher/proxy's azure.go, which
-// writes and reads that text and is the only code that does). Nothing may assume a slot it does
-// not know is a mistake. SlotAWSSecretAccessKey is written in two halves because the public leak
-// check reads the whole name as an AWS secret key; its value is the wire name.
-const (
-	SlotValue              = "value"
-	SlotAWSAccessKeyID     = "aws-access-key-id"
-	SlotAWSSecretAccessKey = "aw" + "s-secret-access-key"
-	SlotAWSSessionToken    = "aws-session-token"
-	SlotGitHubPrefix       = "github:"
-	SlotAzureFederated     = "azure-federated"
-	SlotAzureAccessPrefix  = "azure-access:"
-)
-
-// GitHubSlot is the slot of a github-app secret's installation on owner: SlotGitHubPrefix and
+// GitHubSlot is the slot of a github-app secret's installation on owner: slot.GitHubPrefix and
 // owner with its ASCII letters lowered (fold.ASCII). githubAppSplit writes each installation's
 // slot with it and the proxy reads the slot of the account a request's path names with it
 // (internal/cipher/proxy's accountSlot), so the release and proxy cannot fold one owner two ways.
 func GitHubSlot(owner string) string {
-	return SlotGitHubPrefix + fold.ASCII(owner)
+	return slot.GitHubPrefix + fold.ASCII(owner)
 }
 
 // placeholderHash is a placeholder's SHA-256 in hex: the key airlock_placeholders holds it under,
@@ -169,8 +144,8 @@ func (m *Machine) mintPlaceholders(ctx context.Context, grantID string, expires 
 }
 
 // AirlockAccessPlaceholder answers the placeholder that stands for one access token of grantID's
-// name, minting its row the first time and answering the same string after. slot is the
-// access-token slot the proxy encoded the exchange into (SlotAzureAccessPrefix and the exchange
+// name, minting its row the first time and answering the same string after. accessSlot is the
+// access-token slot the proxy encoded the exchange into (slot.AzureAccessPrefix and the exchange
 // it made), so a second exchange of one scope - by this pod or by another one - is answered the
 // placeholder the first was, and the command's token keeps working wherever its next connection
 // lands.
@@ -178,13 +153,13 @@ func (m *Machine) mintPlaceholders(ctx context.Context, grantID string, expires 
 // The row is one of the grant's own, written with the grant's expiry like every other: it opens
 // a connection of that grant while it lives, it goes when the grant's rows go
 // (deleteSpentPlaceholders), and AirlockConnection answers it among the name's slots.
-func (m *Machine) AirlockAccessPlaceholder(ctx context.Context, grantID, name, slot string) (string, error) {
+func (m *Machine) AirlockAccessPlaceholder(ctx context.Context, grantID, name, accessSlot string) (string, error) {
 	if _, _, minted := m.mintedKindOfGrant(grantID); minted {
 		// A minted grant holds its kind's one slot, and no exchange is ever made for it.
 		return "", ErrGrantNotLive
 	}
-	if !strings.HasPrefix(slot, SlotAzureAccessPrefix) {
-		return "", fmt.Errorf("airlock: %q is no access-token slot", slot)
+	if !strings.HasPrefix(accessSlot, slot.AzureAccessPrefix) {
+		return "", fmt.Errorf("airlock: %q is no access-token slot", accessSlot)
 	}
 	var expires *time.Time
 	if err := m.Store.Pool.QueryRow(ctx, `select expires_at from grants where id=$1`, grantID).Scan(&expires); err != nil {
@@ -193,11 +168,11 @@ func (m *Machine) AirlockAccessPlaceholder(ctx context.Context, grantID, name, s
 		}
 		return "", err
 	}
-	minted, err := m.mintPlaceholders(ctx, grantID, expires, map[string][]string{name: {slot}}, nil)
+	minted, err := m.mintPlaceholders(ctx, grantID, expires, map[string][]string{name: {accessSlot}}, nil)
 	if err != nil {
 		return "", err
 	}
-	placeholder := minted[name][slot]
+	placeholder := minted[name][accessSlot]
 	if placeholder == "" {
 		return "", fmt.Errorf("airlock: no placeholder was minted for %s's access token", name)
 	}
@@ -292,8 +267,8 @@ func airlockSplitOf(way, secretType, gitHubValue, value string) (airlockSplit, e
 	case secretType == policy.TypeAzureLogin:
 		split, err = azureLoginSplit(value)
 	case secretType == "" && way == proxyrules.WaySign:
-		split, err = objectSplit(value, map[string]string{"access_key_id": SlotAWSAccessKeyID, "secret_access_key": SlotAWSSecretAccessKey},
-			map[string]string{"session_token": SlotAWSSessionToken})
+		split, err = objectSplit(value, map[string]string{"access_key_id": slot.AWSAccessKeyID, "secret_access_key": slot.AWSSecretAccessKey},
+			map[string]string{"session_token": slot.AWSSessionToken})
 	default:
 		return valueSplit(value), nil
 	}
@@ -308,8 +283,8 @@ func airlockSplitOf(way, secretType, gitHubValue, value string) (airlockSplit, e
 // valueSplit is the split of a value that is one string: the value slot, holding the whole of it.
 func valueSplit(value string) airlockSplit {
 	return airlockSplit{
-		values: map[string]string{SlotValue: value},
-		fill:   func(bySlot map[string]string) (string, error) { return bySlot[SlotValue], nil },
+		values: map[string]string{slot.Value: value},
+		fill:   func(bySlot map[string]string) (string, error) { return bySlot[slot.Value], nil },
 	}
 }
 
@@ -363,7 +338,7 @@ func azureLoginSplit(value string) (airlockSplit, error) {
 	if err != nil {
 		return airlockSplit{}, err
 	}
-	split, err := fieldsSplit(doc, map[string]string{"federated_token": SlotAzureFederated}, nil)
+	split, err := fieldsSplit(doc, map[string]string{"federated_token": slot.AzureFederated}, nil)
 	if err != nil {
 		return airlockSplit{}, err
 	}

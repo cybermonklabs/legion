@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/dpopproof"
 )
@@ -83,7 +84,7 @@ func (g *dpopGrants) AirlockRules() proxyrules.Rules { return g.rules }
 func mintedConnection() requests.AirlockConnection {
 	return requests.AirlockConnection{
 		GrantID: mintedGrantID, SessionID: mintedSession, Minted: true,
-		Names: map[string]requests.AirlockGrantName{mintedName: {Slots: map[string]string{requests.SlotValue: mintedPlaceholder}}},
+		Names: map[string]requests.AirlockGrantName{mintedName: {Slots: map[string]string{slot.Value: mintedPlaceholder}}},
 	}
 }
 
@@ -372,7 +373,7 @@ func TestAnEndedMintedGrantsValuesAreDropped(t *testing.T) {
 	for _, g := range grants {
 		connection := mintedConnection()
 		connection.GrantID, connection.Expires = g.id, &g.ends
-		connection.Names = map[string]requests.AirlockGrantName{mintedName: {Slots: map[string]string{requests.SlotValue: g.placeholder}}}
+		connection.Names = map[string]requests.AirlockGrantName{mintedName: {Slots: map[string]string{slot.Value: g.placeholder}}}
 		r.grants.setConnection(g.placeholder, connection)
 		r.grants.setValues(g.id, storedValues(mintedName, mintedToken))
 	}

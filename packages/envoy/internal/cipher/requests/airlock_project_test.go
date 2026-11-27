@@ -7,6 +7,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 )
 
 // TestTheAirlockRefusesAConnectionOfALostProject: a proxy connection with the placeholder of a
@@ -19,7 +21,7 @@ func TestTheAirlockRefusesAConnectionOfALostProject(t *testing.T) {
 	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
-	placeholder := placeholderRows(t, m, grantID)["TEAM_TOKEN/"+SlotValue]
+	placeholder := placeholderRows(t, m, grantID)["TEAM_TOKEN/"+slot.Value]
 	if placeholder == "" {
 		t.Fatalf("grant %s minted no placeholder for TEAM_TOKEN", grantID)
 	}
@@ -52,7 +54,7 @@ func TestTheAirlockStopsServingAPrivateSecretAfterAccessIsLost(t *testing.T) {
 		t.Fatalf("AirlockValues of grant %s: %v", grantID, err)
 	}
 	held, ok := values["TEAM_TOKEN"]
-	if !ok || held.Slots[SlotValue] != "team-v1" {
+	if !ok || held.Slots[slot.Value] != "team-v1" {
 		t.Fatalf("AirlockValues of grant %s = %+v; want TEAM_TOKEN's value", grantID, values)
 	}
 	if held.Expires.IsZero() || held.Expires.After(time.Now().Add(airlockProjectRecheck)) || held.Expires.Before(read.Add(airlockProjectRecheck-time.Minute)) {
@@ -77,13 +79,13 @@ func TestTheAirlockOfAnUntaggedGrantKeepsItsValues(t *testing.T) {
 	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
-	placeholder := placeholderRows(t, m, grantID)["AUTO_TOKEN/"+SlotValue]
+	placeholder := placeholderRows(t, m, grantID)["AUTO_TOKEN/"+slot.Value]
 	for range 2 {
 		if _, err := m.AirlockConnection(t.Context(), placeholder); err != nil {
 			t.Fatalf("AirlockConnection of untagged grant %s: %v", grantID, err)
 		}
 		values, _, err := m.AirlockValues(t.Context(), grantID)
-		if err != nil || values["AUTO_TOKEN"].Slots[SlotValue] != "auto-v1" || !values["AUTO_TOKEN"].Expires.IsZero() {
+		if err != nil || values["AUTO_TOKEN"].Slots[slot.Value] != "auto-v1" || !values["AUTO_TOKEN"].Expires.IsZero() {
 			t.Fatalf("AirlockValues of untagged grant %s = %+v, %v; want its value with no expiry", grantID, values, err)
 		}
 		answerFrom(t, m, dispatchRows(privateTeam()))

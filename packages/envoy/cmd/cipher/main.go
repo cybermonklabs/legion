@@ -1441,10 +1441,10 @@ var sessionIdentityVars = map[string]bool{
 //
 // What this CLI sets is every released value, and, for a grant the airlock holds a name of
 // (release, and files, what prepareProxyTrustForCommand wrote for it: nothing where the command
-// needs no bundle), that name's placeholder, the AWS variables its slots fill, the proxy, and the
-// trust bundle where it wrote one (airlockVars). release is nil for every grant the airlock
-// holds no name of, which is every grant of a broker with no rules file, and then nothing of the
-// airlock is in the child's environment at all.
+// needs no bundle), that name's placeholder, the variables its slots fill (slot.EnvSets: an AWS
+// key pair's three), the proxy, and the trust bundle where it wrote one (airlockVars). release is
+// nil for every grant the airlock holds no name of, which is every grant of a broker with no rules
+// file, and then nothing of the airlock is in the child's environment at all.
 //
 // The set entries are appended in sorted order, so one grant's child environment is one string
 // whatever Go's map iteration gave.

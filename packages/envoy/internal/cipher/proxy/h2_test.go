@@ -42,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 )
 
 // negotiated is the protocol an answer's TLS agreed, "" for an answer that came over none.
@@ -972,7 +973,7 @@ func TestEachStreamOfOneH2ConnectionIsDecidedOnItsOwn(t *testing.T) {
 	// The grant as it reads once its operator has withheld the one name bound to the host,
 	// holding one other name so that the read answers a grant rather than refusing.
 	withheld := testConnection()
-	withheld.Names = map[string]requests.AirlockGrantName{"OTHER_TOKEN": {Slots: map[string]string{requests.SlotValue: placeholder.Prefix + "ZzYyXxWwVvUuTtSsRrQqPpOoNnMmLlKk"}}}
+	withheld.Names = map[string]requests.AirlockGrantName{"OTHER_TOKEN": {Slots: map[string]string{slot.Value: placeholder.Prefix + "ZzYyXxWwVvUuTtSsRrQqPpOoNnMmLlKk"}}}
 	for _, row := range []struct {
 		name   string
 		before func()
@@ -1108,13 +1109,13 @@ func TestAGrantCutResetsAFlowControlledH2StreamAndLeavesItsSiblings(t *testing.T
 	r := newRuledRig(t, twoNameRules(workerName, betaName), Options{Watch: watchFast})
 	both := testConnection()
 	both.Names = map[string]requests.AirlockGrantName{
-		workerName: {Slots: map[string]string{requests.SlotValue: workerPlaceholder}},
-		betaName:   {Slots: map[string]string{requests.SlotValue: betaPlaceholder}},
+		workerName: {Slots: map[string]string{slot.Value: workerPlaceholder}},
+		betaName:   {Slots: map[string]string{slot.Value: betaPlaceholder}},
 	}
 	r.grants.setConnection(workerPlaceholder, both)
 	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
-		workerName: {Slots: map[string]string{requests.SlotValue: workerValue}},
-		betaName:   {Slots: map[string]string{requests.SlotValue: betaValue}},
+		workerName: {Slots: map[string]string{slot.Value: workerValue}},
+		betaName:   {Slots: map[string]string{slot.Value: betaValue}},
 	})
 	// The service streams a line every few milliseconds on each path until its call ends, and
 	// says on that path's channel how it ended.

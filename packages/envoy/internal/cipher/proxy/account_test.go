@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 )
 
 // gitHost is the host git's own paths are read on: github.com serves a repository's git
@@ -104,8 +105,8 @@ func TestAccountSlotFoldsAGitHubOwnerWithGitHubSlot(t *testing.T) {
 		path, wantSlot string
 		wantHeld       bool
 	}{
-		{"/repos/KELVIN-ORG/widget", requests.SlotGitHubPrefix + "kelvin-org", true},
-		{"/repos/Kelvin-org/widget", requests.SlotGitHubPrefix + "Kelvin-org", false},
+		{"/repos/KELVIN-ORG/widget", slot.GitHubPrefix + "kelvin-org", true},
+		{"/repos/Kelvin-org/widget", slot.GitHubPrefix + "Kelvin-org", false},
 	} {
 		slot, held := accountSlot(boundHost, row.path, slots)
 		if slot != row.wantSlot || held != row.wantHeld {

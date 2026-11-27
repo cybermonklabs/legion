@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -109,13 +110,13 @@ func TestEachMintedTokenWritesOneMintLineWithItsHashAndNeverTheToken(t *testing.
 
 	want := map[string]map[string]any{
 		acmeToken: {"enrollment": enr, "grant": apps, "secret": "APP_KEY", "way": "mint", "type": policy.TypeGitHubApp,
-			"slot": SlotGitHubPrefix + "acme", "app": appID, "account": "acme", "permissions": "metadata:read", "sha256": sha256Hex(acmeToken)},
+			"slot": slot.GitHubPrefix + "acme", "app": appID, "account": "acme", "permissions": "metadata:read", "sha256": sha256Hex(acmeToken)},
 		adaToken: {"enrollment": enr, "grant": apps, "secret": "APP_KEY", "way": "mint", "type": policy.TypeGitHubApp,
-			"slot": SlotGitHubPrefix + "ada", "app": appID, "account": "ada", "permissions": "metadata:read", "sha256": sha256Hex(adaToken)},
+			"slot": slot.GitHubPrefix + "ada", "app": appID, "account": "ada", "permissions": "metadata:read", "sha256": sha256Hex(adaToken)},
 		bareToken: {"enrollment": enr, "grant": apps, "secret": "APP_ADA_TOKEN", "way": "mint", "type": policy.TypeGitHubApp,
-			"slot": SlotValue, "app": appID, "account": "ada", "repositories": "ada/widgets", "permissions": "metadata:read", "sha256": sha256Hex(bareToken)},
+			"slot": slot.Value, "app": appID, "account": "ada", "repositories": "ada/widgets", "permissions": "metadata:read", "sha256": sha256Hex(bareToken)},
 		anthropicToken: {"enrollment": enr, "grant": decided.GrantID, "secret": "FEDERATION_KEY", "way": "mint", "type": policy.TypeAnthropicFederation,
-			"slot": SlotValue, "account": serviceAccount, "sha256": sha256Hex(anthropicToken)},
+			"slot": slot.Value, "account": serviceAccount, "sha256": sha256Hex(anthropicToken)},
 	}
 	lines := mintLines(t, capture)
 	if len(lines) != len(want) {

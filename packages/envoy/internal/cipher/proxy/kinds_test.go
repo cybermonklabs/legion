@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 )
 
 // holdsText reports whether v, as encoding/json writes it, holds text. It is the one search the
@@ -181,7 +182,7 @@ func TestAnExchangeLogsTheSHA256OfItsTokenAndNeverTheToken(t *testing.T) {
 			t.Errorf("the mint line's %s is %v; want %v", field, fields[field], value)
 		}
 	}
-	if slot, _ := fields["slot"].(string); !strings.HasPrefix(slot, requests.SlotAzureAccessPrefix) {
+	if minted, _ := fields["slot"].(string); !strings.HasPrefix(minted, slot.AzureAccessPrefix) {
 		t.Errorf("the mint line's slot is %v; want the access slot the token fills", fields["slot"])
 	}
 

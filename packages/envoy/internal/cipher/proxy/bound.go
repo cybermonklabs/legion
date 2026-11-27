@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 	"github.com/sjawhar/envoy/internal/fold"
 )
 
@@ -388,8 +389,8 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// A token request carries the grant's placeholder in its form rather than in a header,
 		// so what it is handled for is the federated slot whatever choosePair read of its
 		// headers. The exchange below checks the form itself.
-		chosen.slot = requests.SlotAzureFederated
-	} else if holdsPlaceholder && chosen.slot == requests.SlotAzureFederated {
+		chosen.slot = slot.AzureFederated
+	} else if holdsPlaceholder && chosen.slot == slot.AzureFederated {
 		// The federated token leaves the broker inside an exchange at the token authority and
 		// nowhere else (exchangeToken, azureBound): Entra takes it as the assertion of every
 		// application federated with the broker, so the header swap below would hand the host
@@ -407,7 +408,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	// The placeholder the command sent for this slot, before accountSlot may change which
 	// account's token the swap puts in. The scan swaps this one out of the headers.
 	commandPlaceholder := info.grant.Names[chosen.name].Slots[chosen.slot]
-	if holdsPlaceholder && strings.HasPrefix(chosen.slot, requests.SlotGitHubPrefix) {
+	if holdsPlaceholder && strings.HasPrefix(chosen.slot, slot.GitHubPrefix) {
 		// Which account's token a GitHub call gets: the account its path names, where the
 		// name holds an installation on it, whichever account's placeholder the command sent
 		// (accountSlot). The placeholder in the request stays the one swapped out, and the
@@ -424,7 +425,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	if way == proxyrules.WayDPoP {
 		// A minted capability: its own admission, every rule of which is read before any value is
 		// minted or any dial is made (mintedRefusal, dpop.go). Neither azure branch above is taken
-		// for one: its way is dpop, and a minted grant's one slot is SlotValue (requests'
+		// for one: its way is dpop, and a minted grant's one slot is slot.Value (requests'
 		// mintedConnection), never the federated one.
 		if code, why := s.mintedRefusal(rules, r, request, grant, holdsPlaceholder); code != "" {
 			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, code, why)
@@ -1176,7 +1177,7 @@ type pair struct{ name, slot, way string }
 // it came from. A name whose value is the one "value" slot says nothing by naming it, so that
 // slot, and none, is "".
 func (p pair) namedSlot() string {
-	if p.slot == requests.SlotValue {
+	if p.slot == slot.Value {
 		return ""
 	}
 	return p.slot

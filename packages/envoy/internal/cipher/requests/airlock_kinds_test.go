@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 )
 
 // TestAReleaseTakesEachNamesHostsAndPlaceholderPrefixFromItsKind: what a release hands the session
@@ -41,7 +42,7 @@ func TestAReleaseTakesEachNamesHostsAndPlaceholderPrefixFromItsKind(t *testing.T
 	if !opens || len(prefixed.Value) != len(prefix)+placeholder.Length || strings.ContainsFunc(rest, func(r rune) bool { return !strings.ContainsRune(placeholder.Alphabet, r) }) {
 		t.Errorf("AUTO_TOKEN's placeholder = %q; want %s and %d characters of %s, %d in all", prefixed.Value, prefix, placeholder.Length, placeholder.Alphabet, len(prefix)+placeholder.Length)
 	}
-	if prefixed.Slots[SlotValue] != prefixed.Value {
+	if prefixed.Slots[slot.Value] != prefixed.Value {
 		t.Errorf("AUTO_TOKEN's slots = %v; want the value slot holding %q", prefixed.Slots, prefixed.Value)
 	}
 	wellFormed(t, "SECOND_TOKEN's placeholder", plain.Value)

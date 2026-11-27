@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/slot"
 )
 
 func TestAzureLoginReleaseIsDisabledWithoutConfiguredSecret(t *testing.T) {
@@ -132,10 +133,10 @@ func TestAnAzureLoginSplitCarriesTheApplicationAndTenantItsDocumentNames(t *test
 	if want := (secrets.AzureLoginValue{TenantID: "the-tenant", ClientID: "the-application"}); split.azure != want {
 		t.Fatalf("the split carries %+v; want the document's %+v", split.azure, want)
 	}
-	if !maps.Equal(split.values, map[string]string{SlotAzureFederated: token}) {
+	if !maps.Equal(split.values, map[string]string{slot.AzureFederated: token}) {
 		t.Fatalf("the split's slots are %v; want the federated token's alone, holding the minted token", split.slots())
 	}
-	shape, err := split.fill(map[string]string{SlotAzureFederated: "the-placeholder"})
+	shape, err := split.fill(map[string]string{slot.AzureFederated: "the-placeholder"})
 	if err != nil {
 		t.Fatalf("fill: %v", err)
 	}
