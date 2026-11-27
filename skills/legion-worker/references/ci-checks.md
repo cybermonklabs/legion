@@ -50,6 +50,12 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
   No job runs on a pull request in part: on cybermonklabs/legion test, pi-legion and envoy-infra-go are held back, while tooling-checks, pi-legion-build and envoy-infra-build, their builds and checks, run on every pull request, each job's check named `<job> / <job>` (`test / test`, `tooling-checks / tooling-checks`); the browser suite's pull-request lane is dispatch-browser-pr, whose checks are named `dispatch-browser-pr / <job>`, and its full lane, dispatch-browser, is held back (`lane:dispatch_browser`).
   On cybermonklabs/legion a check of the edited-migrations, gofmt, OpenAPI or pmdoc steps names `envoy-go-build / envoy-go-build`, which every pull request runs; envoy-go-checks is envoy's script tests, a held-back slow suite, and a check naming it for those steps passes under its label with none of them run.
 
+- Where the repository runs a job only in its merge queue, and no label runs it on a pull request, no run of that job answers at any head of the pull request, and no role starts one by hand.
+  Such a job proves no `before_merge` check (`skill://legion-architect/references/design-gate.md`, "A check CI proves", item 3), so a check that needs its result is `after_merge` and reads the merge group of the merged commit.
+  At hand-off, that job is named as "runs in the merge queue; not yet run", never as a pass.
+  A hand-started run of the whole workflow is not that proof, and it costs what the queue would: in one repository whose slow jobs run only in its queue, 281 such runs billed 43,407 runner-minutes from 2026-11-22 to 11-25, against the merge queue's 13,547 on 11-24 alone, and 2 of 133 successful runs ever reached the queue at the head they proved.
+  Keeping the pull request a draft saves nothing either, where the repository runs only its fast filter on a pull request: it costs the head its own run and leaves the same work to be started by hand.
+
 ## A name that no run answers
 
 When the head's checks have settled and no run of the name answers:
