@@ -5,6 +5,7 @@ import {
   askTheAgent,
   bar,
   boxHint,
+  closePanel,
   conversationBox,
   newestRun,
   openBar,
@@ -387,8 +388,7 @@ test("a plan waiting in the Inbox draws on no page until its conversation is ope
     await askTheAgent(page, words);
     await planWaits(page);
     await expect(planOnPage(page)).toBeVisible();
-    await sidePanel(page).getByTestId("going-close").click();
-    await expect(sidePanel(page)).toHaveCount(0);
+    await closePanel(page);
     await expect(planOnPage(page)).toHaveCount(0);
     await page.getByTestId("going-chip-open").click();
     await expect(planOnPage(page)).toBeVisible({ timeout: RUN_STEPS_MS });

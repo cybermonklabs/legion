@@ -99,6 +99,12 @@ export async function closeBar(page: Page): Promise<void> {
   await expect(bar(page)).toHaveCount(0);
 }
 
+/** Closes the panel at the side with its Close. */
+export async function closePanel(page: Page): Promise<void> {
+  await sidePanel(page).getByTestId("going-close").click();
+  await expect(sidePanel(page)).toHaveCount(0);
+}
+
 /** Opens `path`, waits for the shell, and opens the bar over it with `Control+K`. */
 export async function openBarOver(page: Page, path: string): Promise<void> {
   await openShell(page, path);

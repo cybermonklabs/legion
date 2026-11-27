@@ -431,6 +431,16 @@ type PlanWaiting = Pick<Asking, "planWaits" | "runWaits"> & {
   readonly answering: Pick<PlanAnswering, "plan" | "unreadable">;
 };
 
+/** What the box says, and its hint says Enter does nothing for, while the run's record still says
+ *  it waits on a plan whose read says Dispatch withdrew it. */
+const WITHDREW_WORDS = "Dispatch withdrew this plan";
+
+/** Whether the run's record still says it waits on its plan while the plan's read says Dispatch
+ *  withdrew it: Enter then does nothing (`useAsk`). */
+function waitsOnWithdrawn(asking: PlanWaiting): boolean {
+  return asking.runWaits && asking.answering.plan?.withdrawn === true;
+}
+
 /**
  * What the conversation's box says it does now (design v2, rule 5): "Search or ask…" in the bar
  * before Enter ("Ask…" in the panel, which has no search), then "Ask a follow-up…", "Say what to
@@ -457,9 +467,7 @@ export function boxWords({
   if (!open) return search ? "Search or ask…" : "Ask…";
   // Enter does nothing here: the run's record still says it waits, and its plan's read says
   // Dispatch withdrew it (`useAsk`).
-  if (asking.runWaits && asking.answering.plan?.withdrawn === true) {
-    return "Dispatch withdrew this plan";
-  }
+  if (waitsOnWithdrawn(asking)) return WITHDREW_WORDS;
   if (asking.planWaits || asking.runWaits) return "Say what to change…";
   return asked ? "Answer…" : "Ask a follow-up…";
 }
@@ -475,9 +483,7 @@ export function boxHint(asking: PlanWaiting, words: string): string | undefined 
   if (asking.planWaits) {
     return words.trim() === "" ? "↵ Approve" : "↵ sends your words instead of approving";
   }
-  if (asking.runWaits && asking.answering.plan?.withdrawn === true) {
-    return "↵ does nothing: Dispatch withdrew this plan";
-  }
+  if (waitsOnWithdrawn(asking)) return `↵ does nothing: ${WITHDREW_WORDS}`;
   if (!asking.runWaits || asking.answering.plan !== undefined) {
     return undefined;
   }

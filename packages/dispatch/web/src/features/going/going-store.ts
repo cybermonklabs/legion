@@ -429,14 +429,10 @@ export function setPlace(place: PanelPlace): void {
     return;
   }
   if (state.place !== "closed" || place !== "over") {
-    // Only the side is ever widened, and only it takes the focus the handoff asked for: another
-    // place, or a close, docks it and lets that request go.
-    set({
-      ...state,
-      panelFocus: place === "side" && state.panelFocus,
-      place,
-      wide: place === "side" && state.wide,
-    });
+    // Only the side is ever widened, and only it takes the focus the handoff asked for (`setWide`,
+    // `handOffToPanel`): another place, or a close, docks it and lets that request go, and a move
+    // to the side comes from a place that holds neither.
+    set({ ...state, panelFocus: false, place, wide: false });
     return;
   }
   const open = newestRun();

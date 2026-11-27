@@ -1,8 +1,8 @@
 /** Every row reads what the bar draws of an answer the server's agent process kept from the fake
  *  writing model's turn: the mark the browser draws before each line of the answer's lists. */
-import { createIssue, createProject } from "./api";
 import { modelsLane, prose, say, scriptChat } from "./fake-models-helpers";
 import { askTheAgent, newestRun, openBarOver, RUN_STEPS_MS } from "./going-locators";
+import { seedIssues } from "./going-panel";
 import { expect, type Locator, type Page, test } from "./test";
 import { withAlice } from "./users";
 
@@ -19,16 +19,6 @@ import { withAlice } from "./users";
 // first element whatever words stand before it, so a line of words whose first link is a chip
 // with no punctuation after it loses its bullet.
 // Every row runs in the models lane alone (`bun run e2e:models`).
-
-/** Seeds project CORE with one issue for each of `titles`, and answers their keys. */
-async function seedIssues(titles: readonly string[]): Promise<string[]> {
-  await createProject({ key: "CORE", name: "Core" });
-  const keys: string[] = [];
-  for (const title of titles) {
-    keys.push((await createIssue({ project: "CORE", title })).key);
-  }
-  return keys;
-}
 
 const TITLES = [
   "Mount alignment drifts overnight",

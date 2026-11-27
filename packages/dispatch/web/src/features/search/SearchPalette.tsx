@@ -100,7 +100,7 @@ import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
 import { AnswerPanel } from "./AnswerPanel";
 import { AskHitStatus } from "./AskHitStatus";
 import { documentRouteOf } from "./bar-scope";
-import { dropFiling, fileNewIssue, filingParent, useBarOpen, useFiling } from "./filing";
+import { dropFiling, fileLineWords, filingParent, useBarOpen, useFiling } from "./filing";
 import { NEW_ISSUE_GROUP_ID, useNewIssueOffer } from "./NewIssueOffer";
 import { barNoteClassName, type OfferRow } from "./offer";
 import { type RecentItem, readRecents } from "./recents";
@@ -1238,8 +1238,7 @@ function PaletteDialog({
   // chip's context it starts with are the ones in the bar now, and it starts one run at most. Do
   // stays in the bar, which shows its conversation and its plan, as it always did.
   const askWords = (words: string, pressed: GoingLine) => {
-    const started =
-      pressed === "ask" ? asking.openInPanel(words, pressed) : asking.enter(words, pressed);
+    const started = pressed === "ask" ? asking.openInPanel(words) : asking.enter(words, pressed);
     if (started) {
       setQuery("");
       setActive({ hits: "", id: null, left: false });
@@ -1249,7 +1248,7 @@ function PaletteDialog({
   // with the chip's context it is filed with: Try again files with the context the filing that
   // failed was made with, whatever the chip says since.
   const fileWords = (words: string, into: string, context: GoingContextInput) => {
-    void fileNewIssue({ context, login, open, project: into, queryClient, words });
+    void fileLineWords({ context, login, open, project: into, queryClient, words });
   };
   // The line on top (R2, R9): offered for any words the bar can ask about, and for an issue's
   // key once its hit is listed above it. Its first row reads Ask, Do or File as a new issue;
@@ -1810,9 +1809,7 @@ function PaletteDialog({
                 <AnswerPanel
                   answer={shownAnswer}
                   onOpenInPanel={
-                    stale || shownAnswer.replayed || searchText === ""
-                      ? undefined
-                      : () => askWords(searchText, "ask")
+                    stale || shownAnswer.replayed || searchText === "" ? undefined : askRow.select
                   }
                   stale={stale}
                 />

@@ -119,15 +119,15 @@ export function AnswerPanel({
   stale,
 }: {
   readonly answer: GoingAnswer;
-  /** Submits the words in the box as a run in the panel; undefined where the card offers none. */
+  /** Submits the words in the box as a run in the panel; undefined where the card offers none,
+   *  as the bar passes it for a `stale` answer. */
   readonly onOpenInPanel: (() => void) | undefined;
   /** Whether `answer` answers words the person has typed past. */
   readonly stale: boolean;
 }): ReactNode {
   const answering = !stale && !answerSettled(answer);
   // A Dispatch with no answering model says its one sentence and offers no step.
-  const offered =
-    onOpenInPanel !== undefined && !stale && answer.error !== GOING_ERROR_NO_MODEL_CONFIGURED;
+  const offered = onOpenInPanel !== undefined && answer.error !== GOING_ERROR_NO_MODEL_CONFIGURED;
   return (
     <section
       aria-busy={answering}

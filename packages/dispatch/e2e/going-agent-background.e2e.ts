@@ -11,6 +11,7 @@ import {
 } from "./fake-models-helpers";
 import {
   askTheAgent,
+  closePanel,
   conversationBox,
   expectHandedToThePanel,
   newestRun,
@@ -112,8 +113,8 @@ test("Esc in the panel's empty box while a run works stops it, and the panel sta
   });
 });
 
-// SLOW(>=2s): a run closed in the bar, which goes on and ends behind the chip.
-test("a run whose bar is closed goes on, and the chip reads working, then done with Open", async ({
+// SLOW(>=2s): a run closed in the panel, which goes on and ends behind the chip.
+test("a run whose panel is closed goes on, and the chip reads working, then done with Open", async ({
   browser,
 }) => {
   modelsLane();
@@ -137,8 +138,7 @@ test("a run whose bar is closed goes on, and the chip reads working, then done w
     await askTheAgent(page, words);
     await expectHandedToThePanel(page);
     // Close, not Esc: Esc in the empty box while the run works would stop it.
-    await sidePanel(page).getByTestId("going-close").click();
-    await expect(sidePanel(page)).toHaveCount(0);
+    await closePanel(page);
     const chip = page.getByTestId("going-chip");
     await expect(chip).toHaveAttribute("data-state", "working");
     await expect(chip).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });
@@ -179,8 +179,7 @@ test("a run that makes a plan, closed at once, ends with the chip saying a plan 
     await askTheAgent(page, words);
     await expectHandedToThePanel(page);
     // Close, not Esc: Esc in the empty box while the run works would stop it.
-    await sidePanel(page).getByTestId("going-close").click();
-    await expect(sidePanel(page)).toHaveCount(0);
+    await closePanel(page);
     const chip = page.getByTestId("going-chip");
     await expect(chip).toContainText("Needs you", { timeout: RUN_STEPS_MS });
     const waiting = page.getByTestId("inbox-going-plan");

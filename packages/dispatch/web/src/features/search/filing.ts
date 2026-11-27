@@ -206,7 +206,7 @@ function reasonWords(state: RunState, level: string, reason: string): string {
  * stream is read to its end, whose `issue` names what was filed; History is read again once the
  * run ends.
  */
-export async function fileNewIssue({
+export async function fileLineWords({
   context,
   login,
   open,

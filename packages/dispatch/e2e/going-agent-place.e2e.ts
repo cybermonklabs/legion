@@ -26,6 +26,7 @@ import {
   sidePanel,
 } from "./going-locators";
 import { countStartedRuns } from "./going-panel";
+import { COMPACT_VIEWPORT_WIDTH } from "./inbox-threads";
 import { expect, type Page, test } from "./test";
 import { withAlice } from "./users";
 
@@ -358,7 +359,10 @@ test("Widen fills the content area beside the navigation and Dock puts the panel
   await withAlice(browser, async (page) => {
     // From the width at which the navigation stands beside the page: below it the panel keeps its
     // side width and offers no widening.
-    test.skip((page.viewportSize()?.width ?? 0) < 1280, "the navigation is a drawer below 1280 px");
+    test.skip(
+      (page.viewportSize()?.width ?? 0) < COMPACT_VIEWPORT_WIDTH,
+      `the navigation is a drawer below ${COMPACT_VIEWPORT_WIDTH} px`
+    );
     const started = countStartedRuns(page);
     await openBarOver(page, "/projects/CORE/issues");
     await askTheAgent(page, asked);

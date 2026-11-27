@@ -1,10 +1,10 @@
 /** The row reads what the server's agent process made of the fake writing model's turns: the
  *  answer the server keeps when a run ends, the model calls the fake counted, and the result of a
  *  list of issues that the server gave the model. */
-import { createIssue, createProject, listIssues } from "./api";
+import { listIssues } from "./api";
 import { callTool, modelsLane, prose, runCalls, say, scriptChat } from "./fake-models-helpers";
 import { askTheAgent, newestRun, openBarOver, RUN_STEPS_MS } from "./going-locators";
-import { plainWords } from "./going-panel";
+import { plainWords, seedIssues } from "./going-panel";
 import { expect, test } from "./test";
 import { withAlice } from "./users";
 
@@ -13,23 +13,13 @@ import { withAlice } from "./users";
 // ruled (dispatch://INFRA-1588/comment/96cd5279-bc9b-4f8a-b8f8-435901cdca75).
 // The row runs in the models lane alone (`bun run e2e:models`).
 
-/** How many plain words the title of each issue the row seeds holds. */
-const TITLE_WORDS = 8;
-
-/** Seeds project CORE with `count` issues, each titled with TITLE_WORDS plain words of its own,
- *  since a second issue of one title is refused as a copy of the first. */
-async function seedIssues(count: number): Promise<void> {
-  await createProject({ key: "CORE", name: "Core" });
-  for (let index = 0; index < count; index += 1) {
-    await createIssue({ project: "CORE", title: plainWords(`ledger${index}x`, TITLE_WORDS) });
-  }
-}
-
 // SLOW(>=2s): three seeded issues and a run of two model calls and a read.
 test("the list of a project's issues gives the model its total", async ({ browser }) => {
   modelsLane();
   test.setTimeout(120_000);
-  await seedIssues(3);
+  // Each issue is titled with plain words of its own, since a second issue of one title is
+  // refused as a copy of the first.
+  await seedIssues(Array.from({ length: 3 }, (_, index) => plainWords(`ledger${index}x`, 8)));
   const total = (await listIssues("CORE")).length;
   const words = "how many ledgers does the core project hold in all";
   await scriptChat({

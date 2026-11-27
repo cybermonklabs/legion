@@ -14,6 +14,16 @@ export async function seedCoreIssue(title: string): Promise<string> {
   return (await createIssue({ project: "CORE", title })).key;
 }
 
+/** Seeds project CORE with one issue for each of `titles`, and answers their keys. */
+export async function seedIssues(titles: readonly string[]): Promise<string[]> {
+  await createProject({ key: "CORE", name: "Core" });
+  const keys: string[] = [];
+  for (const title of titles) {
+    keys.push((await createIssue({ project: "CORE", title })).key);
+  }
+  return keys;
+}
+
 /** Seeds project CORE and one issue titled `title`, and answers that issue's key and the href the
  *  search for `question` gives its hit, which is the link the model is given. */
 export async function seedIssue(
@@ -78,17 +88,23 @@ export const STATUS_CHART_SPEC = {
   y: "count",
 } as const;
 
+/** Hands `take` the JSON body of each `POST` to `pathname` the page sends from here on. */
+function onPost(page: Page, pathname: string, take: (body: unknown) => void): void {
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (request.method() === "POST" && url.pathname === pathname) {
+      take(request.postDataJSON());
+    }
+  });
+}
+
 /** Counts the bar's `POST /api/v1/going/requests` from here on, each with the words it asked. */
 export function countAskedRuns(page: Page): { readonly words: string[] } {
   const asked = { words: [] as string[] };
-  page.on("request", (request) => {
-    const url = new URL(request.url());
-    if (request.method() === "POST" && url.pathname === "/api/v1/going/requests") {
-      const body: unknown = request.postDataJSON();
-      const words =
-        body !== null && typeof body === "object" && "words" in body ? String(body.words) : "";
-      asked.words.push(words);
-    }
+  onPost(page, "/api/v1/going/requests", (body) => {
+    const words =
+      body !== null && typeof body === "object" && "words" in body ? String(body.words) : "";
+    asked.words.push(words);
   });
   return asked;
 }
@@ -98,14 +114,10 @@ export function countAskedRuns(page: Page): { readonly words: string[] } {
  *  short answer is no run of these: it is `POST /api/v1/going/requests` (`countAskedRuns`). */
 export function countStartedRuns(page: Page): { readonly bodies: Record<string, unknown>[] } {
   const started = { bodies: [] as Record<string, unknown>[] };
-  page.on("request", (request) => {
-    const url = new URL(request.url());
-    if (request.method() === "POST" && url.pathname === "/api/v1/going/runs") {
-      const body: unknown = request.postDataJSON();
-      started.bodies.push(
-        body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {}
-      );
-    }
+  onPost(page, "/api/v1/going/runs", (body) => {
+    started.bodies.push(
+      body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    );
   });
   return started;
 }

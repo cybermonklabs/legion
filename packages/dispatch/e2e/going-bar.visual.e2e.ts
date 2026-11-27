@@ -40,12 +40,13 @@
  *
  *  WHAT EACH ROW DOES THAT THE PAGES' ROWS DO NOT. A page row signs in, navigates and waits; a
  *  bar row drives the bar, which is the state under review: it presses Control+K, types, presses
- *  Enter, Escape and Control+Shift+K, and clicks the buttons the design names (Keep at the side,
- *  New, Close, History, Discard, Undo, the chip). A click leaves the pointer over what it
- *  clicked, and a hovered control draws in another colour, so the pointer is moved to the
- *  window's top left corner before each shot, where the bar's backdrop or the rail's own
- *  background is. The caret is hidden by `toHaveScreenshot`'s default (`caret: "hide"`), and a
- *  focus ring is the one the keys under review leave, which is the same on every run.
+ *  Enter, Escape and Control+Shift+K, and clicks the buttons the design names (Filters, New, the
+ *  × that drops queued words, the plan's "N more", Discard, Undo, Widen the panel, Dock at the
+ *  side, Close, the chip, History). A click leaves the pointer over what it clicked, and a
+ *  hovered control draws in another colour, so the pointer is moved to the window's top left
+ *  corner before each shot, where the bar's backdrop or the rail's own background is. The caret
+ *  is hidden by `toHaveScreenshot`'s default (`caret: "hide"`), and a focus ring is the one the
+ *  keys under review leave, which is the same on every run.
  *
  *  HOW A ROW REACHES THE BAR. Enter on the line Ask hands the run to the panel at the side (the
  *  approved choice of dispatch://INFRA-1588/ask/00f2a090-0324-49a1-b352-b04cb4ff4f50), so a row
@@ -626,7 +627,10 @@ const barRows: readonly BarRow[] = [
         timeout: RUN_STEPS_MS,
       });
       await expect(run.locator(finished)).toHaveCount(3);
-      await expect(run.getByTestId("going-step-label").first()).toHaveText(/^Read OPS-\d+$/u);
+      // The two reads are one model call's, drawn in the order it asked for them.
+      const labels = run.getByTestId("going-step-label");
+      await expect(labels.first()).toHaveText(`Read ${seed.bar.mount}`);
+      await expect(labels.nth(1)).toHaveText(`Read ${seed.bar.craters}`);
       // Both calls under the model's words ended, so its header reads in the past tense.
       await expect(run.getByTestId("going-step-words")).toHaveText("Read the telescope's issues");
       // No call runs while the model streams, so the run ends with "Thinking…" and its timer
