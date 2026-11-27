@@ -196,13 +196,6 @@ func (h *harness) podRoleUnder(ctx context.Context, role claim.Role, state Claim
 	return h.podRoleOf(ctx, role, state, SuspendedByDaemon)
 }
 
-// podRoleSuspendedBy is podRole of a claim stored suspended by by rather than by the daemon: the
-// project release's suspension, for one, which the daemon's next boot resumes by rule.
-func (h *harness) podRoleSuspendedBy(role claim.Role, by SuspendSource) *podRole {
-	h.t.Helper()
-	return h.podRoleOf(h.ctx, role, StateSuspended, by)
-}
-
 // podRoleOf is podRoleUnder with by the source a suspended claim's suspension records.
 func (h *harness) podRoleOf(ctx context.Context, role claim.Role, state ClaimState, by SuspendSource) *podRole {
 	h.t.Helper()
