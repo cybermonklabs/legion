@@ -6,9 +6,12 @@ body: |-
   13 s. Before, the process waited out the pass's NATS call, up to 10 s, before it started to count
   the 3 s, so the other process took over past the 10 s bound. The pass now ends at the cut, and
   runs again once the client is connected. A process whose NATS connection goes silent, open while
-  nothing answers, while its outbox's expiry pass runs now lets the other process publish about 4 s
-  after the silence, not about 17 s. The outbox probes its connection every 2 s while the pass
-  runs, and gives the hold up when a probe gets no answer.
+  nothing answers, while its outbox's expiry pass runs now lets the other process publish within
+  about 6 s of the silence (about 4 s in the package's tests), not about 17 s. The outbox probes its
+  connection every 2 s while the pass runs, and once more when the pass ends if a probe is due. It
+  gives the hold up when a probe gets no answer. A cut or a silence while a batch hands a kept copy
+  to a role's new holder now holds that batch at most 2 s, where it held it up to 10 s, so the
+  other process takes over within the bound.
 time: 2026-11-27T16:34:19Z
 custom:
     Issue: INFRA-6066

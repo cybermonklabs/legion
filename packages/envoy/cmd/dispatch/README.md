@@ -1193,7 +1193,7 @@ What the two processes share, and what each keeps to itself:
   A holder that stops sends nothing more, records what NATS already answered, releases the rest of each batch in flight and then the hold, which wakes the standby at once;
   a graceful stop waits for that before it closes the database pool, up to `outboxStopBudget` after its shutdown starts.
   One that is killed is replaced once its hold lapses, six seconds after its last renewal;
-  one whose NATS stays down for three seconds, or whose failed sends meet a connection that does not answer a probe, releases the hold too.
+  one whose NATS stays down for three seconds, or whose failed sends meet a connection that does not answer a probe, or whose expiry pass runs past two seconds and finds by a probe a connection that does not answer, with no failed send needed, releases the hold too.
   One that finds its hold lost releases it as well, which stops its renewal and deletes the row only while the row still names it.
   One that is alive but whose renewal is not confirmed within four seconds of the last one that was stops publishing at that moment, and no standby may take the name while its row stands: until its release, right after the line that ends the turn, deletes the row, or until the row lapses two seconds later when that release cannot reach the database first;
   the line that ends the turn carries `stopped` and `stopped_by`, the moment it stopped bounded from below and from above rather than dated by the moment the line was written, and one value, the hold's deadline, whenever the turn ended there;

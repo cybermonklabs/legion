@@ -949,7 +949,10 @@ func (f *roleForward) keep(ctx context.Context, deps Deps, sender bus.Sender, it
 // then sends again. What it costs is this issue's order at that holder: the copy reaches it only
 // at the listener's next handover of the lane - the role's next claim, a keep, the registration
 // that makes the holder live again or the claim route's refresh that does, or the sweep, up to
-// its interval later - behind every event the holder takes meanwhile.
+// its interval later - behind every event the holder takes meanwhile. Each read is bounded at
+// 2 s - the lane and its cursor at probeTimeout (boundedKeptLanes, which New puts in front of
+// Deps.KeptLanes), the claim and the session at readTimeout in internal/roles - so a cut or a
+// silence at one holds the batch's keep answer at most that long.
 //
 // The forward carries the time of the keep itself (contracts.Envelope.KeptAt), as the drain's
 // forward of a copy carries the stream's store time of it, so a holder can judge the message's
@@ -1092,6 +1095,38 @@ type KeptLaneReader interface {
 	// stream that carries none (bus.Client.StreamID): what tells the expiry notices' cursor to
 	// start again in a stream created again since it was written (keptExpiryStart).
 	StreamID(ctx context.Context) (string, error)
+}
+
+// boundedKeptLanes is the outbox's kept-lane reader: New puts it in front of Deps.KeptLanes, so
+// every read the outbox makes through that reader - the expiry pass's, and the handover's behind a
+// keep, a scan batch's or a pass's (handOverKept) - runs under a deadline of probeTimeout within
+// its caller's ctx. A stored-message read's flush does not end at its ctx's cancellation: it waits
+// out the call's deadline (bus confirmFlushed, nats.go's FlushTimeout), and a ctx with no deadline
+// gets storedMessageWait in internal/bus, 10 s, so on a connection that is gone or silent the read
+// ends at this deadline at the latest. A healthy stream answers each read in milliseconds. The
+// role and session buckets need no such bound, since each of their reads honours ctx and is
+// bounded at readTimeout in internal/roles, and nor does a keep, whose answer a pass reads within
+// its ctx (awaitAnswer).
+type boundedKeptLanes struct {
+	reader KeptLaneReader
+}
+
+func (b boundedKeptLanes) NextStoredMessage(ctx context.Context, subject string, seq uint64) (bus.StoredMessage, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	return b.reader.NextStoredMessage(ctx, subject, seq)
+}
+
+func (b boundedKeptLanes) ReadKeptRoleCursor(ctx context.Context, role string) (bus.StoredKeptRoleCursor, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	return b.reader.ReadKeptRoleCursor(ctx, role)
+}
+
+func (b boundedKeptLanes) StreamID(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	return b.reader.StreamID(ctx)
 }
 
 // keptCopyLeadsTheLane reports whether the copy of item just kept on role's kept lane is the one

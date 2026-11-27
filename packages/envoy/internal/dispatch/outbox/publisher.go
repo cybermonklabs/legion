@@ -108,7 +108,8 @@ type Deps struct {
 	// listener's next handover of the lane - the role's next claim, a keep, the registration that
 	// makes a session holding the role live again or the claim route's refresh that does, or the
 	// sweep (handOverKept) - which is what this package's tests that publish through a stand-in
-	// with no stream behind it leave it to. A nil reader reads no notice either.
+	// with no stream behind it leave it to. A nil reader reads no notice either. New bounds each
+	// of its calls at probeTimeout (boundedKeptLanes).
 	KeptLanes KeptLaneReader
 	// PostIssueMessage posts message, written by actor, a system actor, on the issue
 	// message.IssueKey names, under the id message.ID, and answers the id of the message it
