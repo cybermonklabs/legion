@@ -369,7 +369,7 @@ func TestWarmCodegraphIndexSkipsRepairWhileABuildIsLive(t *testing.T) {
 	script := `#!/bin/sh
 printf '%s\n' "$1" >> '` + callLog + `'
 case "$1" in
-status) echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
+status) sleep 61; echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
 esac
 `
 	if err := os.WriteFile(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
