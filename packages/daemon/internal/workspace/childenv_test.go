@@ -51,5 +51,7 @@ func TestWorkspaceCommandsGetNoNATSSeed(t *testing.T) {
 	began, after := testexec.StartedAfter(t, mark, called), returned-exitMark(t, exited)
 	if own := began + after; own > runBound {
 		t.Errorf("the runner spent %s of its own on the git, past main's %s: %s from the call to the git's start, and %s from the git's exit to the return", own, runBound, began, after)
+	} else {
+		t.Logf("the runner spent %s of its own on the git, against main's %s: %s from the call to the git's start, and %s from the git's exit to the return", own, runBound, began, after)
 	}
 }

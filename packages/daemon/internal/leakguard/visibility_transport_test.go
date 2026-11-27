@@ -728,6 +728,9 @@ func TestTransportBoundStopsAHangingGhAndCurlAnswers(t *testing.T) {
 				if left := tc.caller - tc.stoppedAt; maxTime < curlLeast || maxTime >= left {
 					t.Errorf("read %d: curl ran with --max-time %s, want at least %s and less than the %s the caller's bound has left after gh's stop",
 						reads, maxTime, curlLeast, left)
+				} else {
+					t.Logf("read %d: the call answered after %s, against the caller's %s; curl ran with --max-time %s, against at least %s and less than the %s the caller's bound has left after gh's stop",
+						reads, took.Round(time.Millisecond), tc.caller, maxTime, curlLeast, left)
 				}
 				return
 			}

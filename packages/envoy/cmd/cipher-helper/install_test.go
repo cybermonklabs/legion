@@ -727,6 +727,8 @@ func TestInstallUndrainsWhenTheRestartOutlivesItsTimeout(t *testing.T) {
 		t.Fatalf("install took %s of its own, past %s, over a restart its timeout is 200ms: it returned %s after its start, of which the machine held %d of its calls but the restart %s between install's exec of each and its first line", own, installReturnsWithin, took, len(taken), held)
 	} else if took > installReturnsWithin {
 		t.Logf("install returned %s after its start, past %s, of which the machine held %d of its calls but the restart %s between install's exec of each and its first line: %s of its own", took, installReturnsWithin, len(taken), held, own)
+	} else {
+		t.Logf("install took %s of its own, against %s, over a restart its timeout is 200ms: it returned %s after its start, of which the machine held %d of its calls but the restart %s between install's exec of each and its first line", own, installReturnsWithin, took, len(taken), held)
 	}
 	if err == nil || !strings.Contains(err.Error(), "did not finish within 200ms") {
 		t.Fatalf("install whose restart outlived its timeout: %v; want an error naming the 200ms timeout", err)
@@ -782,6 +784,8 @@ func TestInstallLeavesTheDrainWhileItsTimedOutRestartIsQueued(t *testing.T) {
 		starts := r.starts()
 		if span, ok := restartSpan(starts); ok && span+2*testexec.ClockTick < restartTimeout {
 			t.Fatalf("run %d: install began the unit read after its restart %s after the read before it ran its first line: it ended the restart before the restart's 200ms timeout", runs, span)
+		} else if ok {
+			t.Logf("run %d: install began the unit read after its restart %s after the read before it ran its first line, against the restart's %s timeout", runs, span, restartTimeout)
 		}
 		_, statErr := os.Stat(r.calls + ".queued")
 		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {

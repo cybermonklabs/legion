@@ -1252,6 +1252,8 @@ func (m jjMarks) requireShimWithin(t *testing.T, called time.Duration, runs int,
 	t.Helper()
 	if spent := m.shimSpent(t, called, runs); spent > bound {
 		t.Fatalf("the shim spent %s of its own on %s, past the %s it has: the span from the request's send to its last jj's end, less each jj's own run from the kernel's start of its process to the end it marked", spent, what, bound)
+	} else {
+		t.Logf("the shim spent %s of its own on %s, against the %s it has", spent, what, bound)
 	}
 }
 
@@ -1338,6 +1340,8 @@ func timedOutOnceRecorded(t *testing.T, p *peer, request shimwire.AdoptWorkingCo
 		if stop, err := testexec.ReadStartMark(termedMark(record)); err == nil {
 			if after := stop.Reached - called; after < budget-2*testexec.ClockTick {
 				t.Fatalf("run %d: the budget's stop reached the jj %s after the request's send, sooner than its %s TimeoutMs, which a budget counted from the shim's read of the request cannot pass before", runs, after, budget)
+			} else {
+				t.Logf("run %d: the budget's stop reached the jj %s after the request's send, against its %s TimeoutMs", runs, after, budget)
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("run %d: read the jj's mark of the budget's stop: %v", runs, err)

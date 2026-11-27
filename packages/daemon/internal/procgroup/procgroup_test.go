@@ -447,6 +447,7 @@ func rerunWithin(t *testing.T) (until time.Time, within time.Duration) {
 func (c childRun) endedInTime(t *testing.T, runs int, stopped time.Time, took time.Duration, err error, until time.Time, within time.Duration) (again bool) {
 	t.Helper()
 	if took <= stopBound {
+		t.Logf("run %d: the run ended %s after the stop, against %s (the grace, WaitDelay and two seconds)", runs, took, stopBound)
 		return false
 	}
 	began, ok := c.began()
@@ -629,6 +630,7 @@ func TestAChildThatHandlesSIGTERMRemovesItsLockBeforeTheRunEnds(t *testing.T) {
 			t.Errorf("run %d: killed() = false for a command the end of its context stopped (Run = %v)", runs, err)
 		}
 		if t.Failed() || took <= StopGrace/2 {
+			t.Logf("run %d: the run ended %s after the stop, against half the %s grace", runs, took, StopGrace)
 			return
 		}
 		if seen && gone.Sub(stopped) <= StopGrace/4 {

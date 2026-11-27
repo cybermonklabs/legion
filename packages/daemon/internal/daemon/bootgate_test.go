@@ -668,6 +668,9 @@ func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutpu
 	if own := began + (returned - exited) - held; own > gateBound {
 		t.Errorf("the gate spent %s of its own on an attempt whose Oh My Pi answered at once, past main's %s: %s from the call to Oh My Pi's start, and %s from its exit to the pass, less the %s os/exec holds the lingering child's pipe (procgroup.WaitDelay): the probe stayed on after Oh My Pi answered, or the gate held the pass after the run",
 			own, gateBound, began, returned-exited, held)
+	} else {
+		t.Logf("the gate spent %s of its own on an attempt whose Oh My Pi answered at once, against main's %s: %s from the call to Oh My Pi's start, and %s from its exit to the pass, less the %s os/exec holds the lingering child's pipe (procgroup.WaitDelay)",
+			own, gateBound, began, returned-exited, held)
 	}
 }
 
@@ -1325,6 +1328,7 @@ func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 			t.Errorf("run %d: Oh My Pi ran %d times, want the one the stop interrupted", runs, n)
 		}
 		if t.Failed() || elapsed <= gateStopsWithin {
+			t.Logf("run %d: the gate took %s to stop, against %s", runs, elapsed, gateStopsWithin)
 			return
 		}
 		late := f.markedAt(t, "count").Sub(f.markedAt(t, "prefixed"))

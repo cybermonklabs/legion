@@ -599,6 +599,8 @@ func TestCheckImageKeepsARowMissingBeforeTheDeadlineAndMarksTheRestUnanswered(t 
 	}
 	if began := testexec.StartedAfter(t, ompMark, called); began > checkBound {
 		t.Errorf("eval-python's Oh My Pi started %s after CheckImage was called, past main's %s: the checks before the browser took that long of the product's own time before they ran it", began, checkBound)
+	} else {
+		t.Logf("eval-python's Oh My Pi started %s after CheckImage was called, against main's %s", began, checkBound)
 	}
 	if want := "capability eval-python is missing: omp setup python --check reports available=false"; err == nil || err.Error() != want {
 		t.Errorf("CheckImage = %v, want the error %q alone", err, want)
@@ -695,6 +697,8 @@ func TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDea
 		if mark := filepath.Join(run, "startmark"); func() bool { _, err := os.Stat(mark); return err == nil }() {
 			if began := testexec.StartedAfter(t, mark, called); began > startBound {
 				t.Fatalf("run %d: the browser's Chromium started %s after CheckImage was called, past main's %s: the browser check, or a check before it, started it late", runs, began, startBound)
+			} else {
+				t.Logf("run %d: the browser's Chromium started %s after CheckImage was called, against main's %s", runs, began, startBound)
 			}
 		}
 		// A Chromium with no started mark had the SIGTERM before its first act, which is no late stop.
