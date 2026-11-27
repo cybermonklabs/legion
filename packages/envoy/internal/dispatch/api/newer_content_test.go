@@ -24,6 +24,7 @@ import (
 // element stays. Each refusal writes one WARN line, which names the elements the document holds
 // and carries nothing of the error (requireNewerContentWarnings).
 func TestEveryRouteAnswersADocumentHoldingNewerContentAlike(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	for _, resident := range []bool{true, false} {
 		name := "stored"
 		if resident {
@@ -142,6 +143,7 @@ func requireNewerContentWarnings(t *testing.T, logs *logtest.Recorder, least int
 // the value: a log line is read by whoever reads the server's logs, which no text of a document
 // reaches.
 func TestAnEnumValueThisBuildDoesNotListIsLoggedByItsAttributeAlone(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	const address = "person-7@example.com"
 	logs := &logtest.Recorder{}
 	logtest.SetDefault(t, logs)

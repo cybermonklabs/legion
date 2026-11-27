@@ -11,6 +11,7 @@ import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts"
 import { type DispatchDelivery, renderInbound } from "@legion/envoy-client/delivery"
 import {
   type DispatchClient,
+  DispatchGatewayError,
   DispatchServiceError,
   DispatchWriteLandedError,
   DispatchWriteUnsettledError,
@@ -943,9 +944,13 @@ test("a reply or a BTW answer Dispatch refused is said not posted, with Dispatch
 })
 
 // A reply that ended with no definitive answer while an attempt of it may have reached Dispatch
-// (`DispatchWriteUnsettledError`), or on a 5xx, may have been posted, so the line says it may or
-// may not have been, never that it was not. A BTW answer that ends so is answered with the error,
-// and when that error reply ends so too the line says the same of the BTW answer.
+// (`DispatchWriteUnsettledError`), or on a status after which it may have (`mayHaveReachedServer`:
+// a 5xx, or a 408, which a gateway can answer after it forwarded the write), may have been posted,
+// so the line says it may or may not have been, never that it was not. A BTW answer that ends so
+// is answered with the error, and when that error reply ends so too the line says the same of the
+// BTW answer. Each error is injected as the host's reply fails, so the 5xx and 408 rows hold the
+// router's own reading of an error that reaches it unclassified; the Dispatch client's keyed POST
+// ends both statuses as `DispatchWriteUnsettledError` before any host sees them.
 for (const [name, failure, tail] of [
   [
     "a write left unsettled",
@@ -960,6 +965,11 @@ for (const [name, failure, tail] of [
     "a 5xx",
     new DispatchServiceError("INTERNAL", 500, "internal error"),
     "INTERNAL: internal error",
+  ],
+  [
+    "a gateway's 408",
+    new DispatchGatewayError(408, "answered 408", "ask again"),
+    "HTTP_408: answered 408, so ask again.",
   ],
 ] as const) {
   test(`a reply that ended in ${name} may have been posted, and its line says so`, async () => {

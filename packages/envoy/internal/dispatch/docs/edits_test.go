@@ -331,6 +331,8 @@ func TestValidateUploadPreconditionRefusesInTheWordsOfAnUpload(t *testing.T) {
 }
 
 func TestApplyOperationRetypesAParagraphInPlace(t *testing.T) {
+	// Not parallel: it sets pmdoc's block ID generator, which every parse in the process draws from
+	// (pmdoc.SetBlockIDGenerator).
 	pmdoc.SetBlockIDGenerator(func() string { return "generated-body" })
 	testcleanup.Add(t, func() { pmdoc.SetBlockIDGenerator(nil) })
 	tree, err := pmdoc.Parse("Which transport should we expose?\n")
@@ -537,6 +539,8 @@ func TestApplyOperationInsertsParagraphAfterTableContainingCellAnchor(t *testing
 // insert of a batch, so it reads the tables' spans unwritten: with a budget of span cells for each
 // read-back, four inserts beside a table whose spans take the whole budget allocated some 1,580 MiB.
 func TestApplyOperationsInsertsBesideASpannedTableSpendNoSpanBudgetEach(t *testing.T) {
+	// Not parallel: it holds what the whole process allocates across four inserts (runtime.MemStats
+	// TotalAlloc) to 64 MiB, which the allocations of the tests beside it would add to.
 	tree := &pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{
 		{Type: "paragraph", Children: []*pmdoc.Node{{Type: "text", Text: "Before."}}},
 		wholeBudgetTable(),

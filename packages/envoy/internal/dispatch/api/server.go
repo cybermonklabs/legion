@@ -768,7 +768,8 @@ type RouteMux interface {
 // started the relay, or at once under the test hooks.
 func Register(mux RouteMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
-	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon}
+	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon,
+		PostSystemMessage: s.postSystemMessage}
 }
 
 // Background is the work a registered server does beside answering its requests, for the process
@@ -790,6 +791,13 @@ type Background struct {
 	// its own: one per process is what lets its readers share an observation. Only a server
 	// registered with a Store has an event log to answer for.
 	EventHorizon func() *events.Horizon
+	// PostSystemMessage posts message on its issue under its own id (model.SystemMessage), written
+	// by actor, a system actor of Dispatch's own, through the one writer every issue message goes
+	// through (postSystemMessage, createStoredMessage), and answers the message's id; a post made
+	// again under the same id writes no second message. Dispatch's outbox posts the message that
+	// says a role-routed event was recorded undelivered with it (internal/dispatch/outbox,
+	// postUndeliveredNotes).
+	PostSystemMessage func(ctx context.Context, actor model.Actor, message model.SystemMessage) (string, error)
 }
 
 // waitBackground waits for every keyed handler and every delivery a request left running past
@@ -1017,7 +1025,7 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 	handler = s.refuseReadOnlyToken(route.Method+" "+route.Pattern, route.Read, handler)
 	// Beside it, for the same reasons and at the same depth, an approve-only token on a row the
 	// approve list does not name: refused before the row's scopes, which it would otherwise pass
-	// with both of its person's scopes, and before anything the row does.
+	// with its person's scopes person and approve, and before anything the row does.
 	handler = refuseApproveOnlyToken(route.ApproveOnly, handler)
 	// One place for the whole table: every answer says its body depends on Dispatch-Trees
 	// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with
@@ -1440,11 +1448,11 @@ func (s *server) credentialOf(r *http.Request) (credentialKind, string) {
 }
 
 // The two credentials every request of their kind shares. Each is a fact of the deployment
-// rather than of one request — a browser's cookie holds both scopes, and the shared token and a
-// service-account token hold none — and the cookie's is on the dashboard's hottest path, so
-// allocating either per request would be waste. Nothing writes a Credential or appends to its
-// Scopes: Holds reads, actScopes copies the slice header onto the act it records, and
-// tokenScopes builds a set of its own.
+// rather than of one request — a browser's cookie holds every scope (model.Scopes: person,
+// approve and p0), and the shared token and a service-account token hold none — and the cookie's
+// is on the dashboard's hottest path, so allocating either per request would be waste. Nothing
+// writes a Credential or appends to its Scopes: Holds reads, actScopes copies the slice header
+// onto the act it records, and tokenScopes builds a set of its own.
 var (
 	scopelessCredential = &model.Credential{}
 	personCredential    = &model.Credential{Scopes: model.Scopes}
@@ -1520,6 +1528,8 @@ func actorNamesWriter(supplied *model.Actor) bool {
 
 // actScopes is the scopes an act records of credential: the ones of model.Scopes, which an act's
 // reader may ask about (ActorAct.Holds; DISPATCH_SCOPES and ActorActSchema in @legion/contracts).
+// An act records the credential's whole set, so the act of a personal token that holds p0 records
+// p0, though no reader of a recorded act asks for it: they ask for approve alone.
 // legion-status, which a Legion daemon's own broker token holds and holds alone, is the
 // credential's leave to write a Legion issue's status (legion_status_scope.go), not a grant an act
 // carries, so such a credential's act records no scope. No credential holds it beside another

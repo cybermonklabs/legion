@@ -840,12 +840,13 @@ describe("DispatchClient", () => {
     expect(await read()).toBe("");
   });
 
-  // A gateway's 5xx can come back after it forwarded a write and Dispatch applied it, so advising
-  // a retry there can post a message twice: the write is told to check what took effect. A 408 or
-  // 429 is the gateway's own timeout or rate limit, sent before it forwards the request, so the
-  // write never reached Dispatch and a retry may succeed. Any other status still gets the same
-  // advice as a read, since the request never got past the gateway either. Each status is one
-  // write's last attempt here; how the attempts before it are made is dispatch-keyed-writes.test.ts.
+  // A gateway's 5xx can come back after it forwarded a write and Dispatch applied it, and so can a
+  // 408, which a gateway can send when its own timeout runs out after it forwarded the request, so
+  // advising a retry there can post a message twice: the write is told to check what took effect.
+  // A 429 is the gateway's own rate limit, sent before it forwards the request, so the write never
+  // reached Dispatch and a retry may succeed. Any other status still gets the same advice as a
+  // read, since the request never got past the gateway either. Each status is one write's last
+  // attempt here; how the attempts before it are made is dispatch-keyed-writes.test.ts.
   test("tells a write a gateway answered whether it may have reached Dispatch", async () => {
     const page = (status: number, statusText: string) =>
       new Response(`<html><body><h1>${status} ${statusText}</h1></body></html>`, {
@@ -876,33 +877,34 @@ describe("DispatchClient", () => {
     const gateway = ", which looks like a proxy or gateway page rather than Dispatch's own answer";
     const page404 = `${request}404 Not Found with a body that is not Dispatch's error JSON ("404 Not Found")`;
 
-    // A 502 can come after Dispatch committed the write, so with no ask left the write ends
-    // unsettled (the transition table, write-outcome.ts), the gateway's page as its cause.
-    const badGateway = await refusal();
-    expect(badGateway).toBeInstanceOf(DispatchWriteUnsettledError);
-    expect(badGateway.message).toBe(
-      `${request}502 Bad Gateway with a body that is not Dispatch's error JSON ("502 Bad Gateway")` +
-        `${gateway} (its only attempt), and an attempt of the write may have reached Dispatch, so ` +
-        "it may or may not have taken effect. Dispatch finishes an attempt it received whatever this " +
-        "command does, so read the write back before you send it again: a new command sends it under a new key."
-    );
-    expect((badGateway as DispatchWriteUnsettledError).last).toEqual(
-      expect.objectContaining({ mayHaveReachedDispatch: true })
-    );
+    // A 502 or a 408 can come after Dispatch committed the write, so with no ask left the write
+    // ends unsettled (the transition table, write-outcome.ts), the gateway's page as its cause.
     for (const [status, statusText] of [
+      [502, "Bad Gateway"],
       [408, "Request Timeout"],
-      [429, "Too Many Requests"],
     ] as const) {
-      const refused = await refusal();
-      expect(refused.message).toBe(
+      const unsettled = await refusal();
+      expect(unsettled).toBeInstanceOf(DispatchWriteUnsettledError);
+      expect(unsettled.message).toBe(
         `${request}${status} ${statusText} with a body that is not Dispatch's error JSON ` +
-          `("${status} ${statusText}")${gateway}, so the write did not reach Dispatch, and a ` +
-          "retry may succeed."
+          `("${status} ${statusText}")${gateway} (its only attempt), and an attempt of the write ` +
+          "may have reached Dispatch, so it may or may not have taken effect. Dispatch finishes an " +
+          "attempt it received whatever this command does, so read the write back before you send " +
+          "it again: a new command sends it under a new key."
       );
-      expect(refused).toEqual(
-        expect.objectContaining({ transient: true, mayHaveReachedDispatch: false })
+      expect((unsettled as DispatchWriteUnsettledError).last).toEqual(
+        expect.objectContaining({ mayHaveReachedDispatch: true })
       );
     }
+    const tooMany = await refusal();
+    expect(tooMany.message).toBe(
+      `${request}429 Too Many Requests with a body that is not Dispatch's error JSON ` +
+        `("429 Too Many Requests")${gateway}, so the write did not reach Dispatch, and a retry ` +
+        "may succeed."
+    );
+    expect(tooMany).toEqual(
+      expect.objectContaining({ transient: true, mayHaveReachedDispatch: false })
+    );
     expect((await refusal()).message).toBe(
       `${page404}${gateway}, so a retry gets the same answer until the Dispatch URL, or whatever ` +
         "answers in its place, is fixed."

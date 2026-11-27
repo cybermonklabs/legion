@@ -189,8 +189,8 @@ func TestABrokerTokensAnswerActsAsTheSessionTheBrokerProved(t *testing.T) {
 	if answer.Act == nil || answer.Act.Session != brokerTestSession || answer.Act.TokenID != "" {
 		t.Fatalf("the stored answer's act = %+v, want the session the broker proved and no token row", answer.Act)
 	}
-	// The act records the scopes the credential held, and a broker token holds person alone,
-	// never approve (brokerTokenActor).
+	// The act records the scopes the credential held, and a broker token that acts for its
+	// person, but for an approve-only token, holds person alone, never approve (brokerTokenActor).
 	if !slices.Equal(answer.Act.Scopes, []string{model.ScopePerson}) {
 		t.Fatalf("the stored answer's act scopes = %v, want person alone", answer.Act.Scopes)
 	}
@@ -539,6 +539,7 @@ func TestACommentUnderAPersonalTokenIsStillTheSessionsOwnWrite(t *testing.T) {
 // Dispatch relays names the token's owner as the approver, which the broker takes on Dispatch's
 // word (credential_requests.go).
 func TestAMachineLoginDecisionNamesTheActingAgentOnItsAccessLogLine(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	for _, test := range []struct {
 		name    string
 		session string

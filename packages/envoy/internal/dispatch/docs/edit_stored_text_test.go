@@ -59,6 +59,7 @@ func judgeAsWrittenBefore(t *testing.T) {
 // refused for, is stored with a text an upload of it is stored with: the writer spells the run it
 // leaves so it reads back.
 func TestAnEditOfARunTheWriterOnceMisspelledIsStoredAsAnUploadOfItIs(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, misreadBefore)
@@ -84,6 +85,8 @@ func TestAnEditOfARunTheWriterOnceMisspelledIsStoredAsAnUploadOfItIs(t *testing.
 // this edit leaves so it reads back, so the check is handed the text the earlier writer stored for
 // it (judgeAsWrittenBefore).
 func TestAnEditWhoseTextWouldReadBackOtherwiseIsRefusedAsAnUploadOfItIs(t *testing.T) {
+	// Not parallel: it writes the package variable judgedTexts (judgeAsWrittenBefore), the rewrite
+	// every write's stored-text check reads.
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, misreadBefore)
@@ -119,6 +122,8 @@ func TestAnEditWhoseTextWouldReadBackOtherwiseIsRefusedAsAnUploadOfItIs(t *testi
 // check is handed that block as the earlier writer stored it (judgeAsWrittenBefore), in the text
 // before the edit and in the text the edit stores alike.
 func TestAnEditBesideABlockThatAlreadyReadsBackOtherwiseIsStoredAndLogsTheBlock(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault) and writes the package variable
+	// judgedTexts (judgeAsWrittenBefore), the rewrite every write's stored-text check reads.
 	logs := &logtest.Recorder{}
 	logtest.SetDefault(t, logs)
 	service, artifactID := newTestService(t)
@@ -180,6 +185,7 @@ func TestAnEditBesideABlockThatAlreadyReadsBackOtherwiseIsStoredAndLogsTheBlock(
 // item beside the text it writes keeps the spread a browser edit gave it, which its markdown does
 // not carry, since that spread is not the edit's, and the edit is stored all the same.
 func TestAnEditLeavesTheSpreadOfAnItemBesideTheTextItWrites(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "- Body.\n- two\n")
@@ -241,6 +247,10 @@ func countBlockReadBacks(t *testing.T) *atomic.Int64 {
 // replace, and twice more in the conditional run, and a read-back rendered apart from the text the
 // edit stores would render the document twice.
 func TestReplacesInOneBlockReadItBackOnceEachAndRenderTheDocumentOnce(t *testing.T) {
+	// Not parallel: it records every document render the process makes in the package variable
+	// documentRenders (countRenders) and every block read-back in the package variable
+	// blockReadBacksCounted (countBlockReadBacks), in its subtests; each refuses a second recorder
+	// and would count those of the tests beside it.
 	const replaces = 4
 	words := make([]string, 2000)
 	for index := range words {

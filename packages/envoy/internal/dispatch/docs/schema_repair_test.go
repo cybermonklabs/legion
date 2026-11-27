@@ -275,6 +275,7 @@ func TestStoredRenderOnlySchemaViolationLoadsForRepair(t *testing.T) {
 // a log line is read by whoever reads the server's logs, which no person's address in a document
 // reaches.
 func TestAStoredRefusalOfAnAttributesValueIsLoggedWithoutTheValue(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	const address = "person-7@example.com"
 	logs := &logtest.Recorder{}
 	logtest.SetDefault(t, logs)
@@ -332,6 +333,7 @@ func TestAStoredRefusalOfAnAttributesValueIsLoggedWithoutTheValue(t *testing.T) 
 // it, so the line names the class and carries none of the refusal's text. A refusal a caller
 // formats with %v is in no chain errors.As reads, and no class can name it (LoggedFault).
 func TestARefusalOfAnAskOrACheckIsLoggedByItsClassWithoutItsText(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	const address = "person-7@example.com"
 	question := "Should " + address + " review it?"
 	broken := &pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{{

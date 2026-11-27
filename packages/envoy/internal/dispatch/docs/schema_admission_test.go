@@ -312,6 +312,8 @@ func newAdmissionServer(t *testing.T, future bool) (*Service, string, *httptest.
 // version older is the shipped build's page, and a live process of the build after this one reads
 // one version above current and creates up to current.
 func TestSchemaAdmissionFollowsTheLiveFleet(t *testing.T) {
+	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
+	// (pmdoc.UseStagedBlockForTest in newAdmissionServer).
 	v, r := pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()
 	if r < 1 || r > v {
 		t.Fatalf("this build reads schema version %d and creates up to %d; the cases below need it to create at least 1, what a page from before the manifest creates, and at most what it reads, so a page one version older than the process they run against, which reads %d and creates up to %d (newAdmissionServer), represents everything that process creates",
@@ -373,6 +375,8 @@ func TestSchemaAdmissionFollowsTheLiveFleet(t *testing.T) {
 
 // A closed issue's document is read-only to every page, by the socket and by its token alike.
 func TestSchemaAdmissionOfAClosedIssueIsReadOnly(t *testing.T) {
+	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
+	// (pmdoc.UseStagedBlockForTest in newAdmissionServer).
 	service, artifactID, server := newAdmissionServer(t, false)
 	if _, err := service.store.Pool.Exec(context.Background(), `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
 		t.Fatalf("close the document's issue: %v", err)
@@ -388,6 +392,8 @@ func TestSchemaAdmissionOfAClosedIssueIsReadOnly(t *testing.T) {
 // a socket's own token is answered with that socket's admission, as often as it asks; and a token
 // its page never presented is read-only.
 func TestATokenIsAnsweredFromTheAdmissionItsSocketCarries(t *testing.T) {
+	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
+	// (pmdoc.UseStagedBlockForTest in newAdmissionServer).
 	service, artifactID, server := newAdmissionServer(t, false)
 	version := strconv.Itoa(pmdoc.SchemaVersion())
 	if config, err := service.authorizeSchemaVersion(context.Background(), artifactID, version); err != nil || !config.ReadOnly {
@@ -415,6 +421,8 @@ func TestATokenIsAnsweredFromTheAdmissionItsSocketCarries(t *testing.T) {
 // the process that joins is of the build after this one: it reads one version above version and
 // creates up to version.
 func TestAdmissionRecheckClosesASocketTheFleetNoLongerAdmits(t *testing.T) {
+	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
+	// (pmdoc.UseStagedBlockForTest in newAdmissionServer).
 	service, artifactID, server := newAdmissionServer(t, false)
 	version, creatable := pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()
 	olderPage := page(version-1, creatable)
@@ -447,6 +455,8 @@ func TestAdmissionRecheckClosesASocketTheFleetNoLongerAdmits(t *testing.T) {
 // (newAdmissionServer), and the newer page is of the build after this one, beside a live process
 // of that build: both read one version above version and create up to version.
 func TestAdmissionRecheckClosesANewerPageOnceNoLiveProcessCreatesWhatItCreates(t *testing.T) {
+	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
+	// (pmdoc.UseStagedBlockForTest in newAdmissionServer).
 	service, artifactID, server := newAdmissionServer(t, false)
 	version, creatable := pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()
 	fleetProcess(t, service, version+1, version, store.OwnerLockProtocol, 0)
@@ -571,6 +581,8 @@ func dialSlowPage(t *testing.T, serverURL, artifactID string, query url.Values) 
 // admission-revoked code after them - never a protocol error from a frame cut in half, and never
 // the bare 1006 of a connection closed without a frame.
 func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
+	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
+	// (pmdoc.UseStagedBlockForTest).
 	// The process stages one element it reads and cannot create, so it reads version, creates up
 	// to creatable, less than it reads, and a page one version older is still writable
 	// (newAdmissionServer).
@@ -678,6 +690,8 @@ const postRevokeMarker = "afterrevoke"
 // runner's TCP pacing and nothing of the revoke. TCP delivers the server's bytes in order and
 // then that FIN, so the stream checked here is exactly what the page reads.
 func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
+	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
+	// (pmdoc.UseStagedBlockForTest).
 	// The document is cut to the send buffer this host's kernel grants, read back before anything
 	// is seeded: the server's one write of it has to return with every byte queued, since a write
 	// that blocked would have put nothing in the record below.

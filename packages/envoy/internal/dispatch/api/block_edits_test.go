@@ -1263,6 +1263,8 @@ func TestDocumentEditsExplainCascadedTableInAtomicBatch(t *testing.T) {
 }
 
 func TestDocumentEditsRefuseCumulativeTablePadding(t *testing.T) {
+	// Not parallel: it reads the whole process's heap statistics (runtime.ReadMemStats, TotalAlloc)
+	// around its request, which every goroutine's allocations move.
 	const maximumAllocation = 128 << 20
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Cumulative table padding", "Before.\n")
@@ -1331,6 +1333,8 @@ func TestDocumentEditsChargeAConditionalBatchItsPaddingOnce(t *testing.T) {
 // header narrower than its delimiter row opens no table at all, as the browser editor's parser
 // reads it (pmdoc, findTableRows), so the table that charges the budget is one both parsers read.
 func TestDocumentEditsRefuseAPaddedTableBeforeItsCells(t *testing.T) {
+	// Not parallel: it reads the whole process's heap statistics (runtime.ReadMemStats, TotalAlloc)
+	// around its request, which every goroutine's allocations move.
 	const maximumAllocation = 64 << 20
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Table padding", "Before.\n")

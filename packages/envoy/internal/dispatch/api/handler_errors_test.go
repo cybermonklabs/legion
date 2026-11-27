@@ -27,6 +27,7 @@ import (
 // person: the error the store returns says what failed and not whose row it was, because a log
 // line is read by whoever reads the server's logs (CodeQL go/clear-text-logging).
 func TestAPersonTheStoreCannotRecordIsAnsweredAndLoggedWithoutTheirAddress(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	const address = "person-7@example.com"
 	logs := &logtest.Recorder{}
 	logtest.SetDefault(t, logs)
@@ -79,6 +80,7 @@ func TestAPersonTheStoreCannotRecordIsAnsweredAndLoggedWithoutTheirAddress(t *te
 // its own (keyedAnswer). The handler hands its error on through writeIDPrefixError, one of the
 // helpers the line's site reads past to the handler.
 func TestAFaultHoldingADocumentsTextIsLoggedByItsTypesSiteAndRoute(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault in its subtests).
 	const address = "person-7@example.com"
 	refused, refusal := pmdoc.Parse(":::callout{#c1 kind=\"" + address + "\" title=\"T\"}\nBody.\n:::\n")
 	if refusal == nil || !errors.Is(refusal, pmdoc.ErrSchema) || !strings.Contains(refusal.Error(), address) {
