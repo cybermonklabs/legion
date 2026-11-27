@@ -82,10 +82,12 @@ interface HostPart {
 }
 
 /**
- * One message, with the identity and role a frame needs, once the host's shape checks out. The
- * host's own object is kept rather than its content: reading `content` is what costs, and a
- * streaming message's is replaced by the host on every delta, so the reference is always the
- * latest without this ever copying one.
+ * One message, with the identity and role a frame needs, once the host's shape checks out. `host`
+ * is the object `record` was handed for a live message, kept rather than its content: reading
+ * `content` is what costs, and a streaming message's is replaced by the host on every delta, so
+ * the reference is always the latest without this copying one. For a message read back from the
+ * transcript it is `restore`'s copy (`detached`), which on purpose does not follow the host's
+ * object: the host rewrites that object in place, and a prune would reach the ring through it.
  */
 interface ReadableMessage {
   readonly role: string;
@@ -766,9 +768,10 @@ export class AgentStreamPublisher {
    * as the host copies a message for `message_end`: the host rewrites its own object in place (a
    * prune blanks a tool result's content), and the ring keeps what the message said when the
    * session was taken up, as it keeps what a live message said at its end. So the fill reads the
-   * bodies of the messages its bound kept, and no other. Nothing is published, since a viewer
-   * reads these from its replay. `dispatchMessageIdOf` names the Dispatch message a user message
-   * delivered, which only the caller can know (`record`'s `dispatchMessageId`).
+   * body of each message its bound kept, and of the others only the text of a card that names no
+   * id. Nothing is published, since a viewer reads these from its replay. `dispatchMessageIdOf`
+   * names the Dispatch message a user message delivered, which only the caller can know
+   * (`record`'s `dispatchMessageId`).
    */
   restore(
     messages: readonly unknown[],

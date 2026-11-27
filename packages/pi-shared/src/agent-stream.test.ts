@@ -1489,9 +1489,10 @@ describe("a session this process takes up with turns already in its transcript",
   });
 
   // A long session's live context holds thousands of messages. Choosing the ones the ring keeps
-  // reads the slot each takes and no body; the fill then reads the body of each message its bound
-  // kept, once, to copy it, and no other. A replay reads the copies.
-  test("reads the body of no message but those its bound kept, once each", () => {
+  // reads the slot each takes, and no assistant message's body; the fill then reads the body of
+  // each message its bound kept, once, to copy it. A replay reads the copies. (A card that names
+  // no id is read for its slot too, kept or not: `keyFor`.)
+  test("reads the body of no assistant message but those its bound kept, once each", () => {
     const { publisher } = harness();
     const { historyMessages } = AGENT_STREAM_LIMITS;
     const reads = new Map<number, number>();
