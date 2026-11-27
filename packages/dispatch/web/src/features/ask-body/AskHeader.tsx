@@ -460,18 +460,30 @@ function CardAskHeader({
   const session = author?.kind === "session" ? author : undefined;
   const dot = ownPart(marks, <Dot />);
   // The asker's name, cut with its tooltip where one is drawn, and never cut to nothing: beside
-  // the words the end leaves it little room. In a narrow body, where the end stands under the
-  // words and the name shares its line with the time, it wraps onto a second line before it is
-  // cut, so a name two lines hold stays whole. Inside `NoTooltips`, where no tooltip gives back
-  // what an ellipsis cut, it is a value that breaks anywhere instead.
-  const askerName = (name: ReactNode) =>
+  // the words the end leaves it little room. It is one line clamped at its end (`line-clamp-1`)
+  // rather than a line that never breaks, so it asks for no more than its floor (`min-w-8`) of a
+  // line it shares: the end and the asker's part then wrap what does not fit, rather than
+  // squeezing the name's control over the live link beside it. In a narrow body, where the end
+  // stands under the words, it wraps onto a second line before it is cut, so a name two lines
+  // hold stays whole. Inside `NoTooltips`, where no tooltip gives back what an ellipsis cut, it is
+  // a value that breaks anywhere instead.
+  // The asker's part takes no more of a narrow line than its least, and grows to what it holds
+  // (`basis-[min-content]`, `max-w-max`), so the time moves under it only where even that least
+  // and the time do not fit.
+  const askerPart =
+    "max-w-max @max-[32rem]/ask-body:grow @max-[32rem]/ask-body:basis-[min-content]";
+  const askerName = (name: ReactNode, part = "") =>
     tooltips ? (
-      <TruncatedText
-        className="min-w-8 @max-[32rem]/ask-body:line-clamp-2 @max-[32rem]/ask-body:whitespace-normal @max-[32rem]/ask-body:[overflow-wrap:anywhere]"
+      // Not `TruncatedText`: its `truncate` keeps the name on one line that never breaks, which
+      // asks the line for the whole name. The clamp draws the same ellipsis as the flex item of
+      // the control it stands in.
+      <span
+        className={`min-w-8 line-clamp-1 whitespace-normal [overflow-wrap:anywhere] @max-[32rem]/ask-body:line-clamp-2 ${part}`}
+        data-ask-asker-name=""
         title={asker?.title ?? ASK_LINE_WORDS.asked}
       >
         {name}
-      </TruncatedText>
+      </span>
     ) : (
       <span className="min-w-0 [overflow-wrap:anywhere]">{name}</span>
     );
@@ -480,25 +492,33 @@ function CardAskHeader({
   // opens what the host folds behind it; the component's live link sits beside it, outside the
   // control. `whitespace-pre` keeps the space before an attribution suffix, which a flex item
   // would drop; inside `NoTooltips` `whitespace-pre-wrap` keeps it too, and lets the name wrap.
+  // Outside `NoTooltips` a session's name stands in a box of its own with no `min-w-0`
+  // (`AgentName` draws one on its own root), so the control and the live link keep the least
+  // they take, side by side.
+  const sessionName = (name: ReactNode) =>
+    tooltips ? <span className={`flex items-center ${askerPart}`}>{name}</span> : name;
   const named =
-    author === undefined ? null : session === undefined || control === undefined ? (
-      askerName(
-        asker === undefined ? (
-          ownWords(marks, ASK_LINE_WORDS.asked)
-        ) : (
-          <AskAgent actor={author} agentNames={agentNames} marks={marks} />
-        )
-      )
-    ) : agentNames === "live" ? (
-      <AgentName
-        actor={session}
-        className={`flex min-w-0 items-center ${tooltips ? "whitespace-pre" : "whitespace-pre-wrap"}`}
-        control={(name) => control(askerName(name))}
-        kind="control"
-      />
-    ) : (
-      control(askerName(authored(marks, agentText.label(session))))
-    );
+    author === undefined
+      ? null
+      : session === undefined || control === undefined
+        ? askerName(
+            asker === undefined ? (
+              ownWords(marks, ASK_LINE_WORDS.asked)
+            ) : (
+              <AskAgent actor={author} agentNames={agentNames} marks={marks} />
+            ),
+            askerPart
+          )
+        : agentNames === "live"
+          ? sessionName(
+              <AgentName
+                actor={session}
+                className={`flex min-w-0 items-center ${tooltips ? "whitespace-pre" : "whitespace-pre-wrap"}`}
+                control={(name) => control(askerName(name))}
+                kind="control"
+              />
+            )
+          : sessionName(control(askerName(authored(marks, agentText.label(session)))));
   const label = facts.stateLabel;
   return (
     <div
@@ -507,20 +527,42 @@ function CardAskHeader({
       {...facts.attributes}
     >
       {children}
+      {/* Outside `NoTooltips` the end is one line where it fits, and wraps where it does not:
+          beside the words, the label with the copy control moves to a line of its own under who
+          asked and when, which keep the words' first line; under them, the time moves under the
+          asker's name rather than give up the room the name, its control and its live link
+          need. Each part is laid out from the least it takes (`basis-[min-content]`) and grows to
+          what it holds (`max-w-max`), so a part wraps only where that least does not fit. The
+          asker's part has no `min-w-0`: it never shrinks below what its name's floor, its control
+          and its live link take, so none of them is drawn over another. */}
       <div
-        className={`flex min-w-0 max-w-[75%] items-center justify-end gap-x-1.5 text-xs leading-6 @max-[32rem]/ask-body:max-w-full @max-[32rem]/ask-body:basis-full @max-[32rem]/ask-body:flex-wrap @max-[32rem]/ask-body:justify-start ${tooltips ? `shrink-0 whitespace-nowrap ${textMutedOnSurface}` : `flex-wrap ${ON_PAGE.quiet}`}`}
+        className={`flex min-w-0 max-w-[75%] items-center justify-end gap-x-1.5 text-xs leading-6 @max-[32rem]/ask-body:max-w-full @max-[32rem]/ask-body:basis-full @max-[32rem]/ask-body:flex-wrap @max-[32rem]/ask-body:justify-start ${tooltips ? `shrink-0 flex-wrap whitespace-nowrap ${textMutedOnSurface}` : `flex-wrap ${ON_PAGE.quiet}`}`}
         data-ask-card-end=""
       >
         {leading}
         {!facts.provenance || ask === undefined ? null : (
-          <span className="flex min-w-0 items-center gap-x-1.5" data-ask-card-asked="">
+          <span
+            className={`flex min-w-0 items-center gap-x-1.5 ${tooltips ? "max-w-max grow basis-[min-content] @max-[32rem]/ask-body:grow-0 @max-[32rem]/ask-body:basis-auto @max-[32rem]/ask-body:flex-wrap" : ""}`}
+            data-ask-card-asked=""
+          >
             {named}
-            {dot}
-            <Timestamp at={ask.created_at} className={tooltips ? "shrink-0" : undefined} />
+            {tooltips ? (
+              // The time and the mark before it go together: where the time moves under the
+              // asker's name, no line ends on a bare mark.
+              <span className="flex shrink-0 items-center gap-x-1.5">
+                {dot}
+                <Timestamp at={ask.created_at} className="shrink-0" />
+              </span>
+            ) : (
+              <>
+                {dot}
+                <Timestamp at={ask.created_at} />
+              </>
+            )}
           </span>
         )}
         {/* The label and the copy control are one group that never breaks, so the control
-            stays on the label's line however the end wraps under the words. */}
+            stays on the label's line however the end wraps. */}
         {label === null && !facts.provenance ? null : (
           <span className="flex shrink-0 items-center gap-x-1.5">
             {label === null ? null : (

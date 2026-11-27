@@ -318,7 +318,7 @@ test("a decision block's answer area picks a session the same way and asks back 
     const block = documentEditor(page).locator('[data-dispatch-ask-block="decide"]');
     const card = block.locator("article[data-testid^=ask-]");
     await expect(card).toBeVisible();
-    await card.getByRole("button", { name: "Add a note or answer in your own words" }).click();
+    // The answer box stands in place under the options (dispatch://INFRA-5702 R15).
     const field = card.getByLabel("Your answer");
     await pickPlanner(field, "Ask ");
 
@@ -347,10 +347,9 @@ test("the Conversation tab's copy of an ask, and the reply box under an answered
     await page.goto(`/issues/${issue.key}/conversation`);
     const conversation = page.locator("#issue-conversation-panel");
 
-    // The open ask's own card in the timeline: the compact variant, whose answer area is behind
-    // its note disclosure.
+    // The open ask's own card in the timeline: the compact variant, whose answer area stands in
+    // place under its options (dispatch://INFRA-5702 R15).
     const openCard = conversation.getByTestId(`ask-${ask.id}`);
-    await openCard.getByRole("button", { name: "Add a note or answer in your own words" }).click();
     await pickPlanner(openCard.getByLabel("Your answer"), "Ask ");
     await openCard.getByRole("button", { exact: true, name: "Ask back" }).click();
     await expect

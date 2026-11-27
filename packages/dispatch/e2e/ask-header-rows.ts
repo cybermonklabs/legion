@@ -63,13 +63,15 @@ const ASK_BLOCK_LINE = containerWidth("ask-block-line");
  *  `web/src/features/ask-body/AskHeader.tsx`, dispatch://INFRA-5702 R15). */
 export const ASK_BODY_BESIDE = 32 * DEFAULT_FONT;
 
-/** The end of the ask body's first line (`CardAskHeader`): one line beside the words from
- *  `ASK_BODY_BESIDE`; under them below it, where each of its parts - the kind, who asked and
- *  when, and the label with the copy control - moves to a line of its own before it gives up
- *  width. */
+/** The end of the ask body's first line (`CardAskHeader`): from `ASK_BODY_BESIDE` beside the
+ *  words, one line where it fits and two where it does not, the label with the copy control
+ *  under who asked and when; below it under the words, where each of its parts - the kind, who
+ *  asked and when, and the label with the copy control - moves to a line of its own before it
+ *  gives up width, and the time moves under the asker's name where even that line cannot hold
+ *  both. */
 const CARD_LINES: Lines = [
-  [ASK_BODY_BESIDE, 1, 1],
-  [0, 1, 3],
+  [ASK_BODY_BESIDE, 1, 2],
+  [0, 1, 4],
 ];
 
 /** A read-only decision block's header (`BlockAskHeader`): from `ASK_BLOCK_LINE` one line, with
@@ -88,7 +90,7 @@ const ANSWERED_BLOCK_LINES: Lines = [
 export const CARD_HEADER: Drawn = {
   fields: {
     asked: "[data-ask-card-asked]",
-    asker: "[data-ask-card-asked] span.truncate[title]",
+    asker: "[data-ask-card-asked] [data-ask-asker-name]",
     copy: "[data-copy-ref] button",
     label: "[data-ask-state-label]",
     "live link": '[data-ask-card-asked] a[aria-label^="Open live conversation"]',

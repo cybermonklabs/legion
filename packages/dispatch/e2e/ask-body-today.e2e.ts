@@ -1466,18 +1466,23 @@ test("the first line's shape holds when the Conversation marks the issue read be
   const data = await seed();
   const surface = SURFACES.find((one) => one.name === "Conversation tab");
   if (surface === undefined) throw new Error("SURFACES has no Conversation tab");
-  // The Conversation marks the issue read a dwell after it draws, and its "New" labels go, which
-  // moves every turn below them up the page (CI run 45954137251 at f8ad9368, shard (3): 281 px).
-  // The row-shape check must read the words and the first line's parts from one layout. This row
-  // holds the read mark back, and a trap draws the read mark's result in the middle of the check:
-  // it fires on the page's first `document.createRange()` call after the row arms it, hides what
-  // the read mark unmounts (a label's wrapper where the label is the wrapper's only child, as on
-  // an ask or a thread turn, and else the label alone, as in a message's header line) and records
-  // how many labels it hid and how far the ask body moved. So `readFirstLine` must make its range
-  // before it reads any box: a check that reads a box before it makes its range reads that box
-  // from one layout and the rest from another. The row does not catch a check that makes its
-  // range first and reads a box in a later call, since the trap has fired by then. The held
-  // write goes on after 10 s, so a check that waits for the read mark sees it land.
+  // The Conversation marks the issue read a dwell after it draws, and its "New" labels go. Since
+  // dispatch://INFRA-341's R10 (from dispatch://INFRA-662) those labels move nothing: each hangs
+  // over its card's corner or is as tall as the line it sits in. Before it, they moved every turn
+  // below them up the page (CI run 45954137251 at f8ad9368, shard (3): 281 px), and any other
+  // write that lands between two reads still can. The row-shape check must read the words and
+  // the first line's parts from one layout. This row holds the read mark back, and a trap draws
+  // a landing in the middle of the check: it fires on the page's first `document.createRange()`
+  // call after the row arms it, hides what the read mark unmounts (a label's wrapper where the
+  // label is the wrapper's only child, as on an ask or a thread turn, and else the label alone,
+  // as in a message's header line), puts a spacer two lines tall above the list's first turn,
+  // which is what moves the page now (dispatch://INFRA-341/comment/f0c8d5db-01d0-4abc-83ba-e3327613c7b1),
+  // and records how many labels it hid and how far the ask body moved. So `readFirstLine` must
+  // make its range before it reads any box: a check that reads a box before it makes its range
+  // reads that box from one layout and the rest from another. The row does not catch a check
+  // that makes its range first and reads a box in a later call, since the trap has fired by
+  // then. The held write goes on after 10 s, so a check that waits for the read mark sees it
+  // land.
   await page.route("**/api/v1/me/issues/*/state", async (route) => {
     const { promise, resolve } = Promise.withResolvers<void>();
     setTimeout(resolve, 10_000);
@@ -1505,8 +1510,15 @@ test("the first line's shape holds when the Conversation marks the issue read be
           target.style.display = "none";
           hidden += 1;
         }
+        // Taller than two of the words' lines, above every turn, so the ask moves whatever the
+        // labels do.
+        const spacer = this.createElement("li");
+        spacer.setAttribute("aria-hidden", "true");
+        spacer.style.height = "3rem";
+        list?.prepend(spacer);
         root.dataset.readMarkHidden = String(hidden);
-        root.dataset.readMarkMoved = String(before - offset());
+        // How far the ask body moved, either way: the spacer moves it down the list.
+        root.dataset.readMarkMoved = String(Math.abs(before - offset()));
       }
       return create.call(this);
     };

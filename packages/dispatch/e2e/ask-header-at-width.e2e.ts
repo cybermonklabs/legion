@@ -308,7 +308,7 @@ async function cardLine(card: Locator, name: string) {
   };
 }
 
-test("the Inbox card's copy control is on the label's line, at the end of the first line beside the question's words, whoever's turn it is", async ({
+test("the Inbox card's copy control is on the label's line at the end of its first line, whoever's turn it is", async ({
   browser,
 }) => {
   const { turns } = await seedTurns();
@@ -321,11 +321,9 @@ test("the Inbox card's copy control is on the label's line, at the end of the fi
       await expect(card.getByTestId(`turn-${ask.id}`)).toContainText(turn);
       const line = await cardLine(card, `${author.title} · ${author.session_id}`);
       expect(line.failures, `${turn}: the Inbox card's header at its own width`).toEqual([]);
-      // The card's widest layout: an ask body of `ASK_BODY_BESIDE` or more, where the kind, who
-      // asked and when, the label and the copy control are one line beside the question's words.
-      expect(line.body, `${turn}: the Inbox card's body is 32rem or wider`).toBeGreaterThanOrEqual(
-        ASK_BODY_BESIDE
-      );
+      // The reading pane at 1280 px draws an ask body under `ASK_BODY_BESIDE`, where the first
+      // line's end stands under the question's words; the copy control keeps the label's line
+      // there as at every width the sweeps read (`ask-header-sweep.e2e.ts`).
       expect(line.copyOnLabelLine, `${turn}: the copy control is on the label's line`).toBe(true);
     }
   } finally {
