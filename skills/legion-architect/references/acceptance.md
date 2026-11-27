@@ -30,7 +30,7 @@ A child that carries part of a parent's requirement proves that part with a chec
 
 1. Leave the parent in `accepting` until its children close.
    A child's merge while the parent waits needs no move of its own: the last round tests them all.
-2. Start the last round with `request_backward_move` to `testing`, or to `implementing` where no tester step comes before yours.
+2. Begin the last round with `request_backward_move` to `testing`, or to `implementing` where no tester step comes before yours.
    Its reason names the children that closed and the checks of the parent that need their code.
 3. Sign off only on a head at which each check of the parent passes.
    A check in another repository needs a pass since the close of each child it needs, at a commit on the branch that child's pull request merged into, or on its default branch.
