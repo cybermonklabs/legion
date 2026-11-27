@@ -2849,6 +2849,41 @@ A deleted row is a hook's words that no worker reads for that move.
 The counts of moves back a task's row holds (`plan_tasks.backward_moves`) can keep a pair in another order; the release before reads the map and lists only its own pairs in a hook's words, so such a count stays and harms nothing.
 The outbox and the plan rows are shared by every project's daemon on the database, and each statement above takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project, since a project key holds no hyphen), so one project can roll back while another stays on this release.
 
+#### Rolling back the release that holds every worker while a merge forward is owed
+
+This release holds the worker of each phase that starts while another role's merge forward of the head is owed, the planner among them, tells the implementer when the merge forward it was asked for is no longer its work, and asks a role again at the ready of its claim's next launch while the merge it was asked for is still owed to it (cybermonklabs/legion#5312).
+It adds no migration: a `merge_forward` row's payload and `pull_requests.merge_forward` are JSON.
+The release before refuses three kinds of `merge_forward` row that this release writes:
+
+- a row whose step is `withdrawn`, which it knows as no step;
+
+- a hold or a landed row to the planner, since it sends those to the tester, the reviewer and the merger alone (`mergeForwardRoles` in `record/outbox.go`);
+
+- an `ask` row sent again to a role's later launch, which carries the key `sentLaunch` (the launch it was sent at), and the release before decodes the outbox strictly (`DecodeOutboxPayload`, `DisallowUnknownFields`, in `record/outbox.go`).
+
+Its decode refuses each one (`DecodeOutboxPayload` and `validateOutboxPayload` in `record/outbox.go`), which is no permanent refusal for that kind (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll forward.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+-- The rows the release before knows no step or recipient of.
+delete from outbox where kind = 'merge_forward' and split_part(issue, '-', 1) = '<PROJECT>'
+  and (payload->>'step' = 'withdrawn' or (payload->>'step' in ('hold', 'landed') and payload->>'role' = 'planner'));
+-- An ask sent again at a launch: the key it carries, which the release before knows as no field.
+update outbox set payload = payload - 'sentLaunch'
+ where kind = 'merge_forward' and split_part(issue, '-', 1) = '<PROJECT>' and payload ? 'sentLaunch';
+```
+
+A deleted withdrawal leaves the implementer with the ask it was told is no longer its work; a deleted row to the planner is a hold or a new head the planner does not read.
+An ask sent again loses only the key: it is then a plain ask, which the release before decodes and delivers, so the launch it was queued for is still told.
+The first ask of a merge forward carries no such key, so the statements leave it as it is.
+`pull_requests.merge_forward` can hold the keys `withdrawn` and `sentLaunch`.
+The release before decodes that column without them (`json.Unmarshal` in `record/store.go`), and its next write of the pull request's record drops both.
+Without `withdrawn` it reads a withdrawn ask as one its role still holds.
+Without `sentLaunch` it does what it always did: it asks once for each head, so an ask whose role's claim failed, was stopped or exited is not sent to that role's next launch, and the workers held for it wait for a landing.
+For such an issue, have its architect move it back to `implementing`, which drops the ask.
+A roll forward reads an ask with no `sentLaunch` as told to no launch, so the ready of the asked role's next launch sends it once more while it is owed, unless a row of it is still queued; the end of that row, delivered or not, then sends it to that launch if the row did not reach it.
+The statements take the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project), so one project can roll back while another stays on this release.
+
 #### Rolling back the release whose owner's plan picks the steps
 
 This release's migration `20261117034837_issue_plans.up.sql` adds three tables, `issue_plans`, `plan_tasks` and `plan_steps`, and two columns, `phases.step_task` and `phases.step_place`.

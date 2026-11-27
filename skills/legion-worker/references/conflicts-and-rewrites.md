@@ -27,4 +27,4 @@ If no fix reaches the base in time, the merger sends the issue back to implement
 
 ## The daemon's ask
 
-A merge-forward message asks the implementer, or in `merging` the merger, to merge the base forward and push, with no handoff and no completion for the merge. A tester or reviewer that holds the phase is told to stop writing the workspace, and later the new head. `HANDOFF_HEAD_MERGED_FORWARD` means a merge landed above the head your completion names: read the merge, then complete again at the new head with a handoff that names it.
+A merge-forward message asks the implementer, or in `merging` the merger, to merge the base forward and push, with no handoff and no completion for the merge. A planner, tester or reviewer that holds the phase, or that starts in it before the merge lands, is told to stop writing the workspace, and later the new head. When the merge you were asked for is no longer yours, the daemon tells you so once: then merge nothing for that message. `HANDOFF_HEAD_MERGED_FORWARD` means a merge landed above the head your completion names: read the merge, then complete again at the new head with a handoff that names it.
