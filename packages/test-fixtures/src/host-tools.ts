@@ -2,27 +2,25 @@ import { beforeEach, describe as bunDescribe, test as bunTest } from "bun:test";
 import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
 import { basename, delimiter, isAbsolute, join, relative, sep } from "node:path";
 
-/** The path of the program on this host's `PATH`, or null when the host does not have it. */
-export function hostTool(name: string): string | null {
-  return Bun.which(name);
-}
-
 /**
  * The program `name` itself, never a mise shim of it, or null when this host has neither: the
- * path a test hands a child whose `HOME` it replaces. A mise shim reads its configuration from
- * the caller's home and from the directories above the child's working directory, and under a
- * `HOME` of the test's own it refuses the real home's config there as untrusted ("Config files in
- * <home>/.config/mise/config.toml are not trusted") or finds no version ("No version is set for
- * shim"), and exits 1 before the program runs. Read it once, at a test file's module scope, before
- * any directory of the test's own goes first on PATH.
+ * path a test hands a child, or links into a PATH of the test's own, under a `HOME` it replaces. A
+ * mise shim reads its configuration from the caller's home and from the directories above the
+ * child's working directory, and under a `HOME` of the test's own it refuses the real home's config
+ * there as untrusted ("Config files in <home>/.config/mise/config.toml are not trusted") or finds no
+ * version ("No version is set for shim", "jq is not a valid shim"), and exits 1 before the program
+ * runs. Read it once, at a test file's module scope, before any directory of the test's own goes
+ * first on PATH.
  *
  * It walks `PATH` in order and takes the first executable `name`. A link to the `mise` binary is a
  * shim: it is replaced by what `mise which <name>` names, or, where that names nothing, by the
  * next `name` on PATH, the one the shim would fall back to. On a host without mise this is the
- * first `name` on PATH, as `Bun.which` gives. A directory at or below `outside`, a test's own
- * stand-in directory, is skipped, so a stand-in never resolves to itself.
+ * first `name` on PATH, as `Bun.which` gives, and mise is never run. A directory at or below
+ * `outside`, a test's own stand-in directory, is skipped, so a stand-in never resolves to itself. A
+ * `name` that holds a path separator is looked at itself, as `Bun.which` does.
  */
-export function realHostTool(name: string, outside?: string): string | null {
+export function hostTool(name: string, outside?: string): string | null {
+  if (name.includes(sep)) return Bun.which(name);
   for (const directory of (process.env["PATH"] ?? "").split(delimiter)) {
     if (directory === "") continue;
     if (outside !== undefined) {

@@ -2,13 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { restoreEnvironment } from "./environment";
-import {
-  type HostGateNeeds,
-  hostTool,
-  realHostTool,
-  requireHostTools,
-  skipWithout,
-} from "./host-tools";
+import { type HostGateNeeds, hostTool, requireHostTools, skipWithout } from "./host-tools";
 import { temporaryDirectories } from "./temporary-directories";
 
 const makeDirectory = temporaryDirectories("test-fixtures-host-tools");
@@ -242,33 +236,51 @@ function realTool(): string {
   return directory;
 }
 
-test("realHostTool is the first program on PATH where no mise shim comes before it", () => {
+test("hostTool is the first program on PATH where no mise shim comes before it", () => {
   const [first, second] = [realTool(), realTool()];
   process.env["PATH"] = [first, second].join(delimiter);
-  expect(realHostTool("tool")).toBe(join(first, "tool"));
-  expect(realHostTool(ABSENT)).toBeNull();
+  expect(hostTool("tool")).toBe(join(first, "tool"));
+  expect(hostTool(ABSENT)).toBeNull();
 });
 
-test("realHostTool takes what mise names for a shim, or the program after the shim on PATH", () => {
+test("hostTool takes what mise names for a shim, or the program after the shim on PATH", () => {
   const named = realTool();
   const after = realTool();
   process.env["PATH"] = [miseShims(join(named, "tool")), after].join(delimiter);
-  expect(realHostTool("tool")).toBe(join(named, "tool"));
+  expect(hostTool("tool")).toBe(join(named, "tool"));
   // `mise which` names nothing where no version of the tool is set; the shim would fall back.
   process.env["PATH"] = [miseShims(null), after].join(delimiter);
-  expect(realHostTool("tool")).toBe(join(after, "tool"));
+  expect(hostTool("tool")).toBe(join(after, "tool"));
   // A shim with nothing after it is no program at all.
   process.env["PATH"] = miseShims(null);
-  expect(realHostTool("tool")).toBeNull();
+  expect(hostTool("tool")).toBeNull();
 });
 
-test("realHostTool skips a directory at or below the one it is told to stay outside", () => {
+test("hostTool runs no mise for a program that is no link to it, even with a mise beside it", () => {
+  // A host without mise, or one whose program is a real file: what is first on PATH is the answer,
+  // and the walk never starts a process. The `mise` here records any start of it.
+  const directory = realTool();
+  const ran = join(makeDirectory(), "mise-ran");
+  writeFileSync(join(directory, "mise"), `#!/bin/sh\n: > '${ran}'\nexit 1\n`, { mode: 0o755 });
+  process.env["PATH"] = [directory, realTool()].join(delimiter);
+  expect(hostTool("tool")).toBe(join(directory, "tool"));
+  expect(existsSync(ran)).toBe(false);
+});
+
+test("hostTool looks at a name that holds a path separator itself, as Bun.which does", () => {
+  const directory = realTool();
+  process.env["PATH"] = realTool();
+  expect(hostTool(join(directory, "tool"))).toBe(join(directory, "tool"));
+  expect(hostTool(join(directory, ABSENT))).toBeNull();
+});
+
+test("hostTool skips a directory at or below the one it is told to stay outside", () => {
   const standIn = realTool();
   const below = join(standIn, "bin");
   mkdirSync(below);
   writeFileSync(join(below, "tool"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   const after = realTool();
   process.env["PATH"] = [standIn, below, after].join(delimiter);
-  expect(realHostTool("tool", standIn)).toBe(join(after, "tool"));
-  expect(realHostTool("tool")).toBe(join(standIn, "tool"));
+  expect(hostTool("tool", standIn)).toBe(join(after, "tool"));
+  expect(hostTool("tool")).toBe(join(standIn, "tool"));
 });
