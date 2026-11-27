@@ -118,8 +118,10 @@ const serving = fakeModelServing(
   "the fake decision model"
 );
 
-/** The choices a choice question offered: its criteria's names, in the order the call sent them. */
-function offered(criteria: unknown): string[] {
+/** The choices a choice question offered: its criteria's names, in the order the call sent them.
+ *  Not named `offered`: e2e/zero-wait-probes.ts reads a function by its name, and
+ *  e2e/settings.e2e.ts has an `offered` that returns a page read. */
+function choicesOffered(criteria: unknown): string[] {
   return criteria !== null && typeof criteria === "object" && !Array.isArray(criteria)
     ? Object.keys(criteria)
     : [];
@@ -149,7 +151,7 @@ function answers(
     display: reply?.display,
   };
   for (const [name, question] of Object.entries(body.questions ?? {})) {
-    const choices = offered(question.criteria);
+    const choices = choicesOffered(question.criteria);
     const answer: DecisionAnswer = scripted[name] ?? {
       choice: unscripted[name] ?? choices[0] ?? "",
       confidence: unscriptedConfidence,
