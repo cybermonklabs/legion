@@ -587,6 +587,7 @@ test("a session's own token is the one it registered, whatever role its claim ho
       }),
       project: "p",
       liveArchitect: true,
+      notice: "overdue",
     })
   ).toEqual({ kind: "topic", topic: "notifications.role.legion-p-infra-1-architect" });
   expect(
@@ -600,6 +601,7 @@ test("a session's own token is the one it registered, whatever role its claim ho
       }),
       project: "p",
       liveArchitect: true,
+      notice: "overdue",
     })
   ).toEqual({ kind: "topic", topic: "notifications.role.legion-p-infra-1-architect" });
 });

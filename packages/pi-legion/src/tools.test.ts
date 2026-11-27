@@ -2854,6 +2854,7 @@ test("an architect's agent action is refused as unavailable before any grant", a
       controllerGrant: noControllerGrant,
       onPhaseCompleted: () => undefined,
       onUpdateAnswered: () => undefined,
+      env: PANE_ENV,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       dispatch: noDispatch,

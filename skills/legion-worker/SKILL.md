@@ -126,6 +126,6 @@ and the production check after the close.
 - Builds, tests, tools or a database in the pod:
   `skill://legion-worker/references/tools.md`; before you unpack or install what the image lacks: `skill://legion-worker/references/withheld-capability.md`.
 
-- A problem outside your issue, a to-do only a person may do, another agent that needs an action, or a failed production check: `skill://legion-worker/references/findings.md`.
+- A problem outside your issue, a to-do only a person may do, or a failed production check: `skill://legion-worker/references/findings.md`.
 
 - Text that reaches a person outside the company: `skill://outside-message`.
