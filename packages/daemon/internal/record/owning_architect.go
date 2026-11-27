@@ -41,11 +41,13 @@ func OwningArchitect(project string, chains *Chains, key string, fromParent bool
 // own worker-died and worker-stalled (the walk from a root ends at the root, OwningIssue); the
 // daemon writes no architect row for a root architect's own provider-errors (daemon's
 // providerErrorRunReached), since that wake would reach the session the provider keeps refusing.
+//
 // Any of these notices on an issue with no issue above it in Legion's work goes to its gate root,
 // never past it to nobody: a failed claim is passed over by the walk anyway, but a stalled one
 // still holds its role and would be told of its own stall, and the outbox can publish a child's
 // close or status change while the child's own architect still holds its role, before its
-// suspension or close lands.
+// suspension or close lands. On a root each walk ends at the root, as every walk from the root
+// does.
 func NoticeStartsAtParent(kind NoticeKind, role claim.Role) bool {
 	aboutItsArchitect := role == claim.RoleArchitect &&
 		(kind == "worker-died" || kind == "worker-stalled" || kind == ProviderErrorsNotice)

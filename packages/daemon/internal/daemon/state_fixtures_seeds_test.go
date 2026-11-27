@@ -110,8 +110,10 @@ func seedLastPause(s *seeding) composition {
 	s.must("the pause", err)
 	_, _, err = pauseService(s, cfg, ended.EndedAt).Resume(s.ctx, ended.EndedBy)
 	s.must("the resume", err)
-	// A daemon that holds a pause runs a workflow, whose three durable consumers are caught up.
+	// A daemon that holds a pause runs a workflow, whose three durable consumers are caught up and
+	// whose store holds state events (seeding.published).
 	caughtUp := ended.EndedAt.Add(19 * time.Minute)
+	s.published(cfg.Project, caughtUp)
 	return composition{cfg: cfg, now: ended.EndedAt.Add(20 * time.Minute), startedAt: startedAt,
 		secretsIssued: true, probed: true, image: bootprobe.ImageReport{ModelFallback: "on"},
 		consumers: []intake.ConsumerLag{
@@ -220,8 +222,9 @@ func seedDaemonController(s *seeding) composition {
 		s.t.Fatal("seed the controller's registration: the store did not register it")
 	}
 	// The daemon booted and its image passed the probe, and a daemon with a workflow opens three
-	// durable consumers, which are caught up.
+	// durable consumers, which are caught up, and its store holds state events (seeding.published).
 	caughtUp := admitted.Add(50 * time.Second)
+	s.published(cfg.Project, caughtUp)
 	return composition{cfg: cfg, now: admitted.Add(time.Minute), startedAt: admitted.Add(-time.Minute),
 		secretsIssued: true, probed: true, image: bootprobe.ImageReport{ModelFallback: "on"},
 		consumers: []intake.ConsumerLag{

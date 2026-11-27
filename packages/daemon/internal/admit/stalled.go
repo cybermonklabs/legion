@@ -754,11 +754,11 @@ func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 //     frees the slot. The slots are the pass's own rows, the ones it judged the line from, so
 //     the fact is the slots table's and not a phase rule's reading of it: an issue holds a slot
 //     when a row names it. The table carries every project's rows while the cap counts this
-//     project's alone (ownSlots), and the walk below is over this project's own records, so a
-//     row of another project matches no issue here and says nothing about this line. A holder is
-//     asked the ladder a member is asked (waitsByDesign); it holds a row, so it is never a
-//     waiting_on_issue entry and waitsOnWorkOutsideItsTree never answers true of it. The cap's
-//     own hold is simply one
+//     project's alone (record.OwnSlots), and the walk below is over this project's own records,
+//     so a row of another project matches no issue here and says nothing about this line. A
+//     holder is asked the ladder a member is asked (waitsByDesign); it holds a row, so it is
+//     never a waiting_on_issue entry and waitsOnWorkOutsideItsTree never answers true of it.
+//     The cap's own hold is simply one
 //     a holder never carries: it is an entry of the line that holds no slot
 //     (record.LineEntry.Holds);
 //  3. the free-slot term: some entry of the line waits on no other issue (blockers.LineWaitsOn,

@@ -27,7 +27,7 @@ def selection($job; $map; $out; $pr; $event):
   | if $value != "true" then
       if $event == "pull_request" and $verdicts[$output] == "true" then
         {selected: false, gated: true,
-         why: "selected by paths, held back on a pull request without full-ci or lane:\($output): runs in the merge queue"}
+         why: "selected by paths, held back on a pull request: the merge queue runs it before the change lands"}
       else {selected: false, why: "needs.changes.outputs.\($output) is \($value)"}
       end
     elif $pr_only and $event != "pull_request" then

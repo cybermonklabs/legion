@@ -42,7 +42,7 @@ func TestTheTickNamesAWaitingParentBlockedByItsOpenChildren(t *testing.T) {
 	var blocked []record.BlockedIssue
 	inTx(t, pool, func(tx pgx.Tx) {
 		var err error
-		if held, blocked, _, err = admission.tickRows(context.Background(), tx); err != nil {
+		if held, blocked, _, err = admission.tickRows(context.Background(), tx, func() (*lineJudgement, error) { return admission.finalJudgement(context.Background(), tx) }); err != nil {
 			t.Fatalf("read the tick's rows: %v", err)
 		}
 	})

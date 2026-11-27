@@ -102,7 +102,9 @@ type ConsumerSpec struct {
 	Renames ghrepo.Renames
 	AckWait time.Duration
 	// NakDelay is the wait before a failed message's second delivery; each later failure doubles
-	// it, up to NakDelayCap (nakDelay), and a longer RetryLater wait takes its place, uncapped.
+	// it, up to NakDelayCap (nakDelay), and a longer RetryLater wait takes its place, uncapped. A
+	// RetryLater that is Waiting is no failure, and waits its own After, or NakDelay when that is
+	// longer, at every delivery (retryDelay).
 	NakDelay time.Duration
 	// NakDelayCap is the longest the doubled NakDelay grows to; none is defaultNakDelayCap.
 	NakDelayCap time.Duration
@@ -230,13 +232,23 @@ type ConsumerSpec struct {
 	PrepareArtifact func(ctx context.Context, artifact DispatchArtifact) (DispatchArtifact, error)
 }
 
-// RetryLater is an error ConsumerSpec.ReviewPermission returns when its read must not be made again
-// sooner than After, which GitHub names when it answers with its rate limit: the delivery is nacked
-// with a delay of After, whole, or of the nak delay its delivery count earns (nakDelay) when that
-// is longer.
+// RetryLater is an error that asks for the delivery to be nacked with a delay of After, whole, or
+// of the nak delay its delivery count earns (nakDelay) when that is longer (retryDelay). The
+// daemon's preparations return one when a fact must wait for something outside the daemon, such
+// as GitHub's rate limit, a review App token GitHub has not yet accepted, or a repository mapping
+// that is being read again (internal/daemon's repositories.go, review_body.go and
+// review_permission.go). The workflow returns one, with Waiting set, when a listener's wake report
+// finds its claim in a release that has not ended (workflow's listenerWakeInRelease).
+//
+// Waiting marks a retry that is expected rather than a failure: nakResolve logs it at INFO, and
+// every other retry at WARN. A wait that lasts minutes would otherwise write a WARN line each
+// delay, and those lines would hide the one WARN that says a wake was dropped. Its delay does
+// not grow with the delivery count: it is After, or NakDelay when that is longer, at every
+// delivery, so the fact is applied again as soon as the wait it names is over.
 type RetryLater struct {
-	After time.Duration
-	Err   error
+	After   time.Duration
+	Waiting bool
+	Err     error
 }
 
 func (r *RetryLater) Error() string { return r.Err.Error() }
@@ -263,9 +275,11 @@ type Consumers struct {
 	// wake is the durable on the Envoy listener's wake reports (legionWakeSubject): a message
 	// published to a role topic of a released pod, a message sent to the agent subject of a
 	// released session, and the listener's own `listener_ready`. It is a durable of its own
-	// because every daemon consumes the subject: the listener does
-	// not know which daemon owns a session, so each reads every report and acts only on a
-	// released claim of its own.
+	// because every daemon consumes the subject: the listener does not know which daemon owns a
+	// session, so each reads every report and acts only on a claim of its own. A role report of
+	// another project decodes to no fact (decodeListenerWake). A report that finds its own claim
+	// live in a release that has not ended is sent back and applied again after its delay
+	// (RetryLater, Waiting), and one that finds its claim released wakes it.
 	wake jetstream.Consumer
 
 	progress struct{ dispatch, github, wake *consumerProgress }
@@ -1175,6 +1189,8 @@ func duplicateOutcome() messageOutcome { return messageOutcome{kind: outcomeDupl
 
 // nakOutcome asks for the nak nakResolve makes: what failed, which it logs at warn, nakWhat, which
 // it logs at error if the nak itself fails, and the failure, whose RetryLater can widen the delay.
+// A RetryLater that is Waiting is no failure: nakResolve logs it at info, with a line that says
+// the fact waits, in place of what.
 // The event both lines name is the caller's own, which holds the decoded message.
 func nakOutcome(what, nakWhat string, err error) messageOutcome {
 	return messageOutcome{kind: outcomeNak, what: what, nakWhat: nakWhat, err: err}
@@ -1421,10 +1437,15 @@ func resolveReviewBody(ctx context.Context, spec ConsumerSpec, fact Fact) (Fact,
 // nakResolve naks message, whose delivery delivered failed as outcome says, at the delay that
 // delivery earns (retryDelay: the doubled nak delay, or a longer RetryLater wait in outcome.err),
 // logging outcome.what, the delay and the delivery count at warn, and outcome.nakWhat at error if
-// the nak itself fails.
+// the nak itself fails. A RetryLater that is Waiting is no failure: its line is at info and says
+// the fact waits.
 func nakResolve(spec ConsumerSpec, message jetstream.Msg, delivered uint64, eventID string, outcome messageOutcome) {
-	delay := retryDelay(delivered, spec, outcome.err)
-	logMessage(spec.Logger, slog.LevelWarn, outcome.what, message, "event_id", eventID, "retry_in", delay, "delivered", delivered, "error", outcome.err)
+	delay, waiting := retryDelay(delivered, spec, outcome.err)
+	level, what := slog.LevelWarn, outcome.what
+	if waiting {
+		level, what = slog.LevelInfo, "an intake fact waits and is applied again after its delay"
+	}
+	logMessage(spec.Logger, level, what, message, "event_id", eventID, "retry_in", delay, "delivered", delivered, "error", outcome.err)
 	if nakErr := message.NakWithDelay(delay); nakErr != nil {
 		logMessage(spec.Logger, slog.LevelError, outcome.nakWhat, message, "event_id", eventID, "error", nakErr)
 	}

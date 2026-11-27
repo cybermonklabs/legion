@@ -689,8 +689,9 @@ func populatedDeployment(s *seeding) composition {
 
 // seedPopulatedRecord is the populated record the populated and paused states share, written in
 // the order its writers need: the issues, the outbox rows the claims' tasks name, the claims, the
-// deployment's boots and controller, the intake's give-ups, the pod's hold and the live P0 bound.
-// It answers the daemon's composition of it and the outbox rows the claims hold.
+// deployment's boots and controller, the intake's give-ups, the pod's hold, the live P0 bound and
+// the store's state publication. It answers the daemon's composition of it and the outbox rows the
+// claims hold.
 func seedPopulatedRecord(s *seeding) (composition, populatedRows) {
 	populatedRecord(s)
 	rows := populatedOutbox(s)
@@ -708,6 +709,8 @@ func seedPopulatedRecord(s *seeding) (composition, populatedRows) {
 			Reason: "the P0 issues outran the gateway", At: at(22, 9, 10, 0)})
 		return err
 	})
+	// The daemon runs a workflow, so its store holds state events (seeding.published).
+	s.published(c.cfg.Project, at(22, 9, 17, 30))
 	return c, rows
 }
 

@@ -232,6 +232,106 @@ func issueSecrets(sandbox string) []string {
 	return secrets
 }
 
+// A Sandbox under the issue's name whose labels name another project or issue is not the issue's
+// to end. The close (SuspendIssue) and the release (ReleaseIssue) refuse it, and they do so before
+// they ask authorize. The daemon's authorize of a release commits the release where it acts
+// (store.Store.CommitIssueRelease), and a committed release is never cancelled. A refusal after
+// that commit would come on every attempt, and the release would never end. The refusal leaves the
+// Sandbox, its pod and its Secrets as the launch made them. Its tree label is no part of the check
+// (decision 14 of dispatch://INFRA-4730; TestEveryDecisionIsTheSameWithEveryStoredTreeWrong). The
+// control is each end of the issue's own Sandbox: it asks authorize once, and where authorize
+// answers false it acts on nothing.
+func TestASandboxOfAnotherProjectOrIssueIsRefusedBeforeAuthorize(t *testing.T) {
+	for _, end := range []struct {
+		name string
+		call func(*Runtime, context.Context, string, string, func(context.Context) (bool, error)) error
+	}{
+		{name: "the close", call: (*Runtime).SuspendIssue},
+		{name: "the release", call: func(r *Runtime, ctx context.Context, issue, podUID string, authorize func(context.Context) (bool, error)) error {
+			_, err := r.ReleaseIssue(ctx, issue, podUID, authorize, nil)
+			return err
+		}},
+	} {
+		for _, other := range []struct {
+			name string
+			// labels are the labels the test sets on the launch's Sandbox.
+			labels map[string]string
+		}{
+			{name: "another project", labels: map[string]string{labelProject: "other"}},
+			{name: "another issue", labels: map[string]string{labelIssue: labelValue("LEGION-210")}},
+		} {
+			t.Run(end.name+" of a Sandbox of "+other.name, func(t *testing.T) {
+				g := newRig(t, nil)
+				loc := g.spawn(childSpec(t))
+				name := SandboxName(childToken)
+				if len(other.labels) > 0 {
+					object, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, name)
+					if err != nil {
+						t.Fatal(err)
+					}
+					relabelled := object.(*unstructured.Unstructured).DeepCopy()
+					labels := relabelled.GetLabels()
+					maps.Copy(labels, other.labels)
+					relabelled.SetLabels(labels)
+					if err := g.dyn.Tracker().Update(sandboxGVR, relabelled, testNamespace); err != nil {
+						t.Fatal(err)
+					}
+				}
+				g.clearActions()
+				var asked atomic.Int32
+				authorize := func(context.Context) (bool, error) {
+					asked.Add(1)
+					return true, nil
+				}
+
+				err := end.call(g.r, g.ctx, childIssue, "", authorize)
+				if err == nil || !strings.Contains(err.Error(), "does not belong to this issue") {
+					t.Fatalf("%s = %v, want the refusal of a Sandbox of %s", end.name, err, other.name)
+				}
+				if n := asked.Load(); n != 0 {
+					t.Fatalf("%s asked authorize %d times before its refusal, want none: a release commits where authorize answers that it acts", end.name, n)
+				}
+				if s := g.sandbox(name); s == nil || s.mode() != modeRunning {
+					t.Fatalf("after the refused %s the Sandbox is %+v, want it Running as the launch left it", end.name, s)
+				}
+				if pod := g.pod(name); pod == nil || string(pod.UID) != loc.Sandbox.PodUID {
+					t.Fatalf("after the refused %s the pod is %+v, want the launch's %s", end.name, pod, loc.Sandbox.PodUID)
+				}
+				secrets := issueSecrets(name)
+				for _, w := range g.writes() {
+					if w.name == name || slices.Contains(secrets, w.name) {
+						t.Fatalf("the refused %s sent %s, want nothing written to the Sandbox or its Secrets", end.name, w)
+					}
+				}
+			})
+		}
+		t.Run("control: "+end.name+" of the issue's own Sandbox asks authorize once", func(t *testing.T) {
+			g := newRig(t, nil)
+			loc := g.spawn(childSpec(t))
+			name := SandboxName(childToken)
+			g.clearActions()
+			var asked atomic.Int32
+			refuse := func(context.Context) (bool, error) {
+				asked.Add(1)
+				return false, nil
+			}
+
+			if err := end.call(g.r, g.ctx, childIssue, "", refuse); err != nil {
+				t.Fatalf("%s of the issue's own Sandbox = %v, want no error: authorize answered that it does not act", end.name, err)
+			}
+			if n := asked.Load(); n != 1 {
+				t.Fatalf("%s asked authorize %d times, want once: the Sandbox is the issue's own", end.name, n)
+			}
+			if s := g.sandbox(name); s == nil || s.mode() != modeRunning {
+				t.Fatalf("after %s that authorize refused the Sandbox is %+v, want it Running as the launch left it", end.name, s)
+			}
+			if pod := g.pod(name); pod == nil || string(pod.UID) != loc.Sandbox.PodUID {
+				t.Fatalf("after %s that authorize refused the pod is %+v, want the launch's %s", end.name, pod, loc.Sandbox.PodUID)
+			}
+		})
+	}
+}
+
 // An issue whose microVM pod keeps its volume (keptVolume) keeps one claim through every end of a
 // pod that leaves the issue in the workflow. The claim is the Sandbox's own, made by Agent Sandbox
 // from the one `issue` template, and each of those ends keeps the Sandbox and so the claim: an

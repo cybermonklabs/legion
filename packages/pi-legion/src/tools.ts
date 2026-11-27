@@ -971,7 +971,8 @@ export function createLegionTool(deps: {
         "in it and before each `tester`, `reviewer` or `acceptance:owner` step; a " +
         "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
-        "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
+        "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with a reason for each cause, " +
+        "the first reasons of each kind and one more that counts the rest of that kind " +
         "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
         "that started its work before Legion took plans), a version Dispatch does " +
         "not have (VERSION_NOT_IN_DISPATCH), a version below the plan in force (PLAN_VERSION_OLD; the plan in force given " +

@@ -306,10 +306,11 @@ func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []Des
 
 // PutRoleHolders publishes the session of each Legion role of the issue through PUT
 // /api/v1/issues/{key}/role-holders, as the daemon's own session: the route takes a Legion
-// daemon's session alone. The write replaces the issue's whole set, appends no event and notifies
-// nobody. The list is always sent, empty for an issue where no session holds a role: Dispatch
-// refuses a body that names no list, and the empty list is the publication that removes every
-// holder. Dispatch answers two 403s to a token it does not take as the daemon's own
+// daemon's session alone. The write replaces the issue's whole set. A change to its (role,
+// session) pairs appends quiet issue.role_holders_changed; a publication of the same pairs appends
+// no event and notifies nobody. The list is always sent, empty for an issue where no session holds
+// a role: Dispatch refuses a body that names no list, and the empty list is the publication that
+// removes every holder. Dispatch answers two 403s to a token it does not take as the daemon's own
 // (putIssueRoleHolders in packages/envoy/internal/dispatch/api/issue_role_holders.go). With
 // DISPATCH_LEGION_STATUS_SCOPE on, it takes the write only on a token that proves the session
 // legion-daemon:<PROJECT> of the issue's project and holds the legion-status scope, the token the

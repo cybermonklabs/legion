@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -364,6 +365,86 @@ func TestANewsOnlyStartOfAChildsArchitectWithNoClaimFinishes(t *testing.T) {
 	}
 	if says := "outbox news-only start reaches no claim; finished without acting"; !strings.Contains(logged.String(), says) {
 		t.Fatalf("the outbox logged %q, want %q", logged.String(), says)
+	}
+}
+
+// A child's first phase start tells the architect above the child of the start once, with the
+// child-status of workflow.ChildStartedNotice. The child's move out of admitted tells nobody
+// (workflow's noticeFor), so the child's own architect, which that move starts, is told nothing of
+// its own start: its first notice is its catch-up, and no later notice is of the start.
+//
+// Here the child's parent is a child of the root, in implementing. The release of an open child
+// under it holds the parent in awaiting_children (dispatch://INFRA-3320), and that move tells the
+// architect above the child first, with the awaiting-children notice of the parent; the child's
+// start is the one other notice it gets. The parent's architect works, or the idle release took
+// its pod, or it failed. A released claim holds its role (record.HoldsRole), so the first attempt
+// of each notice wakes the pod and waits on its backoff, as on INFRA's daemon (INFRA-4640,
+// INFRA-4318), and the child's start waits behind the parent's earlier notice to the same
+// architect. The child's architect starts while the notices wait, and the attempt after the
+// backoff walks the owner again and finds that architect launching: the notices still go to the
+// parent's architect. A failed claim holds no role, so the notices go on up to the root's
+// architect.
+func TestAChildsStartTellsTheArchitectAboveItOnce(t *testing.T) {
+	const parent = "LEGION-5"
+	for _, tc := range []struct {
+		name     string
+		state    supervise.ClaimState
+		by       supervise.SuspendSource
+		released bool
+		above    string
+	}{
+		{name: "the parent's architect works", state: supervise.StateWorking, above: parent},
+		{name: "the parent's architect is released", state: supervise.StateSuspended, by: supervise.SuspendedByReleased, released: true, above: parent},
+		{name: "the parent's architect failed", state: supervise.StateFailed, above: doorRoot},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newChildArchitectRig(t)
+			rig.put(rig.member(parent, doorRoot, phase.Implementing, "in_progress", "T"))
+			holdSlot(t, rig.pool, parent)
+			held, _, err := rig.sup.Create(rig.ctx, supervise.Claim{Token: mustClaimToken(t, parent, claim.RoleArchitect), Project: "legion",
+				Tree: doorRoot, Issue: parent, Role: claim.RoleArchitect, Generation: 1, ServingGeneration: 1,
+				State: tc.state, SuspendedBy: tc.by, Session: "ses-parent-architect", SessionFile: doorSessionFile("ses-parent-architect")}, "")
+			if err != nil {
+				t.Fatalf("create the architect of %s: %v", parent, err)
+			}
+			if got := held.Claim(); got.State != tc.state || got.Released() != tc.released {
+				t.Fatalf("the architect of %s is %s by %s, want %s (released %t)", parent, got.State, got.SuspendedBy, tc.state, tc.released)
+			}
+
+			rig.written("release", dispatch.Issue{Key: doorChild, Status: "todo", Title: doorChild, Parent: new(parent), Rank: "V",
+				ResolvedRepo: "acme/widgets", LastSeq: 2})
+			rig.drain()
+			if told := rig.noticesTo(parent); tc.released && len(told) != 0 {
+				t.Fatalf("the released architect of %s was published %+v before its pod came back, want nothing", parent, told)
+			}
+			// The backoff of each notice that woke the parent's pod runs out: the parent's own
+			// awaiting-children notice, and the child's start behind it.
+			if _, err := rig.pool.Exec(rig.ctx, `update outbox set next_at = now() where kind = 'notice' and issue in ($1, $2)`, doorChild, parent); err != nil {
+				t.Fatalf("bring the notices of %s and %s due: %v", doorChild, parent, err)
+			}
+			rig.wantChildsArchitectToldItsIssues([]string{doorChild})
+
+			want := workflow.ChildStartedNotice(doorChild, doorRoot, phase.Planning, nil)
+			var started, waiting []record.Notice
+			for _, notice := range rig.noticesTo(tc.above) {
+				if notice.Kind == want.Kind {
+					started = append(started, notice)
+				} else {
+					waiting = append(waiting, notice)
+				}
+			}
+			if len(started) != 1 || !reflect.DeepEqual(started[0], want) {
+				t.Fatalf("the architect of %s was published %+v of the child-status kind, want the one notice %+v of %s's start", tc.above, started, want, doorChild)
+			}
+			if len(waiting) != 1 || waiting[0].Kind != workflow.AwaitingChildrenNoticeKind {
+				t.Fatalf("the architect of %s was published %+v beside the child's start, want the one awaiting-children notice of %s", tc.above, waiting, parent)
+			}
+			for _, notice := range rig.noticesTo(doorChild)[1:] {
+				if notice.Kind == "child-status" || notice.Phase == phase.Admitted {
+					t.Fatalf("the child's own architect was published %+v after its catch-up, want no notice of its own start", notice)
+				}
+			}
+		})
 	}
 }
 

@@ -38,6 +38,12 @@ func (projectedState) State(ctx context.Context, tx pgx.Tx) (api.State, []superv
 	return state, nil, err
 }
 
+func (projectedState) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
+	observed, err := projection.Observe(ctx, projection.ObservedInputs{Tx: tx, Store: record.NewStore(), Project: treeRunsProject,
+		Steps: config.DesignGateRootIssues.Steps(), Now: treeRunsNow})
+	return observed, nil, err
+}
+
 // The served `treeRuns` is the daemon's own answer to whether a root's tree runs (record.TreeRuns,
 // dispatch://INFRA-3320, R4), on every root it records, read through the route a session reads
 // its record from, over the state the projection builds from a real store and the copy of

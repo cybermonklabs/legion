@@ -39,3 +39,26 @@ func TestAChildsCloseAndStatusChangeStartAboveItOnTheChain(t *testing.T) {
 		})
 	}
 }
+
+// Every phase-finished starts its owner walk at its issue. One that names a role is a worker's own,
+// which the issue's own architect hears while it holds its role. The one that names no role is the
+// gate's opening of an issue that holds its own gate (workflow's noticeFor), which that issue's
+// own architect hears. A child's gate opening sends no phase-finished: the child-status of its
+// start tells the architect above it (workflow's ChildStartedNotice).
+func TestEveryPhaseFinishedStartsAtItsIssue(t *testing.T) {
+	for _, role := range append([]claim.Role{""}, claim.Roles...) {
+		if NoticeStartsAtParent("phase-finished", role) {
+			t.Errorf("a phase-finished of role %q starts at the issue's parent, want the issue", role)
+		}
+	}
+	root := chainIssue("LEGION-1", "LEGION-1", "", phase.Implementing, "in_progress")
+	child := chainIssue("LEGION-2", "LEGION-1", "LEGION-1", phase.Planning, "in_progress")
+	issues := []Issue{root, child}
+	chains := chainsOf(issues, copyOf(issues...))
+	runs := func(token claim.Token) bool {
+		return token == architectToken(t, root.Key) || token == architectToken(t, child.Key)
+	}
+	if got := OwningIssue("legion", chains, root.Key, NoticeStartsAtParent("phase-finished", ""), runs); got != root.Key {
+		t.Errorf("the phase-finished of the gate's opening of the root %s goes to the architect of %s, want the root's own", root.Key, got)
+	}
+}

@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A role claim whose takeover record the message bus did not answer is answered `503` with
+  `Retry-After: 1` and a body that opens `envoy: the message bus did not answer`, as every
+  other answer the listener gives a request the bus did not answer, so a client's
+  `isBusUnanswered` and a log filter on that prefix count it. A record the stream refused, a full
+  stream and a denied publish keep their answers.
+time: 2026-11-20T16:31:52Z
+custom:
+    Issue: pr4194

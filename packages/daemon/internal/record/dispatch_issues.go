@@ -24,6 +24,19 @@ func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading Disp
 	if reading.Seq == 0 {
 		return nil
 	}
+	// A row the copy does not hold yet, and a parent the reading moves, can move the trees of the
+	// project (watchTrees), which are read before the write.
+	if s.state.Load() != nil {
+		moves, err := copyRowMovesTrees(ctx, tx, reading)
+		if err != nil {
+			return fmt.Errorf("put the Dispatch copy of %s: %w", reading.Key, err)
+		}
+		if moves {
+			if err := s.watchTrees(ctx, tx, reading.Project); err != nil {
+				return fmt.Errorf("put the Dispatch copy of %s: %w", reading.Key, err)
+			}
+		}
+	}
 	// A value the reading does not carry goes into a new row as its column's default, and a nil
 	// list it carries as the empty list, since neither list column takes null; a parent of none
 	// is null.
@@ -103,6 +116,11 @@ func (s *Postgres) TakeDispatchRefill(ctx context.Context, tx pgx.Tx, project st
 	}
 	if tag.RowsAffected() == 0 {
 		return nil, false, nil
+	}
+	// The copy is emptied and filled again in this transaction, so the trees are read before it
+	// empties (watchTrees) and compared with the trees the refill leaves when it ends.
+	if err := s.watchTrees(ctx, tx, project); err != nil {
+		return nil, false, fmt.Errorf("empty the Dispatch copy of %s: %w", project, err)
 	}
 	rows, err := tx.Query(ctx, `with removed as (delete from dispatch_issues where project = $1 returning key)
 		select key from removed order by key`, project)

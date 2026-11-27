@@ -187,9 +187,12 @@ func architectClaim(t *testing.T, sup *supervisor, issue string, state supervise
 // under its lease.
 func leasedOutboxRow(t *testing.T, pool *store.Pool, records record.Store, row record.OutboxRow) record.OutboxRow {
 	t.Helper()
-	enqueueOutbox(t, pool, records, row)
-	if err := pool.QueryRow(context.Background(), "select id from outbox order by id desc limit 1").Scan(&row.ID); err != nil {
-		t.Fatalf("read the enqueued row: %v", err)
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		row.ID, err = records.EnqueueID(ctx, tx, row)
+		return err
+	}); err != nil {
+		t.Fatalf("enqueue the row: %v", err)
 	}
 	row.LeaseToken = leaseOutboxRow(t, pool, row.ID)
 	return row
@@ -406,6 +409,10 @@ func TestAChildStatusNoticeStartsAtTheParent(t *testing.T) {
 		{"stored in one tree, under another tree's issue", "LEGION-5", childClosed, map[string]routeClaim{"LEGION-5": holds, "LEGION-51": holds, "LEGION-1": holds}, "LEGION-51"},
 		{"past a parent on the backlog", "LEGION-9", childClosed, map[string]routeClaim{"LEGION-9": holds, "LEGION-1": holds}, "LEGION-1"},
 		{"on a chain the copy cannot show to its top", "LEGION-7", childStatus, map[string]routeClaim{"LEGION-7": holds, "LEGION-1": holds}, "waits"},
+		// A child's start is told with a child-status, whose walk starts at its parent, so the
+		// architect above the child hears it even while the child's own architect is launching.
+		{"a child's start, its own architect launching", "LEGION-2", childStatus, map[string]routeClaim{"LEGION-2": launching, "LEGION-1": holds}, "LEGION-1"},
+		{"a grandchild's start under its parent's architect", "LEGION-3", childStatus, map[string]routeClaim{"LEGION-2": holds, "LEGION-1": holds}, "LEGION-2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := routedTo(t, route, tc.issue, tc.notice, tc.claims); got != tc.owner {
@@ -589,7 +596,7 @@ func TestANoticeHeldForAnAbsentArchitectArrivesInOrderOnceItReturns(t *testing.T
 	// The held row's error carries the listener's refusal, which is what the log line and the row's
 	// last_error show an operator.
 	var lastError string
-	if err := pool.QueryRow(context.Background(), "select id, last_error from outbox order by id limit 1").Scan(&first.ID, &lastError); err != nil {
+	if err := pool.QueryRow(context.Background(), "select id, last_error from outbox where "+notStateRows+" order by id limit 1").Scan(&first.ID, &lastError); err != nil {
 		t.Fatalf("read the first held row: %v", err)
 	}
 	first.LeaseToken = leaseOutboxRow(t, pool, first.ID)

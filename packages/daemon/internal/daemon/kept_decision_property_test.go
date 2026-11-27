@@ -2887,10 +2887,11 @@ func (r *keptRun) enqueue(issue string, payload record.OutboxPayload) {
 	}
 }
 
-// lastRow is the newest outbox row's id, which names in the trace the row an operation wrote.
+// lastRow is the newest outbox row's id, which names in the trace the row an operation wrote: a
+// row of the lanes the operations write, the state lane's left out (notStateRows).
 func (r *keptRun) lastRow() int64 {
 	var id int64
-	if err := r.pool.QueryRow(r.ctx, "select coalesce(max(id), 0) from outbox").Scan(&id); err != nil {
+	if err := r.pool.QueryRow(r.ctx, "select coalesce(max(id), 0) from outbox where "+notStateRows).Scan(&id); err != nil {
 		r.fatalf("read the newest outbox row: %v", err)
 	}
 	return id

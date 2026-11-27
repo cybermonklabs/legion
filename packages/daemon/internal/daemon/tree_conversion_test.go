@@ -650,9 +650,10 @@ func TestALandedHandOverUnderAReservedCleanupStartsAsARootOfItsOwn(t *testing.T)
 // plan of the run before to the new generation, each task where it stood (record.Store's CarryPlan
 // with carried), and then writes the new run's plan node under that run's own id: the default
 // steps where the run before walked them, and its owner's plan, with the document and the version
-// Legion took, where its owner gave one. CAPTURE-80 lingers at generation 2; CAPTURE-81, a member
-// of its tree at its acceptance, was handed over, and the listing shows that the write landed. This
-// is main's TestACarriedRootsNewRunWritesItsPlan (admit's plan_carry_test.go) on the one path of
+// Legion took, where its owner gave one; each task with the tasks it needs, [] for the one task of
+// either. CAPTURE-80 lingers at generation 2; CAPTURE-81, a member of its tree at its acceptance,
+// was handed over, and the listing shows that the write landed. This is main's
+// TestACarriedRootsNewRunWritesItsPlan (admit's plan_carry_test.go) on the one path of
 // this release that finishes a hand-over, the conversion.
 func TestALandedHandOverCarriesItsPlanIntoItsNewRun(t *testing.T) {
 	t.Parallel()
@@ -665,10 +666,10 @@ func TestALandedHandOverCarriesItsPlanIntoItsNewRun(t *testing.T) {
 		want   record.PlanRecord
 	}{
 		{name: "the default steps", want: record.PlanRecord{ID: workflow.PlanID(member, 2), Generation: 2, Source: record.PlanSourceDefault,
-			Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}},
+			Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}, Needs: &[]string{}}}}},
 		{name: "the owner's plan", owners: true, want: record.PlanRecord{ID: workflow.PlanID(member, 2), Generation: 2, Source: record.PlanSourceOwner,
 			PlanDocument: &record.PlanDocument{ArtifactID: "plan-artifact", Version: 2},
-			Tasks:        []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "reviewer", "acceptance:owner"}}}}},
+			Tasks:        []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "reviewer", "acceptance:owner"}, Needs: &[]string{}}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

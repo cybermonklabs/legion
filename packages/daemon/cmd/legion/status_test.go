@@ -144,7 +144,7 @@ func TestStatusWithTheOperatorTokenFileFindsTheDaemonFromTheConfiguration(t *tes
 	t.Parallel()
 	d := statusDaemon(t, `{"queued":[{"issue":"LEGSMOKE-3","status":"icebox","row":41}]}`)
 	tokenFile := writeFile(t, "operator-token", controllerOperatorToken+"\n")
-	code, _, errb := issueStatus(t, "LEGSMOKE-3", "icebox", "--operator-token-file", tokenFile, "--config", legionConfig(t, "demo", d.port))
+	code, _, errb := issueStatus(t, "LEGSMOKE-3", "icebox", "--operator-token-file", tokenFile, "--config", legionConfig(t, "DEMO", d.port))
 	if code != 0 {
 		t.Fatalf("legion issue status = %d, stderr %q", code, errb)
 	}

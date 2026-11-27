@@ -76,6 +76,9 @@ type Store struct {
 	// fold of a delivery's final credit reads (settleDesignNews). It is nil until the daemon wires
 	// it.
 	gateRoots atomic.Pointer[GateRoots]
+	// stateQueued is PublishState's switch, read at each claim write. It is nil until the daemon
+	// turns the state events on, and while it is nil no claim write queues one.
+	stateQueued atomic.Pointer[statePublication]
 }
 
 // Open connects to dsn and waits for the server to answer, so a daemon that

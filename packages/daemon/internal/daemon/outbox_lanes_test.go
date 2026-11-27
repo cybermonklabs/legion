@@ -351,7 +351,7 @@ func microClock() *heldClock {
 // outboxIDs is every row's id, in id order.
 func outboxIDs(t *testing.T, pool *store.Pool) []int64 {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), "select id from outbox order by id")
+	rows, err := pool.Query(context.Background(), "select id from outbox where "+notStateRows+" order by id")
 	if err != nil {
 		t.Fatalf("list outbox rows: %v", err)
 	}

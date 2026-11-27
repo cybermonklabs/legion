@@ -798,6 +798,9 @@ func encodeBackwardMoves(moves map[string]int) ([]byte, error) {
 }
 
 // decodeBackwardMoves reads such a column back: nil for the empty object, as scanPhase reads it.
+// The empty object is what nearly every row holds, and this decode runs on every phase row of
+// every state read, so those bytes answer the nil map without a decode of their own. Any other
+// bytes, a null among them, still go through json.Unmarshal and still answer its error.
 func decodeBackwardMoves(raw []byte) (map[string]int, error) {
 	if bytes.Equal(raw, []byte("{}")) {
 		return nil, nil

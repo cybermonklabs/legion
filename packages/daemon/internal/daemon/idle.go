@@ -572,16 +572,29 @@ func endIdleHolds(ctx context.Context, st *store.Store, project, issue string, l
 // here would charge this release with a role it never touched and the hours that role's pod was
 // gone a second time.
 //
-// The record names the release's mark (release, issue_releases.id), so a teardown that runs again
-// after its record and before the mark's clear writes no second record (store.RecordPodRelease).
-// The release line follows the record's first write. A retry whose record was already written
-// logs no second line.
+// The record also retells the start of each wake taken under the release's mark that a
+// project's pause told in its words: that start's task becomes the task of the same wake in the
+// release's words (workflow.ReleasedWakeTask, store.PodRelease.WakeTask), since the release takes
+// the pod.
 //
-// If the write fails, the teardown logs the release line beside the warning: the pod is already
-// released, and nothing undoes that for want of a row.
-func (r *outbox) recordPodRelease(ctx context.Context, issue string, release int64, generation uint64, suspended []claim.Role) bool {
+// The record is the release's one-way step too: it names the release's mark (release,
+// issue_releases.id; store.Store.RecordPodRelease), and the teardown records the release once the
+// runtime has answered, before its own steps that can fail. So a teardown that runs again after
+// such a step failed finishes the release, asks the runtime nothing and cannot cancel it
+// (store.ReleaseDecision.PodTaken), and its record writes no second row. A step of the runtime
+// that fails comes before the record, and the commit of the runtime's read keeps that release
+// from being cancelled (store.Store.CommitIssueRelease). A record that cannot be written is
+// answered as the teardown's error, and the row's failure logs it once (settle): the mark stands,
+// and the row runs again on the outbox's backoff until workflow.WakeHeldForRelease after the mark.
+// The teardown's attempt at or past that bound gives up on the record (recordGivenUp), and its
+// last write settles the release in place of the record and clears the mark, in one transaction
+// (settleGivenUp). Until a record lands, no record names the mark.
+//
+// It answers whether this call wrote the record. The release line follows the record's first
+// write, so a retry whose record was already written logs no second line.
+func (r *outbox) recordPodRelease(ctx context.Context, issue string, release int64, generation uint64, suspended []claim.Role) (bool, error) {
 	if r.supervisor == nil || r.supervisor.store == nil {
-		return true
+		return true, nil
 	}
 	roles := make([]string, 0, len(suspended))
 	for _, role := range suspended {
@@ -590,13 +603,69 @@ func (r *outbox) recordPodRelease(ctx context.Context, issue string, release int
 	slices.Sort(roles)
 	_, wrote, err := r.supervisor.store.RecordPodRelease(ctx, store.PodRelease{
 		Project: r.project, Issue: issue, Generation: generation, Roles: roles,
-		At: time.Now().UTC(), Release: release,
+		At: time.Now().UTC(), Release: release, WakeTask: workflow.ReleasedWakeTask,
 	})
-	if err != nil {
-		r.log.Warn("outbox: could not record an issue pod's release", "issue", issue, "error", err)
-		return true
+	return wrote, err
+}
+
+// recordGivenUp answers whether the teardown of a release gives up on its record, whose write
+// failed (recordPodRelease). decision is the answer the teardown acts on. The record is what tells
+// each wake taken under the mark the release it ends, so a failed record is retried; and a release
+// that cannot finish must not run for ever, so the retries are bounded. R3's bound
+// (dispatch://INFRA-3589) is workflow.WakeHeldForRelease after the release's mark
+// (store.ReleaseDecision.MarkedAt), read on the outbox's clock, as the teardown's other steps
+// read it.
+//
+// It answers whether that bound has passed. Before the bound, the teardown answers the record's
+// error: it fails, the mark stands, and the row runs again on its backoff. At or past the bound,
+// the teardown gives up on the record: it finishes its later steps, and its last write is the
+// settle, in place of the clear of the mark (clearOrSettleRelease, settleGivenUp). It makes no
+// store call and logs nothing, so an attempt whose later step fails before the settle writes
+// nothing of the give-up and logs no line of it.
+//
+// Each decision that reaches the record is the mark's own answer (store's releaseMark.decision),
+// so it carries the mark's time, a column that is never null (issue_releases.marked_at). A zero
+// time would read as a bound long past, so it would end the retries and never keep them for ever.
+func (r *outbox) recordGivenUp(decision store.ReleaseDecision) bool {
+	return !r.now().UTC().Before(decision.MarkedAt.Add(workflow.WakeHeldForRelease))
+}
+
+// clearOrSettleRelease is the last write of a teardown of issue's release, whose mark is release.
+// unrecorded is the error of the record's write where the teardown gave up on it (recordGivenUp),
+// and nil otherwise. A teardown that gave up settles the release in place of the clear of the mark
+// (settleGivenUp); every other teardown clears the mark (store.Store.ClearIssueRelease).
+func (r *outbox) clearOrSettleRelease(ctx context.Context, issue string, release int64, unrecorded error) error {
+	if unrecorded != nil {
+		return r.settleGivenUp(ctx, issue, release, unrecorded)
 	}
-	return wrote
+	return r.trees.ClearIssueRelease(ctx, r.project, issue)
+}
+
+// settleGivenUp is the last write of a teardown that gave up on the record of issue's release
+// (recordGivenUp), in place of the clear of the mark: release is the release's mark, and failed
+// the record's error. The store settles the wakes taken under the mark in place of the record and
+// clears the mark, in one transaction that writes nothing to pod_releases
+// (store.Store.SettleUnrecordedRelease). So each such wake keeps its one start, the role's next
+// wake takes no second one, and no wake is taken between the settle and the clear. Once that
+// transaction commits, this logs one ERROR line naming the issue, the release and failed, and
+// answers nil, so the row finishes. Only the attempt whose settle commits logs the line: an
+// attempt whose step before the settle failed runs the row again, and the next attempt writes the
+// record, or, where that write fails again, gives up again.
+//
+// Where a record names the mark after all, the store writes nothing and leaves the mark, and this
+// answers failed: the next attempt reads that record (store.ReleaseDecision.PodTaken). A settle
+// that fails answers its own error, and the row runs again.
+func (r *outbox) settleGivenUp(ctx context.Context, issue string, release int64, failed error) error {
+	recorded, err := r.supervisor.store.SettleUnrecordedRelease(ctx, r.project, issue, release, r.now().UTC(), workflow.ReleasedWakeTask)
+	if err != nil {
+		return err
+	}
+	if recorded {
+		return failed
+	}
+	r.log.Error("outbox: the record of a release could not be written within 15 minutes of its mark; the teardown finishes without it and clears the mark, the release records hold no row of this release, and each wake taken during it starts once",
+		"issue", issue, "release", release, "error", failed)
+	return nil
 }
 
 // releaseHold is the hold a cancel the store decided is recorded under, and the sentence the

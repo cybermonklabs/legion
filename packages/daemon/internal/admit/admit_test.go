@@ -353,7 +353,10 @@ func TestReconcileReleasesSlotWhoseDispatchStatusLeftActiveSet(t *testing.T) {
 
 func TestCapturedDispatchTodoEventAdmitsAndProjectsActiveSlot(t *testing.T) {
 	pool := migratedPool(t)
-	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	// The admission runs for CAPTURE, the project the captured event names, so the issue is
+	// recorded under it and holds one of CAPTURE's own slots: the state's admission.active lists
+	// the project's own slot holders alone (blockers.JudgeAdmission).
+	admission := newAdmissionForProject(t, "CAPTURE", 1, config.DesignGate("").Steps(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	js := testJetStream(t)
 	consumers, err := intake.OpenConsumers(context.Background(), js, pool, intake.ConsumerSpec{Project: "CAPTURE", Repositories: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")}, AckWait: time.Second, NakDelay: time.Millisecond, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {

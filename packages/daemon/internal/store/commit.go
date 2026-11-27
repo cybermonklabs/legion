@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/puddle/v2"
 
+	"github.com/sjawhar/legion/daemon/internal/store/precommit"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -208,13 +209,14 @@ func (begunError) WriteBegun() bool { return true }
 // is this package's own, so a scope stored anywhere else names it there.
 type commitHooksKey struct{}
 
-// commitScope is one open transaction of TransactWith: the hooks its body registers, the
-// transaction, its pool and its options, whether its body still runs, and the error of each joined
-// write whose savepoint was neither rolled back nor released (savepointNotEnded), which keeps the
-// transaction from committing. A TransactWith called on a context whose scope's body still runs
-// joins that transaction (join).
+// commitScope is one open transaction of TransactWith: the hooks and the settles (package
+// precommit) its body registers, the transaction, its pool and its options, whether its body still
+// runs, and the error of each joined write whose savepoint was neither rolled back nor released
+// (savepointNotEnded), which keeps the transaction from committing. A TransactWith called on a
+// context whose scope's body still runs joins that transaction (join).
 type commitScope struct {
 	hooks             []func()
+	settles           *precommit.Scope
 	tx                pgx.Tx
 	pool              TxPool
 	options           pgx.TxOptions
@@ -311,10 +313,11 @@ func ReadOnly[T any](ctx context.Context, pool TxPool, what string, read func(ct
 //     (join), so write's hooks wait on the open transaction's commit. A join on another pool, or
 //     with another isolation level or access mode, runs nothing and is refused
 //     (errTransactionOnAnotherPool, errJoinOfOtherOptions). A joined write runs under a
-//     savepoint: one that fails is rolled back to it, and its hooks are cut, whatever the open
-//     transaction's body then does with its error; one that succeeds releases it. Either
-//     statement that fails fails the whole transaction (below). Under a bound (BoundAfterAcquire)
-//     the join's write bound runs from the join, since the open transaction holds its connection.
+//     savepoint: one that fails is rolled back to it, and its hooks and its settles (package
+//     precommit) are cut, whatever the open transaction's body then does with its error; one that
+//     succeeds releases it. Either statement that fails fails the whole transaction (below). Under
+//     a bound (BoundAfterAcquire) the join's write bound runs from the join, since the open
+//     transaction holds its connection.
 //   - The transaction begins through the pool's BeginTx, the boundary's one begin. Under a bound
 //     the daemon's pool ends its first wait in the queue at the acquire bound (errAcquireBound) and
 //     runs the BEGIN under the write bound counted from the moment it first handed out a
@@ -327,6 +330,10 @@ func ReadOnly[T any](ctx context.Context, pool TxPool, what string, read func(ct
 //     runs on the commit's context, below, so a rollback after the caller's cancel still reaches
 //     the server and the pool gets back a connection whose transaction has ended.
 //   - write's error is returned. No hook runs.
+//   - The settles write registered (package precommit) run on the same transaction once write has
+//     returned nil, in the order they were registered, a joined write's among them unless that
+//     write failed (join), while hooks can still be registered: a settle's statements commit with
+//     write's or not at all. A settle's error is returned as write's would be, and no hook runs.
 //   - A joined write whose savepoint was neither rolled back nor released (join) is returned as
 //     errSavepointNotEnded, with that write's error and the savepoint statement's, even when write
 //     returned nil, and nothing commits: pgx leaves the transaction open after a failed savepoint
@@ -375,8 +382,14 @@ func TransactWith(ctx context.Context, pool TxPool, options pgx.TxOptions, write
 	defer func() { _ = tx.Rollback(committing) }()
 
 	scope := &commitScope{tx: tx, pool: pool, options: options}
-	scoped := context.WithValue(ctx, commitHooksKey{}, scope)
-	if err := runWrite(scoped, scope, write); err != nil {
+	scoped, settles := precommit.Open(context.WithValue(ctx, commitHooksKey{}, scope))
+	scope.settles = settles
+	if err := runWrite(scoped, scope, func(ctx context.Context, tx pgx.Tx) error {
+		if err := write(ctx, tx); err != nil {
+			return err
+		}
+		return settles.Run(ctx, tx)
+	}); err != nil {
 		return err
 	}
 	if scope.savepointNotEnded != nil {
@@ -419,10 +432,12 @@ func runWrite(scoped context.Context, scope *commitScope, write func(ctx context
 }
 
 // join runs write inside the scope's open transaction, on ctx, the scope's own context, under a
-// savepoint of that transaction, and answers nil only for a write whose rows and hooks commit or
-// roll back with the open transaction's. A write that fails is rolled back to the savepoint, and
-// the hooks it registered are cut from the scope's list, so an outer body that swallows its error
-// commits neither. A write that succeeds releases the savepoint and keeps its hooks on the scope.
+// savepoint of that transaction, and answers nil only for a write whose rows, hooks and settles
+// commit or roll back with the open transaction's. A write that fails is rolled back to the
+// savepoint, and the hooks and the settles it registered are cut from the scope's lists, each such
+// settle's id freed for a later write of the transaction to register again
+// (precommit.Scope.Truncate), so an outer body that swallows its error commits none of them. A
+// write that succeeds releases the savepoint and keeps its hooks and its settles on the scope.
 // The rollback and the release run on the commit's context (commitContext), as TransactWith's
 // rollback and commit do: on ctx alone, a ctx that has ended sends neither, and a join whose write
 // succeeded would answer an error for rows and hooks that commit. A rollback or a release that
@@ -442,13 +457,14 @@ func (s *commitScope) join(ctx context.Context, pool TxPool, options pgx.TxOptio
 	if err != nil {
 		return err
 	}
-	registered := len(s.hooks)
+	registered, settled := len(s.hooks), s.settles.Len()
 	written := write(ctx, savepoint)
 	ending, stop := commitContext(ctx)
 	defer stop()
 	var ended error
 	if written != nil {
 		s.hooks = s.hooks[:registered]
+		s.settles.Truncate(settled)
 		ended = savepoint.Rollback(ending)
 	} else {
 		ended = savepoint.Commit(ending)

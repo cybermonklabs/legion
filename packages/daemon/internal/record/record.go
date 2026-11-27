@@ -2171,6 +2171,25 @@ type OutboxRow struct {
 	// the issue stands at when the fact commits (Postgres.RefenceFactRows). A row read back from
 	// the store carries none.
 	refence fenceStamp
+	// StateSeq, StateAt and StateTx are a state row's sequence, time and transaction (LaneState),
+	// which the row takes when the transaction that inserted it commits (the commit trigger of
+	// migration 20261126163320_state_events): the project's next sequence, the time every state
+	// row of that transaction shares, and that transaction's id. They are zero on a row of any
+	// other kind, and on a state row read inside the transaction that inserted it.
+	StateSeq int64
+	StateAt  time.Time
+	StateTx  int64
+}
+
+// StatePublication is a project's counter of its state events (state_publication, migration
+// 20261126163320_state_events): Seq, the sequence of the newest state row the project's daemon
+// committed, and StateID, the id of the store those events are counted in. The commit trigger
+// makes StateID once, at the project's first state row, and nothing changes it after; a reader
+// applies only the messages that carry its starting point's id (api.DaemonInfo.StateID). Seq is 0
+// and StateID empty while the project has no state row.
+type StatePublication struct {
+	Seq     int64
+	StateID string
 }
 
 // OutboxAttempt is the attempt a status row with an option of Dispatch's status-change route last
@@ -2407,6 +2426,13 @@ type Store interface {
 	// moves it.
 	DispatchIssueApplied(ctx context.Context, tx pgx.Tx, key string) (int64, error)
 	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
+	// AllPhases is the phases rows of project's issues, by issue, read in one statement: each
+	// issue's rows are what Phases answers for it, in the same order, with only the columns the
+	// state route reads (Postgres.AllPhases names them; every other field is zero), and an issue
+	// with no row has no entry. A row of another project's issue is not read. The state route
+	// reads it in place of a Phases read for each issue it lists (projection.Project,
+	// projection.Observe).
+	AllPhases(ctx context.Context, tx pgx.Tx, project string) (map[string][]PhaseRow, error)
 	// PhaseEntries is the entry each phases row of issues names, the moment that entry was raised
 	// and whether its task is one to send as written (PhaseRow.Entry, PhaseRow.EntryRaisedAt,
 	// PhaseRow.EntryVerbatim), by issue and role, read in one statement. Admission's sweep weighs
@@ -2919,6 +2945,20 @@ type Store interface {
 	// RecentClaimIssues is every issue of the Dispatch project with a claim that holds its role, or
 	// a claim that changed at or after since, in key order: the issues the boot publishes.
 	RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchProject string, since time.Time) ([]string, error)
+	// StatePublished says whether the state events are on (Postgres.PublishState): the switch a
+	// writer reads before it judges an event of its own, the admission pass before its block
+	// (QueueAdmissionBlock).
+	StatePublished() bool
+	// JudgedWrites is how many rows tx has written so far to the tables an admission judgement
+	// reads, and ok, false when Postgres keeps no such counts (Postgres.JudgedWrites): two counts
+	// in one transaction, both ok and equal, say no such row was written between them.
+	JudgedWrites(ctx context.Context, tx pgx.Tx) (count int64, ok bool, err error)
+	// QueueAdmissionBlock writes block as project's admission block where it differs from the
+	// one stored, and when that write changed it queues its state event (StateAdmission, carrying
+	// the run the state events were turned on with); a block equal to the stored one writes and
+	// queues nothing. It answers whether it queued the event. Its caller reads StatePublished
+	// first: a call while the state events are off is refused.
+	QueueAdmissionBlock(ctx context.Context, tx pgx.Tx, project string, block AdmissionBlock) (bool, error)
 	// Enqueue queues row. A row NewFencedRow filled a phase entry of, queued in a ctx that keeps
 	// its fact's fenced rows (WithFencedRows), is kept for that fact's settle (RefenceFactRows).
 	Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error
@@ -2993,6 +3033,15 @@ type Store interface {
 	// finish: a stale lease is ErrOutboxLeaseLost, so the caller rolls that effect back rather than
 	// committing it beside the replacement worker's own.
 	FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error
+	// StateRowsAfter is every state row still in the outbox that committed in head's transaction
+	// (OutboxRow.StateTx) with a higher sequence, in sequence order: the rows the state lane
+	// publishes after head, in head's message or, past the message bound, in the next ones
+	// (internal/daemon's stateEvents).
+	StateRowsAfter(ctx context.Context, tx pgx.Tx, head OutboxRow) ([]OutboxRow, error)
+	// FinishStateRows finishes head under its lease, and with it the rows of head's transaction
+	// with sequences above head's and at most through; a lease no longer head's is
+	// ErrOutboxLeaseLost and the caller's transaction finishes none of them.
+	FinishStateRows(ctx context.Context, tx pgx.Tx, head OutboxRow, through int64) error
 	// NameUndeliveredHookPrompt names paragraph (HookPrompt.Undelivered) in the message on issue
 	// that names role's undelivered hook prompts, inside tx, and answers when that message posts
 	// and whether this call opened it. It takes tx's lock on that role's window of issue first,
@@ -3019,6 +3068,10 @@ type Store interface {
 	// forward only and for a recorded issue alone (Issue.SeenSeq).
 	AdvanceSeenSeq(ctx context.Context, tx pgx.Tx, key string, seq int64) error
 	PendingStatusWrites(ctx context.Context, tx pgx.Tx, project string) ([]OutboxRow, error)
+	// StatePublication is project's counter row (state_publication): the sequence of the newest
+	// state row project's daemon committed, 0 while the project has none, and the store id the
+	// row was made with, empty while there is none.
+	StatePublication(ctx context.Context, tx pgx.Tx, project string) (StatePublication, error)
 	ReleaseRetry(ctx context.Context, tx pgx.Tx, issue string) (*ReleaseRetry, error)
 	PutReleaseRetry(ctx context.Context, tx pgx.Tx, retry ReleaseRetry) error
 	DeleteReleaseRetry(ctx context.Context, tx pgx.Tx, issue string) error

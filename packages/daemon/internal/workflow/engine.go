@@ -3199,7 +3199,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err := e.queueMovedNews(ctx, tx, issue); err != nil {
 		return err
 	}
-	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason)); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, issue, from, row.To, handoff, reason)); err != nil {
 		return err
 	}
 	// The merge forward follows the move (mergeForwardOnEntry): a move into implementing drops
@@ -3291,7 +3291,7 @@ func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Is
 	}
 	e.logOnCommit(ctx, "workflow: a parent is held before its retro", "issue", issue.Key, "tree", issue.Tree,
 		"task", w.Task, "hold", held.code, "holding", held.names)
-	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, to, handoff, reason)); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, issue, from, to, handoff, reason)); err != nil {
 		return err
 	}
 	return e.tellRetroHeld(ctx, tx, issue, w, held, trigger)
@@ -3323,22 +3323,33 @@ func (e *Engine) queueMovedNews(ctx context.Context, tx pgx.Tx, issue record.Iss
 	return nil
 }
 
-// noticeFor is what a transition on trigger out of from into to tells the architect: that from
-// finished, with its worker's handoff. Its own sign-off tells it nothing (a notice of no kind,
-// which notice drops), since its only recipient would be the architect that just acted; the
-// merge's close is no transition (closeMerged, closeLanded), and its leave tells the architect
-// above a child child-closed itself. One move names no role: the gate's opening, the one move out
-// of admitted (Table), whose role is the architect. A phase-finished names the worker whose phase
-// ended, and admitted has none: its role is an architect, the role that reads this notice.
+// noticeFor is what a transition of issue on trigger out of from into to tells the architect: that
+// from finished, with its worker's handoff. Three moves tell it nothing (a notice of no kind, which
+// notice drops). The first is its own sign-off, whose only recipient would be the architect that
+// just acted. The second is the merge's close, which is no transition (closeMerged, closeLanded),
+// and whose leave tells the architect above a child child-closed itself. The third is the gate's
+// opening of an issue that does not hold its own gate, the move out of admitted that starts a
+// child's first phase (StartFirstPhase). That start tells the architect above the child with a
+// child-status (ChildStartedNotice), and the child's own architect, which the move starts
+// (gateOpened), learns of the child from its catch-up.
+//
+// The gate's opening is the one move out of admitted (Table). On an issue that holds its own gate
+// on the Dispatch chain (record.Chains.HoldsOwnGate, which gateOpened marks on the issue it moves,
+// Issue.HoldsGate) it tells that issue's own architect, and its notice names no role: a
+// phase-finished names the worker whose phase ended, and admitted has none, since its role is the
+// architect, the role that reads this notice.
 //
 // A worker's own backward move (TriggerBackward, request_backward_move) keeps the phase-finished
 // kind the architect's prompt routes on, and says in its reason what happened and who asked: the
 // phase it moved the issue to, the role that moved it and the words that role gave. The handoff
 // row a move writes is empty, so without that reason the architect reads a completion with no
 // summary and no verdict and cannot tell it from a worker that finished its phase.
-func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, reason string) record.Notice {
+func noticeFor(trigger TriggerKind, issue record.Issue, from, to phase.Phase, handoff record.PhaseRow, reason string) record.Notice {
 	switch trigger {
 	case TriggerGateOpened:
+		if !issue.HoldsGate {
+			return record.Notice{}
+		}
 		return record.Notice{Kind: "phase-finished", Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
 	case TriggerBackward:
 		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
@@ -3394,10 +3405,11 @@ func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRo
 // now — or empty, when the issue named none or someone took its blocked-by links off while it
 // waited, which the notice's reason says instead. chains is the admission pass's own reading of
 // the Dispatch chains. An issue that holds its own design gate on them (record.Chains.HoldsOwnGate)
-// gets no notice: the architect this would tell is its own, which the phase-finished of the move
-// out of admitted already tells (noticeFor). Any other issue's notice and log lines name the tree
-// it starts in as the chain gives it (record.Chains.StateTree, its gate root), never the tree its
-// record stores (R15 of dispatch://INFRA-3320).
+// gets no notice here: the architect this would tell is its own, which the phase-finished of the
+// move out of admitted already tells (noticeFor). Any other issue's move out of admitted tells
+// nobody (noticeFor), so this child-status is the one notice of its start, and its notice and log
+// lines name the tree it starts in as the chain gives it (record.Chains.StateTree, its gate root),
+// never the tree its record stores (R15 of dispatch://INFRA-3320).
 func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, chains *record.Chains, waited []string) error {
 	holdsGate := chains.HoldsOwnGate(issue.Key)
 	if err := e.gateOpened(ctx, tx, issue, holdsGate); err != nil {
@@ -3437,6 +3449,11 @@ func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Is
 // the first worker's start because the outbox runs an issue's starts one at a time, oldest first,
 // so the architect's claim exists by that worker's launch. That is the order the outbox tries, not
 // one it holds to: a start that fails and backs off holds back none of the rows behind it.
+//
+// An issue that holds its own gate is marked so on the copy the transition moves (Issue.HoldsGate,
+// set-only, as the admission pass's MarkHoldsGate writes it for every root it reads), which is
+// what the move's notice reads (noticeFor): the phase-finished of the gate's opening goes to that
+// issue's own architect, and the move of any other issue tells nobody.
 func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue, holdsGate bool) error {
 	if err := e.planFirstStep(ctx, tx, issue); err != nil {
 		return err
@@ -3449,6 +3466,7 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
+	issue.HoldsGate = issue.HoldsGate || holdsGate
 	return e.transition(ctx, tx, issue, TriggerGateOpened, "", record.PhaseRow{}, nil, "")
 }
 

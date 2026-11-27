@@ -2043,6 +2043,17 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
   ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)), whose entry
   says the limit this deployment runs with and where the daemon prints it. A consumer that
   stops is not a stall: it stops the daemon (`workflow intake stopped: …`).
+- **A wake held for a release.** An Envoy listener's wake report that comes while an idle release
+  of its pod runs waits on the wake consumer (`legion-go-<project>-wake`) until the release ends,
+  for at most 15 minutes after the report. It counts in that consumer's `waiting`. Every 30 s the
+  daemon applies it again and logs `an intake fact waits and is applied again after its delay` at
+  INFO, with `retry_in` and an `error` that names the issue, the role, when the release was marked
+  and the deadline. A report sent back to wait is not handled, so the consumer shows `stalled` after
+  60 s when no other wake report is handled in that time. Past 5 minutes it also shows in the
+  warning `intake: a durable consumer is behind its stream; …` with `delivered` above 1. Nothing
+  to do: it ends when the release ends. A report the release does not end for within 15 minutes is
+  dropped with the warning `wake: a wake that came during a release was dropped: the release did not
+  end within 15 minutes of the report`.
 - **`unavailable`** names what NATS did not answer in time, or refused; the rest of the state is
   served all the same. Every consumer is read at the same time, each within two seconds,
   so one consumer's read that does not answer leaves the others' as they are. `read the consumer's
@@ -2289,7 +2300,9 @@ notice comes once per handoff commit, from whichever read finds it first.
   after failures, not a backlog: a retried event keeps the time it was first stored. It can also
   be a second delivery of one event, which raises `delivered` with no failure of its own ([a
   handling that outlives its window](#a-handling-that-outlives-its-window)); the line `an intake
-  fact was delivered again and dropped as already applied` is what names one.
+  fact was delivered again and dropped as already applied` is what names one. On the wake
+  consumer it can also be a wake report held for a release, which is expected
+  ([GitHub events wait](#github-events-wait)).
   Every event that consumer has not reached waits: on the GitHub consumer a pull request's opened
   or push, on the Dispatch consumer a status change. `legion state`'s `consumer` lines
   (`consumers` in `--json`) show how many wait and how old the oldest is now, and whether the
