@@ -190,7 +190,7 @@ func TestEveryPathFromDispatchStoresEachResolvedPriority(t *testing.T) {
 				p0Holder(t, pool, "LEGION-1", "A", record.P1)
 				inheritedHolder(t, pool, "LEGION-9", "C", before)
 				applyFact(t, pool, admission, "own-status-write", intake.OwnStatusWrite(dispatch.Issue{Key: "LEGION-9", Title: "LEGION-9", Status: "in_progress",
-					Rank: "C", HandedOver: true, LastSeq: 2, ResolvedRepo: "acme/widgets", Resolved: &dispatch.ResolvedPriority{Priority: level(want.Priority), From: want.From}}))
+					Rank: "C", HandedOver: true, LastSeq: 2, ResolvedRepo: "acme/widgets", Resolved: &dispatch.ResolvedPriority{Priority: level(want.Priority), From: want.From}}, "", ""))
 				check(t, pool, "the status write")
 			})
 		})

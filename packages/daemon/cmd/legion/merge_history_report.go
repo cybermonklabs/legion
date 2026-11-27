@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -11,7 +15,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/spf13/cobra"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/daemon"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -37,18 +44,34 @@ func newMergeHistoryReportCommand(stdout, stderr io.Writer) *cobra.Command {
 	configPath := cmd.Flags().String("config", defaultConfigPath, "path to legion.yaml, whose postgres_dsn names the database to read")
 	project := cmd.Flags().String("project", "", "the project whose recorded issues to count (default: the file's project)")
 	repos := cmd.Flags().StringArray("repo", nil, "count only the issues on this repository, compared without case (repeat it for each, or give none for every repository)")
+	candidates := mergeCandidateFlags{}
+	cmd.Flags().BoolVar(&candidates.read, "read-candidates", false, "also read the merge candidates of each PARTIAL and NONE issue, as the daemon's merge read does, applying nothing")
+	cmd.Flags().StringVar(&candidates.progress, "progress", "", "the private file the candidate reads save their progress in, and resume from (required with --read-candidates)")
+	cmd.Flags().StringVar(&candidates.githubAPI, "github-api", "", "GitHub's REST root the candidate reads ask (default: https://api.github.com)")
+	cmd.Flags().IntVar(&candidates.maxGets, "max-gets", 0, "the most GETs this run's candidate reads send, at most one pass's eight (default: eight)")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
-		return runMergeHistoryReport(ctx, *configPath, *project, *repos, stdout, stderr)
+		return runMergeHistoryReport(ctx, *configPath, *project, *repos, candidates, stdout, stderr)
 	})
 	return cmd
+}
+
+// mergeCandidateFlags is the census's candidate mode: whether it reads candidates, the private
+// file their progress is saved in, GitHub's REST root, and the GETs this run may send.
+type mergeCandidateFlags struct {
+	read      bool
+	progress  string
+	githubAPI string
+	maxGets   int
 }
 
 // runMergeHistoryReport reads the census and prints it. Each way it can fail to count prints the
 // report with every count UNKNOWN and the reason's code on its unknown line, and exits 1: config
 // (the file was refused), connect (the database was not reached), read (the read failed) and empty
 // (the selection holds no issue). The refusal of the first three goes to stderr, through the URL
-// rule (printRefusal), since a DSN can carry a credential.
-func runMergeHistoryReport(ctx context.Context, configPath, project string, repos []string, stdout, stderr io.Writer) int {
+// rule (printRefusal), since a DSN can carry a credential. With --read-candidates it then reads
+// the candidates of each PARTIAL and NONE issue (readMergeCandidates), and a candidate read it
+// could not make prints its lines UNKNOWN and exits 1 (candidates).
+func runMergeHistoryReport(ctx context.Context, configPath, project string, repos []string, candidates mergeCandidateFlags, stdout, stderr io.Writer) int {
 	const name = "legion merge-history-report"
 	report := mergeHistoryReport{Project: project, Repos: repos}
 	fail := func(reason string, err error) int {
@@ -58,6 +81,9 @@ func runMergeHistoryReport(ctx context.Context, configPath, project string, repo
 		report.Unknown = reason
 		report.write(stdout)
 		return 1
+	}
+	if candidates.read && candidates.progress == "" {
+		return fail("config", errors.New("--read-candidates needs --progress, the private file its reads resume from"))
 	}
 	cfg, err := config.LoadForValidation(configPath, nil)
 	if err != nil {
@@ -94,7 +120,161 @@ func runMergeHistoryReport(ctx context.Context, configPath, project string, repo
 	}
 	report.Rows = rows
 	report.write(stdout)
+	if !candidates.read {
+		return 0
+	}
+	read, err := readMergeCandidates(ctx, configPath, st.Pool(), rows, candidates)
+	if err != nil {
+		printRefusal(stderr, name, err)
+		read.Unknown = true
+	}
+	read.write(stdout)
+	if read.Unknown {
+		return 1
+	}
 	return 0
+}
+
+// readMergeCandidates runs one pass of the candidate reads of each PARTIAL and NONE row
+// (daemon.ReadMergeCandidates), with the configuration's Dispatch and GitHub Apps, resuming from
+// and saving to the progress file, which it keeps private (0600). It writes nothing to the
+// database: the reads take the database's one merge read slot and apply no fact.
+func readMergeCandidates(ctx context.Context, configPath string, pool *store.Pool, rows []record.MergeHistoryRow, flags mergeCandidateFlags) (mergeCandidateReport, error) {
+	report := mergeCandidateReport{}
+	for _, row := range rows {
+		if row.Class != record.MergeHistoryAnswered {
+			report.issues = append(report.issues, daemon.CensusIssue{Key: row.Key, Repo: row.Repo, Class: row.Class, Evidence: row.Evidence})
+		}
+	}
+	cfg, err := config.Load(configPath, nil)
+	if err != nil {
+		return report, err
+	}
+	if cfg.DispatchURL == "" || cfg.DispatchTokenFile == "" {
+		return report, errors.New("--read-candidates reads Dispatch with dispatch_url and dispatch_token_file, and the file names neither or not both")
+	}
+	token, err := config.ReadSecretPointer("dispatch_token_file", cfg.DispatchTokenFile)
+	if err != nil {
+		return report, err
+	}
+	progress, err := loadCensusProgress(flags.progress)
+	if err != nil {
+		return report, err
+	}
+	read := daemon.CensusRead{
+		Dispatch:  dispatch.New(cfg.DispatchURL, dispatch.BearerTransport(token, nil)),
+		Tokens:    appauth.New(cfg.GitHubApps, appauth.Options{BaseURL: flags.githubAPI}),
+		GitHubAPI: flags.githubAPI,
+		Pool:      pool,
+		Now:       time.Now,
+		MaxGets:   flags.maxGets,
+		Save:      func(progress daemon.CensusProgress) error { return saveCensusProgress(flags.progress, progress) },
+	}
+	progress, outcomes, err := daemon.ReadMergeCandidates(ctx, read, report.issues, progress)
+	report.progress, report.outcomes = progress, outcomes
+	return report, err
+}
+
+// loadCensusProgress reads the progress file, and answers an empty progress where it does not
+// exist yet: a census's first run.
+func loadCensusProgress(path string) (daemon.CensusProgress, error) {
+	var progress daemon.CensusProgress
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return progress, nil
+	}
+	if err != nil {
+		return progress, fmt.Errorf("read the census's progress file %s: %w", path, err)
+	}
+	if err := json.Unmarshal(data, &progress); err != nil {
+		return progress, fmt.Errorf("decode the census's progress file %s: %w", path, err)
+	}
+	return progress, nil
+}
+
+// saveCensusProgress writes progress over the progress file whole: to a private file beside it,
+// renamed over it, so a run stopped mid-write leaves the last progress it saved.
+func saveCensusProgress(path string, progress daemon.CensusProgress) error {
+	data, err := json.Marshal(progress)
+	if err != nil {
+		return err
+	}
+	next, err := os.CreateTemp(filepath.Dir(path), ".census-progress-*")
+	if err != nil {
+		return fmt.Errorf("save the census's progress: %w", err)
+	}
+	if _, err := next.Write(data); err != nil {
+		next.Close()
+		os.Remove(next.Name())
+		return fmt.Errorf("save the census's progress: %w", err)
+	}
+	if err := next.Close(); err != nil {
+		os.Remove(next.Name())
+		return fmt.Errorf("save the census's progress: %w", err)
+	}
+	if err := os.Rename(next.Name(), path); err != nil {
+		os.Remove(next.Name())
+		return fmt.Errorf("save the census's progress: %w", err)
+	}
+	return nil
+}
+
+// mergeCandidateReport is what one run of the candidate reads came to: the candidate issues, the
+// progress saved, each issue's outcome, and whether the run could not read (Unknown).
+type mergeCandidateReport struct {
+	issues   []daemon.CensusIssue
+	progress daemon.CensusProgress
+	outcomes map[string]daemon.CensusOutcome
+	Unknown  bool
+}
+
+// write prints the candidate reads, one fact a line: for PARTIAL, NONE and their total, the
+// candidates, those answering, those completed and unread, and those unfinished, split into those
+// whose automatic retries go on (unfinished_active) and those that stopped (unfinished_wait); and
+// what the reads cost: the GETs, the retries, the attempts whose answer was never saved
+// (uncertain), the passes observed and their lower bound (ceil(gets/8)), the token requests, and
+// Dispatch's downstream work, which the daemon cannot see (UNKNOWN). A run that could not read
+// prints each count UNKNOWN.
+func (r mergeCandidateReport) write(w io.Writer) {
+	type tally struct{ candidates, answering, unread, active, wait int }
+	tallies := map[record.MergeHistoryClass]*tally{record.MergeHistoryPartial: {}, record.MergeHistoryNone: {}}
+	var total tally
+	for _, issue := range r.issues {
+		outcome := r.outcomes[issue.Key]
+		for _, t := range []*tally{tallies[issue.Class], &total} {
+			t.candidates++
+			switch {
+			case outcome.Answering:
+				t.answering++
+			case outcome.Unread:
+				t.unread++
+			case outcome.Stopped:
+				t.wait++
+			default:
+				t.active++
+			}
+		}
+	}
+	count := func(n int) string {
+		if r.Unknown {
+			return unknownCount
+		}
+		return strconv.Itoa(n)
+	}
+	line := func(label string, t tally) {
+		fmt.Fprintf(w, "%s candidates %s answering %s unread %s unfinished %s unfinished_active %s unfinished_wait %s\n", label,
+			count(t.candidates), count(t.answering), count(t.unread), count(t.active+t.wait), count(t.active), count(t.wait))
+	}
+	line("read_PARTIAL", *tallies[record.MergeHistoryPartial])
+	line("read_NONE", *tallies[record.MergeHistoryNone])
+	line("read_total", total)
+	uncertain := 0
+	for _, progress := range r.progress.Issues {
+		uncertain += progress.Uncertain
+	}
+	gets := r.progress.Gets
+	fmt.Fprintf(w, "read_cost gets %s retries %s uncertain %s passes %s passes_lower_bound %s token_requests %s dispatch_downstream UNKNOWN\n",
+		count(gets), count(r.progress.Retries), count(uncertain), count(r.progress.Passes), count((gets+7)/8), count(r.progress.TokenRequests))
 }
 
 // mergeHistoryReport is what one census read: the selection (Project, Repos), the snapshot's time,

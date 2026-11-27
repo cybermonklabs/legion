@@ -35,8 +35,8 @@ const (
 // chain (daemon/workflow.go: the mirror, the engine, admission), with no Dispatch event consumer:
 // whatever moves the record moves it inside the route's own request. The tree LEGION-208 is live
 // (slotted, its design gate approved) and its child LEGION-209 is in planning at Dispatch event
-// sequence 4.
-func statusHarness(t *testing.T) (*harness, []intake.Handler, *statusRecorder) {
+// sequence 4. Each of configure changes the server's options before it is built.
+func statusHarness(t *testing.T, configure ...func(*Options)) (*harness, []intake.Handler, *statusRecorder) {
 	t.Helper()
 	h := newHarness(t)
 	records := record.NewStore()
@@ -44,12 +44,16 @@ func statusHarness(t *testing.T) (*harness, []intake.Handler, *statusRecorder) {
 	engine := workflow.New(records, workflow.Config{Project: testDispatchProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quiet)
 	handlers := []intake.Handler{blockers.NewMirror(records, testDispatchProject), engine, admit.New(records, engine, 2, testDispatchProject, quiet)}
 	statuses := &statusRecorder{}
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	opts := Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
 		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
 		Handlers: handlers, Dispatch: statuses,
-	}).Handler
+	}
+	for _, change := range configure {
+		change(&opts)
+	}
+	h.handler = NewServer("127.0.0.1", 8437, opts).Handler
 	root := statusRoot
 	h.recordIssue(record.Issue{Key: statusRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: statusRoot,
 		Project: testDispatchProject, Title: statusRoot, Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
