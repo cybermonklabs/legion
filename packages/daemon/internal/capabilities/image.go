@@ -643,7 +643,7 @@ func (img Image) runWithin(ctx context.Context, budget time.Duration, name strin
 	r := ran{stdout: omplaunch.PrefixMasked(stdout.String(), img.Prefix), stderr: omplaunch.PrefixMasked(stderr.String(), img.Prefix),
 		cut: cause != nil && !timedOut && (killed() || cmd.Process == nil)}
 	switch {
-	case killed() && timedOut:
+	case timedOut: // PLANT (fault control, never merged): a timeout read from the budget's cause alone
 		r.err = fmt.Errorf("timed out after %s", budget)
 	case procgroup.Err(err) != nil:
 		r.err = procgroup.Said(procgroup.Err(err), r.output())
