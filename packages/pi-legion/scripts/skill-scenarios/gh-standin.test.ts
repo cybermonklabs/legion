@@ -99,25 +99,53 @@ test("a body edit gives each object of a list answer that has a body the new bod
 // comment's id over REST, with the reply's body as the call gave it.
 test("a reply on a review thread, over GraphQL and over REST, and its resolution, are recorded with the thread", () => {
   const run = runWith([
-    { match: "addPullRequestReviewThreadReply", stdout: { data: { addPullRequestReviewThreadReply: { comment: { id: "c1" } } } } },
-    { match: "resolveReviewThread", stdout: { data: { resolveReviewThread: { thread: { isResolved: true } } } } },
+    {
+      match: "addPullRequestReviewThreadReply",
+      stdout: { data: { addPullRequestReviewThreadReply: { comment: { id: "c1" } } } },
+    },
+    {
+      match: "resolveReviewThread",
+      stdout: { data: { resolveReviewThread: { thread: { isResolved: true } } } },
+    },
     { match: "/replies", stdout: { id: 4300 } },
     { match: "^gh pr view", stdout: { number: 41 } },
   ]);
   const reply =
     "mutation($id:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id,body:$body}){comment{id}}}";
-  expect(gh(run, "api", "graphql", "-f", `query=${reply}`, "-F", "id=PRRT_1", "-f", "body=Reported as defect d-7.").code).toBe(0);
+  expect(
+    gh(
+      run,
+      "api",
+      "graphql",
+      "-f",
+      `query=${reply}`,
+      "-F",
+      "id=PRRT_1",
+      "-f",
+      "body=Reported as defect d-7."
+    ).code
+  ).toBe(0);
   const inline =
     'mutation{addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:"PRRT_2",body:"Declined: the \\"line\\" stays."}){comment{id}}}';
   expect(gh(run, "api", "graphql", "-f", `query=${inline}`).code).toBe(0);
   expect(
-    ghWith(run, "Reported as defect d-8.", "api", "repos/acme/widgets/pulls/41/comments/4242/replies", "-F", "body=@-").code
+    ghWith(
+      run,
+      "Reported as defect d-8.",
+      "api",
+      "repos/acme/widgets/pulls/41/comments/4242/replies",
+      "-F",
+      "body=@-"
+    ).code
   ).toBe(0);
-  const resolve = "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}";
+  const resolve =
+    "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}";
   expect(gh(run, "api", "graphql", "-f", `query=${resolve}`, "-F", "id=PRRT_1").code).toBe(0);
   expect(gh(run, "pr", "view", "41").code).toBe(0);
   const lines = recorded(run);
-  expect(lines.map((line) => ({ reply: line.reply ?? null, resolved: line.resolved ?? null }))).toEqual([
+  expect(
+    lines.map((line) => ({ reply: line.reply ?? null, resolved: line.resolved ?? null }))
+  ).toEqual([
     { reply: { thread: "PRRT_1", body: "Reported as defect d-7." }, resolved: null },
     { reply: { thread: "PRRT_2", body: 'Declined: the "line" stays.' }, resolved: null },
     { reply: { thread: "4242", body: "Reported as defect d-8." }, resolved: null },
@@ -131,9 +159,19 @@ test("a reply on a review thread, over GraphQL and over REST, and its resolution
 test("a reply sent as a new review comment with in_reply_to is recorded with its thread", () => {
   const run = runWith([{ match: "pulls/41/comments", stdout: { id: 4301 } }]);
   expect(
-    gh(run, "api", "repos/acme/widgets/pulls/41/comments", "-f", "body=Reported as defect d-7.", "-F", "in_reply_to=4242").code
+    gh(
+      run,
+      "api",
+      "repos/acme/widgets/pulls/41/comments",
+      "-f",
+      "body=Reported as defect d-7.",
+      "-F",
+      "in_reply_to=4242"
+    ).code
   ).toBe(0);
-  expect(gh(run, "api", "repos/acme/widgets/pulls/41/comments", "-f", "body=A new comment.").code).toBe(0);
+  expect(
+    gh(run, "api", "repos/acme/widgets/pulls/41/comments", "-f", "body=A new comment.").code
+  ).toBe(0);
   expect(recorded(run).map((line) => line.reply ?? null)).toEqual([
     { thread: "4242", body: "Reported as defect d-7." },
     null,

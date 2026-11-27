@@ -44,7 +44,9 @@ export const ForwardWorldFile = z.strictObject({
   pull: z.number().int().positive(),
   passes: z.array(nonEmpty),
   item: z.union([z.literal(1), z.literal(2)]),
-  thread: z.strictObject({ id: nonEmpty, comment: z.number().int().positive(), url: nonEmpty }).optional(),
+  thread: z
+    .strictObject({ id: nonEmpty, comment: z.number().int().positive(), url: nonEmpty })
+    .optional(),
   reported: z.array(nonEmpty).min(1).optional(),
   children: z
     .array(z.strictObject({ key: issueKey, title: nonEmpty, status: nonEmpty }))
@@ -114,7 +116,8 @@ export function forwardWorldProblems(dir: string): string[] {
   try {
     world = readForwardWorld(dir);
     for (const file of ["spec.md", "verification.md", "fixtures.json", "head.patch"])
-      if (!existsSync(path.join(dir, file))) throw new Error(`${path.join(dir, file)} does not exist`);
+      if (!existsSync(path.join(dir, file)))
+        throw new Error(`${path.join(dir, file)} does not exist`);
   } catch (error) {
     return [error instanceof Error ? error.message : String(error)];
   }
@@ -122,7 +125,9 @@ export function forwardWorldProblems(dir: string): string[] {
   for (const [where, text] of taskTexts(dir, world))
     for (const anchor of world.anchors.defect)
       if (text.includes(anchor))
-        problems.push(`the task's text holds the defect anchor ${JSON.stringify(anchor)}, in ${where}`);
+        problems.push(
+          `the task's text holds the defect anchor ${JSON.stringify(anchor)}, in ${where}`
+        );
   const checks = checkBlocks(readFileSync(path.join(dir, "verification.md"), "utf8"));
   for (const check of checks)
     if (check.when === "before_merge" && !world.passes.includes(check.id))
@@ -152,7 +157,9 @@ export const ForwardCaptured = z.strictObject({
   spec: z.strictObject({
     artifact: nonEmpty,
     seeded: z.number().int().positive(),
-    versions: z.array(z.strictObject({ version: z.number().int().positive(), markdown: z.string() })),
+    versions: z.array(
+      z.strictObject({ version: z.number().int().positive(), markdown: z.string() })
+    ),
   }),
   approvals: z.array(
     z.strictObject({ id: nonEmpty, version: z.number().int().positive(), state: nonEmpty })

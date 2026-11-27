@@ -4134,7 +4134,9 @@ esac
   test("scored-job.sh refuses SKILL_SCENARIOS_MODEL=standin-report for owner-walk, whose runs write no script", () => {
     const refused = plantedJob().run({ ...pod, SKILL_SCENARIOS_MODEL: "standin-report" });
     expect({ code: refused.code, calls: refused.calls }).toEqual({ code: 2, calls: "" });
-    expect(refused.stderr).toContain("standin-report is the path check's model, and owner-walk has none");
+    expect(refused.stderr).toContain(
+      "standin-report is the path check's model, and owner-walk has none"
+    );
   });
 
   // Catches: a Job that builds a label its cases do not run on, so a form-E Job stops on ctl-d's
@@ -4302,7 +4304,8 @@ const madeWorld = (fields: Record<string, unknown> = {}): Record<string, string>
     ...fields,
   }),
   "anchors.json": JSON.stringify({ defect: ["src/config.ts", "loadConfig"] }),
-  "spec.md": "# List rows a page at a time\n\n`listRows(rows, limit)` returns at most `limit` rows.\n",
+  "spec.md":
+    "# List rows a page at a time\n\n`listRows(rows, limit)` returns at most `limit` rows.\n",
   "verification.md":
     '# Verification\n\n:::check{#c-list-rows surface="cli" run="bun test" when="before_merge"}\nThe list test passes.\n:::\n',
   "fixtures.json": '{"routes":[]}\n',
@@ -4315,7 +4318,10 @@ const status = (turn: "running" | "idle", activity: object | null) => ({
   turn,
   activity,
 });
-const ended = status("idle", { backgroundWork: { running: false }, phase: { nextReminderAt: null } });
+const ended = status("idle", {
+  backgroundWork: { running: false },
+  phase: { nextReminderAt: null },
+});
 
 /**
  * run_forward on a made label whose entry is STUB_ENTRY, playing PLAN, in a run directory of its
@@ -4342,7 +4348,9 @@ function labelRun(
   const entry = path.join(co, "packages/pi-legion/scripts/skill-scenarios/label-texts.sh");
   mkdirSync(path.dirname(entry), { recursive: true });
   writeFileSync(entry, STUB_ENTRY, { mode: 0o755 });
-  mkdirSync(path.join(work, "profiles/head/home/.omp/profiles/skills-head/agent"), { recursive: true });
+  mkdirSync(path.join(work, "profiles/head/home/.omp/profiles/skills-head/agent"), {
+    recursive: true,
+  });
   const world = path.join(worlds, "forward-only/retro-defect");
   mkdirSync(world, { recursive: true });
   for (const [file, text] of Object.entries({ ...madeWorld(), ...options.world }))
@@ -4526,7 +4534,8 @@ esac
     mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
     writeFileSync(path.join(repo, file), text);
   };
-  for (const [name, file] of Object.entries(texts)) write(file, `# ${name}\n\nOne line of ${name}.\n`);
+  for (const [name, file] of Object.entries(texts))
+    write(file, `# ${name}\n\nOne line of ${name}.\n`);
   git(repo, "init", "-q");
   git(repo, "add", "-A");
   git(repo, "commit", "-qm", "the texts at the base");
@@ -4537,15 +4546,25 @@ esac
     git(repo, "commit", "-qm", subject);
   };
   commit("docs(prompts): the retro and the merger report a defect after the last step and go on", {
-    [texts.common]: "# common\n\nOne line of common.\nA finding after the last step goes to report_defect.\n",
-    [texts.merger]: "# merger\n\nOne line of merger.\nA defect you see in the change goes to report_defect.\n",
+    [texts.common]:
+      "# common\n\nOne line of common.\nA finding after the last step goes to report_defect.\n",
+    [texts.merger]:
+      "# merger\n\nOne line of merger.\nA defect you see in the change goes to report_defect.\n",
   });
-  commit("docs(prompts): at the retro, a review thread that needs a fix is reported, not sent back", {
-    [texts.implementer]: "# implementer\n\nOne line of implementer.\nAt the retro a thread is reported, never sent back.\n",
-  });
-  commit("docs(prompts): the architect asks no role to move reviewed work back past the last step", {
-    [texts.architect]: "# architect\n\nOne line of architect.\nNo role takes an ancestor back for a child.\n",
-  });
+  commit(
+    "docs(prompts): at the retro, a review thread that needs a fix is reported, not sent back",
+    {
+      [texts.implementer]:
+        "# implementer\n\nOne line of implementer.\nAt the retro a thread is reported, never sent back.\n",
+    }
+  );
+  commit(
+    "docs(prompts): the architect asks no role to move reviewed work back past the last step",
+    {
+      [texts.architect]:
+        "# architect\n\nOne line of architect.\nNo role takes an ancestor back for a child.\n",
+    }
+  );
   const owner = git(repo, "rev-parse", "HEAD").trim();
   const diff = (...args: string[]) =>
     git(
@@ -4702,7 +4721,11 @@ describe("a world with daemon: label", () => {
     expect(at("term")).toBeGreaterThanOrEqual(at("status 3"));
     expect(run.read("out.txt")).toBe("exit=0\n");
     // At its bound the run ends `exit=bound`, and held.txt names what held it.
-    const held = labelRun("label-status-bound", { statuses: statuses.slice(0, 2) }, { env: { SKILL_SCENARIOS_TIMEOUT: "2" } });
+    const held = labelRun(
+      "label-status-bound",
+      { statuses: statuses.slice(0, 2) },
+      { env: { SKILL_SCENARIOS_TIMEOUT: "2" } }
+    );
     expect({ code: held.code, stderr: held.stderr }).toEqual({ code: 0, stderr: "" });
     expect(held.read("out.txt")).toBe("exit=bound\n");
     expect(held.read("held.txt")).toBe(
@@ -4719,7 +4742,9 @@ describe("a world with daemon: label", () => {
       generation: 2,
       calls: [],
       defects: [],
-      steps: [{ task: "t1", step: 3, kind: "retro", role: "implementer", attempt: 1, result: "passed" }],
+      steps: [
+        { task: "t1", step: 3, kind: "retro", role: "implementer", attempt: 1, result: "passed" },
+      ],
     };
     const run = labelRun("label-end", { statuses: [{ afterMs: 500, status: ended }], record });
     expect({ code: run.code, stderr: run.stderr }).toEqual({ code: 0, stderr: "" });
@@ -4728,7 +4753,10 @@ describe("a world with daemon: label", () => {
     expect(run.read("sessions/ses_pane.jsonl")).toBe('{"type":"session","id":"ses_pane"}\n');
     expect(run.read("sessions/ses_pane/sub.jsonl")).toBe('{"type":"session","id":"sub"}\n');
     // Control: an entry that exits 1 after SIGTERM fails the run, naming its log.
-    const failed = labelRun("label-end-exit", { statuses: [{ afterMs: 500, status: ended }], exit: 1 });
+    const failed = labelRun("label-end-exit", {
+      statuses: [{ afterMs: 500, status: ended }],
+      exit: 1,
+    });
     expect(failed.code).toBe(1);
     expect(failed.stderr).toContain("label-texts.sh daemon of label head exited 1");
   });
@@ -4737,7 +4765,11 @@ describe("a world with daemon: label", () => {
   test("a ready file that never comes within the bound makes the launch a rig error", () => {
     const run = labelRun("label-no-ready", { readyAfterMs: null }, { readyBound: 1 });
     expect(run.code).toBe(1);
-    const line = run.stderr.split("\n").filter((each) => each.startsWith("skill-scenarios: ")).at(-1) ?? "";
+    const line =
+      run.stderr
+        .split("\n")
+        .filter((each) => each.startsWith("skill-scenarios: "))
+        .at(-1) ?? "";
     expect(line).toContain("the label daemon took no claims/ready of the real pane within 1s");
     expect(existsSync(path.join(run.R, "out.txt"))).toBe(false);
     // The batch writes its row as the rig's error (scored_rig_error), of the forward scenario.
@@ -4748,9 +4780,15 @@ describe("a world with daemon: label", () => {
     );
     expect(row.code).toBe(0);
     const parsed = RunRow.parse(
-      JSON.parse(readFileSync(path.join(work, "runs/forward-only-retro-defect-head-1/row.json"), "utf8"))
+      JSON.parse(
+        readFileSync(path.join(work, "runs/forward-only-retro-defect-head-1/row.json"), "utf8")
+      )
     );
-    expect(parsed).toMatchObject({ outcome: "rig-error", scenario: "forward-only", case: "retro-defect" });
+    expect(parsed).toMatchObject({
+      outcome: "rig-error",
+      scenario: "forward-only",
+      case: "retro-defect",
+    });
     // A ready.json that fails RigDaemonReady is no ready either.
     const bad = labelRun("label-bad-ready", { ready: { head: "not-a-head" } }, { readyBound: 1 });
     expect(bad.code).toBe(1);
@@ -4784,26 +4822,38 @@ describe("a world with daemon: label", () => {
       );
       return { ...result, calls: readFileSync(path.join(bin, "build-calls"), "utf8") };
     };
-    expect(build({ SKILL_SCENARIOS_PATH_CHECK: "1" })).toMatchObject({ code: 0, calls: "build --compile\n" });
+    expect(build({ SKILL_SCENARIOS_PATH_CHECK: "1" })).toMatchObject({
+      code: 0,
+      calls: "build --compile\n",
+    });
     expect(build({})).toMatchObject({ code: 0, calls: "build\n" });
     // The Job hands the batch the path check's variable with --path-check alone.
     const job = plantedForwardJob();
-    const checked = job.run(["forward-only", "head", "--world", "retro-defect", "--count", "1", "--path-check"], {
-      SKILL_SCENARIOS_MODEL: "standin-report",
-    });
+    const checked = job.run(
+      ["forward-only", "head", "--world", "retro-defect", "--count", "1", "--path-check"],
+      {
+        SKILL_SCENARIOS_MODEL: "standin-report",
+      }
+    );
     expect({ code: checked.code, stderr: checked.stderr }).toEqual({ code: 0, stderr: "" });
     expect(checked.env).toBe("world=retro-defect check=1 control= model=standin-report\n");
     expect(checked.stdout.split("\n")).toContain("PATH OK d-planted");
-    const scored = plantedForwardJob().run(["forward-only", "head", "--world", "retro-defect", "--count", "1"], {
-      SKILL_SCENARIOS_MODEL: "standin",
-    });
+    const scored = plantedForwardJob().run(
+      ["forward-only", "head", "--world", "retro-defect", "--count", "1"],
+      {
+        SKILL_SCENARIOS_MODEL: "standin",
+      }
+    );
     expect({ code: scored.code, stderr: scored.stderr }).toEqual({ code: 0, stderr: "" });
     expect(scored.env).toBe("world=retro-defect check= control= model=standin\n");
     expect(scored.stdout).not.toContain("PATH OK");
     // A path check needs the scripted model.
-    const refused = plantedForwardJob().run(["forward-only", "head", "--world", "retro-defect", "--path-check"], {
-      SKILL_SCENARIOS_MODEL: "standin",
-    });
+    const refused = plantedForwardJob().run(
+      ["forward-only", "head", "--world", "retro-defect", "--path-check"],
+      {
+        SKILL_SCENARIOS_MODEL: "standin",
+      }
+    );
     expect({ code: refused.code, calls: refused.calls }).toEqual({ code: 2, calls: "" });
     expect(refused.stderr).toContain("set SKILL_SCENARIOS_MODEL=standin-report");
   });
@@ -4830,7 +4880,12 @@ describe("a world with daemon: label", () => {
         },
         {
           tool: "legion",
-          input: { op: "handoff_complete", summary: "path check", plan_rating: 3, plan_reason: "path check" },
+          input: {
+            op: "handoff_complete",
+            summary: "path check",
+            plan_rating: 3,
+            plan_reason: "path check",
+          },
         },
       ],
     });
@@ -4865,7 +4920,10 @@ describe("a world with daemon: label", () => {
         [R, services, world],
         { SKILL_SCENARIOS_OMP: omp, ...env }
       );
-      return { ...result, paneDaemon: result.code === 0 ? JSON.parse(result.stdout).paneDaemon : null };
+      return {
+        ...result,
+        paneDaemon: result.code === 0 ? JSON.parse(result.stdout).paneDaemon : null,
+      };
     };
     expect(
       request({ SKILL_SCENARIOS_PATH_CONTROL: "intercept", SKILL_SCENARIOS_PATH_CHECK: "1" })
@@ -4873,14 +4931,28 @@ describe("a world with daemon: label", () => {
     // The control of the path check alone: a scored run never gets the intercepting proxy.
     const unchecked = request({ SKILL_SCENARIOS_PATH_CONTROL: "intercept" });
     expect(unchecked.code).toBe(1);
-    expect(unchecked.stderr).toContain("intercept is the path check's control: it needs SKILL_SCENARIOS_PATH_CHECK=1");
+    expect(unchecked.stderr).toContain(
+      "intercept is the path check's control: it needs SKILL_SCENARIOS_PATH_CHECK=1"
+    );
     expect(request({})).toMatchObject({ code: 0, paneDaemon: "label" });
     const other = request({ SKILL_SCENARIOS_PATH_CONTROL: "proxy" });
     expect(other.code).toBe(1);
-    expect(other.stderr).toContain("SKILL_SCENARIOS_PATH_CONTROL is 'proxy': it is intercept, or unset");
+    expect(other.stderr).toContain(
+      "SKILL_SCENARIOS_PATH_CONTROL is 'proxy': it is intercept, or unset"
+    );
     // The Job hands the batch the control's variable with --path-control intercept alone.
     const job = plantedForwardJob().run(
-      ["forward-only", "head", "--world", "retro-defect", "--count", "1", "--path-check", "--path-control", "intercept"],
+      [
+        "forward-only",
+        "head",
+        "--world",
+        "retro-defect",
+        "--count",
+        "1",
+        "--path-check",
+        "--path-control",
+        "intercept",
+      ],
       { SKILL_SCENARIOS_MODEL: "standin-report" }
     );
     expect({ code: job.code, stderr: job.stderr }).toEqual({ code: 0, stderr: "" });
@@ -4905,7 +4977,9 @@ describe("a world with daemon: label", () => {
       }
     );
     expect(run.code).toBe(1);
-    expect(run.stderr).toContain('the task\'s text holds the defect anchor "src/config.ts", in spec.md');
+    expect(run.stderr).toContain(
+      'the task\'s text holds the defect anchor "src/config.ts", in spec.md'
+    );
     expect({ calls: run.calls, argv: run.read("stub-argv") }).toEqual({ calls: "", argv: "" });
   });
 
@@ -4932,10 +5006,13 @@ describe("a world with daemon: label", () => {
   // Catches: a path check that prints row 1's line for a run the rig failed, which reads as the
   // label daemon's failure when the rig's own launch failed.
   test("--path-check names a run the rig failed as a rig error, and prints no path line for it", () => {
-    const job = plantedForwardJob().run(["forward-only", "head", "--world", "retro-defect", "--count", "1", "--path-check"], {
-      SKILL_SCENARIOS_MODEL: "standin-report",
-      PLANT_RIG_ERROR: "1",
-    });
+    const job = plantedForwardJob().run(
+      ["forward-only", "head", "--world", "retro-defect", "--count", "1", "--path-check"],
+      {
+        SKILL_SCENARIOS_MODEL: "standin-report",
+        PLANT_RIG_ERROR: "1",
+      }
+    );
     expect({ code: job.code, stderr: job.stderr }).toEqual({ code: 0, stderr: "" });
     expect(job.stdout).not.toContain("PATH OK");
     expect(job.stdout.split("\n")).toContain(
@@ -4948,14 +5025,17 @@ describe("a world with daemon: label", () => {
   test("--path-check's batch builds with build --compile at cmd_batch_scored, and a scored batch with build", () => {
     const worlds = freshDir("batch-build-worlds");
     mkdirSync(path.join(worlds, "forward-only/retro-defect"), { recursive: true });
-    writeFileSync(path.join(worlds, "forward-only/retro-defect/world.json"), madeWorld()["world.json"] ?? "");
+    writeFileSync(
+      path.join(worlds, "forward-only/retro-defect/world.json"),
+      madeWorld()["world.json"] ?? ""
+    );
     const batch = (env: Record<string, string>) => {
       const calls = path.join(freshDir("batch-build"), "calls");
       const result = bash(
         [
           defs("fail", "note", "forward_world_name", "build_label_texts", "cmd_batch_scored"),
           "forward_worlds=$1 calls=$2",
-          'load_label() { co=/rig/label P=/rig/profiles/$1; }',
+          "load_label() { co=/rig/label P=/rig/profiles/$1; }",
           "require_label_texts() { :; }",
           "lock_services() { :; }",
           "on_exit() { :; }",
@@ -4973,7 +5053,10 @@ describe("a world with daemon: label", () => {
       code: 0,
       calls: "label_texts build --compile\ncell forward-only head retro-defect 1\n",
     });
-    expect(batch({})).toMatchObject({ code: 0, calls: "label_texts build\ncell forward-only head retro-defect 1\n" });
+    expect(batch({})).toMatchObject({
+      code: 0,
+      calls: "label_texts build\ncell forward-only head retro-defect 1\n",
+    });
   });
 
   // Catches: a world whose retro gate would return the task for a check that has no pass, a cause
@@ -4998,7 +5081,11 @@ describe("a world with daemon: label", () => {
     const unrecorded = labelRun(
       "label-unrecorded",
       { statuses: [{ afterMs: 500, status: ended }] },
-      { env: { RESULTS_MISSING: `the before_merge check c-list-rows of ACME-1 has no pass at ${madeHead}` } }
+      {
+        env: {
+          RESULTS_MISSING: `the before_merge check c-list-rows of ACME-1 has no pass at ${madeHead}`,
+        },
+      }
     );
     expect(unrecorded.code).toBe(1);
     expect(unrecorded.stderr).toContain(
@@ -5024,10 +5111,19 @@ describe("a control cell", () => {
       const run = `forward-only-retro-defect-ctl-main-texts-${at + 1}`;
       const dir = path.join(work, "runs", run);
       mkdirSync(dir, { recursive: true });
-      for (const file of ["world.json", "anchors.json"]) writeFileSync(path.join(dir, file), world[file] ?? "");
-      const common = { run, scenario: "forward-only", label: "ctl-main-texts", case: "retro-defect" };
+      for (const file of ["world.json", "anchors.json"])
+        writeFileSync(path.join(dir, file), world[file] ?? "");
+      const common = {
+        run,
+        scenario: "forward-only",
+        label: "ctl-main-texts",
+        case: "retro-defect",
+      };
       if ("error" in launch) {
-        writeFileSync(path.join(dir, "row.json"), JSON.stringify({ outcome: "rig-error", ...common, error: launch.error }));
+        writeFileSync(
+          path.join(dir, "row.json"),
+          JSON.stringify({ outcome: "rig-error", ...common, error: launch.error })
+        );
         return;
       }
       writeFileSync(
@@ -5063,11 +5159,25 @@ describe("a control cell", () => {
   /** `rig.sh forward-cell` of the planted cell at a count of 5. */
   function decide(launches: Launch[]) {
     const cell = childSpawn(
-      ["bash", path.join(scenarios, "rig.sh"), "forward-cell", "forward-only", "ctl-main-texts", "retro-defect", "5"],
+      [
+        "bash",
+        path.join(scenarios, "rig.sh"),
+        "forward-cell",
+        "forward-only",
+        "ctl-main-texts",
+        "retro-defect",
+        "5",
+      ],
       { SKILL_SCENARIOS_WORK: plantCell(launches) }
     );
     const lines = cell.stdout.toString().trimEnd().split("\n");
-    return { code: cell.exitCode, stderr: cell.stderr.toString(), lines, decision: lines.at(-2), head: lines.at(-1) };
+    return {
+      code: cell.exitCode,
+      stderr: cell.stderr.toString(),
+      lines,
+      decision: lines.at(-2),
+      head: lines.at(-1),
+    };
   }
   const pass: Launch = { pass: true };
   const noticed: Launch = { pass: false, noticed: true };
@@ -5151,7 +5261,13 @@ describe("a control cell", () => {
 
   // Catches: a cell short of its count, after the limit of launches, decided as if it were whole.
   test("a control cell with 4 scored runs after the limit of launches takes row 2 and starts no head Job", () => {
-    const cell = decide([...Array.from({ length: 11 }, () => ({ error: "the rig failed the run: no ready" })), pass, pass, noticed, noticed]);
+    const cell = decide([
+      ...Array.from({ length: 11 }, () => ({ error: "the rig failed the run: no ready" })),
+      pass,
+      pass,
+      noticed,
+      noticed,
+    ]);
     expect({ code: cell.code, decision: cell.decision, head: cell.head }).toEqual({
       code: 0,
       decision: "UNKNOWN: ctl-main-texts retro-defect 4 of 5 scored",
@@ -5198,7 +5314,14 @@ describe("a control cell", () => {
 
   // Catches: a discarded launch counted among the five, or left out of the report.
   test("a control cell with one discarded launch, then 3 passes and 2 failed runs noticed, takes row 5 and lists the discarded launch", () => {
-    const cell = decide([{ error: "the rig failed the run: ready.json fails RigDaemonReady" }, pass, noticed, pass, noticed, pass]);
+    const cell = decide([
+      { error: "the rig failed the run: ready.json fails RigDaemonReady" },
+      pass,
+      noticed,
+      pass,
+      noticed,
+      pass,
+    ]);
     expect({ decision: cell.decision, head: cell.head }).toEqual({
       decision: "CONTROL BIT: ctl-main-texts retro-defect 3/5, 2 failed runs noticed",
       head: mayStart,

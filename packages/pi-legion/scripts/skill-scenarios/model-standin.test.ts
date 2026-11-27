@@ -33,7 +33,12 @@ function blocksOf(stream: string): Answered[] {
   }
   return blocks.map((block) =>
     block.type === "tool_use"
-      ? { type: "tool_use", id: block.id ?? "", name: block.name ?? "", input: JSON.parse(block.json) }
+      ? {
+          type: "tool_use",
+          id: block.id ?? "",
+          name: block.name ?? "",
+          input: JSON.parse(block.json),
+        }
       : { type: "text", text: block.text }
   );
 }
@@ -44,12 +49,16 @@ async function standin(mode: string, script?: object) {
   const dir = path.join(work, `run-${++runs}`);
   mkdirSync(dir, { recursive: true });
   const log = path.join(dir, "model-standin.jsonl");
-  if (script !== undefined) writeFileSync(path.join(dir, "standin-script.json"), JSON.stringify(script));
-  const server = Bun.spawn([process.execPath, path.join(import.meta.dir, "model-standin.ts"), log], {
-    env: { PATH: process.env.PATH ?? "", SKILL_SCENARIOS_MODEL: mode },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  if (script !== undefined)
+    writeFileSync(path.join(dir, "standin-script.json"), JSON.stringify(script));
+  const server = Bun.spawn(
+    [process.execPath, path.join(import.meta.dir, "model-standin.ts"), log],
+    {
+      env: { PATH: process.env.PATH ?? "", SKILL_SCENARIOS_MODEL: mode },
+      stdout: "pipe",
+      stderr: "pipe",
+    }
+  );
   const reader = server.stdout.getReader();
   let printed = "";
   while (!printed.includes("\n")) {
@@ -80,8 +89,18 @@ const report = {
   defect: "path check: src/config.ts loadConfig returns DEFAULTS on a parse error",
   head: "a".repeat(40),
 };
-const completion = { op: "handoff_complete", summary: "path check", plan_rating: 3, plan_reason: "path check" };
-const script = { calls: [{ tool: "legion", input: report }, { tool: "legion", input: completion }] };
+const completion = {
+  op: "handoff_complete",
+  summary: "path check",
+  plan_rating: 3,
+  plan_reason: "path check",
+};
+const script = {
+  calls: [
+    { tool: "legion", input: report },
+    { tool: "legion", input: completion },
+  ],
+};
 const task = { role: "user", content: [{ type: "text", text: "Your retro of ACME-1." }] };
 /** The user message that carries one tool's result back. */
 const resultOf = (id: string, text: string) => ({
@@ -115,7 +134,9 @@ test("standin-report answers the report, then the completion, then its fixed mes
       resultOf(completed.id, "completed"),
     ]);
     expect(third.blocks).toEqual([{ type: "text", text: FIXED }]);
-    expect(lines().map((line) => ({ answered: line.answered, toolResult: line.toolResult }))).toEqual([
+    expect(
+      lines().map((line) => ({ answered: line.answered, toolResult: line.toolResult }))
+    ).toEqual([
       { answered: 1, toolResult: null },
       { answered: 2, toolResult: answer },
       { answered: 3, toolResult: "completed" },

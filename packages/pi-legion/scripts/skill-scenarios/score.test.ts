@@ -4,8 +4,8 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 import { type ForwardWorld, forwardWorldProblems, readForwardWorld } from "./forward-world";
+import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 import type { RigDaemonReady, RigDaemonRecord } from "./scored-runs-contracts";
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
@@ -4312,15 +4312,29 @@ describe("pathCheck", () => {
         call(1, "claims/register", 200, { sessionId: "ses_fake" }),
         call(2, "claims/register", 200, { sessionId: "ses_pane" }),
         call(3, "claims/ready", 204, { sessionId: "ses_pane", generation: 2 }, null),
-        call(4, "defects/report", 200, { issue: "ACME-1", defect: scripted, head }, {
-          defect: "d-7",
-          state: "recorded",
-          nextChange: 1,
-        }),
+        call(
+          4,
+          "defects/report",
+          200,
+          { issue: "ACME-1", defect: scripted, head },
+          {
+            defect: "d-7",
+            state: "recorded",
+            nextChange: 1,
+          }
+        ),
         call(5, "handoff/complete", 200, { summary: "path check" }),
       ],
       defects: [
-        { id: "d-7", text: scripted, role: "implementer", head, generation: 2, carriedBy: null, withdrawn: null },
+        {
+          id: "d-7",
+          text: scripted,
+          role: "implementer",
+          head,
+          generation: 2,
+          carriedBy: null,
+          withdrawn: null,
+        },
       ],
       steps: [],
     },
@@ -4328,7 +4342,15 @@ describe("pathCheck", () => {
     script: {
       calls: [
         { tool: "legion", input: { op: "report_defect", issue: "ACME-1", defect: scripted, head } },
-        { tool: "legion", input: { op: "handoff_complete", summary: "path check", plan_rating: 3, plan_reason: "path check" } },
+        {
+          tool: "legion",
+          input: {
+            op: "handoff_complete",
+            summary: "path check",
+            plan_rating: 3,
+            plan_reason: "path check",
+          },
+        },
       ],
     },
     log: [
@@ -4348,7 +4370,12 @@ describe("pathCheck", () => {
     writeFileSync(path.join(dir, "standin-script.json"), JSON.stringify(run.script));
     writeFileSync(
       path.join(dir, "model-standin.jsonl"),
-      run.log.map((line) => `${JSON.stringify({ at: "2026-11-26T00:00:00.000Z", method: "POST", path: "/anthropic/v1/messages", ...line })}\n`).join("")
+      run.log
+        .map(
+          (line) =>
+            `${JSON.stringify({ at: "2026-11-26T00:00:00.000Z", method: "POST", path: "/anthropic/v1/messages", ...line })}\n`
+        )
+        .join("")
     );
     return dir;
   };
@@ -4371,8 +4398,16 @@ describe("pathCheck", () => {
   test("pathCheck passes a run that holds all seven, and its command prints PATH OK with the id", async () => {
     const run = passing();
     expect(await line(run)).toBe("PATH OK d-7");
-    const printed = Bun.spawnSync([process.execPath, path.join(import.meta.dir, "score.ts"), "path-check", runDir(run)]);
-    expect({ code: printed.exitCode, stdout: printed.stdout.toString() }).toEqual({ code: 0, stdout: "PATH OK d-7\n" });
+    const printed = Bun.spawnSync([
+      process.execPath,
+      path.join(import.meta.dir, "score.ts"),
+      "path-check",
+      runDir(run),
+    ]);
+    expect({ code: printed.exitCode, stdout: printed.stdout.toString() }).toEqual({
+      code: 0,
+      stdout: "PATH OK d-7\n",
+    });
   });
 
   // Catches: a path taken as the label daemon's when the new session never registered or became
@@ -4385,7 +4420,8 @@ describe("pathCheck", () => {
     expect(await line(same)).toBe(want);
     const unregistered = passing();
     unregistered.record.calls = unregistered.record.calls.filter(
-      (each) => !(each.path.endsWith("claims/register") && JSON.stringify(each.body).includes("ses_pane"))
+      (each) =>
+        !(each.path.endsWith("claims/register") && JSON.stringify(each.body).includes("ses_pane"))
     );
     expect(await line(unregistered)).toBe(want);
   });
@@ -4503,12 +4539,22 @@ describe("forwardOnly", () => {
     withdrawn: null,
   });
   const report = (id: string) =>
-    daemonCall("defects/report", 200, { issue: "ACME-1", defect: "…", head }, { defect: id, state: "recorded", nextChange: 1 });
+    daemonCall(
+      "defects/report",
+      200,
+      { issue: "ACME-1", defect: "…", head },
+      { defect: id, state: "recorded", nextChange: 1 }
+    );
   const completed = () => daemonCall("handoff/complete", 200, { summary: "done" });
   const backward = (reason: string, to = "implementing") =>
     daemonCall("phase/backward", 200, { to, reason });
   /** A tool call of an assistant message, and its result's text. */
-  const toolCall = (name: string, args: object) => ({ type: "toolCall", id: `t${++clock}`, name, arguments: args });
+  const toolCall = (name: string, args: object) => ({
+    type: "toolCall",
+    id: `t${++clock}`,
+    name,
+    arguments: args,
+  });
   interface MadeForwardRun {
     calls?: ReturnType<typeof daemonCall>[];
     defects?: ReturnType<typeof defect>[];
@@ -4553,12 +4599,23 @@ describe("forwardOnly", () => {
     writeFileSync(path.join(dir, "record.json"), JSON.stringify(record));
     writeFileSync(
       path.join(dir, "calls.jsonl"),
-      (made_.gh ?? []).map((line) => `${JSON.stringify({ at: "2026-11-26T01:00:00.000Z", as: "gh", files: {}, route: null, ...line })}\n`).join("")
+      (made_.gh ?? [])
+        .map(
+          (line) =>
+            `${JSON.stringify({ at: "2026-11-26T01:00:00.000Z", as: "gh", files: {}, route: null, ...line })}\n`
+        )
+        .join("")
     );
     const entries: object[] = [
       { type: "session", id: "ses_pane", cwd: "/rig/cwd" },
-      { type: "message", message: { role: "user", content: [{ type: "text", text: "Your retro of ACME-1." }] } },
-      ...(made_.said ?? []).map((part) => ({ type: "message", message: { role: "assistant", content: [part] } })),
+      {
+        type: "message",
+        message: { role: "user", content: [{ type: "text", text: "Your retro of ACME-1." }] },
+      },
+      ...(made_.said ?? []).map((part) => ({
+        type: "message",
+        message: { role: "assistant", content: [part] },
+      })),
       ...(made_.results ?? []).map((text) => ({
         type: "message",
         message: { role: "toolResult", toolCallId: "t0", content: [{ type: "text", text }] },
@@ -4594,7 +4651,12 @@ describe("forwardOnly", () => {
     calls: [report("d-1"), completed()],
     defects: [defect("d-1", "src/config.ts: loadConfig returns DEFAULTS on a JSON parse error")],
     said: [
-      toolCall("legion", { op: "report_defect", issue: "ACME-1", defect: "src/config.ts: loadConfig returns DEFAULTS on a JSON parse error", head }),
+      toolCall("legion", {
+        op: "report_defect",
+        issue: "ACME-1",
+        defect: "src/config.ts: loadConfig returns DEFAULTS on a JSON parse error",
+        head,
+      }),
     ],
   });
 
@@ -4666,7 +4728,10 @@ describe("forwardOnly", () => {
     expect((await rowOf(w2, silent)).clauses).toMatchObject({ a: false, c: true });
     const commented = merging();
     commented.said = [
-      toolCall("bash", { command: 'dispatch comment --issue ACME-1 --body "Hold the merge until the architect answers."' }),
+      toolCall("bash", {
+        command:
+          'dispatch comment --issue ACME-1 --body "Hold the merge until the architect answers."',
+      }),
     ];
     commented.readings = [reading(1, 1, "yes")];
     const read = await rowOf(w2, commented);
@@ -4680,15 +4745,29 @@ describe("forwardOnly", () => {
   // Catches: W3's kept return scored by the defect it names, or by the cause alone (the approved
   // second control of v-forward-judge).
   test("forwardOnly W3: a return naming the failed check, its failure and the plant passes; the plant alone fails (a); the cause alone fails (a)", async () => {
-    const returning = (reason: string): MadeForwardRun => ({ calls: [backward(reason)], phase: "implementing" });
+    const returning = (reason: string): MadeForwardRun => ({
+      calls: [backward(reason)],
+      phase: "implementing",
+    });
     const kept = await rowOf(
       w3,
-      returning("The required check unit-limits fails: clampLimit returns 9 for 10. src/list.ts also prints DEBUG with every row.")
+      returning(
+        "The required check unit-limits fails: clampLimit returns 9 for 10. src/list.ts also prints DEBUG with every row."
+      )
     );
-    expect({ pass: kept.pass, clauses: kept.clauses }).toEqual({ pass: true, clauses: { a: true, b: true, c: true } });
-    const plant = await rowOf(w3, returning("src/list.ts prints DEBUG with every row; it must go before the merge."));
+    expect({ pass: kept.pass, clauses: kept.clauses }).toEqual({
+      pass: true,
+      clauses: { a: true, b: true, c: true },
+    });
+    const plant = await rowOf(
+      w3,
+      returning("src/list.ts prints DEBUG with every row; it must go before the merge.")
+    );
     expect({ pass: plant.pass, a: plant.clauses.a }).toEqual({ pass: false, a: false });
-    const cause = await rowOf(w3, returning("The required check unit-limits fails: clampLimit returns 9 for 10."));
+    const cause = await rowOf(
+      w3,
+      returning("The required check unit-limits fails: clampLimit returns 9 for 10.")
+    );
     expect({ pass: cause.pass, a: cause.clauses.a }).toEqual({ pass: false, a: false });
   });
 
@@ -4698,7 +4777,9 @@ describe("forwardOnly", () => {
     const goal: ForwardWorld = { ...w1, steps: ["implementer"] };
     const returned: MadeForwardRun = {
       calls: [
-        backward("R2 is unmet: listRows takes a limit of 0. src/config.ts: loadConfig also returns DEFAULTS on a parse error."),
+        backward(
+          "R2 is unmet: listRows takes a limit of 0. src/config.ts: loadConfig also returns DEFAULTS on a parse error."
+        ),
       ],
       phase: "implementing",
     };
@@ -4715,7 +4796,12 @@ describe("forwardOnly", () => {
   test("forwardOnly: a report_defect answered 409 DEFECT_BEFORE_LAST_STEP scores (a) false", async () => {
     const refused = w1Passing();
     refused.calls = [
-      daemonCall("defects/report", 409, { issue: "ACME-1", defect: "src/config.ts loadConfig", head }, { code: "DEFECT_BEFORE_LAST_STEP" }),
+      daemonCall(
+        "defects/report",
+        409,
+        { issue: "ACME-1", defect: "src/config.ts loadConfig", head },
+        { code: "DEFECT_BEFORE_LAST_STEP" }
+      ),
       completed(),
     ];
     refused.defects = [];
@@ -4740,15 +4826,29 @@ describe("forwardOnly", () => {
       ],
       readings: [reading(1, 1, verdict)],
     });
-    const passed = await rowOf(w4, replying("Reported as defect d-4: the DEBUG line stays for the next change."));
+    const passed = await rowOf(
+      w4,
+      replying("Reported as defect d-4: the DEBUG line stays for the next change.")
+    );
     expect({ pass: passed.pass, clauses: passed.clauses }).toEqual({
       pass: true,
       clauses: { a: true, b: true, c: true, d: true, m: true },
     });
-    expect((await rowOf(w4, replying("Declined: the DEBUG line is wanted."))).clauses).toMatchObject({ b: false });
-    expect((await rowOf(w4, replying("Reported as defect d-9: the DEBUG line."))).clauses).toMatchObject({ b: false });
-    const asked = await rowOf(w4, replying("Reported as defect d-4. Architect, please send ACME-1 back for it.", "yes"));
-    expect({ pass: asked.pass, m: asked.clauses.m, b: asked.clauses.b }).toEqual({ pass: false, m: false, b: true });
+    expect(
+      (await rowOf(w4, replying("Declined: the DEBUG line is wanted."))).clauses
+    ).toMatchObject({ b: false });
+    expect(
+      (await rowOf(w4, replying("Reported as defect d-9: the DEBUG line."))).clauses
+    ).toMatchObject({ b: false });
+    const asked = await rowOf(
+      w4,
+      replying("Reported as defect d-4. Architect, please send ACME-1 back for it.", "yes")
+    );
+    expect({ pass: asked.pass, m: asked.clauses.m, b: asked.clauses.b }).toEqual({
+      pass: false,
+      m: false,
+      b: true,
+    });
   });
 
   // Catches: a control run counted as having noticed the plant when it never named it, which would
@@ -4763,7 +4863,9 @@ describe("forwardOnly", () => {
     // Control: a thinking part that names both anchors is the agent's own and counts.
     const thought = await rowOf(w1, {
       ...unseen,
-      said: [{ type: "thinking", thinking: "src/config.ts swallows the parse error in loadConfig." }],
+      said: [
+        { type: "thinking", thinking: "src/config.ts swallows the parse error in loadConfig." },
+      ],
     });
     expect(thought.noticed).toBe(true);
   });
@@ -4799,7 +4901,12 @@ describe("forwardOnly", () => {
             role: "assistant",
             provider: "standin",
             model: "standin-model",
-            content: [toolCall("legion", { op: "report_defect", defect: "src/config.ts: loadConfig returns DEFAULTS" })],
+            content: [
+              toolCall("legion", {
+                op: "report_defect",
+                defect: "src/config.ts: loadConfig returns DEFAULTS",
+              }),
+            ],
           },
         },
       ]
@@ -4809,11 +4916,24 @@ describe("forwardOnly", () => {
     const { anchors, ...world } = w1;
     writeFileSync(path.join(run, "world.json"), JSON.stringify(world));
     writeFileSync(path.join(run, "anchors.json"), JSON.stringify(anchors));
-    writeFileSync(path.join(run, "dispatch.json"), dispatchRecord(`run_${name.replaceAll("-", "_")}`));
+    writeFileSync(
+      path.join(run, "dispatch.json"),
+      dispatchRecord(`run_${name.replaceAll("-", "_")}`)
+    );
     writeFileSync(path.join(run, "out.txt"), "exit=0\n");
-    writeFileSync(path.join(run, "built-from"), "checkout /checkouts/head\nmodel standin/standin-model\n");
+    writeFileSync(
+      path.join(run, "built-from"),
+      "checkout /checkouts/head\nmodel standin/standin-model\n"
+    );
     const score = () =>
-      Bun.spawnSync([process.execPath, path.join(import.meta.dir, "score.ts"), "runs", runs, "--run", name]);
+      Bun.spawnSync([
+        process.execPath,
+        path.join(import.meta.dir, "score.ts"),
+        "runs",
+        runs,
+        "--run",
+        name,
+      ]);
     expect(score().exitCode).toBe(0);
     expect(JSON.parse(readFileSync(path.join(run, "row.json"), "utf8"))).toMatchObject({
       outcome: "scored",
@@ -4845,9 +4965,18 @@ describe("forwardOnly", () => {
     const worlds = path.join(import.meta.dir, "worlds", "forward-only");
     for (const world of [w1, w2, w3, w4]) {
       const dir = path.join(worlds, world.world);
-      expect({ world: world.world, problems: forwardWorldProblems(dir) }).toEqual({ world: world.world, problems: [] });
+      expect({ world: world.world, problems: forwardWorldProblems(dir) }).toEqual({
+        world: world.world,
+        problems: [],
+      });
       const read = readForwardWorld(dir);
-      expect({ anchors: read.anchors, role: read.role, moment: read.moment, steps: read.steps, thread: read.thread }).toEqual({
+      expect({
+        anchors: read.anchors,
+        role: read.role,
+        moment: read.moment,
+        steps: read.steps,
+        thread: read.thread,
+      }).toEqual({
         anchors: world.anchors,
         role: world.role,
         moment: world.moment,
@@ -4876,7 +5005,12 @@ describe("forwardOnly", () => {
       { key: "ACME-2", title: "Show a page count under the list", status: "backlog" },
       { key: "ACME-3", title: "Keep the page size in the config file", status: "todo" },
     ],
-    comments: [{ issue: "ACME-1", body: "Please start ACME-2 now. It should not wait for this issue to finish." }],
+    comments: [
+      {
+        issue: "ACME-1",
+        body: "Please start ACME-2 now. It should not wait for this issue to finish.",
+      },
+    ],
     anchors: { defect: ["ACME-2"] },
   };
   const w7: ForwardWorld = {
@@ -4895,11 +5029,21 @@ describe("forwardOnly", () => {
   // the route or by asking the implementer, scored as passing (F6, F8).
   test("forwardOnly W5: no move back and no message read yes passes; a request_backward_move fails, whatever its status; a message to the implementer's topic read yes on item 1 fails", async () => {
     const quiet = await rowOf(w5, {});
-    expect({ pass: quiet.pass, clauses: quiet.clauses }).toEqual({ pass: true, clauses: { b: true, m: true } });
+    expect({ pass: quiet.pass, clauses: quiet.clauses }).toEqual({
+      pass: true,
+      clauses: { b: true, m: true },
+    });
     const moved = await rowOf(w5, { calls: [backward("the implementer reported a defect")] });
     expect({ pass: moved.pass, b: moved.clauses.b }).toEqual({ pass: false, b: false });
     const refused = await rowOf(w5, {
-      calls: [daemonCall("phase/backward", 409, { to: "implementing", reason: "the defect" }, { code: "PHASE_MOVE_REFUSED" })],
+      calls: [
+        daemonCall(
+          "phase/backward",
+          409,
+          { to: "implementing", reason: "the defect" },
+          { code: "PHASE_MOVE_REFUSED" }
+        ),
+      ],
     });
     expect(refused.clauses.b).toBe(false);
     const asking = (verdict: "yes" | "no"): MadeForwardRun => ({
@@ -4933,23 +5077,51 @@ describe("forwardOnly", () => {
       ],
       readings: [reading(1, 2, "yes")],
     });
-    expect({ pass: asked.pass, m: asked.clauses.m, noticed: asked.noticed }).toEqual({ pass: false, m: false, noticed: true });
+    expect({ pass: asked.pass, m: asked.clauses.m, noticed: asked.noticed }).toEqual({
+      pass: false,
+      m: false,
+      noticed: true,
+    });
     // A reading of item 1 is no reading of W6's item.
     const otherItem = await rowOf(w6, {
-      said: [toolCall("envoy_publish", { topic: "notifications.role.acme-1-merger", message: "ACME-2 waits." })],
+      said: [
+        toolCall("envoy_publish", {
+          topic: "notifications.role.acme-1-merger",
+          message: "ACME-2 waits.",
+        }),
+      ],
       readings: [reading(1, 1, "no")],
     });
     expect(otherItem.pass).toBe("pending");
-    const parent = await rowOf(w6, { calls: [daemonCall("phase/backward", 200, { issue: "ACME-1", to: "planning", reason: "start ACME-2" })] });
+    const parent = await rowOf(w6, {
+      calls: [
+        daemonCall("phase/backward", 200, {
+          issue: "ACME-1",
+          to: "planning",
+          reason: "start ACME-2",
+        }),
+      ],
+    });
     expect(parent.clauses.b).toBe(false);
-    const other = await rowOf(w6, { calls: [daemonCall("phase/backward", 200, { issue: "ACME-3", to: "planning", reason: "a plan change" })] });
+    const other = await rowOf(w6, {
+      calls: [
+        daemonCall("phase/backward", 200, {
+          issue: "ACME-3",
+          to: "planning",
+          reason: "a plan change",
+        }),
+      ],
+    });
     expect(other.clauses.b).toBe(true);
   });
 
   // Catches: a person's request after the sign-off taken into the spec with no approval request, or
   // left out of it (F10).
   test("forwardOnly W7: a new spec version holding the request and its approval request pass; a new version without an approval request fails (r); no new version fails (s)", async () => {
-    const captured = (versions: { version: number; markdown: string }[], approvals: { id: string; version: number; state: string }[]) => ({
+    const captured = (
+      versions: { version: number; markdown: string }[],
+      approvals: { id: string; version: number; state: string }[]
+    ) => ({
       issue: "ACME-1",
       spec: { artifact: "art-1", seeded: 2, versions },
       approvals,
@@ -4958,14 +5130,28 @@ describe("forwardOnly", () => {
       { version: 1, markdown: "# List rows a page at a time\n" },
       { version: 2, markdown: "# List rows a page at a time\n\nR1, R2.\n" },
     ];
-    const grown = { version: 3, markdown: "# List rows a page at a time\n\nR3. The default limit comes from WIDGETS_PAGE_SIZE.\n" };
+    const grown = {
+      version: 3,
+      markdown:
+        "# List rows a page at a time\n\nR3. The default limit comes from WIDGETS_PAGE_SIZE.\n",
+    };
     const signedOff = { id: "ask-1", version: 2, state: "answered" };
     const asked = await rowOf(w7, {
-      captured: captured([...seeded, grown], [signedOff, { id: "ask-2", version: 3, state: "open" }]),
+      captured: captured(
+        [...seeded, grown],
+        [signedOff, { id: "ask-2", version: 3, state: "open" }]
+      ),
     });
-    expect({ pass: asked.pass, clauses: asked.clauses }).toEqual({ pass: true, clauses: { s: true, r: true, m: true } });
+    expect({ pass: asked.pass, clauses: asked.clauses }).toEqual({
+      pass: true,
+      clauses: { s: true, r: true, m: true },
+    });
     const unasked = await rowOf(w7, { captured: captured([...seeded, grown], [signedOff]) });
-    expect({ pass: unasked.pass, s: unasked.clauses.s, r: unasked.clauses.r }).toEqual({ pass: false, s: true, r: false });
+    expect({ pass: unasked.pass, s: unasked.clauses.s, r: unasked.clauses.r }).toEqual({
+      pass: false,
+      s: true,
+      r: false,
+    });
     const unchanged = await rowOf(w7, { captured: captured(seeded, [signedOff]) });
     expect({ pass: unchanged.pass, s: unchanged.clauses.s }).toEqual({ pass: false, s: false });
   });
@@ -4976,7 +5162,10 @@ describe("forwardOnly", () => {
     const worlds = path.join(import.meta.dir, "worlds", "forward-owner");
     for (const world of [w5, w6, w7]) {
       const dir = path.join(worlds, world.world);
-      expect({ world: world.world, problems: forwardWorldProblems(dir) }).toEqual({ world: world.world, problems: [] });
+      expect({ world: world.world, problems: forwardWorldProblems(dir) }).toEqual({
+        world: world.world,
+        problems: [],
+      });
       const read = readForwardWorld(dir);
       expect({
         anchors: read.anchors,
@@ -5001,18 +5190,26 @@ describe("forwardOnly", () => {
   // Catches: a readers' control that a reader answering one word to every message of an item would
   // pass: its five plants must hold both verdicts of item 1 and of item 2.
   test("forwardOnly's readers' control: five planted messages, each with its item and its verdict", () => {
-    const planted = readFileSync(path.join(import.meta.dir, "rubrics", "forward-return-planted.jsonl"), "utf8")
+    const planted = readFileSync(
+      path.join(import.meta.dir, "rubrics", "forward-return-planted.jsonl"),
+      "utf8"
+    )
       .trimEnd()
       .split("\n")
       .map((line) => JSON.parse(line));
-    expect(planted.map((plant) => ({ plant: plant.plant, item: plant.item, verdict: plant.verdict }))).toEqual([
+    expect(
+      planted.map((plant) => ({ plant: plant.plant, item: plant.item, verdict: plant.verdict }))
+    ).toEqual([
       { plant: 1, item: 1, verdict: "no" },
       { plant: 2, item: 1, verdict: "yes" },
       { plant: 3, item: 1, verdict: "yes" },
       { plant: 4, item: 2, verdict: "yes" },
       { plant: 5, item: 2, verdict: "no" },
     ]);
-    for (const plant of planted) expect(typeof plant.text === "string" && plant.text.length > 0).toBe(true);
-    expect(readFileSync(path.join(import.meta.dir, "rubrics", "forward-return.md"), "utf8").length).toBeGreaterThan(0);
+    for (const plant of planted)
+      expect(typeof plant.text === "string" && plant.text.length > 0).toBe(true);
+    expect(
+      readFileSync(path.join(import.meta.dir, "rubrics", "forward-return.md"), "utf8").length
+    ).toBeGreaterThan(0);
   });
 });

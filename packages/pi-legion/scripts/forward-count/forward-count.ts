@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 // The count of returns from the retro and the merge (C7 of the forward-only design), in two
 // phases:
 //
@@ -35,10 +37,8 @@
 //
 // Neither `collect` nor `resolve` writes anything outside `--out`, and neither calls any route
 // that writes.
-import { readFileSync, readdirSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 
 // ---------------------------------------------------------------------------
 // The words and the shapes
@@ -189,7 +189,9 @@ export function classifyMergeBlocked(read: MergeBlockedRead): { state: RecordSta
   const counted = read.timeline.items.filter(about);
   if (last === undefined) {
     if (read.timeline.state === "unread") return { state: "unread", step: 4 };
-    return counted.length > 0 ? { state: "established", step: 4 } : { state: "undetermined", step: 4 };
+    return counted.length > 0
+      ? { state: "established", step: 4 }
+      : { state: "undetermined", step: 4 };
   }
   if (read.timeline.state === "unread") return { state: "unread", step: 5 };
   const lastAt = timeOf(last.at);
@@ -263,7 +265,8 @@ export function parseSession(text: string): { session: string | null; entries: T
     }
     if (!isObject(parsed)) continue;
     const at = typeof parsed.timestamp === "string" ? parsed.timestamp : null;
-    const add = (entry: Omit<TranscriptEntry, "index">) => entries.push({ ...entry, index: entries.length });
+    const add = (entry: Omit<TranscriptEntry, "index">) =>
+      entries.push({ ...entry, index: entries.length });
     if (parsed.type === "session") {
       if (typeof parsed.id === "string") session = parsed.id;
       continue;
@@ -330,10 +333,14 @@ function commandOf(args: Record<string, unknown>): string {
 }
 
 /** The words that open a shell command, so `gh` at a command's start is found and `… | gh` too. */
-const COMMAND_START = /(?:^|[;&|(]|&&|\|\||\$\(|\n)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*([^\s;&|()]+)/g;
+const COMMAND_START =
+  /(?:^|[;&|(]|&&|\|\||\$\(|\n)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*([^\s;&|()]+)/g;
 
 /** Whether a call is a GitHub read: a `gh` command, or a request to a host of GitHub's API. */
-function githubRead(entry: TranscriptEntry, apiHosts: string[]): { place: string; merge: string | null } | null {
+function githubRead(
+  entry: TranscriptEntry,
+  apiHosts: string[]
+): { place: string; merge: string | null } | null {
   const command = entry.command ?? "";
   if (command === "") return null;
   const tool = entry.tool ?? "";
@@ -348,7 +355,8 @@ function githubRead(entry: TranscriptEntry, apiHosts: string[]): { place: string
       const head = /--match-head-commit[= ]+([0-9a-f]{40})/.exec(command)?.[1] ?? null;
       return { place: "gh pr merge --match-head-commit", merge: head };
     }
-    if (words[0] === "pr" && words[1] !== undefined) return { place: `gh ${words[0]} ${words[1]}`, merge: null };
+    if (words[0] === "pr" && words[1] !== undefined)
+      return { place: `gh ${words[0]} ${words[1]}`, merge: null };
     return { place: "gh", merge: null };
   }
   for (const url of command.matchAll(/https?:\/\/([A-Za-z0-9.:-]+)(\/[^\s"'\\]*)?/g)) {
@@ -362,9 +370,12 @@ function githubRead(entry: TranscriptEntry, apiHosts: string[]): { place: string
 
 /** GitHub's answer about a head, read from a payload: its value and the head it names. */
 export function answerOfPayload(text: string): { value: AnswerValue; head: string | null } | null {
-  const mergeable = /"mergeable"\s*:\s*"?(MERGEABLE|CONFLICTING|UNKNOWN|true|false|null)"?/i.exec(text)?.[1];
+  const mergeable = /"mergeable"\s*:\s*"?(MERGEABLE|CONFLICTING|UNKNOWN|true|false|null)"?/i.exec(
+    text
+  )?.[1];
   const status =
-    /"mergeStateStatus"\s*:\s*"([A-Za-z_]+)"/.exec(text)?.[1] ?? /"mergeable_state"\s*:\s*"([A-Za-z_]+)"/.exec(text)?.[1];
+    /"mergeStateStatus"\s*:\s*"([A-Za-z_]+)"/.exec(text)?.[1] ??
+    /"mergeable_state"\s*:\s*"([A-Za-z_]+)"/.exec(text)?.[1];
   if (mergeable === undefined && status === undefined) return null;
   const head =
     /"headRefOid"\s*:\s*"([0-9a-f]{40})"/.exec(text)?.[1] ??
@@ -372,9 +383,14 @@ export function answerOfPayload(text: string): { value: AnswerValue; head: strin
     null;
   const state = (status ?? "").toUpperCase();
   const merge = (mergeable ?? "").toUpperCase();
-  const blocked = merge === "CONFLICTING" || merge === "FALSE" || ["DIRTY", "BLOCKED", "BEHIND", "DRAFT"].includes(state);
+  const blocked =
+    merge === "CONFLICTING" ||
+    merge === "FALSE" ||
+    ["DIRTY", "BLOCKED", "BEHIND", "DRAFT"].includes(state);
   if (blocked) return { value: "blocked", head };
-  const clear = (merge === "MERGEABLE" || merge === "TRUE") && (state === "" || ["CLEAN", "HAS_HOOKS", "UNSTABLE"].includes(state));
+  const clear =
+    (merge === "MERGEABLE" || merge === "TRUE") &&
+    (state === "" || ["CLEAN", "HAS_HOOKS", "UNSTABLE"].includes(state));
   return { value: clear ? "clear" : "indeterminate", head };
 }
 
@@ -393,11 +409,15 @@ function backwardMoveCall(entry: TranscriptEntry): boolean {
  * id. Nothing else is an answer: no assistant message, no tool call's arguments, no delivery, and
  * no result of a command that is not a GitHub read.
  */
-export function transcriptAnswers(entries: TranscriptEntry[], options: { apiHosts: string[] }): Answer[] {
+export function transcriptAnswers(
+  entries: TranscriptEntry[],
+  options: { apiHosts: string[] }
+): Answer[] {
   const cut = entries.findIndex(backwardMoveCall);
   const upTo = cut === -1 ? entries : entries.slice(0, cut);
   const calls = new Map<string, TranscriptEntry>();
-  for (const entry of upTo) if (entry.kind === "call" && entry.callId !== undefined) calls.set(entry.callId, entry);
+  for (const entry of upTo)
+    if (entry.kind === "call" && entry.callId !== undefined) calls.set(entry.callId, entry);
   const answers: Answer[] = [];
   for (const entry of upTo) {
     if (entry.kind !== "result" || entry.callId === undefined) continue;
@@ -406,12 +426,24 @@ export function transcriptAnswers(entries: TranscriptEntry[], options: { apiHost
     const read = githubRead(call, options.apiHosts);
     if (read === null) continue;
     if (read.merge !== null && entry.isError === true) {
-      answers.push({ source: "transcript", place: read.place, at: entry.at, value: "blocked", head: read.merge });
+      answers.push({
+        source: "transcript",
+        place: read.place,
+        at: entry.at,
+        value: "blocked",
+        head: read.merge,
+      });
       continue;
     }
     const payload = answerOfPayload(entry.text ?? "");
     if (payload === null) continue;
-    answers.push({ source: "transcript", place: read.place, at: entry.at, value: payload.value, head: payload.head });
+    answers.push({
+      source: "transcript",
+      place: read.place,
+      at: entry.at,
+      value: payload.value,
+      head: payload.head,
+    });
   }
   return answers;
 }
@@ -433,7 +465,15 @@ export interface ReasonFacts {
 }
 
 /** The words of `merge-blocked`, matched at the start of a word, in any case. */
-const BLOCK_WORDS = ["CONFLICTING", "DIRTY", "BLOCKED", "conflict", "CHANGES_REQUESTED", "requested changes", "merge queue"];
+const BLOCK_WORDS = [
+  "CONFLICTING",
+  "DIRTY",
+  "BLOCKED",
+  "conflict",
+  "CHANGES_REQUESTED",
+  "requested changes",
+  "merge queue",
+];
 
 /** The words of `ci`, matched anywhere, in any case. */
 const CI_WORDS = ["failed_checks", "merge_group", "required check"];
@@ -444,7 +484,7 @@ const NEWS = /\b(spec|verification)\b[^.\n]{0,60}?\bv(?:ersion)?\s?(\d+)/i;
 /** Whether text holds name as a name of its own, with neither a letter, a digit nor a hyphen beside it. */
 function namesWord(text: string, name: string): boolean {
   if (name === "") return false;
-  const escaped = name.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
+  const escaped = name.replace(/[.*+?^${}()|[\]-]/g, "\\$&");
   return new RegExp(`(^|[^A-Za-z0-9_-])${escaped}([^A-Za-z0-9_-]|$)`, "i").test(text);
 }
 
@@ -458,14 +498,17 @@ export function statedCauses(facts: ReasonFacts): StatedCause[] {
   if (reason === null || reason === "") return [];
   const stated: StatedCause[] = [];
   const lower = reason.toLowerCase();
-  if (BLOCK_WORDS.some((word) => new RegExp(`\\b${word.toLowerCase()}`).test(lower))) stated.push("merge-blocked");
+  if (BLOCK_WORDS.some((word) => new RegExp(`\\b${word.toLowerCase()}`).test(lower)))
+    stated.push("merge-blocked");
   const ci =
     CI_WORDS.some((word) => lower.includes(word.toLowerCase())) ||
     facts.ciJobNames.some((name) => namesWord(reason, name));
   if (ci) stated.push("ci");
-  if (facts.kind === "retro" && facts.checkIds.some((id) => namesWord(reason, id))) stated.push("failed-check");
+  if (facts.kind === "retro" && facts.checkIds.some((id) => namesWord(reason, id)))
+    stated.push("failed-check");
   if (NEWS.test(reason)) stated.push("news");
-  if (facts.kind === "retro" && facts.requirementIds.some((id) => namesWord(reason, id))) stated.push("goal-check");
+  if (facts.kind === "retro" && facts.requirementIds.some((id) => namesWord(reason, id)))
+    stated.push("goal-check");
   return CAUSES.filter((cause) => stated.includes(cause));
 }
 
@@ -481,7 +524,9 @@ export function causeRecords(facts: ReturnFacts): CauseRecord[] {
     kind: facts.kind,
     reason: facts.reasonRead ? facts.reason : null,
     checkIds: (facts.checks ?? []).map((check) => check.blockId),
-    ciJobNames: (facts.checks ?? []).flatMap((check) => (check.ciCheck === null ? [] : [check.ciCheck])),
+    ciJobNames: (facts.checks ?? []).flatMap((check) =>
+      check.ciCheck === null ? [] : [check.ciCheck]
+    ),
     requirementIds: facts.requirementIds ?? [],
   });
   const records: CauseRecord[] = [];
@@ -497,13 +542,18 @@ export function causeRecords(facts: ReturnFacts): CauseRecord[] {
 }
 
 /** The state of the record of a cause that is not `merge-blocked`. */
-function otherRecord(cause: Exclude<StatedCause, "merge-blocked">, facts: ReturnFacts): RecordState {
+function otherRecord(
+  cause: Exclude<StatedCause, "merge-blocked">,
+  facts: ReturnFacts
+): RecordState {
   if (facts.head === null || facts.head === "") return "unread";
   const reason = facts.reason ?? "";
   switch (cause) {
     case "ci": {
       if (facts.checks === null) return "unread";
-      const ciChecks = facts.checks.filter((check) => check.ciCheck !== null && check.ciCheck !== "");
+      const ciChecks = facts.checks.filter(
+        (check) => check.ciCheck !== null && check.ciCheck !== ""
+      );
       return ciChecks.some((check) => check.passStands !== "yes") ? "established" : "absent";
     }
     case "failed-check": {
@@ -523,7 +573,9 @@ function otherRecord(cause: Exclude<StatedCause, "merge-blocked">, facts: Return
       return inRun ? "established" : "absent";
     }
     case "goal-check": {
-      const reviewed = facts.taskSteps.some((step) => step.role === "reviewer" || step.role === "acceptance");
+      const reviewed = facts.taskSteps.some(
+        (step) => step.role === "reviewer" || step.role === "acceptance"
+      );
       return reviewed ? "absent" : "established";
     }
   }
@@ -562,14 +614,21 @@ function finalReading(ret: ReturnLine, readings: Reading[]): Reading | null {
 /** Whether two readings of one return say the same thing of its own defect and of each cause. */
 function readingsAgree(ret: ReturnLine, one: Reading, two: Reading): boolean {
   if (one.own !== two.own) return false;
-  return ret.causes.every((record) => (one.confirmed[record.cause] === true) === (two.confirmed[record.cause] === true));
+  return ret.causes.every(
+    (record) => (one.confirmed[record.cause] === true) === (two.confirmed[record.cause] === true)
+  );
 }
 
 /** The class one reading alone gives a return. */
 function classWith(ret: ReturnLine, reading: Reading): ResolvedClass {
-  const outcomes = ret.causes.map((record) => ({ cause: record.cause, holds: causeHolds(record, reading.confirmed[record.cause] === true) }));
+  const outcomes = ret.causes.map((record) => ({
+    cause: record.cause,
+    holds: causeHolds(record, reading.confirmed[record.cause] === true),
+  }));
   if (outcomes.some((outcome) => outcome.holds === "pending")) return "pending";
-  const holds = outcomes.filter((outcome) => outcome.holds === true).map((outcome) => outcome.cause);
+  const holds = outcomes
+    .filter((outcome) => outcome.holds === true)
+    .map((outcome) => outcome.cause);
   if (reading.own) return holds.length === 0 ? "against-R23" : "mixed";
   if (holds.includes("goal-check")) return "goal-check";
   const first = CAUSES.find((cause) => holds.includes(cause));
@@ -581,7 +640,10 @@ function classWith(ret: ReturnLine, reading: Reading): ResolvedClass {
  * was not read is `pending`: it rests on no claim about any cause, and the role's own defect
  * cannot be judged without the reason.
  */
-export function resolveReturn(ret: ReturnLine, readings: Reading[]): { class: ResolvedClass; final: Reading | null; why: string } {
+export function resolveReturn(
+  ret: ReturnLine,
+  readings: Reading[]
+): { class: ResolvedClass; final: Reading | null; why: string } {
   if (!ret.reasonRead) return { class: "pending", final: null, why: "the reason was not read" };
   const final = finalReading(ret, readings);
   if (final === null) {
@@ -595,7 +657,10 @@ export function resolveReturn(ret: ReturnLine, readings: Reading[]): { class: Re
     return { class: "pending", final: null, why };
   }
   const name = classWith(ret, final);
-  const why = name === "pending" ? "a cause the reading confirms has no record that decides it" : `the reading of reader ${final.reader}`;
+  const why =
+    name === "pending"
+      ? "a cause the reading confirms has no record that decides it"
+      : `the reading of reader ${final.reader}`;
   return { class: name, final, why };
 }
 
@@ -636,7 +701,11 @@ export interface Unknown {
  * be read, the verdict, and one line for each issue with a return. A day or a project that could
  * not be read is `unknown`, never a zero.
  */
-export function summaryOf(input: { returns: SummaryReturn[]; lastStepsPassed: number; unknown: Unknown[] }): string {
+export function summaryOf(input: {
+  returns: SummaryReturn[];
+  lastStepsPassed: number;
+  unknown: Unknown[];
+}): string {
   const count = (name: ResolvedClass) => input.returns.filter((ret) => ret.class === name).length;
   const lines = [
     `against R23: ${count("against-R23")}`,
@@ -650,12 +719,17 @@ export function summaryOf(input: { returns: SummaryReturn[]; lastStepsPassed: nu
       input.unknown.length === 0
         ? "none"
         : input.unknown
-            .map((entry) => (entry.day === null ? `${entry.project} (every day of the window)` : `${entry.project} ${entry.day}`))
+            .map((entry) =>
+              entry.day === null
+                ? `${entry.project} (every day of the window)`
+                : `${entry.project} ${entry.day}`
+            )
             .join(", ")
     }`,
   ];
   const failed = count("against-R23") > 0;
-  const pass = !failed && count("pending") === 0 && input.unknown.length === 0 && input.lastStepsPassed > 0;
+  const pass =
+    !failed && count("pending") === 0 && input.unknown.length === 0 && input.lastStepsPassed > 0;
   lines.push(`verdict: ${failed ? "fail" : pass ? "pass" : "unknown"}`);
   for (const ret of input.returns) lines.push(`${ret.issue} ${ret.class}`);
   return `${lines.join("\n")}\n`;
@@ -679,7 +753,9 @@ class Dispatch {
     let last = "";
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const answer = await fetch(`${this.url}${route}`, { headers: { Authorization: `Bearer ${this.token}` } });
+        const answer = await fetch(`${this.url}${route}`, {
+          headers: { Authorization: `Bearer ${this.token}` },
+        });
         if (answer.ok) return (await answer.json()) as T;
         last = `${answer.status} ${(await answer.text()).slice(0, 200)}`;
         if (answer.status < 500 && answer.status !== 429) break;
@@ -741,9 +817,13 @@ class GitHub {
    */
   budget(calls: number): void {
     if (!this.viaGh() || calls <= 500) return;
-    const limit = ghApi(["api", "rate_limit"]) as { resources?: { core?: { remaining?: number; limit?: number } } };
+    const limit = ghApi(["api", "rate_limit"]) as {
+      resources?: { core?: { remaining?: number; limit?: number } };
+    };
     const remaining = limit.resources?.core?.remaining ?? 0;
-    process.stderr.write(`github: ${remaining} of ${limit.resources?.core?.limit ?? 0} core calls left, and this run makes about ${calls}\n`);
+    process.stderr.write(
+      `github: ${remaining} of ${limit.resources?.core?.limit ?? 0} core calls left, and this run makes about ${calls}\n`
+    );
     if (remaining < 5000) {
       throw new ReadFailed(
         `GitHub's budget is shared: ${remaining} core calls are left, under the 5,000 this count holds back. Run it again after the limit resets.`
@@ -793,7 +873,8 @@ class GitHub {
       }
       this.calls++;
       const body = ghApi(args) as { data?: unknown; errors?: unknown };
-      if (body.errors !== undefined) throw new ReadFailed(`gh api graphql: ${JSON.stringify(body.errors).slice(0, 200)}`);
+      if (body.errors !== undefined)
+        throw new ReadFailed(`gh api graphql: ${JSON.stringify(body.errors).slice(0, 200)}`);
       data = body.data;
     } else {
       this.calls++;
@@ -802,9 +883,13 @@ class GitHub {
         headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ query, variables }),
       });
-      if (!answer.ok) throw new ReadFailed(`POST /graphql: ${answer.status} ${(await answer.text()).slice(0, 200)}`);
+      if (!answer.ok)
+        throw new ReadFailed(
+          `POST /graphql: ${answer.status} ${(await answer.text()).slice(0, 200)}`
+        );
       const body = (await answer.json()) as { data?: unknown; errors?: unknown };
-      if (body.errors !== undefined) throw new ReadFailed(`POST /graphql: ${JSON.stringify(body.errors).slice(0, 200)}`);
+      if (body.errors !== undefined)
+        throw new ReadFailed(`POST /graphql: ${JSON.stringify(body.errors).slice(0, 200)}`);
       data = body.data;
     }
     this.keep(key, data);
@@ -824,7 +909,8 @@ class GitHub {
       const read = await fetch(`${this.api.replace(/\/+$/, "")}${route}`, {
         headers: { Authorization: `Bearer ${this.token}`, Accept: "application/vnd.github+json" },
       });
-      if (!read.ok) throw new ReadFailed(`GET ${route}: ${read.status} ${(await read.text()).slice(0, 200)}`);
+      if (!read.ok)
+        throw new ReadFailed(`GET ${route}: ${read.status} ${(await read.text()).slice(0, 200)}`);
       answer = await read.json();
     }
     this.keep(key, answer);
@@ -835,8 +921,12 @@ class GitHub {
 /** One `gh api` call, answered as JSON. A refusal is a read that did not answer. */
 function ghApi(args: string[]): unknown {
   const run = spawnSync("gh", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-  if (run.error !== undefined && run.error !== null) throw new ReadFailed(`gh ${args[0]}: ${run.error.message}`);
-  if (run.status !== 0) throw new ReadFailed(`gh ${args.slice(0, 2).join(" ")} exited ${run.status}: ${(run.stderr ?? "").trim().slice(0, 300)}`);
+  if (run.error !== undefined && run.error !== null)
+    throw new ReadFailed(`gh ${args[0]}: ${run.error.message}`);
+  if (run.status !== 0)
+    throw new ReadFailed(
+      `gh ${args.slice(0, 2).join(" ")} exited ${run.status}: ${(run.stderr ?? "").trim().slice(0, 300)}`
+    );
   try {
     return JSON.parse(run.stdout ?? "");
   } catch (error) {
@@ -865,8 +955,10 @@ function tqSql(sql: string): Record<string, unknown>[] {
     encoding: "utf8",
     maxBuffer: 512 * 1024 * 1024,
   });
-  if (run.error !== undefined && run.error !== null) throw new ReadFailed(`tq sql: ${run.error.message}`);
-  if (run.status !== 0) throw new ReadFailed(`tq sql exited ${run.status}: ${(run.stderr ?? "").trim().slice(0, 300)}`);
+  if (run.error !== undefined && run.error !== null)
+    throw new ReadFailed(`tq sql: ${run.error.message}`);
+  if (run.status !== 0)
+    throw new ReadFailed(`tq sql exited ${run.status}: ${(run.stderr ?? "").trim().slice(0, 300)}`);
   return (run.stdout ?? "")
     .split("\n")
     .filter((line) => line.trim() !== "")
@@ -876,7 +968,11 @@ function tqSql(sql: string): Record<string, unknown>[] {
 /** A string of a row, "" where the row holds none. */
 function text(row: Record<string, unknown>, key: string): string {
   const value = row[key];
-  return typeof value === "string" ? value : value === null || value === undefined ? "" : String(value);
+  return typeof value === "string"
+    ? value
+    : value === null || value === undefined
+      ? ""
+      : String(value);
 }
 
 /** The entries of each session the store holds, built from its calls and their results. */
@@ -925,7 +1021,10 @@ function storeSessions(sessions: string[], from: string): Map<string, Transcript
 }
 
 /** Every `request_backward_move` call the store holds in the window, by session and time. */
-function storeBackwardMoves(from: string, to: string): { session: string; at: string; issue: string | null }[] {
+function storeBackwardMoves(
+  from: string,
+  to: string
+): { session: string; at: string; issue: string | null }[] {
   const rows = tqSql(
     `SELECT c.session_id AS session_id, toString(c.started_at) AS started_at, c.command AS command
      FROM calls c
@@ -936,7 +1035,11 @@ function storeBackwardMoves(from: string, to: string): { session: string; at: st
   return rows.map((row) => {
     const command = text(row, "command");
     const issue = /"issue"\s*:\s*"([A-Z][A-Z0-9]*-\d+)"/.exec(command)?.[1] ?? null;
-    return { session: text(row, "session_id"), at: `${text(row, "started_at").replace(" ", "T")}Z`, issue };
+    return {
+      session: text(row, "session_id"),
+      at: `${text(row, "started_at").replace(" ", "T")}Z`,
+      issue,
+    };
   });
 }
 
@@ -1014,7 +1117,11 @@ interface Batch {
 }
 
 /** Runs `run` over `items`, at most `limit` at a time, keeping the answers in order. */
-async function mapLimit<T, R>(items: T[], limit: number, run: (item: T) => Promise<R>): Promise<R[]> {
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  run: (item: T) => Promise<R>
+): Promise<R[]> {
   const answers: R[] = new Array(items.length);
   let next = 0;
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
@@ -1031,7 +1138,11 @@ async function mapLimit<T, R>(items: T[], limit: number, run: (item: T) => Promi
 /** Each day of the window, as the unknown list names them. */
 function daysOf(from: string, to: string): string[] {
   const days: string[] = [];
-  for (let at = Date.parse(`${from}T00:00:00Z`); at <= Date.parse(`${to}T00:00:00Z`); at += 86_400_000) {
+  for (
+    let at = Date.parse(`${from}T00:00:00Z`);
+    at <= Date.parse(`${to}T00:00:00Z`);
+    at += 86_400_000
+  ) {
     days.push(new Date(at).toISOString().slice(0, 10));
   }
   return days;
@@ -1065,7 +1176,8 @@ async function collect(args: CollectArgs): Promise<void> {
   const cannotRead = (project: string, why: string) => {
     process.stderr.write(`unknown: ${project}: ${why}\n`);
     for (const day of daysOf(args.from, args.to)) {
-      if (!unknown.some((entry) => entry.project === project && entry.day === day)) unknown.push({ project, day });
+      if (!unknown.some((entry) => entry.project === project && entry.day === day))
+        unknown.push({ project, day });
     }
   };
 
@@ -1107,12 +1219,16 @@ async function collect(args: CollectArgs): Promise<void> {
     let passed = 0;
     for (const step of newestStep.values()) if (step.passed) passed++;
     lastStepsPassed.push({ project, count: passed });
-    process.stderr.write(`${project}: ${found.length} returns of the retro and the merge in the window\n`);
+    process.stderr.write(
+      `${project}: ${found.length} returns of the retro and the merge in the window\n`
+    );
     // Each return reads at most one head and one timeline from GitHub, whose budget every
     // session of the fleet shares.
     github.budget(found.length * 2);
 
-    const sessions = [...new Set(found.map((row) => row.record.session).filter((session) => session !== ""))];
+    const sessions = [
+      ...new Set(found.map((row) => row.record.session).filter((session) => session !== "")),
+    ];
     let transcripts = new Map<string, TranscriptEntry[]>();
     let transcriptWhy = "the run read no transcript (--transcripts none)";
     if (args.transcripts.kind === "tq") {
@@ -1137,24 +1253,33 @@ async function collect(args: CollectArgs): Promise<void> {
       try {
         addStoreOnly(lines, found, project, storeBackwardMoves(args.from, args.to), args);
       } catch (error) {
-        process.stderr.write(`${project}: the store's backward moves did not answer: ${messageOf(error)}\n`);
+        process.stderr.write(
+          `${project}: the store's backward moves did not answer: ${messageOf(error)}\n`
+        );
       }
     }
   }
 
   mkdirSync(args.out, { recursive: true });
-  writeFileSync(path.join(args.out, "returns.jsonl"), lines.map((line) => `${JSON.stringify(line)}\n`).join(""), { mode: 0o644 });
+  writeFileSync(
+    path.join(args.out, "returns.jsonl"),
+    lines.map((line) => `${JSON.stringify(line)}\n`).join(""),
+    { mode: 0o644 }
+  );
   const batch: Batch = {
     from: args.from,
     to: args.to,
     projects: args.projects,
-    transcripts: args.transcripts.kind === "dir" ? `dir:${args.transcripts.path}` : args.transcripts.kind,
+    transcripts:
+      args.transcripts.kind === "dir" ? `dir:${args.transcripts.path}` : args.transcripts.kind,
     reasons: args.reasons,
     collectedAt: new Date().toISOString(),
     lastStepsPassed,
     unknown,
   };
-  writeFileSync(path.join(args.out, "batch.json"), `${JSON.stringify(batch, null, 2)}\n`, { mode: 0o644 });
+  writeFileSync(path.join(args.out, "batch.json"), `${JSON.stringify(batch, null, 2)}\n`, {
+    mode: 0o644,
+  });
   process.stdout.write(
     `collected ${lines.length} returns of ${args.projects.join(", ")} into ${args.out}; GitHub calls: ${github.madeCalls()}\n`
   );
@@ -1165,7 +1290,11 @@ function messageOf(error: unknown): string {
 }
 
 /** Every issue of a project that changed since the window's first day. */
-async function listIssues(dispatch: Dispatch, project: string, from: string): Promise<{ key: string }[]> {
+async function listIssues(
+  dispatch: Dispatch,
+  project: string,
+  from: string
+): Promise<{ key: string }[]> {
   const issues: { key: string }[] = [];
   const limit = 250;
   for (let offset = 0; ; offset += limit) {
@@ -1221,11 +1350,20 @@ async function lineOf(input: {
   let checks: CheckRead[] | null = null;
   if (head !== null) {
     try {
-      const read = await dispatch.get<ResultsRead>(`/api/v1/issues/${row.issue}/results?at=${head}`);
+      const read = await dispatch.get<ResultsRead>(
+        `/api/v1/issues/${row.issue}/results?at=${head}`
+      );
       checks = read.checks.map((check) => ({
         blockId: check.block_id,
-        ciCheck: check.ci_check === undefined || check.ci_check.trim() === "" ? null : check.ci_check.trim(),
-        passStands: (check.pass_stands.answer === "yes" ? "yes" : check.pass_stands.answer === "no" ? "no" : "unknown") as CheckRead["passStands"],
+        ciCheck:
+          check.ci_check === undefined || check.ci_check.trim() === ""
+            ? null
+            : check.ci_check.trim(),
+        passStands: (check.pass_stands.answer === "yes"
+          ? "yes"
+          : check.pass_stands.answer === "no"
+            ? "no"
+            : "unknown") as CheckRead["passStands"],
       }));
     } catch (error) {
       process.stderr.write(`${row.issue}: the results did not answer: ${messageOf(error)}\n`);
@@ -1263,7 +1401,10 @@ async function lineOf(input: {
   });
   let timeline: MergeBlockedRead["timeline"] = { state: "read", items: [] };
   if (stated.includes("merge-blocked")) {
-    timeline = pull === null ? { state: "unread", items: [], why: "the issue holds no pull request" } : await timelineOf(github, pull, at);
+    timeline =
+      pull === null
+        ? { state: "unread", items: [], why: "the issue holds no pull request" }
+        : await timelineOf(github, pull, at);
   }
 
   const facts: ReturnFacts = {
@@ -1305,7 +1446,9 @@ async function issueEvents(dispatch: Dispatch, issue: string): Promise<EventRead
   const events: EventRead[] = [];
   const limit = 200;
   for (let after = 0; ; ) {
-    const page = await dispatch.get<EventRead[]>(`/api/v1/issues/${issue}/events?after=${after}&limit=${limit}`);
+    const page = await dispatch.get<EventRead[]>(
+      `/api/v1/issues/${issue}/events?after=${after}&limit=${limit}`
+    );
     events.push(...page);
     if (page.length < limit) return events;
     after = page[page.length - 1]?.seq ?? after + limit;
@@ -1324,7 +1467,10 @@ function approvalsOf(events: EventRead[]): { at: string }[] {
 }
 
 /** The pull request the issue's events attribute to it, newest at or before the return. */
-function pullRequestOf(events: EventRead[] | null, at: string): { repo: string; number: number } | null {
+function pullRequestOf(
+  events: EventRead[] | null,
+  at: string
+): { repo: string; number: number } | null {
   if (events === null) return null;
   const moment = timeOf(at);
   let found: { repo: string; number: number } | null = null;
@@ -1378,10 +1524,16 @@ async function headOf(
 }
 
 /** The reason of a return: the daemon's own message of the move, as backwardMoveReason writes it. */
-async function reasonOf(dispatch: Dispatch, issue: string, record: StepRecord, at: string): Promise<string | null> {
+async function reasonOf(
+  dispatch: Dispatch,
+  issue: string,
+  record: StepRecord,
+  at: string
+): Promise<string | null> {
   const messages = await dispatch.get<MessageRead[]>(`/api/v1/issues/${issue}/messages`);
   const moment = timeOf(at);
-  const form = /^Legion moved this issue from (\S+) back to (\S+) at the ([a-z]+)'s request(?::\s*|,\s*)?([\s\S]*)$/;
+  const form =
+    /^Legion moved this issue from (\S+) back to (\S+) at the ([a-z]+)'s request(?::\s*|,\s*)?([\s\S]*)$/;
   let found: { at: number; reason: string } | null = null;
   for (const read of messages) {
     const body = read.message.body ?? "";
@@ -1392,7 +1544,8 @@ async function reasonOf(dispatch: Dispatch, issue: string, record: StepRecord, a
     if (when === null || moment === null) continue;
     if (when < moment - 120_000 || when > moment + 900_000) continue;
     const reason = (match[4] ?? "").split("\n\n<!--")[0]?.trim() ?? "";
-    if (found === null || Math.abs(when - moment) < Math.abs(found.at - moment)) found = { at: when, reason };
+    if (found === null || Math.abs(when - moment) < Math.abs(found.at - moment))
+      found = { at: when, reason };
   }
   return found === null ? null : found.reason;
 }
@@ -1418,19 +1571,39 @@ async function timelineOf(
       const when = timeOf(createdAt);
       if (moment !== null && when !== null && when >= moment) continue;
       if (kind === "RemovedFromMergeQueueEvent") {
-        const before = isObject(node.beforeCommit) && typeof node.beforeCommit.oid === "string" ? node.beforeCommit.oid : null;
-        items.push({ source: "timeline", place: "REMOVED_FROM_MERGE_QUEUE_EVENT", at: createdAt, value: "blocked", head: before });
+        const before =
+          isObject(node.beforeCommit) && typeof node.beforeCommit.oid === "string"
+            ? node.beforeCommit.oid
+            : null;
+        items.push({
+          source: "timeline",
+          place: "REMOVED_FROM_MERGE_QUEUE_EVENT",
+          at: createdAt,
+          value: "blocked",
+          head: before,
+        });
         continue;
       }
       if (kind === "PullRequestReview" && node.state === "CHANGES_REQUESTED") {
-        const commit = isObject(node.commit) && typeof node.commit.oid === "string" ? node.commit.oid : null;
+        const commit =
+          isObject(node.commit) && typeof node.commit.oid === "string" ? node.commit.oid : null;
         const submitted = typeof node.submittedAt === "string" ? node.submittedAt : createdAt;
-        items.push({ source: "timeline", place: "PULL_REQUEST_REVIEW CHANGES_REQUESTED", at: submitted, value: "blocked", head: commit });
+        items.push({
+          source: "timeline",
+          place: "PULL_REQUEST_REVIEW CHANGES_REQUESTED",
+          at: submitted,
+          value: "blocked",
+          head: commit,
+        });
       }
     }
     return { state: "read", items };
   } catch (error) {
-    return { state: "unread", items: [], why: `GitHub's timeline did not answer: ${messageOf(error)}` };
+    return {
+      state: "unread",
+      items: [],
+      why: `GitHub's timeline did not answer: ${messageOf(error)}`,
+    };
   }
 }
 
@@ -1450,7 +1623,8 @@ function addStoreOnly(
   for (const call of calls) {
     if (collected.has(call.session)) {
       for (const line of byId.values()) {
-        if (line.session === call.session && !line.heldBy.includes("transcript")) line.heldBy.push("transcript");
+        if (line.session === call.session && !line.heldBy.includes("transcript"))
+          line.heldBy.push("transcript");
       }
       continue;
     }
@@ -1512,7 +1686,11 @@ function resolve(out: string, readingsFile: string): void {
     const answer = resolveReturn(ret, readings);
     return { ...ret, readings: mine, final: answer.final, class: answer.class, why: answer.why };
   });
-  writeFileSync(path.join(out, "resolved.jsonl"), resolved.map((line) => `${JSON.stringify(line)}\n`).join(""), { mode: 0o644 });
+  writeFileSync(
+    path.join(out, "resolved.jsonl"),
+    resolved.map((line) => `${JSON.stringify(line)}\n`).join(""),
+    { mode: 0o644 }
+  );
 
   const everyProject = [...new Set([...batch.projects, ...resolved.map((ret) => ret.project)])];
   for (const project of everyProject) {
@@ -1595,8 +1773,14 @@ async function main(argv: string[]): Promise<void> {
     dispatchUrl: (given.get("dispatch-url") ?? "").replace(/\/+$/, ""),
     token: fileText(given.get("token-file") ?? "", "--token-file"),
     githubApiUrl: given.get("github-api-url") ?? "https://api.github.com",
-    githubToken: given.get("github-token-file") === undefined ? "" : fileText(given.get("github-token-file") ?? "", "--github-token-file"),
-    projects: (given.get("projects") ?? "").split(",").map((project) => project.trim()).filter((project) => project !== ""),
+    githubToken:
+      given.get("github-token-file") === undefined
+        ? ""
+        : fileText(given.get("github-token-file") ?? "", "--github-token-file"),
+    projects: (given.get("projects") ?? "")
+      .split(",")
+      .map((project) => project.trim())
+      .filter((project) => project !== ""),
     from: given.get("from") ?? "",
     to: given.get("to") ?? "",
     transcripts: transcripts.startsWith("dir:")

@@ -11,18 +11,18 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   type Answer,
+  causeRecords,
+  classifyMergeBlocked,
   type MergeBlockedRead,
+  parseSession,
   type Reading,
   type ReturnFacts,
   type ReturnLine,
-  type TranscriptEntry,
-  causeRecords,
-  classifyMergeBlocked,
-  parseSession,
   readerTwoFaults,
   resolveReturn,
   statedCauses,
   summaryOf,
+  type TranscriptEntry,
   transcriptAnswers,
 } from "./forward-count";
 
@@ -37,7 +37,13 @@ function transcriptAnswer(value: Answer["value"], at: string | null, head = HEAD
 
 /** A timeline item that counts: a removal from the merge queue, which is always `blocked`. */
 function removal(at: string | null, head = HEAD): Answer {
-  return { source: "timeline", place: "REMOVED_FROM_MERGE_QUEUE_EVENT", at, value: "blocked", head };
+  return {
+    source: "timeline",
+    place: "REMOVED_FROM_MERGE_QUEUE_EVENT",
+    at,
+    value: "blocked",
+    head,
+  };
 }
 
 /** The read of one return's two sources, with the parts a case does not name left read and empty. */
@@ -57,20 +63,32 @@ describe("the classification of merge-blocked's record", () => {
   const rows: { name: string; read: MergeBlockedRead; state: string; step: number }[] = [
     {
       name: "the head cannot be determined",
-      read: read({ head: null, transcript: { state: "read", answers: [transcriptAnswer("blocked", "2026-11-20T10:00:00Z")] } }),
+      read: read({
+        head: null,
+        transcript: {
+          state: "read",
+          answers: [transcriptAnswer("blocked", "2026-11-20T10:00:00Z")],
+        },
+      }),
       state: "unread",
       step: 1,
     },
     {
       name: "the transcript is unread, and the timeline holds a removal from the queue",
-      read: read({ transcript: { state: "unread", answers: [] }, timeline: { state: "read", items: [removal("2026-11-20T10:00:00Z")] } }),
+      read: read({
+        transcript: { state: "unread", answers: [] },
+        timeline: { state: "read", items: [removal("2026-11-20T10:00:00Z")] },
+      }),
       state: "unread",
       step: 2,
     },
     {
       name: "the transcript holds a blocked answer, and the timeline is unread",
       read: read({
-        transcript: { state: "read", answers: [transcriptAnswer("blocked", "2026-11-20T10:00:00Z")] },
+        transcript: {
+          state: "read",
+          answers: [transcriptAnswer("blocked", "2026-11-20T10:00:00Z")],
+        },
         timeline: { state: "unread", items: [] },
       }),
       state: "established",
@@ -81,7 +99,10 @@ describe("the classification of merge-blocked's record", () => {
       read: read({
         transcript: {
           state: "read",
-          answers: [transcriptAnswer("clear", "2026-11-20T10:00:00Z"), transcriptAnswer("blocked", null)],
+          answers: [
+            transcriptAnswer("clear", "2026-11-20T10:00:00Z"),
+            transcriptAnswer("blocked", null),
+          ],
         },
         timeline: { state: "unread", items: [] },
       }),
@@ -93,7 +114,10 @@ describe("the classification of merge-blocked's record", () => {
       read: read({
         transcript: {
           state: "read",
-          answers: [transcriptAnswer("clear", "2026-11-20T10:00:00Z"), transcriptAnswer("blocked", null)],
+          answers: [
+            transcriptAnswer("clear", "2026-11-20T10:00:00Z"),
+            transcriptAnswer("blocked", null),
+          ],
         },
         timeline: { state: "read", items: [removal("2026-11-20T10:30:00Z")] },
       }),
@@ -120,7 +144,10 @@ describe("the classification of merge-blocked's record", () => {
       read: read({
         transcript: {
           state: "read",
-          answers: [transcriptAnswer("clear", "2026-11-20T10:00:00Z"), transcriptAnswer("blocked", "2026-11-20T10:10:00Z")],
+          answers: [
+            transcriptAnswer("clear", "2026-11-20T10:00:00Z"),
+            transcriptAnswer("blocked", "2026-11-20T10:10:00Z"),
+          ],
         },
       }),
       state: "established",
@@ -146,14 +173,22 @@ describe("the classification of merge-blocked's record", () => {
     },
     {
       name: "only an indeterminate answer, both sources read",
-      read: read({ transcript: { state: "read", answers: [transcriptAnswer("indeterminate", "2026-11-20T10:00:00Z")] } }),
+      read: read({
+        transcript: {
+          state: "read",
+          answers: [transcriptAnswer("indeterminate", "2026-11-20T10:00:00Z")],
+        },
+      }),
       state: "undetermined",
       step: 4,
     },
     {
       name: "a clear answer about another head, and nothing else, both sources read",
       read: read({
-        transcript: { state: "read", answers: [transcriptAnswer("clear", "2026-11-20T10:00:00Z", OTHER_HEAD)] },
+        transcript: {
+          state: "read",
+          answers: [transcriptAnswer("clear", "2026-11-20T10:00:00Z", OTHER_HEAD)],
+        },
       }),
       state: "undetermined",
       step: 4,
@@ -197,7 +232,10 @@ describe("the classification of merge-blocked's record", () => {
       read: read({
         transcript: {
           state: "read",
-          answers: [transcriptAnswer("blocked", "2026-11-20T10:00:00Z"), transcriptAnswer("clear", "2026-11-20T10:10:00Z")],
+          answers: [
+            transcriptAnswer("blocked", "2026-11-20T10:00:00Z"),
+            transcriptAnswer("clear", "2026-11-20T10:10:00Z"),
+          ],
         },
       }),
       state: "absent",
@@ -277,7 +315,10 @@ function call(at: string, id: string, tool: string, args: object): Line {
   return {
     type: "message",
     timestamp: at,
-    message: { role: "assistant", content: [{ type: "toolCall", id, name: tool, arguments: args }] },
+    message: {
+      role: "assistant",
+      content: [{ type: "toolCall", id, name: tool, arguments: args }],
+    },
   };
 }
 
@@ -286,35 +327,62 @@ function answered(at: string, id: string, tool: string, text: string, isError = 
   return {
     type: "message",
     timestamp: at,
-    message: { role: "toolResult", toolName: tool, toolCallId: id, isError, content: [{ type: "text", text }] },
+    message: {
+      role: "toolResult",
+      toolName: tool,
+      toolCallId: id,
+      isError,
+      content: [{ type: "text", text }],
+    },
   };
 }
 
 /** An assistant message of text alone. */
 function said(at: string, text: string): Line {
-  return { type: "message", timestamp: at, message: { role: "assistant", content: [{ type: "text", text }] } };
+  return {
+    type: "message",
+    timestamp: at,
+    message: { role: "assistant", content: [{ type: "text", text }] },
+  };
 }
 
 /** A delivery the session was sent, as Oh My Pi keeps one and the store imports it. */
 function delivered(at: string, text: string): Line {
-  return { type: "custom_message", customType: "envoy-message", timestamp: at, content: [{ type: "text", text }] };
+  return {
+    type: "custom_message",
+    customType: "envoy-message",
+    timestamp: at,
+    content: [{ type: "text", text }],
+  };
 }
 
 /** The role's own `request_backward_move`, the call every answer that counts stands before. */
 function backwardMove(at: string, id = "back-1"): Line[] {
   return [
-    call(at, id, "legion", { op: "request_backward_move", to: "implementing", reason: "the head conflicts with its base" }),
+    call(at, id, "legion", {
+      op: "request_backward_move",
+      to: "implementing",
+      reason: "the head conflicts with its base",
+    }),
     answered(at, id, "legion", "{}"),
   ];
 }
 
 /** A session file of `lines`, as the store imports one. */
 function session(lines: Line[], id = "ses-made-1"): string {
-  return [JSON.stringify({ type: "session", id }), ...lines.map((line) => JSON.stringify(line))].join("\n") + "\n";
+  return (
+    [JSON.stringify({ type: "session", id }), ...lines.map((line) => JSON.stringify(line))].join(
+      "\n"
+    ) + "\n"
+  );
 }
 
 /** GitHub's payload for the head: CONFLICTING and DIRTY, as `gh pr view --json` answers it. */
-const CONFLICTING = JSON.stringify({ headRefOid: HEAD, mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" });
+const CONFLICTING = JSON.stringify({
+  headRefOid: HEAD,
+  mergeable: "CONFLICTING",
+  mergeStateStatus: "DIRTY",
+});
 
 /** The answers a made session gives, with its `request_backward_move` as the cut. */
 function answersOf(lines: Line[]): Answer[] {
@@ -331,7 +399,11 @@ function returnOfSession(lines: Line[]): ReturnLine {
   const answers = answersOf(lines);
   const facts = made({
     reason: BLOCK_AND_DEFECT,
-    mergeBlocked: { head: HEAD, transcript: { state: "read", answers }, timeline: { state: "read", items: [] } },
+    mergeBlocked: {
+      head: HEAD,
+      transcript: { state: "read", answers },
+      timeline: { state: "read", items: [] },
+    },
   });
   return returnOf(facts, { answers });
 }
@@ -340,20 +412,30 @@ describe("the source of an answer: made payloads", () => {
   // In each case GitHub's JSON that reads the head CONFLICTING stands in one place, and nothing
   // else holds an answer. Each gives `undetermined`, and a `pending` return.
   const rows: { name: string; lines: Line[] }[] = [
-    { name: "an assistant message", lines: [said("2026-11-20T10:00:00Z", `GitHub answers ${CONFLICTING}`)] },
+    {
+      name: "an assistant message",
+      lines: [said("2026-11-20T10:00:00Z", `GitHub answers ${CONFLICTING}`)],
+    },
     {
       name: "a tool call's arguments",
       lines: [
-        call("2026-11-20T10:00:00Z", "c1", "bash", { command: `echo ${CONFLICTING} > /tmp/state.json` }),
+        call("2026-11-20T10:00:00Z", "c1", "bash", {
+          command: `echo ${CONFLICTING} > /tmp/state.json`,
+        }),
         answered("2026-11-20T10:00:01Z", "c1", "bash", ""),
       ],
     },
     {
       name: "an envoy_publish and a dispatch comment that the role sent",
       lines: [
-        call("2026-11-20T10:00:00Z", "c1", "envoy_publish", { topic: "notifications.role.architect", message: CONFLICTING }),
+        call("2026-11-20T10:00:00Z", "c1", "envoy_publish", {
+          topic: "notifications.role.architect",
+          message: CONFLICTING,
+        }),
         answered("2026-11-20T10:00:01Z", "c1", "envoy_publish", "published"),
-        call("2026-11-20T10:01:00Z", "c2", "bash", { command: `dispatch comment --issue ACME-9 --body '${CONFLICTING}'` }),
+        call("2026-11-20T10:01:00Z", "c2", "bash", {
+          command: `dispatch comment --issue ACME-9 --body '${CONFLICTING}'`,
+        }),
         answered("2026-11-20T10:01:01Z", "c2", "bash", "Commented"),
       ],
     },
@@ -374,7 +456,9 @@ describe("the source of an answer: made payloads", () => {
     {
       name: "the result of a curl to a host that is not GitHub's API host",
       lines: [
-        call("2026-11-20T10:00:00Z", "c1", "bash", { command: "curl -fsS https://mirror.example.com/graphql" }),
+        call("2026-11-20T10:00:00Z", "c1", "bash", {
+          command: "curl -fsS https://mirror.example.com/graphql",
+        }),
         answered("2026-11-20T10:00:01Z", "c1", "bash", CONFLICTING),
       ],
     },
@@ -395,7 +479,9 @@ describe("the source of an answer: made payloads", () => {
       expect(answersOf(lines)).toEqual([]);
       const ret = returnOfSession(lines);
       expect(ret.causes).toEqual([{ cause: "merge-blocked", state: "undetermined", step: 4 }]);
-      expect(resolveReturn(ret, [confirming(ret.id, "1"), confirming(ret.id, "2")]).class).toBe("pending");
+      expect(resolveReturn(ret, [confirming(ret.id, "1"), confirming(ret.id, "2")]).class).toBe(
+        "pending"
+      );
     });
   }
 });
@@ -433,19 +519,30 @@ describe("the source of an answer: real daemon asks, word for word", () => {
 describe("the source of an answer: the merger's own reads", () => {
   test("gh pr view --json mergeStateStatus,reviewDecision reading DIRTY names no head: undetermined, and the return is pending", () => {
     const lines = [
-      call("2026-11-20T10:00:00Z", "c1", "bash", { command: "gh pr view 41 --json mergeStateStatus,reviewDecision" }),
-      answered("2026-11-20T10:00:01Z", "c1", "bash", JSON.stringify({ mergeStateStatus: "DIRTY", reviewDecision: "APPROVED" })),
+      call("2026-11-20T10:00:00Z", "c1", "bash", {
+        command: "gh pr view 41 --json mergeStateStatus,reviewDecision",
+      }),
+      answered(
+        "2026-11-20T10:00:01Z",
+        "c1",
+        "bash",
+        JSON.stringify({ mergeStateStatus: "DIRTY", reviewDecision: "APPROVED" })
+      ),
       ...backwardMove("2026-11-20T10:30:00Z"),
     ];
     expect(answersOf(lines).map((answer) => answer.head)).toEqual([null]);
     const ret = returnOfSession(lines);
     expect(ret.causes).toEqual([{ cause: "merge-blocked", state: "undetermined", step: 4 }]);
-    expect(resolveReturn(ret, [confirming(ret.id, "1"), confirming(ret.id, "2")]).class).toBe("pending");
+    expect(resolveReturn(ret, [confirming(ret.id, "1"), confirming(ret.id, "2")]).class).toBe(
+      "pending"
+    );
   });
 
   test("a refused gh pr merge names the head through its own --match-head-commit: established, by step 3", () => {
     const lines = [
-      call("2026-11-20T10:00:00Z", "c1", "bash", { command: `gh pr merge 41 --squash --match-head-commit ${HEAD}` }),
+      call("2026-11-20T10:00:00Z", "c1", "bash", {
+        command: `gh pr merge 41 --squash --match-head-commit ${HEAD}`,
+      }),
       answered(
         "2026-11-20T10:00:01Z",
         "c1",
@@ -457,17 +554,27 @@ describe("the source of an answer: the merger's own reads", () => {
     ];
     const answers = answersOf(lines);
     expect(answers).toEqual([
-      { source: "transcript", place: "gh pr merge --match-head-commit", at: "2026-11-20T10:00:01Z", value: "blocked", head: HEAD },
+      {
+        source: "transcript",
+        place: "gh pr merge --match-head-commit",
+        at: "2026-11-20T10:00:01Z",
+        value: "blocked",
+        head: HEAD,
+      },
     ]);
     const ret = returnOfSession(lines);
     expect(ret.causes).toEqual([{ cause: "merge-blocked", state: "established", step: 3 }]);
     // The class is mixed, which leaves the return out of the count, so reader 2 reads it too.
-    expect(resolveReturn(ret, [confirming(ret.id, "1"), confirming(ret.id, "2")]).class).toBe("mixed");
+    expect(resolveReturn(ret, [confirming(ret.id, "1"), confirming(ret.id, "2")]).class).toBe(
+      "mixed"
+    );
   });
 
   test("a gh pr view that reads the head MERGEABLE and CLEAN is a clear answer about that head", () => {
     const lines = [
-      call("2026-11-20T10:00:00Z", "c1", "bash", { command: "gh pr view 41 --json headRefOid,mergeable,mergeStateStatus" }),
+      call("2026-11-20T10:00:00Z", "c1", "bash", {
+        command: "gh pr view 41 --json headRefOid,mergeable,mergeStateStatus",
+      }),
       answered(
         "2026-11-20T10:00:01Z",
         "c1",
@@ -477,7 +584,13 @@ describe("the source of an answer: the merger's own reads", () => {
       ...backwardMove("2026-11-20T10:30:00Z"),
     ];
     expect(answersOf(lines)).toEqual([
-      { source: "transcript", place: "gh pr view", at: "2026-11-20T10:00:01Z", value: "clear", head: HEAD },
+      {
+        source: "transcript",
+        place: "gh pr view",
+        at: "2026-11-20T10:00:01Z",
+        value: "clear",
+        head: HEAD,
+      },
     ]);
   });
 
@@ -491,7 +604,15 @@ describe("the source of an answer: the merger's own reads", () => {
         "c1",
         "bash",
         JSON.stringify({
-          data: { repository: { pullRequest: { headRefOid: HEAD, mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" } } },
+          data: {
+            repository: {
+              pullRequest: {
+                headRefOid: HEAD,
+                mergeable: "CONFLICTING",
+                mergeStateStatus: "DIRTY",
+              },
+            },
+          },
         })
       ),
       ...backwardMove("2026-11-20T10:30:00Z"),
@@ -505,7 +626,9 @@ describe("the source of an answer: the merger's own reads", () => {
   test("an answer that stands after the role's request_backward_move call counts for nothing", () => {
     const lines = [
       ...backwardMove("2026-11-20T10:00:00Z"),
-      call("2026-11-20T10:10:00Z", "c1", "bash", { command: "gh pr view 41 --json headRefOid,mergeable,mergeStateStatus" }),
+      call("2026-11-20T10:10:00Z", "c1", "bash", {
+        command: "gh pr view 41 --json headRefOid,mergeable,mergeStateStatus",
+      }),
       answered(
         "2026-11-20T10:10:01Z",
         "c1",
@@ -514,12 +637,15 @@ describe("the source of an answer: the merger's own reads", () => {
       ),
     ];
     expect(answersOf(lines)).toEqual([]);
-    expect(returnOfSession(lines).causes).toEqual([{ cause: "merge-blocked", state: "undetermined", step: 4 }]);
+    expect(returnOfSession(lines).causes).toEqual([
+      { cause: "merge-blocked", state: "undetermined", step: 4 },
+    ]);
   });
 });
 
 /** The reason of a return that states no cause of C7's table. */
-const OWN_DEFECT = "the change's reader keeps the file open after it answers, so a second read of one path answers the first entry";
+const OWN_DEFECT =
+  "the change's reader keeps the file open after it answers, so a second read of one path answers the first entry";
 
 /** One return's facts, with the parts a case does not name read and empty. */
 function made(parts: Partial<ReturnFacts> = {}): ReturnFacts {
@@ -563,7 +689,10 @@ function returnOf(facts: ReturnFacts, parts: Partial<ReturnLine> = {}): ReturnLi
     reason: facts.reason,
     reasonRead: facts.reasonRead,
     heldBy: ["steps"],
-    sources: { transcript: facts.mergeBlocked.transcript.state, timeline: facts.mergeBlocked.timeline.state },
+    sources: {
+      transcript: facts.mergeBlocked.transcript.state,
+      timeline: facts.mergeBlocked.timeline.state,
+    },
     causes: causeRecords(facts),
     answers: [],
     ...parts,
@@ -572,7 +701,19 @@ function returnOf(facts: ReturnFacts, parts: Partial<ReturnLine> = {}): ReturnLi
 
 /** A reading that owns the return and confirms each cause it states. */
 function confirming(id: string, reader: Reading["reader"], own = true): Reading {
-  return { return: id, reader, model: "made/reader", own, confirmed: { "merge-blocked": true, ci: true, "failed-check": true, news: true, "goal-check": true } };
+  return {
+    return: id,
+    reader,
+    model: "made/reader",
+    own,
+    confirmed: {
+      "merge-blocked": true,
+      ci: true,
+      "failed-check": true,
+      news: true,
+      "goal-check": true,
+    },
+  };
 }
 
 /** A reading that owns the return and confirms no cause. */
@@ -581,11 +722,26 @@ function ownAlone(id: string, reader: Reading["reader"] = "1"): Reading {
 }
 
 describe("the stated causes of a reason", () => {
-  const inputs = { kind: "merge" as const, checkIds: ["c-units", "c-docs"], ciJobNames: ["unit-limits"], requirementIds: ["r1", "r2"] };
+  const inputs = {
+    kind: "merge" as const,
+    checkIds: ["c-units", "c-docs"],
+    ciJobNames: ["unit-limits"],
+    requirementIds: ["r1", "r2"],
+  };
 
   test("merge-blocked, by each word the rule names", () => {
-    for (const word of ["CONFLICTING", "DIRTY", "BLOCKED", "conflict", "CHANGES_REQUESTED", "requested changes", "merge queue"]) {
-      expect(statedCauses({ ...inputs, reason: `GitHub says ${word} at this head.` })).toEqual(["merge-blocked"]);
+    for (const word of [
+      "CONFLICTING",
+      "DIRTY",
+      "BLOCKED",
+      "conflict",
+      "CHANGES_REQUESTED",
+      "requested changes",
+      "merge queue",
+    ]) {
+      expect(statedCauses({ ...inputs, reason: `GitHub says ${word} at this head.` })).toEqual([
+        "merge-blocked",
+      ]);
     }
   });
 
@@ -596,19 +752,31 @@ describe("the stated causes of a reason", () => {
   });
 
   test("failed-check names a check id of the issue's Verification document, from a retro alone", () => {
-    expect(statedCauses({ ...inputs, kind: "retro", reason: "c-units has no pass at this head." })).toEqual(["failed-check"]);
-    expect(statedCauses({ ...inputs, kind: "merge", reason: "c-units has no pass at this head." })).toEqual([]);
+    expect(
+      statedCauses({ ...inputs, kind: "retro", reason: "c-units has no pass at this head." })
+    ).toEqual(["failed-check"]);
+    expect(
+      statedCauses({ ...inputs, kind: "merge", reason: "c-units has no pass at this head." })
+    ).toEqual([]);
   });
 
   test("news names an approved new version of the design", () => {
-    expect(statedCauses({ ...inputs, reason: "A person approved spec v4, which adds R6." })).toEqual(["news"]);
-    expect(statedCauses({ ...inputs, reason: "Verification version 9 adds m4." })).toEqual(["news"]);
+    expect(
+      statedCauses({ ...inputs, reason: "A person approved spec v4, which adds R6." })
+    ).toEqual(["news"]);
+    expect(statedCauses({ ...inputs, reason: "Verification version 9 adds m4." })).toEqual([
+      "news",
+    ]);
     expect(statedCauses({ ...inputs, reason: "The spec asks for two names." })).toEqual([]);
   });
 
   test("goal-check names a requirement id of the spec, from a retro alone", () => {
-    expect(statedCauses({ ...inputs, kind: "retro", reason: "r2 is unmet at this head." })).toEqual(["goal-check"]);
-    expect(statedCauses({ ...inputs, kind: "merge", reason: "r2 is unmet at this head." })).toEqual([]);
+    expect(statedCauses({ ...inputs, kind: "retro", reason: "r2 is unmet at this head." })).toEqual(
+      ["goal-check"]
+    );
+    expect(statedCauses({ ...inputs, kind: "merge", reason: "r2 is unmet at this head." })).toEqual(
+      []
+    );
   });
 
   test("a reason that states two causes at once states both", () => {
@@ -639,7 +807,10 @@ describe("the record of each other cause", () => {
   });
 
   test("ci is unread where the results read failed", () => {
-    const facts = made({ reason: "The required check unit-limits failed at this head.", checks: null });
+    const facts = made({
+      reason: "The required check unit-limits failed at this head.",
+      checks: null,
+    });
     expect(causeRecords(facts)).toEqual([{ cause: "ci", state: "unread", step: null }]);
   });
 
@@ -649,7 +820,9 @@ describe("the record of each other cause", () => {
       reason: "c-units has no pass at this head.",
       checks: [{ blockId: "c-units", ciCheck: null, passStands: "no" }],
     });
-    expect(causeRecords(facts)).toEqual([{ cause: "failed-check", state: "established", step: null }]);
+    expect(causeRecords(facts)).toEqual([
+      { cause: "failed-check", state: "established", step: null },
+    ]);
   });
 
   test("failed-check is absent where that check stands passed at the head", () => {
@@ -670,7 +843,10 @@ describe("the record of each other cause", () => {
   });
 
   test("news is absent where the approval stands outside the step's run", () => {
-    const facts = made({ reason: "A person approved spec v4, which adds R6.", approvals: [{ at: "2026-11-19T10:05:00Z" }] });
+    const facts = made({
+      reason: "A person approved spec v4, which adds R6.",
+      approvals: [{ at: "2026-11-19T10:05:00Z" }],
+    });
     expect(causeRecords(facts)).toEqual([{ cause: "news", state: "absent", step: null }]);
   });
 
@@ -685,7 +861,9 @@ describe("the record of each other cause", () => {
       reason: "r2 is unmet at this head.",
       taskSteps: [{ role: "implementer", kind: "step", type: "implementation" }],
     });
-    expect(causeRecords(facts)).toEqual([{ cause: "goal-check", state: "established", step: null }]);
+    expect(causeRecords(facts)).toEqual([
+      { cause: "goal-check", state: "established", step: null },
+    ]);
   });
 
   test("goal-check is absent where the task ran a reviewer step", () => {
@@ -698,7 +876,11 @@ describe("the record of each other cause", () => {
       head: null,
       reason: "GitHub reads the head DIRTY, and the required check unit-limits failed.",
       checks: [{ blockId: "c-ci", ciCheck: "unit-limits", passStands: "no" }],
-      mergeBlocked: { head: null, transcript: { state: "read", answers: [] }, timeline: { state: "read", items: [] } },
+      mergeBlocked: {
+        head: null,
+        transcript: { state: "read", answers: [] },
+        timeline: { state: "read", items: [] },
+      },
     });
     expect(causeRecords(facts)).toEqual([
       { cause: "merge-blocked", state: "unread", step: 1 },
@@ -715,16 +897,22 @@ describe("the record of each other cause", () => {
 /** The five DECOY returns of C7's table, each with the record its sources give. */
 function decoy(number: number, parts: Partial<ReturnFacts>): ReturnLine {
   const facts = made({
-    reason: "Conflict with main's new defaults behavior: src/config.ts:loadConfig still swallows parse errors and returns DEFAULTS.",
+    reason:
+      "Conflict with main's new defaults behavior: src/config.ts:loadConfig still swallows parse errors and returns DEFAULTS.",
     ...parts,
   });
-  return returnOf(facts, { id: `DECOY-${number}/default/merge/1`, issue: `DECOY-${number}`, project: "DECOY" });
+  return returnOf(facts, {
+    id: `DECOY-${number}/default/merge/1`,
+    issue: `DECOY-${number}`,
+    project: "DECOY",
+  });
 }
 
 describe("how a return resolves", () => {
   test("DECOY-1: the merger's own defect, with GitHub reading the head clear, counts against R23", () => {
     const ret = decoy(1, {
-      reason: "the change's conflict handling loses data: resolveTree drops the base's side where both sides changed one line.",
+      reason:
+        "the change's conflict handling loses data: resolveTree drops the base's side where both sides changed one line.",
       mergeBlocked: {
         head: HEAD,
         transcript: { state: "read", answers: [transcriptAnswer("clear", "2026-11-20T10:00:00Z")] },
@@ -732,7 +920,9 @@ describe("how a return resolves", () => {
       },
     });
     expect(ret.causes).toEqual([{ cause: "merge-blocked", state: "absent", step: 7 }]);
-    expect(resolveReturn(ret, [{ ...ownAlone(ret.id), confirmed: { "merge-blocked": false } }]).class).toBe("against-R23");
+    expect(
+      resolveReturn(ret, [{ ...ownAlone(ret.id), confirmed: { "merge-blocked": false } }]).class
+    ).toBe("against-R23");
   });
 
   test("DECOY-2: the readers' shared word cannot make a block hold against GitHub's answer", () => {
@@ -753,19 +943,31 @@ describe("how a return resolves", () => {
         head: HEAD,
         transcript: {
           state: "read",
-          answers: [{ source: "transcript", place: "curl https://api.github.com/graphql", at: "2026-11-20T10:00:00Z", value: "blocked", head: HEAD }],
+          answers: [
+            {
+              source: "transcript",
+              place: "curl https://api.github.com/graphql",
+              at: "2026-11-20T10:00:00Z",
+              value: "blocked",
+              head: HEAD,
+            },
+          ],
         },
         timeline: { state: "read", items: [] },
       },
     });
     expect(ret.causes).toEqual([{ cause: "merge-blocked", state: "established", step: 3 }]);
-    expect(resolveReturn(ret, [confirming(ret.id, "1"), confirming(ret.id, "2")]).class).toBe("mixed");
+    expect(resolveReturn(ret, [confirming(ret.id, "1"), confirming(ret.id, "2")]).class).toBe(
+      "mixed"
+    );
   });
 
   test("DECOY-4: a block with no eligible answer neither clears the return nor counts it", () => {
     const ret = decoy(4, {});
     expect(ret.causes).toEqual([{ cause: "merge-blocked", state: "undetermined", step: 4 }]);
-    expect(resolveReturn(ret, [confirming(ret.id, "1"), confirming(ret.id, "2")]).class).toBe("pending");
+    expect(resolveReturn(ret, [confirming(ret.id, "1"), confirming(ret.id, "2")]).class).toBe(
+      "pending"
+    );
   });
 
   test("DECOY-4 with readings that do not confirm the block counts against R23", () => {
@@ -777,7 +979,9 @@ describe("how a return resolves", () => {
   test("DECOY-5: GitHub's payload in text the role wrote, or in another agent's relay, is no answer", () => {
     const ret = decoy(5, {});
     expect(ret.causes).toEqual([{ cause: "merge-blocked", state: "undetermined", step: 4 }]);
-    expect(resolveReturn(ret, [confirming(ret.id, "1"), confirming(ret.id, "2")]).class).toBe("pending");
+    expect(resolveReturn(ret, [confirming(ret.id, "1"), confirming(ret.id, "2")]).class).toBe(
+      "pending"
+    );
   });
 
   test("the gate's case of two verdicts: an unread record of a confirmed block is pending", () => {
@@ -789,7 +993,9 @@ describe("how a return resolves", () => {
       },
     });
     expect(ret.causes).toEqual([{ cause: "merge-blocked", state: "unread", step: 5 }]);
-    expect(resolveReturn(ret, [confirming(ret.id, "1"), confirming(ret.id, "2")]).class).toBe("pending");
+    expect(resolveReturn(ret, [confirming(ret.id, "1"), confirming(ret.id, "2")]).class).toBe(
+      "pending"
+    );
   });
 
   test("a contradicted cause: the readers confirm ci where every CI check stands passed", () => {
@@ -798,14 +1004,29 @@ describe("how a return resolves", () => {
       checks: [{ blockId: "c-ci", ciCheck: "unit-limits", passStands: "yes" }],
     });
     const ret = returnOf(facts);
-    const reading: Reading = { return: ret.id, reader: "1", model: "made/reader", own: false, confirmed: { ci: true } };
+    const reading: Reading = {
+      return: ret.id,
+      reader: "1",
+      model: "made/reader",
+      own: false,
+      confirmed: { ci: true },
+    };
     expect(resolveReturn(ret, [reading, { ...reading, reader: "2" }]).class).toBe("unexplained");
   });
 
   test("an unread record of a cause the readings confirm is pending", () => {
-    const facts = made({ reason: "The required check unit-limits failed at this head.", checks: null });
+    const facts = made({
+      reason: "The required check unit-limits failed at this head.",
+      checks: null,
+    });
     const ret = returnOf(facts);
-    const reading: Reading = { return: ret.id, reader: "1", model: "made/reader", own: false, confirmed: { ci: true } };
+    const reading: Reading = {
+      return: ret.id,
+      reader: "1",
+      model: "made/reader",
+      own: false,
+      confirmed: { ci: true },
+    };
     expect(resolveReturn(ret, [reading, { ...reading, reader: "2" }]).class).toBe("pending");
   });
 
@@ -816,7 +1037,13 @@ describe("how a return resolves", () => {
       taskSteps: [{ role: "implementer", kind: "step", type: "implementation" }],
     });
     const ret = returnOf(facts);
-    const reading: Reading = { return: ret.id, reader: "1", model: "made/reader", own: false, confirmed: { "goal-check": true } };
+    const reading: Reading = {
+      return: ret.id,
+      reader: "1",
+      model: "made/reader",
+      own: false,
+      confirmed: { "goal-check": true },
+    };
     expect(resolveReturn(ret, [reading, { ...reading, reader: "2" }]).class).toBe("goal-check");
   });
 
@@ -826,7 +1053,13 @@ describe("how a return resolves", () => {
       checks: [{ blockId: "c-ci", ciCheck: "unit-limits", passStands: "no" }],
     });
     const ret = returnOf(facts);
-    const reading: Reading = { return: ret.id, reader: "1", model: "made/reader", own: false, confirmed: { ci: true } };
+    const reading: Reading = {
+      return: ret.id,
+      reader: "1",
+      model: "made/reader",
+      own: false,
+      confirmed: { ci: true },
+    };
     expect(resolveReturn(ret, [reading, { ...reading, reader: "2" }]).class).toBe("exempt:ci");
   });
 
@@ -844,25 +1077,64 @@ describe("how a return resolves", () => {
 
 describe("the readers", () => {
   const ret = returnOf(
-    made({ reason: "The required check unit-limits failed at this head.", checks: [{ blockId: "c-ci", ciCheck: "unit-limits", passStands: "no" }] })
+    made({
+      reason: "The required check unit-limits failed at this head.",
+      checks: [{ blockId: "c-ci", ciCheck: "unit-limits", passStands: "no" }],
+    })
   );
   const counted = returnOf(made(), { id: "ACME-8/default/merge/1", issue: "ACME-8" });
 
   test("a disagreement with no resolver reading is pending", () => {
-    const one: Reading = { return: ret.id, reader: "1", model: "made/one", own: false, confirmed: { ci: true } };
-    const two: Reading = { return: ret.id, reader: "2", model: "made/two", own: true, confirmed: { ci: true } };
+    const one: Reading = {
+      return: ret.id,
+      reader: "1",
+      model: "made/one",
+      own: false,
+      confirmed: { ci: true },
+    };
+    const two: Reading = {
+      return: ret.id,
+      reader: "2",
+      model: "made/two",
+      own: true,
+      confirmed: { ci: true },
+    };
     expect(resolveReturn(ret, [one, two]).class).toBe("pending");
   });
 
   test("the resolver's reading decides a disagreement", () => {
-    const one: Reading = { return: ret.id, reader: "1", model: "made/one", own: false, confirmed: { ci: true } };
-    const two: Reading = { return: ret.id, reader: "2", model: "made/two", own: true, confirmed: { ci: true } };
-    const resolver: Reading = { return: ret.id, reader: "resolver", model: "made/resolver", own: true, confirmed: { ci: false } };
+    const one: Reading = {
+      return: ret.id,
+      reader: "1",
+      model: "made/one",
+      own: false,
+      confirmed: { ci: true },
+    };
+    const two: Reading = {
+      return: ret.id,
+      reader: "2",
+      model: "made/two",
+      own: true,
+      confirmed: { ci: true },
+    };
+    const resolver: Reading = {
+      return: ret.id,
+      reader: "resolver",
+      model: "made/resolver",
+      own: true,
+      confirmed: { ci: false },
+    };
     expect(resolveReturn(ret, [one, two, resolver]).class).toBe("against-R23");
   });
 
   test("a return reader 1 leaves out of the count with no reading of reader 2 is pending", () => {
-    const one: Reading = { return: ret.id, reader: "1", model: "made/one", own: false, confirmed: { ci: true } };
+    const one: Reading = {
+      return: ret.id,
+      reader: "1",
+      model: "made/one",
+      own: false,
+      confirmed: { ci: true },
+    };
     expect(resolveReturn(ret, [one]).class).toBe("pending");
   });
 
@@ -872,7 +1144,10 @@ describe("the readers", () => {
   });
 
   test("a reading of reader 2 on a return reader 1's reading counts is refused by name", () => {
-    const faults = readerTwoFaults([counted], [ownAlone(counted.id), { ...ownAlone(counted.id), reader: "2" }]);
+    const faults = readerTwoFaults(
+      [counted],
+      [ownAlone(counted.id), { ...ownAlone(counted.id), reader: "2" }]
+    );
     expect(faults).toEqual([
       `reader 2 read ${counted.id}, which reader 1's reading counts against R23: reader 2 reads each return that reader 1 leaves out of the count, and no other`,
     ]);
@@ -911,7 +1186,11 @@ describe("the summary and the verdict", () => {
   });
 
   test("unknown with no against-R23 and one pending", () => {
-    const text = summaryOf({ returns: [resolved("A/2", "ACME-2", "pending")], lastStepsPassed: 1, unknown: [] });
+    const text = summaryOf({
+      returns: [resolved("A/2", "ACME-2", "pending")],
+      lastStepsPassed: 1,
+      unknown: [],
+    });
     expect(lines(text)).toContain("against R23: 0");
     expect(lines(text)).toContain("verdict: unknown");
   });
@@ -924,13 +1203,21 @@ describe("the summary and the verdict", () => {
   });
 
   test("unknown with no return and an unread project", () => {
-    const text = summaryOf({ returns: [], lastStepsPassed: 1, unknown: [{ project: "ACME", day: null }] });
+    const text = summaryOf({
+      returns: [],
+      lastStepsPassed: 1,
+      unknown: [{ project: "ACME", day: null }],
+    });
     expect(lines(text)).toContain("unknown: ACME (every day of the window)");
     expect(lines(text)).toContain("verdict: unknown");
   });
 
   test("a project whose read failed prints unknown for it, never 0", () => {
-    const text = summaryOf({ returns: [], lastStepsPassed: 0, unknown: [{ project: "ACME", day: null }] });
+    const text = summaryOf({
+      returns: [],
+      lastStepsPassed: 0,
+      unknown: [{ project: "ACME", day: null }],
+    });
     expect(lines(text)).not.toContain("unknown: none");
     expect(lines(text)).toContain("unknown: ACME (every day of the window)");
   });
@@ -980,7 +1267,10 @@ describe("the sources a return is held by", () => {
 
 describe("parsing a session the store imports", () => {
   test("the header names the session, and a delivery is read as a delivery", () => {
-    const text = session([delivered("2026-11-20T10:00:00Z", "envoy:\n  from: dispatch\n  message: \"a notice\"")], "ses-x");
+    const text = session(
+      [delivered("2026-11-20T10:00:00Z", 'envoy:\n  from: dispatch\n  message: "a notice"')],
+      "ses-x"
+    );
     const parsed = parseSession(text);
     expect(parsed.session).toBe("ses-x");
     const kinds = parsed.entries.map((entry: TranscriptEntry) => entry.kind);

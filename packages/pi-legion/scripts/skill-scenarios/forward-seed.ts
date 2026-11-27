@@ -31,11 +31,7 @@ import {
   patchIssue,
   putProjectDefaultRepository,
 } from "../../../dispatch/e2e/api";
-import {
-  ForwardCaptured,
-  ForwardFixture,
-  readForwardWorld,
-} from "./forward-world";
+import { ForwardCaptured, ForwardFixture, readForwardWorld } from "./forward-world";
 import { approveSpec } from "./owner-walk-seed";
 import { PERSON } from "./seed-dispatch";
 
@@ -56,11 +52,16 @@ export async function forwardIssues(file: string, worldDir: string): Promise<voi
     person
   );
   if (created.key !== world.issue)
-    throw new Error(`Dispatch gave the world's issue the key ${created.key}, and world.json names ${world.issue}`);
+    throw new Error(
+      `Dispatch gave the world's issue the key ${created.key}, and world.json names ${world.issue}`
+    );
   const seeded = await approveSpec(created.primary_artifact_id);
   await createIssueArtifact(
     created.key,
-    { name: "verification.md", content: readFileSync(path.join(worldDir, "verification.md"), "utf8") },
+    {
+      name: "verification.md",
+      content: readFileSync(path.join(worldDir, "verification.md"), "utf8"),
+    },
     person
   );
   await patchIssue(created.key, { status: "in_progress", labels: ["legion"] }, person);
@@ -71,7 +72,9 @@ export async function forwardIssues(file: string, worldDir: string): Promise<voi
       person
     );
     if (filed.key !== child.key)
-      throw new Error(`Dispatch gave the child ${child.title} the key ${filed.key}, and world.json names ${child.key}`);
+      throw new Error(
+        `Dispatch gave the child ${child.title} the key ${filed.key}, and world.json names ${child.key}`
+      );
     await patchIssue(filed.key, { status: child.status }, person);
     children.push(filed.key);
   }
@@ -92,7 +95,9 @@ export async function resultsHold(file: string, head: string): Promise<boolean> 
   const read = await getIssueResults(issue, { as: "agent" });
   // A read that names no checks enumerated nothing: it is no evidence that every check passed.
   if (read.checks === null || read.checks === undefined || read.checks.length === 0) {
-    console.log(`the results of ${issue} name no check, so no before_merge check can be read as passed at ${head}`);
+    console.log(
+      `the results of ${issue} name no check, so no before_merge check can be read as passed at ${head}`
+    );
     return false;
   }
   const missing = read.checks

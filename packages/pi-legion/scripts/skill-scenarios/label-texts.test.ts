@@ -27,7 +27,9 @@ const tests = [
 ] as const;
 // The tests whose own cases build runs: the three that read a request. TestRigDaemonLive has none,
 // and TestRigDaemon is a check of its own (CI's daemon-go job), never a step of a label's build.
-const ownCases = tests.filter(([, , name]) => name !== "TestRigDaemonLive" && name !== "TestRigDaemon");
+const ownCases = tests.filter(
+  ([, , name]) => name !== "TestRigDaemonLive" && name !== "TestRigDaemon"
+);
 
 const directory = temporaryDirectories("label-texts");
 

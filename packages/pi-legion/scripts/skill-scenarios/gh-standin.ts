@@ -124,7 +124,8 @@ if (as === "gh" && args[0] === "api" && replies !== undefined)
 const newComment = args.some((arg) => /^\/?repos\/[^/]+\/[^/]+\/pulls\/\d+\/comments$/.test(arg));
 if (as === "gh" && args[0] === "api" && newComment) {
   const parsed: unknown = input === undefined ? given : JSON.parse(files[input] ?? "null");
-  const sent = typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
+  const sent =
+    typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
   const thread = sent.in_reply_to === undefined ? "" : String(sent.in_reply_to);
   if (thread !== "") reply = { thread, body: sent.body === undefined ? "" : String(sent.body) };
 }
@@ -174,7 +175,9 @@ if (JSON.stringify(output).includes("{{HEAD}}")) {
     head = undefined;
   }
   if (head === undefined) {
-    console.error(`gh-standin: the route ${route.match} names {{HEAD}}, and ${ready} holds no head`);
+    console.error(
+      `gh-standin: the route ${route.match} names {{HEAD}}, and ${ready} holds no head`
+    );
     exit(1);
   }
   output = JSON.parse(JSON.stringify(output).replaceAll("{{HEAD}}", head));

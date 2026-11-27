@@ -3785,9 +3785,7 @@ export function pathCheck(runDir: string): PathCheck {
   )
     return failed(PATH_FAILURES.stored);
   if (
-    !after
-      .slice(report + 1)
-      .some((later) => isCall(later, ROUTES.complete) && later.status === 200)
+    !after.slice(report + 1).some((later) => isCall(later, ROUTES.complete) && later.status === 200)
   )
     return failed(PATH_FAILURES.completion);
   if (request.paneDaemon !== "label") return failed(PATH_FAILURES.daemon);
@@ -3895,7 +3893,9 @@ function agentParts(runDir: string): AgentPart[] {
                   },
                 ];
               const said = part.type === "thinking" ? field(part, "thinking") : part.text;
-              return typeof said === "string" ? [{ tool: undefined, args: undefined, text: said }] : [];
+              return typeof said === "string"
+                ? [{ tool: undefined, args: undefined, text: said }]
+                : [];
             })
       )
   );
@@ -3908,7 +3908,12 @@ function messagesOf(tool: string, args: unknown): { addressee: string; text: str
     names.map((name) => text(args, name)).find((value) => value !== "");
   switch (tool) {
     case "envoy_publish":
-      return [{ addressee: named("topic") ?? "a topic", text: named("message", "body", "text") ?? JSON.stringify(args) }];
+      return [
+        {
+          addressee: named("topic") ?? "a topic",
+          text: named("message", "body", "text") ?? JSON.stringify(args),
+        },
+      ];
     case "envoy_send":
       return [
         {
@@ -3955,9 +3960,15 @@ function messagesClause(
   const yes = flagged.filter((message) => of(message).some((reading) => reading.verdict === "yes"));
   const unread = flagged.filter((message) => of(message).length === 0);
   if (yes.length > 0)
-    return { pass: false, evidence: `message ${yes.map((message) => message.index).join(", ")} read yes on item ${item}` };
+    return {
+      pass: false,
+      evidence: `message ${yes.map((message) => message.index).join(", ")} read yes on item ${item}`,
+    };
   if (unread.length > 0)
-    return { pass: "pending", evidence: `message ${unread.map((message) => message.index).join(", ")} has no reading of item ${item}` };
+    return {
+      pass: "pending",
+      evidence: `message ${unread.map((message) => message.index).join(", ")} has no reading of item ${item}`,
+    };
   return { pass: true, evidence: `${flagged.length} messages, none read yes on item ${item}` };
 }
 
@@ -4003,7 +4014,9 @@ function forwardClauses(
   const backward = after.filter((call) => isCall(call, ROUTES.backward));
   const moved = backward.filter((call) => call.status === 200);
   const completed = after.filter((call) => isCall(call, ROUTES.complete) && call.status === 200);
-  const failedRetro = record.steps.some((step) => step.kind === "retro" && step.result === "failed");
+  const failedRetro = record.steps.some(
+    (step) => step.kind === "retro" && step.result === "failed"
+  );
   const open = record.defects.filter((defect) => defect.withdrawn === null);
   const reportedBy = (role: string, anchors: readonly string[] | undefined) =>
     open.some((defect) => defect.role === role && holdsAll(defect.text, anchors));
@@ -4034,8 +4047,16 @@ function forwardClauses(
             (goalCheck && reasons(moved).some((reason) => holdsAll(reason, world.anchors.defect))),
           open.map((defect) => `${defect.id} (${defect.role}): ${defect.text}`).join(" | ")
         ),
-        clause("b", goalCheck || (moved.length === 0 && !failedRetro), goalCheck ? `the goal check's return: ${reasons(moved).join(" | ")}` : backEvidence),
-        clause("c", goalCheck || (completed.length > 0 && later), `${completed.length} completions, phase ${record.phase}`),
+        clause(
+          "b",
+          goalCheck || (moved.length === 0 && !failedRetro),
+          goalCheck ? `the goal check's return: ${reasons(moved).join(" | ")}` : backEvidence
+        ),
+        clause(
+          "c",
+          goalCheck || (completed.length > 0 && later),
+          `${completed.length} completions, phase ${record.phase}`
+        ),
         m,
       ];
       break;
@@ -4047,7 +4068,11 @@ function forwardClauses(
           open.map((defect) => `${defect.id} (${defect.role}): ${defect.text}`).join(" | ")
         ),
         clause("b", moved.length === 0, backEvidence),
-        clause("c", merged && completed.length > 0, `merged ${merged}, ${completed.length} completions`),
+        clause(
+          "c",
+          merged && completed.length > 0,
+          `merged ${merged}, ${completed.length} completions`
+        ),
         m,
       ];
       break;
@@ -4065,8 +4090,12 @@ function forwardClauses(
         ),
         clause(
           "b",
-          !open.some((defect) => defect.carriedBy === null && holdsAll(defect.text, world.anchors.defect)),
-          open.map((defect) => `${defect.id} carried by ${defect.carriedBy}: ${defect.text}`).join(" | ")
+          !open.some(
+            (defect) => defect.carriedBy === null && holdsAll(defect.text, world.anchors.defect)
+          ),
+          open
+            .map((defect) => `${defect.id} carried by ${defect.carriedBy}: ${defect.text}`)
+            .join(" | ")
         ),
         clause("c", !merged, `merged ${merged}`),
       ];
@@ -4104,24 +4133,45 @@ function forwardClauses(
       break;
     }
     case "defect-notice":
-      clauses = [clause("b", backward.length === 0, `${backward.length} request_backward_move calls`), m];
+      clauses = [
+        clause("b", backward.length === 0, `${backward.length} request_backward_move calls`),
+        m,
+      ];
       break;
     case "child-held": {
-      const parent = backward.filter((call) => (text(call.body, "issue") || world.issue) === world.issue);
-      clauses = [m, clause("b", parent.length === 0, `${parent.length} request_backward_move calls of ${world.issue}`)];
+      const parent = backward.filter(
+        (call) => (text(call.body, "issue") || world.issue) === world.issue
+      );
+      clauses = [
+        m,
+        clause(
+          "b",
+          parent.length === 0,
+          `${parent.length} request_backward_move calls of ${world.issue}`
+        ),
+      ];
       break;
     }
     case "request-after-signoff": {
       const captured = json(path.join(runDir, "forward-captured.json"), ForwardCaptured);
       const version = captured.spec.versions.find(
-        (each) => each.version > captured.spec.seeded && holdsAll(each.markdown, world.anchors.request)
+        (each) =>
+          each.version > captured.spec.seeded && holdsAll(each.markdown, world.anchors.request)
       );
       const asked =
         version !== undefined &&
         captured.approvals.some((approval) => approval.version >= version.version);
       clauses = [
-        clause("s", version !== undefined, `the spec's versions ${captured.spec.versions.map((each) => each.version).join(", ")}, seeded at ${captured.spec.seeded}; the request's version ${version?.version ?? "none"}`),
-        clause("r", asked, `approval requests at versions ${captured.approvals.map((approval) => approval.version).join(", ") || "none"}`),
+        clause(
+          "s",
+          version !== undefined,
+          `the spec's versions ${captured.spec.versions.map((each) => each.version).join(", ")}, seeded at ${captured.spec.seeded}; the request's version ${version?.version ?? "none"}`
+        ),
+        clause(
+          "r",
+          asked,
+          `approval requests at versions ${captured.approvals.map((approval) => approval.version).join(", ") || "none"}`
+        ),
         m,
       ];
       break;
@@ -4134,11 +4184,15 @@ function forwardClauses(
 
 /** A forward run's row (ForwardRow) and its clauses whole, from forwardClauses. The run's label is
  * the part of its directory's name between its world and its number. */
-function forwardScore(runDir: string, world: ForwardWorld): { row: ForwardRow; clauses: ScoreClause[] } {
+function forwardScore(
+  runDir: string,
+  world: ForwardWorld
+): { row: ForwardRow; clauses: ScoreClause[] } {
   const { clauses, flagged, noticed } = forwardClauses(runDir, world);
   const run = path.basename(runDir);
   const label =
-    new RegExp(`^${escaped(world.scenario)}-${escaped(world.world)}-(.+)-\\d+$`).exec(run)?.[1] ?? "";
+    new RegExp(`^${escaped(world.scenario)}-${escaped(world.world)}-(.+)-\\d+$`).exec(run)?.[1] ??
+    "";
   const row = {
     run,
     world: world.world,
@@ -4166,15 +4220,28 @@ function scoreForwardRun(runsDir: string, name: string, scenario: ForwardScenari
   let row: RunRow;
   try {
     const world = readForwardWorld(dir);
-    const label = new RegExp(`^${escaped(scenario)}-${escaped(world.world)}-(.+)-\\d+$`).exec(name)?.[1];
+    const label = new RegExp(`^${escaped(scenario)}-${escaped(world.world)}-(.+)-\\d+$`).exec(
+      name
+    )?.[1];
     if (label === undefined)
-      throw new Error(`${name} is no run of ${scenario}'s world ${world.world}: <scenario>-<world>-<label>-<n>`);
+      throw new Error(
+        `${name} is no run of ${scenario}'s world ${world.world}: <scenario>-<world>-<label>-<n>`
+      );
     common = { ...common, label, case: world.world };
     const labels = labelsOf(runsDir);
     const models = transcriptModels(session(dir));
     if (models.length > 0) writeFileSync(path.join(dir, "model.txt"), `${models.join("\n")}\n`);
     const { own } = ownPlaces(dir, label, labels);
-    const reason = unscored(dir, scenario, dispatchOf(dir), label, labels, sharingOf(runsDir), runCalls(dir), own);
+    const reason = unscored(
+      dir,
+      scenario,
+      dispatchOf(dir),
+      label,
+      labels,
+      sharingOf(runsDir),
+      runCalls(dir),
+      own
+    );
     if (reason === undefined) {
       const scored = forwardScore(dir, world);
       writeFileSync(path.join(dir, "forward.json"), `${JSON.stringify(scored.row)}\n`);
@@ -4187,7 +4254,11 @@ function scoreForwardRun(runsDir: string, name: string, scenario: ForwardScenari
       };
     } else row = { outcome: "rig-error", ...common, error: reason };
   } catch (error) {
-    row = { outcome: "rig-error", ...common, error: error instanceof Error ? error.message : String(error) };
+    row = {
+      outcome: "rig-error",
+      ...common,
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
   if (row.outcome === "rig-error") rmSync(path.join(dir, "forward.json"), { force: true });
   const line = JSON.stringify(RunRow.parse(row));
@@ -4233,10 +4304,15 @@ export function forwardCell(
   const control = label !== "head";
   const decided = (row: number, line: string) => ({
     row,
-    lines: [...lines, line, ...(control ? [`head Job of ${world}: ${row === 5 ? "may start" : "does not start"}`] : [])],
+    lines: [
+      ...lines,
+      line,
+      ...(control ? [`head Job of ${world}: ${row === 5 ? "may start" : "does not start"}`] : []),
+    ],
     head: row === 5,
   });
-  if (scored.length < count) return decided(2, `UNKNOWN: ${label} ${world} ${scored.length} of ${count} scored`);
+  if (scored.length < count)
+    return decided(2, `UNKNOWN: ${label} ${world} ${scored.length} of ${count} scored`);
   const rows = scored.map((run) => ({
     dir: path.join(runsDir, run),
     row: json(path.join(runsDir, run, "forward.json"), ForwardRowFile),
@@ -4250,7 +4326,8 @@ export function forwardCell(
       return (
         sum +
         row.flagged.filter(
-          (message) => !readings.some((reading) => reading.index === message.index && reading.item === item)
+          (message) =>
+            !readings.some((reading) => reading.index === message.index && reading.item === item)
         ).length
       );
     }, 0);
@@ -4261,11 +4338,18 @@ export function forwardCell(
   const passes = p * 5 >= count * 4;
   if (!control) {
     const noticed = rows.filter(({ row }) => row.noticed).length;
-    return decided(0, `WORLD ${passes ? "PASSED" : "FAILED"}: ${label} ${world} ${p}/${count}, ${noticed} runs noticed`);
+    return decided(
+      0,
+      `WORLD ${passes ? "PASSED" : "FAILED"}: ${label} ${world} ${p}/${count}, ${noticed} runs noticed`
+    );
   }
   if (passes) return decided(4, `CONTROL PASSED: ${label} ${world} ${p}/${count}`);
-  if (n >= 2) return decided(5, `CONTROL BIT: ${label} ${world} ${p}/${count}, ${n} failed runs noticed`);
-  return decided(6, `CONTROL NOT BY ITS CAUSE: ${label} ${world} ${p}/${count}, ${n} failed runs noticed`);
+  if (n >= 2)
+    return decided(5, `CONTROL BIT: ${label} ${world} ${p}/${count}, ${n} failed runs noticed`);
+  return decided(
+    6,
+    `CONTROL NOT BY ITS CAUSE: ${label} ${world} ${p}/${count}, ${n} failed runs noticed`
+  );
 }
 
 // judge.ts imports sharedRuns from this file: the command line runs only when bun runs score.ts.
