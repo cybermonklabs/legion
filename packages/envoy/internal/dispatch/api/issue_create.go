@@ -230,6 +230,17 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// A create with no priority of its own under a parent that reads P0 makes its new issue P0 by
+	// the priority it takes from that parent, which needs the p0 scope unless the writer's session
+	// is the parent's architect (refuseNewChildP0WithoutScope). It is asked here first, on the
+	// pool, after the scoped caller's read of its parent above and before the near-copy gate, so a
+	// refused create writes no near_copy_checks row; the check in the transaction below decides.
+	if parentKey != "" && priority == nil {
+		if err := refuseNewChildP0WithoutScope(r.Context(), s.deps.Store.Pool, caller, parentKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	// A create names a person or nobody: no assignee key and a JSON null both leave assignee nil,
 	// and defaultAssignee below fills it in, so a new issue always has somebody on it. Only the
 	// PATCH clears an issue's assignee.
@@ -343,6 +354,18 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
+		}
+		// The p0 check of a new issue with no priority under a P0 parent again, under the
+		// dependency lock that every write of a priority or a parent takes, so the chain above
+		// the parent is the one this create commits under: this is the check that decides. Like
+		// the first check, on the pool, it comes before the check of who writes an issue Legion
+		// runs (refuseSpecWriter), so a session that is no architect of the parent meets the p0
+		// refusal.
+		if priority == nil {
+			if err := refuseNewChildP0WithoutScope(r.Context(), tx, caller, parentKey); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
 		}
 		// A parent of another project passes on no assignee, as it passes on no repository,
 		// components or legion label: the chain's parent step (defaultAssignee) reads only a

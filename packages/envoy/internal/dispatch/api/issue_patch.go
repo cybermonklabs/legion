@@ -332,12 +332,16 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// Whether the write closes the issue (closing) waits for the issue's owner lock; whether it
 	// asks to is known now.
 	closes := input.Status != nil && status == "done"
-	// A close that makes the issue's own priority 0 from a credential without p0 is refused here,
-	// on a read of that priority, before the settlement below writes the issue's document versions
-	// and asks; the check under the owner lock decides each close this read lets through
-	// (refuseP0BeforeSettlement).
+	// The two fields of the write that its p0 checks judge (p0_scope.go): the issue's own priority
+	// and its parent.
+	p0 := p0Write{priority: priority, namesPriority: priorityProvided, parent: parent, namesParent: parentProvided}
+	// A close that makes the issue's own priority 0, or that clears it or moves the issue so that
+	// the issue or an issue under it takes P0 from above, from a credential without p0, is refused
+	// here, on a read of the issue's priorities, before the settlement below writes the issue's
+	// document versions and asks; the checks under the owner lock decide each close this read lets
+	// through (refuseP0BeforeSettlement).
 	if closes {
-		if err := s.refuseP0BeforeSettlement(ctx, call.writer.credential, key, priority); err != nil {
+		if err := s.refuseP0BeforeSettlement(ctx, call.writer.credential, key, p0); err != nil {
 			return issueWriteResult{}, err
 		}
 	}
@@ -368,8 +372,15 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 
 	// A write that asks for the open-child check of an acceptance is a dependency write too: the
 	// check and the status it guards run under the deployment dependency lock that every create
-	// with a parent and every reparent takes, so no child is filed between the two.
-	dependencyWrite := input.BlockedBy != nil || parentProvided || input.RefuseOpenForeignChildren
+	// with a parent and every reparent takes, so no child is filed between the two. So is a write
+	// of the issue's own priority, a clear included: the priority an issue resolves to is read from
+	// the priorities and the parents above it (refs.IssuePriorityTerms), so the p0 check of a move
+	// or a clear below, and what each issue under the written one resolves to after the write, hold
+	// only while no other write of a priority or a parent runs beside this one. Every such write
+	// takes this one lock first, before any owner lock, so two of them run one after the other: a
+	// create under a parent (createIssue), and each step of a status change or of R25's fix that
+	// unlinks a child, which comes through here with a parent of null.
+	dependencyWrite := input.BlockedBy != nil || parentProvided || priorityProvided || input.RefuseOpenForeignChildren
 	// The lock step below reads each target's and the parent's project again, and asks
 	// access.CredentialCovers about each of another project before any lock is taken
 	// (lockIssueDependencyWrite).
@@ -436,11 +447,21 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if s.afterIssueLoad != nil {
 		s.afterIssueLoad(ctx, key)
 	}
-	// The p0 check (p0_scope.go) is the first refusal that reads the issue: a write that makes
+	// The p0 checks (p0_scope.go) are the first refusals that read the issue: a write that makes
 	// its own priority 0 without the scope is refused before the sequence, the parent and the
 	// closed issue are, so a credential without p0 meets this refusal and no other. before.Priority
 	// is the issue's own column, never a priority its parent has.
 	if err := refuseP0WithoutScope(call.writer.credential, priority, before.Priority); err != nil {
+		return issueWriteResult{}, err
+	}
+	// Then the move and the clear: a write that names a parent, or clears the issue's own priority,
+	// and so makes the priority the issue resolves to go from 1 to 3, or none, to 0 makes the issue
+	// and each issue under it that takes its priority from it P0, which needs the scope as well.
+	// It reads the new parent's chain under the dependency lock taken above, which every write of
+	// a priority or a parent takes, so the chain it reads is the one the write commits under.
+	if err := refuseResolvedP0WithoutScope(ctx, tx, call.writer.credential, key, p0, issuePriorityStanding{
+		own: before.Priority, resolved: before.ResolvedPriority, parent: before.Parent,
+	}); err != nil {
 		return issueWriteResult{}, err
 	}
 	if input.ExpectedSeq != nil && *input.ExpectedSeq != int64(before.LastSeq) {
