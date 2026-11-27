@@ -255,8 +255,13 @@ const machinePathPattern = /^\/machines\/([^/]+)$/;
 /** The page of an agent's artifact, the router's pattern for `AgentArtifactRoute`. */
 export const AGENT_ARTIFACT_PATH = "/agents/:sessionId/artifacts/:slug";
 
-/** Agents reference the conversation as `dispatch://KEY/log`; the browser path is `/conversation`. */
-const legacyLogReferencePattern = /^log$/;
+/** The segment that an issue tab is written as in a `dispatch://` reference where that is not the
+ *  tab's own name: agents write the conversation as `dispatch://KEY/log`, and the browser path is
+ *  `/conversation`. The reader below takes it, and the dashboard's pages file writes each tab's
+ *  reference from it, so the two cannot drift apart. */
+export const ISSUE_TAB_REFERENCE_ALIASES: Partial<Record<IssueTab, string>> = {
+  conversation: "log",
+};
 
 export function isProjectRoute(
   route: DispatchRoute | DispatchReferenceRoute
@@ -390,7 +395,7 @@ function parseIssueReference(key: string, target: string | undefined): IssueRout
   if (plain !== undefined) {
     return { key, kind: plain };
   }
-  if (legacyLogReferencePattern.test(target) || target === "conversation") {
+  if (target === ISSUE_TAB_REFERENCE_ALIASES.conversation || target === "conversation") {
     return { key, kind: "conversation" };
   }
   const artifact = target.match(issueArtifactReferencePattern);

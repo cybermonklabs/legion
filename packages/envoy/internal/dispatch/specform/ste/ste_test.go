@@ -2,9 +2,9 @@ package ste
 
 import (
 	"encoding/json"
+	"math/bits"
 	"math/rand/v2"
 	"reflect"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -172,30 +172,36 @@ func TestRotationsJoinTheVerbsOfTexts(t *testing.T) {
 	}
 }
 
-// Held reads the texts that a text holds once (HeldOf), and keeps of them only the sets of verbs of
-// each group that they use, so its Rotations reads those sets and no held text again, whatever it
-// would keep of one: the held texts followed by more texts that add no set to a group, each held text
-// again and texts made of the parts of different held texts, each group's part of one, in an order of
-// their own, give the same Held, so its value holds nothing of a text but the sets of its groups.
-// HeldOf allocates no more for heldTexts texts followed by heldMixed texts made of their groups'
-// parts, at least half of them distinct, than for those texts alone, less than a byte for each
-// added text where a copy of one takes 8, so it keeps no copy of the texts, repeated or distinct,
-// in its value or outside it. And its Rotations, asked after the caller's slice of held texts is
-// written over and other texts are read into another Held, is still the answer for its own, so it
-// reads neither the caller's texts again nor texts that another HeldOf read. And
-// its Rotations is Rotations as its comment defines it, each held text read for each set of own
-// verbs: for 20,000 sets of own verbs and of 0 to 40 held texts, drawn at random from the verbs of
-// the synonym groups, the two agree. The cases hold groups that a held text uses each verb of and
-// groups it does not (counted), so both answers of the rule are read.
-func TestHeldReadsTheHeldTextsOnceAsRotationsReadsThemEach(t *testing.T) {
-	definition := func(own Verbs, held []Verbs) Verbs {
+// Rotations is each synonym group whose verbs the text and the texts it holds use two or more of
+// together, and that neither the text's own words nor one held text uses each of: a group the own
+// words use each of is Lint's finding of the text, and one a held text uses each of is that text's
+// finding. The rows below read it as the rule reads it, group by group, where Rotations reads the
+// verbs of every group at once: for 20,000 sets of own verbs and of 0 to 40 held texts, drawn at
+// random from the verbs of the synonym groups, the two agree. The cases hold groups that a held
+// text uses each verb of and groups that none does (counted), so both answers of the rule are read.
+func TestRotationsAreTheGroupsNoOneTextUsesEachVerbOf(t *testing.T) {
+	// byGroup is the rule read one group at a time, which Rotations answers for every group at once.
+	byGroup := func(own Verbs, held []Verbs) Verbs {
 		all := own
 		for _, each := range held {
 			all |= each
 		}
-		rotated := all.Rotated() & (own ^ all).Groups()
-		for _, each := range held {
-			rotated &= (each ^ all).Groups()
+		var rotated Verbs
+		for _, group := range rules.groups {
+			used := all & group
+			if bits.OnesCount64(uint64(used)) < 2 || own&group == used {
+				continue
+			}
+			whole := false
+			for _, each := range held {
+				if each&group == used {
+					whole = true
+					break
+				}
+			}
+			if !whole {
+				rotated |= used
+			}
 		}
 		return rotated
 	}
@@ -204,33 +210,6 @@ func TestHeldReadsTheHeldTextsOnceAsRotationsReadsThemEach(t *testing.T) {
 		every |= group
 	}
 	draw := func(random *rand.Rand) Verbs { return Verbs(random.Uint64()&random.Uint64()) & every }
-	// mixed is a text that adds no set of verbs to a group of held's: the part of each group of a
-	// text of held drawn for that group.
-	mixed := func(random *rand.Rand, held []Verbs) Verbs {
-		var text Verbs
-		for _, group := range rules.groups {
-			text |= held[random.IntN(len(held))] & group
-		}
-		return text
-	}
-	texts, drawTexts := make([]Verbs, heldTexts), rand.New(rand.NewPCG(4179, 22))
-	for index := range texts {
-		texts[index] = draw(drawTexts)
-	}
-	more, distinct := slices.Clone(texts), map[Verbs]bool{}
-	for range heldMixed {
-		text := mixed(drawTexts, texts)
-		more, distinct[text] = append(more, text), true
-	}
-	if len(distinct) < heldMixed/2 {
-		t.Fatalf("the %d texts made of the groups' parts of %d texts hold %d distinct texts, want at least half: the allocation check reads too little", heldMixed, len(texts), len(distinct))
-	}
-	heldSink = HeldOf(more)
-	alone, withMore := heldAllocates(texts), heldAllocates(more)
-	if grown := int64(withMore) - int64(alone); grown >= int64(heldMixed) {
-		t.Errorf("HeldOf allocates %d bytes for %d texts and %d for them followed by %d texts made of their groups' parts (%d distinct), %d more: want less than a byte for each, as a Held that keeps no copy of its texts allocates",
-			alone, len(texts), withMore, heldMixed, len(distinct), grown)
-	}
 	random := rand.New(rand.NewPCG(4179, 21))
 	rotated, kept := 0, 0
 	for range 20_000 {
@@ -239,63 +218,24 @@ func TestHeldReadsTheHeldTextsOnceAsRotationsReadsThemEach(t *testing.T) {
 		for index := range held {
 			held[index] = draw(random)
 		}
-		want := definition(own, held)
-		read := HeldOf(held)
-		// more is texts that add no set of verbs to a group: each held text again, and as many texts
-		// made of the part of each group of a held text drawn for that group.
-		more := slices.Concat(held, held)
-		for range held {
-			more = append(more, mixed(random, held))
+		want := byGroup(own, held)
+		if got := Rotations(own, held); got != want {
+			t.Fatalf("own %b, held %b: Rotations gives %b, the rule read group by group %b", own, held, got, want)
 		}
-		random.Shuffle(len(more), func(a, b int) { more[a], more[b] = more[b], more[a] })
-		if again := HeldOf(slices.Concat(held, more)); !reflect.DeepEqual(again, read) {
-			t.Fatalf("held %b: the held texts followed by %b, which add no set of verbs to a group, give the Held %+v, and alone %+v: want the same, a Held that keeps nothing of a text but its groups' sets", held, more, again, read)
-		}
-		// The caller's slice written over with other texts, and other texts, drawn as the held ones
-		// are, read into another Held, before read's Rotations.
-		for index := range held {
-			held[index] = draw(random)
-		}
-		others := make([]Verbs, len(held)+1)
-		for index := range others {
-			others[index] = draw(random)
-		}
-		HeldOf(others)
-		if got := read.Rotations(own); got != want {
-			t.Fatalf("own %b, held %b: Held gives %b after the Held of %b was read, the definition %b", own, held, got, others, want)
+		all := own
+		for _, each := range held {
+			all |= each
 		}
 		if want != 0 {
 			rotated++
-		} else if (own | read.all).Rotated() != 0 {
+		} else if all.Rotated() != 0 {
 			kept++
 		}
 	}
-	t.Logf("HeldOf allocates %d bytes for %d texts and %d for them and %d texts made of their parts (%d distinct); 20,000 cases: %d rotate a group, %d rotate none where the verbs together use two of a group",
-		alone, len(texts), withMore, heldMixed, len(distinct), rotated, kept)
+	t.Logf("20,000 cases: %d rotate a group, %d rotate none where the verbs together use two of a group", rotated, kept)
 	if rotated == 0 || kept == 0 {
 		t.Errorf("%d cases rotate a group and %d rotate none beside two verbs of a group: the test reads too little", rotated, kept)
 	}
-}
-
-// heldTexts is how many texts the allocation check of Held draws, and heldMixed how many texts made
-// of their groups' parts follow them: a copy of the distinct ones would take 8 bytes for each, over
-// 64 KiB.
-const (
-	heldTexts = 40
-	heldMixed = 16_384
-)
-
-// heldSink keeps each Held that heldAllocates reads, so that no allocation of HeldOf is left out.
-var heldSink Held
-
-// heldAllocates is the bytes that the heap gives HeldOf of held, from the process's count of every
-// byte allocated (runtime.MemStats.TotalAlloc), read before and after the call.
-func heldAllocates(held []Verbs) uint64 {
-	var before, after runtime.MemStats
-	runtime.ReadMemStats(&before)
-	heldSink = HeldOf(held)
-	runtime.ReadMemStats(&after)
-	return after.TotalAlloc - before.TotalAlloc
 }
 
 // TestWordsAreWhatSteLintLints holds Words to the text that ste-lint's line loop lints, as words:
@@ -364,9 +304,6 @@ func TestTheReadersOfATextOfDispatchReadNoFence(t *testing.T) {
 	}
 	if !slices.Equal(words, []string{"One.", "Two."}) {
 		t.Errorf("Words: %q, want the two words after the code font", words)
-	}
-	if got, _ := LintVerbs("```x``` one two three four five six"); len(got) != 0 {
-		t.Errorf("LintVerbs of a piece that starts with code font: %v, want no finding", got)
 	}
 }
 

@@ -29,7 +29,6 @@ import (
 	"fmt"
 	"math/bits"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -174,10 +173,10 @@ func isWord(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsNumber(r) || r == '_'
 }
 
-// Strip is Python's str.strip with no argument: s without the white space that ste-lint reads
+// strip is Python's str.strip with no argument: s without the white space that ste-lint reads
 // (isSpace) at its two ends. A caller that cuts a line into sentences names each by it, so a
 // sentence starts at its first word and ends at its last.
-func Strip(s string) string {
+func strip(s string) string {
 	return strings.TrimFunc(s, isSpace)
 }
 
@@ -337,7 +336,7 @@ func splitTableRow(line string) ([]segment, bool) {
 	for index, cell := range raw {
 		trimmed := strings.TrimLeftFunc(cell, isSpace)
 		leading := runes(cell) - runes(trimmed)
-		cells[index] = segment{text: Strip(cell), column: column + leading, start: at + len(cell) - len(trimmed)}
+		cells[index] = segment{text: strip(cell), column: column + leading, start: at + len(cell) - len(trimmed)}
 		column += runes(cell) + 1
 		at += len(cell) + 1
 	}
@@ -452,7 +451,7 @@ func eachSegment(lines []string, starts []int, fences bool, visit func(line int,
 	tables := tableCells(lines)
 	inFence := false
 	for index, raw := range lines {
-		if fences && isFence(Strip(raw)) {
+		if fences && isFence(strip(raw)) {
 			inFence = !inFence
 			continue
 		}
@@ -705,53 +704,13 @@ func (h hit) verb() Verbs {
 // own uses each of those verbs of is Lint's finding of the text, and one that a text of held uses
 // each of is that text's finding.
 func Rotations(own Verbs, held []Verbs) Verbs {
-	return HeldOf(held).Rotations(own)
-}
-
-// Held is the verbs of the texts that a text holds, as Rotations reads them, read once: their verbs
-// together (all), and, for each synonym group in the order of rules.json, each set of its verbs that
-// one of the texts uses (uses), at most two to the power of the group's size, so at most 16 for the
-// groups of rules.json. So Rotations of many sets of own verbs against the same texts reads each
-// group's sets, not the texts: its work does not grow with how many texts are held.
-type Held struct {
-	all  Verbs
-	uses [][]Verbs
-}
-
-// HeldOf is held, the verbs of each text that a text holds, as Held reads them.
-func HeldOf(held []Verbs) Held {
-	if len(held) == 0 {
-		return Held{}
-	}
-	read := Held{uses: make([][]Verbs, len(rules.groups))}
+	all := own
 	for _, each := range held {
-		read.all |= each
-		for index, group := range rules.groups {
-			if used := each & group; !slices.Contains(read.uses[index], used) {
-				read.uses[index] = append(read.uses[index], used)
-			}
-		}
+		all |= each
 	}
-	return read
-}
-
-// Rotations is Rotations(own, held) for the texts of h: each group of which own and the texts use
-// two verbs or more together, where own does not use each of those verbs, and no one text uses
-// each of them (a set of uses that holds each).
-func (h Held) Rotations(own Verbs) Verbs {
-	all := own | h.all
 	rotated := all.Rotated() & (own ^ all).Groups()
-	for index, uses := range h.uses {
-		group := rules.groups[index]
-		if rotated&group == 0 {
-			continue
-		}
-		for _, used := range uses {
-			if all&group&^used == 0 {
-				rotated &^= group
-				break
-			}
-		}
+	for _, each := range held {
+		rotated &= (each ^ all).Groups()
 	}
 	return rotated
 }
@@ -825,7 +784,7 @@ func asciiOnly(s string) string {
 }
 
 func listContinuation(line string, contentIndent int) bool {
-	if Strip(line) == "" {
+	if strip(line) == "" {
 		return true
 	}
 	if listItemStart.MatchString(line) {
@@ -848,7 +807,7 @@ func danglingConjunctions(lines []string, fences bool) []located {
 	inFence := false
 	for index := 0; index < len(lines); {
 		line := lines[index]
-		if fences && isFence(Strip(line)) {
+		if fences && isFence(strip(line)) {
 			inFence = !inFence
 			index++
 			continue
@@ -868,7 +827,7 @@ func danglingConjunctions(lines []string, fences bool) []located {
 		itemFence := false
 		for ; next < len(lines); next++ {
 			candidate := lines[next]
-			if fences && isFence(Strip(candidate)) {
+			if fences && isFence(strip(candidate)) {
 				itemFence = !itemFence
 				continue
 			}
@@ -882,7 +841,7 @@ func danglingConjunctions(lines []string, fences bool) []located {
 		}
 		var last *itemLine
 		for _, item := range items {
-			if cleaned := Strip(inlineCode.ReplaceAllString(item.text, " CODE ")); cleaned != "" {
+			if cleaned := strip(inlineCode.ReplaceAllString(item.text, " CODE ")); cleaned != "" {
 				last = &itemLine{item.index, cleaned}
 			}
 		}
