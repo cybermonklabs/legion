@@ -42,6 +42,7 @@ const specWriterRefusalCode = "DOCUMENT_WRITER_NOT_ARCHITECT"
 // issue's chain, and to a project that holds the same issues, document versions and issue events
 // as before it (specWriterRig.requireRefused), with each row's own checks after it.
 func TestSpecWriteRefusesAWorkerOnEveryRoute(t *testing.T) {
+	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})
 	for _, row := range specWriteInventory() {
 		for _, writer := range row.writers {
@@ -1061,6 +1062,7 @@ func (rig *specWriterRig) eventCount(t *testing.T, issue, pattern string) int {
 // include_children on the status route keeps #4631's 403 BROWSER_SIGN_IN_REQUIRED, and R and its
 // child stay open with no new version and no event.
 func TestSpecWriteKeepsThePersonScopeRefusals(t *testing.T) {
+	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})
 	rig := server.rig(t, specWriterRigShape{})
 	spec := rig.c.documents["spec.md"].id
@@ -1128,6 +1130,7 @@ func TestSpecWriteKeepsThePersonScopeRefusals(t *testing.T) {
 // a root with the label legion that no publication names, is refused, and the refusal says that
 // Dispatch records no architect on V or above it.
 func TestSpecWriteNamesNoArchitectWhenNoneIsRecorded(t *testing.T) {
+	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})
 	rig := server.rig(t, specWriterRigShape{unclaimed: true})
 	edit := rig.editAttempt(rig.cTester, rig.v, "spec.md")
@@ -1151,6 +1154,7 @@ func TestSpecWriteNamesNoArchitectWhenNoneIsRecorded(t *testing.T) {
 // D's spec. A person passes on each credential that holds the person scope: a sign-in, a personal
 // token, and a broker token scoped to a person.
 func TestArchitectWritePassesForTheIssuesArchitectAnArchitectAboveAndAPerson(t *testing.T) {
+	t.Parallel()
 	server, brokered := newSpecWriterBrokerServer(t)
 	routes := []string{"upload a new version", "edit by id", "edit by slug", "named version by id", "named version by slug", "resolution", "retraction", "ask edit"}
 	for _, row := range specWriteTakenRows() {
@@ -1221,6 +1225,7 @@ func TestArchitectWritePassesForTheIssuesArchitectAnArchitectAboveAndAPerson(t *
 // the root stays one. C's architect's, R's architect's and a person's creates under C are taken.
 // (C's tester's create under C is the inventory's row.)
 func TestSpecWriteChecksACreateOnlyUnderAParent(t *testing.T) {
+	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})
 	rig := server.rig(t, specWriterRigShape{unlabelled: true})
 	legion := []string{"legion"}
@@ -1268,6 +1273,7 @@ func TestSpecWriteChecksACreateOnlyUnderAParent(t *testing.T) {
 // worker's edit of V, a root with the label legion that no publication names, is refused, and a
 // person's is taken.
 func TestSpecWriteAppliesOnceTheProjectIsMarked(t *testing.T) {
+	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})
 	rig := server.rig(t, specWriterRigShape{unclaimed: true, unmarked: true})
 	edit := rig.editAttempt(rig.cTester, rig.w, "spec.md")
@@ -1295,6 +1301,7 @@ func TestSpecWriteAppliesOnceTheProjectIsMarked(t *testing.T) {
 // while a person's edit of the spec has not settled yet and the anchor's write is what makes a
 // version of it; C's tester's resolve of its own anchored comment is taken.
 func TestSpecWriteLeavesAnchoredWritesAlone(t *testing.T) {
+	t.Parallel()
 	anchored := func(rig *specWriterRig) []specWriteAttempt {
 		spec := rig.c.documents["spec.md"].id
 		write := func(what, path string, body map[string]any) specWriteAttempt {
@@ -1369,6 +1376,7 @@ func TestSpecWriteLeavesAnchoredWritesAlone(t *testing.T) {
 // its later step, the reopen of R, and writes neither step. (C's tester's close and reopen are the
 // inventory's rows.)
 func TestSpecWriteChecksTheCloseAndTheReopen(t *testing.T) {
+	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})
 	routes := []struct {
 		name string
@@ -1458,6 +1466,7 @@ func TestSpecWriteChecksTheCloseAndTheReopen(t *testing.T) {
 // root's own chain (TestSpecWriteChecksAMoveOnBothChains), and the root stays one; a person's move
 // of it under C is taken.
 func TestSpecWriteChecksAMoveUnderAParent(t *testing.T) {
+	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})
 	rig := server.rig(t, specWriterRigShape{})
 	root := rig.requireCreated(t, "C's tester's create of a root with the label legion", "",
@@ -1501,6 +1510,7 @@ func TestSpecWriteChecksAMoveUnderAParent(t *testing.T) {
 // architect's move of D under C, a person's move of D back under R, and R's architect's move of D
 // under U2 are taken.
 func TestSpecWriteChecksAMoveOnBothChains(t *testing.T) {
+	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})
 	rig := server.rig(t, specWriterRigShape{sibling: true, unlabelled: true, unclaimed: true})
 	vArchitect := "ses-v-architect-" + strings.ToLower(rig.project)
@@ -1578,6 +1588,7 @@ func TestSpecWriteChecksAMoveOnBothChains(t *testing.T) {
 // C is refused on C's chain: it is at or above Y but not at or above C. A person's move of U2
 // under C is taken.
 func TestSpecWriteChecksTheLabelledIssuesOfAMovedSubtree(t *testing.T) {
+	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})
 	rig := server.rig(t, specWriterRigShape{unlabelled: true, unclaimed: true})
 	y := rig.file(t, "labelled", rig.u2.key, []string{"legion"})
@@ -1646,6 +1657,7 @@ func TestSpecWriteChecksTheLabelledIssuesOfAMovedSubtree(t *testing.T) {
 // edit of Y's spec after it is refused too. The refusal does not say that the writer must also be
 // an architect of the new parent or of an issue above it: Legion does not run U2 there.
 func TestSpecWriteChecksAMovedSubtreeWhereverItsNewParentIs(t *testing.T) {
+	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})
 	for _, takeOut := range []struct {
 		name string
@@ -1715,6 +1727,7 @@ func TestSpecWriteChecksAMovedSubtreeWhereverItsNewParentIs(t *testing.T) {
 // move changes no chain of either. R's architect's edit of Y's spec after the move is refused,
 // since Y's architects are still Y's own.
 func TestSpecWriteChecksAMovedSubtreeWithinItsProject(t *testing.T) {
+	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})
 	rig := server.rig(t, specWriterRigShape{unlabelled: true, secondProject: true})
 	y := rig.fileIn(t, rig.q, "labelled", rig.u2.key, []string{"legion"})
@@ -1748,6 +1761,7 @@ func TestSpecWriteChecksAMovedSubtreeWithinItsProject(t *testing.T) {
 // does not say that the writer must also be an architect of C or of an issue above it, since the
 // check of C's chain did not judge the move.
 func TestSpecWriteJudgesARowUnderAParentOfAnotherProjectAsARoot(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	server := newSpecWriterServer(t, testServerOptions{})
 	rig := server.rig(t, specWriterRigShape{secondProject: true})
 	m := rig.fileIn(t, rig.q, "labelled", "", []string{"legion"})
@@ -1815,6 +1829,7 @@ func TestSpecWriteJudgesARowUnderAParentOfAnotherProjectAsARoot(t *testing.T) {
 // architect, and U2 stays a root; when SQL answers that it does not, the move is taken. The test
 // logs SQL's answer.
 func TestSpecWriteDecidesAMovedSubtreesLabelInSQL(t *testing.T) {
+	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})
 	for _, label := range []string{"LEG\u0130ON", "LEGION"} {
 		t.Run(label, func(t *testing.T) {
@@ -1871,6 +1886,7 @@ func TestSpecWriteDecidesAMovedSubtreesLabelInSQL(t *testing.T) {
 // removal of legion from W in Q, which no publication marked, are taken: none takes an issue out of
 // a tree the check holds.
 func TestSpecWriteChecksAWriteThatTakesAnIssueOutOfLegion(t *testing.T) {
+	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})
 	tree := specWriterRigShape{sibling: true, unlabelled: true}
 	unlink := map[string]any{"status": "in_progress", "unlink_children": true}
@@ -1985,6 +2001,7 @@ func TestSpecWriteChecksAWriteThatTakesAnIssueOutOfLegion(t *testing.T) {
 // parentStatusFixWriter - a write that takes C out of Legion, which the check refuses a worker -
 // records that it ran, and answers the rule on with no error.
 func TestSpecWriteLetsTheBootFixWrite(t *testing.T) {
+	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})
 	rig := server.rig(t, specWriterRigShape{})
 	rig.requireTaken(t, "a person's close of "+rig.r.key+" over its open child "+rig.c.key, http.StatusOK, func(t *testing.T) *httptest.ResponseRecorder {
@@ -2009,6 +2026,7 @@ func TestSpecWriteLetsTheBootFixWrite(t *testing.T) {
 // where nothing checks it, each run on a rig of its own: C's tester writes C's documents on each
 // document route, and each issue route is sent by the writer the inventory names.
 func TestSpecWriteChangesNothingOffLegion(t *testing.T) {
+	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})
 	for _, row := range append(specWriteTakenRows(), specWriteOffLegionIssueRows()...) {
 		writers := row.writers
@@ -2031,6 +2049,7 @@ func TestSpecWriteChangesNothingOffLegion(t *testing.T) {
 // TestSpecWriteChangesNothingAfterTheLabelGoes: once a person removes the label legion from R,
 // Legion runs no issue of R's tree, and C's tester's edit of C's spec is taken.
 func TestSpecWriteChangesNothingAfterTheLabelGoes(t *testing.T) {
+	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})
 	rig := server.rig(t, specWriterRigShape{})
 	rig.requireTaken(t, "a person's removal of the label legion from "+rig.r.key, http.StatusOK, func(t *testing.T) *httptest.ResponseRecorder {
@@ -2051,6 +2070,7 @@ func TestSpecWriteChangesNothingAfterTheLabelGoes(t *testing.T) {
 // block written into the spec is the spec's own and no copy, so only a document in a room of its
 // own can be copied into the spec.
 func TestSpecWriteChecksEachCopyOfAResolvedAsk(t *testing.T) {
+	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})
 	rig := server.rig(t, specWriterRigShape{})
 	spec := rig.c.documents["spec.md"].id
@@ -2105,6 +2125,7 @@ func TestSpecWriteChecksEachCopyOfAResolvedAsk(t *testing.T) {
 // the ask before the check reads anything, so C's tester's edit of the architect's block ask in
 // C's spec is refused as it was before the check, with nothing written.
 func TestSpecWriteKeepsNotAuthorFirst(t *testing.T) {
+	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})
 	rig := server.rig(t, specWriterRigShape{})
 	ask := rig.askIn(t, rig.c, "spec.md", "architect")
@@ -2123,6 +2144,7 @@ func TestSpecWriteKeepsNotAuthorFirst(t *testing.T) {
 // DOCUMENT_WRITER_NOT_ARCHITECT and the file store holds no object more after it. The same upload
 // by C's architect is taken and writes its object.
 func TestSpecWriteRefusesAWorkersFileUploadBeforeItsObject(t *testing.T) {
+	t.Parallel()
 	memory := filestest.NewMemory()
 	server := newSpecWriterServer(t, testServerOptions{files: memory})
 	rig := server.rig(t, specWriterRigShape{noVerification: true})
@@ -2501,6 +2523,7 @@ func (rig *specWriterRig) commentState(t *testing.T, id string) (resolved bool, 
 // token that proves the daemon's session. Once a person turns the setting off, C's architect's
 // edit and the daemon's close on the shared token are taken.
 func TestArchitectWriteOnAProvenProjectNeedsAProvenSession(t *testing.T) {
+	t.Parallel()
 	server, brokered := newSpecWriterBrokerServer(t)
 	rig := server.rig(t, specWriterRigShape{})
 	spec := rig.c.documents["spec.md"].id
@@ -2576,6 +2599,7 @@ func TestArchitectWriteOnAProvenProjectNeedsAProvenSession(t *testing.T) {
 // off, the shared token publishes again. In Q, which no publication marked, the setting on, the
 // shared token's refused publication marks nothing, so a worker's edit of W's spec is still taken.
 func TestRoleHolderPublicationOnAProvenProjectNeedsTheDaemonsProof(t *testing.T) {
+	t.Parallel()
 	server, brokered := newSpecWriterBrokerServer(t)
 	rig := server.rig(t, specWriterRigShape{unmarked: true})
 	daemon := legionDaemonSessionOf(rig.c.key)

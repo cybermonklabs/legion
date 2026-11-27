@@ -141,9 +141,9 @@ var legionStatusScopes = []string{model.ScopeLegionStatus}
 // account and writes nothing, as every read-only token does. The broker narrows no job's token.
 // Its credential is marked read-only (model.Credential.ReadOnly), with the token's cut
 // (model.Credential.Cut), and refuseReadOnlyToken answers it 403 READ_ONLY_TOKEN on every route
-// outside the read class (readClasses) and on GET /ws/live, ahead of the scope gate, the sign-in
-// check, an account entry's write as its account and everything else the route does. While no
-// build answers a read at a past time, it answers one that carries a cut 403
+// outside the read class (routeDecl.Read) and on GET /ws/live, ahead of the scope gate, the
+// sign-in check, an account entry's write as its account and everything else the route does.
+// While no build answers a read at a past time, it answers one that carries a cut 403
 // AS_OF_TOKEN_NOT_SERVED on every read but GET /api/v1/whoami. On a read it serves, it is the
 // session it names, reading as that session does.
 //
@@ -218,13 +218,13 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// ApproveOnly), which the secrets broker mints for a person's approve grant, binds to its own
 	// pod's key and spends through its proxy without ever releasing it. That token holds person
 	// and approve (brokerApproveOnlyScopes), never p0, and is marked approve-only, so
-	// refuseApproveOnlyToken holds it to the approve list (approveScopeRoutes) before any route
-	// runs. A token scoped to a project gets no person scope, because the deployment mapped that
-	// token to a project and not to the person: it proves a session, not that any person stands
-	// behind the request. A token that names a service and no person gets none either, whatever
-	// scope the broker answered: there is no person for it to act as, and a scope that said
-	// otherwise would let it act as the session's own id on the routes that read what belongs to a
-	// person. A job's token, named or public, is one of those.
+	// refuseApproveOnlyToken holds it to the routes that state ApproveOnly (routeDecl.ApproveOnly)
+	// before any route runs. A token scoped to a project gets no person scope, because the
+	// deployment mapped that token to a project and not to the person: it proves a session, not
+	// that any person stands behind the request. A token that names a service and no person gets
+	// none either, whatever scope the broker answered: there is no person for it to act as, and a
+	// scope that said otherwise would let it act as the session's own id on the routes that read
+	// what belongs to a person. A job's token, named or public, is one of those.
 	//
 	// A read-only token is read by its base word (ciphertoken.Caller.ProjectScope) as the same
 	// token without read would be: one narrowed from a token that acts as its person still acts
@@ -265,7 +265,8 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		// broker answered them, the scope as its base word (ciphertoken.Caller.ProjectScope),
 		// which is what writeNeedsASignedInPerson reads of a caller naming a service and no person:
 		// a job's token and an account entry's token naming no person write, and a machine's nobody
-		// signed in on does not.
+		// signed in on does not. The principal is the one the listener records a registration on
+		// this token as, which a successor's reply is held to.
 		Credential: &model.Credential{
 			Scopes:       scopes,
 			Session:      caller.Session,
@@ -274,6 +275,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 			Cut:          caller.Cut,
 			ProjectScope: caller.ProjectScope,
 			Projects:     caller.Projects,
+			Principal:    caller.Principal(),
 		},
 		Proven: true,
 	}

@@ -137,6 +137,7 @@ type seedDocument struct{ name, id string }
 // dropped in turn and the sources must change. That is what says this test can see a difference
 // at all.
 func TestScopeSourcesSeedArmsAnswerTheOneSeed(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -330,6 +331,7 @@ const (
 // comments, which is the plan this change is here to stop. A test whose control did not scan
 // would be proving nothing.
 func TestScopeSourcesSeedReadsCommentsThroughItsIndexes(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)

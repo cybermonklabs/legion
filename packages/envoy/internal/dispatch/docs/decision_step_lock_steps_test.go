@@ -47,6 +47,7 @@ import (
 // after it. A step whose table the path wrote at an earlier step is held by a gate
 // (gatedDocsWrites).
 func TestTheDecisionsStepsWritersTakeTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, path := range []func(t *testing.T) (*docsWriterRig, docsWriter){conversionPath, followCatchUpPath} {
 		rig, writer := path(t)
@@ -289,7 +290,8 @@ func conversionPath(t *testing.T) (*docsWriterRig, docsWriter) {
 				write: func() error {
 					step := NewDecisionStep(r.database, "", nil)
 					step.UseDocuments(r.service)
-					done, failed, err := step.RestoreAndConvert(ctx, project, true, false)
+					pass, err := step.RestoreAndConvert(ctx, project, true, false)
+					done, failed := pass.Done, pass.Failed
 					if err != nil || len(failed) > 0 {
 						return fmt.Errorf("the third phase answered %v with failures %+v", err, failed)
 					}

@@ -48,7 +48,8 @@
 #            storing nothing; with the dry run's count it answers 200 with that count, the lens and
 #            its finding go gone in the write, KD and RD leave the spec's text and go gone at its
 #            index pass, and the tree read returns none of the four.
-#   routes   GET /api/v1 and the routes table list PATCH and DELETE under the node route.
+#   routes   GET /api/v1 and the route files (route_<path>+<method>.go) list PATCH and DELETE under the
+#            node route.
 #
 # Inputs: DATABASE_URL (the database the server serves, on this machine: the driver reads the store
 # through psql, deletes V's rows there and holds the block-index and forms drain leases there),
@@ -108,8 +109,9 @@ readonly database_url="$DATABASE_URL"
 stamp="$(date +%s)-$$"
 readonly stamp
 readonly session="issue-tree-reparent-$stamp"
-# The routes table this head serves, which the route rows are read from.
-readonly routes_table="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../../envoy/internal/dispatch/api" && pwd)/routes_table.go"
+# The directory of the route files this head serves, one route each (route_<path>+<method>.go, the
+# names internal/dispatch/routefile gives), which the route rows are read from.
+readonly api_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../../envoy/internal/dispatch/api" && pwd)"
 
 work_dir
 tree_init
@@ -1159,21 +1161,26 @@ tree_want 200 "$section" "read GET /api/v1"
 got="$(jq -cS '[.. | objects | select((.path? // .pattern? // "") == "/api/v1/issues/{key}/nodes/{id}") | (.method // .methods // empty)] | flatten | sort' "$work/body")"
 [[ "$got" == '["DELETE","PATCH"]' ]] || fail "$section" "GET /api/v1 lists PATCH and DELETE under /api/v1/issues/{key}/nodes/{id}" "it lists $got"
 pass "$section" "GET /api/v1 lists PATCH and DELETE under /api/v1/issues/{key}/nodes/{id}"
-# rp_node_rows FILE: the route rows of FILE under /api/v1/issues/{key}/nodes/{id}, each its method or
-# its last segment, sorted and joined by commas, in answer.
+# rp_node_rows DIR: the routes the route files of DIR declare under /api/v1/issues/{key}/nodes/{id},
+# each its method or its last segment, sorted and joined by commas, in answer. Each file declares its
+# route as a `Method: http.MethodX,` line and the `Pattern: "…",` line after it.
 rp_node_rows() {
-  answer="$(grep -oE '\{http\.Method[A-Za-z]+, "/api/v1/issues/\{key\}/nodes/\{id\}(/[a-z]+)?"' "$1" |
-    sed -E 's#\{http\.Method([A-Za-z]+), "/api/v1/issues/\{key\}/nodes/\{id\}(/([a-z]+))?"#\1 \3#' |
+  answer="$(cat -- "$1"/route_*+*.go |
+    awk '/^[[:space:]]*Method:[[:space:]]*http\.Method[A-Za-z]+,/ { method = $2; sub(/^http\.Method/, "", method); sub(/,$/, "", method) }
+      /^[[:space:]]*Pattern:[[:space:]]*"/ { pattern = $2; gsub(/[",]/, "", pattern); print method, pattern }' |
+    sed -nE 's#^([A-Za-z]+) /api/v1/issues/\{key\}/nodes/\{id\}(/([a-z]+))?$#\1 \3#p' |
     awk '{ print ($2 == "" ? toupper($1) : $2) }' | sort | paste -sd, -)" || answer=""
 }
-cp "$routes_table" "$work/routes_table.go"
-printf '\t\t{http.MethodPost, "/api/v1/issues/{key}/nodes/{id}/move", authAny, "a row the grep must see"},\n' >>"$work/routes_table.go"
-rp_node_rows "$work/routes_table.go"
-[[ ",$answer," == *",move,"* ]] || fail "$section" "the grep of the route rows finds a /move row written into a scratch copy" "it reads $answer"
-rp_node_rows "$routes_table"
+mkdir "$work/routes"
+cp -- "$api_dir"/route_*+*.go "$work/routes/"
+printf 'package api\n\nimport (\n\t"net/http"\n)\n\nvar _ = declareRoute(routeDecl{\n\tMethod:      http.MethodPost,\n\tPattern:     "/api/v1/issues/{key}/nodes/{id}/move",\n\tDescription: "a route the read must see",\n})\n' \
+  >"$work/routes/route_api_v1_issues_{key}_nodes_{id}_move+post.go"
+rp_node_rows "$work/routes"
+[[ ",$answer," == *",move,"* ]] || fail "$section" "the read of the route files finds a /move route written into a scratch copy" "it reads $answer"
+rp_node_rows "$api_dir"
 [[ "$answer" == "DELETE,PATCH,findings,pointers,settle,state" ]] ||
-  fail "$section" "the routes table's rows under /api/v1/issues/{key}/nodes/{id} are exactly PATCH, DELETE, findings, pointers, state and settle" "they read $answer"
-pass "$section" "the routes table's rows under /api/v1/issues/{key}/nodes/{id} are exactly $answer"
+  fail "$section" "the route files under /api/v1/issues/{key}/nodes/{id} are exactly PATCH, DELETE, findings, pointers, state and settle" "they read $answer"
+pass "$section" "the route files under /api/v1/issues/{key}/nodes/{id} are exactly $answer"
 
 pass "$driver" "made $moves moves through the PATCH"
 printf 'PASS: %s complete 14 sections\n' "$driver"

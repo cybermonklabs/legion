@@ -37,9 +37,11 @@
 # BASELINE_SHA..HEAD moving that file's version. It reads `git log --reverse --format=%H
 # origin/main..HEAD` and, with `git log -S` for each of requirementBlocksIn and checkBlocksIn, finds
 # the commit that deletes the name later in that list than the commit that adds the route GET
-# /api/v1/issues/{key}/tree to routes_table.go. It reads the routes of routes_table.go at
-# BASELINE_SHA and in this checkout, and finds every route of the first in the second, GET
-# /api/v1/issues/{key}/decisions among them; a route missing at this head fails, naming it.
+# /api/v1/issues/{key}/tree, to routes_table.go or to its route file. It reads the routes declared
+# at BASELINE_SHA and in this checkout, each a row of routes_table.go or, since main's #5409 gave
+# each route a file of its own, a route file route_<path>+<method>.go, and finds every route of the
+# first in the second, GET /api/v1/issues/{key}/decisions among them; a route missing at this head
+# fails, naming it.
 # It searches Go source only: the Verification fixture quotes the names but implements neither lookup.
 #
 # Last it reads O's one dependency through GET /api/v1/issues/{key}, GET /api/v1/issues (the
@@ -95,7 +97,10 @@ readonly person_login="${DEV_SIGNIN_LOGIN:-alice}"
 checkout="${LEGION_WORKSPACE:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../../.." && pwd)}"
 readonly checkout
 readonly schema_path=packages/envoy/internal/dispatch/pmdoc/schema/blocks.json
-readonly routes_path=packages/envoy/internal/dispatch/api/routes_table.go
+readonly api_path=packages/envoy/internal/dispatch/api
+readonly routes_path="$api_path/routes_table.go"
+# The route file of GET /api/v1/issues/{key}/tree (internal/dispatch/routefile's name for it).
+readonly tree_route_path="$api_path/route_api_v1_issues_{key}_tree+get.go"
 # The document lookups only this build runs, which a commit of this branch deletes once the four
 # queries' census reads zero (R21's sixth step).
 readonly -a deleted_lookups=(requirementBlocksIn checkBlocksIn)
@@ -132,15 +137,38 @@ issue_tree_order_version() {
   render_source="${render_source#*: }"
 }
 
-# issue_tree_order_routes FILE: the routes routes_table.go's rows in FILE declare, one `METHOD
-# path` a line, sorted as text.
+# issue_tree_order_route_lines [REVISION]: the lines that declare routes at REVISION, or in this
+# checkout's working tree, untracked files too, where none is named: routes_table.go's and every
+# route file's (route_<path>+<method>.go), each file's lines in its own order. A search that finds
+# no line prints nothing; one that fails returns non-zero.
+issue_tree_order_route_lines() {
+  local status=0 where=(--untracked)
+  (($# == 0)) || where=("$1")
+  git -C "$checkout" grep -h -F -e '{http.Method' -e 'Method:' -e 'Pattern:' "${where[@]}" -- \
+    "$routes_path" "$api_path/route_*+*.go" || status=$?
+  ((status <= 1))
+}
+
+# issue_tree_order_routes: the routes the lines on stdin declare, one `METHOD path` a line, sorted
+# as text: a row of routes_table.go, `{http.MethodX, "path", …}`, as a release before main's #5409
+# writes each route, and a route file's `Method: http.MethodX,` line with the `Pattern: "path",`
+# line after it, as each route is written since.
 issue_tree_order_routes() {
-  local line method path
+  local line method="" path
   while IFS= read -r line; do
-    [[ "$line" =~ \{http\.Method([A-Za-z]+),\ \"([^\"]+)\" ]] || continue
-    method="${BASH_REMATCH[1]}" path="${BASH_REMATCH[2]}"
+    if [[ "$line" =~ \{http\.Method([A-Za-z]+),\ \"([^\"]+)\" ]]; then
+      method="${BASH_REMATCH[1]}" path="${BASH_REMATCH[2]}"
+    elif [[ "$line" =~ ^[[:space:]]*Method:[[:space:]]*http\.Method([A-Za-z]+), ]]; then
+      method="${BASH_REMATCH[1]}"
+      continue
+    elif [[ -n "$method" && "$line" =~ ^[[:space:]]*Pattern:[[:space:]]*\"([^\"]+)\" ]]; then
+      path="${BASH_REMATCH[1]}"
+    else
+      continue
+    fi
     printf '%s %s\n' "$(printf '%s' "$method" | tr '[:lower:]' '[:upper:]')" "$path"
-  done <"$1" | LC_ALL=C sort -u
+    method=""
+  done | LC_ALL=C sort -u
 }
 
 # issue_tree_order_schema_version REVISION: the version pmdoc/schema/blocks.json gives at
@@ -405,9 +433,9 @@ declare -A position=()
 for index in "${!landed[@]}"; do
   position[${landed[$index]}]="$index"
 done
-route_commit="$(git -C "$checkout" log --reverse --format=%H -S'"/api/v1/issues/{key}/tree"' origin/main..HEAD -- "$routes_path" | head -n 1)"
+route_commit="$(git -C "$checkout" log --reverse --format=%H -S'"/api/v1/issues/{key}/tree"' origin/main..HEAD -- "$routes_path" "$tree_route_path" | head -n 1)"
 [[ -n "$route_commit" && -n "${position[$route_commit]:-}" ]] ||
-  fail "$section" "a commit of origin/main..HEAD adds the route $tree_route to $routes_path" "git log -S finds none"
+  fail "$section" "a commit of origin/main..HEAD adds the route $tree_route to $routes_path or $tree_route_path" "git log -S finds none"
 pass "$section" "commit $route_commit, number $((position[$route_commit] + 1)) of ${#landed[@]}, adds $tree_route"
 for name in "${deleted_lookups[@]}"; do
   deletion=""
@@ -427,15 +455,15 @@ for name in "${deleted_lookups[@]}"; do
       "$deletion is number $((position[$deletion] + 1)) and $route_commit number $((position[$route_commit] + 1)) of ${#landed[@]}"
   pass "$section" "commit $deletion, number $((position[$deletion] + 1)), deletes $name after $tree_route landed"
 done
-git -C "$checkout" show "$base_commit:$routes_path" >"$work/routes.base.go" ||
-  fail "$section" "read $routes_path at BASELINE_SHA" "git show $base_commit:$routes_path failed"
-issue_tree_order_routes "$work/routes.base.go" >"$work/routes.base"
-issue_tree_order_routes "$checkout/$routes_path" >"$work/routes.head"
+issue_tree_order_route_lines "$base_commit" | issue_tree_order_routes >"$work/routes.base" ||
+  fail "$section" "read the routes declared at BASELINE_SHA" "git grep at $base_commit over $api_path failed"
+issue_tree_order_route_lines | issue_tree_order_routes >"$work/routes.head" ||
+  fail "$section" "read the routes declared in this checkout" "git grep over $checkout/$api_path failed"
 [[ -s "$work/routes.base" && -s "$work/routes.head" ]] ||
-  fail "$section" "read the routes of $routes_path at BASELINE_SHA and at this head" \
+  fail "$section" "read the routes declared in $api_path at BASELINE_SHA and at this head" \
     "read $(wc -l <"$work/routes.base") and $(wc -l <"$work/routes.head") routes"
 grep -qxF "$decisions_route" "$work/routes.base" ||
-  fail "$section" "BASELINE_SHA serves $decisions_route" "its $routes_path declares no such route"
+  fail "$section" "BASELINE_SHA serves $decisions_route" "no row of its $routes_path and no route file of its $api_path declares that route"
 missing="$(LC_ALL=C comm -23 "$work/routes.base" "$work/routes.head" | paste -sd ';' -)"
 [[ -z "$missing" ]] || fail "$section" "every route of BASELINE_SHA stands at this head" "missing at this head: $missing"
 pass "$section" "all $(wc -l <"$work/routes.base") routes of BASELINE_SHA stand at this head, $decisions_route among them"

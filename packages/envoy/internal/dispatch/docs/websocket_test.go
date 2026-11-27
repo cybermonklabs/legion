@@ -57,6 +57,27 @@ func socketDeadline(t *testing.T) time.Time {
 // failing test to report in and run its cleanups, the margin testwait's own waits leave.
 const socketDeadlineMargin = 30 * time.Second
 
+// documentDialer is the dialer a test opens a document socket with: gorilla's DefaultDialer, but
+// with its handshake bounded by what the test binary's own deadline leaves after
+// socketDeadlineMargin (testwait.Left), and not by DefaultDialer's fixed 45 s. The server's whole
+// admission of the socket runs inside that handshake - the issue read, the document's admission,
+// the room's load and the browser's registration (Service.authorize) all come before its 101 - and
+// takes as long as the store and the machine take, so a dial that is merely slow on a loaded
+// machine is not read as one that failed. It is safe on a goroutine other than the test's: a
+// deadline already used up is reported with t.Error, and the dial then fails at once.
+func documentDialer(t *testing.T) *gws.Dialer {
+	t.Helper()
+	dialer := *gws.DefaultDialer
+	left, err := testwait.Left(t, socketDeadlineMargin)
+	if err != nil {
+		t.Error(err.Error())
+		// Zero would mean no bound at all; the smallest one fails the dial at once.
+		left = time.Nanosecond
+	}
+	dialer.HandshakeTimeout = left
+	return &dialer
+}
+
 // awaitServerClose reads connection, discarding every frame, until the server ends the socket,
 // and fails the test, naming what, when the read ended on socketDeadline instead. The two ends
 // are different facts, and a read loop that stops at the first error cannot tell them apart: a
@@ -88,7 +109,7 @@ func TestIssueCloseClosesOpenDocumentConnection(t *testing.T) {
 	testcleanup.Add(t, httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := documentDialer(t).Dial(wsURL, headers)
 	if err != nil {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
@@ -285,7 +306,7 @@ func TestHocuspocusAuthenticationCommunicatesSchemaReadOnly(t *testing.T) {
 	testcleanup.Add(t, httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := documentDialer(t).Dial(wsURL, headers)
 	if err != nil {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
@@ -349,7 +370,7 @@ func TestLoadFailureMakesDocumentServiceUnavailable(t *testing.T) {
 	testcleanup.Add(t, httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := documentDialer(t).Dial(wsURL, headers)
 	if connection != nil {
 		_ = connection.Close()
 	}
@@ -379,7 +400,7 @@ func TestCorruptLoadRefusesTheSocketAndReadsAsUnloadable(t *testing.T) {
 	testcleanup.Add(t, httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := documentDialer(t).Dial(wsURL, headers)
 	if connection != nil {
 		_ = connection.Close()
 	}
@@ -698,7 +719,7 @@ func TestDocumentSocketRefusesARoomOutsideTheSchema(t *testing.T) {
 			testcleanup.Add(t, httpServer.Close)
 			headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 			wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-			connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+			connection, response, err := documentDialer(t).Dial(wsURL, headers)
 			if err != nil {
 				t.Fatalf("connect outside-schema document: response=%#v err=%v, want an upgrade the server closes", response, err)
 			}
@@ -730,14 +751,15 @@ func TestShutdownClosesDocumentPeers(t *testing.T) {
 	testcleanup.Add(t, httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := documentDialer(t).Dial(wsURL, headers)
 	if err != nil {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
 	defer connection.Close()
-	// The socket's room loads the document before the room counts the browser, which takes as
-	// long as the store and the machine take: the wait ends on the room's record of the
-	// connection, bounded by the test binary's deadline alone.
+	// The server counts the browser in the socket's authorization (Service.authorize), which ygo
+	// runs before the upgrade, so the count stands before the dial above returns and the read finds
+	// it at once. The read is bounded by the test binary's deadline alone, and its failure prints
+	// the last count.
 	testwait.Until(t, "the document's room to count the browser's connection", func() (string, bool) {
 		state := service.room(artifactID)
 		state.mu.Lock()
@@ -772,7 +794,7 @@ func TestShutdownReturnsAtItsDeadlineWithAnEditorConnectedAndAnAppendLocked(t *t
 	testcleanup.Add(t, httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := documentDialer(t).Dial(wsURL, headers)
 	if err != nil {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
@@ -831,7 +853,7 @@ func TestAppendFailureClosesDocumentConnectionAndReloadsRoom(t *testing.T) {
 	testcleanup.Add(t, httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := documentDialer(t).Dial(wsURL, headers)
 	if err != nil {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
@@ -863,14 +885,14 @@ func TestFailedRoomEvictsAndReloadsOnNextAccess(t *testing.T) {
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
 
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := documentDialer(t).Dial(wsURL, headers)
 	if connection != nil {
 		_ = connection.Close()
 	}
 	if err == nil || response == nil || response.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("first failed-room access: response=%#v err=%v, want HTTP 503", response, err)
 	}
-	connection, response, err = gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err = documentDialer(t).Dial(wsURL, headers)
 	if err != nil {
 		t.Fatalf("reloaded room access: response=%#v err=%v", response, err)
 	}
@@ -883,7 +905,7 @@ func TestWebsocketRejectsUnauthenticatedConnection(t *testing.T) {
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	testcleanup.Add(t, httpServer.Close)
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/room"
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, nil)
+	connection, response, err := documentDialer(t).Dial(wsURL, nil)
 	if connection != nil {
 		_ = connection.Close()
 	}

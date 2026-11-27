@@ -563,16 +563,19 @@ func TestAnAskWhoseNodeHoldsAValueThatDoesNotParseIsLeftOutOfTheDecisionsRead(t 
 
 // One ask row of the spec whose own stored value does not decode drops that one ask from the open
 // questions and never fails the Decisions read (R4), as a value of its node that does not parse
-// drops it: the read answers 200 with every other open question of the spec. Of two open asks, one
-// row holds an author written by hand that is no actor. Every other read of the decisions drops
-// that one ask the same way and answers 200 with the other: the Decisions read's entries, which
-// walk the issue's tree, and the tree read with no view and with ?view=decisions. Each of them
-// reaches the issue's asks through the walk of its conversation, which loads each ask and its
-// parts as every read of the graph does (refs' loadAskNodes and itemBlockNodes), and that load
-// leaves out an ask, and each part of it, whose maker does not decode rather than fail the read.
+// drops it: the read answers 200 with every other open question of the spec, and logs a warning
+// that names the ask it left out, its issue and the value that does not decode, so an operator can
+// find the row. Of two open asks, one row holds an author written by hand that is no actor. Every
+// other read of the decisions drops that one ask the same way and answers 200 with the other: the
+// Decisions read's entries, which walk the issue's tree, and the tree read with no view and with
+// ?view=decisions. Each of them reaches the issue's asks through the walk of its conversation,
+// which loads each ask and its parts as every read of the graph does (refs' loadAskNodes and
+// itemBlockNodes), and that load leaves out an ask, and each part of it, whose maker does not
+// decode rather than fail the read.
 func TestASpecAskWhoseRowDoesNotDecodeIsLeftOutOfTheOpenQuestions(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault).
 	handler, database, _ := newTestServer(t, testServerOptions{settle: 20 * time.Millisecond})
+	logs := captureLogs(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", ":::ask{#fine}\nWhich store?\n:::\n\n:::ask{#broken}\nWhich name?\n:::\n")
 	waitForOpenQuestions(t, handler, issue.Key, 2)
@@ -588,6 +591,16 @@ func TestASpecAskWhoseRowDoesNotDecodeIsLeftOutOfTheOpenQuestions(t *testing.T) 
 	}
 	if !slices.Equal(ids, []string{fine}) {
 		t.Errorf("open_questions = %v, want the one ask whose row decodes, %s", ids, fine)
+	}
+	warned := logs.Lines("an ask whose stored value does not decode is left out of the issue's open questions")
+	if warned == "" {
+		t.Fatalf("the read that left out the ask %s logged no warning naming it", broken)
+	}
+	for line := range strings.Lines(warned) {
+		if !strings.Contains(line, "level=WARN") || !strings.Contains(line, "ask="+broken) || !strings.Contains(line, "issue="+issue.Key) ||
+			!strings.Contains(line, "decode its author") || strings.Contains(line, fine) {
+			t.Errorf("the read logged %q, want a WARN naming the ask %s of %s and its author, and not the ask %s", line, broken, issue.Key, fine)
+		}
 	}
 	entries := entriesByNode(view.Entries)
 	if _, held := entries[graphstore.KindAsk+":"+fine]; !held {

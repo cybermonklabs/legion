@@ -457,10 +457,9 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
   };
 }
 
-/** `dispatch request-approval`'s words around the open blocks it refuses over, which it counts as
- *  ask blocks. */
+/** `dispatch request-approval`'s words around the open ask blocks it refuses over. */
 const APPROVAL_REQUEST_OPEN_BLOCKS = {
-  blocks: "ask block",
+  // kept for one release: stored-ask-state
   decidedBy: "live",
   effect:
     "Approving the document means agreeing to every point in it, and an open block is a question the human has not decided yet.",

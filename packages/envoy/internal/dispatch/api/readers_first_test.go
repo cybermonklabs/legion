@@ -17,9 +17,9 @@ import (
 )
 
 // readersFirstVersion is the block schema version of the build that reads decision, reading and
-// ask's shaped and creates none of them: each is read from version 6 and created from version 7
-// (pmdoc/schema/blocks.json), and this build, at version 8, creates them.
-const readersFirstVersion = 6
+// ask's shaped and creates none of them: each is read from version 7 and created from version 8
+// (pmdoc/schema/blocks.json), and this build, at version 9, creates them.
+const readersFirstVersion = 7
 
 // useReadersFirstSchema makes this build's manifest as of readersFirstVersion (blockSchemaAsOf)
 // the one the process reads and writes by until t ends (pmdoctest.UseBlockSchema): the manifest of
@@ -68,6 +68,8 @@ func blockSchemaAsOf(t *testing.T, version int) pmdoc.BlockSchema {
 // nodes, so a decision written beside a stored one is a decision node (refs' TypedFacts) even
 // under that manifest.
 func TestTheNewTypesAreReadButNotWrittenBeforeTheirNodePass(t *testing.T) {
+	// Not parallel: it installs the readers-first manifest for the whole process
+	// (useReadersFirstSchema), which every test beside it would read and write by.
 	useReadersFirstSchema(t)
 	handler, database, documents := settlingCarryDocuments(t, pastTheRun)
 	const intro = "Introductory prose.\n\n"

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Dispatch HTTP API",
-    "description": "Generated from the Go route table (internal/dispatch/api/routes_table.go) and the Go types beside it (routes_shapes.go) by `envoy-dispatch openapi`. Edit those, never this document: it is committed so a client's types can be rendered from it, and `envoy-dispatch openapi --check` refuses a tree where it is stale.",
+    "description": "Generated from Dispatch's route declarations (one file per route in internal/dispatch/api) and the Go types they name (routes_shapes.go) by `envoy-dispatch openapi`. Edit those, never this document: it is committed so a client's types can be rendered from it, and `envoy-dispatch openapi --check` refuses a tree where it is stale.",
     "version": "1"
   },
   "paths": {
@@ -609,7 +609,7 @@
         ]
       },
       "post": {
-        "description": "Send an issue-less targeted message to a session: {body, delivery, in_reply_to?, connected_only?}, answered once its own delivery attempt has settled, on past a client that gives up. A session the Envoy listener knows and that is not running is a recipient: the listener stores the message and hands it over when that session runs again, and the attempt is recorded queued rather than sent. A session the listener knows nothing about (\"no live session \u003cid\u003e\") is queued too: Dispatch publishes the message on that session's own subject itself, and the attempt fails with \"no live session \u003cid\u003e\" only where Dispatch has no NATS to publish on or the publish fails. connected_only asks for a session that is running now and fails the attempt with \"the session is stopped\", nothing stored; every later attempt of the message asks what its first asked. A model or thinking switch the session would run as its own turn - a person's own Send or Aside, not one an agent wrote for them, whose whole body is one /model or /effort line, which would otherwise apply at an unknown later time - is held to a running session at every send whether or not the request set connected_only. Under an Idempotency-Key header (as every POST and PATCH takes one), a repeat with the same request answers 201 with the message the key made and its deliveries as they stand, Idempotency-Replayed: ?1, first sending the one attempt it still owes (none yet, or one stranded past its claim) and nothing else; a listener it cannot reach is recorded on the attempt, so a repeat is answered while the listener is down. An attempt a stopped process left owed is resumed by the server's delivery sweep whether anyone asks again or not.",
+        "description": "Send an issue-less targeted message to a session: {body, delivery, in_reply_to?, in_reply_to_block?, quote?, occurrence?, connected_only?}, answered once its own delivery attempt has settled, on past a client that gives up. A session the Envoy listener knows and that is not running is a recipient: the listener stores the message and hands it over when that session runs again, and the attempt is recorded queued rather than sent. A session the listener knows nothing about (\"no live session \u003cid\u003e\") is queued too: Dispatch publishes the message on that session's own subject itself, and the attempt fails with \"no live session \u003cid\u003e\" only where Dispatch has no NATS to publish on or the publish fails. connected_only asks for a session that is running now and fails the attempt with \"the session is stopped\", nothing stored; every later attempt of the message asks what its first asked. A model or thinking switch the session would run as its own turn - a person's own Send or Aside, not one an agent wrote for them, whose whole body is one /model or /effort line, which would otherwise apply at an unknown later time - is held to a running session at every send whether or not the request set connected_only. Under an Idempotency-Key header (as every POST and PATCH takes one), a repeat with the same request answers 201 with the message the key made and its deliveries as they stand, Idempotency-Replayed: ?1, first sending the one attempt it still owes (none yet, or one stranded past its claim) and nothing else; a listener it cannot reach is recorded on the attempt, so a repeat is answered while the listener is down. An attempt a stopped process left owed is resumed by the server's delivery sweep whether anyone asks again or not. A reply names the message it answers in in_reply_to, and one block of it in in_reply_to_block. Beside in_reply_to_block, quote and occurrence name the words of that block the reply quotes: quote is a run of characters of the block's plain text, its text runs joined with no markdown marks and no heading marker, and occurrence is which match of quote in that one block it is, counted from 0 with overlapping matches counted (0 where none is sent and the block holds quote once); the reply stores both. An occurrence without quote, a quote without in_reply_to_block, an empty quote and an occurrence below 0 are each 400 INVALID_MESSAGE, naming the field. A quote the block's text does not hold, or an occurrence past its last match, is 404 TARGET_NOT_FOUND, and a quote it holds more than once with no occurrence is 409 TARGET_AMBIGUOUS.",
         "operationId": "postApiV1AgentsBySessionIdMessages",
         "parameters": [
           {
@@ -1843,7 +1843,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Comment on a document or one of its quotes. An issue's document, its decisions document included, is 400 ARTIFACT_LINKED whether or not it is retired, naming its issue's routes: comment on it through POST /api/v1/issues/{key}/comments. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. A reply to a thread on a quote of a retired document is taken, and writes nothing into the document. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/\u003csession id\u003e names a session and dispatch://role/\u003ctoken\u003e names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/\u003clogin\u003e, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it is 400 MENTION_INPUT. A target of a form no delivery route takes is also 400 MENTION_INPUT, whether the array or the body names it. For example, a session ID that contains a dot or a colon cannot be used as a delivery target.",
+        "description": "Comment on a document or one of its quotes. An issue's document, its decisions document included, is 400 ARTIFACT_LINKED whether or not it is retired, naming its issue's routes: comment on it through POST /api/v1/issues/{key}/comments. A reply names the comment it answers in reply_to, and one block of it in reply_to_block. Beside reply_to_block, quote and occurrence name the words of that block the reply quotes: quote is a run of characters of the block's plain text, its text runs joined with no markdown marks and no heading marker, and occurrence is which match of quote in that one block it is, counted from 0 with overlapping matches counted (0 where none is sent and the block holds quote once); the reply stores both. An occurrence without quote, a quote without reply_to_block, an empty quote and an occurrence below 0 are each 400 INVALID_COMMENT, naming the field. A quote the block's text does not hold, or an occurrence past its last match, is 404 TARGET_NOT_FOUND, and a quote it holds more than once with no occurrence is 409 TARGET_AMBIGUOUS. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. A reply to a thread on a quote of a retired document is taken, and writes nothing into the document. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/\u003csession id\u003e names a session and dispatch://role/\u003ctoken\u003e names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/\u003clogin\u003e, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it is 400 MENTION_INPUT. A target of a form no delivery route takes is also 400 MENTION_INPUT, whether the array or the body names it. For example, a session ID that contains a dot or a colon cannot be used as a delivery target.",
         "operationId": "postApiV1ArtifactsByIdComments",
         "parameters": [
           {
@@ -4026,7 +4026,7 @@
     },
     "/api/v1/comments/{id}/reply": {
       "post": {
-        "description": "The mentioned session's reply to a delivery; the session names itself in actor. For a mention of a role (role:\u003cname\u003e), the role's live holder may reply too, as the Envoy listener names it; a listener that does not answer is 503 ENVOY_UNAVAILABLE, and a failed read of the mention is 500, never a refusal.",
+        "description": "The mentioned session's reply to a delivery; the session names itself in actor. For a mention of a role (role:\u003cname\u003e), the role's live holder may reply too, as the Envoy listener names it; for a mention of a session (session:\u003cid\u003e), so may a session the listener names as having replaced the attempt's session, which it handed that session's unread messages. A listener that does not answer is 503 ENVOY_UNAVAILABLE, and a failed read of the mention is 500, never a refusal. A reply names one block of comment {id} in reply_to_block. Beside reply_to_block, quote and occurrence name the words of that block the reply quotes: quote is a run of characters of the block's plain text, its text runs joined with no markdown marks and no heading marker, and occurrence is which match of quote in that one block it is, counted from 0 with overlapping matches counted (0 where none is sent and the block holds quote once); the reply stores both. An occurrence without quote, a quote without reply_to_block, an empty quote and an occurrence below 0 are each 400 INVALID_COMMENT, naming the field. A quote the block's text does not hold, or an occurrence past its last match, is 404 TARGET_NOT_FOUND, and a quote it holds more than once with no occurrence is 409 TARGET_AMBIGUOUS.",
         "operationId": "postApiV1CommentsByIdReply",
         "parameters": [
           {
@@ -4207,7 +4207,7 @@
     },
     "/api/v1/credential-grants/{id}/revoke": {
       "post": {
-        "description": "Revoke a credential grant as the caller: its approver, or the person its enrollment acts for, ends it whatever project it touches. A grant revoked by someone it does not name is 404 when it belongs to a private project the caller may not see, as an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; of the grants they may see, they end one whose approver is anyone, and any other is 403 NOT_APPROVER. A grant the broker saw move to another box each time it read it, three times in a row, is 409 GRANT_MOVING, revoking nothing; the same revoke succeeds once it stays put. A caller Dispatch calls a restricted member ends a grant only as the person its enrollment acts for: any other is 403 NOT_APPROVER, saying why. While Dispatch does not answer the broker what kind of member the caller is (a timeout, a failed connection, a gateway's 502, 503 or 504, Dispatch's own DATABASE_UNAVAILABLE or OIDC_ISSUER_UNAVAILABLE, or a 500 naming no code or INTERNAL, which Dispatch answers while its database fails), only the person the grant names as its approver ends it as an approver: every revoke through a group or as anyone then, whatever session holds the grant, and every revoke while Dispatch answers anything else the broker cannot read (a refused account, a kind the broker does not know, another code, a certificate or a name that does not resolve), is 503 MEMBER_KIND_UNCHECKABLE, revoking nothing. A grant on a person's session can still be ended then by that person, who asks Dispatch nothing; a grant on a session that acts for no person (a service's pod, a person's pod the broker no longer maps, or a machine's own session) is ended through the broker by nobody but its named approver until Dispatch answers.",
+        "description": "Revoke a credential grant as the caller: its approver, or the person its enrollment acts for, ends it whatever project it touches. A grant revoked by someone it does not name is 404 when it belongs to a private project the caller may not see, as an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; of the grants they may see, they end one whose approver is anyone, and any other is 403 NOT_APPROVER. A grant the broker saw move to another box each time it read it, three times in a row, is 409 GRANT_MOVING, revoking nothing; the same revoke succeeds once it stays put. A caller Dispatch calls a restricted member ends a grant only as the person its enrollment acts for: any other is 403 NOT_APPROVER, saying why. While Dispatch does not answer the broker what kind of member the caller is (a timeout, a failed connection, a 408 or a 429 whatever its body names, a gateway's 502, 503 or 504, Dispatch's own DATABASE_UNAVAILABLE or OIDC_ISSUER_UNAVAILABLE, or a 500 naming no code or INTERNAL, which Dispatch answers while its database fails), only the person the grant names as its approver ends it as an approver: every revoke through a group or as anyone then, whatever session holds the grant, and every revoke while Dispatch answers anything else the broker cannot read (a refused account, a kind the broker does not know, another code, a certificate or a name that does not resolve), is 503 MEMBER_KIND_UNCHECKABLE, revoking nothing. A grant on a person's session can still be ended then by that person, who asks Dispatch nothing; a grant on a session that acts for no person (a service's pod, a person's pod the broker no longer maps, or a machine's own session) is ended through the broker by nobody but its named approver until Dispatch answers.",
         "operationId": "postApiV1CredentialGrantsByIdRevoke",
         "parameters": [
           {
@@ -5150,6 +5150,110 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/deploys": {
+      "get": {
+        "description": "Read each program's current deploy in ?repo=owner/repo, ordered by program, with its source, writer and known or unknown workflow run attempt.",
+        "operationId": "getApiV1Deploys",
+        "parameters": [
+          {
+            "name": "repo",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploysResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      },
+      "post": {
+        "description": "Record a program's deployed build {repo, program, commit, deployed_at?, url?}; 201 carries the new deploy and its credential-resolved writer, 200 the unchanged current build, 400 DEPLOY_INPUT or DEPLOY_COMMIT_UNKNOWN, 409 DEPLOY_NOT_NEWEST. A project-scoped credential cannot write a deployment-wide fact.",
+        "operationId": "postApiV1Deploys",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeployInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeployResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeployResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
+      }
+    },
     "/api/v1/events/log": {
       "get": {
         "description": "Page the whole event log by id, whatever owns each event (an issue, a document, a project or none): the events with id \u003e after (default 0), oldest first, at most limit (1 to 1000, default 1000). An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it.",
@@ -5302,7 +5406,7 @@
     },
     "/api/v1/going/catalogue": {
       "get": {
-        "description": "The catalogue of operations an agent may propose on Dispatch's graph: 29 of the 54 tool specs agents operate Dispatch with, every one that writes but five, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The tools that write and that it leaves out are dispatch_review, dispatch_settle, dispatch_state, dispatch_premortem_convert and dispatch_project_update, on purpose: the first three each record or undo a person's decision - a review an approval or a changes request in a person's name, a settle that a person settled a proposal, a state write a move out of settled, which undoes a settle, or into gone, which is final - the conversion retires a document once, dispatch_project_update turns a check of a project on or off, and the loop that proposes operations must never propose one. The list is read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
+        "description": "The catalogue of operations an agent may propose on Dispatch's graph: 30 of the 56 tool specs agents operate Dispatch with, every one that writes but five, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The tools that write and that it leaves out are dispatch_review, dispatch_settle, dispatch_state, dispatch_premortem_convert and dispatch_project_update, on purpose: the first three each record or undo a person's decision - a review an approval or a changes request in a person's name, a settle that a person settled a proposal, a state write a move out of settled, which undoes a settle, or into gone, which is final - the conversion retires a document once, dispatch_project_update turns a check of a project on or off, and the loop that proposes operations must never propose one. The list is read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
         "operationId": "getApiV1GoingCatalogue",
         "parameters": [
           {
@@ -6620,7 +6724,7 @@
     },
     "/api/v1/issues/{key}/asks": {
       "get": {
-        "description": "List an issue's asks, each with its newest reply; ?state= filters, and ?thread=1 adds each ask's thread (replies, rewordings, answers, followers, claimant, route, route_holder).",
+        "description": "List an issue's asks, each with its newest reply; ?state= filters, and ?thread=1 adds each ask's thread (replies, rewordings, answers, followers, claimant, route, route_holder). ?order=activity answers one page of the issue's threads in place of the list, {threads, before, remaining}: the thread with the newest last activity first, and of two with the same last activity the one with the larger id first. An ask's thread is the ask, each comment whose ask_id names it, and the answer and the resolution the ask holds now (a person's decline among them), each written by its actor at its own at; an answer or a resolution a later one replaced is no entry. Its row is the list's row with last_activity_at, and ?state= and ?thread=1 filter and shape the page as they filter and shape the list. A row's last_activity_at is the newest time an entry of the thread was written, cut to whole microseconds and written in UTC with six fractional digits; a deleted entry counts and an edit does not. ?limit= is how many threads a page holds at most, an integer from 1 to 100, and 20 without it. before is the position of the page's last thread, \u003clast_activity_at\u003e,\u003cid\u003e, and null when no thread follows; ?before= with that value answers the threads that follow the position, in the same order, and a thread written in during a walk moves above it. remaining is the exact number of threads that follow the page under the same filters, counted in the same read, and is 0 only when before is null. ?author= keeps the threads that hold an entry that actor wrote: a person's login, matched with no regard to case, or a session id, matched exactly; remaining counts under it. The route takes no ?person=. Without ?order= the route answers its list. Each refusal is 400 INVALID_QUERY, names the parameter and the values it takes, and answers no thread: ?limit=, ?before=, ?author= or ?person= without ?order=activity, an order other than activity, a limit that is not an integer from 1 to 100, a before that is not a position this API wrote, an empty author, a person value the route does not take, and any of order, limit, before, author and person given twice.",
         "operationId": "getApiV1IssuesByKeyAsks",
         "parameters": [
           {
@@ -6649,6 +6753,37 @@
             }
           },
           {
+            "name": "order",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "activity"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "author",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "session",
             "in": "query",
             "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
@@ -6673,10 +6808,17 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/IssueAskRow"
-                  },
-                  "type": "array"
+                  "oneOf": [
+                    {
+                      "items": {
+                        "$ref": "#/components/schemas/IssueAskRow"
+                      },
+                      "type": "array"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AskThreadPage"
+                    }
+                  ]
                 }
               }
             }
@@ -6950,7 +7092,7 @@
     },
     "/api/v1/issues/{key}/comments": {
       "get": {
-        "description": "List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. With ?node_anchor=true each comment whose anchor names a node or a block carries node_anchor {node {kind, id, state}, quote, occurrence, orphaned}, and the answer is not cached.",
+        "description": "List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. With ?node_anchor=true each comment whose anchor names a node or a block carries node_anchor {node {kind, id, state}, quote, occurrence, orphaned}, and the answer is not cached. ?order=activity answers one page of the issue's threads in place of the list, {threads, before, remaining}: the thread with the newest last activity first, and of two with the same last activity the one with the larger id first. A comment thread is a comment with no reply_to and no ask_id, and each comment whose reply_to names it; its row is {comment, replies, last_activity_at}, the replies oldest first, each shaped as the list shapes it. A comment with an ask_id is an entry of its ask's thread on GET /api/v1/issues/{key}/asks, and of no comment thread. A row's last_activity_at is the newest time an entry of the thread was written, cut to whole microseconds and written in UTC with six fractional digits; a deleted entry counts and an edit does not. ?limit= is how many threads a page holds at most, an integer from 1 to 100, and 20 without it. before is the position of the page's last thread, \u003clast_activity_at\u003e,\u003cid\u003e, and null when no thread follows; ?before= with that value answers the threads that follow the position, in the same order, and a thread written in during a walk moves above it. remaining is the exact number of threads that follow the page under the same filters, counted in the same read, and is 0 only when before is null. ?author= keeps the threads that hold an entry that actor wrote: a person's login, matched with no regard to case, or a session id, matched exactly; remaining counts under it. ?person=in keeps each thread with an entry a person wrote, and each thread on text, whoever wrote it: its first comment has an anchor, or one of its comments is a reply that stores a quote; the route takes no other person value. With ?order=activity, ?artifact= keeps each thread whose first comment is anchored in that document, with all its replies, and the page's ETag hashes every parameter of the request, If-None-Match answering 304 as for the list. Without ?order= the route answers its list. Each refusal is 400 INVALID_QUERY, names the parameter and the values it takes, and answers no thread: ?limit=, ?before=, ?author= or ?person= without ?order=activity, an order other than activity, a limit that is not an integer from 1 to 100, a before that is not a position this API wrote, an empty author, a person value the route does not take, and any of order, limit, before, author and person given twice.",
         "operationId": "getApiV1IssuesByKeyComments",
         "parameters": [
           {
@@ -6973,6 +7115,47 @@
             "in": "query",
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "activity"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "author",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "person",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "in"
+              ],
+              "type": "string"
             }
           },
           {
@@ -7000,10 +7183,17 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/CommentWithNodeAnchor"
-                  },
-                  "type": "array"
+                  "oneOf": [
+                    {
+                      "items": {
+                        "$ref": "#/components/schemas/CommentWithNodeAnchor"
+                      },
+                      "type": "array"
+                    },
+                    {
+                      "$ref": "#/components/schemas/CommentThreadPage"
+                    }
+                  ]
                 }
               }
             }
@@ -7012,7 +7202,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. visibility is project, the default; author is refused 400 VISIBILITY_NOT_ADMITTED, naming the kind comment, and nothing is stored, because not every read of a comment binds the visibility predicate. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. A reply to a thread on a quote of a retired document is taken, and writes nothing into the document. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/\u003csession id\u003e names a session and dispatch://role/\u003ctoken\u003e names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/\u003clogin\u003e, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it is 400 MENTION_INPUT. A target of a form no delivery route takes is also 400 MENTION_INPUT, whether the array or the body names it. For example, a session ID that contains a dot or a colon cannot be used as a delivery target.",
+        "description": "Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. Beside reply_to_block, quote and occurrence name the words of that block the reply quotes: quote is a run of characters of the block's plain text, its text runs joined with no markdown marks and no heading marker, and occurrence is which match of quote in that one block it is, counted from 0 with overlapping matches counted (0 where none is sent and the block holds quote once); the reply stores both. An occurrence without quote, a quote without reply_to_block, an empty quote and an occurrence below 0 are each 400 INVALID_COMMENT, naming the field. A quote the block's text does not hold, or an occurrence past its last match, is 404 TARGET_NOT_FOUND, and a quote it holds more than once with no occurrence is 409 TARGET_AMBIGUOUS. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. visibility is project, the default; author is refused 400 VISIBILITY_NOT_ADMITTED, naming the kind comment, and nothing is stored, because not every read of a comment binds the visibility predicate. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing; in an issue's decisions document once it is retired it is 409 DECISIONS_ARE_NODES instead: a decision is a `decision` block in the spec. A reply to a thread on a quote of a retired document is taken, and writes nothing into the document. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/\u003csession id\u003e names a session and dispatch://role/\u003ctoken\u003e names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/\u003clogin\u003e, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it is 400 MENTION_INPUT. A target of a form no delivery route takes is also 400 MENTION_INPUT, whether the array or the body names it. For example, a session ID that contains a dot or a colon cannot be used as a delivery target.",
         "operationId": "postApiV1IssuesByKeyComments",
         "parameters": [
           {
@@ -7698,7 +7888,7 @@
     },
     "/api/v1/issues/{key}/messages": {
       "get": {
-        "description": "List an issue's message threads: every root message, oldest first, each with its deliveries and its replies.",
+        "description": "List an issue's message threads: every root message, oldest first, each with its deliveries and its replies. ?order=activity answers one page of the issue's threads in place of the list, {threads, before, remaining}: the thread with the newest last activity first, and of two with the same last activity the one with the larger id first. A message thread is a root message and every message under it at any depth, and its row is the list's row with last_activity_at. A row's last_activity_at is the newest time an entry of the thread was written, cut to whole microseconds and written in UTC with six fractional digits; a deleted entry counts and an edit does not. ?limit= is how many threads a page holds at most, an integer from 1 to 100, and 20 without it. before is the position of the page's last thread, \u003clast_activity_at\u003e,\u003cid\u003e, and null when no thread follows; ?before= with that value answers the threads that follow the position, in the same order, and a thread written in during a walk moves above it. remaining is the exact number of threads that follow the page under the same filters, counted in the same read, and is 0 only when before is null. ?author= keeps the threads that hold an entry that actor wrote: a person's login, matched with no regard to case, or a session id, matched exactly; remaining counts under it. ?person=in keeps each thread with an entry a person wrote, and each thread whose root has no target; ?person=none keeps each thread whose root targets an agent, as role:\u003cname\u003e or session:\u003cid\u003e, and that holds no entry a person wrote. Neither value holds a thread whose root the Legion daemon of the issue's project wrote, the session legion-daemon:\u003cPROJECT\u003e (legion-daemon:ACME on an ACME issue), whoever wrote its other entries, so each other thread is on the pages of exactly one of the two. Without ?order= the route answers its list. Each refusal is 400 INVALID_QUERY, names the parameter and the values it takes, and answers no thread: ?limit=, ?before=, ?author= or ?person= without ?order=activity, an order other than activity, a limit that is not an integer from 1 to 100, a before that is not a position this API wrote, an empty author, a person value the route does not take, and any of order, limit, before, author and person given twice.",
         "operationId": "getApiV1IssuesByKeyMessages",
         "parameters": [
           {
@@ -7706,6 +7896,48 @@
             "in": "path",
             "required": true,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "activity"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "author",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "person",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "in",
+                "none"
+              ],
               "type": "string"
             }
           },
@@ -7734,10 +7966,17 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/MessageRead"
-                  },
-                  "type": "array"
+                  "oneOf": [
+                    {
+                      "items": {
+                        "$ref": "#/components/schemas/MessageRead"
+                      },
+                      "type": "array"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessageThreadPage"
+                    }
+                  ]
                 }
               }
             }
@@ -7746,7 +7985,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Post an issue message; target and delivery address a session or role. A reply names the message it answers in in_reply_to, and one block of it in in_reply_to_block. A reply to a deleted message is 409 POST_DELETED: a withdrawn post takes no new text.",
+        "description": "Post an issue message; target and delivery address a session or role. A reply names the message it answers in in_reply_to, and one block of it in in_reply_to_block. Beside in_reply_to_block, quote and occurrence name the words of that block the reply quotes: quote is a run of characters of the block's plain text, its text runs joined with no markdown marks and no heading marker, and occurrence is which match of quote in that one block it is, counted from 0 with overlapping matches counted (0 where none is sent and the block holds quote once); the reply stores both. An occurrence without quote, a quote without in_reply_to_block, an empty quote and an occurrence below 0 are each 400 INVALID_MESSAGE, naming the field. A quote the block's text does not hold, or an occurrence past its last match, is 404 TARGET_NOT_FOUND, and a quote it holds more than once with no occurrence is 409 TARGET_AMBIGUOUS. A reply to a deleted message is 409 POST_DELETED: a withdrawn post takes no new text.",
         "operationId": "postApiV1IssuesByKeyMessages",
         "parameters": [
           {
@@ -8482,7 +8721,7 @@
     },
     "/api/v1/issues/{key}/results": {
       "get": {
-        "description": "The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's text is its words with every link and dispatch:// reference dropped; a caller that sent Dispatch-Trees: 1 is also given text_tree, the check's whole content as the tree a reader is shown, links and references kept, and each result's observed_tree, the tree its observed text is shown as. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. Those are the open and merged pull requests attributed to the check's issue, and the open and merged pull requests its external links name (https://github.com/\u003cowner\u003e/\u003crepo\u003e/pull/\u003cn\u003e) in a repository it does not resolve to, each at the head its stored row holds now; the head of a linked one also carries that repository as repo (owner/name), so a reader can tell it from a pull request of the same number in the issue's own repository. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read, and for a check CI proves whose check runs GitHub could not be read (ci state unread). A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason, repo} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit; a basis in a repository the issue links a pull request in, rather than its own, carries that repository as repo, owner/name, whether it is the head of a pull request linked there, as in compared_with, or a branch of that repository, which a result whose commit is taken to be of it is compared with), other_commit, or unknown with the reason (repository_unreadable, read_failed). An other_commit or unknown answer that a repository the issue links a pull request in decided, the one the result's commit is taken to be of, carries that repository as repo (owner/name), so a reader can tell it from an answer about the issue's own repository, which carries none. check_words_moved is whether the check's words moved after the result was recorded: true where the result's check_sha256 is not the check's digest and its check_version is not the check's version, since a check whose stored text another renderer version spelled keeps its version under a new digest. The result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. With no ?at=, each result also answers currency (current or older) where either word applies, for dispatch clients older than pi-envoy 17.1.0; read commit_stands, check_words_moved and retracted instead. A check CI proves is one whose ci_check names a GitHub check run, with when before_merge, no run, a negative_control, and no result recorded against it. It carries ci {run, state, case, detail, line}, read from that run at the head of the issue's open pull request of the highest number, else at the final head of its merged pull request of the highest number: state pass, fail, no_result or unread; case the conclusion that decided it (success, failure, timed_out, action_required, startup_failure, stale, or another conclusion as GitHub wrote it), or neutral, skipped, cancelled, not_completed, absent (no run of that name at the head), no_head (Dispatch holds no open or merged pull request head of the issue) or github_unreadable (state unread); detail one sentence naming the case, with GitHub's own answer where GitHub could not be read; line the pull-request body line for the check. Its one result is derived from that run on every read, for a pass or a fail alone, and is stored nowhere: id ci-run:\u003ccheck run id\u003e, role ci, actor {kind: github_app, id: the slug of the App that made the run}, session \"\", verdict pass or fail, commit_sha the head read, created_at the run's completed_at, observed the conclusion, the run's output title and summary cut to 2,000 runes, and its URL, one a line, check_sha256 the check's own, and no event_seq. It is compared as a recorded result is. ?at=\u003ccommit\u003e replaces compared_with for every check of the issue by that one commit, {kind: named, commit}. The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks.",
+        "description": "The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check, subject, program), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's text is its words with every link and dispatch:// reference dropped; a caller that sent Dispatch-Trees: 1 is also given text_tree, the check's whole content as the tree a reader is shown, links and references kept, and each result's observed_tree, the tree its observed text is shown as. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, merged, learned_at: {at, kind}}, merged true for a merged pull request's final head, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. Those are the open and merged pull requests attributed to the check's issue, and the open and merged pull requests its external links name (https://github.com/\u003cowner\u003e/\u003crepo\u003e/pull/\u003cn\u003e) in a repository it does not resolve to, each at the head its stored row holds now; the head of a linked one also carries that repository as repo (owner/name), so a reader can tell it from a pull request of the same number in the issue's own repository. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles, reason, subjects}: yes with the roles whose passes stand, no, or unknown where the repository could not be read, and, with reason read_failed, for a check CI proves with no subject whose check runs GitHub could not be read (ci state unread). A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. A before_merge check compared with pull request heads names its subjects, the heads a pass must stand at: the head of each open pull request of the issue, or with none open the final head of the newest merged one, the one that merged last; each {basis, answer, reason, roles, results, ci}, its state from the results at its own commit alone: yes, no for fail or no_result, or unknown for pass_and_fail (a pass and a fail at that commit) or read_failed (a check CI proves whose check runs at that head could not be read), results the results that decide it. A pass of the check stands only where one stands at each subject, and its roles are the roles that passed at each; unknown takes the reason pass_and_fail where a subject holds a pass and a fail. Where Dispatch cannot tell which merged pull request merged last, since one holds no time of its merge, it names no subject and answers unknown for read_failed. Each result states two facts apart from each other. commit_stands {answer, basis, reason, repo} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit; a basis in a repository the issue links a pull request in, rather than its own, carries that repository as repo, owner/name, whether it is the head of a pull request linked there, as in compared_with, or a branch of that repository, which a result whose commit is taken to be of it is compared with), other_commit, or unknown with the reason (repository_unreadable, read_failed). An other_commit or unknown answer that a repository the issue links a pull request in decided, the one the result's commit is taken to be of, carries that repository as repo (owner/name), so a reader can tell it from an answer about the issue's own repository, which carries none. check_words_moved is whether the check's words moved after the result was recorded: true where the result's check_sha256 is not the check's digest and its check_version is not the check's version, since a check whose stored text another renderer version spelled keeps its version under a new digest. The result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. With no ?at=, each result also answers currency (current or older) where either word applies, for dispatch clients older than pi-envoy 17.1.0; read commit_stands, check_words_moved and retracted instead. A check CI proves is one whose ci_check names a GitHub check run, with when before_merge, no run, a negative_control, and no result recorded against it. It is read from that run at the head of each open pull request of the issue, each in that pull request's own repository, or with none open at the final head of the newest merged one; its ci {run, state, case, detail, line, commit, repo, result} is the read of the open pull request of the highest number, and each subject carries the read at its own head: state pass, fail, no_result or unread; case the conclusion that decided it (success, failure, timed_out, action_required, startup_failure, stale, or another conclusion as GitHub wrote it), or neutral, skipped, cancelled, not_completed, absent (no run of that name at the head), no_head (Dispatch holds no open or merged pull request head of the issue), read_failed (Dispatch cannot tell which merged pull request merged last, and read no head; state unread) or github_unreadable (state unread); detail one sentence naming the case, with GitHub's own answer where GitHub could not be read; line the pull-request body line for the check; commit and repo the head read, and result the id of the result the read derived, for a pass or a fail. A result is derived from that run at each head read, for a pass or a fail alone, and is stored nowhere: id ci-run:\u003ccheck run id\u003e, role ci, actor {kind: github_app, id: the slug of the App that made the run}, session \"\", verdict pass or fail, commit_sha the head read, created_at the run's completed_at, observed the conclusion, the run's output title and summary cut to 2,000 runes, and its URL, one a line, check_sha256 the check's own, and no event_seq. It is compared as a recorded result is, and stands at the head its run was read at. ?at=\u003ccommit\u003e replaces compared_with for every check of the issue by that one commit, {kind: named, commit}. The only read of GitHub it leaves is the check runs of a check CI proves, read at each open pull request head, or with none open the final head of the newest merged one, as on every read, so a derived result stands at the named commit only where that commit is the head it was read at. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks.",
         "operationId": "getApiV1IssuesByKeyResults",
         "parameters": [
           {
@@ -11127,7 +11366,7 @@
     },
     "/api/v1/messages/{id}/reply": {
       "post": {
-        "description": "The targeted session's reply to a delivery; the session names itself in actor. For an attempt sent for a route to a role (role:\u003cname\u003e), the role's live holder may reply too, as the Envoy listener names it; a listener that does not answer is 503 ENVOY_UNAVAILABLE, and a failed read of the attempt is 500, never a refusal. Once the attempt is answered, ?follow_up=true posts other text as the session's follow-up, threaded under its first reply; with follow_up=false or absent, or with text the session already posted there, nothing is posted and the stored message comes back marked duplicate. Any other follow_up is 400 MESSAGE_INPUT.",
+        "description": "The targeted session's reply to a delivery; the session names itself in actor. For an attempt sent for a route to a role (role:\u003cname\u003e), the role's live holder may reply too, as the Envoy listener names it; for one sent to a session (session:\u003cid\u003e), so may a session the listener names as having replaced the attempt's session, which it handed that session's unread messages. A listener that does not answer is 503 ENVOY_UNAVAILABLE, and a failed read of the attempt is 500, never a refusal. Once the attempt is answered, ?follow_up=true posts other text as the session's follow-up, threaded under its first reply; with follow_up=false or absent, or with text the session already posted there, nothing is posted and the stored message comes back marked duplicate. Any other follow_up is 400 MESSAGE_INPUT. A reply, never a follow-up, names one block of message {id} in in_reply_to_block. Beside in_reply_to_block, quote and occurrence name the words of that block the reply quotes: quote is a run of characters of the block's plain text, its text runs joined with no markdown marks and no heading marker, and occurrence is which match of quote in that one block it is, counted from 0 with overlapping matches counted (0 where none is sent and the block holds quote once); the reply stores both. An occurrence without quote, a quote without in_reply_to_block, an empty quote and an occurrence below 0 are each 400 INVALID_MESSAGE, naming the field. A quote the block's text does not hold, or an occurrence past its last match, is 404 TARGET_NOT_FOUND, and a quote it holds more than once with no occurrence is 409 TARGET_AMBIGUOUS.",
         "operationId": "postApiV1MessagesByIdReply",
         "parameters": [
           {
@@ -17494,6 +17733,223 @@
         ],
         "type": "object"
       },
+      "AskThreadPage": {
+        "properties": {
+          "before": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "remaining": {
+            "type": "integer"
+          },
+          "threads": {
+            "items": {
+              "$ref": "#/components/schemas/AskThreadRow"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "threads",
+          "before",
+          "remaining"
+        ],
+        "type": "object"
+      },
+      "AskThreadRow": {
+        "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Anchor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "anchor_artifact": {
+            "$ref": "#/components/schemas/AskAnchorArtifact"
+          },
+          "anchor_block": {
+            "$ref": "#/components/schemas/BlockPath"
+          },
+          "anchor_block_error": {
+            "type": "string"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskAnswerWithTrees"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "approval": {
+            "$ref": "#/components/schemas/AskApproval"
+          },
+          "approval_artifact": {
+            "$ref": "#/components/schemas/AskAnchorArtifact"
+          },
+          "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_by": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "block_artifact": {
+            "$ref": "#/components/schemas/AskBlockArtifact"
+          },
+          "block_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "edited_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue_key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "last_activity_at": {
+            "type": "string"
+          },
+          "last_reply": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskLastReply"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "multiple": {
+            "type": "boolean"
+          },
+          "opened_event_id": {
+            "type": "integer"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/AskOptionWithTrees"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "question": {
+            "type": "string"
+          },
+          "question_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "referenced_by_count": {
+            "type": "integer"
+          },
+          "resolution": {
+            "$ref": "#/components/schemas/AskResolutionWithTrees"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "thread": {
+            "$ref": "#/components/schemas/AskThread"
+          },
+          "urgency": {
+            "type": "string"
+          },
+          "waiting_on": {
+            "type": "string"
+          },
+          "waiting_on_person": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "issue_key",
+          "artifact_id",
+          "block_id",
+          "author",
+          "kind",
+          "question",
+          "options",
+          "multiple",
+          "urgency",
+          "anchor",
+          "state",
+          "answer",
+          "created_at",
+          "edited_at",
+          "asked_of",
+          "asked_of_by",
+          "asked_of_at",
+          "last_reply",
+          "last_activity_at"
+        ],
+        "type": "object"
+      },
       "AskWithTrees": {
         "properties": {
           "anchor": {
@@ -18263,6 +18719,12 @@
           "learned_at": {
             "$ref": "#/components/schemas/BasisLearnedAt"
           },
+          "merge_commit": {
+            "type": "string"
+          },
+          "merged": {
+            "type": "boolean"
+          },
           "pull_request": {
             "type": "integer"
           },
@@ -18293,7 +18755,8 @@
             "enum": [
               "no_pull_request_or_branch",
               "repository_unreadable",
-              "read_failed"
+              "read_failed",
+              "not_merged"
             ],
             "type": "string"
           },
@@ -18315,6 +18778,9 @@
           "pass_stands": {
             "$ref": "#/components/schemas/CheckPassStands"
           },
+          "program": {
+            "type": "string"
+          },
           "ref": {
             "type": "string"
           },
@@ -18331,6 +18797,14 @@
             "type": "string"
           },
           "sha256": {
+            "type": "string"
+          },
+          "subject": {
+            "enum": [
+              "code",
+              "production",
+              "graph"
+            ],
             "type": "string"
           },
           "surface": {
@@ -18382,10 +18856,19 @@
           "case": {
             "type": "string"
           },
+          "commit": {
+            "type": "string"
+          },
           "detail": {
             "type": "string"
           },
           "line": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "result": {
             "type": "string"
           },
           "run": {
@@ -18410,6 +18893,26 @@
         ],
         "type": "object"
       },
+      "CheckDeploy": {
+        "properties": {
+          "commit": {
+            "type": "string"
+          },
+          "deployed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "program": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "program",
+          "commit",
+          "deployed_at"
+        ],
+        "type": "object"
+      },
       "CheckPassStands": {
         "properties": {
           "answer": {
@@ -18420,9 +18923,41 @@
             ],
             "type": "string"
           },
+          "commit": {
+            "type": "string"
+          },
+          "deploy": {
+            "$ref": "#/components/schemas/CheckDeploy"
+          },
+          "reason": {
+            "enum": [
+              "pass_and_fail",
+              "fail",
+              "no_result",
+              "not_placed",
+              "read_failed",
+              "program_not_named",
+              "no_deploy",
+              "deploy_not_merged",
+              "no_result_from_deploy"
+            ],
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "roles": {
             "items": {
               "type": "string"
+            },
+            "type": "array"
+          },
+          "subjects": {
+            "items": {
+              "$ref": "#/components/schemas/PassStandsSubject"
             },
             "type": "array"
           }
@@ -18489,6 +19024,9 @@
             "type": "string"
           },
           "negative_control": {
+            "type": "string"
+          },
+          "not_counted": {
             "type": "string"
           },
           "observed": {
@@ -19225,6 +19763,18 @@
               "string"
             ]
           },
+          "occurrence": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "quote": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "reply_to_block": {
             "type": [
               "null",
@@ -19240,6 +19790,59 @@
         },
         "required": [
           "attempt"
+        ],
+        "type": "object"
+      },
+      "CommentThreadPage": {
+        "properties": {
+          "before": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "remaining": {
+            "type": "integer"
+          },
+          "threads": {
+            "items": {
+              "$ref": "#/components/schemas/CommentThreadRow"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "threads",
+          "before",
+          "remaining"
+        ],
+        "type": "object"
+      },
+      "CommentThreadRow": {
+        "properties": {
+          "comment": {
+            "$ref": "#/components/schemas/CommentWithTrees"
+          },
+          "last_activity_at": {
+            "type": "string"
+          },
+          "replies": {
+            "items": {
+              "$ref": "#/components/schemas/CommentWithTrees"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "comment",
+          "replies",
+          "last_activity_at"
         ],
         "type": "object"
       },
@@ -19951,6 +20554,18 @@
               "null",
               "string"
             ]
+          },
+          "occurrence": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "quote": {
+            "type": [
+              "null",
+              "string"
+            ]
           }
         },
         "required": [
@@ -20162,6 +20777,18 @@
             "type": [
               "array",
               "null"
+            ]
+          },
+          "occurrence": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "quote": {
+            "type": [
+              "null",
+              "string"
             ]
           },
           "reply_to": {
@@ -20467,6 +21094,18 @@
             ]
           },
           "in_reply_to_block": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "occurrence": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "quote": {
             "type": [
               "null",
               "string"
@@ -22970,6 +23609,66 @@
         ],
         "type": "object"
       },
+      "Deploy": {
+        "properties": {
+          "commit": {
+            "type": "string"
+          },
+          "deployed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "program": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "recorded_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "run_attempt": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "run_id": {
+            "type": "integer"
+          },
+          "source": {
+            "enum": [
+              "delivery_run",
+              "route"
+            ],
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "repo",
+          "program",
+          "commit",
+          "deployed_at",
+          "source",
+          "run_attempt",
+          "url",
+          "recorded_at",
+          "recorded_by"
+        ],
+        "type": "object"
+      },
       "DeployFrequency": {
         "properties": {
           "deploys_with_prs": {
@@ -22992,6 +23691,46 @@
           "deploys_with_prs",
           "per_day",
           "with_prs_per_day"
+        ],
+        "type": "object"
+      },
+      "DeployInput": {
+        "properties": {
+          "commit": {
+            "type": "string"
+          },
+          "deployed_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "program": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo",
+          "program",
+          "commit"
+        ],
+        "type": "object"
+      },
+      "DeployResponse": {
+        "properties": {
+          "deploy": {
+            "$ref": "#/components/schemas/Deploy"
+          }
+        },
+        "required": [
+          "deploy"
         ],
         "type": "object"
       },
@@ -23018,6 +23757,27 @@
           "reached_production",
           "cancelled",
           "rate"
+        ],
+        "type": "object"
+      },
+      "DeploysResponse": {
+        "properties": {
+          "deploys": {
+            "items": {
+              "$ref": "#/components/schemas/Deploy"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "repo": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo",
+          "deploys"
         ],
         "type": "object"
       },
@@ -29281,6 +30041,18 @@
               "null",
               "string"
             ]
+          },
+          "occurrence": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "quote": {
+            "type": [
+              "null",
+              "string"
+            ]
           }
         },
         "required": [
@@ -29401,6 +30173,62 @@
           "deleted_by",
           "deliveries",
           "reply_block"
+        ],
+        "type": "object"
+      },
+      "MessageThreadPage": {
+        "properties": {
+          "before": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "remaining": {
+            "type": "integer"
+          },
+          "threads": {
+            "items": {
+              "$ref": "#/components/schemas/MessageThreadRow"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "threads",
+          "before",
+          "remaining"
+        ],
+        "type": "object"
+      },
+      "MessageThreadRow": {
+        "properties": {
+          "last_activity_at": {
+            "type": "string"
+          },
+          "message": {
+            "$ref": "#/components/schemas/MessageWithTrees"
+          },
+          "replies": {
+            "items": {
+              "$ref": "#/components/schemas/MessageWithTrees"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "unread": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "message",
+          "replies",
+          "last_activity_at"
         ],
         "type": "object"
       },
@@ -30653,6 +31481,50 @@
           "state",
           "counts",
           "cursor"
+        ],
+        "type": "object"
+      },
+      "PassStandsSubject": {
+        "properties": {
+          "answer": {
+            "enum": [
+              "yes",
+              "no",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "basis": {
+            "$ref": "#/components/schemas/CheckBasis"
+          },
+          "ci": {
+            "$ref": "#/components/schemas/CheckCI"
+          },
+          "reason": {
+            "enum": [
+              "fail",
+              "no_result",
+              "pass_and_fail",
+              "read_failed"
+            ],
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "basis",
+          "answer"
         ],
         "type": "object"
       },
@@ -32727,6 +33599,12 @@
           "node": {
             "type": "string"
           },
+          "occurrence": {
+            "type": "integer"
+          },
+          "quote": {
+            "type": "string"
+          },
           "ref": {
             "type": "string"
           },
@@ -32762,6 +33640,12 @@
             "type": "string"
           },
           "node": {
+            "type": "string"
+          },
+          "occurrence": {
+            "type": "integer"
+          },
+          "quote": {
             "type": "string"
           },
           "ref": {

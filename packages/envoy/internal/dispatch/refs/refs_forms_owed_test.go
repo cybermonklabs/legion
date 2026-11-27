@@ -209,6 +209,7 @@ func writeAskText(t *testing.T, tx pgx.Tx, reader *Reader, ask model.Ask, at tim
 // which is what an older build's re-index of the text is at the database, its scope drain's and
 // its block index's included - leaves the source owed.
 func TestAWriteLeavesNothingOwedInTheFormsQueue(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -282,6 +283,7 @@ func TestAWriteLeavesNothingOwedInTheFormsQueue(t *testing.T) {
 // settles nothing of the forms queue: the document stays owed, by its version's own trigger, until
 // a write of this build that indexes its blocks too.
 func TestAVersionThatLeavesItsBlocksToTheBlockIndexStaysOwed(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -319,6 +321,7 @@ func TestAVersionThatLeavesItsBlocksToTheBlockIndexStaysOwed(t *testing.T) {
 // anything, and the drain then indexes the question and both parts again. An edit of the options
 // alone owes the ask the same way.
 func TestAnOlderBuildsAnswerLeavesTheAskOwed(t *testing.T) {
+	t.Parallel()
 	tx := askPartFixture(t)
 	ctx := context.Background()
 	insertSecondIssue(t, tx)
@@ -368,6 +371,7 @@ func TestAnOlderBuildsAnswerLeavesTheAskOwed(t *testing.T) {
 // issue message and an ask for theirs. A delete that removes nothing owes nothing, and neither
 // does one that cascades from the owner's own delete: a gone owner owes no text.
 func TestABareDeleteFromEachBlockTableLeavesItsOwnerOwed(t *testing.T) {
+	t.Parallel()
 	tx := askPartFixture(t)
 	ctx := context.Background()
 	document, _ := createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
@@ -427,6 +431,7 @@ func TestABareDeleteFromEachBlockTableLeavesItsOwnerOwed(t *testing.T) {
 // block index of an ask left owed (IndexOwedItemBlocks) is the same, its question's edge written
 // back beside its parts.
 func TestThisBuildsAskWritesSettleAfterTheirParts(t *testing.T) {
+	t.Parallel()
 	tx := askPartFixture(t)
 	ctx := context.Background()
 	insertSecondIssue(t, tx)
@@ -498,6 +503,7 @@ func TestThisBuildsAskWritesSettleAfterTheirParts(t *testing.T) {
 // that transaction. A row a write moves between the listing and the re-index is left owed, with
 // nothing written for it.
 func TestTheFormsQueueDrainReindexesWithThisBuildsGrammar(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedRefsGrammarIssue(t, database)
@@ -559,6 +565,7 @@ func TestTheFormsQueueDrainReindexesWithThisBuildsGrammar(t *testing.T) {
 // ListOwedAfter walks the queue in its order from the row after a cursor, so a drain that leaves
 // a row owed lists the rows past it on its next pass rather than that row again.
 func TestTheFormsQueueListsPastACursor(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedRefsGrammarIssue(t, database)
@@ -599,6 +606,7 @@ func TestTheFormsQueueListsPastACursor(t *testing.T) {
 // which owes the forms queue the source again (migration 20261117025906): it is left owing
 // nothing.
 func TestTheFormsQueueDrainOfAGoneSourceLeavesNothingOwed(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedRefsGrammarIssue(t, database)
@@ -638,6 +646,7 @@ func TestTheFormsQueueDrainOfAGoneSourceLeavesNothingOwed(t *testing.T) {
 // A document's removal deletes its edges and then what it owes every queue, so the delete's own
 // debt to the forms queue goes with it; the same delete, bare, leaves the document owed.
 func TestForgetDocumentLeavesNothingOwedInTheFormsQueue(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -682,6 +691,7 @@ func TestForgetDocumentLeavesNothingOwedInTheFormsQueue(t *testing.T) {
 // it after its whole text. The orphan sweep, whose delete owes the forms queue every gone source
 // it sweeps, settles those in its own transaction, so a gone source is left owing nothing.
 func TestRebuildRefsLeavesEachSourceOwedUntilThisBuildsBlockIndex(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedRefsGrammarIssue(t, database)

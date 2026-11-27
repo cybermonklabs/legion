@@ -23,10 +23,11 @@ const (
 	// maxEventPage is the most events one page of an issue's or a document's event log holds,
 	// and its default.
 	maxEventPage = 200
-	// maxEventReplay is the most events one page of the global event log holds (readEventsAfterID):
-	// the relay's read and GET /api/v1/events/log each page through the log at it, and it is that
-	// route's default. An events subscription's catch-up pages the same read at maxLiveReplay
-	// instead, the bound its resume is replayed within (replayThrough in live_events.go).
+	// maxEventReplay is the most events one page of the global event log holds: the relay's read
+	// (readEventsAfterIDOnLog) and GET /api/v1/events/log (readEventsAfterID) each page through the
+	// log at it, and it is that route's default. An events subscription's catch-up pages
+	// readEventsAfterID at maxLiveReplay instead, the bound its resume is replayed within
+	// (replayThrough in live_events.go).
 	maxEventReplay = 1000
 )
 
@@ -308,6 +309,23 @@ func (s *server) readEventsAfterID(ctx context.Context, who model.Actor, after, 
 	`, after, through, limit)
 }
 
+// readEventsAfterIDOnLog is readEventsAfterID for a reader whose cursor after is the id of an event
+// it read with created_at afterAt (0 and the zero time before the first): the page holds rows only
+// while that row still carries that created_at, in the statement's own snapshot. A reset of the log
+// (e2e/seed.ts's delete with the table's sequence restarted, or `truncate events restart
+// identity`) holds an ACCESS EXCLUSIVE lock on events until it commits, and the statement holds its
+// ACCESS SHARE lock until it ends, so the reset lands wholly before or wholly after this read. A
+// page read after a reset is therefore empty, never a page of the new log above the old cursor,
+// which the reader would take for the events after the ones it read (events.EventLogWasReset
+// tells the two cases apart).
+func (s *server) readEventsAfterIDOnLog(ctx context.Context, who model.Actor, after int64, afterAt time.Time, through int64, limit int) ([]model.Event, error) {
+	return s.readEventRows(ctx, who, eventSelect+`
+		where e.id > $1 and e.id <= $2
+		  and ($1 = 0 or exists (select 1 from events c where c.id = $1 and c.created_at = $4))
+		order by e.id asc limit $3
+	`, after, through, limit, afterAt)
+}
+
 // eventLogUnbrokenThrough is the id before the first one missing from the event log counted up
 // from 1, or its newest id when none is missing: every id at or below it is a committed event.
 // It reads the whole log, so feedEvents asks it only of a log that was reset beneath the relay,
@@ -481,13 +499,15 @@ type postKey struct {
 // reply_block.text of a message reply's message.answered and of its message.edited written
 // before the delete, and the reply_block.text of a comment reply's comment.created or
 // comment.answered and of each later event of that reply written before the delete but its
-// comment.deleted. A reply's own delete event, message.deleted or comment.deleted, carries no
-// text of the post it answers whenever it is written (deleteEventReplyBlock), and an event of
-// the reply written after the delete carries no text of it. Each is part of an event of the post
-// that quoted it, and only the quoted post's own events are marked here. So are the document
-// events of an accepted suggestion, which are no event of the post: the accept's
-// artifact.version, and an artifact.renamed written before the delete, which carries every
-// version, keep the name the accept gave the version.
+// comment.deleted. So do the reply_block.quote and reply_block.occurrence of those events, the
+// words of the post the reply quotes. A reply's own delete event, message.deleted or
+// comment.deleted, carries no text, quote or occurrence of the post it answers whenever it is
+// written (deleteEventReplyBlock), and an event of the reply written after the delete carries none
+// of them (refs.ReplyBlocks). Each is part of an event of the post that quoted it, and only the
+// quoted post's own events are marked here. So are the document events of an accepted
+// suggestion, which are no event of the post: the accept's artifact.version, and an
+// artifact.renamed written before the delete, which carries every version, keep the name the
+// accept gave the version.
 func (s *server) attachPostMarks(ctx context.Context, events []model.Event) error {
 	// The ids the page names, by the kind of post each is an id of; that kind names the table
 	// readPostMarks reads it in.

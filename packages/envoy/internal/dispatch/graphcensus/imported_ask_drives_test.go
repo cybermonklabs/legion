@@ -475,7 +475,8 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		Drive: func(t *testing.T) {
 			step := docs.NewDecisionStep(r.database, "", nil)
 			step.UseDocuments(r.documents)
-			done, failed, err := step.RestoreAndConvert(ctx, decided, true, false)
+			pass, err := step.RestoreAndConvert(ctx, decided, true, false)
+			done, failed := pass.Done, pass.Failed
 			if err != nil || len(failed) > 0 {
 				t.Fatalf("the decisions step's conversion answered %v with failures %+v", err, failed)
 			}

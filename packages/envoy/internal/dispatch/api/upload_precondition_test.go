@@ -355,6 +355,7 @@ func uploadFromClient(t *testing.T, handler http.Handler, issueKey string, body 
 // naming the live token is checked and taken and is not counted, and a first upload replaces
 // nothing and is not counted either.
 func TestUploadReplacingADocumentWithNoTokenIsTakenCountedAndLogged(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	registry := metrics.New()

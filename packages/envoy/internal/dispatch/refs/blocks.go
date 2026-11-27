@@ -593,10 +593,11 @@ func (b BlockIndexing) retains(blockID string) bool {
 // and what the node and tuple store is told of them - and reads, through q, only what the store
 // itself holds where the plan compares the render against it: each block's parent, values and
 // authors, where its authored nodes stand, the document's own references on its first indexing,
-// the store's statement of the document where that is stale, and the pointer tuples at each block
-// it states gone (retractGonePointers). A version writer plans the indexing in its read phase and
-// queues it in its write phase (docs.indexDocument). now is the transaction's now(), which a row
-// the indexing inserts takes from its column's default.
+// the store's statement of the document where that is stale, and the pointer tuples and the
+// copied_from at each block it states gone (retractGonePointers, heldCopiedFrom). A version
+// writer plans the indexing in its read phase and queues it in its write phase
+// (docs.indexDocument). now is the transaction's now(), which a row the indexing inserts takes
+// from its column's default.
 //
 // The plan makes the version's blocks graph nodes, and each mention written inside a block an edge
 // out of the innermost block holding its start. version.Blocks are its rendered blocks in
@@ -621,8 +622,9 @@ func (b BlockIndexing) retains(blockID string) bool {
 // id again. Such a block also takes its pointer tuples with it: each prevented_by of a risk it
 // covered as a check, and each constrained_by it held as a requirement, is retracted beside the
 // facts the pass states (retractGonePointers), and a version that restores the block restores none
-// of them. A block the version holds keeps the state and the visibility its node has, unless it
-// was gone, when it comes back live (blockNode restates every node it writes). The windows the
+// of them, and an ask block copy's copied_from is retracted with it (heldCopiedFrom). A block the
+// version holds keeps the state and the visibility its node has, unless it was gone, when it comes
+// back live (blockNode restates every node it writes). The windows the
 // version's blocks are embedded in are not planned here and not written by this index: the row it
 // records marks the document owed them, and the block-index tick's window arm writes them (Queue,
 // DocumentsOwedWindows).
@@ -1171,6 +1173,23 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 		return BlockIndexing{}, fmt.Errorf("retract the pointers at the blocks version %d of %s no longer holds: %w", number, artifactID, err)
 	}
 	indexing.stated.Tuples = append(indexing.stated.Tuples, retracted...)
+	// A block the version no longer holds is no copy of an ask either, so the copied_from its node
+	// states (docs' claimCopies) is retracted at this version's time and by its writer, as the
+	// tuple of a link the version drops is (planBlockRefs). The settlement that claims copies reads
+	// which blocks hold one through the document's rows, and this write deletes the dropped block's
+	// row, so no later write would end the relation (heldCopiedFrom).
+	copies, err := heldCopiedFrom(ctx, q, refKey, dropped)
+	if err != nil {
+		return BlockIndexing{}, err
+	}
+	for _, id := range dropped {
+		for _, ask := range copies[id] {
+			indexing.stated.Tuples = append(indexing.stated.Tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+				FromKind: BlockNodeKind, FromID: blockNodeAddress(refKey, id), Kind: graphstore.TupleCopiedFrom,
+				ToKind: graphstore.KindAsk, ToID: ask, At: versionAt, Who: writer, Asserted: false,
+			}})
+		}
+	}
 	// A block whose row the insert writes afresh joins the document there; one whose row was
 	// already there - a block whose text alone changed - keeps that row and the membership it
 	// already states.

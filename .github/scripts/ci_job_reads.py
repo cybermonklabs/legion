@@ -737,10 +737,48 @@ CLEANUP_DETECTOR_PACKAGES = ("internal/dispatch/docs",)
 # a log when the race binary's memory passes RACE_MEM_LIMIT_KB (the step's comment in
 # ci-job-envoy-go-race-docs.yaml says why), and under the cleanup detector, so its line is shell
 # assignments and a script, not a go command the simple form reduces. GODEBUG is a GO* name,
+# ---------------------------------------------------------------- a job whose steps run in legs
+# .github/go-legs.yaml lists the packages each leg of a Go job runs, and, for a package too long
+# for one leg, the group of its tests each leg runs; .github/scripts/go_legs.py prints them for
+# the leg, holding the file to `go list ./...` and the package's own test listing first.
+# why: .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs
+GO_LEGS = go_legs.LEGS
+GO_LEGS_SCRIPT = ".github/scripts/go_legs.py"
+GO_LEGS_GROUPS = go_legs.GROUPS
+
+
+def legs_script(module, job, command):
+    """The whole run: of a legs job's go test step: its leg's packages, piped from go_legs.py into
+    `command` (a go test, or a script that runs one). go_legs.py takes the leg's number and how
+    many legs the matrix runs, and refuses a file whose legs are not those or a leg with no
+    package. It also takes the command's own build flags (-race, -tags), under which it lists the
+    tests of a package a leg runs a group of, so the listing is the build the run then reuses and
+    names the tests the run can choose from. `set -o pipefail` is what fails the step when
+    go_legs.py refuses the file or go list fails, and `xargs -r` runs nothing on the empty output a
+    refusal leaves, where a plain xargs would run the command once with no package (for the skip
+    counter, a run of its whole default table) before the pipeline's status failed the step."""
+    words = command.split()
+    # `--race` is how packages/envoy/scripts/database-skips.sh takes the same flag, and a leg
+    # piped into that counter builds under the detector as surely as one piped into go test.
+    build = "".join(" -race" if word in ("-race", "--race") else f" {word}"
+                    for word in words if word in ("-race", "--race") or word.startswith("-tags="))
+    build += "".join(f" -tags={words[i + 1]}" for i, word in enumerate(words[:-1]) if word == "-tags")
+    up = "/".join([".."] * len(Path(module).parts))
+    return ("set -o pipefail\n"
+            f"python3 {up}/{GO_LEGS_SCRIPT} {module} {job} ${{{{ matrix.leg }}}} ${{{{ strategy.job-total }}}}{build} "
+            f"| xargs -r {command}")
+
+
 # which is outside ENV_ALLOWED wherever it is set, so the step is pinned whole.
 RACE_DOCS_STEP = "Race-test the document service"
-RACE_DOCS_SCRIPT = (f"{CLEANUP_DETECTOR} RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py "
-                    "go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/")
+# The document service's legs: as the API's, with the memory sampler and the cleanup detector the
+# one job carried. xargs runs a program and not a shell, so `env` is what carries the two
+# variables to the sampler.
+RACE_DOCS_LEGS_JOB = "envoy-go-race-docs-legs"
+RACE_DOCS_SCRIPT = legs_script(ENVOY, "envoy-go-race-docs",
+                               f"env {CLEANUP_DETECTOR} RACE_MEM_LIMIT_KB=8388608 "
+                               "../../.github/scripts/race_memory.py "
+                               "go test -json -race -count=1 -timeout 60m")
 # Every lane whose tests start a Dispatch process checks its Postgres service's max_connections in
 # its CEILING_STEP, which runs .github/scripts/pg-connection-ceiling.sh. The check reads the step's
 # run: line, not what the script runs, so each such gate declares the script, and the go run on the
@@ -1091,28 +1129,27 @@ DAEMON_PLAIN_JOB = "daemon-go"
 DAEMON_RACE_JOB = "daemon-go-race"
 DAEMON_PLAIN_LEGS_JOB = "daemon-go-legs"
 DAEMON_RACE_LEGS_JOB = "daemon-go-race-legs"
-GO_LEGS = go_legs.LEGS
-GO_LEGS_SCRIPT = ".github/scripts/go_legs.py"
-GO_LEGS_GROUPS = go_legs.GROUPS
 DAEMON_LEGS = go_legs.module_entry(DAEMON, Path(GO_LEGS))
 
 
-def legs_key_problems(entry: dict, plain_job: str, race_job: str, where: str, extra=()) -> list:
+def legs_key_problems(entry: dict, plain_job: str, race_job: str, where: str, extra=(), jobs=()) -> list:
     """What keeps a module's go-legs.yaml entry from having exactly the keys its legs run under:
-    its plain job and its race job, whose legs `where` runs, beside `elsewhere`, `unlisted` and
-    `extra` (envoy's `twice`); and from naming the plain job under `unlisted`, since the last leg of
-    that job runs a package no place names and a race leg would run it under the detector, which
-    its tests may not build for. A package filed under another key passes every leg, which sees
-    only its own job, and runs in no job. The one check both holds below make."""
+    its plain job, its race job and `jobs` (envoy's single-package race jobs), whose legs `where`
+    runs, beside `elsewhere`, `unlisted` and `extra` (envoy's `twice`); and from naming the plain
+    job under `unlisted`, since the last leg of that job runs a package no place names and a race
+    leg would run it under the detector, which its tests may not build for. A package filed under
+    another key passes every leg, which sees only its own job, and runs in no job. The one check
+    both holds below make."""
     problems = []
     keys = set(entry)
     beside = sorted({go_legs.ELSEWHERE, go_legs.UNLISTED, *extra})
-    wanted = {plain_job, race_job, *beside}
+    ran_by = [plain_job, race_job, *jobs]
+    wanted = {*ran_by, *beside}
     if keys != wanted:
-        problems.append(f"its keys are {', '.join(sorted(keys))}, and the jobs whose legs run are {plain_job} and "
-                        f"{race_job} ({where}), beside {', '.join(beside[:-1])} and {beside[-1]}: a package under "
-                        f"{', '.join(sorted(keys - wanted)) or 'a missing key'} runs in no job, so file it under one "
-                        f"of those")
+        problems.append(f"its keys are {', '.join(sorted(keys))}, and the jobs whose legs run are "
+                        f"{', '.join(ran_by[:-1])} and {ran_by[-1]} ({where}), beside {', '.join(beside[:-1])} and "
+                        f"{beside[-1]}: a package under {', '.join(sorted(keys - wanted)) or 'a missing key'} runs in "
+                        f"no job, so file it under one of those")
     if entry.get(go_legs.UNLISTED) != plain_job:
         problems.append(f"its {go_legs.UNLISTED} is {entry.get(go_legs.UNLISTED)!r}, and the job whose last leg runs a "
                         f"package no place names is {plain_job}, which runs a package plain: a race leg would run it "
@@ -1171,25 +1208,6 @@ hold_daemon_legs(DAEMON_LEGS)
 DAEMON_PLAIN_PACKAGES = leg_run_packages(DAEMON_LEGS, DAEMON_PLAIN_JOB, go_legs.go_packages(DAEMON))
 DAEMON_RACE_LEG_PACKAGES = go_legs.job_packages(DAEMON_LEGS[DAEMON_RACE_JOB])
 
-
-def legs_script(module, job, command):
-    """The whole run: of a legs job's test step, run in `module`: its leg's packages, piped from
-    go_legs.py into `command`, the step's one go test (or the script that runs it) with its flags.
-    go_legs.py takes the leg's number and how many legs the matrix runs, and refuses a file whose
-    legs are not those or a leg with no package. It also takes the command's build flags, under
-    which it lists the tests of a package a leg runs a group of, so the listing is the build the
-    run then reuses and names the tests the run can choose from: -race, and -tags, which decides
-    which files are in the build and so which tests exist at all (a listing without a step's -tags
-    would leave that tag's tests in no group's -run). No legs step passes -tags today, and one that
-    did would hand it on here. `set -o pipefail` is what fails the step when go_legs.py refuses the
-    file or go list fails, rather than test what xargs got."""
-    up = "/".join([".."] * len(Path(module).parts))
-    words = command.split()
-    build = "".join(f" {word}" for word in words if word == "-race" or word.startswith("-tags="))
-    build += "".join(f" -tags={words[index + 1]}" for index, word in enumerate(words[:-1]) if word == "-tags")
-    return ("set -o pipefail\n"
-            f"python3 {up}/{GO_LEGS_SCRIPT} {module} {job} ${{{{ matrix.leg }}}} ${{{{ strategy.job-total }}}}{build} "
-            f"| xargs {command}")
 
 # The three tests of this module the plugin-pack job runs: the plugin pack test and the two tests
 # of agentmodels_omp_test.go (a fourth that loads a plugin on the real Oh My Pi,
@@ -1341,8 +1359,10 @@ if SUPERVISE_TABLE_PACKAGE not in DAEMON_PLAIN_PACKAGES:
     raise ValueError(f"the table pins are in {SUPERVISE_TABLE_PACKAGE}, which no plain leg of {GO_LEGS} runs, so "
                      f"nothing skips them there; name that package's step here, or move the -skip to the step "
                      f"that runs them")
-DAEMON_PLAIN_SCRIPT = legs_script(DAEMON, DAEMON_PLAIN_JOB, f"go test -count=1 -timeout 15m -skip {SUPERVISE_TABLE_PATTERN}")
-DAEMON_RACE_SCRIPT = legs_script(DAEMON, DAEMON_RACE_JOB, f"go test -count=1 -race -timeout 30m -skip {PLUGIN_PACK_PATTERN}")
+DAEMON_PLAIN_SCRIPT = legs_script(DAEMON, DAEMON_PLAIN_JOB,
+                                  f"go test -count=1 -timeout 15m -skip {SUPERVISE_TABLE_PATTERN}")
+DAEMON_RACE_SCRIPT = legs_script(DAEMON, DAEMON_RACE_JOB,
+                                 f"go test -count=1 -race -timeout 30m -skip {PLUGIN_PACK_PATTERN}")
 
 
 def hold_supervise_table_tests():
@@ -1516,6 +1536,19 @@ LISTENERWIRE_STEP = "Test the listener's wire package, its clients and wirecheck
 LISTENERWIRE_PKGS = [f"./{p}/" for p in LISTENERWIRE_PACKAGES]
 LISTENERWIRE_TEXT = "go test -count=1 " + " ".join(LISTENERWIRE_PKGS)
 
+# The route adopter, cmd/dispatch-route-adopt, runs its rows under git and under jj, so
+# envoy-go-skips installs jj (./.github/actions/install-jj) and tests the package in a step of its
+# own with -v, which names each row in the log: a leg's go test -json report names no test that
+# passed, so a jj row that skipped would read as green there. The rows that need jj fail rather
+# than skip on GitHub Actions without it. As with the packages above, that step's package list
+# and the package's `elsewhere` line in .github/go-legs.yaml (hold_envoy_legs) are built from this
+# one list. The tool is deleted once the branches open when routes moved into files have adopted,
+# and this list and its step with it.
+ADOPTER_PACKAGES = ["cmd/dispatch-route-adopt"]
+ADOPTER_STEP = "Test the route adopter under git and jj"
+ADOPTER_PKGS = [f"./{p}/" for p in ADOPTER_PACKAGES]
+ADOPTER_TEXT = "go test -count=1 -v -timeout 4m " + " ".join(ADOPTER_PKGS)
+
 # The packages whose skips envoy-go's unit step counts: each leg runs its packages through
 # packages/envoy/scripts/database-skips.sh --count-table, one `go test -json`, and the script
 # counts the skips of the packages of its default table (DEFAULT_PACKAGES there) among them: the
@@ -1662,24 +1695,35 @@ def hold_envoy_legs(entry: dict, root=ENVOY) -> None:
     around them are built. go_legs.py, in each leg, holds the whole entry to `go list ./...` and
     the running job's legs to its matrix, but it sees only its own job, and nothing of why a
     package is where it is. So: the entry's keys and its `unlisted` are what legs_key_problems()
-    asks of them, `twice` among the keys; the race legs run the packages of
-    ENVOY_RACE_LANE's envoy-go-race and nothing else, each tree's root among them, and every
-    package each tree holds under `root` (race_lane_packages, the walk of `./<tree>/...` the plain
-    run's derivation reads the lane by) - a package added under a tree with no line would otherwise
-    run plain in envoy-go's last leg, which `unlisted` sends it to, and lose the detector the
-    tree's `./<tree>/...` gave it on main; a plain leg runs
+    asks of them, `twice` among the keys and the race lane's two single-package jobs
+    (envoy-go-race-api and envoy-go-race-docs, a group of its one package's tests per leg) among
+    the jobs; each single-package job's legs run that job's lane package and nothing else; the
+    race legs run the packages of ENVOY_RACE_LANE's envoy-go-race and nothing else, each tree's
+    root among them, and every package each tree holds under `root` (race_lane_packages, the walk
+    of `./<tree>/...` the plain run's derivation reads the lane by) - a package added under a tree
+    with no line would otherwise run plain in envoy-go's last leg, which `unlisted` sends it to,
+    and lose the detector the tree's `./<tree>/...` gave it on main; a plain leg runs
     no package the lane runs under the detector but those `twice` names; `twice` names exactly the
     race legs' packages whose skips the unit legs count (database_skips_table), so each of those
     runs plain, where it is counted, and no other runs twice; and `elsewhere` is exactly the
-    packages other jobs' steps are built here to run, each with that job: the race lane's other
-    two jobs', envoy-go-natslive's integration suite, the text checks and envoy-go-build's
-    (NOTE_AND_SPEC_PACKAGES, LISTENERWIRE_PACKAGES). With go_legs.py's own check, every package of
-    the module then runs once in the job it is built for, and every package of the counter's table
-    in a plain leg, which counts its skips. check-ci-filters.sh imports this table in the changes
-    and ci-filters jobs, so a refusal here fails the run that brings the entry, the pull request
-    that adds a package under a tree among them."""
-    problems = legs_key_problems(entry, ENVOY_PLAIN_JOB, ENVOY_RACE_JOB, f"{ENVOY_GO_FILE} and {ENVOY_RACE_FILE}",
-                                 extra=(go_legs.TWICE,))
+    packages other jobs' steps are built here to run, each with that job: envoy-go-natslive's
+    integration suite, the text checks, envoy-go-build's (NOTE_AND_SPEC_PACKAGES,
+    LISTENERWIRE_PACKAGES) and envoy-go-skips' route adopter (ADOPTER_PACKAGES). With go_legs.py's
+    own check, every package of the module then runs
+    once in the job it is built for, and every package of the counter's table in a plain leg,
+    which counts its skips. check-ci-filters.sh imports this table in the changes and ci-filters
+    jobs, so a refusal here fails the run that brings the entry, the pull request that adds a
+    package under a tree among them."""
+    single = {job.job: job for job in ENVOY_RACE_LANE if job.job != ENVOY_RACE_JOB}
+    problems = legs_key_problems(entry, ENVOY_PLAIN_JOB, ENVOY_RACE_JOB,
+                                 f"{ENVOY_GO_FILE}, {ENVOY_RACE_FILE} and the race lane's single-package jobs' files",
+                                 extra=(go_legs.TWICE,), jobs=tuple(sorted(single)))
+    for name, job in single.items():
+        ran = go_legs.job_packages(entry.get(name))
+        if ran != [p.name for p in job.packages]:
+            problems.append(f"its {name} legs run {', '.join(ran) or 'nothing'}, and ENVOY_RACE_LANE's {name} is "
+                            f"{', '.join(p.name for p in job.packages)}: give the job's legs that package alone, a "
+                            f"group of its tests each")
     plain = go_legs.job_packages(entry.get(ENVOY_PLAIN_JOB))
     race = go_legs.job_packages(entry.get(ENVOY_RACE_JOB))
     twice = sorted(entry.get(go_legs.TWICE) or {})
@@ -1711,9 +1755,9 @@ def hold_envoy_legs(entry: dict, root=ENVOY) -> None:
                         f"skips the unit legs count ({DATABASE_SKIPS_SCRIPT}'s table) are {', '.join(counted) or 'none'}: "
                         f"make them one set, so each of those runs plain too, where it is counted, and no other runs "
                         f"twice")
-    elsewhere = {p.name: job.job for job in ENVOY_RACE_LANE if job.job != ENVOY_RACE_JOB for p in job.packages}
-    elsewhere.update({ENVOY_INTEGRATION_PACKAGE: ENVOY_NATSLIVE_JOB, TEXT_CHECK_PACKAGE: "text-checks"})
+    elsewhere = {ENVOY_INTEGRATION_PACKAGE: ENVOY_NATSLIVE_JOB, TEXT_CHECK_PACKAGE: "text-checks"}
     elsewhere.update({p: "envoy-go-build" for p in NOTE_AND_SPEC_PACKAGES + LISTENERWIRE_PACKAGES})
+    elsewhere.update({p: ENVOY_SKIPS_JOB for p in ADOPTER_PACKAGES})
     if (entry.get(go_legs.ELSEWHERE) or {}) != elsewhere:
         problems.append(f"it runs packages elsewhere as {entry.get(go_legs.ELSEWHERE)}, and the packages other jobs' "
                         f"steps are built here to run are {elsewhere}")
@@ -1739,8 +1783,13 @@ ENVOY_RACE_SCRIPT = legs_script(ENVOY, ENVOY_RACE_JOB, f"go test -count=1 -race 
 # without -v. Its text is built from the lane's declaration: the race job's packages, and its
 # -timeout as the counter's --timeout.
 RACE_API = RACE_JOBS["envoy-go-race-api"]
-RACE_API_SCRIPT = ("scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL "
-                   f"--race --timeout {RACE_API.timeout} " + " ".join(race_pkgs(RACE_API)))
+# The API's legs: each runs a group of internal/dispatch/api's tests, so the packages and the
+# group's -run come from go_legs.py and the counter takes them through xargs. -run reaches the
+# counter's EXPECTED_SKIPS rule too, which then holds only the tests the group runs.
+RACE_API_LEGS_JOB = "envoy-go-race-api-legs"
+RACE_API_SCRIPT = legs_script(ENVOY, RACE_API.job,
+                              "scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL "
+                              f"--var BROKER_TEST_DATABASE_URL --race --timeout {RACE_API.timeout}")
 
 
 # ---------------------------------------------------------------- the web app's display fixture
@@ -2409,6 +2458,7 @@ SMOKE_IMAGE_STEP = "Build the listener image the smoke test runs against"
 BASE_IMAGES_STEP = "Read the smoke image's base images"
 FOLD_CHECK_STEP = "Check every changelog fragment renders"
 CHECK_STEP = "Check every CI filter matches every file its job reads"
+TC_LINKS_STEP = "Check no command or self-starting test binary links testcontainers-go"
 ACTIONLINT_STEP = "Check every workflow file with actionlint"
 GUIDES_STEP = "Check the guides' semantic line breaks"
 COPY_STEP = "Copy every image the package does not hold"
@@ -2586,7 +2636,7 @@ def browser_gate(filter, job):
         # the modules dispatch_ui's tsc programs compile and the dispatch command's bundle loads,
         # which check-ts-filters.sh writes, and ci_ts_programs.py's LISTED says why this suite
         # loads those and no other; each job's `Build contracts for dispatch e2e` step runs
-        # `build:dispatch`, whose three entries compile nothing outside dispatch_ui's.
+        # `build:dispatch`, whose four entries compile nothing outside dispatch_ui's.
         ("packages/envoy-client/bin/dispatch.ts", "`packages/dispatch/e2e/inbox-cli.e2e.ts#runDispatch` runs it through `packages/dispatch/e2e/dispatch-cli.ts#dispatchEntry`"),
         (f"{FIX}/priority-ids.json", "`packages/dispatch/e2e/priorities.e2e.ts#idFixture` reads the shared list of the priority "
                                      "id rule's cases by path"),

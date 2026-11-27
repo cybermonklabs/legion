@@ -538,7 +538,7 @@ export function useMarginItems(
     // Until the issue read answers, a decision is found only where the view names its document.
     const documents =
       documentsKey === undefined
-        ? { key: issueKey ?? "", primary_artifact_id: "" }
+        ? undefined
         : {
             artifacts: issueArtifacts,
             key: documentsKey,

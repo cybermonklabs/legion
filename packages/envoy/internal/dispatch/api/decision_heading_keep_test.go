@@ -142,8 +142,8 @@ func TestAHeadingKeepThatWaitsBehindTheStepsConversionOfItsSectionIsNotFound(t *
 	}
 	passed := make(chan pass, 1)
 	go func() {
-		done, failed, err := step.RestoreAndConvert(ctx, "KEPT", true, false)
-		passed <- pass{done, failed, err}
+		answered, err := step.RestoreAndConvert(ctx, "KEPT", true, false)
+		passed <- pass{answered.Done, answered.Failed, err}
 	}()
 	awaitLockWaiters(t, database, 1)
 	kept := make(chan *httptest.ResponseRecorder, 1)

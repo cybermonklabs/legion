@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -334,9 +335,7 @@ func TestAConvertedDecisionWaitsForReviewWhereAPersonWroteItsSectionLast(t *test
 		}
 		var deciders []string
 		for _, tuple := range tuples {
-			if tuple.Asserted {
-				deciders = append(deciders, tuple.ToKind+"/"+tuple.ToID)
-			}
+			deciders = append(deciders, tuple.ToKind+"/"+tuple.ToID)
 		}
 		if want.decider == "" && len(deciders) != 0 || want.decider != "" && !slices.Equal(deciders, []string{want.decider}) {
 			t.Errorf("%s (%s): the node states the decided_by %v, want %q", want.what, address, deciders, want.decider)
@@ -399,6 +398,29 @@ func TestTheConversionMovesTheAskBlockASectionStillHoldsAndConvertsTheRest(t *te
 	issue.requireUnplacedDecision(decisions, heading, unplacedBody, []string{"r1"}, nil,
 		[]string{"We lean towards the top shelf"})
 	issue.requireNoSectionCitation(heading)
+	issue.requireRetiredAndOwedNothing(decisions)
+}
+
+// A section whose whole body is its ask block - an answered ask whose block the decisions
+// document holds, the second shape of the restore - converts with nothing written under the ask:
+// the block moves into the spec, the section holds no words beside it, so it is dropped
+// (planRestating) and the restored block holds no reading. The document retires and the step
+// owes nothing.
+func TestTheConversionWritesNoReadingUnderAnAskBlockThatWasItsSectionsWholeBody(t *testing.T) {
+	issue := newRestoreIssue(t, "# Spec\n\n:::requirement{#r1}\nThe corpus is written once.\n:::\n")
+	decisions := issue.document("decisions-md", "decisions.md", false, "decisions",
+		"# Decisions\n\n## Which line names a moved block\n\n:::ask{#q-doc urgency=\"low\" multiple=\"false\"}\nWhich line names a block that moved?\n:::\n")
+	moved := issue.answer(decisions, "q-doc", "The census names each move.")
+
+	result := issue.run(true)
+	from, to := issue.refKey(decisions)+"#q-doc", issue.refKey(issue.spec)+"#q-doc"
+	if len(result.Restored) != 1 || result.Restored[0].Ask != moved || result.Restored[0].From != from || result.Restored[0].To != to ||
+		result.Readings != 0 || result.Dropped != 1 || result.Decisions != 0 || result.Left != 0 || !result.Retired {
+		t.Fatalf("the conversion did %+v, want ask %s moved from %s to %s, its section dropped with no reading, the document retired", result, moved, from, to)
+	}
+	if spec := issue.latest(issue.spec); !strings.Contains(spec, "#q-doc urgency=") || strings.Contains(spec, ":::reading") {
+		t.Errorf("the spec's newest version holds no block of the ask, or a reading under it:\n%s", spec)
+	}
 	issue.requireRetiredAndOwedNothing(decisions)
 }
 
@@ -683,11 +705,11 @@ func TestARestoreAloneLeavesASectionAboutAnAskTheSpecHoldsWithItsLinksForTheConv
 //   - its notes, a third document, which hold the answered ask q-notes, and whose block index holds
 //     no row of that block yet, as a version whose index its write deferred leaves it.
 //
-// A pass touches no issue and fails none, the decisions document stands at its one version, and
-// neither the spec nor the document that owes its index gains one. Once the block-index
-// reconciliation has indexed that document, the next pass writes the section as a reading into the
-// ask's block - q-store restored into the spec, or q-notes where the notes hold it - shapes it by
-// r1, and retires the decisions document.
+// A pass touches no issue and fails none, and answers DOC-1 left for its block index; the
+// decisions document stands at its one version, and neither the spec nor the document that owes
+// its index gains one. Once the block-index reconciliation has indexed that document, the next
+// pass writes the section as a reading into the ask's block - q-store restored into the spec, or
+// q-notes where the notes hold it - shapes it by r1, and retires the decisions document.
 func TestAPassLeavesAnIssueADocumentOfWhichOwesItsBlockIndexForALaterPass(t *testing.T) {
 	const title = "The corpus lives in the database"
 	const words = "The person ruled it in"
@@ -743,10 +765,13 @@ func TestAPassLeavesAnIssueADocumentOfWhichOwesItsBlockIndexForALaterPass(t *tes
 			step := NewDecisionStep(issue.database, "", nil)
 			step.UseDocuments(issue.service)
 
-			done, failed, err := step.RestoreAndConvert(ctx, "DOC", true, false)
-			if err != nil || len(done) != 0 || len(failed) != 0 {
+			pass, err := step.RestoreAndConvert(ctx, "DOC", true, false)
+			if err != nil || len(pass.Done) != 0 || len(pass.Failed) != 0 {
 				t.Fatalf("the pass over an issue a document of which owes its block index answered %v, touched %+v and failed %+v, want the issue left alone",
-					err, done, failed)
+					err, pass.Done, pass.Failed)
+			}
+			if len(pass.Left) != 1 || pass.Left[0].Issue != "DOC-1" || !errors.Is(pass.Left[0].Reason, errBlockIndexOwed) {
+				t.Fatalf("the pass left %+v, want DOC-1 alone, left because a document of it owes its block index (%v)", pass.Left, errBlockIndexOwed)
 			}
 			if readRetired(t, issue.database, decisions) || specVersions(t, issue.database, decisions) != 1 ||
 				specVersions(t, issue.database, issue.spec) != specBefore || specVersions(t, issue.database, owing) != owingBefore {
