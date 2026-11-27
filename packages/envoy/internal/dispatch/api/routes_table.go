@@ -286,12 +286,11 @@ type routeDecl struct {
 	// Deps.DownloadDeadline), stopping at the answer's first byte, after which the answer's
 	// transfer bound alone decides how long the bytes may take (servedAsRead,
 	// admission.WithDeadlineUntilAnswer). A download pins no connection either (pinsConnection).
-	// Only a read is one, and download, the only row constructor that marks one, is used only by
-	// reads.
+	// Only a GET route declares it.
 	Download bool
 	// Streams marks a read whose answer is a stream its reader holds open long past the work
 	// behind it: the going run's server-sent events, which a reader keeps for the run's whole
-	// window while the frames the run stores reach it (streamed, streamGoingAnswer). Such a row
+	// window while the frames the run stores reach it (streamGoingAnswer). Such a route
 	// takes no admission unit and pins no connection, since a reader parked on a stream for
 	// half a minute would hold a unit of the read class and a request-pool connection for all
 	// of it, where the polls that fill it take a connection only while each read runs; the
@@ -300,10 +299,11 @@ type routeDecl struct {
 	// transfer bounds every answer has, so a reader that stops reading is still cut.
 	Streams bool
 	// Weight is how many of its class's admission units a request takes (admission.Limiter): the
-	// most request-pool connections it holds at once. Zero is one.
+	// most request-pool connections it holds at once. Zero is one; concurrentReadWeight and
+	// questionReadWeight are the two the routes that run reads side by side declare.
 	Weight int
 	// Lane is the heavy read lane a request of the route takes before it asks its class for
-	// units (admission.Lane, heavyRead): a limit of its own for one route whose reads cost the
+	// units (admission.Lane): a limit of its own for one route whose reads cost the
 	// database far more than the rest. admission.NoLane for every other route.
 	Lane admission.Lane
 	// BodyLimit is the most bytes the route reads of a request body, which is also how much the
@@ -312,22 +312,22 @@ type routeDecl struct {
 	// bodyTooLarge). Zero is maxJSONRequestBytes, every JSON route's limit.
 	BodyLimit int64
 	// Replay answers a repeat of this route's keyed write whose first run committed a recovery
-	// point (keyedReplay, replays): nil for a route that commits none, which is every route but
-	// the writes that also deliver to sessions.
-	// The function binds the replay to the server that mounts the route (routes), as Handler is a method
-	// expression bound there: `func(s *server) keyedReplay { return replayRecovered(s, s.replayComment) }`.
+	// point (keyedReplay): nil for a route that commits none, which is every route but the writes
+	// that also deliver to sessions. The function binds the replay to the server that mounts the
+	// route (routes), as Handler, a method expression, is bound there:
+	// `func(s *server) keyedReplay { return replayRecovered(s, s.replayComment) }`.
 	Replay func(s *server) keyedReplay
 	// Resumes is whether a repeat of this route's keyed write whose holder is gone takes the key
-	// over and runs the steps its recovery point does not hold (keyedRoute.resumes, resumes): true
+	// over and runs the steps its recovery point does not hold (keyedRoute.resumes): true
 	// for the status change alone, a write made of steps that each commit.
 	Resumes bool
 	// Refuse answers a refusal the keyed layer decides itself in this route's own shape
-	// (keyedRoute.refuse, resumes): nil for every route but the status change, whose refusals
-	// carry the entries of the steps that committed.
-	// Bound to the server that mounts the route in routes(), as Replay is.
+	// (keyedRoute.refuse): nil for every route but the status change, whose refusals carry the
+	// entries of the steps that committed. Bound to the server that mounts the route in routes(),
+	// as Replay is.
 	Refuse func(s *server) keyedRefusal
-	// RefusesClosedIssue marks the upload whose issue must still be open (issueUpload,
-	// refuseUploadToAClosedIssue).
+	// RefusesClosedIssue marks the upload whose issue must still be open
+	// (refuseUploadToAClosedIssue).
 	RefusesClosedIssue bool
 
 	// Shape is what the route takes and answers, in the Go types the OpenAPI document is
