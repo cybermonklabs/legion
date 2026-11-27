@@ -356,17 +356,24 @@ func TestALaneWaiterHoldsNoReadUnitWhileItWaits(t *testing.T) {
 	}
 }
 
-// A heavy read's lane serves newest first while the read class's queue has stood non-empty for a
-// whole read wait, and first in, first out until then (laneGate): with the read class's one unit
-// held and a read queued for it, and the lane's one place held with three heavy reads lined up
-// behind it, the place that comes back while the read class's queue has been non-empty for less
-// than its wait goes to the heavy read that has waited longest; once that queue has stood a whole
-// wait, by the clock its decision reads, each place that comes back goes to the heavy read that
-// joined the lane last, and the lane counts those two grants newest first (LaneStats.NewestFirst).
-// First in, first out there handed each place to the heavy read that had waited longest, which
-// reached the read class with its wait spent, was admitted all the same and crowded out the cheap
-// reads: about 22,000 fewer of them answered 2xx a 3-minute window on the two-processor bed at a
-// standing ten times the load (INFRA-592, a bisection of d416a857).
+// A heavy read's lane serves newest first once the read class's queue has stood non-empty for
+// laneStandWaits (three) whole read waits, and first in, first out until then (laneGate): with the
+// read class's one unit held and a read queued for it, and the lane's one place held with six
+// heavy reads lined up behind it, the place that comes back goes to the heavy read that has waited
+// longest while the read class's queue has been non-empty for less than one wait, at exactly one,
+// at two and one nanosecond short of three; at three, by the clock its decision reads, each place
+// that comes back goes to the heavy read that joined the lane last, and the lane counts those two
+// grants newest first (LaneStats.NewestFirst).
+//
+// The class's own queue turns to its newest waiter at one wait, and a lane following it there gave
+// its places to the requests that had just come when a stall of a second or two stood the class's
+// queue, and left its oldest to run out their wait: one references read of 358,714 in a step at ten
+// times the load (INFRA-592, c-scale at 2ecfa550, head step 6, a read class that stood about 1.8
+// s). First in, first out there under a read class that stays standing handed each place to the
+// heavy read that had waited longest, which reached the read class with its wait spent, was
+// admitted all the same and crowded out the cheap reads: about 22,000 fewer of them answered 2xx a
+// 3-minute window on the two-processor bed at a standing ten times the load (INFRA-592, a
+// bisection of d416a857), so a standing class of three waits still turns its lanes.
 func TestALaneServesTheNewestFirstWhileTheReadClassStands(t *testing.T) {
 	t.Parallel()
 	clock := newTestClock()
@@ -380,23 +387,41 @@ func TestALaneServesTheNewestFirstWhileTheReadClassStands(t *testing.T) {
 		queued: func() int { return laneStatsOf(t, l, Search).Queued },
 	}
 	held := holdEveryPlace(t, ctx, lane)
-	answers := lineUp(t, ctx, lane, 3)
+	answers := lineUp(t, ctx, lane, 6)
+	notNewestFirst := func(when string) {
+		t.Helper()
+		if newestFirst := laneStatsOf(t, l, Search).NewestFirst; newestFirst != 0 {
+			t.Fatalf("%d granted newest first %s, want none", newestFirst, when)
+		}
+	}
 
 	clock.advance(patient - time.Nanosecond)
 	held[0]()
-	oldest := grantedNext(t, answers, 0, "a lane serves first in, first out while the read class's queue absorbs a burst")
-	if newestFirst := laneStatsOf(t, l, Search).NewestFirst; newestFirst != 0 {
-		t.Fatalf("%d granted newest first while the read class's queue absorbed a burst, want none", newestFirst)
+	previous := grantedNext(t, answers, 0, "a lane serves first in, first out while the read class's queue has stood less than a wait")
+	notNewestFirst("while the read class's queue had stood less than a wait")
+
+	for next, when := range []struct {
+		step time.Duration
+		what string
+	}{
+		{time.Nanosecond, "at the read class's one whole wait, where its own queue turns to its newest waiter"},
+		{patient, "at two whole read waits"},
+		{patient - time.Nanosecond, "one nanosecond short of three whole read waits"},
+	} {
+		clock.advance(when.step)
+		previous.give()
+		previous = grantedNext(t, answers, next+1, "a lane serves first in, first out "+when.what)
+		notNewestFirst(when.what)
 	}
 
 	clock.advance(time.Nanosecond)
-	const why = "a lane serves the newest first while the read class's queue has stood a whole read wait"
-	oldest.give()
-	newest := grantedNext(t, answers, 2, why)
+	const why = "a lane serves the newest first once the read class's queue has stood three whole read waits"
+	previous.give()
+	newest := grantedNext(t, answers, 5, why)
 	newest.give()
-	last := grantedNext(t, answers, 1, why)
+	last := grantedNext(t, answers, 4, why)
 	if stats := laneStatsOf(t, l, Search); stats.NewestFirst != 2 || stats.Queued != 0 || stats.QueueFull+stats.WaitExceeded != 0 {
-		t.Fatalf("the search lane's stats %+v, want the two grants since the read class stood counted newest first, and nothing queued or refused", stats)
+		t.Fatalf("the search lane's stats %+v, want the two grants since the read class stood three waits counted newest first, and nothing queued or refused", stats)
 	}
 	last.give()
 

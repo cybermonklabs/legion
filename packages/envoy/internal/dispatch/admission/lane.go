@@ -243,10 +243,12 @@ func (g *fifoGate) counts() (used, queued, maxQueued int) {
 // counts against the wait the request has already spent.
 //
 // What it serves first is the read class's state, not its own (the architect, INFRA-592,
-// 2026-11-26): first in, first out while the read class's queue is empty or absorbing a burst, and
-// newest first while that queue has stood non-empty for a whole read wait (Limiter.readsStand),
-// the moment the class's queue turns to its own newest waiter (gate.next). A lane full while the
-// read class has room is no overload but its places turning over, and newest first there, decided
+// 2026-11-26; the three waits, 2026-11-27): first in, first out while the read class's queue is
+// empty, absorbing a burst or has stood for less than laneStandWaits whole read waits, and newest
+// first once that queue has stood non-empty for that long (Limiter.readsStand); the class's own
+// queue turns to its newest waiter at one whole wait (gate.next), a lane three waits on, so a
+// second or two of stalled answers leaves a lane first in, first out (laneStandWaits). A lane full
+// while the read class has room is no overload but its places turning over, and newest first there, decided
 // by the lane's own queue standing, handed each place to the waiter that had just come and left
 // the oldest to be refused at their wait while the places turned over beside them: on the cluster
 // copy at ten times the load every refusal of the run - 26 searches, answered 429 at about 1,001

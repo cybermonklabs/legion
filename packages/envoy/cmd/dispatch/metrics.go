@@ -286,7 +286,7 @@ func newDispatchMetrics(sources metricsSources, lag *outboxLag) *metrics.Registr
 		}
 		return samples
 	})
-	registry.NewCounterVecFunc(metricPrefix+"http_lane_newest_first_total", "Requests a heavy read lane gave a place newest first, by lane. A lane serves first come, first served while the read class's queue is empty or absorbing a burst; while that queue has stood non-empty for one whole read wait (1 s), each place that frees goes to the request that joined the lane last, and the lane's oldest are refused at their wait.", func() []metrics.Sample {
+	registry.NewCounterVecFunc(metricPrefix+"http_lane_newest_first_total", "Requests a heavy read lane gave a place newest first, by lane. A lane serves first come, first served while the read class's queue is empty or absorbing a burst; once that queue has stood non-empty for three whole read waits (3 s), each place that frees goes to the request that joined the lane last, and the lane's oldest are refused at their wait.", func() []metrics.Sample {
 		return laneSamples(func(l admission.LaneStats) float64 { return float64(l.NewestFirst) })
 	})
 	registry.NewGaugeFunc(metricPrefix+"http_admitted_units", "Admission units the admitted requests of both classes hold now, under the combined cap.", func() int64 {
