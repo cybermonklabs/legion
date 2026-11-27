@@ -1646,6 +1646,73 @@ test("on a return to the issue on Spec, the column's first render draws no cell 
   }
 });
 
+// The same reset with a refusal: no reader takes an earlier visit's refusal of a view read either
+// (`useLoadView`, `loadEnded`). An earlier visit of the issue on Spec read the Spec view once and
+// was refused, so the column drew the statements' failed line, and the cache keeps that refusal
+// as the reader comes back to the issue on Spec, with this load's read of the view out. The
+// column's first render, before the load's reset drops the view, draws no failed line, which
+// would say the earlier visit's refusal as an alert, and none is drawn while the read is out.
+test("a return to an issue whose earlier Spec view read failed once draws no failed line on the column's first render", async () => {
+  const issue = issueDetails();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(["whoami"], { kind: "user", login: READER });
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead(["r1"]));
+  client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
+  client.setQueryData(["issue-messages", KEY], []);
+  let earlierVisit = true;
+  // Conversation's read never answers; the Spec view read is refused once on the earlier visit,
+  // and this load's never answers.
+  const trees = spyOn(api, "getIssueTree").mockImplementation((_key, query = {}) =>
+    query.view === "spec" && earlierVisit
+      ? Promise.reject(new Error("offline"))
+      : Promise.withResolvers<never>().promise
+  );
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const line = "[data-failed-read]";
+  /** Whether `nodes` holds a failed read's line, or an element around one. */
+  const holdsLine = (nodes: NodeList): boolean =>
+    [...nodes].some(
+      (one) => one instanceof Element && (one.matches(line) || one.querySelector(line) !== null)
+    );
+  try {
+    const earlier = drawStage("", { client, issue, preset: "spec" });
+    await waitFor(() => alertSaying(earlier, STATE_LINES.statements_unreadable));
+    expect(
+      client.getQueryState(viewKey(KEY, "spec"))?.errorUpdateCount,
+      "the earlier visit's Spec view read was not refused once"
+    ).toBe(1);
+    earlier.unmount();
+    earlierVisit = false;
+
+    // Every element the return's renders put on the page or took off it, its first render's
+    // among them, which the load's reset redraws before `render` hands the page back.
+    const drawn = new MutationObserver(() => {});
+    drawn.observe(document.body, { childList: true, subtree: true });
+    const view = drawStage("", { client, issue, preset: "spec" });
+    const records = drawn.takeRecords();
+    drawn.disconnect();
+    try {
+      expect(
+        records.some((record) => holdsLine(record.addedNodes) || holdsLine(record.removedNodes)),
+        "the column's first render on the return drew the earlier visit's failed line"
+      ).toBe(false);
+      await act(() => Bun.sleep(20));
+      expect(
+        view.container.querySelector(line),
+        "the column drew a failed line while this load's read is out"
+      ).toBeNull();
+    } finally {
+      view.unmount();
+    }
+  } finally {
+    names.mockRestore();
+    trees.mockRestore();
+  }
+});
+
 // The Spec view's slot reads who is reading as the tree reads it, kept fresh by events and never
 // read again by its age (`EVENT_FRESH`). Under the app's 30 s `staleTime` (`main.tsx`) the view
 // opened more than 30 s after whoami answered asked for it again, a request of the view's own.

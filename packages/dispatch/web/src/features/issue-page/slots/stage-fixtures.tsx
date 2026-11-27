@@ -24,8 +24,10 @@ import type { Preset } from "../page-words";
 import { commentNode, treeAnswer, treeNode, wholeTreeOnly } from "../tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 import { FAILED_READ_RETRY } from "./failed-read-line";
+import { HeaderSlot } from "./header";
 import { ProvidersSlot } from "./providers";
 import { type SlotsFilled, StageSlot, type ViewSlots } from "./stage";
+import { ViewRowSlot } from "./view-row";
 
 /**
  * What the stage's unit tests share (`stage.test.tsx`, `view-decisions-slot.test.tsx`,
@@ -59,19 +61,24 @@ interface StageViews {
 interface StageProps extends StageViews {
   readonly held: { navigate?: NavigateFunction };
   readonly issue: IssueDetails;
+  /** Whether the page's header and its view row are drawn before the stage, as the page's root
+   *  draws them. */
+  readonly page?: boolean;
 }
 
 /** The page's stage at the address the router holds, under the page's own providers, as the
  *  page's root draws it (`IssueOutlinePage.tsx`): the route read from the address at every
  *  render, and the slots `filled` and `views` give where the case gives them. `held.navigate`
  *  moves the router, as a press of a view's control does. */
-function AddressedStage({ filled, held, issue, views }: StageProps): ReactNode {
+function AddressedStage({ filled, held, issue, page, views }: StageProps): ReactNode {
   const { pathname, search } = useLocation();
   held.navigate = useNavigate();
   const route = parseIssuePath(pathname, search);
   if (route === undefined) throw new Error(`${pathname} names no route`);
   return (
     <ProvidersSlot issue={issue} route={route}>
+      {page ? <HeaderSlot issue={issue} route={route} /> : null}
+      {page ? <ViewRowSlot issue={issue} route={route} /> : null}
       <StageSlot filled={filled} issue={issue} route={route} views={views} />
     </ProvidersSlot>
   );
@@ -123,17 +130,20 @@ export function drawStage(
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
     held = {},
     issue = issueDetails(),
+    page,
     preset = "decisions",
   }: {
     client?: QueryClient;
     held?: { navigate?: NavigateFunction };
     issue?: IssueDetails;
+    /** Whether the page's header and its view row are drawn before the stage (`StageProps`). */
+    page?: boolean;
     preset?: Preset;
   } = {}
 ): RenderResult {
   return render(
     <MemoryRouter initialEntries={[`${presetPath(KEY, preset)}${after}`]}>
-      <ProvidedStage client={client} held={held} issue={issue} />
+      <ProvidedStage client={client} held={held} issue={issue} page={page} />
     </MemoryRouter>
   );
 }
