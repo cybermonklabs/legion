@@ -872,11 +872,11 @@ func teardownEffectsTraceAnswer(seq int, op string, code *string, replayed []tea
 // teardownEffectsTraceWrite is the trace's Dispatch write a as the run replay's writer makes one
 // (applyDispatch): the event of its kind, by the role's session, and a readback that holds the
 // record the event names. A handoff's head is mapped to its commit (sha) and takes the version
-// that version gives its phase; a result's commit is mapped too. It writes what the run replay
-// writes: a handoff, an issue comment, a result and a question. Any other write is an error, a
-// document among them (Dispatch's artifact.created event names no text, so a trace holds none),
-// and so is a write on another issue than key. A request-approval is not made here: the replay
-// makes it through the real dispatch CLI, as a refused write (teardownEffectsApprovalRefusal).
+// that version gives its phase; a result's commit is mapped too. An anchored comment names the
+// document by name, and applyDispatch uses the id of the replay's copy. Other writes, including a
+// document upload (the trace holds no text) and a write on another issue than key, are refused.
+// The replay makes request-approval through the real dispatch CLI instead, as a refused write
+// (teardownEffectsApprovalRefusal).
 func teardownEffectsTraceWrite(key, session string, a teardownEffectsTraceAction, sha func(string) string, version func(phase string) int) (teardownEffectsEvent, teardownEffectsReadback, error) {
 	var readback teardownEffectsReadback
 	author := teardownEffectsActor{Kind: "session", ID: session}
@@ -917,6 +917,16 @@ func teardownEffectsTraceWrite(key, session string, a teardownEffectsTraceAction
 		records = map[string]any{"results": map[string]any{"checks": []any{map[string]any{"block_id": teardownEffectsString(fields, "check"), "results": []any{fields}}}}}
 	case "comment":
 		event.Type, event.Payload = "comment.created", fields
+		if name := teardownEffectsString(fields, "artifact_name"); name != "" || fields["anchor"] != nil {
+			anchor, _ := fields["anchor"].(map[string]any)
+			quote := teardownEffectsString(anchor, "quote")
+			if name == "" || quote == "" {
+				return event, readback, fmt.Errorf("the trace's anchored comment at action %d needs a document name and an anchor quote", a.Seq)
+			}
+			// This id joins the event to its projected readback, not to the scratch Dispatch.
+			fields["anchor"] = map[string]any{"artifact_id": id, "quote": quote}
+			readback.Documents = []teardownEffectsDocument{{ID: id, Name: name, Kind: "doc"}}
+		}
 	case "ask":
 		fields["id"] = id
 		event.Type, event.Payload = "ask.opened", fields
@@ -1696,7 +1706,7 @@ func TestTeardownEffectsTraceWrite(t *testing.T) {
 		t.Fatalf("the question made %+v, %+v", e, readback.Asks)
 	}
 
-	// A reply is a comment the run replay's writer does not make.
+	// A trace supplies no earlier comment record for the reply to name.
 	e, readback, err := teardownEffectsTraceWrite("ACME-12", session, write("comment", "ACME-12", map[string]any{"body": "Yes.", "reply_to": "c-1"}), sha, version)
 	if fault, _ := teardownEffectsDispatchFault(&readback, e); err != nil || fault == "" {
 		t.Fatalf("a reply made %+v (%v), and the writer takes it", e, err)
@@ -1710,6 +1720,103 @@ func TestTeardownEffectsTraceWrite(t *testing.T) {
 		if _, _, err := teardownEffectsTraceWrite("ACME-12", session, refused, sha, version); err == nil {
 			t.Fatalf("made the write %s on %s %v", refused.Command, refused.Target, refused.Fields)
 		}
+	}
+}
+
+// A trace's comment that names a document of the issue and an anchor quote becomes a
+// comment.created event the run replay's writer takes, and posts as an anchored comment on the
+// replay's copy of that document; one naming a document with no anchor quote, or an anchor with no
+// document name, is refused.
+func TestTeardownEffectsTraceCommentOnADocument(t *testing.T) {
+	t.Parallel()
+	const session = "11111111-2222-4333-8444-555555555555"
+	sha := func(id string) string { return id }
+	version := func(string) int { return 1 }
+	at := time.Date(2030, 1, 9, 12, 5, 0, 0, time.UTC)
+	f3Comment := teardownEffectsF3Events(t)("comment.created")
+	f3Payload, _ := f3Comment["payload"].(map[string]any)
+	f3Body, _ := f3Payload["body"].(string)
+	write := func(fields map[string]any) teardownEffectsTraceAction {
+		return teardownEffectsTraceAction{Kind: "dispatch", Command: "comment", Target: "ACME-52", Seq: 2, At: at, Fields: fields}
+	}
+	// Lane D only projects the fields it needs: the world can contain step runs and comment threads.
+	var frozen teardownEffectsCase
+	if err := json.Unmarshal([]byte(`{
+		"world": {"dispatch": {
+			"issue": {"key": "ACME-52"},
+			"documents": [{"name": "plan.md", "body": "The flag's default is 3."}],
+			"steps": [{"id": "implement", "step": 0, "result": "passed"}],
+			"comments": [
+				{"id": "departure", "body": "Please confirm.", "anchor": {"document": "plan.md", "quote": "The flag's default is 3."}},
+				{"id": "decision", "body": "Confirmed.", "replyTo": "departure"}
+			]
+		}},
+		"traces": {"good": {"actions": [
+			{"kind": "dispatch", "command": "comment", "target": "ACME-52", "seq": 2, "at": "2030-01-09T12:05:00Z",
+			 "fields": {"artifact_name": "plan.md", "anchor": {"quote": "The flag's default is 3."}, "body": "For the architect: this change departs from task t1."}}
+		]}}
+	}`), &frozen); err != nil {
+		t.Fatal(err)
+	}
+	if len(frozen.Traces.Good.Actions) != 1 || len(frozen.World.Dispatch.Documents) != 1 {
+		t.Fatal("the case projection lost the trace comment or its document")
+	}
+	for _, row := range []struct {
+		name   string
+		fields map[string]any
+		body   string
+		quote  string
+	}{
+		{
+			name:   "a frozen trace's comment with artifact_name and anchor quote",
+			fields: frozen.Traces.Good.Actions[0].Fields,
+			body:   "For the architect: this change departs from task t1.",
+			quote:  "The flag's default is 3.",
+		},
+		{
+			name:   "a copy of fixture F3's anchored comment payload",
+			fields: f3Payload,
+			body:   f3Body,
+			quote:  "Deliver R1 and R2 of the spec",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			e, readback, err := teardownEffectsTraceWrite("ACME-52", session, write(row.fields), sha, version)
+			if err != nil {
+				t.Fatalf("teardownEffectsTraceWrite: %v", err)
+			}
+			if fault, _ := teardownEffectsDispatchFault(&readback, e); fault != "" {
+				t.Fatalf("the run replay's writer refuses the comment: %s", fault)
+			}
+			if len(readback.Documents) != 1 || readback.Documents[0].Name != "plan.md" || readback.Documents[0].Kind != "doc" {
+				t.Fatalf("readback documents = %+v, want one doc named plan.md", readback.Documents)
+			}
+			const replayID = "0df3d9b6-65b0-451a-9b69-6ae98218d858"
+			body, err := teardownEffectsCommentBody(e, &readback, map[string]string{"plan.md": replayID}, nil)
+			want := map[string]any{"body": row.body, "anchor": map[string]any{"artifact": replayID, "quote": row.quote}}
+			if err != nil || !reflect.DeepEqual(body, want) {
+				t.Fatalf("comment POST body = %+v (%v), want %+v", body, err, want)
+			}
+			if body, err := teardownEffectsCommentBody(e, &readback, nil, nil); err == nil {
+				t.Fatalf("made comment POST body %+v without a replay copy of plan.md", body)
+			}
+		})
+	}
+	for _, row := range []struct {
+		name   string
+		fields map[string]any
+	}{
+		{"artifact_name with no anchor", map[string]any{"artifact_name": "plan.md", "body": "On the plan."}},
+		{"anchor with no artifact_name", map[string]any{"artifact_name": "", "anchor": map[string]any{"quote": "The flag's default is 3."}, "body": "On the plan."}},
+		{"anchor with an empty quote", map[string]any{"artifact_name": "plan.md", "anchor": map[string]any{"quote": ""}, "body": "On the plan."}},
+	} {
+		t.Run("refuses "+row.name, func(t *testing.T) {
+			t.Parallel()
+			if e, _, err := teardownEffectsTraceWrite("ACME-52", session, write(row.fields), sha, version); err == nil {
+				t.Fatalf("made %+v, want refusal for %s", e, row.name)
+			}
+		})
 	}
 }
 

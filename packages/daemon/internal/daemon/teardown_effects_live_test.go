@@ -97,6 +97,8 @@ type teardownEffectsRun struct {
 	git                                                             fixturegit.Runner
 	commits                                                         map[string]string
 	handoffs                                                        map[string]teardownEffectsHandoff
+	documents                                                       map[string]string // name to replay artifact id
+	comments                                                        map[string]string // recorded comment id to replay comment id
 	before                                                          phase.Phase
 	fail                                                            func(error)
 }
@@ -190,6 +192,7 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 	proof := liveProof{t: t, cfg: cfg, st: st, records: record.NewStore(), project: projectToken}
 	r := &teardownEffectsRun{liveAgentProof: liveAgentProof{liveProof: proof, legion: h.legion}, harness: h, dispatch: dispatch, key: key, branch: "legion/" + key, role: roleOfClaim, token: token,
 		clock: &teardownEffectsClock{now: world.Clock}, git: fixturegit.Isolated(t, h.home), commits: map[string]string{}, handoffs: map[string]teardownEffectsHandoff{}, repo: liveRepo, base: "main", remoteName: "origin", fail: harness}
+	r.documents, r.comments = map[string]string{}, map[string]string{}
 	if harness == nil {
 		r.fail = func(err error) { t.Helper(); t.Fatal(err) }
 	}
@@ -314,10 +317,16 @@ func (r *teardownEffectsRun) fileIssue(key string, fields map[string]any) {
 	t.Helper()
 	teardownEffectsIssueCounter(t, r.dispatch, r.cfg.Project, r.issueNumber(key))
 	fields["project"], fields["force"] = r.cfg.Project, true
-	var issue struct{ Key string }
+	var issue struct {
+		Key               string
+		PrimaryArtifactID string `json:"primary_artifact_id"`
+	}
 	r.dispatch.user(http.MethodPost, "/api/v1/issues", fields, http.StatusCreated, &issue)
 	if issue.Key != key {
 		t.Fatalf("created issue %s, want %s", issue.Key, key)
+	}
+	if key == r.key && issue.PrimaryArtifactID != "" {
+		r.documents["spec.md"] = issue.PrimaryArtifactID
 	}
 }
 
@@ -557,7 +566,24 @@ func (r *teardownEffectsRun) push(branch, head string) {
 
 func (r *teardownEffectsRun) document(name, body string) {
 	r.t.Helper()
-	r.dispatch.user(http.MethodPost, "/api/v1/issues/"+r.key+"/artifacts", map[string]string{"name": name, "content": body}, 201, nil)
+	if err := r.uploadDocument(teardownEffectsActor{Kind: "user"}, name, body); err != nil {
+		r.fail(err)
+	}
+}
+
+// uploadDocument keeps the id Dispatch assigned, for later comments on the document's words.
+func (r *teardownEffectsRun) uploadDocument(actor teardownEffectsActor, name, body string) error {
+	var answer struct {
+		Artifact struct{ ID string }
+	}
+	if err := r.dispatchPost(actor, "/api/v1/issues/"+r.key+"/artifacts", map[string]any{"name": name, "content": body}, &answer); err != nil {
+		return err
+	}
+	if answer.Artifact.ID == "" {
+		return fmt.Errorf("Dispatch's upload of %q answered no artifact id", name)
+	}
+	r.documents[name] = answer.Artifact.ID
+	return nil
 }
 func (r *teardownEffectsRun) handoff(word, session, body string) handoffRecord {
 	r.t.Helper()
@@ -1623,7 +1649,7 @@ func (r *teardownEffectsRun) applyDispatch(e teardownEffectsEvent, own string, b
 	switch e.Type {
 	case "handoff.recorded":
 		body, version, word, _ := b.handoffBody(text("handoff_id"))
-		if err := r.dispatchPost(actor, prefix+"/handoffs/"+word, map[string]any{"body": body}); err != nil {
+		if err := r.dispatchPost(actor, prefix+"/handoffs/"+word, map[string]any{"body": body}, nil); err != nil {
 			return err
 		}
 		got := r.dispatch.latest(r.key, word)
@@ -1633,29 +1659,41 @@ func (r *teardownEffectsRun) applyDispatch(e teardownEffectsEvent, own string, b
 		r.handoffs[got.ID] = teardownEffectsHandoff{Phase: word, ID: got.ID, Version: got.Version}
 		return nil
 	case "comment.created":
-		return r.dispatchPost(actor, prefix+"/comments", map[string]any{"body": text("body")})
+		body, err := teardownEffectsCommentBody(e, b, r.documents, r.comments)
+		if err != nil {
+			return err
+		}
+		var answer struct{ ID string }
+		if err := r.dispatchPost(actor, prefix+"/comments", body, &answer); err != nil {
+			return err
+		}
+		if id := text("id"); id != "" {
+			if answer.ID == "" {
+				return fmt.Errorf("Dispatch's POST of comment %s answered no comment id", id)
+			}
+			r.comments[id] = answer.ID
+		}
+		return nil
 	case "result.recorded":
 		result, check, _ := b.result(text("result_id"))
 		return r.recordResult(actor.ID, check, result)
 	case "ask.opened":
 		for _, ask := range b.Asks {
 			if ask.ID == text("id") {
-				return r.dispatchPost(actor, prefix+"/asks", map[string]any{"question": ask.Question, "options": ask.Options})
+				return r.dispatchPost(actor, prefix+"/asks", map[string]any{"question": ask.Question, "options": ask.Options}, nil)
 			}
 		}
 	case "artifact.created":
-		for _, doc := range b.Documents {
-			if doc.ID == e.ArtifactID {
-				return r.dispatchPost(actor, prefix+"/artifacts", map[string]any{"name": doc.Name, "content": doc.Text})
-			}
-		}
+		doc, _ := b.document(e.documentID())
+		return r.uploadDocument(actor, doc.Name, doc.Text)
 	}
 	return fmt.Errorf("the replay writes no %s", e.Type)
 }
 
 // dispatchPost posts body as actor: a session through the agent's bearer, naming it, and a person
-// as the scratch Dispatch's person (handoffRecordsUser), whose login stands for the run's.
-func (r *teardownEffectsRun) dispatchPost(actor teardownEffectsActor, path string, body map[string]any) error {
+// as the scratch Dispatch's person (handoffRecordsUser), whose login stands for the run's. It
+// decodes Dispatch's answer into into when it is not nil.
+func (r *teardownEffectsRun) dispatchPost(actor teardownEffectsActor, path string, body map[string]any, into any) error {
 	var status int
 	var answer []byte
 	switch actor.Kind {
@@ -1679,6 +1717,11 @@ func (r *teardownEffectsRun) dispatchPost(actor teardownEffectsActor, path strin
 	}
 	if status != http.StatusCreated {
 		return fmt.Errorf("Dispatch POST %s = %d %s", path, status, answer)
+	}
+	if into != nil {
+		if err := json.Unmarshal(answer, into); err != nil {
+			return fmt.Errorf("decode Dispatch's answer to POST %s: %w", path, err)
+		}
 	}
 	return nil
 }

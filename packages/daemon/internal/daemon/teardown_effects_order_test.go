@@ -119,18 +119,34 @@ type teardownEffectsEvent struct {
 	Payload    map[string]any       `json:"payload"`
 }
 
+// documentID reads the document an artifact event changed. On issue events the envelope names the
+// issue, not its document: versions and edit notices carry the id directly in the payload, and
+// creates, renames and removals carry the artifact there.
+func (e teardownEffectsEvent) documentID() string {
+	if e.ArtifactID != "" {
+		return e.ArtifactID
+	}
+	if id := teardownEffectsString(e.Payload, "artifact_id"); id != "" {
+		return id
+	}
+	artifact, _ := e.Payload["artifact"].(map[string]any)
+	return teardownEffectsString(artifact, "id")
+}
+
+type teardownEffectsDocument struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	Text string `json:"text"`
+}
+
 // teardownEffectsReadback is the part of dispatch-readback.json the replay reads: the event log
 // with its seed cursor, and the records whose bodies the events do not carry.
 type teardownEffectsReadback struct {
-	SeedThrough int64                  `json:"seedThrough"`
-	Events      []teardownEffectsEvent `json:"events"`
-	Documents   []struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-		Kind string `json:"kind"`
-		Text string `json:"text"`
-	} `json:"documents"`
-	Handoffs []struct {
+	SeedThrough int64                     `json:"seedThrough"`
+	Events      []teardownEffectsEvent    `json:"events"`
+	Documents   []teardownEffectsDocument `json:"documents"`
+	Handoffs    []struct {
 		ID      string               `json:"id"`
 		Phase   string               `json:"phase"`
 		Version int                  `json:"version"`
@@ -148,6 +164,15 @@ type teardownEffectsReadback struct {
 			Results []map[string]any `json:"results"`
 		} `json:"checks"`
 	} `json:"results"`
+}
+
+func (b *teardownEffectsReadback) document(id string) (teardownEffectsDocument, bool) {
+	for _, doc := range b.Documents {
+		if id != "" && doc.ID == id {
+			return doc, true
+		}
+	}
+	return teardownEffectsDocument{}, false
 }
 
 // handoffBody is the stored body of the handoff record id: Dispatch keeps it as a string, and an
@@ -658,11 +683,10 @@ func teardownEffectsWorkspaceMoves(dir string, launched time.Time) ([]teardownEf
 	return moves, nil
 }
 
-// teardownEffectsDispatchFault is why the replay cannot write e again ("" when it can): it writes
-// a handoff, an issue comment, a result, a question and a document, each as its author did.
-// unsupported says the fault is the kind of write itself, one the replay never makes (a status
-// write, a claim, a reply, an answer, a question of a document, a file, a document its author
-// changed after making it), and not a record the readback lacks or an author the write cannot have.
+// teardownEffectsDispatchFault is why the replay cannot write e again ("" when it can). It writes
+// handoffs, plain and anchored issue comments, replies to earlier issue comments, results,
+// questions and documents. unsupported distinguishes writes it cannot make as recorded from a
+// missing record or invalid author.
 func teardownEffectsDispatchFault(b *teardownEffectsReadback, e teardownEffectsEvent) (fault string, unsupported bool) {
 	text := func(key string) string { s, _ := e.Payload[key].(string); return s }
 	switch e.Type {
@@ -674,9 +698,30 @@ func teardownEffectsDispatchFault(b *teardownEffectsReadback, e teardownEffectsE
 			return "its record " + text("handoff_id") + " is not in the readback", false
 		}
 	case "comment.created":
-		for _, field := range []string{"reply_to", "ask_id", "anchor", "artifact_id", "block_id"} {
-			if v, ok := e.Payload[field]; ok && v != nil && v != "" {
-				return "a reply, an answer on a question or an anchored comment (" + field + ")", true
+		for _, field := range []string{"ask_id", "artifact_id", "block_id", "reply_block"} {
+			if v := e.Payload[field]; v != nil && v != "" {
+				return "a comment with " + field + ", which the replay does not make", true
+			}
+		}
+		if target := e.Payload["reply_to"]; target != nil && target != "" {
+			reply := text("reply_to")
+			if reply == "" || e.Payload["anchor"] != nil {
+				return "a reply without a comment id or with an anchor", true
+			}
+			if !slices.ContainsFunc(b.Events, func(parent teardownEffectsEvent) bool {
+				return parent.Seq < e.Seq && parent.Type == "comment.created" && teardownEffectsString(parent.Payload, "id") == reply
+			}) {
+				return "a reply to the comment " + reply + ", which the readback holds no earlier record of", true
+			}
+		}
+		if raw := e.Payload["anchor"]; raw != nil {
+			anchor, _ := raw.(map[string]any)
+			if teardownEffectsString(anchor, "quote") == "" {
+				return "an anchored comment without an anchor quote", true
+			}
+			id := teardownEffectsString(anchor, "artifact_id")
+			if doc, ok := b.document(id); !ok || doc.Kind != "doc" {
+				return "a comment anchored to words of " + id + ", a document the readback does not hold", true
 			}
 		}
 		if _, ok := e.Payload["body"].(string); !ok {
@@ -703,22 +748,17 @@ func teardownEffectsDispatchFault(b *teardownEffectsReadback, e teardownEffectsE
 			return "its question " + text("id") + " is not in the readback", false
 		}
 	case "artifact.created":
-		kind := ""
-		for _, d := range b.Documents {
-			if d.ID == e.ArtifactID {
-				kind = d.Kind
-			}
+		id := e.documentID()
+		doc, ok := b.document(id)
+		if !ok || doc.Kind == "" {
+			return "the readback holds no document " + id, false
 		}
-		switch kind {
-		case "":
-			return "the readback holds no document " + e.ArtifactID, false
-		case "doc":
-		default:
-			return "the readback holds " + e.ArtifactID + " as a " + kind + ", which the replay does not make", true
+		if doc.Kind != "doc" {
+			return "the readback holds " + id + " as a " + doc.Kind + ", which the replay does not make", true
 		}
 		for _, later := range b.Events {
 			changed := later.Type == "artifact.version" || later.Type == "artifact.human_edited" || later.Type == "artifact.renamed" || later.Type == "artifact.removed"
-			if later.Seq > e.Seq && later.ArtifactID == e.ArtifactID && changed {
+			if changed && later.Seq > e.Seq && later.documentID() == id {
 				return "the readback holds only the document's latest text, and " + later.Type + " changed it after it was made", later.Actor == e.Actor
 			}
 		}
@@ -726,6 +766,29 @@ func teardownEffectsDispatchFault(b *teardownEffectsReadback, e teardownEffectsE
 		return "the replay writes no " + e.Type, true
 	}
 	return "", false
+}
+
+// teardownEffectsCommentBody translates the comment's targets after teardownEffectsDispatchFault
+// has checked the recorded write. The replay maps document names and original comment ids to the
+// ids its own writes returned.
+func teardownEffectsCommentBody(e teardownEffectsEvent, b *teardownEffectsReadback, documents, comments map[string]string) (map[string]any, error) {
+	body := map[string]any{"body": teardownEffectsString(e.Payload, "body")}
+	if anchor, ok := e.Payload["anchor"].(map[string]any); ok {
+		doc, _ := b.document(teardownEffectsString(anchor, "artifact_id"))
+		id := documents[doc.Name]
+		if id == "" {
+			return nil, fmt.Errorf("the replay holds no copy of document %q", doc.Name)
+		}
+		body["anchor"] = map[string]any{"artifact": id, "quote": teardownEffectsString(anchor, "quote")}
+	}
+	if reply := teardownEffectsString(e.Payload, "reply_to"); reply != "" {
+		id := comments[reply]
+		if id == "" {
+			return nil, fmt.Errorf("the replay holds no copy of comment %s", reply)
+		}
+		body["reply_to"] = id
+	}
+	return body, nil
 }
 
 // teardownEffectsGitHubAction is the change a gh call made to the GitHub lane R kept, as gh-standin
@@ -1555,11 +1618,16 @@ func TestTeardownEffectsOrderAuditRecords(t *testing.T) {
 }
 
 // A HARNESS verdict is typed by its cause, never read from its reason. A Dispatch write the replay
-// does not make (a status write, a reply), of the session whose legion call it precedes and scored
-// by outcome.json, is the role's write, named by its record, its outcome.json action and case time,
-// its author and that call. The same write by another session, a handoff by a person, a write whose
-// record the readback lacks or whose event carries no body, and a seeded write the replay cannot
-// make are the harness's own records. Each row changes one event of the control.
+// does not make (a status write, a reply to a comment the readback holds no record of, a comment
+// anchored to a document the issue does not hold), of the session whose legion call it precedes and
+// scored by outcome.json, is the role's write, named by its record, its outcome.json action and case
+// time, its author and that call. The same write by another session, a handoff by a person, a write
+// whose record the readback lacks or whose event carries no body, and a seeded write the replay
+// cannot make are the harness's own records. A comment anchored to a document of the issue, a reply
+// to a comment the readback holds and a document whose event names it in its payload alone are
+// writes the replay makes, each as real Dispatch writes it (fixture F3): no fault, and placed. Each
+// row changes one event of the control, and a row that sets seeded changes event 4 too, the seed's
+// status write, which the replay skips.
 func TestTeardownEffectsOrderTypesTheRoleWrite(t *testing.T) {
 	t.Parallel()
 	const role = "7d1e5a12-0c05-4a12-9b12-a5120c05a512"
@@ -1569,24 +1637,61 @@ func TestTeardownEffectsOrderTypesTheRoleWrite(t *testing.T) {
 	}
 	records := &teardownEffectsFault{Kind: "harness-record"}
 	payload := func(event map[string]any) map[string]any { p, _ := event["payload"].(map[string]any); return p }
+	// f3 puts fixture F3's event of the type kind in event's place: event keeps its seq, time, id,
+	// issue and author, and takes the copy's type, its own artifact_id (none) and its payload.
+	f3Event := teardownEffectsF3Events(t)
+	f3 := func(event map[string]any, kind string) {
+		copied := f3Event(kind)
+		event["type"], event["artifact_id"], event["payload"] = copied["type"], copied["artifact_id"], copied["payload"]
+	}
+	// The control's one document, and the id of F3's comment, which is anchored to words of plan.md.
+	const document, comment = "art-acme-12-verification", "88213038-202d-4554-bdaf-eceda4f590cc"
+	// anchored is F3's comment, anchored to the same words of the control's document.
+	anchored := func(e map[string]any) {
+		f3(e, "comment.created")
+		anchor, _ := payload(e)["anchor"].(map[string]any)
+		anchor["artifact_id"], payload(e)["artifact_name"] = document, "verification.md"
+	}
+	// reply is F3's comment made a reply to F3's comment, as Dispatch writes a reply: on no words.
+	reply := func(e map[string]any) {
+		f3(e, "comment.created")
+		p := payload(e)
+		p["id"], p["anchor"], p["artifact_name"], p["reply_to"] = "4f0c7a52-3d5e-4b1a-9c2d-7e8f9a0b1c2d", nil, "", comment
+	}
+	// created is the control's document as F3's artifact.created names plan.md: in its payload alone.
+	created := func(e map[string]any) {
+		f3(e, "artifact.created")
+		artifact, _ := payload(e)["artifact"].(map[string]any)
+		artifact["id"], artifact["name"] = document, "verification.md"
+	}
+	// versioned is a new version of the control's document, as F3's artifact.version names plan.md's.
+	versioned := func(e map[string]any) {
+		f3(e, "artifact.version")
+		payload(e)["artifact_id"], payload(e)["name"] = document, "verification.md"
+	}
 	for _, row := range []struct {
 		name  string
 		seq   float64
 		edit  func(event map[string]any)
-		want  string
+		want  string // "" for a write the replay makes: no error, and the event placed
 		fault *teardownEffectsFault
+		// seeded, where set, makes event 4 a record of the starting state the row's write needs.
+		seeded func(event map[string]any)
 	}{
-		{"the role's status write", 6, func(e map[string]any) { e["type"] = "issue.updated" }, "precedes legion call 2 (toolu_05published_accepted): the replay writes no issue.updated", roleWrite("issue.updated")},
-		{"the role's reply", 6, func(e map[string]any) {
-			e["type"], payload(e)["reply_to"], payload(e)["body"] = "comment.created", "cmt-1", "Done."
-		}, "a reply, an answer on a question or an anchored comment (reply_to)", roleWrite("comment.created")},
+		{"the role's status write", 6, func(e map[string]any) { e["type"] = "issue.updated" }, "precedes legion call 2 (toolu_05published_accepted): the replay writes no issue.updated", roleWrite("issue.updated"), nil},
+		{"the role's reply", 6, reply, "", nil, anchored},
+		{"a reply to a comment the readback holds no record of is still a role write", 6, reply, "a reply to the comment " + comment + ", which the readback holds no earlier record of", roleWrite("comment.created"), nil},
+		{"a comment anchored to a document of the issue is no role write", 6, anchored, "", nil, nil},
+		{"a comment anchored to a document the issue does not hold is still a role write", 6, func(e map[string]any) { f3(e, "comment.created") }, "a comment anchored to words of 5493e699-5455-48ce-af81-bff67681cb87, a document the readback does not hold", roleWrite("comment.created"), nil},
 		{"another session's status write", 6, func(e map[string]any) {
 			e["type"], e["actor"] = "issue.updated", map[string]any{"kind": "session", "id": "ses-acme-12-tester"}
-		}, "the replay writes no issue.updated", records},
-		{"a person's handoff", 5, func(e map[string]any) { e["actor"] = map[string]any{"kind": "user", "id": "usr-acme"} }, "precedes legion call 1 (toolu_01local_only_refused): a handoff written by a user", records},
-		{"the role's result the readback lacks", 6, func(e map[string]any) { payload(e)["result_id"] = "res-missing" }, "its result res-missing is not in the readback", records},
-		{"the role's comment whose event carries no body", 6, func(e map[string]any) { e["type"] = "comment.created" }, "its event carries no body", records},
-		{"a seeded write the replay cannot make", 2, func(e map[string]any) { e["type"] = "message.created" }, "which the replay cannot seed: the replay writes no message.created", records},
+		}, "the replay writes no issue.updated", records, nil},
+		{"a person's handoff", 5, func(e map[string]any) { e["actor"] = map[string]any{"kind": "user", "id": "usr-acme"} }, "precedes legion call 1 (toolu_01local_only_refused): a handoff written by a user", records, nil},
+		{"the role's result the readback lacks", 6, func(e map[string]any) { payload(e)["result_id"] = "res-missing" }, "its result res-missing is not in the readback", records, nil},
+		{"the role's comment whose event carries no body", 6, func(e map[string]any) { e["type"] = "comment.created" }, "its event carries no body", records, nil},
+		{"a seeded write the replay cannot make", 2, func(e map[string]any) { e["type"] = "message.created" }, "which the replay cannot seed: the replay writes no message.created", records, nil},
+		{"a seeded document whose event names it in its payload alone", 2, created, "", nil, nil},
+		{"a seeded document that a version named in its payload alone changed", 2, created, "which the replay cannot seed: the readback holds only the document's latest text, and artifact.version changed it after it was made", records, versioned},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -1594,8 +1699,26 @@ func TestTeardownEffectsOrderTypesTheRoleWrite(t *testing.T) {
 			if err := os.CopyFS(dir, os.DirFS(teardownEffectsLocalOnlyHead)); err != nil {
 				t.Fatal(err)
 			}
-			teardownEffectsEditEvent(t, filepath.Join(dir, "dispatch-readback.json"), row.seq, row.edit)
-			_, err := teardownEffectsOrderOf(t, dir)
+			readback := filepath.Join(dir, "dispatch-readback.json")
+			teardownEffectsEditEvent(t, readback, row.seq, row.edit)
+			if row.seeded != nil {
+				teardownEffectsEditEvent(t, readback, 4, row.seeded)
+			}
+			plan, err := teardownEffectsOrderOf(t, dir)
+			if row.want == "" {
+				if err != nil {
+					t.Fatalf("placed the run with error %v, want none", err)
+				}
+				placed := slices.Clone(plan.Seed)
+				for _, step := range plan.Steps {
+					placed = append(placed, step.Before...)
+				}
+				source := fmt.Sprintf("dispatch-readback.json event %v", row.seq)
+				if !slices.ContainsFunc(placed, func(c teardownEffectsChange) bool { return c.Source == source }) {
+					t.Fatalf("placed %+v, and not %s", teardownEffectsPlacedOf(placed), source)
+				}
+				return
+			}
 			if err == nil || !strings.Contains(err.Error(), row.want) {
 				t.Fatalf("placed the run with error %v, want one naming %q", err, row.want)
 			}
@@ -1636,6 +1759,34 @@ func teardownEffectsEditEvent(t *testing.T, path string, seq float64, edit func(
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// teardownEffectsF3Events reads three events of fixture F3, a real issue's event log
+// (testdata/teardown-effects/document-events.json; its .command says how they were taken), and
+// answers a fresh copy of the one of a type at each call: plan.md's artifact.created and its
+// artifact.version, each of which names the document in its payload alone, and a comment anchored
+// to words of plan.md.
+func teardownEffectsF3Events(t *testing.T) func(kind string) map[string]any {
+	t.Helper()
+	var events []json.RawMessage
+	if err := teardownEffectsDecode("testdata/teardown-effects/document-events.json", &events); err != nil {
+		t.Fatal(err)
+	}
+	byType := map[string]json.RawMessage{}
+	for _, raw := range events {
+		var e struct{ Type string }
+		if err := json.Unmarshal(raw, &e); err != nil {
+			t.Fatal(err)
+		}
+		byType[e.Type] = raw
+	}
+	return func(kind string) map[string]any {
+		var event map[string]any
+		if err := json.Unmarshal(byType[kind], &event); err != nil {
+			panic(fmt.Sprintf("fixture F3 holds no %s event: %v", kind, err))
+		}
+		return event
 	}
 }
 

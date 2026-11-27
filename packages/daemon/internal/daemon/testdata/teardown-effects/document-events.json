@@ -1,0 +1,201 @@
+[
+  {
+    "id": 1268431,
+    "issue_key": "ACME-5996",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 3,
+    "type": "artifact.created",
+    "actor": {
+      "kind": "session",
+      "id": "01a1fa8c-54ff-7224-830f-aa84d79e2ebb",
+      "origin": {
+        "host": "host",
+        "machine": "machine",
+        "cwd": "/work",
+        "session_title": "session"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-26T20:00:39.311166Z",
+    "payload": {
+      "artifact": {
+        "id": "5493e699-5455-48ce-af81-bff67681cb87",
+        "kind": "doc",
+        "name": "plan.md",
+        "role": "plan",
+        "slug": "plan-md",
+        "primary": false,
+        "project": "ACME",
+        "ref_key": "ACME-5996/plan-md",
+        "versions": [
+          {
+            "size": 888,
+            "named": false,
+            "number": 1,
+            "authors": [
+              {
+                "id": "01a1fa8c-54ff-7224-830f-aa84d79e2ebb",
+                "kind": "session",
+                "origin": {
+                  "host": "host",
+                  "machine": "machine",
+                  "cwd": "/work",
+                  "session_title": "session"
+                }
+              }
+            ],
+            "summary": null,
+            "created_at": "2026-11-26T20:00:39.311166Z"
+          }
+        ],
+        "issue_key": "ACME-5996",
+        "created_at": "2026-11-26T20:00:39.311166Z",
+        "created_by": {
+          "id": "01a1fa8c-54ff-7224-830f-aa84d79e2ebb",
+          "kind": "session",
+          "origin": {
+            "host": "host",
+            "machine": "machine",
+            "cwd": "/work",
+            "session_title": "session"
+          }
+        },
+        "session_id": null
+      },
+      "references_changed": [
+        {
+          "id": "ACME-5996",
+          "kind": "issue"
+        }
+      ]
+    }
+  },
+  {
+    "id": 1268820,
+    "issue_key": "ACME-5996",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 6,
+    "type": "artifact.version",
+    "actor": {
+      "kind": "session",
+      "id": "01a1fa8c-54ff-7224-830f-aa84d79e2ebb",
+      "origin": {
+        "host": "host",
+        "machine": "machine",
+        "cwd": "/work",
+        "session_title": "session"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-26T20:07:46.565944Z",
+    "payload": {
+      "name": "plan.md",
+      "version": {
+        "size": 979,
+        "named": false,
+        "number": 2,
+        "authors": [
+          {
+            "id": "01a1fa8c-54ff-7224-830f-aa84d79e2ebb",
+            "kind": "session",
+            "origin": {
+              "host": "host",
+              "machine": "machine",
+              "cwd": "/work",
+              "session_title": "session"
+            }
+          }
+        ],
+        "summary": null,
+        "created_at": "2026-11-26T20:07:46.565944Z"
+      },
+      "artifact_id": "5493e699-5455-48ce-af81-bff67681cb87",
+      "references_changed": [
+        {
+          "id": "ACME-5996/spec#c-handoffs",
+          "ref": "dispatch://ACME-5996/spec#b-c-handoffs",
+          "kind": "block",
+          "artifact_id": "5e5ab409-ed3d-4606-b852-5593df47359b"
+        },
+        {
+          "id": "ACME-5996/spec#c-departures",
+          "ref": "dispatch://ACME-5996/spec#b-c-departures",
+          "kind": "block",
+          "artifact_id": "5e5ab409-ed3d-4606-b852-5593df47359b"
+        },
+        {
+          "id": "ACME-5996",
+          "kind": "issue"
+        }
+      ]
+    }
+  },
+  {
+    "id": 1310533,
+    "issue_key": "ACME-5996",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 13,
+    "type": "comment.created",
+    "actor": {
+      "kind": "session",
+      "id": "01a21c6d-65d0-7181-b1d1-2a70641fad33",
+      "origin": {
+        "host": "host",
+        "machine": "machine",
+        "cwd": "/work",
+        "session_title": "session"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-27T09:58:51.891997Z",
+    "payload": {
+      "id": "88213038-202d-4554-bdaf-eceda4f590cc",
+      "body": "Facts for the planner of task `t-review-check`, read 2026-11-27T09:57Z, and two decisions of this issue's architect.\n\n- **#5700's head moved.** cybermonklabs/legion#5700 (ACME-3223, branch `legion/ACME-3223`) is open at head `d76c2a50375482cf5b8dbfa1280320f9246a70f1`, base `main`, merge state `BLOCKED`. Its `packages/daemon/internal/prompts/roles/reviewer.md` is 1,394 bytes at that head, not the 1,251 bytes at `4962fc95c5` that the spec's Design names; `main`'s is 13,179 bytes and goes away with #5700. Plan the reviewer text against the head the implementer merges forward.\n- **No step runs in the harness.** At `d76c2a5037`, `packages/pi-legion/scripts/skill-scenarios/heldout-case.ts` takes `set: devcase`, and neither it nor `daemon-standin.ts` holds step runs. So the step runs that R1's test reads are part of this task, in the world and in the stand-in.\n- **Decision: tell ACME-3223 the lines first.** Before its first push that changes a file #5700 changes, the implementer writes a Dispatch comment on dispatch://ACME-3223 with `--mention-role legion-acme-acme-3223-architect` that names each file and the exact lines the change touches. ACME-3223's architect asked for this, and the deployment's rule for a change that touches another open pull request's files says the same. It does not wait for an answer.\n- **Decision: no children.** This issue is one pull request in cybermonklabs/legion. The reviewer text and the harness step runs are proven by one case, so a split would only run them in sequence.\n",
+      "turn": null,
+      "anchor": {
+        "quote": "Deliver R1 and R2 of the spec",
+        "mark_id": "88213038-202d-4554-bdaf-eceda4f590cc",
+        "version": 2,
+        "block_id": "812bea54-6eb2-4bfd-a005-be7d596bd76f",
+        "orphaned": false,
+        "artifact_id": "5493e699-5455-48ce-af81-bff67681cb87"
+      },
+      "ask_id": null,
+      "author": {
+        "id": "01a21c6d-65d0-7181-b1d1-2a70641fad33",
+        "kind": "session",
+        "origin": {
+          "host": "host",
+          "machine": "machine",
+          "cwd": "/work",
+          "session_title": "session"
+        }
+      },
+      "answers": null,
+      "mentions": [],
+      "reply_to": null,
+      "resolved": false,
+      "edited_at": null,
+      "issue_key": "ACME-5996",
+      "created_at": "2026-11-27T09:58:51.927469Z",
+      "deliveries": [],
+      "suggestion": null,
+      "artifact_id": null,
+      "reply_block": null,
+      "resolved_at": null,
+      "resolved_by": null,
+      "artifact_name": "plan.md",
+      "thread_logins": [],
+      "suppress_route": false,
+      "references_changed": [
+        {
+          "id": "ACME-3223",
+          "kind": "issue"
+        }
+      ]
+    }
+  }
+]
