@@ -5135,10 +5135,19 @@ On the base both paths must resolve.
 On the candidate only the retained path must resolve.
 The withheld-file control repeats the planner launch in a separate profile without the retained file.
 
+Oh My Pi asks its fast model, the stand-in here, to shorten each skill's description, and the skill list of each later session gives the answer.
+Both recorders, the stand-in and the `--reads` proxy, answer such a request themselves and send it to no gateway.
+The answer is the preview Oh My Pi itself lists while no answer is stored, so a skill list is the same whether or not the answer came first.
+A recorder never keeps a description request as the role's first request.
+`descriptions/` holds the description requests each pane's endpoint answered, one request a line.
+A capture fails, naming the launch, when a skill entry of its first request gives a recorder's own line as the description.
+
 `rows.jsonl` holds one row per launch, with prompt part hashes, byte counts, and reference outcomes.
 `requests/` holds the original request bodies.
-`splits/` accounts for the wire bytes separately from the input totals.
-Input totals count the decoded system and message text specified by the row, tool definitions, and observed reads.
+`splits/` accounts for the wire bytes separately from the input totals, and lists each skill entry's description.
+A row's first request has six parts: the system text, the tool definitions, the skill list, the dispatch-first skill, the first message, and the text of every other message.
+Its total is those six parts and the observed reads.
+The total leaves out the wire framing: JSON punctuation, keys and the request's options.
 `argv/` and `prompts/` show which prompt file each process received.
 `control-withheld.json` and `control-extra-read.json` hold the two controls.
 
@@ -5153,6 +5162,12 @@ Set `LEGION_PROMPT_INPUTS_READS_SUPERVISED_ONLY=1` to measure the eight supervis
 It records each session's read results up to the first non-read call or the end of the turn.
 The extra-read control repeats the planner launch with a mandatory read added to a copy of a subject prompt part.
 It checks that the new read appears and that the total increases.
+
+`packages/pi-legion/scripts/skill-scenarios/teardown-inputs.ts rows --before <base rows.jsonl> --after <head rows.jsonl>` compares two runs.
+It prints one Markdown table with a line for each launch: the role parts, each part of the first request, the required reads and the total, in bytes, before and after.
+It refuses a row that has no `other_messages_bytes`, naming the launch and the arm: such a row was measured before the other messages were counted, so its total leaves them out.
+It also refuses a launch that only one arm has, and it drops no row.
+Run both arms with this driver before you compare them.
 
 ## late-completion.sh
 

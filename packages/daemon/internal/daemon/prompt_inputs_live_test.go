@@ -932,6 +932,9 @@ func (r *promptInputsRun) capture(a *liveAgentProof, p *promptInputsPane, root i
 	if !split.LegionPromptFound || split.DispatchFirstBytes == 0 || split.FirstMessageBytes == 0 || split.ToolDefinitionsBytes == 0 {
 		t.Fatalf("%s: missing prompt, dispatch-first, first message or tools (see splits/%s.json)", p.name, name)
 	}
+	if held := split.placeholderSkills(); len(held) != 0 {
+		t.Fatalf("%s: the skill list gives a recorder's answer as the description of %s, not the skill's own text (see splits/%s.json)", p.name, strings.Join(held, ", "), name)
+	}
 	var actual []string
 	for _, skill := range split.Skills {
 		actual = append(actual, promptInputsNormalizeSkillName(skill))
@@ -985,15 +988,6 @@ func (r *promptInputsRun) capture(a *liveAgentProof, p *promptInputsPane, root i
 	fmt.Printf("   %s pid %d: request %d wire bytes, input total %d bytes\n", p.name, pid, split.TotalRequestBytes, row.TotalBytes)
 }
 
-func promptInputsTotal(row promptInputsRow) int {
-	p := row.FirstRequest
-	n := p.SystemTextBytes + p.ToolDefinitionsBytes + p.SkillListBytes + p.DispatchFirstBytes + p.FirstMessageBytes
-	for _, read := range row.RequiredReads {
-		n += read.Bytes
-	}
-	return n
-}
-
 func (r *promptInputsRun) finishReads() {
 	for _, l := range promptInputsLaunches {
 		if l.Backend != runtime.BackendClaude {
@@ -1024,6 +1018,9 @@ type promptInputsModel struct {
 	done     chan promptInputsCapture
 	finished bool
 	gateway  *promptInputsGateway
+	// descriptions are the skill-description requests this endpoint answered, each compacted to
+	// one line.
+	descriptions bytes.Buffer
 }
 
 type promptInputsCapture struct {
@@ -1035,6 +1032,9 @@ type promptInputsCapture struct {
 func (r *promptInputsRun) startModel(t *testing.T, p *promptInputsPane, name string) *promptInputsModel {
 	t.Helper()
 	m := &promptInputsModel{modelStandin: &modelStandin{name: name}, task: p.task, done: make(chan promptInputsCapture, 1)}
+	// Registered before the endpoint, so it runs after the endpoint has closed and every request
+	// it took has been answered.
+	t.Cleanup(func() { r.writeDescriptions(p, m) })
 	if p.reads {
 		m.gateway = promptInputsNewGateway(t, r.spend, r.gatewayAuth)
 		t.Cleanup(func() { r.writePaneSpend(p) })
@@ -1061,6 +1061,16 @@ func (r *promptInputsRun) startModel(t *testing.T, p *promptInputsPane, name str
 	}
 	m.serve(t, m)
 	return m
+}
+
+// writeDescriptions keeps the skill-description requests the pane's endpoint answered as
+// descriptions/<pane>.jsonl, one request a line.
+func (r *promptInputsRun) writeDescriptions(p *promptInputsPane, m *promptInputsModel) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.descriptions.Len() != 0 {
+		r.writeEvidence("descriptions/"+promptInputsSlug(p.name)+".jsonl", m.descriptions.Bytes())
+	}
 }
 
 func (m *promptInputsModel) writeProvider(models, enabled *strings.Builder) string {
@@ -1093,6 +1103,19 @@ func (m *promptInputsModel) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 		http.Error(w, "cannot read model request", http.StatusBadRequest)
 		return
 	}
+	// Oh My Pi asks its fast model, which is this endpoint, to shorten each skill's description,
+	// and every later session lists the answer as that description. Answer such a request here,
+	// before the gateway route and before the task's first request is kept, so no recorder's line
+	// becomes a skill's description and no description request is taken for the role's request.
+	if _, description, ok := promptInputsDescriptionRequest(raw); ok {
+		m.mu.Lock()
+		if err := json.Compact(&m.descriptions, raw); err == nil {
+			m.descriptions.WriteByte('\n')
+		}
+		m.mu.Unlock()
+		streamAnthropicText(w, m.name, promptInputsDescriptionAnswer(description))
+		return
+	}
 	if m.gateway != nil {
 		m.mu.Lock()
 		if m.first == nil && bytes.Contains(raw, []byte(m.task[:24])) {
@@ -1118,7 +1141,7 @@ func (m *promptInputsModel) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 	if !bytes.Contains(raw, []byte(m.task[:24])) || len(call.Tools) == 0 || m.finished {
-		streamAnthropicText(w, m.name, "WAITING on the next fixture task.")
+		streamAnthropicText(w, m.name, promptInputsStandinWait)
 		return
 	}
 	if m.first == nil {
@@ -1153,13 +1176,13 @@ func (m *promptInputsModel) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 		}
 		if !found {
 			m.complete(fmt.Errorf("missing tool result %s", id))
-			streamAnthropicText(w, m.name, "WAITING on the next fixture task.")
+			streamAnthropicText(w, m.name, promptInputsStandinWait)
 			return
 		}
 	}
 	if m.next == len(m.refs) {
 		m.complete(nil)
-		streamAnthropicText(w, m.name, "WAITING on the next fixture task.")
+		streamAnthropicText(w, m.name, promptInputsStandinWait)
 		return
 	}
 	for _, tool := range call.Tools {
@@ -1170,5 +1193,5 @@ func (m *promptInputsModel) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 		}
 	}
 	m.complete(fmt.Errorf("request did not offer a read tool"))
-	streamAnthropicText(w, m.name, "WAITING on the next fixture task.")
+	streamAnthropicText(w, m.name, promptInputsStandinWait)
 }

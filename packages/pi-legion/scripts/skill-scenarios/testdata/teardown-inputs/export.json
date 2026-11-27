@@ -9,11 +9,11 @@
   "public": [
     {
       "repository": "cybermonklabs/legion",
-      "requested": "ecd967b17a4e527009dab56f459e0f4e76c0bd25",
-      "commit": "ecd967b17a4e527009dab56f459e0f4e76c0bd25",
-      "parent": "d00ed2547ce52cb9c42fc333410b2ce7381630f0",
+      "requested": "1098e27eaf18b355b7a8b883360e10807507d9b8",
+      "commit": "1098e27eaf18b355b7a8b883360e10807507d9b8",
+      "parent": "b28a60ca658499ac05bbf0f845d5ebca5659f113",
       "branch": "sample-branch",
-      "branchHead": "ecd967b17a4e527009dab56f459e0f4e76c0bd25",
+      "branchHead": "1098e27eaf18b355b7a8b883360e10807507d9b8",
       "isBranchHead": true,
       "problems": []
     }
@@ -25,7 +25,7 @@
         "commit": "0123456789abcdef0123456789abcdef01234567"
       },
       "project": "ACME",
-      "publicCommit": "ecd967b17a4e527009dab56f459e0f4e76c0bd25",
+      "publicCommit": "1098e27eaf18b355b7a8b883360e10807507d9b8",
       "shared": {
         "bytes": 31,
         "sha256": "20f6dfa23e57f0fbad0dae547ea221a9bbbc96ef3c4eff759bff57c1aebae114"
@@ -53,23 +53,23 @@
           "parts": [
             {
               "path": "packages/daemon/internal/prompts/roles/controller-root.md",
-              "bytes": 3693,
-              "sha256": "c211980843f14c75d90bf17a1f82f54db66e0e6a2d878cddb4b78618e3fb3aac"
+              "bytes": 599,
+              "sha256": "67f610729e25d8e5724faa8a06e7c325f69fd5e461de45aab24b10401ae15258"
             },
             {
               "path": "packages/daemon/internal/prompts/go/controller-headless.md",
-              "bytes": 2830,
-              "sha256": "24660f30c9d5fab861c48458fcdc31226f27541d27329b8a9740d578e10e2f5b"
+              "bytes": 78,
+              "sha256": "621caaa793c199cd8a6e468761eeeaba99b0f6ada39dbd2f851d81149c16e3f5"
             }
           ],
           "roleText": {
-            "bytes": 6522,
-            "sha256": "23ac2f8161fc300d8cab5c5e404b6e3651a6de4f73b79ef662a9ad76abd7d24b"
+            "bytes": 676,
+            "sha256": "7c327ed1e730b767687fcb3d16b87f60ef787ba154df89a08c36df20a50caebf"
           },
           "memory": false,
           "assembled": {
-            "bytes": 6621,
-            "sha256": "b7ae24d00690f205d236294c9a21e54a649cb35ebdb142f7873e403a03482a3c"
+            "bytes": 775,
+            "sha256": "e896fef2d5351c63f7674f748ab724d7c22d8793ad9629969ccf2e0e5220f7f9"
           }
         }
       ],
@@ -82,7 +82,7 @@
         "commit": "0123456789abcdef0123456789abcdef01234567"
       },
       "project": "BETA",
-      "publicCommit": "ecd967b17a4e527009dab56f459e0f4e76c0bd25",
+      "publicCommit": "1098e27eaf18b355b7a8b883360e10807507d9b8",
       "shared": {
         "bytes": 31,
         "sha256": "20f6dfa23e57f0fbad0dae547ea221a9bbbc96ef3c4eff759bff57c1aebae114"
@@ -118,23 +118,23 @@
           "parts": [
             {
               "path": "packages/daemon/internal/prompts/roles/controller-root.md",
-              "bytes": 3693,
-              "sha256": "c211980843f14c75d90bf17a1f82f54db66e0e6a2d878cddb4b78618e3fb3aac"
+              "bytes": 599,
+              "sha256": "67f610729e25d8e5724faa8a06e7c325f69fd5e461de45aab24b10401ae15258"
             },
             {
               "path": "packages/daemon/internal/prompts/go/controller-headless.md",
-              "bytes": 2830,
-              "sha256": "24660f30c9d5fab861c48458fcdc31226f27541d27329b8a9740d578e10e2f5b"
+              "bytes": 78,
+              "sha256": "621caaa793c199cd8a6e468761eeeaba99b0f6ada39dbd2f851d81149c16e3f5"
             }
           ],
           "roleText": {
-            "bytes": 6522,
-            "sha256": "23ac2f8161fc300d8cab5c5e404b6e3651a6de4f73b79ef662a9ad76abd7d24b"
+            "bytes": 676,
+            "sha256": "7c327ed1e730b767687fcb3d16b87f60ef787ba154df89a08c36df20a50caebf"
           },
           "memory": false,
           "assembled": {
-            "bytes": 6621,
-            "sha256": "c2c2e2a4494f38598eb31a056b65c025b1f6ea43e07f483fabcc9c9e8cdfde06"
+            "bytes": 775,
+            "sha256": "d13ca0b2cd6f3ba29f0635b5d7ffc9a247ca136471427fae6af53cc732a07cc9"
           }
         }
       ],
@@ -156,7 +156,7 @@
     {
       "name": "stale-revision",
       "outcome": "detected",
-      "detail": "ecd967b17a4e527009dab56f459e0f4e76c0bd25 is the head of sample-branch; its parent d00ed2547ce52cb9c42fc333410b2ce7381630f0 is not"
+      "detail": "1098e27eaf18b355b7a8b883360e10807507d9b8 is the head of sample-branch; its parent b28a60ca658499ac05bbf0f845d5ebca5659f113 is not"
     },
     {
       "name": "layout-mismatch",

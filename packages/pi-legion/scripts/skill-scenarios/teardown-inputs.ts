@@ -10,10 +10,12 @@
  *   bun teardown-inputs.ts sizes --before <export.json> --before-private <label>
  *       --after <export.json> --head <commit> --branch <branch> --projects <project,...>
  *       --launches <launch,...>
+ *   bun teardown-inputs.ts rows --before <rows.jsonl> --after <rows.jsonl>
  *
- * --export, --before and --after are export.json files of the schema prompt-render/2, and of no
- * other version. The keys read are the ones that version keeps from prompt-render/1: `public`
- * (each read's `requested`, `commit`, `branch`, `branchHead`, `isBranchHead` and `problems`),
+ * --export, and the --before and --after of `sizes`, are export.json files of the schema
+ * prompt-render/2, and of no other version. The keys read are the ones that version keeps from
+ * prompt-render/1: `public` (each read's `requested`, `commit`, `branch`, `branchHead`,
+ * `isBranchHead` and `problems`),
  * `renders` (each render's `private` `label` and `commit`, `project`, `publicCommit`, `gate`,
  * `problems`, `deployment`, `memory`, `requiredReadBytes` and `launches`: each launch's `launch`,
  * `role`, `backend`, `parts` with each part's `path`, `bytes` and `sha256`, `roleText` and
@@ -24,7 +26,10 @@
  * each launch, as the Go type promptInputsRow of
  * packages/daemon/internal/daemon/prompt_inputs_launches_test.go writes it (every key of that type
  * and no other), and its composition.json names in `subject_head` the public commit those rows
- * were measured at.
+ * were measured at. A row's first request counts the text of the other messages as a part of its
+ * own, `other_messages_bytes`, and its total includes it. A row written before that part was
+ * counted has no such key. It still reads, as history, but no command takes it for a
+ * measurement: `compare` and `rows` each refuse it, naming its launch.
  *
  * --head is the exact public commit, 40 lower-case hex. --branch is the public branch the render
  * was asked to compare that commit with (the run's `legion_branch`): for a pull request's head,
@@ -45,9 +50,9 @@
  * wrong-project and missing-reference controls, each `detected`; one gate render of each expected
  * project and none other, at the head and with no problem; and one launch of each expected kind.
  * It holds the rows to the head (composition.json's `subject_head`) and to the launches: one row
- * of each, none other, none without a part. Then, launch by launch, the export's parts and the
- * row's agree in order, path, bytes and sha256. It prints a line for each project and
- * `teardown-inputs: pass`, or each problem and `teardown-inputs: fail`.
+ * of each, none other, none without a part, and none without other_messages_bytes. Then, launch by
+ * launch, the export's parts and the row's agree in order, path, bytes and sha256. It prints a
+ * line for each project and `teardown-inputs: pass`, or each problem and `teardown-inputs: fail`.
  *
  * `sizes` compares no part. It prints, before and after, the bytes of each project's deployment,
  * memory and required reads, and of each launch's role parts and assembled prompt (addressing left
@@ -55,6 +60,14 @@
  * held to its outcome and controls and to the lists, and its renders are those of the private
  * checkout --before-private names (`base` in a pull request's run: the old deployment text at
  * each project's released Legion); a before render's own problems are counted, not failed.
+ *
+ * `rows` compares two runs of the prompt-inputs proof, the base's rows.jsonl (--before) and the
+ * head's (--after). It prints one table with a line for each launch: the bytes of its role parts,
+ * of each part of its first request (the system text, the tool definitions, the skill list, the
+ * dispatch-first skill, the first message and the other messages), of its required reads (marked
+ * `not observed` where the run did not observe them) and its total, before and after. It refuses,
+ * naming the launch and the arm, a row measured without the other messages, a launch one arm has
+ * twice, and a launch that only one arm has; it drops no row.
  *
  * Exit 0 when every check holds, 1 when one does not or an input does not read, 2 when the
  * arguments are refused.
@@ -137,6 +150,9 @@ const PromptInputsRow = z.strictObject({
     skill_list_bytes: Bytes,
     dispatch_first_bytes: Bytes,
     first_message_bytes: Bytes,
+    // Absent from a row written before the driver counted the other messages: such a row reads
+    // as history, and `measured` refuses it.
+    other_messages_bytes: Bytes.optional(),
   }),
   required_reads: list(z.strictObject({ path: z.string(), bytes: Bytes })),
   reads_observed: z.string().optional(),
@@ -350,7 +366,18 @@ function holdRenders(
   return { held, problems };
 }
 
-/** The rows held to the head and the expected launches: one row of each, each with a part. */
+/**
+ * The refusal of a row written before the driver counted the other messages, or undefined for a
+ * row that counts them. Such a row's total leaves those bytes out, so it is history, never a
+ * measurement. `which` names the row: `row`, or the arm's row.
+ */
+function unmeasured(which: string, row: PromptInputsRow): string | undefined {
+  if (row.first_request.other_messages_bytes !== undefined) return undefined;
+  return `the ${which} of ${row.launch} has no other_messages_bytes: it was measured without the other messages, and its total leaves them out`;
+}
+
+/** The rows held to the head and the expected launches: one row of each, each with a part and
+ * each measured with the other messages. */
 function rowProblems(evidence: Evidence, expected: Expected): string[] {
   const problems: string[] = [];
   if (evidence.subjectHead !== expected.head)
@@ -360,10 +387,15 @@ function rowProblems(evidence: Evidence, expected: Expected): string[] {
   if (evidence.rows.length === 0) problems.push("the rows hold no launch");
   const byLaunch = grouped(evidence.rows, (row) => row.launch);
   for (const [launch, same] of byLaunch) {
+    const [row] = same;
     if (!expected.launches.includes(launch))
       problems.push(`the rows hold ${launch}, which is not an expected launch`);
     else if (same.length > 1) problems.push(`the rows hold ${launch} ${same.length} times`);
-    else if (same[0]?.parts.length === 0) problems.push(`the row of ${launch} has no part`);
+    else if (row !== undefined) {
+      if (row.parts.length === 0) problems.push(`the row of ${launch} has no part`);
+      const refusal = unmeasured("row", row);
+      if (refusal !== undefined) problems.push(refusal);
+    }
   }
   for (const launch of expected.launches)
     if (!byLaunch.has(launch)) problems.push(`the rows hold no row of ${launch}`);
@@ -522,9 +554,85 @@ export function sizes(
   return { problems, table: `${lines.join("\n")}\n` };
 }
 
+/** The columns of `rowSizes`' table after the launch: each heading, and its bytes in a row. */
+const ROW_COLUMNS: readonly (readonly [string, (row: PromptInputsRow) => number | string])[] = [
+  ["Role-part bytes", (row) => row.parts.reduce((sum, part) => sum + part.bytes, 0)],
+  ["System text", (row) => row.first_request.system_text_bytes],
+  ["Tool definitions", (row) => row.first_request.tool_definitions_bytes],
+  ["Skill list", (row) => row.first_request.skill_list_bytes],
+  ["Dispatch-first", (row) => row.first_request.dispatch_first_bytes],
+  ["First message", (row) => row.first_request.first_message_bytes],
+  ["Other messages", (row) => row.first_request.other_messages_bytes ?? "-"],
+  [
+    "Required reads",
+    (row) => {
+      const bytes = row.required_reads.reduce((sum, read) => sum + read.bytes, 0);
+      return row.reads_observed === "observed" ? bytes : `${bytes}, not observed`;
+    },
+  ],
+  ["Total", (row) => row.total_bytes],
+];
+
+/**
+ * The before and after bytes of each launch, from two runs' rows: the base's (`before`) and the
+ * head's (`after`). Every launch of either run is a line, in the order the base's rows give them,
+ * and a launch that only one run has, a launch one run has twice, or a row measured without the
+ * other messages is a problem, which leaves no table.
+ */
+export function rowSizes(
+  before: readonly PromptInputsRow[],
+  after: readonly PromptInputsRow[]
+): Sizes {
+  const problems: string[] = [];
+  const arms = (
+    [
+      ["before", before],
+      ["after", after],
+    ] as const
+  ).map(([arm, rows]) => {
+    if (rows.length === 0) problems.push(`the ${arm} rows hold no launch`);
+    const byLaunch = grouped(rows, (row) => row.launch);
+    for (const [launch, same] of byLaunch)
+      if (same.length > 1) problems.push(`the ${arm} rows hold ${launch} ${same.length} times`);
+    for (const row of rows) {
+      const refusal = unmeasured(`${arm} row`, row);
+      if (refusal !== undefined) problems.push(refusal);
+    }
+    return { arm, byLaunch };
+  });
+  const [was, is] = arms;
+  if (was === undefined || is === undefined) return { problems, table: "" };
+  const launches = [...new Set([...was.byLaunch.keys(), ...is.byLaunch.keys()])];
+  for (const launch of launches)
+    for (const [arm, other] of [
+      [was, is],
+      [is, was],
+    ] as const)
+      if (!arm.byLaunch.has(launch))
+        problems.push(
+          `${launch} has a row in the ${other.arm} rows and none in the ${arm.arm} rows`
+        );
+  if (problems.length > 0) return { problems, table: "" };
+
+  const lines = [
+    `| Launch | ${ROW_COLUMNS.map(([heading]) => `${heading} before | after`).join(" | ")} |`,
+    `| --- |${" --- | --- |".repeat(ROW_COLUMNS.length)}`,
+  ];
+  for (const launch of launches) {
+    const [a] = was.byLaunch.get(launch) ?? [];
+    const [b] = is.byLaunch.get(launch) ?? [];
+    if (a === undefined || b === undefined) continue;
+    lines.push(
+      `| ${launch} | ${ROW_COLUMNS.map(([, bytes]) => `${bytes(a)} | ${bytes(b)}`).join(" | ")} |`
+    );
+  }
+  return { problems, table: `${lines.join("\n")}\n` };
+}
+
 const USAGE = [
   "usage: teardown-inputs.ts compare --export <export.json> --evidence <dir> --head <commit> --branch <branch> --projects <project,...> --launches <launch,...>",
   "   or: teardown-inputs.ts sizes --before <export.json> --before-private <label> --after <export.json> --head <commit> --branch <branch> --projects <project,...> --launches <launch,...>",
+  "   or: teardown-inputs.ts rows --before <rows.jsonl> --after <rows.jsonl>",
 ].join("\n");
 
 const FLAGS = {
@@ -538,13 +646,16 @@ const FLAGS = {
     "--projects",
     "--launches",
   ],
+  rows: ["--before", "--after"],
 } as const;
 
-interface Arguments {
-  readonly command: keyof typeof FLAGS;
-  readonly values: ReadonlyMap<string, string>;
-  readonly expected: Expected;
-}
+type Arguments =
+  | { readonly command: "rows"; readonly values: ReadonlyMap<string, string> }
+  | {
+      readonly command: "compare" | "sizes";
+      readonly values: ReadonlyMap<string, string>;
+      readonly expected: Expected;
+    };
 
 /** A comma-separated list of names, or the refusal that names what is wrong with it. */
 function names(flag: string, value: string): string[] | string {
@@ -558,7 +669,7 @@ function names(flag: string, value: string): string[] | string {
 /** The arguments, or the refusal that names the bad one. */
 function parseArguments(argv: readonly string[]): Arguments | string {
   const [command, ...rest] = argv;
-  if (command !== "compare" && command !== "sizes") return USAGE;
+  if (command !== "compare" && command !== "sizes" && command !== "rows") return USAGE;
   const flags: readonly string[] = FLAGS[command];
   const values = new Map<string, string>();
   for (let index = 0; index < rest.length; index += 2) {
@@ -571,6 +682,7 @@ function parseArguments(argv: readonly string[]): Arguments | string {
   }
   const missing = flags.filter((flag) => !values.has(flag));
   if (missing.length > 0) return `${command} needs ${missing.join(", ")}\n${USAGE}`;
+  if (command === "rows") return { command, values };
   const head = values.get("--head") ?? "";
   if (!COMMIT.test(head)) return `--head ${head} is not a 40-hex lower-case commit`;
   const projects = names("--projects", values.get("--projects") ?? "");
@@ -614,10 +726,17 @@ export function main(argv: readonly string[], io: Pick<CliIo, "out" | "err">): n
       lines.push(
         `teardown-inputs: pass: the private ${found.checkout?.label} at ${found.checkout?.commit}, the public ${args.expected.head} on ${args.expected.branch}`
       );
-    } else {
+    } else if (args.command === "sizes") {
       const before = readInput(file("--before"), parseExport);
       const after = readInput(file("--after"), parseExport);
       const found = sizes(before, args.values.get("--before-private") ?? "", after, args.expected);
+      problems = found.problems;
+      lines.push(found.table.trimEnd());
+    } else {
+      const found = rowSizes(
+        readInput(file("--before"), parseRows),
+        readInput(file("--after"), parseRows)
+      );
       problems = found.problems;
       lines.push(found.table.trimEnd());
     }

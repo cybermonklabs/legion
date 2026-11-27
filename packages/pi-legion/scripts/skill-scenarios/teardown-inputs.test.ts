@@ -12,6 +12,7 @@ import {
   parseExport,
   parseRows,
   type RenderExport,
+  rowSizes,
   rowsLaunchName,
   rowsPartPath,
   sizes,
@@ -20,13 +21,14 @@ import {
 // The sample in testdata/teardown-inputs (teardown-inputs.command): one real row of the
 // prompt-inputs proof and its composition.json, as the Go driver wrote them, and an export
 // written by hand in the private render's shape at the same public commit, with the neutral
-// projects ACME and BETA. No test here reads a real export of the private render: that pair is
-// fixture F6.
+// projects ACME and BETA. history/ holds the same launch's row from a run made before the driver
+// counted the other messages. No test here reads a real export of the private render: that pair
+// is fixture F6.
 const sample = path.join(import.meta.dir, "testdata", "teardown-inputs");
 const exportFile = path.join(sample, "export.json");
 const evidenceDir = path.join(sample, "evidence");
-const HEAD = "ecd967b17a4e527009dab56f459e0f4e76c0bd25";
-const OTHER = "d00ed2547ce52cb9c42fc333410b2ce7381630f0";
+const HEAD = "1098e27eaf18b355b7a8b883360e10807507d9b8";
+const OTHER = "b28a60ca658499ac05bbf0f845d5ebca5659f113";
 const CHECKOUT = "0123456789abcdef0123456789abcdef01234567";
 const LAUNCH = "controller-headless/omp";
 const expected: Expected = {
@@ -42,6 +44,8 @@ const compositionText = readFileSync(path.join(evidenceDir, "composition.json"),
 const sampleExport = parseExport(exportText);
 const rows = parseRows(rowText);
 const evidence = { rows, subjectHead: parseComposition(compositionText) };
+const historyFile = path.join(sample, "history", "rows.jsonl");
+const historyRows = parseRows(readFileSync(historyFile, "utf8"));
 const scratch = temporaryDirectory("teardown-inputs", { real: true });
 
 /** A copy of the sample export with `change` made to it. */
@@ -63,18 +67,26 @@ test("the sample's row and composition read as the Go driver wrote them, and its
     parts: [
       {
         path: "roles/controller-root.md",
-        bytes: 3693,
-        sha256: "c211980843f14c75d90bf17a1f82f54db66e0e6a2d878cddb4b78618e3fb3aac",
+        bytes: 599,
+        sha256: "67f610729e25d8e5724faa8a06e7c325f69fd5e461de45aab24b10401ae15258",
       },
       {
         path: "go/controller-headless.md",
-        bytes: 2830,
-        sha256: "24660f30c9d5fab861c48458fcdc31226f27541d27329b8a9740d578e10e2f5b",
+        bytes: 78,
+        sha256: "621caaa793c199cd8a6e468761eeeaba99b0f6ada39dbd2f851d81149c16e3f5",
       },
     ],
+    first_request: {
+      system_text_bytes: 21501,
+      tool_definitions_bytes: 58677,
+      skill_list_bytes: 1721,
+      dispatch_first_bytes: 1782,
+      first_message_bytes: 136,
+      other_messages_bytes: 225,
+    },
     required_reads: [],
     reads_observed: "not observed",
-    total_bytes: 78862,
+    total_bytes: 84042,
   });
   expect(evidence.subjectHead).toBe(HEAD);
   expect(sampleExport.schema).toBe(EXPORT_SCHEMA);
@@ -191,12 +203,10 @@ test("a missing, unknown or repeated launch fails", () => {
 test("a part whose bytes or sha256 differ from the row fails, and so does a part out of order or place", () => {
   const bytes = exportWith((exported) => {
     const part = exported.renders[0]?.launches[0]?.parts[1];
-    if (part !== undefined) part.bytes = 2831;
+    if (part !== undefined) part.bytes = 79;
   });
   expect(compare(bytes, evidence, expected)).toMatchObject({
-    problems: [
-      `ACME ${LAUNCH} go/controller-headless.md: 2831 bytes in the export, 2830 in the row`,
-    ],
+    problems: [`ACME ${LAUNCH} go/controller-headless.md: 79 bytes in the export, 78 in the row`],
     projects: [
       { project: "ACME", launches: 0, parts: 0 },
       { project: "BETA", launches: 1, parts: 2 },
@@ -207,7 +217,7 @@ test("a part whose bytes or sha256 differ from the row fails, and so does a part
     if (part !== undefined) part.sha256 = "0".repeat(64);
   });
   expect(problemsOf(digest)).toEqual([
-    `BETA ${LAUNCH} roles/controller-root.md: sha256 ${"0".repeat(64)} in the export, c211980843f14c75d90bf17a1f82f54db66e0e6a2d878cddb4b78618e3fb3aac in the row`,
+    `BETA ${LAUNCH} roles/controller-root.md: sha256 ${"0".repeat(64)} in the export, 67f610729e25d8e5724faa8a06e7c325f69fd5e461de45aab24b10401ae15258 in the row`,
   ]);
   const reversed = exportWith((exported) => {
     exported.renders[0]?.launches[0]?.parts.reverse();
@@ -335,6 +345,97 @@ test("a row holds every key of the Go row and no other", () => {
   expect(() => parseRows("not json\n")).toThrow(/^line 1: /);
 });
 
+/** The refusal of a row measured without the other messages, as `which` names it. */
+function unmeasured(which: string, launch = LAUNCH): string {
+  return `the ${which} of ${launch} has no other_messages_bytes: it was measured without the other messages, and its total leaves them out`;
+}
+
+test("a row written before the other messages were counted still reads, and compare and rows refuse it", () => {
+  expect(historyRows).toHaveLength(1);
+  expect(historyRows[0]?.launch).toBe(LAUNCH);
+  expect(historyRows[0]?.first_request.other_messages_bytes).toBeUndefined();
+  expect(rows[0]?.first_request.other_messages_bytes).toBeNumber();
+  // The history row is of another commit, so its parts differ from the export's too.
+  expect(compare(sampleExport, { ...evidence, rows: historyRows }, expected).problems).toContain(
+    unmeasured("row")
+  );
+  const row = rows[0] as PromptInputsRow;
+  const { other_messages_bytes: _, ...without } = row.first_request;
+  expect(
+    compare(sampleExport, { ...evidence, rows: [{ ...row, first_request: without }] }, expected)
+      .problems
+  ).toEqual([unmeasured("row")]);
+  expect(rowSizes(historyRows, rows)).toEqual({
+    problems: [unmeasured("before row")],
+    table: "",
+  });
+  expect(rowSizes(rows, historyRows)).toEqual({ problems: [unmeasured("after row")], table: "" });
+});
+
+test("rows refuses a launch that one arm lacks or holds twice, and an arm with no row", () => {
+  const row = rows[0] as PromptInputsRow;
+  const merger = { ...row, launch: "merger/omp" };
+  expect(rowSizes([row, merger], [row]).problems).toEqual([
+    "merger/omp has a row in the before rows and none in the after rows",
+  ]);
+  expect(rowSizes([row], [merger, row]).problems).toEqual([
+    "merger/omp has a row in the after rows and none in the before rows",
+  ]);
+  expect(rowSizes([row, row], [row]).problems).toEqual([`the before rows hold ${LAUNCH} 2 times`]);
+  expect(rowSizes([], [row]).problems).toEqual([
+    "the before rows hold no launch",
+    `${LAUNCH} has a row in the after rows and none in the before rows`,
+  ]);
+  const { other_messages_bytes: _, ...without } = merger.first_request;
+  expect(rowSizes([row, merger], [row, { ...merger, first_request: without }]).problems).toEqual([
+    unmeasured("after row", "merger/omp"),
+  ]);
+});
+
+test("rows gives each part of each launch before and after, in the base's order, sums the reads and marks reads not observed", () => {
+  const row = rows[0] as PromptInputsRow;
+  const before: PromptInputsRow = {
+    ...row,
+    launch: "planner/omp",
+    parts: [{ path: "roles/planner.md", bytes: 100, sha256: "a".repeat(64) }],
+    first_request: {
+      system_text_bytes: 1000,
+      tool_definitions_bytes: 2000,
+      skill_list_bytes: 300,
+      dispatch_first_bytes: 400,
+      first_message_bytes: 50,
+      other_messages_bytes: 0,
+    },
+    required_reads: [],
+    reads_observed: "not observed",
+    total_bytes: 3750,
+  };
+  const after: PromptInputsRow = {
+    ...before,
+    parts: [
+      { path: "roles/planner.md", bytes: 60, sha256: "b".repeat(64) },
+      { path: "go/planner.md", bytes: 20, sha256: "c".repeat(64) },
+    ],
+    first_request: { ...before.first_request, other_messages_bytes: 16163 },
+    required_reads: [
+      { path: "skill://legion-worker", bytes: 7000 },
+      { path: "README.md", bytes: 500 },
+    ],
+    reads_observed: "observed",
+    total_bytes: 27413,
+  };
+  expect(rowSizes([before, row], [row, after])).toEqual({
+    problems: [],
+    table: [
+      "| Launch | Role-part bytes before | after | System text before | after | Tool definitions before | after | Skill list before | after | Dispatch-first before | after | First message before | after | Other messages before | after | Required reads before | after | Total before | after |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      "| planner/omp | 100 | 80 | 1000 | 1000 | 2000 | 2000 | 300 | 300 | 400 | 400 | 50 | 50 | 0 | 16163 | 0, not observed | 7500 | 3750 | 27413 |",
+      `| ${LAUNCH} | 677 | 677 | 21501 | 21501 | 58677 | 58677 | 1721 | 1721 | 1782 | 1782 | 136 | 136 | 225 | 225 | 0, not observed | 0, not observed | 84042 | 84042 |`,
+      "",
+    ].join("\n"),
+  });
+});
+
 test("each launch name of the render takes the rows' name, and a part loses the prompts directory", () => {
   const names = [
     ["controller-daemon", "controller", "omp", "controller-headless/omp"],
@@ -384,7 +485,7 @@ test("sizes prints the before and after bytes of each project and launch, and co
     if (acme === undefined || beta === undefined) return;
     acme.deployment.bytes = 150;
     const launch = acme.launches[0];
-    if (launch !== undefined) launch.assembled.bytes = 6674;
+    if (launch !== undefined) launch.assembled.bytes = 828;
     beta.problems = ["a page the old text names is gone"];
     beta.memory = undefined;
   });
@@ -395,13 +496,13 @@ test("sizes prints the before and after bytes of each project and launch, and co
       "",
       "| Project | Public before | Deployment bytes before | after | Memory bytes before | after | Required-read bytes before | after | Problems before |",
       "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
-      "| ACME | d00ed2547ce5 | 150 | 97 | - | - | 0 | 0 | 0 |",
-      "| BETA | d00ed2547ce5 | 97 | 97 | - | 57 | 0 | 0 | 1 |",
+      "| ACME | b28a60ca6584 | 150 | 97 | - | - | 0 | 0 | 0 |",
+      "| BETA | b28a60ca6584 | 97 | 97 | - | 57 | 0 | 0 | 1 |",
       "",
       "| Project | Launch | Role-part bytes before | after | Assembled bytes before, addressing left out | after |",
       "| --- | --- | --- | --- | --- | --- |",
-      `| ACME | ${LAUNCH} | 6522 | 6522 | 6674 | 6621 |`,
-      `| BETA | ${LAUNCH} | 6522 | 6522 | 6621 | 6621 |`,
+      `| ACME | ${LAUNCH} | 676 | 676 | 828 | 775 |`,
+      `| BETA | ${LAUNCH} | 676 | 676 | 775 | 775 |`,
       "",
     ].join("\n"),
   });
@@ -479,12 +580,12 @@ test("compare fails with exit 1 on a missing project, a differing byte count or 
     err: [],
   });
   const raw = JSON.parse(exportText);
-  raw.renders[1].launches[0].parts[0].bytes = 3692;
+  raw.renders[1].launches[0].parts[0].bytes = 598;
   const changed = written("bytes/export.json", JSON.stringify(raw));
   expect(run(compareArgs({ "--export": changed }))).toEqual({
     status: 1,
     out: [
-      `problem: BETA ${LAUNCH} roles/controller-root.md: 3692 bytes in the export, 3693 in the row`,
+      `problem: BETA ${LAUNCH} roles/controller-root.md: 598 bytes in the export, 599 in the row`,
       "teardown-inputs: fail, 1 problems",
     ],
     err: [],
@@ -541,5 +642,23 @@ test("sizes prints its table on the sample read as both sides", () => {
     LAUNCH,
   ]);
   expect(result.status).toBe(0);
-  expect(result.out.join("\n")).toContain(`| BETA | ${LAUNCH} | 6522 | 6522 | 6621 | 6621 |`);
+  expect(result.out.join("\n")).toContain(`| BETA | ${LAUNCH} | 676 | 676 | 775 | 775 |`);
+});
+
+test("rows on the command line prints the two runs' table, and refuses a row of the history with exit 1", () => {
+  const evidenceRows = path.join(evidenceDir, "rows.jsonl");
+  const table = run(["rows", "--before", evidenceRows, "--after", evidenceRows]);
+  expect(table).toMatchObject({ status: 0, err: [] });
+  expect(table.out.join("\n").split("\n").slice(2)).toEqual([
+    `| ${LAUNCH} | 677 | 677 | 21501 | 21501 | 58677 | 58677 | 1721 | 1721 | 1782 | 1782 | 136 | 136 | 225 | 225 | 0, not observed | 0, not observed | 84042 | 84042 |`,
+  ]);
+  expect(run(["rows", "--before", historyFile, "--after", evidenceRows])).toEqual({
+    status: 1,
+    out: [`problem: ${unmeasured("before row")}`, "teardown-inputs: fail, 1 problems"],
+    err: [],
+  });
+  expect(run(["rows", "--before", evidenceRows]).status).toBe(2);
+  expect(
+    run(["rows", "--before", evidenceRows, "--after", evidenceRows, "--head", HEAD]).status
+  ).toBe(2);
 });

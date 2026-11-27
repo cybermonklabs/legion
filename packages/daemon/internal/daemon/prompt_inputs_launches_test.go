@@ -100,8 +100,21 @@ type promptInputsRow struct {
 	ReadsObserved string `json:"reads_observed,omitempty"`
 	// References records each retained or removed reference exercised from its packaged call site.
 	References []promptInputsRefResult `json:"references,omitempty"`
-	// TotalBytes is the first request's five parts and every required read, summed.
+	// TotalBytes is the first request's six parts and every required read, summed
+	// (promptInputsTotal).
 	TotalBytes int `json:"total_bytes"`
+}
+
+// promptInputsTotal is a row's total: the decoded text of the first request's six parts and the
+// bytes of every required read. The wire framing of the request (JSON punctuation, keys and the
+// request's options) is no part of it.
+func promptInputsTotal(row promptInputsRow) int {
+	p := row.FirstRequest
+	n := p.SystemTextBytes + p.ToolDefinitionsBytes + p.SkillListBytes + p.DispatchFirstBytes + p.FirstMessageBytes + p.OtherMessagesBytes
+	for _, read := range row.RequiredReads {
+		n += read.Bytes
+	}
+	return n
 }
 
 // promptInputsPart is one prompt part of a launch: its path as promptInputsLaunch.Parts names it,
@@ -114,13 +127,17 @@ type promptInputsPart struct {
 
 // promptInputsRequest is a launch's first request to the model, in bytes by part: the system
 // text, the tool definitions, the skill list, the dispatch-first skill the Envoy plugin injects,
-// and the first message.
+// the first message, and the text of every other message (the harness's reminders and hook
+// output, such as the system-role message Claude Code sends after the first message).
+// teardown-inputs.ts refuses a row whose first request has no other_messages_bytes: such a row was
+// measured before that part was counted, and its total leaves the part out.
 type promptInputsRequest struct {
 	SystemTextBytes      int `json:"system_text_bytes"`
 	ToolDefinitionsBytes int `json:"tool_definitions_bytes"`
 	SkillListBytes       int `json:"skill_list_bytes"`
 	DispatchFirstBytes   int `json:"dispatch_first_bytes"`
 	FirstMessageBytes    int `json:"first_message_bytes"`
+	OtherMessagesBytes   int `json:"other_messages_bytes"`
 }
 
 // promptInputsRead is one file a launch is told to read before its first act, by the path it is
@@ -288,9 +305,9 @@ func TestPromptInputsRowRoundTripsThroughJSON(t *testing.T) {
 		`{"path":"go/merger.md","bytes":4096,"sha256":"2123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},` +
 		`{"path":"go/worker-common.md","bytes":8192,"sha256":"3123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}],` +
 		`"addressing_bytes":512,"task_bytes":300,` +
-		`"first_request":{"system_text_bytes":40000,"tool_definitions_bytes":20000,"skill_list_bytes":3000,"dispatch_first_bytes":5000,"first_message_bytes":400},` +
+		`"first_request":{"system_text_bytes":40000,"tool_definitions_bytes":20000,"skill_list_bytes":3000,"dispatch_first_bytes":5000,"first_message_bytes":400,"other_messages_bytes":700},` +
 		`"required_reads":[{"path":"skill://legion-worker","bytes":7000}],` +
-		`"total_bytes":75400}`
+		`"total_bytes":76100}`
 	want := promptInputsRow{
 		Launch: "merger/omp",
 		Parts: []promptInputsPart{
@@ -302,10 +319,10 @@ func TestPromptInputsRowRoundTripsThroughJSON(t *testing.T) {
 		AddressingBytes: 512,
 		TaskBytes:       300,
 		FirstRequest: promptInputsRequest{
-			SystemTextBytes: 40000, ToolDefinitionsBytes: 20000, SkillListBytes: 3000, DispatchFirstBytes: 5000, FirstMessageBytes: 400,
+			SystemTextBytes: 40000, ToolDefinitionsBytes: 20000, SkillListBytes: 3000, DispatchFirstBytes: 5000, FirstMessageBytes: 400, OtherMessagesBytes: 700,
 		},
 		RequiredReads: []promptInputsRead{{Path: "skill://legion-worker", Bytes: 7000}},
-		TotalBytes:    75400,
+		TotalBytes:    76100,
 	}
 	decoder := json.NewDecoder(strings.NewReader(line))
 	decoder.DisallowUnknownFields()
@@ -315,6 +332,9 @@ func TestPromptInputsRowRoundTripsThroughJSON(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("decoded row = %+v, want %+v", got, want)
+	}
+	if total := promptInputsTotal(got); total != got.TotalBytes {
+		t.Fatalf("the row's parts and reads sum to %d, and its total is %d", total, got.TotalBytes)
 	}
 	encoded, err := json.Marshal(got)
 	if err != nil {

@@ -1,0 +1,3 @@
+LEGION_OMP_PATH=<the pinned Oh My Pi> PROMPT_INPUTS_EVIDENCE_DIR=<dir> bash scripts/e2e/prompt-inputs.sh --base ecd967b17a4e --subject <checkout>
+
+The run of ../f1/capture.txt. requests.jsonl.gz holds one skill-description request for each of the 15 skills, sorted by skill name: the first line for that skill in the run's descriptions/*.jsonl, byte for byte. The pinned Oh My Pi sent each to the stand-in, the only model its profile names, and every request for one skill was the same. The stand-in answered each with promptInputsDescriptionAnswer.

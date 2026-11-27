@@ -7,7 +7,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -56,9 +58,11 @@ func promptInputsNewGateway(t *testing.T, spend *promptInputsSpend, auth string)
 	return &promptInputsGateway{target: target, spend: spend, auth: auth, client: &http.Client{Timeout: 2 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 
+// serve forwards a request of the fixture task to the gateway. promptInputsModel.ServeHTTP has
+// already answered a skill-description request locally, so none reaches the gateway.
 func (g *promptInputsGateway) serve(w http.ResponseWriter, req *http.Request, raw []byte, model *promptInputsModel) {
 	if !bytes.Contains(raw, []byte(model.task[:24])) {
-		streamAnthropicText(w, model.name, "WAITING on the fixture task.")
+		streamAnthropicText(w, model.name, promptInputsGatewayWait)
 		return
 	}
 	// A pane sends one request at a time. Hold this slot until the request ends so a
@@ -66,7 +70,7 @@ func (g *promptInputsGateway) serve(w http.ResponseWriter, req *http.Request, ra
 	g.mu.Lock()
 	if g.stopped || g.calls >= promptInputsGatewayCalls {
 		g.mu.Unlock()
-		streamAnthropicText(w, model.name, "WAITING: the fixture measurement has ended.")
+		streamAnthropicText(w, model.name, promptInputsGatewayEnded)
 		return
 	}
 	defer g.mu.Unlock()
@@ -260,4 +264,106 @@ func (r *promptInputsRun) recordReads(a *liveAgentProof, p *promptInputsPane, se
 		}
 	}
 	return out
+}
+
+// Both recorders answer Oh My Pi's skill-description request themselves, with the stand-ins'
+// answer, and neither keeps it as the role's first request, though its description holds the
+// task's words. The gateway recorder sends no description request to the gateway. A request of
+// the fixture task is still kept: the stand-in asks it for a read, and the gateway recorder
+// forwards it.
+func TestPromptInputsRecordersAnswerDescriptionRequests(t *testing.T) {
+	ask, _ := json.Marshal(promptInputsDescriptionAsk + "fixture-skill\nDescription: " + promptInputsReadsTask)
+	describe := fmt.Appendf(nil, `{"model":%q,"max_tokens":1024,"messages":[{"role":"user","content":[{"type":"text","text":%s}]}],"stream":true}`, promptInputsReadsModel, ask)
+	task, _ := json.Marshal(promptInputsReadsTask)
+	role := fmt.Appendf(nil, `{"model":%q,"max_tokens":1024,"tools":[{"name":"read"}],"messages":[{"role":"user","content":%s}],"stream":true}`, promptInputsReadsModel, task)
+	want := promptInputsDescriptionAnswer(promptInputsReadsTask)
+
+	var mu sync.Mutex
+	var forwarded [][]byte
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		body, _ := io.ReadAll(req.Body)
+		mu.Lock()
+		forwarded = append(forwarded, body)
+		mu.Unlock()
+		streamAnthropicText(w, "gateway", "Done.")
+	}))
+	t.Cleanup(gateway.Close)
+	t.Setenv("ANTHROPIC_BASE_URL", gateway.URL)
+
+	for _, route := range []string{"stand-in", "gateway"} {
+		t.Run(route, func(t *testing.T) {
+			m := &promptInputsModel{modelStandin: &modelStandin{name: "promptinputs1"}, task: promptInputsReadsTask, done: make(chan promptInputsCapture, 1),
+				refs: []promptInputsRefResult{{Kind: "retained", Path: "skill://fixture"}}, readArgs: []map[string]any{{"path": "skill://fixture"}}}
+			if route == "gateway" {
+				m.gateway = promptInputsNewGateway(t, &promptInputsSpend{cap: promptInputsDefaultTokenCap}, "fixture-identity")
+			}
+			endpoint := httptest.NewServer(m)
+			t.Cleanup(endpoint.Close)
+			sent := func() int {
+				mu.Lock()
+				defer mu.Unlock()
+				return len(forwarded)
+			}
+			before := sent()
+
+			if got := promptInputsPost(t, endpoint.URL, describe); got != want {
+				t.Fatalf("the description request was answered %q, want %q", got, want)
+			}
+			m.mu.Lock()
+			first, next, kept := m.first, m.next, m.descriptions.Len()
+			m.mu.Unlock()
+			if first != nil || next != 0 || kept == 0 || sent() != before {
+				t.Fatalf("after the description request: kept as the first request %t, reads asked %d, kept as a description %t, sent to the gateway %d",
+					first != nil, next, kept != 0, sent()-before)
+			}
+
+			promptInputsPost(t, endpoint.URL, role)
+			m.mu.Lock()
+			first, next = m.first, m.next
+			m.mu.Unlock()
+			if !bytes.Equal(first, role) {
+				t.Fatalf("the task's request was not kept as the first request: %.200s", first)
+			}
+			if route == "gateway" && sent() != before+1 {
+				t.Fatalf("the gateway recorder sent %d requests of the task to the gateway, want 1", sent()-before)
+			}
+			if route == "stand-in" && next != 1 {
+				t.Fatalf("the stand-in asked for %d reads, want 1", next)
+			}
+		})
+	}
+}
+
+// promptInputsPost sends body to a recorder as Oh My Pi sends a model request, and returns the
+// text of the streamed answer.
+func promptInputsPost(t *testing.T, base string, body []byte) string {
+	t.Helper()
+	resp, err := http.Post(base+"/v1/messages", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the recorder answered HTTP %d", resp.StatusCode)
+	}
+	var text strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		data, ok := bytes.CutPrefix(scanner.Bytes(), []byte("data: "))
+		if !ok {
+			continue
+		}
+		var event struct {
+			Delta struct {
+				Text string `json:"text"`
+			} `json:"delta"`
+		}
+		if json.Unmarshal(data, &event) == nil {
+			text.WriteString(event.Delta.Text)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return text.String()
 }
