@@ -43,7 +43,8 @@ func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipes(t *testing.T)
 			timeout := testwait.Remaining(t)
 			dir := t.TempDir()
 			mark, exited := filepath.Join(dir, "started"), filepath.Join(dir, "exited")
-			client := fakeTmuxClient(t, dir, testexec.MarkStart(shellprefix.Literal(mark))+"\necho answered\n"+heldChild(t)+"\n"+testexec.MarkNow(shellprefix.Literal(exited))+"\nexit "+strconv.Itoa(exit))
+			// CONTROL ONLY: the client stalls 1 s at its exit, before its exit mark.
+			client := fakeTmuxClient(t, dir, testexec.MarkStart(shellprefix.Literal(mark))+"\necho answered\n"+heldChild(t)+"\nsleep 1\n"+testexec.MarkNow(shellprefix.Literal(exited))+"\nexit "+strconv.Itoa(exit))
 			r := &Runtime{tmuxPath: client, commandTimeout: timeout, clock: clock.Real(), environ: []string{"PATH=" + os.Getenv("PATH")}}
 
 			called := testexec.SinceBoot(t)
@@ -96,10 +97,12 @@ func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipesPastIt(t *test
 	const timeout = pipeDrainDelay - 100*time.Millisecond
 	within := testwait.Bounded(t, time.Minute, pipeDrainDelay+time.Second)
 	until := time.Now().Add(within)
+	// CONTROL ONLY: the first run's client stalls 1 s at its exit, before its exit mark.
+	stalled := filepath.Join(t.TempDir(), "stalled")
 	for runs := 1; ; runs++ {
 		dir := t.TempDir()
 		leader, mark, exited := filepath.Join(dir, "leader"), filepath.Join(dir, "started"), filepath.Join(dir, "exited")
-		client := fakeTmuxClient(t, dir, testexec.MarkStart(shellprefix.Literal(mark))+"\necho $$ >"+shellprefix.Literal(leader)+"\necho answered\n"+heldChild(t)+"\n"+testexec.MarkNow(shellprefix.Literal(exited))+"\nexit 3")
+		client := fakeTmuxClient(t, dir, testexec.MarkStart(shellprefix.Literal(mark))+"\necho $$ >"+shellprefix.Literal(leader)+"\necho answered\n"+heldChild(t)+"\n[ -e "+shellprefix.Literal(stalled)+" ] || { : >"+shellprefix.Literal(stalled)+"; sleep 1; }\n"+testexec.MarkNow(shellprefix.Literal(exited))+"\nexit 3")
 		r := &Runtime{tmuxPath: client, commandTimeout: timeout, clock: clock.Real(), environ: []string{"PATH=" + os.Getenv("PATH")}}
 		reaped := make(chan time.Time, 1)
 		go func() {
