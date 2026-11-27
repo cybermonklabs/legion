@@ -46,6 +46,46 @@ func CalledFootnoteLabels(block *Node) []string {
 	})
 }
 
+// DefinedFootnoteLabels is the label of every footnote definition in doc, each once, in document
+// order and as the definition holds it.
+func DefinedFootnoteLabels(doc *Node) []string {
+	var defined []string
+	seen := map[string]struct{}{}
+	Walk(doc, func(node *Node) bool {
+		if node.Type != "footnote_definition" {
+			return true
+		}
+		label, ok := node.Attrs["label"].(string)
+		if _, repeated := seen[label]; ok && !repeated {
+			seen[label] = struct{}{}
+			defined = append(defined, label)
+		}
+		return true
+	})
+	return defined
+}
+
+// WrittenFootnoteLabels is each of labels that markdown writes as a footnote call, in the order of
+// labels: `[^label]`, the label written as the renderer writes one (escapeFootnoteLabel), compared
+// up to case (footnoteLabelKey), as a reference resolves to a definition whose label matches it
+// only up to case. It reads markdown's characters, not its parse, so it also answers a label
+// markdown writes in a call that is escaped or in code, which reads as text, and one markdown
+// defines itself, whose calls resolve to that definition. A stand-in definition of either after
+// markdown (WithStandInDefinitions) is one nothing in markdown refers to.
+func WrittenFootnoteLabels(markdown string, labels []string) []string {
+	if len(labels) == 0 || !strings.Contains(markdown, "[^") {
+		return nil
+	}
+	written := footnoteLabelKey(markdown)
+	var calls []string
+	for _, label := range labels {
+		if strings.Contains(written, footnoteLabelKey("[^"+escapeFootnoteLabel(label)+"]")) {
+			calls = append(calls, label)
+		}
+	}
+	return calls
+}
+
 // WithStandInDefinitions is markdown with a stand-in definition of each of labels after it: for
 // each label, a blank line and `[^label]: x`, the label written as the renderer writes one
 // (escapeFootnoteLabel), so every reader reads it back as that label. A reading of it reads each

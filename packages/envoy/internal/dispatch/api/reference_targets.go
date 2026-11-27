@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -225,9 +227,12 @@ func (s *server) wholeReferences(ctx context.Context, who model.Actor, reference
 // check it reaches by reference from it, where the member's name is the block's stored excerpt,
 // cut at refs.BlockExcerptRunes and holding a typed block's opening line. The texts are read in
 // one statement per kind of block the request names (refs.BlockTexts), beside the one per kind
-// the names cost, and no document is loaded for them: a block of a document, a comment or an ask
-// has its text read from the block index, and a block of a message has its text split again from
-// its message's body, since no table records it.
+// the names cost: a block of a document, a comment or an ask has its text read from the block
+// index, and a block of a message has its text split again from its message's body, since no
+// table records it. A document's block is registered with the footnotes it calls that its
+// document defines outside it (registerBlockTree), as the coverage and the results reads register
+// a typed block's, and only one whose text holds a call has its document read for them
+// (calledFootnotes); every other block registers its text as it stands.
 //
 // A block is read only for a member that is not gone, and a member is not gone only where
 // refs.TargetNames named its target for the request's reader. refs.BlockTexts binds no
@@ -257,16 +262,116 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 	if err != nil {
 		return err
 	}
-	contents := make(map[refs.Target]string, len(texts))
+	called := s.calledFootnotes(ctx, texts)
+	sources := make(map[refs.Target]blockTreeSource, len(texts))
 	for target, whole := range texts {
-		contents[target] = blockTextContent(whole, target.Kind == "block")
+		sources[target] = blockTreeSource{markdown: blockTextContent(whole, target.Kind == "block"), labels: called[target].labels}
 	}
 	for index, target := range named {
 		if answers[index].Kind == "block" && !answers[index].Gone {
-			trees.text(&answers[index].TextTree, contents[target])
+			registerBlockTree(trees, &answers[index].TextTree, sources[target], called[target].artifactID, called[target].blockID)
 		}
 	}
 	return nil
+}
+
+// calledFootnote is what calledFootnotes answers for one document block: the id of its document,
+// its own block id, and the footnotes it calls that the document defines outside it.
+type calledFootnote struct {
+	artifactID, blockID string
+	labels              []string
+}
+
+// calledFootnotes is, by target, the footnotes each document block of texts calls that its
+// document defines outside it, for the blocks whose stored text holds a call at all (`[^`). Such
+// a text is a slice of its document, so it holds no definition the document writes outside the
+// block, and read alone it reads a call of such a label as text.
+//
+// Each document is read once, however many of its blocks texts holds. Its id is read by its
+// ref_key, the part of a block's node id before its first '#', in one statement for every such
+// document. Its markdown is read through TextWithToken: the block index cut each stored text from
+// the markdown the document's latest version stored, and TextWithToken answers that markdown
+// itself, without rendering the document, where that version is still the document's state and
+// a room of this process holds it, and from the read cache by the document's stamp where no room
+// holds it; Text renders a room's tree on every read. The markdown is parsed as a rendering.
+//
+// A typed block is the first node of the parse holding its id, as typedBlocksIn finds one, since
+// the rendering writes a typed block's id into its opening line, and its labels are the ones its
+// node calls (pmdoc.CalledFootnoteLabels), as the coverage and the results reads take them. Any
+// other block - a paragraph, a heading, a list item - has no id in the rendering, so the parse
+// gives it another, and so has a block its document no longer holds: no node holds its id, and
+// its labels are each label the document defines that its stored text writes as a call, up to
+// case (pmdoc.DefinedFootnoteLabels, pmdoc.WrittenFootnoteLabels). Such a text can write a call
+// that reads as text, escaped or in code, or one of a label it defines itself, which resolves to
+// its own definition first; the stand-in of that label is then one nothing refers to, which is
+// taken out of the tree with the rest (registerBlockTree). A block whose document cannot be read
+// has no entry and keeps the tree of its stored text alone.
+func (s *server) calledFootnotes(ctx context.Context, texts map[refs.Target]string) map[refs.Target]calledFootnote {
+	// wanted is the targets to read, by their document's ref_key and then by block id.
+	wanted := map[string]map[string]refs.Target{}
+	for target, whole := range texts {
+		if target.Kind != "block" || !strings.Contains(whole, "[^") {
+			continue
+		}
+		refKey, blockID, found := strings.Cut(target.ID, "#")
+		if !found {
+			continue
+		}
+		if wanted[refKey] == nil {
+			wanted[refKey] = map[string]refs.Target{}
+		}
+		wanted[refKey][blockID] = target
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+	refKeys := make([]string, 0, len(wanted))
+	for refKey := range wanted {
+		refKeys = append(refKeys, refKey)
+	}
+	rows, err := s.deps.Store.Pool.Query(ctx, `select ref_key, id::text from artifacts where ref_key = any($1)`, refKeys)
+	if err != nil {
+		return nil
+	}
+	type heldDocument struct{ refKey, artifactID string }
+	documents, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (heldDocument, error) {
+		var document heldDocument
+		err := row.Scan(&document.refKey, &document.artifactID)
+		return document, err
+	})
+	if err != nil {
+		return nil
+	}
+	called := map[refs.Target]calledFootnote{}
+	for _, document := range documents {
+		blocks, artifactID := wanted[document.refKey], document.artifactID
+		markdown, _, err := s.deps.Docs.TextWithToken(ctx, artifactID)
+		if err != nil {
+			continue
+		}
+		tree, err := pmdoc.ParseRendering(markdown)
+		if err != nil {
+			continue
+		}
+		pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+			id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
+			if target, held := blocks[id]; held {
+				called[target] = calledFootnote{artifactID: artifactID, blockID: id, labels: pmdoc.CalledFootnoteLabels(node)}
+				delete(blocks, id)
+			}
+			return true
+		})
+		if len(blocks) == 0 {
+			continue
+		}
+		defined := pmdoc.DefinedFootnoteLabels(tree)
+		for id, target := range blocks {
+			if labels := pmdoc.WrittenFootnoteLabels(texts[target], defined); len(labels) > 0 {
+				called[target] = calledFootnote{artifactID: artifactID, blockID: id, labels: labels}
+			}
+		}
+	}
+	return called
 }
 
 // blockTextContent is the markdown a block's text_tree is read from, given the block's whole
@@ -525,12 +630,14 @@ func withoutBlankEnds(lines string) string {
 // the last two after its length so no name's own line endings can read as another member's
 // fields. The answer depends on nothing else, so a set whose members all stand as they did is
 // answered 304, and a member renamed, deleted or restored changes the tag; for a caller given
-// trees, a block whose text changed anywhere changes the tag. An edit of a post changes the tag
-// of every member naming it or a block of it, the block the edit left as it was included, and so
-// does its delete. A member gone because its short id is ambiguous and a member gone because its
-// target is deleted never share a tag, so a short id that stops being ambiguous, or starts to be,
-// changes the tag too. A caller given trees and one given none are answered different bodies
-// wherever a block is named, and different tags with them.
+// trees, a block whose text changed anywhere changes the tag, and so does a footnote definition
+// added or removed elsewhere in its document, which changes how the block reads a call of it and
+// not its stored text (calledFootnotes). An edit of a post changes the tag of every member naming
+// it or a block of it, the block the edit left as it was included, and so does its delete. A
+// member gone because its short id is ambiguous and a member gone because its target is deleted
+// never share a tag, so a short id that stops being ambiguous, or starts to be, changes the tag
+// too. A caller given trees and one given none are answered different bodies wherever a block is
+// named, and different tags with them.
 func referenceTargetsETag(targets []model.ReferenceTarget) string {
 	hash := sha256.New()
 	for _, target := range targets {

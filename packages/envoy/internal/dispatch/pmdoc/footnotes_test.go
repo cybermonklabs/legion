@@ -66,6 +66,34 @@ func TestStandInDefinitionsReadBackAsTheLabelsTheyStandFor(t *testing.T) {
 	}
 }
 
+// A document defines each label of its footnote definitions once, in document order, a definition
+// in a quote included. A text writes a defined label where it holds `[^label]` with the label
+// escaped as the renderer writes it, compared up to case, and an escaped call as well, since the
+// characters are what is read; a label that is only the start of a written one is not written.
+func TestATextWritesTheDefinedLabelsItsCallsHoldUpToCase(t *testing.T) {
+	t.Parallel()
+	doc := &Node{Type: "doc", Children: []*Node{
+		paragraph("Calls."),
+		footnoteDefinition("b", paragraph("B.")),
+		footnoteDefinition("a]b", paragraph("A.")),
+		{Type: "blockquote", Children: []*Node{footnoteDefinition("esc", paragraph("In a quote."))}},
+		footnoteDefinition("b", paragraph("B again.")),
+		footnoteDefinition("k1", paragraph("K.")),
+		footnoteDefinition("k10", paragraph("Longer.")),
+	}}
+	defined := DefinedFootnoteLabels(doc)
+	if want := []string{"b", "a]b", "esc", "k1", "k10"}; !slices.Equal(defined, want) {
+		t.Fatalf("DefinedFootnoteLabels = %q, want %q", defined, want)
+	}
+	const written = "See [^K1], [^a\\]b], \\[^esc] and [^k10x]."
+	if got, want := WrittenFootnoteLabels(written, defined), []string{"a]b", "esc", "k1"}; !slices.Equal(got, want) {
+		t.Errorf("WrittenFootnoteLabels(%q) = %q, want %q", written, got, want)
+	}
+	if got := WrittenFootnoteLabels("No call.", defined); len(got) != 0 {
+		t.Errorf("WrittenFootnoteLabels of a text with no call = %q, want none", got)
+	}
+}
+
 // A footnote reference resolves to the first definition whose label it equals byte for byte, and
 // failing that to the first whose label matches it up to case (footnoteLabelKey), carrying its
 // label as written then; a reference that matches no definition stays text. That was goldmark's
