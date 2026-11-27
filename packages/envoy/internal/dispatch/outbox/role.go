@@ -858,11 +858,11 @@ func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envel
 // and the handover is behind it; the handover is given the time of this publish, which is the
 // copy's own age and what its forward carries (contracts.Envelope.KeptAt). The answer is the
 // stream's acknowledgement, or the error of a handover that failed on a connection that no
-// longer answers a probe (handOverKept), which wraps bus.ErrUnavailable. The publish is made on
-// the batch's own goroutine, which issues every send of a window without waiting for any of them
-// (sendChains), so the wait for the acknowledgement and the handover behind it run on a goroutine
-// of their own, and the record of what those handovers delivered is shared between them (handed,
-// keptHandovers).
+// longer answers a probe (handOverKept), which wraps errHandoverProbeFailed and
+// bus.ErrUnavailable. The publish is made on the batch's own goroutine, which issues every send of
+// a window without waiting for any of them (sendChains), so the wait for the acknowledgement and
+// the handover behind it run on a goroutine of their own, and the record of what those handovers
+// delivered is shared between them (handed, keptHandovers).
 func (f *roleForward) keep(ctx context.Context, deps Deps, sender bus.Sender, item contracts.Envelope, handed *keptHandovers) <-chan error {
 	keptAt := time.Now()
 	item.MentionDedupeKeys = f.settledKeys
@@ -877,6 +877,14 @@ func (f *roleForward) keep(ctx context.Context, deps Deps, sender bus.Sender, it
 	}()
 	return answer
 }
+
+// errHandoverProbeFailed is in the answer of a keep whose handover failed and whose probe of the
+// keep's connection then failed too (handOverKept), beside the probe's own error, which wraps
+// bus.ErrUnavailable. It says that the connection was probed already, and found not answering: a
+// batch a send of which answered it gives the hold up for NATS lost without a second probe of the
+// same connection (publishBatch), and a fallback pass reports NATS lost for it
+// (publishFallbackCopies), so the holder gives the hold up there too (Outbox.serve).
+var errHandoverProbeFailed = errors.New("the probe after the failed handover found its NATS connection not answering")
 
 // handOverKept hands the copy just kept on role's kept lane to the session holding the role now,
 // when one claimed it while the keep was in flight and that copy is the one the role's drain
@@ -953,16 +961,19 @@ func (f *roleForward) keep(ctx context.Context, deps Deps, sender bus.Sender, it
 // keep would answer reached, and the chain would send its next send - another keep of the role -
 // into the silence, waiting out that send's acknowledgement before the batch probes and gives the
 // hold up, past the take-over (TestAnOutboxThatLosesNATSInAKeepsHandoverGivesThePublisherToTheOther).
-// A probe that fails is logged at Error and answers the keep with an error wrapping it, and so
-// bus.ErrUnavailable: the batch settles the send lost and makes no further send, probes the
-// connection itself and gives the hold up for NATS lost (sendChains, publishBatch), counting the
-// send failed (countPublishFailure), which it is to everyone reading the outage. The copy is on
-// the lane all the same, as the stream acknowledged it, and the released event is sent again by
-// the next scan: kept again under the same message id, which the stream holds once, or forwarded to
-// a holder that claimed the role meanwhile under the id every forward of that copy to that holder
-// carries, which the stream and the holder each take once. A pass's keep answered so, the fallback
-// pass's or the expiry pass's, is a send that found NATS unavailable (judgeSend): its row is
-// released after retry.BaseDelay and kept again under the same id.
+// A probe that fails is logged at Error and answers the keep with an error wrapping
+// errHandoverProbeFailed and the probe's own error, and so bus.ErrUnavailable: the batch settles
+// the send lost and makes no further send, and gives the hold up for NATS lost with no second
+// probe of that connection, unless its client has reconnected since it began (sendChains,
+// publishBatch), counting the send failed (countPublishFailure), which it is to everyone reading
+// the outage. The copy is on the lane all the same, as the stream acknowledged it, and the
+// released event is sent again by the next scan: kept again under the same message id, which the
+// stream holds once, or forwarded to a holder that claimed the role meanwhile under the id every
+// forward of that copy to that holder carries, which the stream and the holder each take once. A
+// pass's keep answered so, the fallback pass's or the expiry pass's, is a send that found NATS
+// unavailable (judgeSend): its row is released after retry.BaseDelay and kept again under the
+// same id, and the fallback pass reports NATS lost for it, so the holder gives the hold up as it
+// does for such a batch (publishFallbackCopies, Outbox.serve).
 //
 // A probe that answers, or a failure once the batch's ctx has ended that is not that end's own,
 // is logged at Warn, and nothing follows it: the route was reached when the stream acknowledged
@@ -989,7 +1000,7 @@ func handOverKept(ctx context.Context, deps Deps, sender bus.Sender, role string
 		if probeErr := sender.Probe(probeTimeout); probeErr != nil {
 			slog.Error("dispatch outbox: the copy kept for a role was not handed to the holder that claimed it, and the handover's NATS connection does not answer",
 				"role", role, "event_id", item.EventID, "error", err, "probe_error", probeErr)
-			return fmt.Errorf("hand role %s's kept copy of %s over: %w", role, item.EventID, probeErr)
+			return fmt.Errorf("hand role %s's kept copy of %s over: %w: %w", role, item.EventID, errHandoverProbeFailed, probeErr)
 		}
 	}
 	slog.Warn("dispatch outbox: the copy kept for a role was not handed to the holder that claimed it",

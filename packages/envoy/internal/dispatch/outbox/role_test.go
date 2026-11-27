@@ -286,26 +286,14 @@ func routedEvents(t *testing.T, database *store.Store, broker *events.Broker, ke
 	`, key, number, route); err != nil {
 		t.Fatalf("create issue %s: %v", key, err)
 	}
-	tx, err := database.Pool.Begin(context.Background())
-	if err != nil {
-		t.Fatalf("begin event transaction: %v", err)
-	}
-	defer tx.Rollback(context.Background())
-	appended := make([]model.Event, 0, count)
+	written := make([]model.Event, 0, count)
 	for index := range count {
-		event, err := broker.Append(context.Background(), tx, model.Event{
+		written = append(written, model.Event{
 			IssueKey: new(key), Type: "message.created", Actor: actor,
 			Payload: model.Message{ID: fmt.Sprintf("8f14e45f-ceea-467a-%04x-%012d", 0x9c1e+index, number), IssueKey: new(key), Body: "for the role"},
 		})
-		if err != nil {
-			t.Fatalf("append event: %v", err)
-		}
-		appended = append(appended, event)
 	}
-	if err := tx.Commit(context.Background()); err != nil {
-		t.Fatalf("commit event: %v", err)
-	}
-	return appended
+	return appendEvents(t, database, broker, written...)
 }
 
 // silent fails t when anything arrives on subject before the test ends.

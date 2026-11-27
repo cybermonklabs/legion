@@ -32,14 +32,13 @@ import (
 // take-over too (TestAnOutboxWhoseNATSGoesSilentInItsExpiryPassGivesThePublisherToTheOther). So
 // the pass is watched (watchExpiryPass): a probe of the connection, as answering makes one, is due
 // probeTimeout after the last probe that answered was sent, or after the pass began, and is made
-// then. One is made as the pass returns, too, when the pass reports a call that failed or ran
-// probeTimeout or longer: a call that meets a silence waits out its bound, at least probeTimeout,
-// and so makes the pass run that long. A pass that returns sooner, with nothing failed, probes
-// nothing, so a healthy holder pays one timer per pass. A probe that fails with no connection
-// event since the pass began ends the pass and reports silent, with one Error line, and serve
-// gives the hold up for NATS lost, as a batch whose sends failed and whose probe failed too does
-// (publishBatch); a probe that fails once an event has come leaves the loss to that event, as
-// above.
+// then. One is made as the pass returns, too, when the pass reports a failure or ran probeTimeout
+// or longer: a call that meets a silence waits out its bound, at least probeTimeout, and so makes
+// the pass run that long. A pass that returns sooner, reporting no failure, probes nothing, so a
+// healthy holder pays one timer per pass. A probe that fails with no connection event since the
+// pass began ends the pass and reports silent, with one Error line, and serve gives the hold up
+// for NATS lost, as a batch whose sends failed and whose probe failed too does (publishBatch); a
+// probe that fails once an event has come leaves the loss to that event, as above.
 //
 // So a silence that one of the pass's NATS calls meets is found by a probe: one made when due, at
 // most probeTimeout after the silence, or the one made as the pass returns, which that call brings
@@ -112,14 +111,15 @@ const (
 // A probe is due probeTimeout after the last probe that answered was sent, or after began, and a
 // timer fires then. A probe runs on its own goroutine, with changed watched beside it, and the
 // watcher waits for its answer even once the pass has returned: the probe decides. One that
-// answers re-arms the timer, or answers finished once the pass has returned. One that fails ends
-// the pass and answers connectionChanged when changed has closed - a cut or a reconnect, which the
-// connection's own event decides - and silent otherwise, with one Error line. changed closing
-// while the pass runs ends the pass and answers connectionChanged. The pass's return wins over
-// changed whenever both are there to read, so a pass that did its work is never reported as one
-// the event ended. The return answers finished at once unless the pass reported failed or ran
-// probeTimeout or longer since began, when a probe is made first and decides. serve's ctx ending
-// answers finished at once.
+// answers re-arms the timer, or answers finished once the pass has returned. One that fails once
+// changed has closed - a cut or a reconnect, which the connection's own event decides - is
+// answered as that event is, and one that fails otherwise ends the pass and answers silent, with
+// one Error line. changed closing while the pass runs ends the pass and answers
+// connectionChanged, and the pass's return wins over changed whenever both are there to read, so
+// a pass that did its work is never reported as one the event ended: that is the one rule of a
+// connection event (atConnectionEvent). The return answers finished at once unless the pass
+// reported failed or ran probeTimeout or longer since began, when a probe is made first and
+// decides. serve's ctx ending answers finished at once.
 func (o *Outbox) watchExpiryPass(ctx context.Context, changed <-chan struct{}, returned <-chan bool, endPass context.CancelFunc, began time.Time) expiryPassEnd {
 	// done is whether the pass has returned, and failed what it reported then.
 	done, failed := false, false
@@ -133,6 +133,16 @@ func (o *Outbox) watchExpiryPass(ctx context.Context, changed <-chan struct{}, r
 		}
 		return done
 	}
+	// atConnectionEvent is the one answer to a change of the client's connection: finished when the
+	// pass has returned, since it did its work, and otherwise the pass is ended there and the
+	// answer is connectionChanged.
+	atConnectionEvent := func() expiryPassEnd {
+		if returnedNow() {
+			return expiryPassFinished
+		}
+		endPass()
+		return expiryPassConnectionChanged
+	}
 	due := time.NewTimer(time.Until(began.Add(probeTimeout)))
 	defer due.Stop()
 	for {
@@ -142,15 +152,14 @@ func (o *Outbox) watchExpiryPass(ctx context.Context, changed <-chan struct{}, r
 		case failed = <-returned:
 			done = true
 		case <-changed:
-			if !returnedNow() {
-				endPass()
-				return expiryPassConnectionChanged
-			}
+			return atConnectionEvent()
 		case <-due.C:
 		}
 		switch {
 		case !done:
-		case connectionReplaced(changed), !failed && time.Since(began) < probeTimeout:
+		case connectionReplaced(changed):
+			return atConnectionEvent()
+		case !failed && time.Since(began) < probeTimeout:
 			return expiryPassFinished
 		}
 		// A probe left behind, at a stop or a connection event, answers into its buffer.
@@ -162,25 +171,17 @@ func (o *Outbox) watchExpiryPass(ctx context.Context, changed <-chan struct{}, r
 		case <-ctx.Done():
 			return expiryPassFinished
 		case <-changed:
-			if returnedNow() {
-				return expiryPassFinished
-			}
-			endPass()
-			return expiryPassConnectionChanged
+			return atConnectionEvent()
 		case err = <-answer:
 		}
-		returnedNow()
 		switch {
-		case err == nil && done:
+		case err == nil && returnedNow():
 			return expiryPassFinished
 		case err == nil:
 			due.Reset(time.Until(sent.Add(probeTimeout)))
 			continue
-		case connectionReplaced(changed) && done:
-			return expiryPassFinished
 		case connectionReplaced(changed):
-			endPass()
-			return expiryPassConnectionChanged
+			return atConnectionEvent()
 		case ctx.Err() != nil:
 			return expiryPassFinished
 		}

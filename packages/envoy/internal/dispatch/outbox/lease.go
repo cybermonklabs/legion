@@ -87,8 +87,9 @@ const (
 	// stopping: ctx ended; the hold is released.
 	stopping holdEnd = "stopping"
 	// natsLost: NATS stayed down for natsLossGrace, a batch's sends failed and the probe of their
-	// connection failed too, or the expiry pass's probe of its connection failed; the hold is
-	// released.
+	// connection failed too - the batch's own or the one behind a keep's handover (handOverKept) -
+	// the probe behind a fallback pass's keep's handover failed, or the expiry pass's probe of its
+	// connection failed; the hold is released.
 	natsLost holdEnd = "NATS lost"
 	// holdLost: the hold reported itself lost, its deadline had passed when a scan was to start
 	// a batch or when a send of one was to be written, or a record found it another's; its
@@ -511,7 +512,8 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 // stopped: ctx ended, the hold was lost or its deadline had passed when a scan was to start a
 // batch or write a send of one, or NATS was lost - down for natsLossGrace without a break and
 // still down when the grace ends, a batch's sends failed for the connection and a probe of that
-// connection failed too, or the expiry pass's probe of its connection failed.
+// connection failed too, a fallback pass's keep answered that its handover's probe of the pass's
+// connection failed (publishFallbackCopies), or the expiry pass's probe of its connection failed.
 //
 // After the fallback pass comes the expiry pass (passKeptExpiries), under the same hold and fenced
 // the same way: it reads the listeners' notices of the copies the outbox kept for roles whose hour
@@ -521,8 +523,8 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 // the first pass after its wait. A full read or a full claim leaves the holder due again. Both
 // runs of the pass are bound to the NATS connection: none starts while the client reads
 // disconnected, one in flight ends at the client's next connection event, so natsLossGrace counts
-// a cut inside the pass from the cut, and a pass that runs past probeTimeout, or reports a call
-// that failed, probes the connection and ends as NATS lost when the probe fails
+// a cut inside the pass from the cut, and a pass that runs probeTimeout or longer, or reports a
+// failure, probes the connection and ends as NATS lost when the probe fails
 // (passKeptExpiriesWhileNATSAnswers, in lease_expiry_pass.go, whose doc holds why).
 func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 	var disconnected, retryTimer *time.Timer
@@ -552,9 +554,12 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 				case end.natsLost:
 					return natsLost
 				}
-				fullPass, failedPass := publishFallbackCopies(ctx, o.deps, hold, o.instance)
+				fullPass, failedPass, passLostNATS := publishFallbackCopies(ctx, o.deps, hold, o.instance)
 				if ctx.Err() != nil {
 					return stopping
+				}
+				if passLostNATS {
+					return natsLost
 				}
 				fullExpiries, failedExpiries, silent := o.passKeptExpiriesWhileNATSAnswers(ctx, hold)
 				if ctx.Err() != nil {

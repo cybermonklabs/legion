@@ -3,6 +3,7 @@ package outbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -368,6 +369,90 @@ func TestAnOutboxWhoseNATSGoesSilentInItsExpiryPassGivesThePublisherToTheOther(t
 			t.Logf("the working process published the event %s after a silence inside %s",
 				time.Since(frozenAt).Round(time.Millisecond), call.name)
 			requireNoTakeBackWhileSilent(t, row.recorder, row.held, row.working)
+		})
+	}
+}
+
+// answeredOnce is a test publisher with no NATS whose connection answers the first probe made of
+// it and no probe after, as a connection that goes silent just after a probe answered: every probe
+// after the first fails at once, wrapping bus.ErrUnavailable as a flush probe that ran out of time
+// does. probes counts the probes made, and answered is closed as the first one answers.
+type answeredOnce struct {
+	publishOnly
+	probes   atomic.Int32
+	answered chan struct{}
+}
+
+func (p *answeredOnce) WindowUntil(func() time.Time) bus.Sender { return p }
+
+func (p *answeredOnce) PublishAsync(item contracts.Envelope) <-chan error {
+	return answered(fmt.Errorf("test publisher serves no publish (to %q)", item.Topic))
+}
+
+func (p *answeredOnce) Probe(time.Duration) error {
+	if p.probes.Add(1) == 1 {
+		close(p.answered)
+		return nil
+	}
+	return fmt.Errorf("test connection: %w: the flush probe got no answer", bus.ErrUnavailable)
+}
+
+// An expiry pass that returns after a probe of its connection answered, and before the next probe
+// is due, is probed again as it returns when it reports a failure or ran probeTimeout or longer
+// since it began, and its watcher answers silent when that probe fails (watchExpiryPass). That is
+// a silence that starts just after a probe answered: a call the pass makes then waits out its
+// bound, at least probeTimeout, and fails, or the pass reports a failure of its own, and the pass
+// returns before the next probe is due. The rule at 0abe7e89 answered such a return finished at
+// once while the last probe that answered was sent less than probeTimeout before it
+// (returned && time.Since(lastAnswer) < probeTimeout), so the watcher took the answer from before
+// the silence for the connection's, the holder kept the hold, and the silence was found only by
+// the next batch or pass, past the take-over; under that rule this test fails.
+//
+// The watcher runs alone, on an outbox whose publisher has no NATS (answeredOnce), with no
+// connection-change channel: the first probe, due probeTimeout after began, answers, and every
+// probe after it fails. The pass's return is sent half a second after that answer, so after the
+// watcher read it, and before the next probe is due, 2 x probeTimeout after began, so only the
+// return can bring on the second probe. Each subtest is one value of the failed the pass reports.
+func TestAnExpiryPassThatReturnsAfterAnAnsweredProbeIsProbedAgain(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name   string
+		failed bool
+	}{
+		{name: "reporting no failure", failed: false},
+		{name: "reporting a failure", failed: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			publisher := &answeredOnce{answered: make(chan struct{})}
+			outbox := New(Deps{Publisher: publisher})
+			pass, endPass := context.WithCancel(context.Background())
+			defer endPass()
+			returned := make(chan bool, 1)
+			watched := make(chan expiryPassEnd, 1)
+			began := time.Now()
+			go func() { watched <- outbox.watchExpiryPass(context.Background(), nil, returned, endPass, began) }()
+
+			testwait.Receive(t, "the first probe, due probeTimeout after the pass began, answering", publisher.answered)
+			// The watcher reads that answer at once; the return comes after it.
+			time.Sleep(500 * time.Millisecond)
+			if since := time.Since(began); since >= 2*probeTimeout {
+				t.Fatalf("the pass returns %s after it began, at or past the second probe's due time (%s): the return no longer brings that probe on by itself",
+					since.Round(time.Millisecond), 2*probeTimeout)
+			}
+			returned <- row.failed
+			end := testwait.Receive(t, "the watcher's answer once the pass returned", watched)
+
+			if end != expiryPassSilent {
+				t.Fatalf("the watcher answered %d, want expiryPassSilent (%d); it made %d probes, want 2: the one due probeTimeout after the pass began, and the one as the pass returned, which failed",
+					end, expiryPassSilent, publisher.probes.Load())
+			}
+			if probes := publisher.probes.Load(); probes != 2 {
+				t.Fatalf("the watcher made %d probes, want 2: the one due probeTimeout after the pass began, and the one as the pass returned", probes)
+			}
+			if pass.Err() == nil {
+				t.Fatal("the watcher answered silent and left the pass's context standing, want it ended")
+			}
 		})
 	}
 }

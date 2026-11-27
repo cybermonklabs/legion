@@ -8,8 +8,8 @@ body: |-
   runs again once the client is connected. When the connection goes silent, open while nothing
   answers, while one of the pass's NATS calls waits for an answer, the other process now publishes
   within about 6 s of the silence (about 4 s in the package's tests), not about 17 s. The outbox
-  probes its connection every 2 s while the pass runs, and once more as the pass ends when one of
-  its calls failed or it ran 2 s or longer. It gives the hold up when a probe gets no answer. A
+  probes its connection every 2 s while the pass runs, and once more as the pass ends when the
+  pass reports a failure or ran 2 s or longer. It gives the hold up when a probe gets no answer. A
   silence that starts while the pass does database work is found as one between passes is. When a
   batch keeps a copy for a role and hands it to the role's new holder, each read of that handover
   now gives up after 2 s, where it could wait up to 10 s. When a read or the forward of the
