@@ -225,6 +225,20 @@ function slashHint(hasCommands: boolean): string {
   return hasCommands ? ", / for commands" : ", / for send modes";
 }
 
+/**
+ * One session's live view: its thread, its message box, and the one row under the message box
+ * (R6), which says what a message is delivered as, where the session runs, what it runs on, how
+ * full its window is, and holds the one question mark that holds every rule this page used to
+ * print. That row's groups, in this order: Facts and Window (the context ring and the question
+ * mark). Facts holds three groups, in this order: Delivery (the mode picker), Place (the machine
+ * and the directory, or the line that the session is not listed) and Session (the model and
+ * thinking pickers, `SessionSettings`). A row too narrow for all three facts moves the last group
+ * that does not fit to the next line whole; inside Place the machine and the directory shorten to
+ * an ellipsis, each with its whole text as its title, so on a laptop the row is one line and
+ * nothing scrolls sideways at any width. Window sits outside the facts, so the ring and the
+ * question mark keep the box's right edge however the facts wrap, and their panels open upwards
+ * from there.
+ */
 export function AgentConversationPage({
   front,
   sessionId,
@@ -295,11 +309,10 @@ export function AgentConversationPage({
   const [picked, setPicked] = useState<MessageDeliveryMode | null>(null);
   const mode = picked !== null && modes.includes(picked) ? picked : (modes[0] ?? "aside");
   // Which panel of the footer row stands open, since both open upwards over the transcript from
-  // the same corner: one at a time, as a `MultiSelect`'s host holds its list.
+  // the same corner: one at a time, as a `MultiSelect`'s host holds its list. The reader opens and
+  // closes it; a session that stops reporting its window leaves an open context panel open,
+  // saying so (`ContextRing`).
   const [panel, setPanel] = useState<"context" | "help" | null>(null);
-  // The ring's panel goes with the ring: a session that stops reporting its window takes the ring
-  // away, and its next reading draws the ring closed rather than reopening a panel by itself.
-  if (panel === "context" && conversation.context === undefined) setPanel(null);
   // The slash commands the composer completes (LEGION-394). The session runs typed input only
   // from a Send or an Aside, so a BTW, a side question it answers, offers none; nor does a
   // session that sent no list, whose host cannot run typed input.
@@ -507,17 +520,9 @@ export function AgentConversationPage({
         />
       </ErrorBoundary>
       <div className="shrink-0" ref={footerRef}>
-        {/* The one row under the message box (R6): what a message is delivered as, where the
-            session runs, what it runs on, how full its window is, and the one question mark
-            that holds every rule this page used to print. The facts scroll sideways at a phone
-            width and wrap nowhere from `sm` up, so the row is one line on a laptop; the pickers
-            hold their width (`shrink-0`, `SessionSettings`) and the directory is the one part
-            that shortens. The ring and the question mark sit outside that scroller, so they keep
-            the box's right edge however far the facts scroll, and their panels open upwards
-            from here rather than inside a clipped scroller. */}
         <div className="mt-2 flex items-center gap-2 text-xs" data-testid="agent-composer-footer">
           <div
-            className="flex min-w-0 flex-1 flex-nowrap items-center gap-x-3 gap-y-1 overflow-x-auto sm:flex-wrap sm:overflow-x-visible"
+            className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1"
             data-testid="agent-composer-facts"
           >
             <select
@@ -535,30 +540,26 @@ export function AgentConversationPage({
             </select>
             {/* A claim that the session is gone starts only from a current list. The header's
                 presence and the transcript's line keep that fact through a failed read, from the
-                kept rows of the last read that returned a list; this line waits for a current
-                one, and while the list refills or is unreachable the header names why it has
-                none. */}
+                kept rows of the last read that returned a list; this line waits for a current one,
+                and while the list refills or is unreachable the header names why it has none. */}
             {agent === undefined && current ? (
-              <span
-                className={`shrink-0 whitespace-nowrap ${textMutedOnCanvas}`}
-                data-testid="agent-not-listed"
-              >
+              <span className={`min-w-0 ${textMutedOnCanvas}`} data-testid="agent-not-listed">
                 Not in the live session list — it may have ended.
               </span>
             ) : null}
             {agent === undefined ? null : (
-              <>
+              <span className="flex min-w-0 flex-1 basis-48 items-center gap-x-3">
                 <span
-                  className={`shrink-0 whitespace-nowrap ${textMutedOnCanvas}`}
+                  className={`min-w-0 truncate ${textMutedOnCanvas}`}
                   data-testid="agent-footer-machine"
-                  title="The machine this session runs on"
+                  title={`The machine this session runs on: ${agent.host}`}
                 >
                   {agent.host}
                 </span>
                 {/* The flex item the ellipsis applies to is the span inside, not this one
                     (`packages/dispatch/AGENTS.md`): a flex container never draws one on its own
-                    text. `min-w-24` keeps a shortened directory readable, so the row scrolls at a
-                    phone width rather than cutting it to nothing. */}
+                    text. `min-w-24` keeps a shortened directory readable: the machine gives way
+                    before it does. */}
                 <span
                   className={`flex min-w-24 flex-1 items-center truncate ${textMutedOnCanvas}`}
                   data-testid="agent-footer-dir"
@@ -567,9 +568,14 @@ export function AgentConversationPage({
                     {agent.dir}
                   </TruncatedText>
                 </span>
-              </>
+              </span>
             )}
-            <SessionSettings onPick={onPick} pending={switchPending} view={settings} />
+            <span
+              className="flex min-w-0 max-w-full flex-wrap items-center gap-x-3 gap-y-1 empty:hidden"
+              data-testid="agent-session-group"
+            >
+              <SessionSettings onPick={onPick} pending={switchPending} view={settings} />
+            </span>
           </div>
           <span className="flex shrink-0 items-center gap-1">
             <ContextRing
@@ -583,8 +589,9 @@ export function AgentConversationPage({
             />
           </span>
         </div>
-        {/* Under the row, not in it: a line of prose in the row's sideways scroller shrinks to a
-            sliver beside the pickers (`SessionSwitchLines`). */}
+        {/* Under the row, not in it: the facts wrap as groups, and a status sentence among them
+            would be one more flex item that shrinks to a sliver beside the pickers
+            (`SessionSwitchLines`). */}
         <SessionSwitchLines notice={settings.notice} status={sessionSwitch.status} />
       </div>
     </div>

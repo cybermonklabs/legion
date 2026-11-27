@@ -42,6 +42,7 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../theme/classes";
+import { TruncatedText } from "./TruncatedText";
 
 const EMPTY_COUNTS: ReadonlyMap<string, number> = new Map();
 const NO_SELECTION: RowSelectionState = {};
@@ -528,7 +529,9 @@ function TableHeaderCell<TData>({
   const sorted = column.getIsSorted();
   const mark =
     wrap && sorted === false ? null : (
-      <span className={textMutedOnCanvas}>{{ asc: "▲", desc: "▼" }[sorted as string] ?? ""}</span>
+      <span className={`shrink-0 ${textMutedOnCanvas}`}>
+        {{ asc: "▲", desc: "▼" }[sorted as string] ?? ""}
+      </span>
     );
   return (
     <th
@@ -553,20 +556,24 @@ function TableHeaderCell<TData>({
       >
         {column.getCanSort() ? (
           <button
-            className={`flex min-w-0 items-center gap-1 ${numeric ? "text-right" : wrap ? "text-left" : "truncate whitespace-nowrap"}`}
+            className={`flex min-w-0 items-center gap-1 ${numeric ? "text-right" : wrap ? "text-left" : "whitespace-nowrap"}`}
             draggable={!pinned}
             onClick={column.getToggleSortingHandler()}
             onDragEnd={() => setDragColumn(undefined)}
             onDragStart={() => setDragColumn(column.id)}
-            title={
-              pinned
-                ? "Sort (shift-click to add a second sort)"
-                : "Sort (shift-click to add a second sort); drag to move the column"
-            }
+            // The hint opens with "Sort", as main's does, and names the column, which the name's
+            // ellipsis may have cut.
+            title={`Sort${typeof column.columnDef.header === "string" ? ` by ${column.columnDef.header}` : ""} (shift-click to add a second sort)${pinned ? "" : "; drag to move the column"}`}
             type="button"
           >
             {numeric ? mark : null}
-            {flexRender(column.columnDef.header, header.getContext())}
+            {numeric || wrap ? (
+              flexRender(column.columnDef.header, header.getContext())
+            ) : (
+              <TruncatedText className="min-w-0">
+                {flexRender(column.columnDef.header, header.getContext())}
+              </TruncatedText>
+            )}
             {numeric ? null : mark}
           </button>
         ) : (

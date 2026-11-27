@@ -145,9 +145,9 @@ LISTED = [
      "the contracts modules that entry's bundle loads and no other"),
     # The two-build job runs that Go step and a browser half, which is dispatch_browser's case: it
     # builds the SPA from packages/dispatch and runs the Playwright config and the e2e helpers of
-    # packages/dispatch/e2e (`bun run e2e:multiprocess -- cross-build.multiprocess`), and its
-    # `Build contracts for dispatch e2e` step runs `build:dispatch`, as dispatch_browser's row
-    # says. Its block is the union of the two, so it holds every file the Go step's block holds.
+    # packages/dispatch/e2e (`build:web`, then `e2e:multiprocess:run -- cross-build.multiprocess`),
+    # and its `Build contracts for dispatch e2e` step runs `build:dispatch`, as dispatch_browser's
+    # row says. Its block is the union of the two, so it holds every file the Go step's block holds.
     ("dispatch_two_builds", "packages/contracts/src", ("dispatch_ui", "dispatch_two_builds_go"),
      "the job's browser half runs the SPA built from packages/dispatch and the Playwright config and e2e helpers "
      "of packages/dispatch/e2e, which load the contracts modules dispatch_ui's programs compile, and its Go step "

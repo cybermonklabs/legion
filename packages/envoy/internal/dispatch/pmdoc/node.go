@@ -317,7 +317,7 @@ func validateTypedBlock(n *Node, typ BlockTypeSchema) error {
 		if value == nil && definition.Default == nil {
 			continue
 		}
-		if err := validateAttributeValue(definition, value); err != nil {
+		if err := validateAttributeValue(name, definition, value); err != nil {
 			return fmt.Errorf("%w: typed block %q attribute %q: %w", ErrSchema, n.Type, name, err)
 		}
 	}

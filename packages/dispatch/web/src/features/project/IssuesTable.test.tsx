@@ -246,6 +246,54 @@ test("opening a Labels facet does not pass its values through another column's f
   expect(screen.getByRole("option", { name: "frontend, 1 issue" })).toBeDefined();
 });
 
+// The Layout rule (`web/src/AGENTS.md`), point 2: a label with no break in it shortens inside its
+// own pill, with the whole label as its title, rather than running past the Labels cell.
+test("a long label shortens to an ellipsis inside its pill, with the whole label as its title", async () => {
+  const long = "dispatchlayoutruleaverylonglabelnobreak1";
+  table([issue("CORE-1", { labels: [long] })]);
+  const row = await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  const words = within(row).getByText(long);
+  expect(words).toHaveAttribute("title", long);
+  expect(words.className).toContain("truncate");
+});
+
+// The Layout rule (`web/src/AGENTS.md`), point 3: a row's labels are a list as long as the
+// issue's data, so the cell shows ten and one "+N" that shows the rest in place. A row the search
+// hides and shows again is drawn from nothing, and the labels the reader opened are still open.
+test("a row shows ten of its labels and a +N, and its opened labels stay open when the row is drawn again", async () => {
+  const user = userEvent.setup();
+  const labels = Array.from({ length: 13 }, (_, index) => `label-${index + 1}`);
+  table([
+    issue("CORE-1", { labels, title: "Work with many labels" }),
+    issue("CORE-2", { title: "Sextant" }),
+  ]);
+  const labelsOf = async () => {
+    const row = await screen.findByRole("row", { name: "CORE-1 Work with many labels" });
+    const group = row.querySelector<HTMLElement>('[data-layout-group="labels"]');
+    if (group === null) throw new Error("the row's labels are not a group");
+    return group;
+  };
+  const drawn = (group: HTMLElement) =>
+    labels.filter((label) => within(group).queryByText(label) !== null);
+
+  expect(drawn(await labelsOf())).toEqual(labels.slice(0, 10));
+  await user.click(
+    within(await labelsOf()).getByRole("button", { name: "+3, show all 13 labels" })
+  );
+  expect(drawn(await labelsOf())).toEqual(labels);
+
+  const search = screen.getByRole("searchbox", { name: "Search issues" });
+  await user.type(search, "sextant");
+  // A query longer than the box ends in an ellipsis, so the whole query is the box's title.
+  expect(search).toHaveAttribute("title", "sextant");
+  await waitFor(() =>
+    expect(screen.queryByRole("row", { name: "CORE-1 Work with many labels" })).toBeNull()
+  );
+  await user.clear(search);
+  expect(drawn(await labelsOf())).toEqual(labels);
+  expect(within(await labelsOf()).getByRole("button", { name: "Show fewer labels" })).toBeDefined();
+});
+
 test("Created sorts RFC3339 fractional timestamps by instant, not by text", async () => {
   table(
     [
@@ -1669,7 +1717,7 @@ async function headerLayout(width: number): Promise<string[]> {
 
 /** The columns after the pinned ones, at the registry's widths, then the Start next column. */
 const UNPINNED_REST = [
-  "Status 132px -",
+  "Status 148px -",
   "Epic 220px -",
   "Assignee 180px -",
   "Created by 200px -",
@@ -1730,7 +1778,7 @@ test("a stored desktop width reaches the List's header", async () => {
   );
   const cells = await headerLayout(1400);
   expect(cells).toContain("Epic 300px -");
-  expect(cells).toContain("Status 132px -");
+  expect(cells).toContain("Status 148px -");
 });
 
 test("the Status filter counts Done once the closed issues are loaded", async () => {
@@ -2786,6 +2834,8 @@ test.each([
     await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
     const pick = screen.getByRole("combobox", { name: "Move to epic" });
     await user.selectOptions(pick, "CORE-9");
+    // The closed picker may end the epic's title in an ellipsis, so its whole title is the title.
+    expect(pick).toHaveAttribute("title", "Platform");
     // The epic closes while it is picked, and the select offers it no more.
     rows[1] = issue("CORE-9", { labels: ["epic"], status: "done", title: "Platform" });
     await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
@@ -3523,9 +3573,9 @@ test("a layout's Title fills a desktop box with what the other shown columns and
   expect([narrow.fills, narrow.trailing]).toEqual(["title", 104]);
   const wide = renderHook(() => useTableLayout("fills-narrow", narrow));
   expect(wide.result.current.boxWidth).toBe(1000);
-  // Select 44, key 108 and status 132 shown, and the row's actions, in a box not yet measured,
-  // whose borders read as nothing: 1000 - 388.
-  expect(wide.result.current.responsive.sizing.title).toBe(612);
+  // Select 44, key 108 and status 148 shown, and the row's actions, in a box not yet measured,
+  // whose borders read as nothing: 1000 - 404.
+  expect(wide.result.current.responsive.sizing.title).toBe(596);
   wide.unmount();
   // With more shown than leave Title its minimum, it stays at that minimum.
   const full = renderHook(() =>

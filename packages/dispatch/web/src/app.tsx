@@ -650,10 +650,12 @@ function ShellProviders({
  * The signed-in frame, in three named groups in this order:
  *
  * - **Navigation**: below the compact width, a top bar - the title, the Inbox count or Peek, the
- *   unread replies, then Menu - whose counts wrap whole onto a second row of the bar, with the
- *   navigation itself in a drawer the reader opens with Menu. From the compact width up it is
- *   the sidebar, or the rail the reader collapses it to; the issue frame draws its icon rail
- *   from the `md` width instead and opens the same drawer from it.
+ *   unread replies, then Menu - whose counts wrap whole onto a second row of the bar, and inside
+ *   that row one count at a time, each whole, where it is still too narrow; Menu is its own item
+ *   at the right, in reach however the counts wrap. The navigation itself is in a drawer the
+ *   reader opens with Menu. From the compact width up it is the sidebar, or the rail the reader
+ *   collapses it to; the issue frame draws its icon rail from the `md` width instead and opens
+ *   the same drawer from it.
  * - **Main**: the page (`<main>`).
  * - **Margin**: the details column, which the reader collapses or resizes (`MarginColumn`).
  *
@@ -1223,20 +1225,21 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           <header
             className={`flex items-center justify-between border-b px-3 xl:hidden ${railBorder} ${railBg} ${railText}`}
           >
-            {/* The title never shrinks and no count breaks its own words: the counts that do not
-                fit beside the title wrap onto a second row of the bar, with Menu on the right. */}
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
               <Link className="shrink-0 text-lg font-semibold" to="/">
                 Dispatch
               </Link>
-              {/* Everywhere but the Inbox page, the inbox peek also opens the Inbox drawer. */}
-              <ShellCounts
-                onOpenInboxDrawer={() => {
-                  reachForTheShell();
-                  openTheInboxDrawer();
-                }}
-                reached={shellReached}
-              />
+              {/* One group that wraps as a whole (INFRA-5200). Everywhere but the Inbox page,
+                  the inbox peek also opens the Inbox drawer. */}
+              <span className="flex min-w-0 max-w-full flex-wrap items-center gap-x-2 gap-y-1">
+                <ShellCounts
+                  onOpenInboxDrawer={() => {
+                    reachForTheShell();
+                    openTheInboxDrawer();
+                  }}
+                  reached={shellReached}
+                />
+              </span>
             </div>
             <button
               aria-expanded={navigationOpen}

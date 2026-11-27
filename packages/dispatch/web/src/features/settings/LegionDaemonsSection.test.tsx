@@ -227,6 +227,11 @@ test("a URL with a path is refused by the field, in the words the route uses", a
   await user.selectOptions(await section.findByLabelText("Legion project"), "ACME");
   await user.click(section.getByLabelText("Legion daemon state URL"));
   await user.paste("http://127.0.0.1:9731/legion/v1/state");
+  // The field shortens a long URL to an ellipsis, so its whole URL is its title.
+  expect(section.getByLabelText("Legion daemon state URL")).toHaveAttribute(
+    "title",
+    "http://127.0.0.1:9731/legion/v1/state"
+  );
   await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
 
   expect((await section.findByRole("alert")).textContent).toContain(

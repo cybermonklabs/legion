@@ -829,7 +829,7 @@ to nothing of the browser half, which the dispatch_two_builds filter names.
 
 The two-build job: its Go step's reads, the dispatch_two_builds_go filter's, named again so the job runs for the
 change that starts the step, and the browser half,
-`bun run e2e:multiprocess -- cross-build.multiprocess` in packages/dispatch: the
+`bun run e2e:multiprocess:run -- cross-build.multiprocess` in packages/dispatch: the
 harness and spec under e2e/, the two SPA builds (web/, the editor package and the
 patches it takes, the notices script the build runs), the Dispatch server
 e2e/run-server.sh builds (dispatch_command_tests holds its packages) and the script

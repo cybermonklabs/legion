@@ -58,7 +58,13 @@ import {
  *  - The default repository: the `owner/name` an issue of the project resolves to when neither
  *    the issue nor an issue above it names a repository. A project has one or none, and a person
  *    sets or clears it in the project's row. The project list (`projectsQuery`) holds it, as
- *    `default_repo`, which a project with none does not carry. */
+ *    `default_repo`, which a project with none does not carry.
+ *
+ *  Its create form's groups, in this order: Key, Name, Default assignee and New project, four
+ *  columns from `sm` and one below it; each field shrinks with its column, and a value longer than
+ *  its field ends in an ellipsis with the whole value as its title. A row's Default repository is
+ *  one group: its field, Save, Clear (while the project has one), and the line that says why a
+ *  value was refused. */
 export function ProjectsSection(): ReactNode {
   const queryClient = useQueryClient();
   const [projectKey, setProjectKey] = useState("");
@@ -229,19 +235,21 @@ export function ProjectsSection(): ReactNode {
                 }}
                 placeholder="CORE"
                 required
+                title={projectKey === "" ? undefined : projectKey}
                 value={projectKey}
               />
             </label>
             <label className={settingsFieldLabel} htmlFor="project-name">
               Name
               <input
-                className={`rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
+                className={`rounded-md px-3 py-2 text-ellipsis ${inputClasses(false)} ${textPrimaryOnSurface}`}
                 disabled={createProject.isPending}
                 id="project-name"
                 maxLength={PROJECT_NAME_MAX}
                 onChange={(event) => setProjectName(event.target.value)}
                 placeholder="Core"
                 required
+                title={projectName === "" ? undefined : projectName}
                 value={projectName}
               />
             </label>
@@ -657,6 +665,7 @@ function DefaultRepositoryCell({
           }}
           placeholder="None"
           spellCheck={false}
+          title={(draft ?? repo ?? "") === "" ? undefined : (draft ?? repo ?? "")}
           value={draft ?? repo ?? ""}
         />
         <button
