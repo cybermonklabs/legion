@@ -685,12 +685,14 @@ func TestFromBlocksHoldsATaskIDToDispatchsForm(t *testing.T) {
 // for no credential, and which redact.URLCredentials removes as it removes a password or a token.
 var plantedUser = strings.Repeat("planted-reader-", 20)
 
-// plantedURL is a URL whose userinfo is plantedUser, and redactedURL is what the URL rule leaves of
-// it: its path is long enough that the URL without its userinfo is still past MostQuotedBytes, so
-// a reason quotes it cut.
+// plantedURL is a URL whose userinfo is plantedUser, and redactedURL is what the URL rule
+// (redact.URLCredentials) leaves of it, read from the rule as quoteBoundaryCases' rows read it,
+// never written out here: a rule that removes the userinfo and one that writes a mark in place of
+// the whole authority both leave this test true. Its path is long enough that what the rule
+// leaves is still past MostQuotedBytes, so a reason quotes it cut.
 var (
 	plantedURL  = "https://" + plantedUser + "@h.example/" + strings.Repeat("p", 200)
-	redactedURL = "https://h.example/" + strings.Repeat("p", 200)
+	redactedURL = redact.URLCredentials(plantedURL)
 )
 
 // credentialIn is the first run of six bytes of plantedUser that text holds, and "" where it holds

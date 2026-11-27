@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -782,12 +783,14 @@ func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
 // plantedUser is the user name a planted URL carries as its userinfo, 300 bytes, written as the
 // redact package's tests write theirs: a user name with no password, which a secret scanner takes
 // for no credential, and which redact.URLCredentials removes as it removes a password or a token.
-// plantedURL carries it, and redactedURL is what the URL rule leaves of plantedURL, still past
-// plan.MostQuotedBytes, so a reason quotes it cut.
+// plantedURL carries it, and redactedURL is what the URL rule (redact.URLCredentials) leaves of
+// plantedURL, read from the rule and never written out here, so that a rule that removes the
+// userinfo and one that writes a mark in place of the whole authority both leave the test true;
+// it is still past plan.MostQuotedBytes, so a reason quotes it cut.
 var (
 	plantedUser = strings.Repeat("planted-reader-", 20)
 	plantedURL  = "https://" + plantedUser + "@h.example/" + strings.Repeat("p", 200)
-	redactedURL = "https://h.example/" + strings.Repeat("p", 200)
+	redactedURL = redact.URLCredentials(plantedURL)
 )
 
 // credentialIn is the first run of six bytes of plantedUser that text holds, and "" where it holds
