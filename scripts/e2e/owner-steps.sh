@@ -19,17 +19,19 @@
 #   - plan-registered: before the gate opens, POST /legion/v1/plans/register with the architect's
 #     grant and version 1 answers 200 with one task a naming implementer and reviewer;
 #   - walk-implementer-reviewer: the gate opens and the issue walks implementing, reviewing, retro
-#     and merging to done, and no planner and no tester is launched;
+#     and merging, GitHub's merge takes it to verifying, where its close waits for its checks, or
+#     on through it to done once they pass, and no planner and no tester is launched;
 #   - steps-read: `dispatch steps --issue <KEY>` as the person prints task a's step 1 implementer
 #     and step 2 reviewer, then the retro and the merge, each ended passed, and no other run; the
 #     line `task a needs …` of the plan before them is no run, and the check passes over it;
 #   - walk-default-steps: the second issue, given no plan, walks planning, implementing, testing,
-#     reviewing, accepting (the architect's sign-off), retro and merging to done, and holds
-#     issue_plans version 0 of the source default, its task default done, plan_steps at places 1
-#     to 5, one start of each step, and the seven records of task default in `dispatch steps`;
+#     reviewing, accepting (the architect's sign-off), retro and merging, leaves merging on its
+#     merge for verifying or done, and holds issue_plans version 0 of the source default, its task
+#     default done, plan_steps at places 1 to 5, one start of each step, and the seven records of
+#     task default in `dispatch steps`;
 #   - control-default-rows-deleted: the third issue, given no plan, has its plan rows deleted while
-#     its planner works; it walks today's line to done, and the check of walk-default-steps' rows
-#     fails on it, naming its issue_plans rows as none;
+#     its planner works; it walks today's line to its merge, and the check of walk-default-steps'
+#     rows fails on it, naming its issue_plans rows as none;
 #   - control-refused: a plan whose task a names `implementer checker` is refused 409 PLAN_REFUSED
 #     with the reason that no deployment and no plan defines the role checker, naming task a;
 #   - control-no-plan-rows: the fourth issue is given the plan `implementer reviewer`, and its rows
@@ -39,10 +41,10 @@
 #     PLAN_REFUSED with the one reason that step 1 names the tester and no step before it the
 #     implementer whose pull request it reads, naming task a, and records nothing;
 #   - walk-any-order: the fifth issue is given the plan `implementer reviewer tester`; it walks
-#     implementing, reviewing, testing, retro and merging to done, its implementer, its reviewer and
-#     its tester first launched in that order, and `dispatch steps --issue <KEY>` as the person
-#     prints task a's step 1 implementer, step 2 reviewer and step 3 tester, then the retro and the
-#     merge, each ended passed, and nothing else.
+#     implementing, reviewing, testing, retro and merging, leaves merging on its merge for
+#     verifying or done, its implementer, its reviewer and its tester first launched in that order,
+#     and `dispatch steps --issue <KEY>` as the person prints task a's step 1 implementer, step 2
+#     reviewer and step 3 tester, then the retro and the merge, each ended passed, and nothing else.
 #
 # Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
 # to start without them), bun (after `bun install` at the checkout's root), awk and python3, as
