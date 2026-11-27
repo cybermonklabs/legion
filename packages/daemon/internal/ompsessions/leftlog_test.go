@@ -53,7 +53,7 @@ var pidField = regexp.MustCompile(`"pid":([0-9]+)[,}]`)
 // from a line of statementMessage's shape, and "ERROR" for an ERROR line that carries the text of
 // the statement the server refused. ok is false for a line of any other shape, such as a duration
 // with no text, which the server writes where log_statement already logged the text, or another
-// message the server writes while a statement runs.
+// message the server writes while a statement runs (serverNote).
 func logStatement(record logRecord) (step, text string, ok bool) {
 	if match := statementMessage.FindStringSubmatch(record.Message); match != nil {
 		return cmp.Or(match[1], "statement"), match[3], true
@@ -62,6 +62,25 @@ func logStatement(record logRecord) (step, text string, ok bool) {
 		return "ERROR", *record.Statement, true
 	}
 	return "", "", false
+}
+
+// statementRecord is the start of a LOG message that records a statement in a shape
+// statementMessage does not read: a duration with no text, which log_min_duration_statement writes
+// where log_statement already logged the text, and log_statement's own records, "statement: <text>"
+// and "<step> <name>: <text>" (exec_simple_query, exec_parse_message, exec_bind_message and
+// exec_execute_message in src/backend/tcop/postgres.c at REL_16_16).
+var statementRecord = regexp.MustCompile(`\A(?:duration: |statement: |(?:parse|bind|execute) \S+: )`)
+
+// serverNote reports whether record is a line the server writes while a statement runs that
+// records no statement: a LOG line whose message is no statement record (statementRecord). Three
+// exempt entries of LeftSettings write such lines inside the client's transactions on the backend a
+// case leaves them on: debug_print_parse and debug_print_rewritten the trees "parse tree:" and
+// "rewritten parse tree:" of each statement the client sends (elog_node_display in
+// src/backend/nodes/print.c at REL_16_16), and trace_sort a line about each sort, "begin tuple sort:
+// …" and "performsort of worker …" among them (src/backend/utils/sort/tuplesort.c). Oh My Pi's own
+// left-setting Job met the trees on PostgreSQL 16.16 and held them to its name.
+func serverNote(record logRecord) bool {
+	return record.Severity == "LOG" && !statementRecord.MatchString(record.Message)
 }
 
 // endsTransaction reports whether text is COMMIT or ROLLBACK, in any case: pgx sends commit and
@@ -113,12 +132,20 @@ func excerpt(line []byte) string {
 //     line or ERROR line counts it. A prepared statement has any name (pgx's stmtcache_<hash>,
 //     PgBouncer's PGBOUNCER_<n>, psql's <unnamed>), and one prepared in an earlier transaction logs
 //     bind and execute with no parse;
-//   - a line of any other shape (logStatement) is a problem.
+//   - a line the server writes while a statement runs that records no statement (serverNote), such
+//     as a parse tree that debug_print_parse writes or a line of trace_sort, must show clientName,
+//     and is not counted, but for one after an ERROR line of the window: the error aborted the
+//     transaction, and the abort set each SET LOCAL of it back, application_name's among them
+//     (AbortTransaction's AtEOXact_GUC in src/backend/access/transam/xact.c at REL_16_16), so the
+//     server writes what it writes for the ROLLBACK the client sends next, such as that statement's
+//     parse tree, under the session's own name, and the rule leaves it out as it leaves out the
+//     ROLLBACK line; a statement or an ERROR line there still counts, and must show clientName;
+//   - a line of any other shape (logStatement) is a problem, a duration with no text among them.
 //
 // A line outside every window is left out: PgBouncer's own statements on a server connection, such
 // as the SET of a parameter it tracks before a client's first query, come between windows.
 func clientStatementsInLog(jsonlog []byte, pids map[uint32]bool, openRead, openWrite string) (statements int, other, problems []string) {
-	inWindow := map[uint32]bool{}
+	inWindow, aborted := map[uint32]bool{}, map[uint32]bool{}
 	number := 0
 	for line := range bytes.Lines(jsonlog) {
 		number++
@@ -148,7 +175,7 @@ func clientStatementsInLog(jsonlog []byte, pids map[uint32]bool, openRead, openW
 		counted := ok && step != "parse" && step != "bind"
 		switch {
 		case counted && (text == openRead || text == openWrite):
-			inWindow[pid] = true
+			inWindow[pid], aborted[pid] = true, false
 		case counted && endsTransaction(text):
 			inWindow[pid] = false
 			continue
@@ -159,6 +186,11 @@ func clientStatementsInLog(jsonlog []byte, pids map[uint32]bool, openRead, openW
 		named := record.ApplicationName != nil && *record.ApplicationName == clientName
 		where := fmt.Sprintf("line %d (pid %d)", number, pid)
 		switch {
+		case !ok && serverNote(record):
+			if !named && !aborted[pid] {
+				problems = append(problems, fmt.Sprintf("%s: the server's %s line %s shows %s, want %q", where, record.Severity,
+					shown(record.Message), shownName(record), clientName))
+			}
 		case !ok:
 			problems = append(problems, fmt.Sprintf("%s is in a transaction of the client and has no shape the rule reads: error_severity %q, message %s",
 				where, record.Severity, shown(record.Message)))
@@ -173,6 +205,9 @@ func clientStatementsInLog(jsonlog []byte, pids map[uint32]bool, openRead, openW
 				other = append(other, fmt.Sprintf("%s: the %s line of %s shows %s", where, step, shown(text), shownName(record)))
 			}
 		}
+		// An ERROR line, the test's own included, aborts the transaction, so what the server writes
+		// after it for the ROLLBACK shows the session's own name.
+		aborted[pid] = aborted[pid] || step == "ERROR"
 	}
 	return statements, other, problems
 }
@@ -213,10 +248,14 @@ var fixtureSessions = []struct {
 // lines left out, and the two statements of session 3 under another-client as other. psql sends
 // only unnamed bound statements, so a copy of session 1's bind and execute lines renamed to
 // stmtcache_0123, with no parse before them, as pgx's cache sends a statement it prepared in an
-// earlier transaction, adds one statement under the client's name. The controls are lines the rule
-// must name as problems: a line of a client's pid that is not JSON, a line in a window of no shape
-// the rule reads, and a bind line under another name; a line that is not JSON of a pid the client
-// did not use is left out.
+// earlier transaction, adds one statement under the client's name. A parse tree line the server
+// writes in a window under legion-session-client, as debug_print_parse writes one there, is held to
+// the name and counts no statement, and one after the refused statement of session 1 under psql's
+// name, as the server writes it for the ROLLBACK once the error set the SET LOCAL back, is left out.
+// The controls are lines the rule must name as problems: a line of a client's pid that is not JSON,
+// a line in a window of no shape the rule reads, a bind line under another name, and a parse tree
+// line under another name before any error; a line that is not JSON of a pid the client did not use
+// is left out.
 func TestTheLogRuleCountsEveryStatementOfTheClientUnderItsName(t *testing.T) {
 	captured, err := os.ReadFile(logFixture)
 	if err != nil {
@@ -293,7 +332,13 @@ func TestTheLogRuleCountsEveryStatementOfTheClientUnderItsName(t *testing.T) {
 	}
 
 	setOther, selectOne := find(2, "statement", "SET LOCAL application_name = 'another-client'"), find(2, "statement", "SELECT 1")
-	bind, execute := find(0, "bind", ""), find(0, "execute", "")
+	bind, execute, parse := find(0, "bind", ""), find(0, "execute", ""), find(0, "parse", "")
+	// tree is session 1's parse line as a parse tree line that debug_print_parse writes, under the
+	// application_name name.
+	tree := func(name string) string {
+		line := replaced(lines[parse], `"message":"`+records[parse].Message+`"`, `"message":"parse tree:","detail":"   {QUERY \n   :commandType 1 \n   }"`)
+		return replaced(line, `"application_name":"legion-session-client"`, `"application_name":"`+name+`"`)
+	}
 	_, bound, _ := logStatement(records[find(1, "execute", "")])
 	type row struct {
 		name       string
@@ -336,6 +381,13 @@ func TestTheLogRuleCountsEveryStatementOfTheClientUnderItsName(t *testing.T) {
 			jsonlog: with(find(1, "bind", ""), replaced(lines[find(1, "bind", "")], `"application_name":"legion-session-client"`, `"application_name":"psql"`)),
 			pids:    all, statements: statements, other: other,
 			problem: fmt.Sprintf(`line %d (pid %d): the bind line of %q shows application_name "psql"`, find(1, "bind", "")+2, sessions[1].pid, bound)},
+		row{name: "a parse tree line in a window under the client's name, as debug_print_parse writes one, counts no statement",
+			jsonlog: with(parse, tree(clientName)), pids: all, statements: statements, other: other},
+		row{name: "control: a parse tree line in a window under another name",
+			jsonlog: with(parse, tree("psql")), pids: all, statements: statements, other: other,
+			problem: fmt.Sprintf(`line %d (pid %d): the server's LOG line "parse tree:" shows application_name "psql"`, parse+2, sessions[0].pid)},
+		row{name: "a parse tree line after the refused statement under the session's name, the ROLLBACK's, is left out",
+			jsonlog: with(find(0, "ERROR", ""), tree("psql")), pids: all, statements: statements, other: other},
 	)
 	for _, r := range rows {
 		t.Run(r.name, func(t *testing.T) {
