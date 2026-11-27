@@ -85,10 +85,17 @@ func decisionStepRig(t *testing.T) *docsWriterRig {
 
 // conversionPath is the third phase's conversion of one issue (restoreIssueDecisions), run as the
 // step runs it (RestoreAndConvert) over a project of its own for each run: an issue whose spec
-// holds a requirement and whose decisions document holds one section, which a person kept. The
-// pass versions the decisions document without the section and the spec with the section as a
-// decision, carries the move and the Keep onto the decision's node, and retires the decisions
-// document, which holds no section any more.
+// holds a requirement and whose decisions document holds one section, which the release before's
+// agent wrote (agentOfTheReleaseBefore) and a person kept. The pass versions the decisions document
+// without the section and the spec with the section as a decision, carries the move and the Keep
+// onto the decision's node, and retires the decisions document, which holds no section any more.
+//
+// The decision names the session that wrote its section as its decided_by, a tie whose block_refs
+// row the spec's block index writes under the spec's fence: the spec's tie rows. The step credits a
+// decision only to a session (creditSectionAuthors), so the decision of a section a person wrote
+// last names nobody and writes no tie row at all (TestAConvertedDecisionWaitsForReviewWhereAPersonWroteItsSectionLast),
+// and the pass would hold no tie row of the spec to order. Each run reads the row and the tuple
+// after the pass, so a run whose pass wrote no tie fails as that.
 //
 // The decisions document's block nodes, block rows, tie rows, version event and tuples are the
 // pass's first writes of their tables, so each is held as its table, and its fence row, which its
@@ -243,8 +250,10 @@ func conversionPath(t *testing.T) (*docsWriterRig, docsWriter) {
 					t.Fatalf("create issue %s: %v", issue, err)
 				}
 			}
-			spec = r.issueDocument(t, ctx, issue, project, "spec", "spec.md", true, "", "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n")
-			decisions = r.issueDocument(t, ctx, issue, project, "decisions-md", "decisions.md", false, "decisions",
+			alice := model.Actor{Kind: "user", ID: "alice"}
+			spec = r.issueDocument(t, ctx, issue, project, "spec", "spec.md", true, "", alice,
+				"# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n")
+			decisions = r.issueDocument(t, ctx, issue, project, "decisions-md", "decisions.md", false, "decisions", agentOfTheReleaseBefore,
 				"# Decisions\n\n## Files stay out of the corpus\n\nWe write no file beside the database.\n")
 			for document, refKey := range map[string]*string{spec: &specRefKey, decisions: &decisionsRefKey} {
 				if err := r.database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, document).Scan(refKey); err != nil {
@@ -268,12 +277,12 @@ func conversionPath(t *testing.T) (*docsWriterRig, docsWriter) {
 				t.Fatalf("write %s's Keep of %s: %v", keeper, heading, err)
 			}
 			at := time.Now().UTC()
-			converted, retired := issue, decisions
+			converted, retired, specID, decided := issue, decisions, spec, specRefKey+"#"+heading
 			return docsRun{
 				document: spec,
 				made:     graphstore.PersonNode(keeper, DecisionStepActor, at, graphstore.NoEvent),
 				block: graphstore.Node{
-					Kind: refs.BlockNodeKind, ID: specRefKey + "#" + heading, Supertag: refs.DecisionSupertag,
+					Kind: refs.BlockNodeKind, ID: decided, Supertag: refs.DecisionSupertag,
 					Visibility: graphstore.VisibilityProject, State: graphstore.StateLive, Project: project,
 					MadeAt: at, MadeBy: DecisionStepActor, SourceEvent: graphstore.NoEvent,
 				},
@@ -291,17 +300,44 @@ func conversionPath(t *testing.T) (*docsWriterRig, docsWriter) {
 					if err := r.database.Pool.QueryRow(ctx, `select retired_at is not null from artifacts where id = $1`, retired).Scan(&gone); err != nil || !gone {
 						return fmt.Errorf("the decisions document of %s reads retired %v (%v), want it retired", converted, gone, err)
 					}
-					return nil
+					return requireDecidedBySession(ctx, r, specID, decided, heading)
 				},
 			}
 		},
 	}
 }
 
+// requireDecidedBySession answers an error unless the decision at address decided, block heading
+// of the spec specID, holds the decided_by naming the session that wrote its section
+// (agentOfTheReleaseBefore) after the pass: its block_refs row under the spec, the row the spec's
+// tie rows step holds the pass at, and the current tuple the reconcile states with it.
+func requireDecidedBySession(ctx context.Context, r *docsWriterRig, specID, decided, heading string) error {
+	var tied bool
+	if err := r.database.Pool.QueryRow(ctx, `
+		select exists (select 1 from block_refs where artifact_id = $1::uuid and block_id = $2 and kind = $3 and to_kind = $4 and to_id = $5)
+	`, specID, heading, graphstore.TupleDecidedBy, graphstore.KindSession, agentOfTheReleaseBefore.ID).Scan(&tied); err != nil || !tied {
+		return fmt.Errorf("the spec holds a decided_by row of %s naming session %s: %t (%v), want one", decided, agentOfTheReleaseBefore.ID, tied, err)
+	}
+	tuples, err := graphstore.CurrentOut(ctx, r.database.Pool, refs.BlockNodeKind, decided, []string{graphstore.TupleDecidedBy})
+	if err != nil {
+		return fmt.Errorf("read the decided_by of %s: %w", decided, err)
+	}
+	var deciders []string
+	for _, tuple := range tuples {
+		if tuple.Asserted {
+			deciders = append(deciders, tuple.ToKind+"/"+tuple.ToID)
+		}
+	}
+	if want := graphstore.KindSession + "/" + agentOfTheReleaseBefore.ID; len(deciders) != 1 || deciders[0] != want {
+		return fmt.Errorf("the node %s states the decided_by %v, want %s", decided, deciders, want)
+	}
+	return nil
+}
+
 // issueDocument creates document slug of issue in project holding markdown as its version 1,
-// written by alice and indexed as an upload of a new document is, and settles it, as the decisions
-// step's tests write the documents of DOC-1 (restoreIssue.document).
-func (r *docsWriterRig) issueDocument(t *testing.T, ctx context.Context, issue, project, slug, name string, primary bool, role, markdown string) string {
+// written by author and indexed as an upload of a new document is, and settles it, as the
+// decisions step's tests write the documents of DOC-1 (restoreIssue.document).
+func (r *docsWriterRig) issueDocument(t *testing.T, ctx context.Context, issue, project, slug, name string, primary bool, role string, author model.Actor, markdown string) string {
 	t.Helper()
 	var id string
 	var rolePointer *string
@@ -316,15 +352,15 @@ func (r *docsWriterRig) issueDocument(t *testing.T, ctx context.Context, issue, 
 		t.Fatalf("create document %s of %s: %v", slug, issue, err)
 	}
 	if err := joinedWrite(r.service, func(ctx context.Context) error {
-		written, err := r.service.SeedText(ctx, id, markdown, model.Actor{Kind: "user", ID: "alice"})
+		written, err := r.service.SeedText(ctx, id, markdown, author)
 		if err != nil {
 			return err
 		}
 		tx, _ := txFromContext(ctx)
 		if _, err := tx.Exec(ctx, `
 			insert into artifact_versions (artifact_id, number, markdown, authors)
-			values ($1, 1, $2, '[{"kind":"user","id":"alice"}]')
-		`, id, written); err != nil {
+			values ($1, 1, $2, $3)
+		`, id, written, []model.Actor{author}); err != nil {
 			return err
 		}
 		_, write, err := r.service.IndexDocumentReferences(ctx, id, 1, written)
