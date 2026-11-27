@@ -1369,9 +1369,10 @@ func TestNextCodegraphStep(t *testing.T) {
 // TestTheRolePromptsCheckTheLeaseTheWarmUpHolds: a role's `status` during the warm-up's build makes
 // that build fail, so each prompt has the role check this lease, by its name and its age, before it
 // calls CodeGraph. A renamed lease or a changed stale age would leave the prompts checking the
-// wrong thing.
+// wrong thing. The `2>/dev/null` keeps a missing lease silent, since both finds print the path in
+// their error.
 func TestTheRolePromptsCheckTheLeaseTheWarmUpHolds(t *testing.T) {
-	check := ".codegraph/" + warmLeaseName + " -mmin -1"
+	check := ".codegraph/" + warmLeaseName + " -mmin -1 2>/dev/null"
 	for _, part := range []string{
 		filepath.Join("..", "prompts", "roles", "core", "common.md"),
 		filepath.Join("..", "prompts", "roles", "merger.md"),
