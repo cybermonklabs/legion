@@ -15,6 +15,7 @@ import { stepTasks } from "../steps/steps-model";
 import { DetailsSteps } from "./DetailsSteps";
 import { DetailsHistory } from "./details-more";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
+import { AUTHOR_TEXT_ATTRIBUTE, PAGE_CHROME_ATTRIBUTE } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { SHOW_MORE, showMoreName } from "./show-more-fixture";
 
@@ -410,6 +411,319 @@ test("the runs are drawn 20 at a time across their tasks, the heading counts the
       document.activeElement,
       "Show more did not move the focus to the first run it drew"
     ).toBe(run("default-6"));
+  } finally {
+    steps.restore();
+  }
+});
+
+/** One task of a read of the steps, as the server answers it. */
+type StepTask = NonNullable<IssueSteps["tasks"]>[number];
+
+/** A task of the plan none of whose steps has run: its one step, a tester, not started. */
+function waitingTask(task: string, needs: string[] | null = []): StepTask {
+  return { needs, planned: [{ name: "tester", state: "not started", step: 1 }], steps: [], task };
+}
+
+/** The group of the task `task`. */
+function group(task: string): HTMLElement {
+  const section = document.querySelector<HTMLElement>(`[data-step-task="${task}"]`);
+  if (section === null) throw new Error(`the section draws no group of the task ${task}`);
+  return section;
+}
+
+/** The text of each element the group of `task` holds that `selector` finds, in its order. */
+function textsIn(task: string, selector: string): (string | null)[] {
+  return [...group(task).querySelectorAll(selector)].map((element) => element.textContent);
+}
+
+/** The tasks whose groups the section draws, in its order. */
+function drawnTasks(): (string | null)[] {
+  return [...document.querySelectorAll("[data-step-task]")].map((drawn) =>
+    drawn.getAttribute("data-step-task")
+  );
+}
+
+/** Whether `later` is drawn after `earlier`. */
+function drawnAfter(earlier: Node, later: Node): boolean {
+  return (earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+}
+
+/** `value`, failing the case with `what` where it is null. */
+function found<T>(value: T | null, what: string): T {
+  expect(value, what).not.toBeNull();
+  if (value === null) throw new Error(what);
+  return value;
+}
+
+// Each task draws the tasks of the plan it needs on a line of its own, above its planned steps and
+// its runs, in the Steps tab's words (`taskNeedsLine`): `Needs docs, default` for the task that
+// needs two, and `Needs not recorded` for a task of the plan whose node recorded no needs. A task
+// that needs none, and one the plan does not hold, draw no such line. The line holds the record's
+// task names inside the tab's words, so it is text the page did not author.
+test("each task names the tasks of the plan it needs above its runs, and says where its plan node recorded none", async () => {
+  const steps = renderSteps(async () => ({
+    issue: KEY,
+    tasks: [
+      {
+        needs: [],
+        planned: [{ name: "implementer", state: "passed", step: 1 }],
+        steps: [stepRecord({ id: "docs-1", step: 1, task: "docs" })],
+        task: "docs",
+      },
+      {
+        needs: [],
+        planned: [{ name: "implementer", state: "passed", step: 1 }],
+        steps: [stepRecord({ id: "default-1", step: 1 })],
+        task: "default",
+      },
+      {
+        needs: ["docs", "default"],
+        planned: [{ name: "tester", state: "running", step: 1 }],
+        steps: [
+          stepRecord({
+            ended_at: null,
+            id: "release-1",
+            result: "",
+            role: "tester",
+            step: 1,
+            task: "release",
+          }),
+        ],
+        task: "release",
+      },
+      waitingTask("cleanup", null),
+      {
+        needs: null,
+        steps: [stepRecord({ id: "earlier-1", step: 1, task: "earlier" })],
+        task: "earlier",
+      },
+    ],
+  }));
+  try {
+    await headedWith(4);
+    expect(
+      textsIn("release", "[data-step-needs]"),
+      "the task that needs two tasks of the plan does not name them"
+    ).toEqual(["Needs docs, default"]);
+    const needs = found(
+      group("release").querySelector("[data-step-needs]"),
+      "the task that needs two draws no line of needs"
+    );
+    const releasePlanned = found(
+      group("release").querySelector("[data-step-planned]"),
+      "the task that needs two draws no planned steps"
+    );
+    expect(
+      drawnAfter(needs, releasePlanned) && drawnAfter(needs, run("release-1")),
+      "the line of needs is not above the task's planned steps and its runs"
+    ).toBe(true);
+    expect(
+      needs.hasAttribute(AUTHOR_TEXT_ATTRIBUTE),
+      "the line of needs is not the tab's words"
+    ).toBe(true);
+    expect(
+      textsIn("cleanup", "[data-step-needs]"),
+      "the task whose plan node recorded no needs does not say so"
+    ).toEqual(["Needs not recorded"]);
+    for (const task of ["docs", "default", "earlier"]) {
+      expect(
+        textsIn(task, "[data-step-needs]"),
+        `${task}, which needs no task or which the plan does not hold, draws a line of needs`
+      ).toEqual([]);
+    }
+  } finally {
+    steps.restore();
+  }
+});
+
+// Each task of the plan draws the steps the plan gives it, above its runs, as a list named as the
+// Steps tab names it (`plannedStepsName`): each step's place, its name and where it stands -
+// `not started` before any run of it, else its newest run's state, in the words a run's result is
+// drawn in. The place and the name are the plan's, the state the page's own words. A task the
+// plan gives no step draws no such list.
+test("each task lists the steps the plan gives it, each with its place, its name and its state, above its runs", async () => {
+  const { step_not_started: notStarted, step_results: results } = CONTROL_LABELS;
+  const steps = renderSteps(async () => ({
+    issue: KEY,
+    tasks: [
+      {
+        needs: [],
+        planned: [
+          { name: "implementer", state: "passed", step: 1 },
+          { name: "reviewer", state: "failed", step: 2 },
+          { name: "tester", state: "not started", step: 3 },
+        ],
+        steps: [
+          stepRecord({ id: "implement-1", step: 1 }),
+          stepRecord({
+            id: "review-1",
+            result: "failed",
+            returned_to: 1,
+            role: "reviewer",
+            step: 2,
+            type: "review",
+          }),
+        ],
+        task: "default",
+      },
+      {
+        needs: null,
+        steps: [stepRecord({ id: "earlier-1", step: 1, task: "earlier" })],
+        task: "earlier",
+      },
+    ],
+  }));
+  try {
+    await headedWith(3);
+    const planned = found(
+      within(group("default")).queryByRole("list", { name: "Planned steps of task default" }),
+      "the task of the plan draws no list of its planned steps"
+    );
+    const items = within(planned).getAllByRole("listitem");
+    expect(
+      items.map((item) => item.textContent),
+      "the planned steps do not each read their place, their name and where they stand"
+    ).toEqual([
+      `1 implementer ${results.passed}`,
+      `2 reviewer ${results.failed}`,
+      `3 tester ${notStarted}`,
+    ]);
+    expect(planned.hasAttribute("data-step-planned")).toBe(true);
+    expect(
+      drawnAfter(planned, run("implement-1")),
+      "the planned steps are not above the task's runs"
+    ).toBe(true);
+    expect(
+      items.map((item) =>
+        [...item.querySelectorAll(`[${AUTHOR_TEXT_ATTRIBUTE}]`)].map((text) => text.textContent)
+      ),
+      "a planned step's place and name are not marked as the plan's"
+    ).toEqual([
+      ["1", "implementer"],
+      ["2", "reviewer"],
+      ["3", "tester"],
+    ]);
+    expect(
+      items.map((item) =>
+        [...item.querySelectorAll(`[${PAGE_CHROME_ATTRIBUTE}]`)].map((word) => word.textContent)
+      ),
+      "a planned step's state is not the page's own word"
+    ).toEqual([[results.passed], [results.failed], [notStarted]]);
+    expect(
+      within(group("earlier")).queryByRole("list", { name: "Planned steps of task earlier" }),
+      "a task the plan gives no step lists planned steps"
+    ).toBeNull();
+  } finally {
+    steps.restore();
+  }
+});
+
+// A task none of whose steps has run draws the Steps tab's line saying so in place of its runs
+// (`noRunLine`), under its planned steps, and a task with a run draws none. A read whose tasks
+// hold no run at all draws those tasks, each with that line, under a heading that counts no run:
+// None stands only for a read that holds no task.
+test("a task with no run says so in place of its runs, and a read whose tasks hold no run draws them rather than None", async () => {
+  const ran = renderSteps(async () => ({
+    issue: KEY,
+    tasks: [
+      {
+        needs: [],
+        planned: [{ name: "implementer", state: "passed", step: 1 }],
+        steps: [stepRecord({ id: "default-1", step: 1 })],
+        task: "default",
+      },
+      waitingTask("review", ["default"]),
+    ],
+  }));
+  try {
+    await headedWith(1);
+    expect(
+      textsIn("review", "[data-step-no-run]"),
+      "the task none of whose steps has run does not say so"
+    ).toEqual(["No step of task review has run yet."]);
+    expect(
+      drawnAfter(
+        found(
+          group("review").querySelector("[data-step-planned]"),
+          "review draws no planned steps"
+        ),
+        found(group("review").querySelector("[data-step-no-run]"), "review draws no line of no run")
+      ),
+      "the line is not under the task's planned steps"
+    ).toBe(true);
+    expect(textsIn("default", "[data-step-no-run]"), "a task with a run says none ran").toEqual([]);
+  } finally {
+    ran.restore();
+  }
+
+  const none = renderSteps(async () => ({
+    issue: KEY,
+    tasks: [waitingTask("default"), waitingTask("review", ["default"])],
+  }));
+  try {
+    await headedWith(0);
+    expect(drawnTasks(), "a read whose tasks hold no run does not draw its tasks").toEqual([
+      "default",
+      "review",
+    ]);
+    expect(
+      ["default", "review"].map((task) => textsIn(task, "[data-step-no-run]")),
+      "a task of a read that holds no run does not say none of its steps has run"
+    ).toEqual([["No step of task default has run yet."], ["No step of task review has run yet."]]);
+    expect(
+      within(screen.getByRole("region", { name: CONTROL_LABELS.steps })).queryByText(
+        CONTROL_LABELS.none,
+        { exact: true }
+      ),
+      "a read that holds tasks reads None"
+    ).toBeNull();
+  } finally {
+    none.restore();
+  }
+});
+
+// A task with no run holds no place among the runs Details draws 20 at a time: it is drawn where
+// it stands in the task order once every run before it is drawn - here the second at the cut
+// itself - and the one after the cut waits for Show more, which counts runs alone and still
+// moves the focus to the first run it drew.
+test("a task with no run is drawn where it stands once every run before it is, and counts among no page of runs", async () => {
+  const steps = renderSteps(async () => ({
+    issue: KEY,
+    tasks: [
+      { needs: [], steps: runsOf("docs", 15), task: "docs" },
+      waitingTask("first"),
+      { needs: [], steps: runsOf("default", 5), task: "default" },
+      waitingTask("second"),
+      { needs: [], steps: runsOf("release", 5), task: "release" },
+      waitingTask("third"),
+    ],
+  }));
+  try {
+    await headedWith(25);
+    expect(
+      drawnTasks(),
+      "the tasks drawn are not those up to the 20th run, each task with no run where it stands"
+    ).toEqual(["docs", "first", "default", "second"]);
+    const more = within(screen.getByRole("region", { name: CONTROL_LABELS.steps })).getByRole(
+      "button",
+      { name: SHOW_MORE }
+    );
+    expect(more.textContent, "Show more counts a task with no run").toBe(showMoreName(5));
+
+    act(() => more.focus());
+    await userEvent.keyboard("{Enter}");
+    expect(drawnTasks(), "Show more did not draw the tasks after the cut").toEqual([
+      "docs",
+      "first",
+      "default",
+      "second",
+      "release",
+      "third",
+    ]);
+    expect(
+      document.activeElement,
+      "Show more did not move the focus to the first run it drew"
+    ).toBe(run("release-1"));
   } finally {
     steps.restore();
   }

@@ -122,6 +122,10 @@ export default {
         running: "running",
         stopped: "stopped",
       },
+      /** Where a step the plan gives a task stands before any run of it, after the step's place
+       *  and name in Details' list of the task's planned steps (`DetailsSteps.tsx`); a step a run
+       *  has reached stands where that run does, in `step_results`' words. The Steps tab's words. */
+      step_not_started: "not started",
       /** Draws the next entries of the history under the last one drawn, which reads the next
        *  page of the issue's log first where every entry read is drawn; and the word after the
        *  count of the entries read and not drawn that it says in brackets, "Show more (25 left)"

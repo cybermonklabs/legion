@@ -181,19 +181,42 @@ function PlannedState({ step }: { step: PlannedStep }): ReactNode {
   return <StateLabel shown={step} />;
 }
 
+/** What a task's line of needs says, above its planned steps here and in Details' steps
+ *  (`DetailsSteps.tsx`): `Needs <task>, <task>` for the tasks of the plan it needs, `Needs not
+ *  recorded` where its plan node recorded none (`needs` null while the plan gives it steps), and
+ *  null - no line - for a task that needs none (`needs` []) or that the plan does not hold
+ *  (`needs` null and no planned step). */
+export function taskNeedsLine({
+  needs,
+  planned,
+}: Pick<StepTaskRows, "needs" | "planned">): string | null {
+  return needs === null
+    ? planned.length === 0
+      ? null
+      : "Needs not recorded"
+    : needs.length === 0
+      ? null
+      : `Needs ${needs.join(", ")}`;
+}
+
+/** The name of the list of the steps the plan gives `task`, as a reader hears it, here and in
+ *  Details' steps. */
+export function plannedStepsName(task: string): string {
+  return `Planned steps of task ${task}`;
+}
+
+/** What a task none of whose steps has run says in place of its runs, here and in Details'
+ *  steps. */
+export function noRunLine(task: string): string {
+  return `No step of task ${task} has run yet.`;
+}
+
 /** One task: the tasks of the plan it needs - nothing for a task that needs none or that the plan
  *  does not hold, and `Needs not recorded` where its plan node recorded none - each step the plan
  *  gives it with where it stands, then its runs, one row each, in the order the server read them.
  *  A task none of whose steps has run says so in place of the table. */
 function TaskSection({ task: { needs, planned, rows, task } }: { task: StepTaskRows }): ReactNode {
-  const needsLine =
-    needs === null
-      ? planned.length === 0
-        ? null
-        : "Needs not recorded"
-      : needs.length === 0
-        ? null
-        : `Needs ${needs.join(", ")}`;
+  const needsLine = taskNeedsLine({ needs, planned });
   return (
     <section aria-label={`Task ${task}`} className="min-w-0 space-y-2">
       <h2 className={`text-sm font-semibold ${textSecondaryOnCanvas}`}>Task {task}</h2>
@@ -201,7 +224,7 @@ function TaskSection({ task: { needs, planned, rows, task } }: { task: StepTaskR
         <p className={`text-xs ${textSecondaryOnCanvas}`}>{needsLine}</p>
       )}
       {planned.length === 0 ? null : (
-        <ol aria-label={`Planned steps of task ${task}`} className="flex flex-wrap gap-2 text-xs">
+        <ol aria-label={plannedStepsName(task)} className="flex flex-wrap gap-2 text-xs">
           {planned.map((step) => (
             <li className={`rounded-md border px-2 py-1 ${card}`} key={step.step}>
               <span className={`tabular-nums ${textMutedOnSurface}`}>{step.step}</span>{" "}
@@ -212,7 +235,7 @@ function TaskSection({ task: { needs, planned, rows, task } }: { task: StepTaskR
         </ol>
       )}
       {rows.length === 0 ? (
-        <p className={`text-xs ${textMutedOnCanvas}`}>{`No step of task ${task} has run yet.`}</p>
+        <p className={`text-xs ${textMutedOnCanvas}`}>{noRunLine(task)}</p>
       ) : (
         <RunsTable rows={rows} task={task} />
       )}

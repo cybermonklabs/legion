@@ -129,12 +129,14 @@ import {
   historyShowMoreState,
   newestHistoryEntry,
   olderPageAnswered,
+  putPlan,
   putStepExperiment,
   rowFacts,
   seededHistoryEntry,
   stepRun,
   stepsSection,
   stepsUnread,
+  stepTask,
   watchStepsReads,
 } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
@@ -6534,6 +6536,181 @@ test("Steps in Details names the experiment and the variant of the newest run on
       ).toHaveCount(0);
       await expect(section.locator("[data-step-variant]")).toHaveCount(0);
     }
+  });
+});
+
+/**
+ * Two issues whose steps ran from a plan, written as Legion's daemon writes them: the plan of the
+ * first run (`putPlan`), then each run (`putStep`). `planned`'s plan gives four tasks: `docs`, an
+ * implementation, and `default`, an implementation and a review, each needing no task; `release`,
+ * a test, which needs both; and `cleanup`, a review, written with no needs, so its needs are not
+ * recorded. `docs`' implementation and `default`'s passed and `default`'s review runs; no step of
+ * `release` or `cleanup` ran; and a run of `earlier`, a task the plan does not hold, passed.
+ * `unrun`'s plan gives `default` and `docs`, and none of their steps ran.
+ */
+async function seedPlannedSteps(): Promise<{ planned: string; unrun: string }> {
+  await createProject({ key: "CORE", name: "Core" });
+  const planned = await createIssue({ project: "CORE", title: "Runs of a plan" });
+  const unrun = await createIssue({ project: "CORE", title: "A plan none of whose steps ran" });
+  await putPlan(planned.key, [
+    { id: "docs", needs: [], steps: ["implementer"] },
+    { id: "default", needs: [], steps: ["implementer", "reviewer"] },
+    { id: "release", needs: ["docs", "default"], steps: ["tester"] },
+    { id: "cleanup", steps: ["reviewer"] },
+  ]);
+  // A run of step `step` of `task` that started at `from`, and passed at `to` where it is given.
+  const run = (task: string, step: number, role: string, from: string, to?: string) => {
+    const input: Parameters<typeof putStep>[2] = {
+      agent: `legion-core-${planned.key.toLowerCase()}-${role}`,
+      generation: 1,
+      kind: "step",
+      model: "anthropic/claude-opus-5",
+      role,
+      started_at: stepAt(from),
+      step,
+      task,
+      type: role === "reviewer" ? "review" : "implementation",
+    };
+    return putStep(
+      planned.key,
+      crypto.randomUUID(),
+      to === undefined ? input : { ...input, ended_at: stepAt(to), result: "passed" }
+    );
+  };
+  await run("earlier", 1, "implementer", "07:00", "07:30");
+  await run("docs", 1, "implementer", "08:00", "08:30");
+  await run("default", 1, "implementer", "09:00", "09:40");
+  await run("default", 2, "reviewer", "10:00");
+  await putPlan(unrun.key, [
+    { id: "default", needs: [], steps: ["implementer", "reviewer"] },
+    { id: "docs", needs: ["default"], steps: ["implementer"] },
+  ]);
+  return { planned: planned.key, unrun: unrun.key };
+}
+
+// Each task of the plan draws the tasks of the plan it needs on a line of its own, directly under
+// its heading and above its planned steps, in the words of today's Steps tab: "Needs docs,
+// default" for `release`, which needs both, and "Needs not recorded" for `cleanup`, whose plan
+// node was written with no needs. `docs` and `default`, which need none, and `earlier`, a task the
+// plan does not hold, draw no such line.
+// SLOW(>=2s): a plan and four step records written, and the issue loaded and Details opened.
+test("Steps in Details names the tasks of the plan each task needs, and says where its plan recorded none", async ({
+  browser,
+}) => {
+  await phase(browser, seedPlannedSteps, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.planned}`);
+    await openDetails(page);
+    await expect(
+      stepsSection(page).getByRole("heading", { level: 2 }),
+      `the steps of ${seeded.planned} do not count its four runs`
+    ).toHaveText(`${CONTROL_LABELS.steps} (4)`);
+    await expect(
+      stepTask(page, "release").locator("[data-step-needs]"),
+      "Details does not name the two tasks of the plan release needs"
+    ).toHaveText("Needs docs, default");
+    await expect(
+      stepTask(page, "release").locator("h3 + [data-step-needs] + [data-step-planned]"),
+      "release's line of needs is not directly under its heading and above its planned steps"
+    ).toHaveCount(1);
+    await expect(
+      stepTask(page, "cleanup").locator("[data-step-needs]"),
+      "Details does not say that cleanup's plan node recorded no needs"
+    ).toHaveText("Needs not recorded");
+    for (const task of ["docs", "default", "earlier"]) {
+      await expect(stepTask(page, task), `Details draws no group of ${task}`).toHaveCount(1);
+      await expect(
+        stepTask(page, task).locator("[data-step-needs]"),
+        `${task}, which needs no task or which the plan does not hold, draws a line of needs`
+      ).toHaveCount(0);
+    }
+  });
+});
+
+// Each task of the plan lists the steps the plan gives it, named as today's Steps tab names the
+// list, above its runs: each step's place, its name and where it stands - its newest run's state,
+// in the words a run's result is drawn in, or not started before any run of it. `earlier`, a task
+// the plan does not hold, lists none.
+// SLOW(>=2s): a plan and four step records written, and the issue loaded and Details opened.
+test("Steps in Details lists the steps the plan gives each task, each with its place, name and state, above its runs", async ({
+  browser,
+}) => {
+  await phase(browser, seedPlannedSteps, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.planned}`);
+    await openDetails(page);
+    const { step_not_started: notStarted, step_results: results } = CONTROL_LABELS;
+    for (const [task, steps] of [
+      ["docs", [`1 implementer ${results.passed}`]],
+      ["default", [`1 implementer ${results.passed}`, `2 reviewer ${results.running}`]],
+      ["release", [`1 tester ${notStarted}`]],
+      ["cleanup", [`1 reviewer ${notStarted}`]],
+    ] as const) {
+      const planned = stepTask(page, task).getByRole("list", {
+        exact: true,
+        name: `Planned steps of task ${task}`,
+      });
+      await expect(planned, `Details lists no planned steps of ${task}`).toHaveCount(1);
+      await expect(
+        planned.getByRole("listitem"),
+        `the planned steps of ${task} do not each read their place, their name and their state`
+      ).toHaveText([...steps]);
+    }
+    await expect(
+      stepTask(page, "default").locator("[data-step-planned] ~ ol [data-step-run]"),
+      "default's planned steps are not above its two runs"
+    ).toHaveCount(2);
+    await expect(stepTask(page, "earlier"), "Details draws no group of earlier").toHaveCount(1);
+    await expect(
+      stepTask(page, "earlier").locator("[data-step-planned]"),
+      "earlier, which the plan does not hold, lists planned steps"
+    ).toHaveCount(0);
+  });
+});
+
+// A task of the plan none of whose steps has run says so in place of its runs, in the words of
+// today's Steps tab, directly under its planned steps, and a task with a run says nothing of the
+// kind. An issue whose plan's tasks hold no run at all draws those tasks, each with that line,
+// under a heading that counts no run, and not the None of an issue that holds no task.
+// SLOW(>=2s): two plans and four step records written, and two issues loaded and Details opened.
+test("Steps in Details says a task of the plan has no run yet in place of its runs, and draws a plan none of whose steps ran rather than None", async ({
+  browser,
+}) => {
+  await phase(browser, seedPlannedSteps, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.planned}`);
+    await openDetails(page);
+    for (const task of ["release", "cleanup"]) {
+      await expect(
+        stepTask(page, task).locator("[data-step-no-run]"),
+        `Details does not say that none of ${task}'s steps has run`
+      ).toHaveText(`No step of task ${task} has run yet.`);
+      await expect(
+        stepTask(page, task).locator("[data-step-planned] + [data-step-no-run]"),
+        `${task}'s line is not directly under its planned steps`
+      ).toHaveCount(1);
+      await expect(stepTask(page, task).locator("[data-step-run]")).toHaveCount(0);
+    }
+    for (const task of ["docs", "default", "earlier"]) {
+      await expect(stepTask(page, task), `Details draws no group of ${task}`).toHaveCount(1);
+      await expect(
+        stepTask(page, task).locator("[data-step-no-run]"),
+        `${task}, which ran, says that none of its steps has run`
+      ).toHaveCount(0);
+    }
+
+    await gotoIssue(page, `/issues/${seeded.unrun}`);
+    await openDetails(page);
+    const section = stepsSection(page);
+    await expect(
+      section.getByRole("heading", { level: 2 }),
+      `the steps of ${seeded.unrun} count a run`
+    ).toHaveText(`${CONTROL_LABELS.steps} (0)`);
+    await expect(
+      section.locator("[data-step-no-run]"),
+      `Details does not draw the tasks of ${seeded.unrun}'s plan, each saying none of its steps has run`
+    ).toHaveText(["No step of task default has run yet.", "No step of task docs has run yet."]);
+    await expect(
+      section.getByText(CONTROL_LABELS.none, { exact: true }),
+      `the steps of ${seeded.unrun}, whose plan holds two tasks, read None`
+    ).toHaveCount(0);
   });
 });
 

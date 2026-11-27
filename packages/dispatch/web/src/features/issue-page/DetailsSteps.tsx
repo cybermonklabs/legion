@@ -12,8 +12,22 @@ import {
   pageStatusProgressText,
 } from "../../theme/classes";
 import { standsFailed } from "../refs/reference-target";
-import { Identifier, Time, useCatchUp } from "../steps/StepsTab";
-import { type StepRow, stepTasks, stepVariant } from "../steps/steps-model";
+import {
+  Identifier,
+  noRunLine,
+  plannedStepsName,
+  Time,
+  taskNeedsLine,
+  useCatchUp,
+} from "../steps/StepsTab";
+import {
+  type PlannedStep,
+  type ShownState,
+  type StepRow,
+  type StepTaskRows,
+  stepTasks,
+  stepVariant,
+} from "../steps/steps-model";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
 import { groupsDrawn, useListPages } from "./details-leaves";
 import { authorText, pageChrome } from "./page-structure";
@@ -70,14 +84,65 @@ const RESULT_COLOURS: Record<Exclude<StepRow["state"], "other">, string> = {
   stopped: "",
 };
 
-/** How the run ended, or that it runs, in its colour (`RESULT_COLOURS`). A result this build has
- *  no word for shows the server's own. */
-function Result({ row }: { row: StepRow }): ReactNode {
-  if (row.state === "other") return <span {...authorText}>{row.result}</span>;
+/** How the run ended, or that it runs, in its colour (`RESULT_COLOURS`): a state a run's result
+ *  and a planned step share (`ShownState`). A state this build has no word for shows the server's
+ *  own. */
+function Result({ shown }: { shown: ShownState }): ReactNode {
+  if (shown.state === "other") return <span {...authorText}>{shown.result}</span>;
   return (
-    <span className={`font-medium ${RESULT_COLOURS[row.state]}`} {...pageChrome}>
-      {RESULTS[row.state]}
+    <span className={`font-medium ${RESULT_COLOURS[shown.state]}`} {...pageChrome}>
+      {RESULTS[shown.state]}
     </span>
+  );
+}
+
+/** Where a step of the plan stands, as the Steps tab says it: `not started` before any run of it,
+ *  in the quiet grey, then where its newest run stands, in the words and the colour of a run's
+ *  result (`Result`). */
+function PlannedState({ step }: { step: PlannedStep }): ReactNode {
+  if (step.state === "not started") {
+    return (
+      <span className={pageQuietText} {...pageChrome}>
+        {CONTROL_LABELS.step_not_started}
+      </span>
+    );
+  }
+  return <Result shown={step} />;
+}
+
+/** The steps the plan gives a task, in the plan's order, each its place, its name and where it
+ *  stands (`PlannedState`), named as the Steps tab names the list (`plannedStepsName`); nothing
+ *  for a task the plan gives no step. A step's place and name are the plan's, so text the page
+ *  did not author. */
+function PlannedSteps({
+  planned,
+  task,
+}: {
+  planned: readonly PlannedStep[];
+  task: string;
+}): ReactNode {
+  if (planned.length === 0) return null;
+  return (
+    <ol
+      aria-label={plannedStepsName(task)}
+      className="flex min-w-0 flex-wrap gap-1.5 text-xs leading-[18px]"
+      data-step-planned=""
+    >
+      {planned.map((step) => (
+        <li
+          className={`min-w-0 rounded-md border px-2 py-0.5 break-words ${pageLineBorder}`}
+          key={step.step}
+        >
+          <span className={`tabular-nums ${pageQuietText}`} {...authorText}>
+            {step.step}
+          </span>{" "}
+          <span className={`font-medium ${pageInkText}`} {...authorText}>
+            {step.name}
+          </span>{" "}
+          <PlannedState step={step} />
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -144,7 +209,7 @@ function Run({ row }: { row: StepRow }): ReactNode {
           <TimeValue at={row.ended} />
         </Field>
         <Field field="result" label={FIELDS.result}>
-          <Result row={row} />
+          <Result shown={row} />
         </Field>
         {(row.state === "failed" || row.state === "stopped") && row.returnedTo !== null ? (
           <Field field="returned_to" label={FIELDS.returned_to}>
@@ -158,14 +223,88 @@ function Run({ row }: { row: StepRow }): ReactNode {
   );
 }
 
+/** One task's group: its heading; the tasks of the plan it needs and the steps the plan gives it,
+ *  as the Steps tab says them (`taskNeedsLine`, `PlannedSteps`); then those of its runs Details
+ *  draws (`entries`), or, for a task none of whose steps has run, the tab's line saying so
+ *  (`noRunLine`). The tab's two lines hold the record's task names inside the tab's own words, as
+ *  the experiment line does, so each is text the page did not author. */
+function TaskGroup({
+  entries,
+  task,
+}: {
+  entries: readonly StepRow[];
+  task: StepTaskRows;
+}): ReactNode {
+  const needs = taskNeedsLine(task);
+  return (
+    <section
+      aria-label={`${CONTROL_LABELS.steps_task} ${task.task}`}
+      className="flex min-w-0 flex-col gap-1.5"
+      data-step-task={task.task}
+    >
+      <h3 className={`text-xs leading-[18px] font-semibold ${pageMutedText}`} {...pageChrome}>
+        {CONTROL_LABELS.steps_task} <span {...authorText}>{task.task}</span>
+      </h3>
+      {needs === null ? null : (
+        <p
+          className={`min-w-0 text-xs leading-[18px] break-words ${pageMutedText}`}
+          data-step-needs=""
+          {...authorText}
+        >
+          {needs}
+        </p>
+      )}
+      <PlannedSteps planned={task.planned} task={task.task} />
+      {task.rows.length === 0 ? (
+        <p
+          className={`min-w-0 text-xs leading-[18px] break-words ${pageQuietText}`}
+          data-step-no-run=""
+          {...authorText}
+        >
+          {noRunLine(task.task)}
+        </p>
+      ) : (
+        <ol className="flex min-w-0 flex-col gap-1.5">
+          {entries.map((row) => (
+            <Run key={row.id} row={row} />
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+/** The tasks Details draws while it draws the first `drawn` runs of the read (`useListPages`), in
+ *  the read's order, each with those of its runs among them: a task with runs once its first run
+ *  is drawn (`groupsDrawn`), and a task none of whose steps has run once every run before it is,
+ *  since it holds no run to take a place among them. */
+function tasksDrawn(
+  tasks: readonly StepTaskRows[],
+  drawn: number
+): readonly { readonly entries: readonly StepRow[]; readonly task: StepTaskRows }[] {
+  const ran = new Map(
+    groupsDrawn(tasks, ({ rows }) => rows, drawn).map(({ entries, group }) => [group, entries])
+  );
+  let before = 0;
+  return tasks.flatMap((task) => {
+    const entries = task.rows.length === 0 && before <= drawn ? [] : ran.get(task);
+    before += task.rows.length;
+    return entries === undefined ? [] : [{ entries, task }];
+  });
+}
+
 /**
  * The steps Legion ran on the issue (`GET /issues/{key}/steps`), under the history in Details,
  * where today's page has a Steps tab: headed by how many runs it lists, then the experiment and
  * variant of the newest run where its records name one (`stepVariant`), then one group per task
- * in the order of each task's first step (`stepTasks`), each run of the task in the order the
- * server read them, with its step, role, type, agent, model, attempt, start, end and result. The
- * runs are one list across their tasks, drawn 20 at a time with Show more under them
- * (`useListPages`), and the heading counts every run.
+ * in the server's order (`stepTasks`), the tasks of the issue's plan first. Each group draws what
+ * the Steps tab draws of its task (`TaskGroup`): the tasks it needs, the steps the plan gives it
+ * and where each stands, and each run of the task in the order the server read them, with its
+ * step, role, type, agent, model, attempt, start, end and result, or, where none of its steps has
+ * run, a line saying so. The runs are one list across their tasks, drawn 20 at a time with Show
+ * more under them (`useListPages`), and the heading counts every run; a task with no run takes no
+ * place among them and is drawn once every run before it is (`tasksDrawn`). A read that holds no
+ * task reads None.
  *
  * It reads through the Steps tab's own catch-up (`useCatchUp` in `features/steps/StepsTab.tsx`)
  * while Details is open (`open`), and through its Retry, and in no other way, so a load that
@@ -244,34 +383,15 @@ export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boole
             {ANSWER_LINES.loading_steps}
           </p>
         )
-      ) : runs === 0 ? (
+      ) : tasks.length === 0 ? (
         <p className="text-sm">
           <None />
         </p>
       ) : (
         <>
-          {groupsDrawn(tasks, ({ rows }) => rows, pages.drawn).map(
-            ({ entries, group: { task } }) => (
-              <section
-                aria-label={`${CONTROL_LABELS.steps_task} ${task}`}
-                className="flex min-w-0 flex-col gap-1.5"
-                data-step-task={task}
-                key={task}
-              >
-                <h3
-                  className={`text-xs leading-[18px] font-semibold ${pageMutedText}`}
-                  {...pageChrome}
-                >
-                  {CONTROL_LABELS.steps_task} <span {...authorText}>{task}</span>
-                </h3>
-                <ol className="flex min-w-0 flex-col gap-1.5">
-                  {entries.map((row) => (
-                    <Run key={row.id} row={row} />
-                  ))}
-                </ol>
-              </section>
-            )
-          )}
+          {tasksDrawn(tasks, pages.drawn).map(({ entries, task }) => (
+            <TaskGroup entries={entries} key={task.task} task={task} />
+          ))}
           {pages.more(
             runs ?? 0,
             (index) => pages.list.current?.querySelectorAll("[data-step-run]")[index]
