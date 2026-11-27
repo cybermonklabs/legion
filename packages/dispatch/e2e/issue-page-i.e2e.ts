@@ -126,6 +126,7 @@ import {
   treeActiveDescendant,
   treeText,
 } from "./issue-page-i";
+import { composerField } from "./issue-page-l";
 import { withIssuePage } from "./issue-page-option";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
@@ -1892,7 +1893,8 @@ test("a row's editor on a phone does not scroll sideways, and its words wrap @ph
 // whose title is what widened the box at f5d49c35, while the table already scrolled inside itself.
 // SLOW(>=2s): a seeded issue, an issue of another project and a spec citing it, a load waited on
 // until the focus lands, then End and Enter, waited on until the editor draws the cited issue's
-// name, and a scroll of the table waited on until its last column shows.
+// name, a scroll of the editor's box waited on until it stops with the table's middle on screen,
+// and a scroll of the table waited on until its last column shows.
 test("a table a row's editor holds scrolls sideways inside itself, and the box around it does not @phone @phone-only", async ({
   browser,
 }) => {
@@ -1964,13 +1966,56 @@ test("a table a row's editor holds scrolls sideways inside itself, and the box a
       "the table is no wider than what it shows, so it does not scroll inside itself"
     ).toBeGreaterThan(before.table.client);
     expect(before.lastShown, "the table shows its last column before it is scrolled").toBe(false);
-    // A reader's sideways scroll over the table, as a trackpad makes it.
-    const at = await table.boundingBox();
-    expect(at, "the table has no box on the page").not.toBeNull();
-    await page.mouse.move(
-      (at?.x ?? 0) + (at?.width ?? 0) / 2,
-      (at?.y ?? 0) + (at?.height ?? 0) / 2
-    );
+    // A reader's sideways scroll over the table, as a trackpad makes it, with the table in the
+    // middle of the editor's box: the box to write in stands over the screen's last lines, and a
+    // wheel over it is the box's, not the table's. The reader brings the table there with the
+    // wheel too, over the editor's box, which scrolls inside itself. A script's scroll does not do
+    // it: once the editor's drawing settles, the row puts the node's block at the box's top again
+    // (`refocusWhenSettled`, 200 ms after the cited issue's name is drawn), which a reader's wheel
+    // stops and a script's scroll does not. On a slow machine that second placing undid the
+    // script's scroll before the sideways wheel reached the table (CI at db240615).
+    const held = await box.boundingBox();
+    const placed = await table.boundingBox();
+    expect(held, "the row's editor has no box on the page").not.toBeNull();
+    expect(placed, "the table has no box on the page").not.toBeNull();
+    const boxMiddle = {
+      x: (held?.x ?? 0) + (held?.width ?? 0) / 2,
+      y: (held?.y ?? 0) + (held?.height ?? 0) / 2,
+    };
+    expect(
+      await page.evaluate(
+        ({ x, y }) => document.elementFromPoint(x, y)?.closest("[data-editor-box]") != null,
+        boxMiddle
+      ),
+      "the middle of the row's editor box is under something else the page draws"
+    ).toBe(true);
+    await page.mouse.move(boxMiddle.x, boxMiddle.y);
+    await page.mouse.wheel(0, (placed?.y ?? 0) + (placed?.height ?? 0) / 2 - boxMiddle.y);
+    /** The middle of the table where the page draws it, and whether the table is what the page
+     *  draws there. */
+    const tableMiddle = () =>
+      table.evaluate((drawn) => {
+        const at = drawn.getBoundingClientRect();
+        const x = at.left + at.width / 2;
+        const y = at.top + at.height / 2;
+        return { onTop: document.elementFromPoint(x, y)?.closest("table") === drawn, x, y };
+      });
+    // The box scrolls smoothly, so the table's middle is read until two reads find it in the
+    // same place, with the table drawn there.
+    let last: { readonly x: number; readonly y: number } | undefined;
+    await expect
+      .poll(
+        async () => {
+          const now = await tableMiddle();
+          const still = last !== undefined && now.x === last.x && now.y === last.y;
+          last = now;
+          return still && now.onTop;
+        },
+        { message: "the middle of the table is under something else the page draws" }
+      )
+      .toBe(true);
+    const point = await tableMiddle();
+    await page.mouse.move(point.x, point.y);
     await page.mouse.wheel(before.table.scroll, 0);
     await expect
       .poll(async () => (await widths()).lastShown, {
@@ -4530,22 +4575,17 @@ test("a statement of a document the server admits read-only shows no cue that it
   });
 });
 
-/** Whether the element that holds the focus is a row of the outline's tree. */
-function focusOnATreeRow(page: Page): Promise<boolean> {
-  return page.evaluate(() => {
-    const active = document.activeElement;
-    return active?.matches("[data-node-row]") === true && active.closest('[role="tree"]') !== null;
-  });
-}
-
-// The tester's finding at #4205's 2ff6850a: when a read of the issue's comments no longer holds
-// the comment whose row has the focus, that row leaves the tree and the focus falls to the page's
-// body, so the reader's place in the outline is lost and no row of the tree holds the focus. The
-// comments read is answered without that comment as the server's answer reaches the page, and a
-// real event of the issue - another comment resolved - makes the page read the comments again.
+// When a read of the issue's comments no longer holds the comment whose row has the focus, that
+// row leaves the tree and the focus falls to the page's body. The reader caused no loss - another
+// session resolved a comment, which made the page read the comments again, and the row had the
+// focus by a script's hand, no act of theirs - so the focus stays on the body, where the page's
+// keys work, no row of the tree takes it, and the page does not scroll: the page, and not the
+// reader, would have chosen what stands near the lost place. The comments read is answered
+// without that comment as the server's answer reaches the page. The half the reader causes is
+// the last row of `issue-page-l.e2e.ts`.
 // SLOW(>=2s): the whole issue seeded and loaded, then waited on until the read after the event
 // has drawn the outline without the comment.
-test("a read that drops the focused comment's row leaves the focus on a row of the tree", async ({
+test("a read that drops the focused row with no act of the reader's leaves the focus on the page's body and scrolls nothing", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -4573,17 +4613,25 @@ test("a read that drops the focused comment's row leaves the focus on a row of t
       }
       await route.fulfill({ json, response: answer });
     });
+    // Where the page stands once the row holds the focus, before the event.
+    await nextFrames(page);
+    const scrolled = await page.evaluate(() => window.scrollY);
     await resolveComment(other);
     await expect(
       nodeRow(page, gone),
       "the read after the event still draws the comment its answer no longer holds"
     ).toHaveCount(0);
-    await expect
-      .poll(() => focusOnATreeRow(page), {
-        message: "the focus left the tree when a read dropped the focused comment's row",
-      })
-      .toBe(true);
-    await expectFocusedRowClear(page, "a read that dropped the focused comment's row");
+    // The frames a move of the focus, and the scroll a row makes as it takes the focus, would
+    // take to come.
+    await nextFrames(page);
+    expect(
+      await page.evaluate(() => document.activeElement === document.body),
+      "a read that dropped the focused row, with no act of the reader's, took the focus off the page's body"
+    ).toBe(true);
+    expect(
+      await page.evaluate(() => window.scrollY),
+      "a read that dropped the focused row, with no act of the reader's, scrolled the page"
+    ).toBe(scrolled);
   });
 });
 
@@ -4833,9 +4881,8 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
 // after its statements, and the ask's card draws controls of its own inside the editor. The
 // statement is the third, which no comment or ask is on, so the editor draws no references
 // button of its own block (the next row reads one), and the second's, which the seed's anchored
-// comment draws, is another block's, passed over too. Nothing of the page's own takes the focus
-// after the outline at this head, so a stand-in control under it is the tab stop Tab goes to
-// (`standInControlBelow`).
+// comment draws, is another block's, passed over too. The first tab stop after the outline is the
+// field of the box at the foot, so Tab goes there.
 // SLOW(>=2s): the whole issue seeded and loaded, then the row's editor opened twice, each waited
 // on until it takes the caret and the ask's card is drawn in it, and until it closes again.
 test("Tab from a row's editor passes over the controls of an ask another block draws, Shift+Tab goes to the row, and each ends the editing", async ({
@@ -4851,7 +4898,6 @@ test("Tab from a row's editor passes over the controls of an ask another block d
     const before = await storedMarkdown(seeded.specArtifactId);
     const row = nodeRow(page, statement).first();
     const editable = row.locator('[contenteditable="true"]');
-    const below = await standInControlBelow(page);
     // The tab stops the ask's card draws in the row's editor.
     const askControls = row
       .locator(`[data-block-id="${OPEN_QUESTION_BLOCK_ID}"]`)
@@ -4899,7 +4945,7 @@ test("Tab from a row's editor passes over the controls of an ask another block d
     ).toBe(false);
     expect(afterTab.inAsk, `Tab stopped on the ask's ${afterTab.name}`).toBe(false);
     await expect(
-      below.control,
+      composerField(page),
       `Tab from the row's editor went to ${afterTab.name}, not the first tab stop after its box`
     ).toBeFocused();
     await expect(editable, "Tab from the row's editor did not end the editing").toHaveCount(0);
@@ -4962,7 +5008,6 @@ test("Tab from a row's editor stops at the references button of the node's own b
       const references = row
         .locator("[data-editor-box]")
         .getByRole("button", { name: /references on block$/ });
-      const below = await standInControlBelow(page);
 
       await focusRow(page, statement);
       await page.keyboard.press("Enter");
@@ -5000,7 +5045,7 @@ test("Tab from a row's editor stops at the references button of the node's own b
       );
       await page.keyboard.press("Tab");
       await expect(
-        below.control,
+        composerField(page),
         "Tab from the statement's references button did not go past every other block's to the first tab stop after the editor's box"
       ).toBeFocused();
       await expect(editable, "Tab out of the editor's box did not end the editing").toHaveCount(0);

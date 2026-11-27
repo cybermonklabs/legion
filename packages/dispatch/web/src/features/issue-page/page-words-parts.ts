@@ -250,5 +250,5 @@ export const PART_UNASKED_SOURCES: readonly unknown[] = freeze(
 /** The parts' own tables that the page draws only after an act of the reader, in file order.
  *  `ANSWER_SOURCES` of `page-words.ts` holds them. */
 export const PART_ANSWER_SOURCES: readonly unknown[] = freeze(
-  WORD_FILES.flatMap(({ module }) => module.default.answers)
+  WORD_FILES.flatMap<unknown>(({ module }) => module.default.answers)
 );

@@ -243,14 +243,38 @@ const SURFACES: readonly Surface[] = [
 
 const KIND = /^question$/i;
 
-/** The first text rectangle, not the box of a paragraph that can span several lines. */
-async function firstWords(words: Locator) {
-  return words.evaluate((element) => {
+interface Box {
+  readonly height: number;
+  readonly width: number;
+  readonly x: number;
+  readonly y: number;
+}
+
+/** The words' box, their first text rectangle (not the box of a paragraph that can span several
+ *  lines) and the boxes of the first line's parts, all read in one layout. A row above the ask can
+ *  change height between two reads - the Conversation drops the "New" label above its unread turns
+ *  once it marks the issue read, which moves every turn below it up the page - so boxes read at
+ *  different moments can disagree about where the line is. */
+async function readFirstLine(
+  words: Locator,
+  parts: readonly Locator[]
+): Promise<{ first: { bottom: number; right: number; top: number }; parts: Box[]; words: Box }> {
+  const nodes = await Promise.all([words, ...parts].map((part) => part.elementHandle()));
+  return words.evaluate((_, elements) => {
+    const [wordsNode, ...partNodes] = elements;
     const range = document.createRange();
-    range.selectNodeContents(element);
-    const rect = range.getClientRects()[0] ?? element.getBoundingClientRect();
-    return { bottom: rect.bottom, right: rect.right, top: rect.top };
-  });
+    range.selectNodeContents(wordsNode);
+    const line = range.getClientRects()[0] ?? wordsNode.getBoundingClientRect();
+    const box = (node: Element): Box => {
+      const rect = node.getBoundingClientRect();
+      return { height: rect.height, width: rect.width, x: rect.x, y: rect.y };
+    };
+    return {
+      first: { bottom: line.bottom, right: line.right, top: line.top },
+      parts: partNodes.map(box),
+      words: box(wordsNode),
+    };
+  }, nodes);
 }
 
 /** An open ask's first line: the kind, the asker and the time, in that order, after the words. A
@@ -267,15 +291,10 @@ async function expectRow(
   const author = body.getByText(authorName, { exact: true }).first();
   const time = body.locator("time").first();
   for (const part of [words, kind, author, time]) await expect(part).toBeVisible();
-  const boxes: { height: number; width: number; x: number; y: number }[] = [];
-  for (const part of [kind, author, time]) {
-    // The part is visible above, so its layout box is settled and this one read is its place.
-    const box = await part.boundingBox();
-    if (box === null) throw new Error("The first line has a part with no layout box");
-    boxes.push(box);
-  }
+  // One read of one layout: the visibility waits above say each part is drawn, not that the rows
+  // above the ask will not move before a later read.
+  const { first, parts: boxes, words: wordsBox } = await readFirstLine(words, [kind, author, time]);
   if (!stacked) {
-    const first = await firstWords(words);
     let right = first.right;
     for (const box of boxes) {
       expect(box.y, "first-line metadata sits under the words").toBeLessThan(first.bottom);
@@ -290,9 +309,7 @@ async function expectRow(
     }
     return;
   }
-  // The visibility assertion above settled the question before this geometry check.
-  const wordsBox = await words.boundingBox();
-  if (wordsBox === null) throw new Error("The question's words have no layout box");
+  // The words' box comes from the same layout as the parts' boxes.
   const [kindBox, authorBox, timeBox] = boxes;
   expect(
     Math.abs(kindBox.x - wordsBox.x),
@@ -1439,4 +1456,91 @@ test("the inventory preserves each surface's words and controls", async ({ page 
   await testInfo.attach("ask inventory", { body: json, contentType: "application/json" });
   if (recording) await writeFile(inventoryFile, json, "utf8");
   else compareInventory(JSON.parse(await readFile(inventoryFile, "utf8")), inventory);
+});
+
+// SLOW(>=2s): seed the real records and open today's Conversation once.
+test("the first line's shape holds when the Conversation marks the issue read between its reads", async ({
+  page,
+}) => {
+  test.skip(inventoryMode, "The inventory run reads the legacy layout as well");
+  const data = await seed();
+  const surface = SURFACES.find((one) => one.name === "Conversation tab");
+  if (surface === undefined) throw new Error("SURFACES has no Conversation tab");
+  // The Conversation marks the issue read a dwell after it draws, and its "New" labels go, which
+  // moves every turn below them up the page (CI run 45954137251 at f8ad9368, shard (3): 281 px).
+  // The row-shape check must read the words and the first line's parts from one layout. This row
+  // holds the read mark back, and a trap draws the read mark's result in the middle of the check:
+  // it fires on the page's first `document.createRange()` call after the row arms it, hides what
+  // the read mark unmounts (a label's wrapper where the label is the wrapper's only child, as on
+  // an ask or a thread turn, and else the label alone, as in a message's header line) and records
+  // how many labels it hid and how far the ask body moved. So `readFirstLine` must make its range
+  // before it reads any box: a check that reads a box before that call, or reads boxes at
+  // different moments, reads the parts from one layout and the words from another. The held
+  // write goes on after 10 s, so a check that waits for the read mark sees it land.
+  await page.route("**/api/v1/me/issues/*/state", async (route) => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 10_000);
+    await promise;
+    await route.continue().catch(() => undefined);
+  });
+  await page.addInitScript(() => {
+    const create = Document.prototype.createRange;
+    Document.prototype.createRange = function createRange(this: Document) {
+      const root = this.documentElement;
+      if (root.dataset.readMarkLands === "armed") {
+        delete root.dataset.readMarkLands;
+        const list = this.querySelector<HTMLElement>('[aria-label="Conversation turns"]');
+        const probe = this.querySelector<HTMLElement>("[data-read-mark-probe]");
+        // Measured against the list, in this one synchronous call, so neither the page's scroll
+        // nor a later scroll back (`ViewportAnchor`) hides the move.
+        const offset = () =>
+          (probe?.getBoundingClientRect().top ?? 0) - (list?.getBoundingClientRect().top ?? 0);
+        const before = offset();
+        let hidden = 0;
+        for (const label of list?.querySelectorAll<HTMLElement>("*") ?? []) {
+          if (label.childElementCount > 0 || label.textContent?.trim() !== "New") continue;
+          const wrapper = label.parentElement;
+          const target = wrapper !== null && wrapper.childElementCount === 1 ? wrapper : label;
+          target.style.display = "none";
+          hidden += 1;
+        }
+        root.dataset.readMarkHidden = String(hidden);
+        root.dataset.readMarkMoved = String(before - offset());
+      }
+      return create.call(this);
+    };
+  });
+  const card = await surface.open(page, data);
+  await expect(card).toBeVisible();
+  const body = card.locator(BODY);
+  await expect(body).toHaveCount(1);
+  await expect(
+    page
+      .getByRole("list", { name: "Conversation turns" })
+      .getByText("New", { exact: true })
+      .first(),
+    "the seed's turns are unread when the Conversation opens"
+  ).toBeVisible();
+  await body.evaluate((element) => element.setAttribute("data-read-mark-probe", ""));
+  await page.evaluate(() => {
+    document.documentElement.dataset.readMarkLands = "armed";
+  });
+  await expectRow(body, surface.question, data.plannerName, surface.stacked);
+  // The trap fired and moved the ask: else the row proves nothing about when the check reads.
+  const trap = await page.evaluate(() => ({
+    hidden: Number(document.documentElement.dataset.readMarkHidden ?? "0"),
+    moved: Number(document.documentElement.dataset.readMarkMoved ?? "0"),
+  }));
+  const lineHeight = await body
+    .getByText(surface.question, { exact: true })
+    .first()
+    .evaluate((element) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      return (range.getClientRects()[0] ?? element.getBoundingClientRect()).height;
+    });
+  expect(trap.hidden, "the trap hid no New label").toBeGreaterThanOrEqual(1);
+  expect(trap.moved, "the hidden labels moved the ask by less than its first line").toBeGreaterThan(
+    lineHeight
+  );
 });

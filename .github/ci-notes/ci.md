@@ -7,8 +7,11 @@ sections say how); the sections after them stood beside that file's filters, in 
 comment blocks stood, and each says why a job reads what its gate in `.github/ci-gates` declares.
 The router's sections follow them. Each `# why:` line of ci.yaml names the section that holds the
 derivation or the record its step, its job or its key rests on. In ci.yaml a comment block of at
-most two lines stays where it is, beside the pattern or the step it is about; so does a value's
-own arithmetic, and a comment inside a `run:` body, which is shell and stays with its command.
+most two lines stays where it is, beside the pattern or the step it is about, until ci.yaml stands
+at the byte limit `.github/scripts/check-workflow-files.sh#LIMIT`: then a derivation of two lines
+moves here too, as that check's refusal says, and its place keeps a `# why:` line. A value's own
+arithmetic stays, and so does a comment inside a `run:` body, which is shell and stays with its
+command.
 In the text moved here, "this file" and "this workflow" refer to `.github/workflows/ci.yaml`,
 where every one of these comments first stood, the filters' comments among them, and a section
 that names a pattern of `.github/ci-filters.yaml` names what the filter selected then.
@@ -612,7 +615,7 @@ the same helper, so both filters hold the same patterns.
 dispatch_ui's set, which the SPA and the e2e helpers load, with the bundle of the
 dispatch command its rows spawn through `packages/dispatch/e2e/dispatch-cli.ts#dispatchEntry` and `packages/dispatch/e2e/dispatch-cli.ts#runDispatch`, dispatch_two_builds_go's
 set (ci_ts_programs.py, LISTED, says why). Its jobs' contracts build
-(`build:dispatch`) compiles nothing outside the first: not legion-api.ts.
+(`build:dispatch`) compiles nothing outside the first.
 
 ## dispatch_browser: The workflow that holds every browser step, which this job
 
@@ -1286,10 +1289,10 @@ included). The jobs that cache Go restore, in steps of their own, one of eight f
 actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
 internal/daemon test binary daemon-go's race step does — and pi-legion; the test job restored
 it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
-of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
-build the same listener and natsd, listener-server-change and envoy-go-build, which build the
-listener, and envoy-go-checks, whose script tests run under the setup they had in
-envoy-go-build's job), go-envoy-test (envoy-go, which
+of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local, envoy-session-stall and
+envoy-refill, which build the same listener and natsd, listener-server-change and
+envoy-go-build, which build the listener, and envoy-go-checks, whose script tests run under the
+setup they had in envoy-go-build's job), go-envoy-test (envoy-go, which
 builds the test binary of every package of the envoy module, envoy-go-claim-model, which builds
 the API's of that set, the binaries, multiprocess
 and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
@@ -1688,6 +1691,11 @@ therefore test nothing and post nothing; the jobs of it that do run are `ci-ok` 
 and each concludes the failure such an attempt must get in a step instead
 (.github/ci-notes/ci.md#why-a-re-run-attempt-of-a-merge-group-run-is-refused-in-a-step and
 .github/ci-notes/ci.md#why-pr-title-refuses-a-re-run-attempt-in-a-step-of-its-own say why).
+
+## Why the docs output is selected like any other
+
+Selected like any other job now that no run of this workflow is a push to main.
+docs-pages.yaml still builds and deploys main's site, on a push trigger of its own.
 
 ## The fast half of a split job comes back on every push
 
@@ -2313,9 +2321,11 @@ them; the wait passes `--allow-none` for that run.
 
 ci.yaml calls 45 unique reusable workflows, the most .github/scripts/check-workflow-files.sh
 allows it (its rule 5 keeps five below the 50 GitHub counts over every tree of nested calls),
-so a job split in two takes no file of its own for its new half. test and tooling-checks call
-ci-job-test.yaml, pi-legion and pi-legion-build call ci-job-pi-legion.yaml, and envoy-infra-go
-and envoy-infra-build call ci-job-envoy-infra-go.yaml. Such a file holds one job per caller and
+so a job split in two takes no file of its own for its new half, and a new job takes none
+either. test and tooling-checks call ci-job-test.yaml, pi-legion and pi-legion-build call
+ci-job-pi-legion.yaml, envoy-infra-go and envoy-infra-build call ci-job-envoy-infra-go.yaml,
+and envoy-e2e-local and envoy-refill, which build the same listener and natsd, call
+ci-job-envoy-e2e-local.yaml. Such a file holds one job per caller and
 takes a `job` input: each of its jobs carries exactly `if: inputs.job == '<its id>'`, each
 caller passes `job: <its own id>`, and each job ends with the ci-ok-report step under its own
 id. A call runs the one job named for its caller, and the other reads `skipped` under it.
@@ -2325,9 +2335,9 @@ ci.yaml jobs call holds a job named for any of its callers, each caller must hav
 named for itself, which must carry that `if:`, and must pass its own id, since a job that ran
 under a second caller would read files that caller's filter is never held to, and a caller with
 no job of its own there runs nothing its filter is held to.
-.github/scripts/ci_job_reads.py's SHARED_FILE maps each new half to the file it shares, so its
-gates find their steps there. Each half keeps a filter of its own, and both name the shared
-file, so a change to it selects both. dispatch-browser.yaml has three callers,
+`.github/scripts/ci_job_reads.py#SHARED_FILE` maps each new half, and envoy-refill, to the file
+it shares, so its gates find their steps there. Each job keeps a filter of its own, and both name
+the shared file, so a change to it selects both. dispatch-browser.yaml has three callers,
 dispatch-browser, dispatch-browser-pr and dispatch-references, but every job of it runs under
 any of them: it takes the caller's id as `job` for its artifact names, its read of its own jobs
 and its report, never to pick a job
@@ -2950,6 +2960,9 @@ tests a second time, envoy-go's unit step having run them already, so the -run c
 .github/scripts/go-tagged-tests.sh, which reads the names off the source at run time. The
 assignment is a line of its own: under bash -e it carries the script's exit status, so an
 empty or refused list fails the step instead of running -run "", which matches every test.
+The rows run beside each other, up to the package's eight process slots at once
+(cmd/dispatch/process_slots_test.go): run one after another they took 13 minutes, nearly all
+of it waiting, with the runner's four cores 91% idle.
 
 ## The two-build tests (packages/envoy/cmd/dispatch/twobuild_*_test.go): each row starts
 
@@ -3145,6 +3158,14 @@ envoy-client job sets up neither, so a suite gated on LEGION_E2E_DISPATCH_STACK 
 there for ever. The filter envoy_session_stall already selects packages/envoy/** and
 packages/envoy-client/**, so the suite brings no new path into this job's closure.
 
+## What the refill live proof shows
+
+packages/envoy/scripts/e2e-refill.sh, the refill live proof (INFRA-261): on a real listener
+and a NATS server of its own, the listener keeps its copy of a bucket while it reads the
+bucket again, and refuses its two list routes, with no active-sessions sample, while it cannot
+stand behind that copy. The job runs every scenario of the script: reread, interrupt (stop
+and restart), recreate-live (both shapes) and refuse.
+
 ## What the ci-filters job holds every filter and every workflow file to
 
 Holds the table every filter is computed from to ci.yaml - every gate a filter the changes job
@@ -3263,6 +3284,11 @@ run is a passing required check, and a dead group must get a real failure rather
 check concluded by nothing. It comes before the checkout because no step after it runs
 once it has failed.
 
+## What the pr-title job checks out
+
+The job reads nothing of the tree but find-pr-payload.sh, check-pr-text.sh and the
+check-private-names.sh that one runs, so the .github cone is the whole checkout it needs.
+
 ## What the pr-title check step maps, and how it runs its scripts
 
 PRIVATE_NAME_TERMS is the deployment's own list, which check-private-names.sh's fifth rule
@@ -3327,6 +3353,11 @@ The job follows these rules:
 A force-cancel that fails leaves a warning rather than a red job: the run it names may have
 completed between the list and the call, and an act that reclaims nothing is no failure of
 the run it runs in.
+
+## What the cancel-started job checks out
+
+The job reads nothing of the tree but .github/scripts/cancel-started-act.sh and the
+merge-group-cancels.sh it runs, so the .github cone is the whole checkout it needs.
 
 ## The verdict, and one of the two checks main's ruleset requires of
 
@@ -3461,7 +3492,8 @@ on, so the step skips any attempt above the first. The reconcile step after it i
 exactly the case it runs, so it is the job's last step there and the job's check run concludes
 the moment it ends; that reconcile would only set a posted ci-ok of this head to failure, which
 every ci-ok a report step posts already is. Its own timeout-minutes, 175, lets a run created
-moments before it hold for the whole age and its last read; the verdict and reconcile steps
+moments before it hold for nearly the whole age, 170 minutes, and for its last pause and read, whose
+ladder is 30 s, then three attempts and their pauses, two minutes; the verdict and reconcile steps
 carry 10 each, the whole job's limit before this step, so their wait for a spent API budget is
 as long as it was.
 

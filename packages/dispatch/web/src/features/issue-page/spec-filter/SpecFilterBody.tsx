@@ -15,7 +15,7 @@ import { Link, useNavigate } from "react-router-dom";
 
 import { primarySpec, roleDocument } from "../../../api/issue-cache";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
-import type { Actor, IssueDetails } from "../../../api/types";
+import type { Actor, DisplayTree, IssueDetails } from "../../../api/types";
 import {
   pageDecisionText,
   pageFocusedRow,
@@ -59,6 +59,7 @@ import { useIssueNames } from "../one-line";
 import type { OutlineReads } from "../outline-reads";
 import { useTakeOutlineRequest } from "../outline-request";
 import { useOutlineWriter } from "../outline-writer";
+import { editWords, noteAfterDraw, type OwnAct } from "../own-act";
 import { authorText, KEY_REPORTS, pageChrome } from "../page-structure";
 import {
   authorKind,
@@ -78,7 +79,7 @@ import { RowText, useOutOfTabOrder } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { specSummary } from "../spec-summary";
 import { treeContext } from "../target-naming";
-import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
+import { focusIsLoose, nodeRowSelectorOf, rowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
 import { issueAsksQuery } from "../useIssueTree";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
@@ -373,10 +374,32 @@ export function SpecFilterBody({
   }, []);
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const admissions = useDocumentAdmissions();
+  // The statement the reader last edited themselves, as the outline notes it (`IssueTree.tsx`'s
+  // `ownAct`, `own-act.ts`'s `OwnAct`): the row's editor names the edited row at each edit of the
+  // reader's that changes the document (`useNodeEditing.ts`'s `onOwnEdit`), with the row's block
+  // as the edit left it, and the note holds the row's node, the words the edit left there
+  // (`editWords`) and the view drawn then. A read that drops that row while the note lasts is the
+  // reader's own doing (`heldRow`, below).
+  const ownEdit = useRef<OwnAct | undefined>(undefined);
+  const drawnView = useRef(view);
+  drawnView.current = view;
+  const noteEdit = useCallback((row: string, block: DisplayTree) => {
+    const id = tree.current?.querySelector<HTMLElement>(rowSelectorOf(row))?.dataset.nodeId;
+    if (id === undefined) return;
+    ownEdit.current = {
+      ended: false,
+      id,
+      kind: "edit",
+      root: drawnView.current,
+      row,
+      words: editWords(block),
+    };
+  }, []);
   const { edit, editing, stopEditing } = useNodeEditing({
     artifacts,
     container: tree,
     onEditing,
+    onOwnEdit: noteEdit,
     onReport: reportHere,
   });
   // The statements in the order they are drawn, which is the order the keys move through them,
@@ -396,13 +419,54 @@ export function SpecFilterBody({
     return { rows, rowKeys };
   }, [statements]);
   const editingRow = editing?.row;
+  // A read can answer without the statement whose row holds the focus, and the row then leaves
+  // the tree with the focus, which the browser drops to the page's body. Where the reader's own
+  // edit dropped it - an edit that takes their filter's words out of the statement, which comes
+  // back as the spec's blocks read again - the focus goes on to the row now at its place, as the
+  // outline hands on a loss the reader caused (`IssueTree.tsx`'s `heldRow`): the note of the edit
+  // (`ownEdit`) names the dropped row's node, and the drop uses the note up. The nearest row is
+  // the one now at the dropped row's place, or the last where none is, and it takes the focus
+  // only where nothing holds it (`focusIsLoose`), as a key's move gives it (`moveToRow`).
+  // Any other drop leaves the focus on the page's body. The row is noted at every render, by its
+  // key, its node and its place among the rows, as the focus stands once that render is drawn:
+  // the render that drops the row no longer draws it, so where it stood is the render before's to
+  // tell. The drop is read before the view drawn now decides whether the note lasts
+  // (`noteAfterDraw`, decision 409), so the view that ends the note can still count a drop as the
+  // reader's.
+  //
   // When the filter or a read removes the edited row, release its document even if the focus
   // was already elsewhere. There is no row for Escape's focus restoration to find.
+  const heldRow = useRef<
+    { readonly index: number; readonly key: string; readonly node: string | undefined } | undefined
+  >(undefined);
   useEffect(() => {
-    if (editingRow !== undefined && !rows.some((row) => rowKeyOf(row) === editingRow)) {
-      stopEditing();
+    const container = tree.current;
+    const order = rows.map((row) => rowKeyOf(row));
+    const held = heldRow.current;
+    const own = ownEdit.current;
+    if (editingRow !== undefined && !order.includes(editingRow)) stopEditing();
+    if (
+      held !== undefined &&
+      !order.includes(held.key) &&
+      own !== undefined &&
+      own.id === held.node &&
+      focusIsLoose(container)
+    ) {
+      ownEdit.current = undefined;
+      const key = order[Math.min(held.index, order.length - 1)];
+      const nearest =
+        key === undefined ? null : container?.querySelector<HTMLElement>(rowSelectorOf(key));
+      if (nearest !== null && nearest !== undefined) moveToRow(nearest);
     }
-  }, [editingRow, rows, stopEditing]);
+    ownEdit.current = noteAfterDraw(ownEdit.current, view, editingRow);
+    const holder = document.activeElement?.closest<HTMLElement>("[data-node-row]");
+    const focusedKey =
+      holder != null && container?.contains(holder) === true ? holder.dataset.rowKey : undefined;
+    heldRow.current =
+      focusedKey === undefined
+        ? undefined
+        : { index: order.indexOf(focusedKey), key: focusedKey, node: holder?.dataset.nodeId };
+  }, [editingRow, rows, stopEditing, view]);
   const takeFocus = useCallback(
     (node: TreeNode) => {
       setFocused(node.id);
