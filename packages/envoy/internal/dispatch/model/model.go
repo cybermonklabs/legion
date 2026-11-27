@@ -2020,7 +2020,9 @@ type CheckResultRetraction struct {
 // content whole, links and references kept, as the reader is shown it, present only for a
 // caller that sent `Dispatch-Trees: 1`. Subject is what the check reads, its `subject` as stored:
 // code, production or graph, and "" where the block names none, which reads as code. Program is
-// the deployed program it reads, its `program` as stored, "" where it names none.
+// the deployed program it reads, its `program` as stored, "" where it names none. Serves is the
+// references the block's `serves` attribute names, each as the block writes it, in the block's
+// order, and absent on a block that names none.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
@@ -2032,6 +2034,7 @@ type CheckBlock struct {
 	Surface         string        `json:"surface"`
 	Run             string        `json:"run"`
 	NegativeControl string        `json:"negative_control"`
+	Serves          []string      `json:"serves,omitempty"`
 	CICheck         string        `json:"ci_check,omitempty"`
 	Subject         string        `json:"subject,omitempty" enum:"code,production,graph"`
 	Program         string        `json:"program,omitempty"`
@@ -2891,6 +2894,12 @@ type MyReplyRow struct {
 	DeletedAt *time.Time   `json:"deleted_at,omitempty"`
 	DeletedBy *Actor       `json:"deleted_by,omitempty"`
 	Reply     MyReplyReply `json:"reply"`
+	// RootAuthor is the actor who wrote the thread's root, in the shape of Reply.Author and as it
+	// is stored: an ask's asker, a comment thread's root comment's author or a message thread's
+	// root message's author, so a root the Legion daemon wrote reads as its session,
+	// legion-daemon:<PROJECT>. Only the Reply scan sets it (readMyReplyRows, api/replies.go); an
+	// Agent row, whose root is always the caller's own message, carries none.
+	RootAuthor *Actor `json:"root_author,omitempty"`
 	// ReadThrough is the caller's read mark on the thread (user_threads.read_through), absent on
 	// an Agent row, whose replies are read by id rather than by a mark.
 	ReadThrough *time.Time `json:"read_through,omitempty"`

@@ -11,9 +11,10 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { answerQuestionOf, NAMED_ASK, NAMED_QUESTION } from "../../__tests__/question-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { api, NetworkError } from "../../api/client";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type {
   Artifact,
+  ArtifactText,
   AskRead,
   Comment,
   Decision,
@@ -21,6 +22,7 @@ import type {
   DisplayTree,
   IssueAskRow,
   IssueDecisions,
+  ReferenceTarget,
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
@@ -146,6 +148,32 @@ function renderPanel(
 
 function list(name: string): HTMLElement {
   return screen.getByRole("region", { name });
+}
+
+/** The decisions document `issueView` is the read of, which a Change's send reads to count
+ *  which place of its quote is the decision's own (`changeAnchor`). */
+const DECISIONS_TEXT = [
+  "## Store notices in a table",
+  "A table keeps them queryable.",
+  "Unsure: the index may be slow.",
+  "## Name them notices",
+  "The person chose the name.",
+  "## Replaced",
+  "### Keep them in a file",
+  "A file was simpler.",
+].join("\n\n");
+
+/** Answers the decisions document's text read with `DECISIONS_TEXT` and the reading the server
+ *  sends of it. */
+function spyDecisionsText() {
+  return spyOn(api, "getArtifactText").mockImplementation(
+    async (): Promise<ArtifactText> => ({
+      markdown: DECISIONS_TEXT,
+      markdown_tree: displayTree(DECISIONS_TEXT),
+      token: "token",
+      version: 1,
+    })
+  );
 }
 
 test("the panel sorts the view into its four lists, in order", async () => {
@@ -296,6 +324,7 @@ test("Change opens the comment composer on decisions.md, quoting the decision's 
   const user = userEvent.setup();
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(issueView());
   const comment = spyOn(api, "createComment").mockResolvedValue({} as Comment);
+  const text = spyDecisionsText();
   try {
     renderPanel();
     const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
@@ -307,19 +336,20 @@ test("Change opens the comment composer on decisions.md, quoting the decision's 
     );
     await user.click(within(composer).getByLabelText("Your change"));
     await user.paste("Use a queue instead.");
-    await user.click(within(composer).getByRole("button", { name: "Send" }));
+    await user.click(within(composer).getByRole("button", { name: "Send change" }));
 
     await waitFor(() => expect(comment).toHaveBeenCalled());
     expect(comment.mock.calls[0]?.slice(0, 2)).toEqual([
       "CORE-1",
       {
-        anchor: { artifact: documentId, quote: "A table keeps them queryable." },
+        anchor: { artifact: documentId, occurrence: 0, quote: "A table keeps them queryable." },
         body: "Use a queue instead.",
       },
     ]);
   } finally {
     read.mockRestore();
     comment.mockRestore();
+    text.mockRestore();
   }
 });
 
@@ -377,12 +407,12 @@ test("an open question and the Change's name read their text's plain-text projec
   }
 });
 
-// A link under "Shaped in the spec" names the spec block by its id, in the panel's own words: the
-// decisions read sends no text of the block a link points to (`refs.BlockLinks` resolves each end
-// as a graph node, whose text only a reference read fills), so there is no stored text to draw,
-// and the panel reads none. Handed a node that did carry text, the link still reads `Block p1`:
-// a projection of that text would read `Warm CORE-2 Cut the release before the cut.`.
-test("a shaped block's link names the block by its id and draws no text of the block", async () => {
+// A link under a decision names the statement it shaped by its first line (the decision card's
+// `decision-statement-line`), and never by the block's id. A link holds no markup, so the line
+// is the statement's text as plain words: the formatting is gone and a `dispatch://` address
+// reads as its target's name, as the same text reads in any other plain line. Drawn as the
+// characters it is, the link would hold `**Warm** dispatch://CORE-2 before the cut.`.
+test("a shaped block's link reads its first line as plain words, never by the block's id", async () => {
   const view: IssueDecisions = {
     decisions: [
       decision({
@@ -420,14 +450,106 @@ test("a shaped block's link names the block by its id and draws no text of the b
   try {
     renderPanel();
     const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
-    expect(await within(waiting).findByRole("link", { name: "Block p1" })).toHaveAttribute(
-      "href",
-      "/issues/CORE-1/spec#b-p1"
-    );
-    expect(within(waiting).queryByText(/before the cut/)).toBeNull();
+    const link = await within(waiting).findByRole("link", {
+      name: "Warm CORE-2 Cut the release before the cut.",
+    });
+    expect(link).toHaveAttribute("href", "/issues/CORE-1/spec#b-p1");
+    expect(within(waiting).queryByText(/Block p1/)).toBeNull();
+    expect(link.textContent).not.toContain("**");
+    expect(link.textContent).not.toContain("dispatch://");
   } finally {
     read.mockRestore();
     summary.mockRestore();
+  }
+});
+
+/** The two statements a decision of the tab below shaped: the address its tie names, where the
+ *  tab links it, and the words the names read answers for it. */
+const SHAPED = [
+  {
+    block: "p1",
+    href: "/issues/CORE-1/spec#b-p1",
+    name: "Notices are stored.",
+    ref: "dispatch://CORE-1/spec#b-p1",
+  },
+  {
+    block: "p 2",
+    href: "/issues/CORE-1/spec#b-p%202",
+    name: "Old rows expire.",
+    ref: "dispatch://CORE-1/spec#b-p%202",
+  },
+] as const;
+
+/** A refusal of a read, as Dispatch answers one it cannot serve now. */
+const REFUSED = new ApiError(503, { code: "UNAVAILABLE", error: "the read is refused" });
+
+/** A decision that waits for review whose ties name their statements by address alone, as the
+ *  bare decisions read does today, so the words of each come from the names read alone. */
+function unnamedView(): IssueDecisions {
+  return {
+    decisions: [
+      decision({
+        block_id: "store",
+        heading: "Store notices in a table",
+        links: SHAPED.map(({ block, ref }) => ({
+          created_at: "2026-11-01T00:00:00Z",
+          created_version: 1,
+          from_block: "store-why",
+          stale: false,
+          to: graphNode({ block_id: block, id: `CORE-1/spec#${block}`, kind: "block", ref }),
+        })),
+        text: "## Store notices in a table\n\nA table keeps them queryable.",
+        waiting_review: true,
+      }),
+    ],
+    document: "dispatch://CORE-1/artifact/decisions-md",
+    open_questions: [],
+  };
+}
+
+// The statements a decision shaped are named by one batched read for the whole tab, and a
+// decision's read ties each by its address alone. With that read refused the tab says so with a
+// Retry, every statement is still a link to its block by the card's word for it, and the Retry
+// names them again, the same links by their own words.
+test("a refused read of the statements' names says so with a Retry, keeps every statement a link to its block, and the Retry names them", async () => {
+  const user = userEvent.setup();
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(unnamedView());
+  const names = spyOn(api, "getReferenceTargets")
+    .mockRejectedValueOnce(REFUSED)
+    .mockImplementation(async (refs) => ({
+      targets: refs.flatMap((ref): ReferenceTarget[] => {
+        const named = SHAPED.find((one) => one.ref === ref);
+        return named === undefined ? [] : [{ gone: false, kind: "block", name: named.name, ref }];
+      }),
+    }));
+  try {
+    renderPanel();
+    const alert = await screen.findByRole("alert");
+    expect(
+      within(alert).getByText("Could not load the statements these decisions shaped.")
+    ).toBeInTheDocument();
+    const retry = within(alert).getByRole("button", { name: "Retry" });
+    const waiting = list("Waiting for your review");
+    const unnamed = within(waiting).getAllByRole("link", { name: "A statement it shaped" });
+    expect(unnamed).toHaveLength(SHAPED.length);
+    for (const [index, { href }] of SHAPED.entries()) {
+      expect(unnamed[index]).toHaveAttribute("href", href);
+    }
+
+    await user.click(retry);
+    await waitFor(() => {
+      for (const { href, name } of SHAPED) {
+        expect(within(waiting).getByRole("link", { name })).toHaveAttribute("href", href);
+      }
+    });
+    expect(within(waiting).queryByRole("link", { name: "A statement it shaped" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    // One batched read of both statements, asked again by the Retry for the same two.
+    const asked = SHAPED.map(({ ref }) => ref).sort();
+    expect(names.mock.calls.map(([refs]) => [...refs])).toEqual([asked, asked]);
+  } finally {
+    read.mockRestore();
+    names.mockRestore();
   }
 });
 
@@ -464,6 +586,7 @@ test("a change the reader stopped says it may have been posted, not a message's 
   const comment = spyOn(api, "createComment").mockRejectedValue(
     new NetworkError("/api/v1/issues/CORE-1/comments", new TypeError("Failed to fetch"))
   );
+  const text = spyDecisionsText();
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   try {
     renderPanel(queryClient);
@@ -474,7 +597,7 @@ test("a change the reader stopped says it may have been posted, not a message's 
     const composer = within(waiting).getByRole("form", { name: "Change Store notices in a table" });
     await user.click(within(composer).getByLabelText("Your change"));
     await user.paste("Use a queue instead.");
-    await user.click(within(composer).getByRole("button", { name: "Send" }));
+    await user.click(within(composer).getByRole("button", { name: "Send change" }));
     await stopTheLateWrite(queryClient);
     expect(within(composer).getByRole("alert").textContent).toBe(
       stoppedWriteNote("your change", "posted", { anew: "Send posts it again as a new comment." })
@@ -484,6 +607,7 @@ test("a change the reader stopped says it may have been posted, not a message's 
     queryClient.clear();
     read.mockRestore();
     comment.mockRestore();
+    text.mockRestore();
   }
 });
 

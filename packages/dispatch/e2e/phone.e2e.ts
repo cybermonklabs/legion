@@ -124,7 +124,6 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
       await expect(reviewToggle).toBeVisible();
       await reviewToggle.click();
       const askCard = needsYouCards(page).getByTestId(`ask-${openAsk.id}`);
-      await askCard.getByRole("button", { name: "Add a note or answer in your own words" }).click();
       await askCard.getByLabel("Your answer").fill("Yes.");
       await askCard.getByRole("button", { exact: true, name: "Answer" }).click();
       await expect

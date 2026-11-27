@@ -5473,6 +5473,8 @@ Each item below names a path with its method and identity, then its purpose.
   or `dismissed`, what they dismissed out of it, newest dismissal first, 200 rows at a time from `cursor`, which is the `next_cursor` the page before it answered.
   `limit` or `offset` under `dismissed`, and `cursor` under any other state, are each `400 INVALID_QUERY`.
   A row names the thread, its owner, its issue's priority, its project, its subject, its root's deep link, the newest reply's author, first line and time, the caller's read mark, whether it is unread, how many writes they have not read, and its dismissal mark when it has been dismissed.
+  A row of kind `ask`, `comment` or `message` also carries `root_author`, the actor who wrote the thread's root in the shape of the reply's `author`: the ask's asker, the root comment's author or the root message's author, as it is stored, so a root the Legion daemon wrote reads as its session, `legion-daemon:<PROJECT>`.
+  An `agent` row carries none.
   `issue` or `artifact` narrows to one owner (both is `400 INVALID_QUERY`, and either leaves out every agent row, which has neither).
   An absent `limit` is every row, which is what the Inbox reads; a `limit` the caller names is 1–200.
   The answer carries `as_of`, the database time of the one snapshot every row was read in, which is what Mark all read passes back as its read mark.
@@ -6378,6 +6380,7 @@ Each item below names a path with its method and identity, then its purpose.
   GET lists the Verification document's `check` blocks in document order as `{issue, verification_artifact_id, checks}`.
   Each check carries its attributes (`when`, `surface`, `run`, `negative_control`, `ci_check`, `subject`, `program`).
   It also carries the version its words last changed in, their digest, and every recorded result, newest first.
+  A check whose block's `serves` attribute names statements carries `serves`, those references each as the block writes it, in the block's order; a check whose block names none carries no `serves`.
 
   - A check's results come newest first by `created_at`, the time the recording transaction began, with `id` descending breaking a tie, and a client that reads one result per check reads the first of them;
     `dispatch results` prints every one of them, each with the reading its role recorded.

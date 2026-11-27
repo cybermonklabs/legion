@@ -1,0 +1,781 @@
+{
+  "key": "ACME-1",
+  "project": "ACME",
+  "number": 1,
+  "title": "Dashboard on today's issue page",
+  "status": "triage",
+  "priority": null,
+  "rank": "U",
+  "labels": [],
+  "parent": null,
+  "blocked_by": [],
+  "advances": [],
+  "advances_revision": 0,
+  "assignee": "alice",
+  "claim": null,
+  "components": {
+    "mode": "inherit",
+    "ids": [],
+    "unknown": [],
+    "reason": null,
+    "inherited_from": null
+  },
+  "external_links": [],
+  "route": null,
+  "repo": null,
+  "resolved_repo": "acme/dashboard-515448c6",
+  "created_by": {
+    "kind": "user",
+    "id": "alice",
+    "proven": true
+  },
+  "created_at": "2026-11-25T22:24:58.544458Z",
+  "updated_at": "2026-11-25T22:25:00.359982Z",
+  "closed_at": null,
+  "primary_artifact_id": "90b617cf-54ed-4268-9e10-b2f79ed42a56",
+  "verification_artifact_id": "cb7db029-25f3-403f-bc93-fceb1c93d52d",
+  "plan_artifact_id": "",
+  "decisions_artifact_id": "cffcd0c6-4a91-4ffc-9e1f-02f0789e37e4",
+  "last_seq": 47,
+  "blocks": [],
+  "route_status": null,
+  "route_holder": null,
+  "route_status_reason": null,
+  "holder_state": null,
+  "last_seen": null,
+  "takeable_at": null,
+  "progress": {
+    "tasks": null,
+    "children": {
+      "done": 3,
+      "total": 7
+    }
+  },
+  "comment_count": 5,
+  "artifacts": [
+    {
+      "id": "90b617cf-54ed-4268-9e10-b2f79ed42a56",
+      "issue_key": "ACME-1",
+      "project": "ACME",
+      "session_id": null,
+      "ref_key": "ACME-1/spec",
+      "slug": "spec",
+      "name": "spec.md",
+      "kind": "doc",
+      "primary": true,
+      "created_by": {
+        "kind": "user",
+        "id": "alice",
+        "proven": true
+      },
+      "created_at": "2026-11-25T22:24:58.545478Z",
+      "versions": [
+        {
+          "number": 1,
+          "named": false,
+          "summary": null,
+          "authors": [
+            {
+              "kind": "user",
+              "id": "alice",
+              "proven": true
+            }
+          ],
+          "created_at": "2026-11-25T22:24:58.544458Z",
+          "size": 286
+        },
+        {
+          "number": 2,
+          "named": false,
+          "summary": null,
+          "authors": [
+            {
+              "kind": "session",
+              "id": "dashboard-planner",
+              "origin": {
+                "session_title": "Planner (dashboard)"
+              }
+            }
+          ],
+          "created_at": "2026-11-25T22:24:59.834107Z",
+          "size": 300
+        }
+      ],
+      "approval": {
+        "state": "awaiting",
+        "latest_version": 2,
+        "version": 1,
+        "by": {
+          "kind": "user",
+          "id": "alice",
+          "proven": true
+        },
+        "at": "2026-11-25T22:24:59.818716Z",
+        "seq": 29,
+        "ask_id": "a3ed67dd-c9d5-47a2-9ce7-8d32a9162a0b",
+        "content_sha256": "00ab938e39d45f92ff11544742236b1497ba87362c6119778617bd390b363828",
+        "content_sha256_source": "insert",
+        "requested_by": {
+          "kind": "session",
+          "id": "dashboard-planner",
+          "origin": {
+            "session_title": "Planner (dashboard)"
+          }
+        },
+        "waiting_on": "human",
+        "kind": "person"
+      }
+    },
+    {
+      "id": "cffcd0c6-4a91-4ffc-9e1f-02f0789e37e4",
+      "issue_key": "ACME-1",
+      "project": "ACME",
+      "session_id": null,
+      "ref_key": "ACME-1/decisions-md",
+      "slug": "decisions-md",
+      "name": "decisions.md",
+      "kind": "doc",
+      "primary": false,
+      "role": "decisions",
+      "created_by": {
+        "kind": "session",
+        "id": "dashboard-planner",
+        "origin": {
+          "session_title": "Planner (dashboard)"
+        }
+      },
+      "created_at": "2026-11-25T22:24:59.644808Z",
+      "versions": [
+        {
+          "number": 1,
+          "named": false,
+          "summary": null,
+          "authors": [
+            {
+              "kind": "session",
+              "id": "dashboard-planner",
+              "origin": {
+                "session_title": "Planner (dashboard)"
+              }
+            }
+          ],
+          "created_at": "2026-11-25T22:24:59.641148Z",
+          "size": 539
+        },
+        {
+          "number": 2,
+          "named": false,
+          "summary": null,
+          "authors": [
+            {
+              "kind": "session",
+              "id": "dashboard-planner",
+              "origin": {
+                "session_title": "Planner (dashboard)"
+              }
+            }
+          ],
+          "created_at": "2026-11-25T22:24:59.752272Z",
+          "size": 650
+        }
+      ],
+      "approval": {
+        "state": "draft",
+        "latest_version": 2
+      }
+    },
+    {
+      "id": "cb7db029-25f3-403f-bc93-fceb1c93d52d",
+      "issue_key": "ACME-1",
+      "project": "ACME",
+      "session_id": null,
+      "ref_key": "ACME-1/verification-md",
+      "slug": "verification-md",
+      "name": "verification.md",
+      "kind": "doc",
+      "primary": false,
+      "role": "verification",
+      "created_by": {
+        "kind": "session",
+        "id": "dashboard-planner",
+        "origin": {
+          "session_title": "Planner (dashboard)"
+        }
+      },
+      "created_at": "2026-11-25T22:24:59.940281Z",
+      "versions": [
+        {
+          "number": 1,
+          "named": false,
+          "summary": null,
+          "authors": [
+            {
+              "kind": "session",
+              "id": "dashboard-planner",
+              "origin": {
+                "session_title": "Planner (dashboard)"
+              }
+            }
+          ],
+          "created_at": "2026-11-25T22:24:59.935735Z",
+          "size": 1270
+        },
+        {
+          "number": 2,
+          "named": false,
+          "summary": null,
+          "authors": [
+            {
+              "kind": "session",
+              "id": "dashboard-planner",
+              "origin": {
+                "session_title": "Planner (dashboard)"
+              }
+            }
+          ],
+          "created_at": "2026-11-25T22:25:00.123254Z",
+          "size": 1286
+        }
+      ],
+      "approval": {
+        "state": "stale",
+        "latest_version": 2,
+        "version": 1,
+        "by": {
+          "kind": "user",
+          "id": "alice",
+          "proven": true
+        },
+        "at": "2026-11-25T22:24:59.977474Z",
+        "seq": 33,
+        "content_sha256": "8de20dc6fb5bd30e600abd1ca16ad200b5e3236ae63d088cfb20ae1ca98f7c62",
+        "content_sha256_source": "insert",
+        "kind": "person"
+      }
+    }
+  ],
+  "open_asks": [
+    {
+      "id": "d0df6bf1-6ae7-46aa-ab8f-9485aa38917b",
+      "issue_key": "ACME-1",
+      "artifact_id": null,
+      "block_id": null,
+      "author": {
+        "kind": "session",
+        "id": "dashboard-planner",
+        "origin": {
+          "session_title": "Planner (dashboard)"
+        }
+      },
+      "kind": "question",
+      "question": "Which reads does the first load send?",
+      "multiple": false,
+      "urgency": "med",
+      "anchor": null,
+      "state": "open",
+      "opened_event_id": 35,
+      "created_at": "2026-11-25T22:24:59.400925Z",
+      "referenced_by_count": 0,
+      "revision": 1,
+      "edited_at": null,
+      "asked_of": null,
+      "asked_of_by": null,
+      "asked_of_at": null,
+      "waiting_on": "agent",
+      "waiting_on_person": "alice",
+      "question_tree": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Which reads does the first load send?"
+              }
+            ]
+          }
+        ]
+      },
+      "options": [],
+      "answer": null,
+      "last_reply": {
+        "author": {
+          "kind": "user",
+          "id": "alice",
+          "proven": true
+        },
+        "created_at": "2026-11-25T22:24:59.441297Z"
+      }
+    },
+    {
+      "id": "d2e44219-ef4a-42d0-98da-5b0e9fcff393",
+      "issue_key": "ACME-1",
+      "artifact_id": null,
+      "block_id": null,
+      "author": {
+        "kind": "session",
+        "id": "dashboard-planner",
+        "origin": {
+          "session_title": "Planner (dashboard)"
+        }
+      },
+      "kind": "question",
+      "question": "Who reviews the tile words?",
+      "multiple": false,
+      "urgency": "med",
+      "anchor": null,
+      "state": "open",
+      "opened_event_id": 37,
+      "created_at": "2026-11-25T22:24:59.463695Z",
+      "referenced_by_count": 0,
+      "revision": 1,
+      "edited_at": null,
+      "asked_of": "bob",
+      "asked_of_by": "alice",
+      "asked_of_at": "2026-11-25T22:24:59.490752Z",
+      "waiting_on": "human",
+      "waiting_on_person": "bob",
+      "question_tree": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Who reviews the tile words?"
+              }
+            ]
+          }
+        ]
+      },
+      "options": [],
+      "answer": null,
+      "last_reply": null
+    },
+    {
+      "id": "d2ce7af7-fb20-4bec-8154-f5c8cee30de9",
+      "issue_key": "ACME-1",
+      "artifact_id": null,
+      "block_id": null,
+      "author": {
+        "kind": "session",
+        "id": "dashboard-planner",
+        "origin": {
+          "session_title": "Planner (dashboard)"
+        }
+      },
+      "kind": "question",
+      "question": "Which order does the list take?",
+      "multiple": false,
+      "urgency": "high",
+      "anchor": null,
+      "state": "open",
+      "opened_event_id": 39,
+      "created_at": "2026-11-25T22:24:59.510501Z",
+      "referenced_by_count": 0,
+      "revision": 1,
+      "edited_at": null,
+      "asked_of": null,
+      "asked_of_by": null,
+      "asked_of_at": null,
+      "waiting_on": "human",
+      "waiting_on_person": "alice",
+      "question_tree": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Which order does the list take?"
+              }
+            ]
+          }
+        ]
+      },
+      "options": [
+        {
+          "id": "b2",
+          "label": "Newest first",
+          "description": "Newest at the top.",
+          "label_tree": {
+            "type": "doc",
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Newest first"
+                  }
+                ]
+              }
+            ]
+          },
+          "description_tree": {
+            "type": "doc",
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Newest at the top."
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "b3",
+          "label": "Oldest first",
+          "description": "Oldest at the top.",
+          "label_tree": {
+            "type": "doc",
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Oldest first"
+                  }
+                ]
+              }
+            ]
+          },
+          "description_tree": {
+            "type": "doc",
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Oldest at the top."
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "answer": null,
+      "last_reply": null
+    },
+    {
+      "id": "1a3fc3ff-0755-41d7-8ff9-eb92c712de84",
+      "issue_key": "ACME-1",
+      "artifact_id": null,
+      "block_id": null,
+      "author": {
+        "kind": "session",
+        "id": "dashboard-planner",
+        "origin": {
+          "session_title": "Planner (dashboard)"
+        }
+      },
+      "kind": "question",
+      "question": "What does the line say when nothing waits?",
+      "multiple": false,
+      "urgency": "med",
+      "anchor": null,
+      "state": "open",
+      "opened_event_id": 40,
+      "created_at": "2026-11-25T22:24:59.538939Z",
+      "referenced_by_count": 0,
+      "revision": 1,
+      "edited_at": null,
+      "asked_of": null,
+      "asked_of_by": null,
+      "asked_of_at": null,
+      "waiting_on": "human",
+      "waiting_on_person": "alice",
+      "question_tree": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "What does the line say when nothing waits?"
+              }
+            ]
+          }
+        ]
+      },
+      "options": [],
+      "answer": null,
+      "last_reply": null
+    },
+    {
+      "id": "b063388c-4df9-4db0-9cd5-414330fde25f",
+      "issue_key": "ACME-1",
+      "artifact_id": null,
+      "block_id": null,
+      "author": {
+        "kind": "session",
+        "id": "dashboard-planner",
+        "origin": {
+          "session_title": "Planner (dashboard)"
+        }
+      },
+      "kind": "question",
+      "question": "Does a reply from here mark the thread read?",
+      "multiple": false,
+      "urgency": "med",
+      "anchor": null,
+      "state": "open",
+      "opened_event_id": 41,
+      "created_at": "2026-11-25T22:24:59.568038Z",
+      "referenced_by_count": 0,
+      "revision": 1,
+      "edited_at": null,
+      "asked_of": null,
+      "asked_of_by": null,
+      "asked_of_at": null,
+      "waiting_on": "human",
+      "waiting_on_person": "alice",
+      "question_tree": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Does a reply from here mark the thread read?"
+              }
+            ]
+          }
+        ]
+      },
+      "options": [],
+      "answer": null,
+      "last_reply": {
+        "author": {
+          "kind": "session",
+          "id": "dashboard-planner",
+          "origin": {
+            "session_title": "Planner (dashboard)"
+          }
+        },
+        "created_at": "2026-11-25T22:24:59.607578Z"
+      }
+    },
+    {
+      "id": "a3ed67dd-c9d5-47a2-9ce7-8d32a9162a0b",
+      "issue_key": "ACME-1",
+      "artifact_id": null,
+      "block_id": null,
+      "author": {
+        "kind": "session",
+        "id": "dashboard-planner",
+        "origin": {
+          "session_title": "Planner (dashboard)"
+        }
+      },
+      "kind": "approval",
+      "question": "Approve spec.md (version 2)?",
+      "multiple": false,
+      "urgency": "high",
+      "anchor": null,
+      "state": "open",
+      "opened_event_id": 50,
+      "created_at": "2026-11-25T22:24:59.873127Z",
+      "referenced_by_count": 0,
+      "revision": 1,
+      "edited_at": null,
+      "approval": {
+        "artifact_id": "90b617cf-54ed-4268-9e10-b2f79ed42a56",
+        "name": "spec.md",
+        "version": 2,
+        "requested_version": 2,
+        "approved": {
+          "version": 1,
+          "at": "2026-11-25T22:24:59.818716Z",
+          "by": {
+            "kind": "user",
+            "id": "alice",
+            "proven": true
+          }
+        },
+        "documents": [
+          {
+            "artifact_id": "90b617cf-54ed-4268-9e10-b2f79ed42a56",
+            "name": "spec.md",
+            "version": 2,
+            "requested_version": 2
+          }
+        ]
+      },
+      "approval_artifact": {
+        "project": "ACME",
+        "slug": "spec",
+        "name": "spec.md",
+        "primary": true
+      },
+      "asked_of": null,
+      "asked_of_by": null,
+      "asked_of_at": null,
+      "waiting_on": "human",
+      "waiting_on_person": "alice",
+      "question_tree": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Approve spec.md (version 2)?"
+              }
+            ]
+          }
+        ]
+      },
+      "options": [
+        {
+          "id": "b2",
+          "label": "Approve",
+          "description": "Approve this version of the document.",
+          "label_tree": {
+            "type": "doc",
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Approve"
+                  }
+                ]
+              }
+            ]
+          },
+          "description_tree": {
+            "type": "doc",
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Approve this version of the document."
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": "b3",
+          "label": "Request changes",
+          "description": "Say what must change before it can be approved.",
+          "label_tree": {
+            "type": "doc",
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Request changes"
+                  }
+                ]
+              }
+            ]
+          },
+          "description_tree": {
+            "type": "doc",
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Say what must change before it can be approved."
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "answer": null,
+      "last_reply": null
+    }
+  ],
+  "children": [
+    {
+      "key": "ACME-2",
+      "title": "Dashboard part 1",
+      "status": "done",
+      "subtree_done": 1,
+      "subtree_total": 1,
+      "active_at": "2026-11-25T22:24:58.73819Z",
+      "external_links": []
+    },
+    {
+      "key": "ACME-3",
+      "title": "Dashboard part 2",
+      "status": "in_progress",
+      "subtree_done": 0,
+      "subtree_total": 1,
+      "active_at": "2026-11-25T22:24:58.873181Z",
+      "external_links": []
+    },
+    {
+      "key": "ACME-4",
+      "title": "Dashboard part 3",
+      "status": "done",
+      "subtree_done": 1,
+      "subtree_total": 1,
+      "active_at": "2026-11-25T22:24:58.964392Z",
+      "external_links": []
+    },
+    {
+      "key": "ACME-5",
+      "title": "Dashboard part 4",
+      "status": "todo",
+      "subtree_done": 0,
+      "subtree_total": 1,
+      "active_at": "2026-11-25T22:24:59.062296Z",
+      "external_links": []
+    },
+    {
+      "key": "ACME-6",
+      "title": "Dashboard part 5",
+      "status": "needs_review",
+      "subtree_done": 0,
+      "subtree_total": 1,
+      "active_at": "2026-11-25T22:24:59.130181Z",
+      "external_links": []
+    },
+    {
+      "key": "ACME-7",
+      "title": "Dashboard part 6",
+      "status": "done",
+      "subtree_done": 1,
+      "subtree_total": 1,
+      "active_at": "2026-11-25T22:24:59.217403Z",
+      "external_links": []
+    },
+    {
+      "key": "ACME-8",
+      "title": "Dashboard part 7",
+      "status": "backlog",
+      "subtree_done": 0,
+      "subtree_total": 1,
+      "active_at": "2026-11-25T22:24:59.274958Z",
+      "external_links": []
+    }
+  ],
+  "design_gates": [],
+  "referenced_by_count": 10
+}

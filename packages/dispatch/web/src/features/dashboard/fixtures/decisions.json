@@ -1,0 +1,457 @@
+{
+  "document": "dispatch://ACME-1/artifact/decisions-md",
+  "open_questions": [],
+  "decisions": [
+    {
+      "block_id": "3f661cd8-c18c-4654-b513-0094cdb78885",
+      "heading": "Keep the list to what waits on the person",
+      "ref": "dispatch://ACME-1/artifact/decisions-md#b-3f661cd8-c18c-4654-b513-0094cdb78885",
+      "text": "## Keep the list to what waits on the person\n\nChosen so nothing that waits is missed. Shapes dispatch://ACME-1/spec#b-r1.",
+      "text_tree": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "heading",
+            "attrs": {
+              "level": 2
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Keep the list to what waits on the person"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Chosen so nothing that waits is missed. Shapes dispatch://ACME-1/spec#b-r1."
+              }
+            ]
+          }
+        ]
+      },
+      "text_sha256": "52dd69eb5e8f0622dfab2c2f256d6f664adb9a1496b2c9b25d92f943184ddf2b",
+      "kind": "agent",
+      "unsure": false,
+      "replaced": false,
+      "asks": [],
+      "links": [
+        {
+          "from_block": "1162d802-ab88-42a2-ae6b-fd64e9cc01ff",
+          "to": {
+            "kind": "block",
+            "id": "ACME-1/spec#r1",
+            "block_id": "r1",
+            "issue_key": "ACME-1",
+            "project": "ACME",
+            "ref": "dispatch://ACME-1/spec#b-r1",
+            "document": "dispatch://ACME-1/spec",
+            "changed_version": 1,
+            "made_by": [
+              {
+                "kind": "user",
+                "id": "alice",
+                "proven": true
+              }
+            ],
+            "made_at": "2026-11-25T22:24:58.544458Z",
+            "changed_by": [
+              {
+                "kind": "user",
+                "id": "alice",
+                "proven": true
+              }
+            ],
+            "changed_at": "2026-11-25T22:24:58.544458Z",
+            "parent": {
+              "kind": "artifact",
+              "id": "90b617cf-54ed-4268-9e10-b2f79ed42a56",
+              "ref": "dispatch://ACME-1/spec"
+            },
+            "parent_version": 1
+          },
+          "created_version": 1,
+          "created_at": "2026-11-25T22:24:59.641148Z",
+          "stale": false
+        }
+      ],
+      "changed_version": 1,
+      "changed_at": "2026-11-25T22:24:59.641148Z",
+      "kept": {
+        "artifact_id": "cffcd0c6-4a91-4ffc-9e1f-02f0789e37e4",
+        "block_id": "3f661cd8-c18c-4654-b513-0094cdb78885",
+        "changed_version": 1,
+        "kept_by": "alice",
+        "kept_at": "2026-11-25T22:24:59.729387Z"
+      },
+      "waiting_review": false
+    },
+    {
+      "block_id": "9e35f8ce-a865-48ea-85ea-dfac2d55ea78",
+      "heading": "Answer each question where it is drawn",
+      "ref": "dispatch://ACME-1/artifact/decisions-md#b-9e35f8ce-a865-48ea-85ea-dfac2d55ea78",
+      "text": "## Answer each question where it is drawn\n\nDecided in dispatch://ACME-1/ask/4896594a-0414-4b37-ac85-7fa25d0f2509. Shapes dispatch://ACME-1/spec#b-r2.",
+      "text_tree": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "heading",
+            "attrs": {
+              "level": 2
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Answer each question where it is drawn"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Decided in dispatch://ACME-1/ask/4896594a-0414-4b37-ac85-7fa25d0f2509. Shapes dispatch://ACME-1/spec#b-r2."
+              }
+            ]
+          }
+        ]
+      },
+      "text_sha256": "5db5019ce4d6f047ce9ca77ad1260711456288617af6ba343b5b5ba398efd4c9",
+      "kind": "person",
+      "unsure": false,
+      "replaced": false,
+      "asks": ["4896594a-0414-4b37-ac85-7fa25d0f2509"],
+      "links": [
+        {
+          "from_block": "b1f384dc-dcdc-44eb-99c2-a08e1b439eca",
+          "to": {
+            "kind": "block",
+            "id": "ACME-1/spec#r2",
+            "block_id": "r2",
+            "issue_key": "ACME-1",
+            "project": "ACME",
+            "ref": "dispatch://ACME-1/spec#b-r2",
+            "document": "dispatch://ACME-1/spec",
+            "changed_version": 1,
+            "made_by": [
+              {
+                "kind": "user",
+                "id": "alice",
+                "proven": true
+              }
+            ],
+            "made_at": "2026-11-25T22:24:58.544458Z",
+            "changed_by": [
+              {
+                "kind": "user",
+                "id": "alice",
+                "proven": true
+              }
+            ],
+            "changed_at": "2026-11-25T22:24:58.544458Z",
+            "parent": {
+              "kind": "artifact",
+              "id": "90b617cf-54ed-4268-9e10-b2f79ed42a56",
+              "ref": "dispatch://ACME-1/spec"
+            },
+            "parent_version": 1
+          },
+          "created_version": 1,
+          "created_at": "2026-11-25T22:24:59.641148Z",
+          "stale": false
+        }
+      ],
+      "changed_version": 1,
+      "changed_at": "2026-11-25T22:24:59.641148Z",
+      "kept": null,
+      "waiting_review": false
+    },
+    {
+      "block_id": "e63df99a-30f7-4e51-8a9c-a04761b3852d",
+      "heading": "Draw five items at a time",
+      "ref": "dispatch://ACME-1/artifact/decisions-md#b-e63df99a-30f7-4e51-8a9c-a04761b3852d",
+      "text": "## Draw five items at a time\n\nChosen so the first screen holds the newest five. Shapes dispatch://ACME-1/spec#b-r1 and dispatch://ACME-1/spec#b-r3.",
+      "text_tree": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "heading",
+            "attrs": {
+              "level": 2
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Draw five items at a time"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Chosen so the first screen holds the newest five. Shapes dispatch://ACME-1/spec#b-r1 and dispatch://ACME-1/spec#b-r3."
+              }
+            ]
+          }
+        ]
+      },
+      "text_sha256": "a14aa1f9626276eaf581d4c479938124e21dc9e5f83fe27a015e65d2d35c61f0",
+      "kind": "agent",
+      "unsure": false,
+      "replaced": false,
+      "asks": [],
+      "links": [
+        {
+          "from_block": "fc4a3588-c02c-4026-b717-ae3c0533e650",
+          "to": {
+            "kind": "block",
+            "id": "ACME-1/spec#r1",
+            "block_id": "r1",
+            "issue_key": "ACME-1",
+            "project": "ACME",
+            "ref": "dispatch://ACME-1/spec#b-r1",
+            "document": "dispatch://ACME-1/spec",
+            "changed_version": 1,
+            "made_by": [
+              {
+                "kind": "user",
+                "id": "alice",
+                "proven": true
+              }
+            ],
+            "made_at": "2026-11-25T22:24:58.544458Z",
+            "changed_by": [
+              {
+                "kind": "user",
+                "id": "alice",
+                "proven": true
+              }
+            ],
+            "changed_at": "2026-11-25T22:24:58.544458Z",
+            "parent": {
+              "kind": "artifact",
+              "id": "90b617cf-54ed-4268-9e10-b2f79ed42a56",
+              "ref": "dispatch://ACME-1/spec"
+            },
+            "parent_version": 1
+          },
+          "created_version": 1,
+          "created_at": "2026-11-25T22:24:59.641148Z",
+          "stale": false
+        },
+        {
+          "from_block": "fc4a3588-c02c-4026-b717-ae3c0533e650",
+          "to": {
+            "kind": "block",
+            "id": "ACME-1/spec#r3",
+            "block_id": "r3",
+            "issue_key": "ACME-1",
+            "project": "ACME",
+            "ref": "dispatch://ACME-1/spec#b-r3",
+            "document": "dispatch://ACME-1/spec",
+            "changed_version": 1,
+            "made_by": [
+              {
+                "kind": "user",
+                "id": "alice",
+                "proven": true
+              }
+            ],
+            "made_at": "2026-11-25T22:24:58.544458Z",
+            "changed_by": [
+              {
+                "kind": "user",
+                "id": "alice",
+                "proven": true
+              }
+            ],
+            "changed_at": "2026-11-25T22:24:58.544458Z",
+            "parent": {
+              "kind": "artifact",
+              "id": "90b617cf-54ed-4268-9e10-b2f79ed42a56",
+              "ref": "dispatch://ACME-1/spec"
+            },
+            "parent_version": 1
+          },
+          "created_version": 1,
+          "created_at": "2026-11-25T22:24:59.641148Z",
+          "stale": false
+        }
+      ],
+      "changed_version": 1,
+      "changed_at": "2026-11-25T22:24:59.641148Z",
+      "kept": null,
+      "waiting_review": true
+    },
+    {
+      "block_id": "be6ea158-53ba-40ab-adf8-a7deaeacaeae",
+      "heading": "Draw every item at once",
+      "ref": "dispatch://ACME-1/artifact/decisions-md#b-be6ea158-53ba-40ab-adf8-a7deaeacaeae",
+      "text": "### Draw every item at once\n\nReplaced by the five at a time above. Shapes dispatch://ACME-1/spec#b-r3.",
+      "text_tree": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "heading",
+            "attrs": {
+              "level": 3
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Draw every item at once"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Replaced by the five at a time above. Shapes dispatch://ACME-1/spec#b-r3."
+              }
+            ]
+          }
+        ]
+      },
+      "text_sha256": "ea33b3d1932fa4daa4a95ee572dbcf0a276abefad68a6029a7997bd3522d24a1",
+      "kind": "agent",
+      "unsure": false,
+      "replaced": true,
+      "asks": [],
+      "links": [
+        {
+          "from_block": "d679bc7d-8b90-4757-9410-8f6b244d5d00",
+          "to": {
+            "kind": "block",
+            "id": "ACME-1/spec#r3",
+            "block_id": "r3",
+            "issue_key": "ACME-1",
+            "project": "ACME",
+            "ref": "dispatch://ACME-1/spec#b-r3",
+            "document": "dispatch://ACME-1/spec",
+            "changed_version": 1,
+            "made_by": [
+              {
+                "kind": "user",
+                "id": "alice",
+                "proven": true
+              }
+            ],
+            "made_at": "2026-11-25T22:24:58.544458Z",
+            "changed_by": [
+              {
+                "kind": "user",
+                "id": "alice",
+                "proven": true
+              }
+            ],
+            "changed_at": "2026-11-25T22:24:58.544458Z",
+            "parent": {
+              "kind": "artifact",
+              "id": "90b617cf-54ed-4268-9e10-b2f79ed42a56",
+              "ref": "dispatch://ACME-1/spec"
+            },
+            "parent_version": 1
+          },
+          "created_version": 1,
+          "created_at": "2026-11-25T22:24:59.641148Z",
+          "stale": false
+        }
+      ],
+      "changed_version": 1,
+      "changed_at": "2026-11-25T22:24:59.641148Z",
+      "kept": null,
+      "waiting_review": false
+    },
+    {
+      "block_id": "9acdab4c-8a6f-4ca5-92ac-3b326987816f",
+      "heading": "Count what waits by its items",
+      "ref": "dispatch://ACME-1/artifact/decisions-md#b-9acdab4c-8a6f-4ca5-92ac-3b326987816f",
+      "text": "## Count what waits by its items\n\nChosen so the count and the list agree. Shapes dispatch://ACME-1/spec#b-r4.",
+      "text_tree": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "heading",
+            "attrs": {
+              "level": 2
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Count what waits by its items"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Chosen so the count and the list agree. Shapes dispatch://ACME-1/spec#b-r4."
+              }
+            ]
+          }
+        ]
+      },
+      "text_sha256": "097b03f1992cd7ac6705dfe6678e85a10c8167400772999d92aaadc9d3cb0e3d",
+      "kind": "agent",
+      "unsure": false,
+      "replaced": false,
+      "asks": [],
+      "links": [
+        {
+          "from_block": "2d0a9ef6-aa1d-4831-844f-8cfec1f1f481",
+          "to": {
+            "kind": "block",
+            "id": "ACME-1/spec#r4",
+            "block_id": "r4",
+            "issue_key": "ACME-1",
+            "project": "ACME",
+            "ref": "dispatch://ACME-1/spec#b-r4",
+            "document": "dispatch://ACME-1/spec",
+            "changed_version": 2,
+            "made_by": [
+              {
+                "kind": "user",
+                "id": "alice",
+                "proven": true
+              }
+            ],
+            "made_at": "2026-11-25T22:24:58.544458Z",
+            "changed_by": [
+              {
+                "kind": "session",
+                "id": "dashboard-planner",
+                "origin": {
+                  "session_title": "Planner (dashboard)"
+                }
+              }
+            ],
+            "changed_at": "2026-11-25T22:24:59.834107Z",
+            "parent": {
+              "kind": "artifact",
+              "id": "90b617cf-54ed-4268-9e10-b2f79ed42a56",
+              "ref": "dispatch://ACME-1/spec"
+            },
+            "parent_version": 2
+          },
+          "created_version": 2,
+          "created_at": "2026-11-25T22:24:59.752272Z",
+          "stale": false
+        }
+      ],
+      "changed_version": 2,
+      "changed_at": "2026-11-25T22:24:59.752272Z",
+      "kept": null,
+      "waiting_review": true
+    }
+  ]
+}
