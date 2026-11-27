@@ -1988,7 +1988,6 @@ version at once and settlement would retract the ask without writing another, so
 would leave the human's Inbox unanswered and the approval refusal would find no block to judge.
 
 `dispatch request-approval` prints a refusal for the form of The Spec as Dispatch writes it, after its code (`SPEC_FORM: <error>`), and exits 1.
-The `DispatchServiceError` it throws carries `findings`, each text and its rule, and `changesReason`, the reason a person's Request changes sends, as it carries `mismatches`.
 A request that Dispatch records ends with one line on the form when a root of The Spec covers the document (the answer's `spec_form`): the count of each kind of text it read, or that it found no text of The Spec.
 Dispatch reads no list of terms yet, so the line names no terms.
 
