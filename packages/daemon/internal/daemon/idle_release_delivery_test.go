@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -263,5 +264,60 @@ func TestADeliveryWakeAfterACancelWaitsForTheCancelsStartAndRecordsNoResume(t *t
 	}
 	if records := rig.records(t); len(records.Resumes) != 0 {
 		t.Fatalf("resumes after the cancel's start = %+v, want none: the release took no pod", records.Resumes)
+	}
+}
+
+// A tree root's architect starts at the tree's run, which a next change of the root leaves behind
+// the root's own generation (record.Issue.GenerationOf). A cancelled release queued the architect's
+// start at that run, as the daemon's builder writes it (releaseResume), and the claim reads
+// `released` until that start runs. A delivery for the architect in that time looks for the start
+// at the run it serves (deliveryWake, store.Store.TakeDeliveryWake). So it takes no wake, records
+// no resume, resumes nothing in process and waits as a routine wait. The control is a tester of
+// the same root, whose start serves the root's own generation.
+func TestADeliveryWakeOfARootsArchitectWaitsForItsStartQueuedAtTheTreesRun(t *testing.T) {
+	t.Parallel()
+	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleTester} {
+		t.Run(string(role), func(t *testing.T) {
+			t.Parallel()
+			rig := newIdleRig(t)
+			ctx := context.Background()
+			machine := rig.releasedRole(t, role)
+			if _, err := rig.pool.Exec(ctx, `update issues set generation = 2 where key = $1`, rig.issue.Key); err != nil {
+				t.Fatalf("move the root's generation on: %v", err)
+			}
+			root, err := rig.runner.issue(ctx, rig.issue.Key)
+			if err != nil {
+				t.Fatalf("read the root: %v", err)
+			}
+			if root.Tree != rig.issue.Key || root.Generation != 2 || root.TreeGeneration != 1 {
+				t.Fatalf("the root after its next change = generation %d, tree's run %d; want 2 and 1: the case's premise",
+					root.Generation, root.TreeGeneration)
+			}
+			row, err := rig.runner.releaseResume(rig.issue.Key, rig.issue.Tree)(role,
+				store.IssueRun{Tree: root.Tree, Generation: root.Generation, TreeGeneration: root.TreeGeneration}, store.DroppedWake{})
+			if err != nil {
+				t.Fatalf("build the cancel's start of the %s: %v", role, err)
+			}
+			if _, err := rig.pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
+				values ($1, $2, $3, 0, now(), '', '')`, row.Kind, rig.issue.Key, string(row.Payload)); err != nil {
+				t.Fatalf("queue the cancel's start of the %s: %v", role, err)
+			}
+
+			resumes := len(rig.rt.CallsOf("Resume"))
+			woken, turn, err := rig.runner.wakeForDelivery(ctx, mustClaimToken(t, rig.issue.Key, role), "a notice of "+rig.issue.Key, 0)
+			var routine interface{ Routine() bool }
+			if woken || !turn.IsZero() || !errors.As(err, &routine) || !routine.Routine() ||
+				!strings.Contains(err.Error(), "waits for the start queued for "+rig.issue.Key+"'s "+string(role)) {
+				t.Fatalf("the wake while the cancel's start of the %s is queued = %t, %s, %v; want no wake and a routine wait for that start",
+					role, woken, turn, err)
+			}
+			if records := rig.records(t); len(records.Resumes) != 0 {
+				t.Errorf("resumes after the wake that waited = %+v, want none: the release took no pod", records.Resumes)
+			}
+			if got := machine.Claim(); !got.Released() || len(rig.rt.CallsOf("Resume")) != resumes {
+				t.Errorf("the %s after the wake that waited = %s by %s, resumes %d; want it released, for the cancel's start to resume",
+					role, got.State, got.SuspendedBy, len(rig.rt.CallsOf("Resume"))-resumes)
+			}
+		})
 	}
 }

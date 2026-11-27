@@ -436,32 +436,39 @@ func (r *idleRig) declined(t *testing.T) bool {
 }
 
 // releasedArchitect leaves the pod an architect claim an earlier release suspended and no wake
-// has brought back: suspended with the source `released`, as quiet as the rest of the pod, and
-// restored into the supervisor the way the daemon's boot restores it.
+// has brought back (releasedRole).
 func (r *idleRig) releasedArchitect(t *testing.T) *supervise.Machine {
 	t.Helper()
+	return r.releasedRole(t, claim.RoleArchitect)
+}
+
+// releasedRole leaves the pod a claim of role an earlier release suspended and no wake has brought
+// back: suspended with the source `released`, as quiet as the rest of the pod, and restored into
+// the supervisor the way the daemon's boot restores it.
+func (r *idleRig) releasedRole(t *testing.T, role claim.Role) *supervise.Machine {
+	t.Helper()
 	ctx := context.Background()
-	token := mustClaimToken(t, r.issue.Key, claim.RoleArchitect)
+	token := mustClaimToken(t, r.issue.Key, role)
 	stored := supervise.Claim{Token: token, Project: "legion", Tree: r.issue.Tree, Issue: r.issue.Key,
-		Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
+		Role: role, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 		State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
-		Session: "ses-architect", SessionFile: "/tmp/architect.jsonl", PluginContract: api.DaemonAPIVersion()}
+		Session: "ses-" + string(role), SessionFile: "/tmp/" + string(role) + ".jsonl", PluginContract: api.DaemonAPIVersion()}
 	if err := r.st.PutClaim(ctx, stored); err != nil {
-		t.Fatalf("seed the architect an earlier release left released: %v", err)
+		t.Fatalf("seed the %s an earlier release left released: %v", role, err)
 	}
 	if _, err := r.sup.restore(ctx, []supervise.Claim{stored}); err != nil {
-		t.Fatalf("restore the released architect: %v", err)
+		t.Fatalf("restore the released %s: %v", role, err)
 	}
 	if _, err := r.pool.Exec(ctx, `update claims set updated_at = now() - interval '30 minutes'
 		where token = $1`, string(token)); err != nil {
-		t.Fatalf("backdate the released architect: %v", err)
+		t.Fatalf("backdate the released %s: %v", role, err)
 	}
 	machine, ok := r.sup.Machine(token)
 	if !ok {
 		t.Fatalf("no machine for %s", token)
 	}
 	if got := machine.Claim(); !got.Released() {
-		t.Fatalf("the restored architect = %s by %s, want it released", got.State, got.SuspendedBy)
+		t.Fatalf("the restored %s = %s by %s, want it released", role, got.State, got.SuspendedBy)
 	}
 	return machine
 }
