@@ -375,7 +375,7 @@ func pwSeedForward(t *testing.T, pool *pgxpool.Pool, asked *record.MergeForward)
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
-		pr, err := records.PullRequest(context.Background(), tx, spParent)
+		pr, err := records.MergePullRequest(context.Background(), tx, spParent)
 		if err != nil || pr == nil {
 			t.Fatalf("read the pull request of %s = %+v, %v; want the one recorded", spParent, pr, err)
 		}
@@ -395,7 +395,7 @@ func pwConflicting(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
-		pr, err := records.PullRequest(context.Background(), tx, spParent)
+		pr, err := records.MergePullRequest(context.Background(), tx, spParent)
 		if err != nil || pr == nil {
 			t.Fatalf("read the pull request of %s = %+v, %v; want the one recorded", spParent, pr, err)
 		}
@@ -411,7 +411,7 @@ func pwForwardOf(t *testing.T, pool *pgxpool.Pool) *record.MergeForward {
 	t.Helper()
 	var asked *record.MergeForward
 	inTx(t, pool, func(tx pgx.Tx) {
-		pr, err := record.NewStore().PullRequest(context.Background(), tx, spParent)
+		pr, err := record.NewStore().MergePullRequest(context.Background(), tx, spParent)
 		if err != nil || pr == nil {
 			t.Fatalf("read the pull request of %s = %+v, %v; want the one recorded", spParent, pr, err)
 		}

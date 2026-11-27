@@ -1547,13 +1547,15 @@ func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reas
 
 // workspaceRead is what the read of an issue's workspace before one of a round's replacements
 // answered (readPodWorkspace): the round it was made for, who makes the replacement (by,
-// roundReplacer), the claim whose process made it ("" for the pod's launcher), the moment it began
-// (at), which the last word weighs a later turn against (replacementDue), and what it found or
-// the error it failed with.
+// roundReplacer), the claim whose process made it ("" for the pod's launcher) and the role that
+// claim's agent names (the role a round's record keeps, replacementRecord.Role), the moment it
+// began (at), which the last word weighs a later turn against (replacementDue), and what it found
+// or the error it failed with.
 type workspaceRead struct {
 	round string
 	by    roundReplacer
 	claim claim.Token
+	role  claim.Role
 	at    time.Time
 	work  runtime.WorkspaceWork
 	err   error
@@ -1584,21 +1586,26 @@ var (
 // through a live role in the pod where one runs, else through the launcher. Its moment is at,
 // which the caller takes before it reads the claims the read is decided on, so a turn that starts
 // after that reading, or while the read runs, is a turn after it (the Legion reviewer's point 1).
-// A runtime that cannot make the read and a launcher's read of another pod than the round's are
-// each a read that failed. The read is bounded to one sweep interval, and a read its bound ends is
-// a read that failed.
+// A runtime that cannot make the read, a claim that names no role, and a launcher's read of
+// another pod than the round's are each a read that failed. The read is bounded to one sweep
+// interval, and a read its bound ends is a read that failed.
 func (s *supervision) readPodWorkspace(ctx context.Context, issue, round string, process runtime.Known, by roundReplacer, at time.Time) workspaceRead {
 	read := workspaceRead{round: round, by: by, at: at}
 	limited, done := context.WithTimeout(ctx, s.plan.orphanSweep)
 	defer done()
 	if process != (runtime.Known{}) {
 		reader, ok := s.runtime.(runtime.WorkspaceWorkReader)
-		if !ok {
-			read.err = errNoRoleReader
-			return read
-		}
 		read.claim = process.Claim
-		read.work, read.err = reader.WorkspaceWork(limited, issue, process.Claim)
+		_, agent, named := process.Claim.Cut()
+		switch {
+		case !ok:
+			read.err = errNoRoleReader
+		case !named:
+			read.err = fmt.Errorf("the claim %s names no role to read the workspace through", process.Claim)
+		default:
+			read.role = claim.Role(agent)
+			read.work, read.err = reader.WorkspaceWork(limited, issue, process.Claim)
+		}
 		return read
 	}
 	reader, ok := s.runtime.(runtime.PodWorkspaceReader)

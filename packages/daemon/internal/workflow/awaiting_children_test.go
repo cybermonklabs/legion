@@ -66,7 +66,8 @@ func cwSeedWaiting(t *testing.T, pool *pgxpool.Pool, key string, start phase.Pha
 
 // cwTransition applies one transition of key on trigger toward target, with handoff the row the
 // move carries and reason its words, as the handler that raises it would, inside a fact's own
-// commit scope.
+// commit scope. The move reaches target at its place on the line of key's task (Walk.PlaceOf), on
+// the scope of that task (firstScope), and names no place where target is "".
 func cwTransition(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, trigger TriggerKind, target phase.Phase, handoff record.PhaseRow, reason string) {
 	t.Helper()
 	if err := store.Transact(engine.OpenFact(t.Context()), pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -82,7 +83,14 @@ func cwTransition(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, 
 		if err != nil {
 			return err
 		}
-		place, _ := s.Walk().PlaceOf(target)
+		var place record.TaskPlace
+		if target != "" {
+			at, ok := s.Walk().PlaceOf(target)
+			if !ok {
+				return fmt.Errorf("the line %v of %s holds no %s", s.Walk().Line, key, target)
+			}
+			place = at
+		}
 		if err := engine.transition(ctx, tx, s, trigger, place, handoff, pr, reason); err != nil {
 			return err
 		}
@@ -362,8 +370,7 @@ func TestASecondMoveOfAWaitingParentSendsNothingAgain(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		w := s.Walk()
-		return engine.awaitChildren(ctx, tx, first, w, childrenHold{Start: phase.Implementing, Task: "another task", Cause: "a later pass",
+		return engine.awaitChildren(ctx, tx, s, childrenHold{Start: phase.Implementing, Task: "another task", Cause: "a later pass",
 			Open: []record.OpenChild{{Key: cwChild, Status: "todo"}}, Ended: claim.RoleTester})
 	}); err != nil {
 		t.Fatalf("the second move: %v", err)
@@ -515,7 +522,7 @@ func TestFactsDuringTheWaitStartNothing(t *testing.T) {
 			got.Phase, got.ChildrenWait)
 	}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		pr, err := record.NewStore().PullRequest(t.Context(), tx, cwParent)
+		pr, err := record.NewStore().MergePullRequest(t.Context(), tx, cwParent)
 		if err != nil || pr == nil {
 			return fmt.Errorf("read the pull request of %s: %v", cwParent, err)
 		}

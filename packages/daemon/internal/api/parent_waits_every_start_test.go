@@ -50,7 +50,7 @@ const staleCompletionAfterTheReturn = "the stopped tester's completion from befo
 // testing back as testing, on an entry of its own raised as a move back out of awaiting_children
 // (record.PhaseRow.EntryMovedBack). The engine reads a tester's completion as one of the phase the
 // issue stands in, and the completion carries no entry, so what refuses the stopped round's
-// completion is the route's entry fence (entryFence, behindEntryClause): it is behind an entry a
+// completion is the route's entry fence (intake.EntryFence, intake.BehindEntryClause): it is behind an entry a
 // move back raised, and is refused HANDOFF_STALE_ENTRY at the very head the record holds, before
 // any fact is applied, moving nothing and recording nothing. The completion of the return's own
 // task is taken.
@@ -103,7 +103,7 @@ func staleTesterCompletionAfterTheReturn(t *testing.T) {
 	// at the head the record holds. Refused, with nothing moved and nothing recorded.
 	before := recordedCompletions(t, h, claim.RoleTester)
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
-		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, staleEntryCode)
+		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, intake.StaleEntryCode)
 	for _, want := range []string{
 		"the move that handed the phase out again moved the issue back",
 		"nothing was recorded",

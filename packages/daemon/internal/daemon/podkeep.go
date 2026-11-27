@@ -81,7 +81,7 @@ func (s *supervision) keepPodForRound(ctx context.Context, issue, round, pod, re
 // (keptPodReadDue). A turn that started after read.at owes that read anyway (the Legion
 // reviewer's point 1).
 //
-// The open phase's worker (workflow.OpenPhaseRole of issuePhase) is told, where its claim has a
+// The open phase's worker (the first step workflow.OpenStepsOf reads of issuePhase) is told, where its claim has a
 // process in the pod and is not gone, and the read could read: by a role message that the pod
 // waits for the push of the work (podKeptMessage). Otherwise the issue's architect is told, by the
 // workspace-kept notice (record.WorkspaceKeptNotice, roundKeptMessage) on the decline a launcher's
@@ -132,14 +132,18 @@ func keptMoment(readAt time.Time, group []supervise.Claim) time.Time {
 	return at
 }
 
-// openPhaseWorker is the claim of the open phase's worker of an issue in issuePhase
-// (workflow.OpenPhaseRole), where that claim records a process in round's pod and is not gone: the
-// one role a round's keep tells by a message of its own (recordPodKept).
+// openPhaseWorker is the claim of the open phase's worker of an issue in issuePhase (the role of
+// the first step workflow.OpenStepsOf reads of the phase, as an issue with no plan runs it), where
+// that claim records a process in round's pod and is not gone: the one role a round's keep tells by
+// a message of its own (recordPodKept).
 func openPhaseWorker(group []supervise.Claim, round string, issuePhase phase.Phase) (supervise.Claim, bool) {
-	role := workflow.OpenPhaseRole(issuePhase)
-	if role == "" {
+	at := record.Issue{Phase: issuePhase}
+	at.Running = record.RunningOf(at, false, nil)
+	steps := workflow.OpenStepsOf(at)
+	if len(steps) == 0 {
 		return supervise.Claim{}, false
 	}
+	role := steps[0].Role
 	for _, c := range group {
 		if c.Role == role && inRoundPod(c, round) && !c.Gone() {
 			return c, true
@@ -435,7 +439,7 @@ func workspaceTakenMessage(issue, round, pod, reasons string, named []supervise.
 // architect reads it in its session and people read it in its history, so it follows ASD-STE100.
 func launchTakenMessage(taken runtime.TakenPod) string {
 	role := string(taken.Claim)
-	if named, ok := taken.Claim.Role(); ok {
+	if _, named, ok := taken.Claim.Cut(); ok {
 		role = string(named)
 	}
 	why := taken.Why
