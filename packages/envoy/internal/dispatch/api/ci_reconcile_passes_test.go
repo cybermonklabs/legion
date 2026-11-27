@@ -186,7 +186,7 @@ func holdCIReconcileLease(t *testing.T, database *store.Store) {
 // start still counts as live when the route reads it however long the steps between take; the
 // production fifteen seconds would read a slow run's process as gone.
 func TestCIReconcilePassesShowsARunningPass(t *testing.T) {
-	t.Parallel()
+	// Not parallel: writes processes.LiveWindow
 	handler, database := newTestHandlerWithStore(t)
 	was := processes.LiveWindow
 	processes.LiveWindow = pastTheRun
