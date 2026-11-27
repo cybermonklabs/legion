@@ -240,9 +240,9 @@ func resultCommit(block dispatch.CheckBlock, merge string) string {
 
 // wokenBy is the check task's wording of a look's wake, from the cause and its detail: the merge
 // that opened the check (wakeMerge, the merge commit as its detail), its bound (wakeBound, the
-// check's own bound and the issue's close it is counted from, and nothing of why the looks before
-// it were pending), a check_wake row (wakeNamed), whose reason is either the summary the pending
-// report gave (checkReported) or the retry of a look nobody reported (endLook), or a result
+// check's own bound and the check's opening it is counted from, and nothing of why the looks
+// before it were pending), a check_wake row (wakeNamed), whose reason is either the summary the
+// pending report gave (checkReported) or the retry of a look nobody reported (endLook), or a result
 // recorded after the check closed as not run (wakeResult, lookAfterNotRun). The named wake reads
 // as one sentence after the dash, so the lead names who named the wake rather than what it says.
 func wokenBy(cause, detail string) string {
@@ -811,5 +811,5 @@ func (e *Engine) checkBound(ctx context.Context, tx pgx.Tx, fact intake.CheckBou
 		return intake.Result{}, e.closeCheck(ctx, tx, check, record.CheckNotRun)
 	}
 	return intake.Result{}, e.startLook(ctx, tx, issue, check, wakeBound,
-		fmt.Sprintf("%s since the merge", boundText(check.BoundAt.Sub(check.OpenedAt))), true)
+		fmt.Sprintf("%s since the check opened", boundText(check.BoundAt.Sub(check.OpenedAt))), true)
 }
