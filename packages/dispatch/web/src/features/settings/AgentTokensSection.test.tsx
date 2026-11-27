@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
+import { stubFailedCopy } from "../../__tests__/clipboard";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
@@ -145,6 +146,42 @@ test("Settings copies a new token through the legacy clipboard fallback", async 
       value: originalExecCommand,
     });
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
+  }
+});
+
+test("Settings reports copy failure rather than Copied when copying a new token fails", async () => {
+  const user = userEvent.setup();
+  const plaintext = "dsp_abcdefghijklmnopqrstuvwxyz0123456789-ABCDEFG";
+  const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
+  const createAgentToken = spyOn(api, "createAgentToken").mockResolvedValue({
+    ...token,
+    id: "22222222-2222-2222-2222-222222222222",
+    name: "reviewer",
+    token: plaintext,
+  });
+  const restoreCopy = stubFailedCopy();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AgentTokensSection />
+      </QueryClientProvider>
+    );
+    await user.click(screen.getByLabelText("Token label"));
+    await user.paste("reviewer");
+    await user.click(screen.getByRole("button", { name: "New token" }));
+    await screen.findByText(plaintext);
+
+    await user.click(screen.getByRole("button", { name: "Copy token" }));
+    expect(await screen.findByText("Copy failed - select the text", { exact: true })).toBeDefined();
+    expect(screen.queryByText("Copied", { exact: true })).toBeNull();
+  } finally {
+    cleanup();
+    queryClient.clear();
+    listAgentTokens.mockRestore();
+    createAgentToken.mockRestore();
+    restoreCopy();
   }
 });
 

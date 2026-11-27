@@ -2,7 +2,7 @@ import { useEffect, useMemo } from "react";
 
 import { primarySpec } from "../../api/issue-cache";
 import type { IssueDetails } from "../../api/types";
-import { parseIssuePath } from "../refs/routes";
+import { parseIssuePath } from "../refs/page-routes";
 import { issueAddress } from "./issue-address";
 import { type MarginDrawerPage, useMarginDrawer } from "./margin-slot";
 import { pageChrome } from "./page-structure";

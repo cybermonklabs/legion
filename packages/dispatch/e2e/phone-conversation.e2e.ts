@@ -51,17 +51,63 @@ async function pauseClock(page: Page): Promise<void> {
   await page.clock.pauseAt(Date.now() + 1000);
 }
 
-/** Spends a paused clock a millisecond at a time until `locator` matches `count` elements. A
- *  page whose clock is paused draws no answer of its own accord: TanStack batches every query's
- *  delivery on a zero-delay page timer, and a paused clock fires no timer at all. A millisecond
- *  of page time fires those and leaves the dwell's second, which is what the rows below hold
- *  still, as good as unspent: a page that needs thirty of these steps to draw has spent 30 ms. */
-async function drawn(locator: Locator, count: number): Promise<void> {
+/** One animation frame of the page's own clock, which is the step below. */
+const FRAME_MS = 16;
+
+/** The pace `drawn()` reads the page at: one frame of the page's clock per frame of the wall's.
+ *  The page's clock never runs ahead of real time, so a fetch, React's own task and the
+ *  IntersectionObserver report that a frame starts have the wall time an unfaked page gives
+ *  them, and no step spends page frames waiting on them. `PROBE`'s ladder would rest half a
+ *  second between two frames once its short steps are spent, and a paused page draws nothing in
+ *  that rest: twenty frames of it were nine seconds of wall time in which the page did nothing. */
+const FRAME_STEP = { intervals: [FRAME_MS] };
+
+/**
+ * The most of the page's clock the wait for the project's issues table may spend (`drawn()`'s
+ * `within`): 544 ms, the bound the wait had while it polled on `PROBE`. That ladder polls at 0,
+ * 50, 100 and 200 ms, then every 500 ms from 400 ms, and inside the 15 s expect timeout
+ * (`expect-timeout.ts`) its last poll starts at 14.9 s: 34 polls at most, each spending one
+ * `FRAME_MS` of the page's clock, so 34 x 16 ms = 544 ms. `FRAME_STEP` fits about 900 polls into
+ * the same 15 s, so with no bound of its own the wait would pass a table the page took 14 s of
+ * its own clock to draw. The waits on the Conversation pass none: the read of the mark right
+ * after each is what bounds them (see `drawn()`).
+ */
+const TABLE_DRAWN_WITHIN_MS = 544;
+
+/**
+ * Spends a paused clock a frame at a time until `locator` matches `count` elements.
+ *
+ * A page whose clock is paused draws no answer of its own accord: TanStack batches every
+ * query's delivery on a zero-delay page timer, and a paused clock fires no timer at all. A cold
+ * page does not draw in a millisecond or two of its own clock: its data is in the cache before
+ * the first render (the landing carries it, `web/src/api/queries.ts`), so the shell and the
+ * page's content draw together across the page's own frames. Measured on this row's cold board
+ * at `34335365` (2026-11-11), the issue's row is on screen after 305 ms of the page's clock and
+ * not after 300 ms, however many steps those milliseconds are spent in: stepping a millisecond a
+ * poll would fire zero-delay timers without reaching that row inside the poll budget.
+ *
+ * A frame a poll does, and still leaves the dwell: the loop stops at the first poll that
+ * matches, so the board above costs about twenty frames, a third of the dwell's second. Nor can
+ * a step that overspent it pass quietly - each row below reads the mark right after this and
+ * expects it unwritten, so a dwell spent here fails the row rather than hiding in it. A wait
+ * that reads no mark after it passes `within`, the most of the page's clock it may spend, and
+ * fails as soon as it has spent that and the page has not drawn.
+ */
+async function drawn(locator: Locator, count: number, within?: number): Promise<void> {
+  let spent = 0;
   await expect
     .poll(async () => {
-      await locator.page().clock.runFor(1);
+      // A throw here ends the poll at once - `expect.poll` retries its matcher, not this
+      // function - so the row fails on the bound and not on the 15 s expect timeout after it.
+      if (within !== undefined && spent >= within) {
+        throw new Error(
+          `${locator} did not match ${count} in ${spent} ms of the page's clock, the most this wait may spend`
+        );
+      }
+      await locator.page().clock.runFor(FRAME_MS);
+      spent += FRAME_MS;
       return locator.count();
-    }, PROBE)
+    }, FRAME_STEP)
     .toBe(count);
 }
 
@@ -1150,7 +1196,7 @@ test("on a phone, a comment link to the newest conversation marks the issue read
     const issueLink = page
       .getByRole("table", { name: "Project issues table" })
       .getByRole("link", { name: issue.key, exact: true });
-    await drawn(issueLink, 1);
+    await drawn(issueLink, 1, TABLE_DRAWN_WITHIN_MS);
     await expect(issueLink).toBeVisible();
 
     await page.goto(`/issues/${issue.key}/comments/${newest.id}`);

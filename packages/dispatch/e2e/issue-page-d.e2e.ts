@@ -1,6 +1,7 @@
 import { ISSUE_TAB_LABELS } from "../web/src/features/issue/issue-tab-list";
 import { HEADER_SCROLLS_QUERY } from "../web/src/features/issue-page/identity-block";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
+import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import { PRESET_NAMES, PRESET_ORDER, type Preset } from "../web/src/features/issue-page/page-words";
 import {
   createAsk,
@@ -9,6 +10,7 @@ import {
   createProject,
   createProjectDocument,
 } from "./api";
+import { acrossABreakpoint, nextFrames, openAt } from "./frames";
 import {
   closeDetails,
   contentsPane,
@@ -35,7 +37,15 @@ import {
   viewportAt,
 } from "./issue-page";
 import { expectOpeningLanded, focusThePage } from "./issue-page-g";
+import { focusedNodeId } from "./issue-page-i";
 import { withIssuePage } from "./issue-page-option";
+import {
+  failAssetWhen,
+  holdMarginChunk,
+  MARGIN_CHUNK,
+  recordTabReloads,
+  tabReloads,
+} from "./shell";
 import { expect, type Locator, type Page, type Route, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
@@ -313,8 +323,10 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
         message: "the pane is not 240 px wide at 1240 px",
       })
       .toBe(240);
-    await page.setViewportSize(viewportAt(1440));
-    await gotoIssue(page, presetPath(key, "spec"));
+    // At 1440 px Spec's own address loads with no pane, and the stage has the column's 1328 px.
+    // A load and not a resize from 1240 px, which is across the pane's 260 px width at 1241 px
+    // and the view row's five controls at 1280 px (`ISSUE_PAGE_BREAKPOINTS`).
+    await openAt(page, viewportAt(1440), presetPath(key, "spec"), true);
     await expect(contentsPane(page), "a view draws the pane").toHaveCount(0);
     expect(await stageWidth(page), "the stage under a view is not 1328 px").toBe(1328);
 
@@ -414,24 +426,36 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     await expect(sheet).toBeHidden();
 
     // At each of R10's widths, Details closed and open, nothing is wider than the window, the
-    // rail and the view row are whole, and no scrolling box of the frame scrolls sideways.
-    for (const width of WIDTHS) {
-      await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${key}`);
+    // rail and the view row are whole, and no scrolling box of the frame scrolls sideways. The
+    // page stands at 390 px from the load above, with its sheet closed. It is loaded at each width
+    // across a breakpoint of the frame from the width before it (`acrossABreakpoint`) - 768, 1024
+    // and 1280 px - and resized (`resizeTo`) to 320 px, on the same side of every breakpoint as
+    // 390 px, and to 1440 px, on the same side of every breakpoint as 1280 px.
+    for (const [index, width] of PHONE_FIRST.entries()) {
+      const previous = PHONE_FIRST[index - 1];
+      if (previous !== undefined) {
+        const load = acrossABreakpoint(previous, width);
+        await openAt(page, viewportAt(width), `/issues/${key}`, load);
+        if (load) await expectOpeningLanded(page);
+      }
+      // Each load here and above has landed its opening before the focus leaves its row for the
+      // page, and a resize starts no opening, so the page places no focus of its own at any width
+      // here. Leaving the control the presses since left the focus on, for the page itself, lets
+      // `openDetails`' Shift+M reach the page's own binding.
+      await focusThePage(page);
       for (const open of [false, true]) {
         if (open) await openDetails(page);
         await assertPageFits(page);
         await assertWhole(filterRow(page));
         await assertNoSidewaysScroll(filterRow(page), `the view row at ${width} px`);
-        // The shell draws the rail in the render that routes to the new page, from a width query
-        // read as it renders, and the view row was drawn above, so one count says whether this
-        // width has the rail.
+        // The shell draws the rail from a width query, whose render the load or the resize above
+        // waited out, so one count says whether this width has the rail.
         if ((await iconRail(page).count()) > 0) {
           await assertWhole(iconRail(page));
           await assertNoSidewaysScroll(iconRail(page), `the rail at ${width} px`);
         }
-        // The page draws the Contents pane in the render that draws the view row read above,
-        // from a width query read as it renders, so one count says whether this width has it.
+        // The page draws the Contents pane from a width query, whose render the load or the
+        // resize above waited out, so one count says whether this width has it.
         if ((await contentsPane(page).count()) > 0) {
           await assertNoSidewaysScroll(contentsPane(page), `the pane at ${width} px`);
         }
@@ -444,8 +468,8 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
           await closeDetails(page);
         }
       }
-      // The view row read above draws the Outline control in its own render, from a width query
-      // read as it renders, so one count says whether this width has it.
+      // The view row draws the Outline control from a width query, whose render the load or the
+      // resize above waited out, so one count says whether this width has it.
       if ((await outlineControl(page).count()) > 0) {
         await outlineControl(page).click();
         await assertNoSidewaysScroll(outlineSheet(page), `the Outline sheet at ${width} px`);
@@ -457,6 +481,302 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
         await expect(outlineSheet(page)).toHaveCount(0);
       }
     }
+  });
+});
+
+// The frame's side of `doc.e2e.ts`'s "a document drawn before the margin keeps its width when the
+// margin arrives". Until the margin's own chunk is in, the shell holds the margin's place empty
+// (`MarginFrame`, `web/src/features/margin/MarginColumn.tsx`); in the frame the margin is Details,
+// a drawer over the page that takes no column, so that place is no column either. The row holds
+// the margin's chunk on the wire, the moment between the page's first draw and the margin, where
+// a column held there would narrow the stage by the margin's width, which a row above that
+// measures the stage after a load would read on a machine slow enough to still be in that moment.
+test("the frame's stage drawn before the margin keeps its width when the margin arrives", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    const releaseMargin = await holdMarginChunk(page);
+    await gotoIssue(page, `/issues/${key}`);
+    await expect(contentsPane(page), "the page draws no Contents pane").toHaveCount(1);
+    const held = await stageWidth(page);
+    expect(held, "the stage beside the pane is not 1068 px while the margin is held").toBe(1068);
+
+    releaseMargin();
+    // Details is the margin, so it opens only once the margin's chunk is in. `openDetails`'
+    // Shift+M is the page's own binding, so the focus leaves the row the load's opening put it on,
+    // for the page itself, once that opening has landed: a blur made before it is undone by it.
+    await expectOpeningLanded(page);
+    await focusThePage(page);
+    await openDetails(page);
+    await closeDetails(page);
+    expect(await stageWidth(page), "the stage changed width when the margin arrived").toBe(held);
+  });
+});
+
+// Shift+M pressed while the margin's chunk is still on the wire opens Details only once that
+// chunk lands (`web/src/features/margin/Margin.tsx`), which can be long after the press, and the
+// reader may have gone on meanwhile. The drawer that lands then takes no focus from where they
+// are: it takes the focus only from where the press found it, or from nowhere. The row holds the
+// margin's chunk, presses Shift+M from the page, moves the focus to a control of the page - the
+// new page draws no text field at rest - and releases the chunk.
+// SLOW(>=2s): a seeded frame, a load waited on until the outline puts the focus on its row, and
+// the margin's chunk held on the wire and then released.
+test("Details opened by Shift+M before the margin's chunk is in takes no focus from where the reader went", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    const releaseMargin = await holdMarginChunk(page);
+    await gotoIssue(page, `/issues/${key}`);
+    await expectOpeningLanded(page);
+    await focusThePage(page);
+    await page.keyboard.press("Shift+M");
+    await expect(marginShell(page), "Details opened with the margin's chunk held").toBeHidden();
+    const went = presetToggle(page, "conversation");
+    await went.focus();
+
+    releaseMargin();
+    await expect(
+      marginShell(page),
+      "Shift+M did not open Details once the margin was in"
+    ).toBeVisible();
+    await expect(went, "Details took the focus from where the reader went").toBeFocused();
+  });
+});
+
+/** The header's control that opens and closes Details, whose `aria-expanded` is whether the
+ *  reader has Details asked for, drawn or not. */
+function detailsControl(page: Page): Locator {
+  return page.getByTestId("issue-details-control");
+}
+
+/** Presses Shift+M, and waits until the header's control says the reader has Details asked for,
+ *  drawn or not (`detailsControl`). */
+async function askForDetails(page: Page): Promise<void> {
+  await page.keyboard.press("Shift+M");
+  await expect(detailsControl(page), "Shift+M did not ask for Details").toHaveAttribute(
+    "aria-expanded",
+    "true"
+  );
+}
+
+// The phone's half of the row above. Below the phone's width Details is a sheet over the whole
+// page, a dialog that takes the focus as it opens (`useDialog`), so one that opened late would
+// take the focus from where the reader went, under a sheet they no longer wait for. So the open
+// whose sheet lands after the reader has moved the focus is called off, and the sheet does not
+// open (`web/src/features/margin/Margin.tsx`). The row holds the margin's chunk, opens Details
+// from its control in the header, moves the focus to the view control and releases the chunk.
+// SLOW(>=2s): a seeded frame, a load waited on until the outline puts the focus on its row, and
+// the margin's chunk held on the wire and then released.
+test("Details opened on a phone before the margin's chunk is in does not open over where the reader went @phone @phone-only", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    await page.setViewportSize(viewportAt(390));
+    const releaseMargin = await holdMarginChunk(page);
+    await gotoIssue(page, `/issues/${key}`);
+    await expectOpeningLanded(page);
+    await focusThePage(page);
+    await detailsControl(page).tap();
+    await expect(detailsControl(page), "the control did not ask for Details").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    await expect(marginShell(page), "Details opened with the margin's chunk held").toBeHidden();
+    const went = presetChooser(page);
+    await went.focus();
+
+    releaseMargin();
+    await expect(
+      detailsControl(page),
+      "the open was not called off once the margin was in"
+    ).toHaveAttribute("aria-expanded", "false");
+    await expect(marginShell(page), "the margin never drew Details").toHaveCount(1);
+    await expect(marginShell(page), "Details' sheet opened late").toBeHidden();
+    await expect(went, "Details took the focus from where the reader went").toBeFocused();
+  });
+});
+
+// Escape pressed while Details' open waits for the margin's chunk calls the open off, as it closes
+// Details once Details is drawn: the shell answers Escape itself while Details is asked for and
+// its drawer is not drawn (`AppShell`, `web/src/app.tsx`), so the chunk that lands after it opens
+// nothing. The row holds the margin's chunk, presses Shift+M and then Escape from the page, and
+// releases the chunk.
+// SLOW(>=2s): a seeded frame, a load waited on until the outline puts the focus on its row, and
+// the margin's chunk held on the wire and then released.
+test("Escape pressed before the margin's chunk is in calls off the Details Shift+M asked for", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    const releaseMargin = await holdMarginChunk(page);
+    await gotoIssue(page, `/issues/${key}`);
+    await expectOpeningLanded(page);
+    await focusThePage(page);
+    await askForDetails(page);
+    await expect(marginShell(page), "Details opened with the margin's chunk held").toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(detailsControl(page), "Escape did not call the open off").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+
+    releaseMargin();
+    await expect(marginShell(page), "the margin never drew Details").toHaveCount(1);
+    await expect(marginShell(page), "Details opened once the margin was in").toBeHidden();
+  });
+});
+
+// The same Escape from the outline row the load's opening put the focus on, where the tree binds
+// Escape too, to leave the row (`useTreeKeymap.ts`'s `tree-leave`). A drawn Details takes that
+// Escape first, and the row keeps the focus (`web/src/features/margin/Margin.tsx`); so does the
+// shell's Escape while Details' open waits for the margin's chunk, which answers before the
+// keymap and marks the key handled (`AppShell`, `web/src/app.tsx`).
+// SLOW(>=2s): a seeded frame, a load waited on until the outline puts the focus on its row, and
+// the margin's chunk held on the wire and then released.
+test("Escape pressed on an outline row before the margin's chunk is in calls off the Details Shift+M asked for, and the row keeps the focus", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    const releaseMargin = await holdMarginChunk(page);
+    await gotoIssue(page, `/issues/${key}`);
+    await expectOpeningLanded(page);
+    const row = await focusedNodeId(page);
+    expect(row, "the load's opening put the focus on no row").not.toBeNull();
+    await askForDetails(page);
+    await expect(marginShell(page), "Details opened with the margin's chunk held").toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(detailsControl(page), "Escape did not call the open off").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    expect(await focusedNodeId(page), "the Escape also took the focus off the row").toBe(row);
+
+    releaseMargin();
+    await expect(marginShell(page), "the margin never drew Details").toHaveCount(1);
+    await expect(marginShell(page), "Details opened once the margin was in").toBeHidden();
+  });
+});
+
+// An Escape in a field is the field's, while Details' open waits for its chunk as beside a drawn
+// Details: it calls nothing off, and the open lands once the margin's chunk is in. The field is
+// the header's status select, whose Escape leaves it (`useHeaderKeys.ts`'s `back`).
+// SLOW(>=2s): a seeded frame, a load waited on until the outline puts the focus on its row, and
+// the margin's chunk held on the wire and then released.
+test("Escape pressed in a field before the margin's chunk is in is the field's, and Details opens once the margin is in", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    const releaseMargin = await holdMarginChunk(page);
+    await gotoIssue(page, `/issues/${key}`);
+    await expectOpeningLanded(page);
+    await focusThePage(page);
+    await askForDetails(page);
+    const status = issuePage(page).getByRole("combobox", {
+      exact: true,
+      name: PROPERTY_LABELS.status,
+    });
+    await status.focus();
+    await page.keyboard.press("Escape");
+    await expect(status, "the Escape in the status field did not leave it").not.toBeFocused();
+    await expect(detailsControl(page), "the Escape in a field called the open off").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+
+    releaseMargin();
+    await expect(marginShell(page), "Details did not open once the margin was in").toBeVisible();
+  });
+});
+
+// The shell's Escape while Details' open waits for its chunk and a drawn Details' own Escape read
+// one rule of what a field is (`escapeClosesDrawer`, `web/src/features/shell/useDialog.ts`): every
+// input but the button family, a checkbox and a radio keeps its own Escape, so a range input does,
+// as a select does. The new page draws no such input, so the row adds one to the document. An
+// Escape on it calls nothing off while the margin's chunk is held, and once Details is drawn it
+// leaves Details open.
+// SLOW(>=2s): a seeded frame, a load waited on until the outline puts the focus on its row, and
+// the margin's chunk held on the wire and then released.
+test("Escape pressed on a range input before the margin's chunk is in calls nothing off, as it leaves a drawn Details open", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    const releaseMargin = await holdMarginChunk(page);
+    await gotoIssue(page, `/issues/${key}`);
+    await expectOpeningLanded(page);
+    await focusThePage(page);
+    await askForDetails(page);
+    await expect(marginShell(page), "Details opened with the margin's chunk held").toHaveCount(0);
+    await page.evaluate(() => {
+      const range = document.createElement("input");
+      range.type = "range";
+      range.setAttribute("aria-label", "The row's range");
+      document.body.append(range);
+    });
+    const range = page.getByRole("slider", { exact: true, name: "The row's range" });
+    await range.focus();
+    await expect(range, "the range input took no focus").toBeFocused();
+    await page.keyboard.press("Escape");
+    await nextFrames(page);
+    await expect(
+      detailsControl(page),
+      "the Escape on a range input called the open off"
+    ).toHaveAttribute("aria-expanded", "true");
+
+    releaseMargin();
+    await expect(marginShell(page), "Details did not open once the margin was in").toBeVisible();
+    await expect(range, "the drawn Details took the focus from the range input").toBeFocused();
+    await page.keyboard.press("Escape");
+    await nextFrames(page);
+    await expect(
+      marginShell(page),
+      "the Escape on a range input closed the drawn Details"
+    ).toBeVisible();
+  });
+});
+
+// The margin's chunk can fail to download while the browser is online - a deployment that
+// replaced the build the page loaded - with no recovery reload to follow: the tab's three reloads
+// are spent here, as a tab whose assets kept failing has spent them. The margin comes through
+// `lazyChunk` (`web/src/features/margin/MarginColumn.tsx`), so the failure goes to the margin's
+// own error boundary (`AppShell`, `web/src/app.tsx`), which says so in the margin's place, and the
+// page stays drawn. Details is the margin, so it is never drawn, and the open the reader asked for
+// still waits: the shell's Escape for a waiting Details calls it off, as it does while the chunk
+// is only slow, and the outline row keeps the focus. The row holds the margin's chunk until
+// Shift+M has asked for Details, and then fails it.
+// SLOW(>=2s): a seeded frame, two loads - the first only to spend the tab's reloads in its own
+// storage - and a load waited on until the outline puts the focus on its row.
+test("with the margin's chunk failing online and no reload to follow, the margin says so, and Escape calls off the Details Shift+M asked for while the row keeps the focus", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    await gotoIssue(page, `/issues/${key}`);
+    const spent = await recordTabReloads(page, [3, 2, 1]);
+    const asked = Promise.withResolvers<void>();
+    const failed = await failAssetWhen(page, MARGIN_CHUNK, () => asked.promise);
+    await gotoIssue(page, `/issues/${key}`);
+    await expectOpeningLanded(page);
+    const row = await focusedNodeId(page);
+    expect(row, "the load's opening put the focus on no row").not.toBeNull();
+    await askForDetails(page);
+
+    asked.resolve();
+    await expect(
+      page.getByTestId("error-boundary").filter({ hasText: "Something went wrong in the margin." }),
+      "the margin's place does not say the margin failed"
+    ).toBeVisible();
+    expect(failed(), "the margin's chunk was not asked for and failed").toBeGreaterThan(0);
+    await expect(
+      page.getByTestId("error-boundary"),
+      "a boundary other than the margin's caught the failure"
+    ).toHaveCount(1);
+    await expect(marginShell(page), "the margin drew Details").toHaveCount(0);
+    expect(await focusedNodeId(page), "the failure took the focus off the row").toBe(row);
+    await page.keyboard.press("Escape");
+    await expect(detailsControl(page), "Escape did not call the open off").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    expect(await focusedNodeId(page), "the Escape also took the focus off the row").toBe(row);
+    expect(await tabReloads(page), "the failure reloaded the page").toEqual(spent);
   });
 });
 
@@ -639,7 +959,8 @@ test("the five controls are toggles with an address each, one line at every widt
       await expect(page).toHaveURL(addressOf(key, "conversation"));
     }
     // With the menu open under the Outline sheet, Escape closes the sheet and leaves the menu.
-    await gotoIssue(page, `/issues/${key}`);
+    // Conversation, chosen above, left the page at the issue's own address at 390 px, and the
+    // press on the one control below takes the focus wherever it is.
     await presetChooser(page).click();
     await expect(openMenu(page)).toHaveCount(1);
     await outlineControl(page).click();
@@ -649,18 +970,25 @@ test("the five controls are toggles with an address each, one line at every widt
     await expect(openMenu(page), "Escape in the sheet closed the menu under it").toHaveCount(1);
     await page.keyboard.press("Escape");
     await expect(openMenu(page)).toHaveCount(0);
+    // Each width by a load, since each is across a breakpoint of the frame from the width before
+    // it (`ISSUE_PAGE_BREAKPOINTS`): 390 px and 1023 px lie either side of the header's 761 px and
+    // the rail's 768 px.
     for (const width of [1023, 390]) {
-      await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${key}`);
+      await openAt(page, viewportAt(width), `/issues/${key}`, true);
       await expect(outlineControl(page), `no Outline control at ${width} px`).toHaveCount(1);
     }
 
     // At each of R10's widths, 390 px first, the row is one line, at most 35 px tall from
     // 1280 px and 51 px below, no control in it under 24 px, and each control's words inside
-    // its name.
-    for (const width of PHONE_FIRST) {
-      await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${key}`);
+    // its name. The page stands at 390 px from the load above. It is loaded at each width across
+    // a breakpoint of the frame from the width before it (`acrossABreakpoint`) - 768, 1024 and
+    // 1280 px - and resized (`resizeTo`) to 320 px, on the same side of every breakpoint as
+    // 390 px, and to 1440 px, on the same side of every breakpoint as 1280 px.
+    for (const [index, width] of PHONE_FIRST.entries()) {
+      const previous = PHONE_FIRST[index - 1];
+      if (previous !== undefined) {
+        await openAt(page, viewportAt(width), `/issues/${key}`, acrossABreakpoint(previous, width));
+      }
       await assertPageFits(page);
       const limit = width >= 1280 ? 35 : 51;
       await expect
@@ -691,8 +1019,9 @@ test("the five controls are toggles with an address each, one line at every widt
       // A control's words are the text it shows less what it hides from assistive technology,
       // such as a glyph that names nothing (WCAG 2.5.3 reads words).
       const named = filterRow(page).locator("button:visible");
-      // The poll above waited for the row to draw at this width and its controls were measured
-      // since, with no press between, so one count lists the buttons it shows.
+      // The poll above waited for the row to draw at this width, after the load or the resize,
+      // and its controls were measured since, with no press between, so one count lists the
+      // buttons it shows.
       for (let at = 0; at < (await named.count()); at += 1) {
         // The count above found this control drawn, and its words are the ones its render wrote,
         // so one read says whether it shows any words.
@@ -711,7 +1040,8 @@ test("the five controls are toggles with an address each, one line at every widt
       }
     }
 
-    // At 390 px a scrolled page keeps the row at the top; at 1440 px it scrolls away.
+    // At 390 px a scrolled page keeps the row at the top; at 1440 px it scrolls away. Each width
+    // by a load, since each is across every breakpoint of the frame from the width before it.
     for (const [width, stays] of [
       [390, true],
       [1440, false],

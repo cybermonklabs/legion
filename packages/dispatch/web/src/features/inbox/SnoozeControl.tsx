@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 
 import { QueryError } from "../../components/QueryError";
-import { badgeLow, secondaryButtonCompact, textMutedOnCanvas } from "../../theme/classes";
+import { badgeLow, textMutedOnCanvas } from "../../theme/classes";
+import { secondaryButtonCompact } from "../../theme/shell-classes";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
 import { Timestamp } from "../refs/Timestamp";
 import { useLiveRegistration } from "../writes/useKeyedWrite";

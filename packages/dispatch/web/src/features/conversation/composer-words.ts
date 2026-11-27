@@ -1,4 +1,3 @@
-import type { DeliveryCapability } from "../../api/types";
 import { STOPPED_UPLOAD_WORDS } from "../artifacts/upload-words";
 import { KEYED_SEND_LATE_TEXT } from "../writes/write-words";
 
@@ -6,11 +5,13 @@ import { KEYED_SEND_LATE_TEXT } from "../writes/write-words";
  * The sentences the mention composer and the parts it draws say in answer to the reader's act, in
  * one module that imports only other modules of words, types and constants of `@legion/contracts`.
  * Every composer reads them here (`MentionComposer.tsx`, `KeptReply.tsx`, `KeptDraftOffers.tsx`,
- * `useKeptDrafts.ts`, `send-request.ts`), and so does a list of words that must load where no
- * component can: the issue page's list is read by a browser spec's Node loader, which cannot load
- * a module that imports a JSON file the way the components do. A sentence that names a session, an
- * author, an address or what a write may have done is cut around that name, and one that differs
- * by the kind of post or by one or many is keyed by it.
+ * `useKeptDrafts.ts`), and so does a list of words that must load where no component can: the
+ * issue page's list is read by a browser spec's Node loader, which cannot load a module that
+ * imports a JSON file the way the components do. A sentence that names a session, an author, an
+ * address or what a write may have done is cut around that name, and one that differs by the kind
+ * of post or by one or many is keyed by it. The words a send says of itself - its mode's command,
+ * where it goes, what a stopped one may have done - are a module of their own (`send-words.ts`,
+ * which says why): the entry chunk makes a send, and imports those alone.
  */
 
 /** A table of words whose every string may be another host's: the shape of `COMPOSER_WORDS`. */
@@ -76,33 +77,6 @@ export type ComposerWords = WordsLike<typeof COMPOSER_WORDS>;
 
 /** The control beside a refusal that drops the draft it handed back. */
 export const DISCARD_DRAFT_LABEL = "Discard draft";
-
-/** The command, at the start of a body, that sends it in a mode other than the plain one (Send,
- *  unless the session refuses Send: `plainDelivery`). `deliveryPlan` strips it from what goes out,
- *  and the composer names it where it tells the reader how to send in another mode or what a bare
- *  command still needs. */
-export const DELIVERY_COMMANDS = { aside: "/aside", btw: "/btw" } as const satisfies Record<
-  Exclude<DeliveryCapability, "steer">,
-  string
->;
-
-/** The words `ownerWords` and `addressWords` name where a message goes in: the prepositions an
- *  issue or another document is said with, and the words of a direct message, of another
- *  document and of a reply. */
-export const ADDRESS_WORDS = {
-  direct: "as a direct message",
-  document: "another document",
-  prepositions: ["for", "to"],
-  reply: "as a reply",
-} as const;
-
-/** The words of `movedSendNote`: what the stopped write is, before its address; what it may have
- *  done there; and what a send from here does. */
-export const MOVED_SEND_WORDS = {
-  anew: "Sending it from here is a new message, which can be delivered a second time if the first one was.",
-  made: "delivered there",
-  what: "this message, sent ",
-} as const;
 
 /** The words of `KeptReply` around the author's name and the control that goes on with the
  *  reply, by the kind of post it answers (a question's thread is named as a comment's). */

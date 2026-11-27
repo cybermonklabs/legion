@@ -1,9 +1,11 @@
 import { expect, mock, test } from "bun:test";
-import { render, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
 import { Opener } from "./details-rows-fixture";
 import { DETAILS_ATTRIBUTE, type MarginDrawer, MarginSlotProvider } from "./margin-slot";
+import { framesByHand } from "./outline-fixtures";
 
 // A row inside a closed section of Details is hidden, and takes no focus, until its section
 // opens, so the opener asks Details for the row - an event on the drawer's aside, with the row as
@@ -73,6 +75,44 @@ test("the opener passes over a control of its row that refuses a press with aria
       expect(pressed, "the opener pressed a control that refuses a press").toEqual(["usable"])
     );
   } finally {
+    view.unmount();
+  }
+});
+
+// The opener puts the focus in its row two frames on, once the drawer has opened. A reader who
+// acts in those frames - a press in another field, and words typed there - has put the focus
+// where they want it, and a late frame that took it into the row would leave the rest of their
+// words there. Here both frames are held until the reader has typed, as a loaded machine holds
+// them.
+test("a reader who moves to another field before the opener's frames keeps the focus and the words typed there", async () => {
+  const user = userEvent.setup();
+  const drawer: MarginDrawer = { open: false, setOpen: () => {}, setPage: () => {} };
+  const view = render(
+    <MarginSlotProvider drawer={drawer}>
+      <aside {...{ [DETAILS_ATTRIBUTE]: "" }}>
+        <div {...{ [DETAILS_ROW_ATTRIBUTE]: "route" }}>
+          <input aria-label="Messages go to" />
+        </div>
+      </aside>
+      <input aria-label="Elsewhere" />
+      <Opener row="route" />
+    </MarginSlotProvider>
+  );
+  const frames = framesByHand();
+  try {
+    await user.click(screen.getByRole("button", { name: "Open at route" }));
+    const elsewhere = screen.getByRole<HTMLInputElement>("textbox", { name: "Elsewhere" });
+    await user.click(elsewhere);
+    await user.keyboard("ab");
+    // The first frame only asks for the second.
+    await frames.run();
+    await frames.run();
+    expect(document.activeElement, "the opener's frames took the focus from the other field").toBe(
+      elsewhere
+    );
+    expect(elsewhere.value).toBe("ab");
+  } finally {
+    frames.restore();
     view.unmount();
   }
 });

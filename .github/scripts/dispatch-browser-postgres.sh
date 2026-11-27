@@ -3,22 +3,22 @@
 # before the suite starts, and what the provider that makes those stacks costs.
 #
 # Who runs it, and why it is a script: the "Read the lanes' PostgreSQL and time its provider"
-# step of .github/workflows/dispatch-browser.yaml's shard job and the step of that name in its
-# alone job. The two jobs repeat their step lists for the reason
+# step of .github/workflows/dispatch-browser.yaml's shard job and the steps of that name in its
+# real and alone jobs. The jobs repeat their step lists for the reason
 # .github/ci-notes/dispatch-browser.md#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows
 # gives - a composite action carries neither `timeout-minutes` nor `services:` - but that
 # reason is a composite action's and not a script's: a step that calls a script keeps its own
-# `timeout-minutes`. So this body is written once, both steps call it, and a fix here is a fix
-# for both jobs. It stood as two copies, word for word apart from the stack count, until a
-# review read them together (dispatch://INFRA-1443).
+# `timeout-minutes`. So this body is written once, every one of those steps calls it, and a fix
+# here is a fix for each of those jobs. It stood as two copies, word for word apart from the
+# stack count, until a review read them together (dispatch://INFRA-1443).
 #
 #   .github/scripts/dispatch-browser-postgres.sh <stack count>
 #
 # <stack count> is the number of stacks the calling job's browser step runs, which is its
-# Playwright worker count: four on a shard leg, which passes `--workers 4`, and one on an alone
-# leg, which takes the configuration's own default of one. It is the one thing the two callers
-# differ in, and it decides how many data directories are copied below, so the copy time
-# printed is that job's own copy time and not some other shape's.
+# Playwright worker count: four on a shard or real leg, each of which passes four workers, and
+# one on an alone leg, which takes the configuration's own default of one. It is the one thing
+# the callers differ in, and it decides how many data directories are copied below, so the copy
+# time printed is that job's own copy time and not some other shape's.
 #
 # What it prints, in order, and why each line is wanted:
 #
@@ -49,7 +49,7 @@
 # on a unix socket of its own and on no TCP port. It calls `initdb`, `pg_ctl` and `psql` by name:
 # .github/docker/browser.Dockerfile appends the version directory to PATH and asserts all three
 # are found at build time, so this script writes no version directory of its own and a PostgreSQL
-# major moving in that file moves it here with no edit. The two browser steps still export
+# major moving in that file moves it here with no edit. The browser steps still export
 # DISPATCH_E2E_PG_BIN, which is the harness's binaries provider's own input - a directory, not a
 # PATH lookup - and is no part of what this script reads; it could not read it in any case, since
 # that export happens inside a later step's `run:`.
@@ -58,7 +58,7 @@
 # so the checkout stays clean and nothing is left for the suite to find.
 #
 # Run from anywhere: it reads nothing of the checkout and writes only inside that directory.
-# CI runs it in the shard and alone jobs of dispatch-browser.yaml.
+# CI runs it in the shard, real and alone jobs of dispatch-browser.yaml.
 set -euo pipefail
 shopt -s inherit_errexit
 

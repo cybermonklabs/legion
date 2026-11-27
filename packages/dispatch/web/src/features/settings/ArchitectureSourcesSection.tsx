@@ -5,19 +5,17 @@ import { api, apiErrorMessage, isSourceNotFound, removedEvenIfGone } from "../..
 import { architectureSourcesQuery, projectsQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { dangerHoverText, textMutedOnCanvas, textPrimaryOnSurface } from "../../theme/classes";
 import {
   borderDefault,
-  dangerHoverText,
   dangerText,
   linkHoverText,
   linkText,
-  textMutedOnCanvas,
   textMutedOnSurface,
   textPrimaryOnCanvas,
-  textPrimaryOnSurface,
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { Timestamp } from "../refs/Timestamp";
 import {
   refusedNote,

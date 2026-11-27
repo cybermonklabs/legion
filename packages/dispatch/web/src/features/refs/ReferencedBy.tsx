@@ -10,15 +10,15 @@ import {
   linkText,
   textMutedOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { compiledBlockSchema } from "../doc/schema";
 import { blockFragment, isBlockItemKind } from "./block-reference";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { DeletedBody, EditedMark } from "./PostMarks";
 import { postDeletion } from "./post-marks";
-import { referenceTriggerProps } from "./RefPreview";
 import { referencesQuery, standsFailed, useNewIssuePageFreshness } from "./reference-target";
+import { referenceTriggerProps } from "./reference-trigger";
 import type { DispatchReferenceRoute } from "./routes";
 import { parseNodeReference, referenceHref } from "./routes";
 import { Timestamp } from "./Timestamp";

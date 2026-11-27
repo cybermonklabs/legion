@@ -1,13 +1,13 @@
 import { type ReactNode, useId, useState } from "react";
 
+import { textMutedOnCanvas } from "../../theme/classes";
 import {
   borderStrong,
   dangerText,
   secondaryButtonCompact,
   surfaceMutedBg,
-  textMutedOnCanvas,
   textPrimaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import {
   customRange,
   lastUtcDate,

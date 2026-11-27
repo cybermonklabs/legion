@@ -134,9 +134,10 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"gh_read_test"')
         run: .github/scripts/gh-read.test.sh
 
-      # The merge job's two reads of its own run, driven under a stand-in gh: the attempt route
-      # the jobs read takes, the retry ladder's attempts and the waits between them, and the two
-      # refusal messages are checked here rather than on a runner against GitHub. Its negative
+      # The merge job's three reads of its own run, driven under a stand-in gh: the attempt route
+      # the jobs read takes, the retry ladder's attempts and the waits between them, the two
+      # refusal messages, and the machine-time reading's two lane budgets and its refusals are
+      # checked here rather than on a runner against GitHub. Its negative
       # control traces the drive with strace, which this job's ubuntu-24.04-arm image carries; the
       # harness refuses by name on an image without it.
       - name: Test the browser lane's run reads

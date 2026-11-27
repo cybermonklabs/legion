@@ -147,7 +147,7 @@ test("a refused comment on a document is retried to that document alone", async 
 // An edited draft is still the one written for that address: a press from a composer its host
 // moved off the reply is refused, and back on the reply it sends the edited words there.
 test("an edited reply refused once is retried as a reply to the same comment alone", async () => {
-  const edited = { body: "Held, and then some", replacement: "" };
+  const edited = { body: "Held, and then some", namesParty: false, replacement: "" };
   const { away, reached } = await retriedFrom(replySend("comment-1"), { replyTo: null }, edited);
   expect(reached).toEqual(["issue CORE-1, reply to comment-1", "issue CORE-1, reply to comment-1"]);
   expect(away).toBe(false);

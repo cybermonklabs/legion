@@ -296,7 +296,7 @@ test("r on a statement aims the writer at it, and every other aim ends it", asyn
     const request: SentRequest = {
       anchor: undefined,
       ask: { multiple: false, options: [], urgency: "med" },
-      draft: { body: "On the statement", replacement: "" },
+      draft: { body: "On the statement", namesParty: false, replacement: "" },
       edit: undefined,
       kind: "comment",
       owner: { issueKey: KEY, kind: "issue" },
@@ -394,7 +394,7 @@ test("a refused comment on a statement holds the writer on it, and a writer moun
   const request: SentRequest = {
     anchor: undefined,
     ask: { multiple: false, options: [], urgency: "med" },
-    draft: { body: "On the statement", replacement: "" },
+    draft: { body: "On the statement", namesParty: false, replacement: "" },
     edit: undefined,
     kind: "comment",
     owner: { issueKey: KEY, kind: "issue" },

@@ -26,7 +26,9 @@ import { LabelPill, Pill, StatusPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { RefusableButton } from "../../components/RefusableButton";
 import { withoutEllipsis } from "../../components/tooltips";
-import * as theme from "../../theme/classes";
+import * as classes from "../../theme/classes";
+import { PAGE_COLORS, pageStateText, pageWaitingChip } from "../../theme/classes";
+import * as shellClasses from "../../theme/shell-classes";
 import {
   calloutWarningBg,
   calloutWarningBorder,
@@ -34,13 +36,10 @@ import {
   focusVisibleRing,
   linkHoverText,
   linkText,
-  PAGE_COLORS,
   pageInkText,
-  pageStateText,
-  pageWaitingChip,
   secondaryButtonCompact,
   textMutedOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { ComponentPicker } from "../architecture/ComponentPicker";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
@@ -63,7 +62,8 @@ import { SubscribedAgents } from "../issue/SubscribedAgents";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName, AgentUnresponsiveNote } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { relativeTimeLabel, Timestamp } from "../refs/Timestamp";
+import { relativeTimeLabel } from "../refs/relative-time";
+import { Timestamp } from "../refs/Timestamp";
 import { AUTHOR_TEXT_ATTRIBUTE, PAGE_CHROME_ATTRIBUTE, PROPERTY_LABELS } from "./page-structure";
 import { ANSWER_LINES, AUTHOR_KIND_WORDS, CONTROL_LABELS, STATE_LINES } from "./page-words";
 import {
@@ -96,6 +96,10 @@ import {
   tokens,
   undraw,
 } from "./shared-controls-fixture";
+
+/** Every export of the theme's two modules of classes, by name: a class string a file names is
+ *  in `classes.ts`, or in `shell-classes.ts` where the entry chunk draws it. */
+const theme: Readonly<Record<string, unknown>> = { ...classes, ...shellClasses };
 
 /**
  * The shared controls on the new issue page's surface: inside `NoTooltips` each shared control
@@ -2115,10 +2119,10 @@ function wrapOffences(mountName: string, value: Element, root: Element): string[
 /**
  * The files whose `ON_PAGE` table holds the page's colours for their elements inside
  * `NoTooltips`. `theme/text-on-background.test.ts` cannot pair those: it reads a class only where
- * it names an export of `classes.ts`, and `ON_PAGE.detail` names none. The case reads each file's
- * source, as that test does, rather than a list of pairs the file exports: which element draws an
- * entry, and on which ground, is a fact of the file's markup, and a list beside it could say other
- * than the markup draws.
+ * it names an export of `classes.ts` or `shell-classes.ts`, and `ON_PAGE.detail` names none. The
+ * case reads each file's source, as that test does, rather than a list of pairs the file exports:
+ * which element draws an entry, and on which ground, is a fact of the file's markup, and a list
+ * beside it could say other than the markup draws.
  */
 const ON_PAGE_FILES = [
   "components/MultiSelect.tsx",
@@ -2190,7 +2194,8 @@ function returnedBy(node: ts.Expression): ts.Expression[] {
 }
 
 /** Each entry of the table `name` names: a table of the file (`ON_PAGE`, `PAGE_URGENCY_ACCENT`),
- *  else an object `classes.ts` exports (`pageStateText`), each entry as its class strings. */
+ *  else an object `classes.ts` or `shell-classes.ts` exports (`pageStateText`), each entry as its
+ *  class strings. */
 function tableEntries(
   name: string,
   file: ParsedSource,
@@ -2206,7 +2211,7 @@ function tableEntries(
       }
     }
   }
-  const exported: unknown = (theme as Readonly<Record<string, unknown>>)[name];
+  const exported: unknown = theme[name];
   if (entries.size === 0 && typeof exported === "object" && exported !== null) {
     for (const [key, value] of Object.entries(exported)) {
       if (typeof value === "string") entries.set(key, [value]);
@@ -2218,10 +2223,11 @@ function tableEntries(
 /**
  * Every class string `node` can make at run time, read from its file's source: a ternary, `??`
  * and `||` one for each side, a template one for each combination of its parts, a name what the
- * file's `const` of that name makes or the string `classes.ts` exports under it, `table.key` that
- * entry, `table[key]` each entry, and a call of the file's own function what it returns. Anything
- * else - a prop, a hook's answer, another module's function - makes the empty string, which names
- * no colour: only an element's page colours are read, and those are written in these forms.
+ * file's `const` of that name makes or the string `classes.ts` or `shell-classes.ts` exports
+ * under it, `table.key` that entry, `table[key]` each entry, and a call of the file's own function
+ * what it returns. Anything else - a prop, a hook's answer, another module's function - makes the
+ * empty string, which names no colour: only an element's page colours are read, and those are
+ * written in these forms.
  */
 function classStrings(node: ts.Expression, file: ParsedSource, depth = 0): string[] {
   if (depth > 24) return [""];
@@ -2255,7 +2261,7 @@ function classStrings(node: ts.Expression, file: ParsedSource, depth = 0): strin
   if (ts.isIdentifier(expression)) {
     const declared = file.declarations.get(expression.text);
     if (declared !== undefined) return [...new Set(declared.flatMap(made))];
-    const exported: unknown = (theme as Readonly<Record<string, unknown>>)[expression.text];
+    const exported: unknown = theme[expression.text];
     return typeof exported === "string" ? [exported] : [""];
   }
   if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression)) {
@@ -2436,10 +2442,10 @@ function groundsOf(
 /** Whether `CONTRAST_CHECKS` holds `text` on `ground` as words, at 4.5:1: a check of the same
  *  swatches at 3:1 is a shape's (a row's twisty), which no word may lean on. */
 function registeredAsText(text: string, ground: string): boolean {
-  const colours: Readonly<Partial<Record<string, theme.ColorPair>>> = PAGE_COLORS;
+  const colours: Readonly<Partial<Record<string, classes.ColorPair>>> = PAGE_COLORS;
   const foreground = colours[text];
   const background = colours[ground];
-  return theme.CONTRAST_CHECKS.some(
+  return classes.CONTRAST_CHECKS.some(
     (check) =>
       check.minRatio === 4.5 &&
       check.foreground.light.name === foreground?.light.name &&
@@ -2775,13 +2781,13 @@ test("inside NoTooltips the repository's clear control is described by what its 
       const refusal = scope.getByRole("alert");
       expect(refusal.textContent).toBe("Write the repository as owner/name.");
       if (surface === "inside") {
-        expect(classOf(refusal)).toEqual(expect.arrayContaining(tokens(theme.pageFailedText)));
+        expect(classOf(refusal)).toEqual(expect.arrayContaining(tokens(classes.pageFailedText)));
         expect(
-          classOf(refusal).filter((token) => tokens(theme.dangerText).includes(token))
+          classOf(refusal).filter((token) => tokens(shellClasses.dangerText).includes(token))
         ).toEqual([]);
         expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
       } else {
-        expect(refusal.getAttribute("class")).toBe(theme.dangerText);
+        expect(refusal.getAttribute("class")).toBe(shellClasses.dangerText);
         expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(false);
       }
     } finally {

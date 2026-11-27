@@ -134,6 +134,8 @@ var readRowDrives = map[string]rowDrive{
 		members: []string{"scopes"},
 		holds:   holdsReadAndNotApprove,
 	}},
+	// The issue page's landing: its issue part reads the issue as GET /api/v1/issues/{key} does.
+	"GET /api/v1/landing":                 {target: "/api/v1/landing?page=issue&key=$issue", statement: statementOf(`\bfrom\s+design_gates\s+where\s+issue\b`)},
 	"GET /api/v1/dashboard/builds":        {target: "/api/v1/dashboard/builds", statement: statementOf(`\bfrom\s+dashboard_builds\b`)},
 	"GET /api/v1/priorities":              {target: "/api/v1/priorities", statement: statementOf(`\bfrom\s+priority_nodes\s+where\s+kind\s*=\s*'priority'\s+and\s+state\b`)},
 	"GET /api/v1/priorities/{id}/history": {target: "/api/v1/priorities/$priority/history", statement: statementOf(`\bfrom\s+priority_nodes\s+where\s+kind\s*=\s*'priority'\s+and\s+id\b`)},

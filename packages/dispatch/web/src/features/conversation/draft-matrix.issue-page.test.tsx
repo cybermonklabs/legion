@@ -84,7 +84,7 @@ import {
   stubViewport,
 } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import type { SentRequest } from "./send-request";
 

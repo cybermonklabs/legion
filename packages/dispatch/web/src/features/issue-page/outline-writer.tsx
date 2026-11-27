@@ -10,7 +10,9 @@ import {
   useState,
 } from "react";
 
+import { ownerAsksQuery, ownerCommentsQuery } from "../../api/queries";
 import type { Actor, Comment, MessageDelivery, MessageRead } from "../../api/types";
+import { abortOnReaderAct } from "../../lib/reader-acts";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { deliveryMode } from "../conversation/delivery";
@@ -21,12 +23,14 @@ import {
   sameStatement,
 } from "../conversation/send-request";
 import { type AgentText, useAgentText } from "../refs/AgentName";
+import { buildIssuePath } from "../refs/page-routes";
+import { sessionOfAddress } from "../refs/party-mention";
 import { EVENT_FRESH } from "../refs/reference-target";
-import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/routes";
+import { parseNodeReference } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import type { TreeNode } from "./issue-tree";
 import { isStatement } from "./issue-tree";
-import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
+import { issueMessagesQuery } from "./useIssueTree";
 
 /**
  * Where the reader writes on the issue page (R16): the one line at the foot
@@ -61,7 +65,7 @@ export interface OutlineWriter {
   readonly landed: () => void;
   /** Where the outline is asked to take the reader after a write; undefined once it has. */
   readonly landing: Landing | undefined;
-  /** Puts the caret in the line, once it is drawn. */
+  /** Puts the caret in the line, once it is drawn, unless the reader acts first (`READER_ACTS`). */
   readonly focus: () => void;
   /** What the line writes with no reply set: a comment, or a question. */
   readonly kind: WriterKind;
@@ -214,38 +218,39 @@ export function OutlineWriterProvider({
   // The reads the outline is drawn from, under the keys it reads them by and kept fresh as it
   // keeps them (`reference-target.ts`'s `EVENT_FRESH`), so a reply's target costs no request of its
   // own, and a window focus past the app's 30 s `staleTime` reads none of them again.
-  const asks = useQuery({ ...issueAsksQuery(issueKey), ...EVENT_FRESH });
-  const comments = useQuery({ ...issueCommentsQuery(issueKey), ...EVENT_FRESH });
+  const asks = useQuery({ ...ownerAsksQuery({ issue: issueKey }), ...EVENT_FRESH });
+  const comments = useQuery({ ...ownerCommentsQuery({ issue: issueKey }), ...EVENT_FRESH });
   const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH });
-  // The animation frame `focus()` is waiting on, if any: a new `focus()` cancels the earlier one
-  // before scheduling its own, and unmounting the provider cancels it so no frame of an unmounted
-  // writer moves the focus.
-  const focusFrame = useRef<number | undefined>(undefined);
-  useEffect(
-    () => () => {
-      if (focusFrame.current !== undefined) {
-        cancelAnimationFrame(focusFrame.current);
-        focusFrame.current = undefined;
-      }
-    },
-    []
-  );
+  // The wait `focus()` is on for the line's field to draw, if one is on; aborting it cancels the
+  // animation frame it waits on. A new `focus()` aborts the earlier wait before it starts its
+  // own, and unmounting the provider aborts it, so no frame of an unmounted writer moves the
+  // focus; the reader's own act aborts it too (below).
+  const focusWait = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => focusWait.current?.abort(), []);
   const focus = useCallback(() => {
-    if (focusFrame.current !== undefined) cancelAnimationFrame(focusFrame.current);
+    focusWait.current?.abort();
+    // A reader who acts before the line takes the focus (`READER_ACTS`) - a key the outline's
+    // keymap reads, or a press in another field and words typed there - has put the focus where
+    // they want it, so the wait ends then and its frames do nothing.
+    const acted = abortOnReaderAct();
+    focusWait.current = acted;
+    let frame = 0;
+    acted.signal.addEventListener("abort", () => cancelAnimationFrame(frame), { once: true });
     // The field that is drawn: the line keeps its write field mounted, hidden, while it edits a
     // comment (`IssueComposer.tsx`), and a hidden field takes no caret.
     const place = (left: number) => {
-      focusFrame.current = undefined;
       const field = [...document.querySelectorAll<HTMLTextAreaElement>(COMPOSER_FIELD)].find(
         (one) => one.closest("[hidden]") === null
       );
       if (field !== undefined) {
+        acted.abort();
         field.focus({ preventScroll: true });
         return;
       }
-      if (left > 0) focusFrame.current = requestAnimationFrame(() => place(left - 1));
+      if (left > 0) frame = requestAnimationFrame(() => place(left - 1));
+      else acted.abort();
     };
-    focusFrame.current = requestAnimationFrame(() => place(DRAWING_FRAMES));
+    frame = requestAnimationFrame(() => place(DRAWING_FRAMES));
   }, []);
   const replyTo = useCallback(
     (item: ReplyItem | StatementItem) => {

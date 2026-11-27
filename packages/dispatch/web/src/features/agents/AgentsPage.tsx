@@ -1,5 +1,6 @@
-import { DELIVERY_CAPABILITIES, dispatchWritingBox } from "@legion/contracts";
-import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
+import { DELIVERY_CAPABILITIES } from "@legion/contracts/dispatch-api-constants";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools-constants";
+import { dispatchWritingBox } from "@legion/contracts/dispatch-writing-boxes";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
@@ -40,10 +41,10 @@ import { RefusableButton } from "../../components/RefusableButton";
 import { useFootInset } from "../../hooks/useFootInset";
 import { useSending } from "../../hooks/useSending";
 import { compareTimestamps } from "../../lib/timestamps";
+import { checkboxAccent, textMutedOnCanvas } from "../../theme/classes";
 import {
   borderDefault,
   card,
-  checkboxAccent,
   dangerText,
   disclosureButtonText,
   focusVisibleRing,
@@ -54,11 +55,10 @@ import {
   secondaryButtonHoverBorder,
   secondaryButtonText,
   textMutedHoverToSecondary,
-  textMutedOnCanvas,
   textMutedOnSurface,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { replyParentOf } from "../conversation/composer-model";
 import { listedReplies } from "../conversation/conversation-model";
 import { broadcastDelivery, deliveryModesOf, MODE_LABELS } from "../conversation/delivery";
@@ -78,8 +78,9 @@ import {
 } from "../refs/AgentName";
 import { PostBody } from "../refs/PostBody";
 import { EditedMark } from "../refs/PostMarks";
+import { buildInboxPath, buildIssuePath } from "../refs/page-routes";
 import { postDeletion } from "../refs/post-marks";
-import { buildInboxPath, buildIssuePath, buildMachinePath } from "../refs/routes";
+import { buildMachinePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { closestMatching, focusOnDocument } from "../shell/roving";

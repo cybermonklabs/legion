@@ -1,5 +1,6 @@
 import type { AskOption } from "../../api/types";
-import { draftParties, partyMention, partyMentionSpan } from "../refs/party-references";
+import { partyMention } from "../refs/party-mention";
+import { draftParties, partyMentionSpan } from "../refs/party-references";
 import type { ComposerOwner, ReplyTarget } from "./composer-model";
 
 /** The composer's draft as its field holds it, and what a draft starts from at an address: the

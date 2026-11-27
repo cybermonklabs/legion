@@ -314,7 +314,7 @@ test("an upload over a document carries the token the page read, and says what a
 // The From/To compare of a document shows what changed as the change view, word by word. It is
 // seeded on a document that is not the issue's primary one, because `ArtifactRoutePanel` mounts
 // `ArtifactDetails` - the version history and this compare - only off the primary document's own
-// route (`isPrimaryDocumentArtifactRoute`, `features/refs/routes.ts`).
+// route (`isPrimaryDocumentArtifactRoute`, `features/refs/page-routes.ts`).
 test("the version history compares two versions of a document with the change view", async ({
   page,
 }) => {

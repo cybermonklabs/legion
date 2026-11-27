@@ -69,17 +69,28 @@ const shellHandlers: RequestHandler[] = [
     } satisfies WhoamiUser)
   ),
   http.get("/api/v1/agents", () => Response.json([])),
+  // The one read a cold page makes before it draws anything (`api/queries.ts`, `readLanding`),
+  // answered as a Dispatch older than that route answers it. That is a real answer of this
+  // deployment - a rolling deploy puts such a server in front of a browser - and it is the one
+  // that leaves the suite measuring what it already measured: the read falls back to
+  // `/auth/whoami` and seeds nothing, so every page under test reads each resource from the
+  // route its own test answers or spies. A test of the landing itself spies `api.getLanding`,
+  // above this handler.
+  http.get("/api/v1/landing", () =>
+    Response.json({ code: "NOT_FOUND", error: "no such route" }, { status: 404 })
+  ),
   // The sidebar reads the project list wherever it is drawn - on a wide viewport with the sidebar
   // shown, or in the compact navigation drawer while it is open - with no `enabled` guard
-  // (`features/sidebar/Sidebar.tsx:91`, drawn by `app.tsx:375`). The issue header reads the same
-  // `projectsQuery` key for every root issue, to learn which design steps are gated
-  // (`features/issue/IssueHeader.tsx:292`, `enabled: issue.parent === null`), and that is the
-  // reader this answer exists for: without it, 36 rows of pages carrying the header fail on an
+  // (`features/sidebar/Sidebar.tsx`, `Sidebar`'s `projects` query, drawn by the `<Sidebar` of
+  // `app.tsx`'s `NavigationContents`). The issue header reads the same `projectsQuery` key for
+  // every root issue, to learn which design steps are gated (`features/issue/IssueHeader.tsx`,
+  // `IssueHeader`'s `projects` query, `enabled: issue.parent === null`), and that is the reader
+  // this answer exists for: without it, 36 rows of pages carrying the header fail on an
   // unanswered read, none of them about projects. `CreateIssueDialog`, `ProjectPage`, the
-  // palette's project mode and three settings sections (`ArchitectureSourcesSection.tsx:52`,
-  // `ProjectsSection.tsx:42`, `SettingsPage.tsx:75`) read it too. An empty list is a project with
-  // no gate, which is what a page with no `api.listProjects` spy drew before, and every row that
-  // asserts on project content spies that method above MSW.
+  // palette's project mode and three settings sections (the `projects` query of each of
+  // `ArchitectureSourcesSection`, `ProjectsSection` and `SettingsPage`) read it too. An empty list
+  // is a project with no gate, which is what a page with no `api.listProjects` spy drew before,
+  // and every row that asserts on project content spies that method above MSW.
   http.get("/api/v1/projects", () => Response.json([])),
   // The Settings page's daemon section reads every project's Legion daemon with no `enabled` guard
   // beyond the project being known (`useLegionDaemons`), so the read happens wherever that section

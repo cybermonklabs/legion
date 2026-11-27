@@ -1,12 +1,8 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import {
-  borderDefault,
-  card,
-  textMutedOnCanvas,
-  textPrimaryOnCanvas,
-} from "../../../theme/classes";
+import { textMutedOnCanvas } from "../../../theme/classes";
+import { borderDefault, card, textPrimaryOnCanvas } from "../../../theme/shell-classes";
 import { buildMachinePath } from "../../refs/routes";
 import { type MachineSummary, sessionCountSentence } from "../machine-model";
 

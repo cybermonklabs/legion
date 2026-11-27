@@ -349,6 +349,19 @@ type inboxQuery struct {
 	Assignee string `query:"assignee"`
 }
 
+// landingQuery is GET /api/v1/landing's query: which page is being landed on, and what that
+// page needs to be read.
+type landingQuery struct {
+	// Page is the page the answer's `page` carries; any other value is 400 LANDING_INPUT.
+	Page string `query:"page" enum:"issue,board,inbox,document"`
+	// Key is the issue the issue page opens, required for it and read by no other page.
+	Key string `query:"key"`
+	// Project is the project a board or a document page opens, required for both.
+	Project string `query:"project"`
+	// Slug is the document a document page opens, required for it.
+	Slug string `query:"slug"`
+}
+
 // myAnswersQuery is the offset page GET /api/v1/me/answers and
 // GET /api/v1/people/{login}/nodes each answer: the page, and nothing else. Neither route
 // takes a kind, a filter or a traversal from its caller, so this struct is the whole of what

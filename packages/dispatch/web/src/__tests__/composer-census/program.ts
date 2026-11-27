@@ -1,9 +1,10 @@
 /**
  * The composer census (INFRA-1503), its first part: the program it reads. Every module under the
  * root it is given, tests left out, parsed into syntax trees (no type checker), its imports
- * resolved by path, and its components and their uses indexed, so that the census sees exactly
- * the files under that root. `trees.ts`, with its walk up (`walk.ts`), `forms.ts` and
- * `lifetime.ts` read the census's items out of it, and `census.ts` names them.
+ * resolved by path, a chunk's constant resolved to the component it loads (`CHUNK_COMPONENTS`),
+ * and its components and their uses indexed, so that the census sees exactly the files under
+ * that root. `trees.ts`, with its walk up (`walk.ts`), `forms.ts` and `lifetime.ts` read the
+ * census's items out of it, and `census.ts` names them.
  *
  * The census lives here. It began as a scratch script outside the repository (version 2 at
  * dispatch://INFRA-1503/artifact/composer-census-ts), which this module replaces as its source,
@@ -226,31 +227,106 @@ export function readProgram(root: string): Program {
   return program;
 }
 
-/** A `lazy(() => import("./x").then((module) => ({ default: module.Name })))` constant. */
-function lazyTarget(program: Program, mod: Mod, decl: ts.Node): string | undefined {
-  if (!ts.isVariableDeclaration(decl) || decl.initializer === undefined) return undefined;
+/**
+ * The calls that make a component of a chunk, by `<module>#<export>`, each with how it draws: a
+ * constant one of them answers draws, wherever it is drawn, the component its chunk's loader
+ * imports, with the props it is drawn with, and nothing of it until the chunk is in. So an
+ * element of that constant is read as an element of that component, as any other element is,
+ * and the climb from a mount goes on up through it (`trees.ts`), which would otherwise find that
+ * component drawn as no element and stop there.
+ */
+const CHUNK_COMPONENTS: Readonly<Record<string, string>> = {
+  "features/shell/asked-surface.tsx#askedSurface":
+    "draws, under a `ChunkBoundary` that draws an alert in the surface's place when a render under it throws, a placeholder while the reader has the surface open and the chunk it is handed is not in (`chunk`, `CHUNK`), then the chunk's component as `<Component {...props} typed={…} />`, `typed` being what the reader typed into the placeholder",
+  "features/shell/chunk-component.tsx#chunkComponent":
+    "draws its fallback until the chunk it is handed is in (`chunk`, `CHUNK`), then the chunk's component as `<Component {...props} />`",
+  "features/shell/chunk-loads.ts#lazyChunk":
+    "React's `lazy`, with the download under `renderChunk`: draws as `lazy` does",
+  "react#lazy":
+    "draws the component its loader's module answers as `default`, with the props it is drawn with, once the chunk is in; the nearest `Suspense` draws its fallback until then",
+};
+
+/** The call that names a chunk by its loader (`chunk(() => import("./x").then(…))`), which a
+ *  `chunkComponent` is handed: a chunk is no component, so only that call is read through it. */
+const CHUNK = "features/shell/chunk-component.tsx#chunk";
+
+/** The component a constant of a chunk draws (`CHUNK_COMPONENTS`), by its id: `const X =
+ *  lazyChunk(() => import("./x").then((module) => ({ default: module.X })))`, and the same
+ *  through `lazy` or `chunkComponent`. */
+function chunkTarget(program: Program, mod: Mod, decl: ts.Node, depth: number): string | undefined {
+  if (depth > 8 || !ts.isVariableDeclaration(decl) || decl.initializer === undefined) {
+    return undefined;
+  }
   const init = decl.initializer;
-  if (!ts.isCallExpression(init) || init.expression.getText() !== "lazy") return undefined;
-  let spec: string | undefined;
+  if (!ts.isCallExpression(init) || !ts.isIdentifier(init.expression)) return undefined;
+  const key = exportKey(program, mod, init.expression.text, depth + 1);
+  const source = init.arguments[0];
+  if (key === undefined || CHUNK_COMPONENTS[key] === undefined || source === undefined) {
+    return undefined;
+  }
+  return loaderTarget(program, mod, source, depth + 1);
+}
+
+/** The component a chunk's loader imports, by its id: the export, of the module its
+ *  `import("…")` names, that a name read off what the import answers names. The import is read
+ *  in the module that holds it, wherever the loader is: a loader named by a constant of a module
+ *  (`lazyChunk(loadIssuePage)`), a chunk named by its loader (`chunkComponent(pendingWritesChunk,
+ *  …)`, `CHUNK`), and a loader that calls a function of a module making the import
+ *  (`loadInboxChunk().then(…)`) are each followed to their declaration. */
+function loaderTarget(
+  program: Program,
+  mod: Mod,
+  source: ts.Node,
+  depth: number
+): string | undefined {
+  let target: Mod | undefined;
   const names: string[] = [];
-  const visit = (node: ts.Node) => {
-    if (
-      ts.isCallExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-      node.arguments.length > 0 &&
-      ts.isStringLiteral(node.arguments[0])
-    ) {
-      spec = node.arguments[0].text;
-    }
-    if (ts.isPropertyAccessExpression(node)) names.push(node.name.text);
-    ts.forEachChild(node, visit);
+  const follow = (name: ts.Identifier, at: Mod, depth: number) => {
+    const decl = declOf(program, resolveLocal(program, at, name.text, depth + 1));
+    const body =
+      decl === undefined
+        ? undefined
+        : ts.isFunctionDeclaration(decl)
+          ? decl.body
+          : ts.isVariableDeclaration(decl)
+            ? decl.initializer
+            : undefined;
+    if (decl !== undefined && body !== undefined) read(body, modOf(program, decl), depth + 1);
   };
-  visit(init);
-  const from = spec === undefined ? undefined : resolveSpec(program.mods, mod.rel, spec);
-  const target = from === undefined ? undefined : program.mods.get(from);
+  const read = (node: ts.Node, at: Mod, depth: number): void => {
+    if (depth > 8) return;
+    if (ts.isIdentifier(node)) {
+      follow(node, at, depth);
+      return;
+    }
+    const visit = (current: ts.Node): void => {
+      if (ts.isCallExpression(current)) {
+        const [first] = current.arguments;
+        if (current.expression.kind === ts.SyntaxKind.ImportKeyword) {
+          const from =
+            first !== undefined && ts.isStringLiteral(first)
+              ? resolveSpec(program.mods, at.rel, first.text)
+              : undefined;
+          target ??= from === undefined ? undefined : program.mods.get(from);
+          return;
+        }
+        if (ts.isIdentifier(current.expression)) {
+          if (exportKey(program, at, current.expression.text, depth + 1) === CHUNK) {
+            if (first !== undefined) read(first, at, depth + 1);
+            return;
+          }
+          follow(current.expression, at, depth);
+        }
+      }
+      if (ts.isPropertyAccessExpression(current)) names.push(current.name.text);
+      ts.forEachChild(current, visit);
+    };
+    visit(node);
+  };
+  read(source, mod, depth);
   if (target === undefined) return undefined;
   for (const name of names) {
-    const id = resolveExport(program, target, name, 0);
+    const id = resolveExport(program, target, name, depth + 1);
     if (id !== undefined) return id;
   }
   return undefined;
@@ -264,7 +340,7 @@ function resolveExport(
 ): string | undefined {
   if (depth > 8) return undefined;
   const decl = mod.decls.get(name);
-  if (decl !== undefined) return lazyTarget(program, mod, decl) ?? `${mod.rel}#${name}`;
+  if (decl !== undefined) return chunkTarget(program, mod, decl, depth) ?? `${mod.rel}#${name}`;
   const re = mod.reexports.get(name);
   if (re !== undefined) {
     if (re.from === undefined) return resolveLocal(program, mod, re.name, depth + 1);
@@ -279,6 +355,15 @@ function resolveExport(
   return undefined;
 }
 
+/** What a name of `mod`'s top level stands for, by `<module>#<export>`: a package's by the name
+ *  the package exports it under. Undefined for a name that stands for no declaration the census
+ *  reads. */
+export function exportKey(program: Program, mod: Mod, name: string, depth = 0): string | undefined {
+  const binding = mod.imports.get(name);
+  if (binding !== undefined && binding.from === undefined) return `${binding.spec}#${binding.name}`;
+  return resolveLocal(program, mod, name, depth);
+}
+
 /** The declaration a name of `mod` stands for, by its id (`<module>#<name>`). */
 export function resolveLocal(
   program: Program,
@@ -287,7 +372,7 @@ export function resolveLocal(
   depth = 0
 ): string | undefined {
   const decl = mod.decls.get(local);
-  if (decl !== undefined) return lazyTarget(program, mod, decl) ?? `${mod.rel}#${local}`;
+  if (decl !== undefined) return chunkTarget(program, mod, decl, depth) ?? `${mod.rel}#${local}`;
   const imported = mod.imports.get(local);
   if (imported?.from === undefined) return undefined;
   const target = program.mods.get(imported.from);

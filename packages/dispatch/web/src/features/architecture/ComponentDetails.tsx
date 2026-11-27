@@ -11,8 +11,8 @@ import type {
 import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle";
 import { StatusPill } from "../../components/Pill";
 import { TruncatedText } from "../../components/TruncatedText";
+import { badgeLow, textPrimaryOnSurface } from "../../theme/classes";
 import {
-  badgeLow,
   borderDefault,
   card,
   dangerText,
@@ -20,14 +20,13 @@ import {
   linkHoverText,
   linkText,
   textMutedOnSurface,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { GitHubLink } from "../issue/GitHubLink";
 import { statusText } from "../project/board-model";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { referenceTriggerProps } from "../refs/RefPreview";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
+import { referenceTriggerProps } from "../refs/reference-trigger";
 import { Timestamp } from "../refs/Timestamp";
 import { expansionStorageKey, placeChild, splitWork } from "./logic/architecture-model";
 

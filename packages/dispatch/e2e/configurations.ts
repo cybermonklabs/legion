@@ -212,11 +212,11 @@ export function duplicateRows<Row extends ListedRow>(
 /** The projects of the stubbed layer, which run a real browser against a recording of the API
  *  (`e2e/stub/`). They are named here rather than in the config so that the config, a bun test
  *  and a tool all read one list: a project added to the layer and missed in the budget test
- *  would leave that test measuring a lane the shard job does not run. */
+ *  would leave that test measuring a lane the pull-request lane does not run. */
 export const stubProjectNames: readonly string[] = ["stub", "stub-phone"];
 
 /** The projects the pull-request lane runs, which is what
- *  `.github/workflows/dispatch-browser.yaml`'s shard job names for `lane: pull-request`. The
+ *  `.github/scripts/dispatch-browser-pr-suite.sh` names for its `real` and `stub` legs. The
  *  lane is these four and the `@pr` tag; every other project, and every row without the tag,
  *  runs on the full lane at the merge queue and on the nightly. */
 export const pullRequestLaneProjects: readonly string[] = [
@@ -248,8 +248,9 @@ export function tagged(tag: string): RegExp {
  *  project, so it is given the server and its stacks alike.
  *
  *  An empty list is a run that names no project, which is every DEFAULT project of its mode:
- *  the three wall-clock projects below carry `default: false` and are outside it, measured at
- *  this head as 1,373 rows in 191 files against the whole suite's 1,427 in 194. Every
+ *  the three wall-clock projects below carry `default: false` and are outside it. At `fc1baefb`
+ *  (2026-11-16) `--list` alone lists 1,460 rows in 203 files, and `--list --project='*'` lists
+ *  the whole suite's 1,511 in 206. Every
  *  `--project` of the whole line is read, and the values of every OTHER option are skipped over
  *  (`e2e/playwright-argv.ts`), because a token that reads like a flag of this run may be some
  *  option's value: `--output --project=stub` hands Playwright `--project=stub` as the output
@@ -388,15 +389,16 @@ export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\
  *  took that `--` as its value (`const dashDashIndex = process.argv.indexOf("--")`,
  *  `playwright/lib/program.js:51-53`). With one token after the `--` and one filter, as here,
  *  that keeps no filter. So `--list --output -- e2e/claim.e2e.ts` lists the whole default
- *  selection, 1,373 rows in 191 files, where `--list --output /tmp/o e2e/claim.e2e.ts` lists 1 -
- *  the filter is dropped although `--output` swallowed the `--`, which `--list --output --
- *  --not-a-flag` shows it did, that line exiting 1 with `error: unknown option '--not-a-flag'`
+ *  selection, 1,452 rows in 202 files at `61e5c402` (2026-11-16), where `--list --output /tmp/o
+ *  e2e/claim.e2e.ts` lists 1 - the filter is dropped although `--output` swallowed the `--`,
+ *  which `--list --output -- --not-a-flag` shows it did, that line exiting 1 with
+ *  `error: unknown option '--not-a-flag'`
  *  rather than the `error: option '--output <dir>' argument missing` of `--list --output`. What
  *  the run does without its filter depends on the option that took the `--`: `--list --grep --
  *  'e2e/heavy.bodies.e2e.ts'`, written as a regex this reader does not answer for, reached the
  *  runner with no filter and a grep of `--` and exited 1 with `Error: No tests found` above
  *  `Total: 0 tests in 0 files`, and `--list --output -- 'e2e/heavy.bodies.e2e.ts'` lists the
- *  1,373 rows of the default selection. Neither run reaches the wall-clock file the person
+ *  1,460 rows of the default selection at `fc1baefb`. Neither run reaches the wall-clock file the person
  *  named, so the refusal, and the command it prints, is the useful answer to both.
  *
  *  A reader that took any `--ui` of the whole argv for the mode would answer `undefined` for

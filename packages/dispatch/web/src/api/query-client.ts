@@ -1,4 +1,4 @@
-import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
+import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts/dispatch-api-constants";
 import {
   type DefaultError,
   type DefaultedQueryObserverOptions,

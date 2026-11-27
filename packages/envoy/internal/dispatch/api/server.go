@@ -211,8 +211,8 @@ type Deps struct {
 	// ListenerRosterUncached is for end-to-end test processes only: every read of the listener's
 	// session list (route_status on an issue read, GET /api/v1/agents) asks the listener rather
 	// than reading the stored answer every process shares (the route_roster row), so a test that
-	// changes the listener's sessions sees the change at its next read. A deployment leaves it
-	// false.
+	// changes the listener's sessions sees the change at its next read. A landing asks once for
+	// all of its parts (startLandingRoster). A deployment leaves it false.
 	ListenerRosterUncached bool
 	// OutboxPublishes is that an outbox publishes this deployment's events: cmd/dispatch sets it
 	// unless NATS is disabled (DISPATCH_NATS_DISABLED=1). A mention's send then goes only once no

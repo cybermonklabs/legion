@@ -116,13 +116,14 @@ async function writerFramesPass(page: Page): Promise<void> {
 
 // c-row-layout: every row at both widths, read off the page's own layout (R1, R4, R5, R8).
 // SLOW(>=2s): a seeded issue of every kind of node, loaded at two widths with each load waited
-// out to a 1.5 s quiet window, a third load read row by row, and a picture opened.
+// out to a 1.5 s quiet window, the 1440 px load read row by row as well, and a picture opened.
 test("a node draws its kind at the right of its row and every node starts at one left edge @phone", async ({
   browser,
 }) => {
   test.setTimeout(180_000);
   await phase(browser, seedRows, async (page, seeded) => {
-    for (const size of [DESKTOP, PHONE]) {
+    // Each width is a load waited out to its quiet window, then read whole.
+    const readAt = async (size: typeof DESKTOP | typeof PHONE) => {
       await page.setViewportSize(size);
       const settling = watchApiRequests(page);
       await openIssue(page, seeded.key);
@@ -188,11 +189,12 @@ test("a node draws its kind at the right of its row and every node starts at one
           ),
         `${where}: a row reads a target of its own for a reference its words cite`
       ).toEqual([]);
-    }
+    };
+    await readAt(DESKTOP);
 
-    await page.setViewportSize(DESKTOP);
-    await openIssue(page, seeded.key);
-    await expectSeedDrawn(page, seeded);
+    // The same 1440 px load, read row by row. The reading above changes nothing on the page but
+    // the branches `expectSeedDrawn` unfolds and the focus it leaves on no row, which is where
+    // a load read by `expectSeedDrawn` stands.
     const rows = await drawnRows(page);
     // No row for the issue, which the header names (R8).
     expect(
@@ -310,8 +312,8 @@ test("a node draws its kind at the right of its row and every node starts at one
     await parent.locator("button[data-node-bullet]").click();
     await expect(parent).toHaveAttribute("aria-expanded", "true");
 
+    await readAt(PHONE);
     // At 390 px a focused comment's Reply is under 44 px (R1).
-    await page.setViewportSize(PHONE);
     const comment = await focusRow(page, seeded.comment);
     expect((await rowAct(comment, "reply").boundingBox())?.height ?? 1e6).toBeLessThan(44);
   });

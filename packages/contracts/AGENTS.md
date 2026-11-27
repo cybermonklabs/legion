@@ -29,4 +29,4 @@ It has no release of its own; its consumers bundle it.
 
 - Change a Dispatch spec's `example` with its argument shape: the command's help and every refusal of its input print it.
 
-- A change to `SEARCH_QUERY_MAX`, to `PROJECT_KEY_PATTERN`, or to the parameters `dispatch search` sends redoes the URL budget in `SEARCH_QUERY_MAX`'s doc comment (`src/dispatch-tools.ts`).
+- A change to `SEARCH_QUERY_MAX`, to `PROJECT_KEY_PATTERN`, or to the parameters `dispatch search` sends redoes the URL budget in `SEARCH_QUERY_MAX`'s doc comment (`src/dispatch-tools-constants.ts`).

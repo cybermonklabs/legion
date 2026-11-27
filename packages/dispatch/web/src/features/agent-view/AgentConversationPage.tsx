@@ -1,4 +1,5 @@
-import { DELIVERY_CAPABILITIES, type MessageDeliveryMode } from "@legion/contracts";
+import type { MessageDeliveryMode } from "@legion/contracts";
+import { DELIVERY_CAPABILITIES } from "@legion/contracts/dispatch-api-constants";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useRef, useState } from "react";
 import { Link } from "react-router-dom";
@@ -14,14 +15,16 @@ import { useFootInset } from "../../hooks/useFootInset";
 import {
   connectionDotConnecting,
   connectionDotFailed,
+  textMutedOnCanvas,
+} from "../../theme/classes";
+import {
   dangerText,
   inputClasses,
   linkHoverText,
   linkText,
   liveDotBg,
-  textMutedOnCanvas,
   textPrimaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { useAgentPinWrite, usePinnedAgents } from "../agents/pins";
 import { useMarkRepliesRead } from "../agents/unread";
 import { deliveryModesOf, MODE_LABELS, noDeliveryLine } from "../conversation/delivery";

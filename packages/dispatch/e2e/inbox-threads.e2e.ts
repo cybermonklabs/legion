@@ -2,6 +2,7 @@ import { setLiveSessions } from "./agents";
 import { createIssue, createProject } from "./api";
 import { inboxPane, inboxRow, selectRow } from "./inbox-pane";
 import { replyRowId, seedCommentThread, seedTwelve, THREAD_SESSION } from "./inbox-threads";
+import { pressOnceTheShellListens } from "./keyboard";
 import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
@@ -126,8 +127,7 @@ test("a long reply shows whole in the reading pane and on a card @phone", async 
     await expectWholeReply(inboxPane(page).locator("[data-inbox-thread-body]"));
 
     await page.goto("/agents");
-    await page.locator("body").focus();
-    await page.keyboard.press("i");
+    await pressOnceTheShellListens(page, "i");
     const drawer = page.getByRole("dialog", { name: "Inbox" });
     await expect(drawer).toBeVisible();
     await expectWholeReply(

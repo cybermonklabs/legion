@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# What a shard leg's run left behind: the file store's log and the stacks' own server logs, in
+# What a shard or real leg's run left behind: the file store's log and the stacks' own server logs, in
 # the job's own log where a reader of a failed row looks first, and copied into the one record
 # directory the upload after it takes.
 #
 # Who runs it: the step "What the run left behind" of .github/workflows/dispatch-browser.yaml's
-# shard job; .github/ci-notes/dispatch-browser.md#what-the-shard-job-collects-after-a-run says why
+# shard and real jobs; .github/ci-notes/dispatch-browser.md#what-the-shard-job-collects-after-a-run says why
 # it runs on every leg and not on a failed one alone. It takes
 # no argument: $RUNNER_TEMP is where the browser step before it wrote the run directory, the
 # sampler's two files and the store's log.
@@ -14,7 +14,7 @@
 # script of its own: no file store runs on that job's machine, so it collects no store log.
 #
 # Run from anywhere, with $RUNNER_TEMP set: .github/scripts/dispatch-browser-shard-record.sh
-# CI runs it in dispatch-browser.yaml's shard job, at the step "What the run left behind".
+# CI runs it in dispatch-browser.yaml's shard and real jobs, at the step "What the run left behind".
 set -euo pipefail
 
 echo "=== $RUNNER_TEMP ==="

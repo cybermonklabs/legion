@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
-} from "../../../packages/contracts/src/dispatch-api-limits.ts";
+} from "../../../packages/contracts/src/dispatch-api-constants.ts";
 import { bearerCredential } from "../../../packages/envoy-client/src/bearer.ts";
 import { DispatchWriteLandedError } from "../../../packages/envoy-client/src/dispatch-http.ts";
 import {

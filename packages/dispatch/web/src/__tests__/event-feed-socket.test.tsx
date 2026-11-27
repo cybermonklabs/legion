@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, QueryObserver, useQuery } from "@tanstack/react-query";
 import {
   act,
+  type RenderHookResult,
   type RenderResult,
   render,
   renderHook,
@@ -12,8 +13,9 @@ import type { ReactNode } from "react";
 
 import { api } from "../api/client";
 import { useEventFeed, WHOLE_CACHE_REFRESH_MS } from "../api/event-feed";
+import * as eventRefreshLoad from "../api/event-refresh-load";
 import { liveSocketFor } from "../api/live-socket";
-import { DispatchQueryClient } from "../api/query-client";
+import { DispatchQueryClient, type EndReadHold, holdBackReads } from "../api/query-client";
 import type { AuthenticatedUser, DispatchEvent, LiveServerFrame } from "../api/types";
 import { credentialPendingQuery } from "../features/credentials/pending";
 import { quietConsoleError } from "./act-warnings";
@@ -27,6 +29,18 @@ import {
 
 let sockets: FakeLiveSockets;
 const clients: QueryClient[] = [];
+
+// The feed reads each event through the event-to-queries map, a chunk it loads when it starts
+// (`api/event-refresh-load.ts`), and the refreshes an event asks for wait on that load. The rows
+// here are about the feed, not about that download: in a random order the row that happens to
+// start the feed first would wait for it, and a row that counts refreshes would count too few
+// while it is out (`test:web:cold` holds it for a second). So the map is loaded before the first
+// row. A row about the download itself replaces `loadEventRefresh` with a load of its own, and
+// the row that holds it hands it this map when it lets it land.
+let eventRefreshMap: eventRefreshLoad.EventRefreshMap;
+beforeAll(async () => {
+  eventRefreshMap = await eventRefreshLoad.loadEventRefresh();
+});
 
 beforeEach(() => {
   sockets = installFakeLiveSockets();
@@ -375,6 +389,228 @@ test("an event this page cannot read is skipped and refreshes everything", async
     hook.unmount();
     logged.mockRestore();
     wholeCache.restore();
+  }
+});
+
+// The map's chunk can fail to download without the tab reloading for it: the browser is offline,
+// the tab's recovery reloads are spent, the page has asked for its one reload already, the page is
+// being left, or the reader stays at the leave prompt a write not yet confirmed opens
+// (`features/shell/DeploymentResilience.tsx`, `reloadForChunkFailure`). The event that was waiting
+// on the map then refreshes everything, as an event the page cannot map does, and the next event
+// starts the import again: a feed that kept the one failed download would log every later event
+// and refresh nothing for as long as the tab stayed open.
+test("a map chunk that fails to download refreshes everything for the event waiting on it, and a later event loads the map again", async () => {
+  const queryClient = newClient({ staleTime: Number.POSITIVE_INFINITY });
+  // A list an `issue.updated` of CORE-1 refreshes through the map, and no whole-cache probe.
+  const projectIssues = ["issues", "project", "CORE"] as const;
+  queryClient.setQueryData(projectIssues, { loaded: true });
+  const listIsStale = () =>
+    queryClient.getQueryCache().find({ queryKey: projectIssues, exact: true })?.isStale();
+  const wholeCache = countWholeCacheRefreshes(queryClient);
+  // The first download is held open, so the first event is waiting on it when it fails.
+  const firstDownload = Promise.withResolvers<eventRefreshLoad.EventRefreshMap>();
+  const load = spyOn(eventRefreshLoad, "loadEventRefresh").mockImplementationOnce(
+    () => firstDownload.promise
+  );
+  const hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
+  try {
+    const { socket, sub } = openFeed();
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+    receive(socket, eventFrame(sub, issueUpdated(1)));
+    firstDownload.reject(new TypeError("Failed to fetch dynamically imported module"));
+    await waitFor(() => expect(wholeCache.count()).toBe(1));
+
+    // The whole-cache refresh marked the list stale; it lands again, fresh, so only the next
+    // event's own refresh can mark it.
+    queryClient.setQueryData(projectIssues, { loaded: true });
+    expect(listIsStale()).toBe(false);
+    receive(socket, eventFrame(sub, issueUpdated(2)));
+    await waitFor(() => expect(listIsStale()).toBe(true));
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(wholeCache.count()).toBe(1);
+  } finally {
+    hook.unmount();
+    load.mockRestore();
+    wholeCache.restore();
+  }
+});
+
+// What a cold page does with the events that arrive before the map's chunk is in: each is kept
+// in the log at once, so a resume starts after it, and each waits on the one download for its own
+// refresh, which runs once the chunk lands. None is lost and none costs a whole-cache refresh.
+test("events that arrive while the map is downloading each refresh once it lands, and a resume during the download starts after them", async () => {
+  jest.useFakeTimers();
+  const queryClient = newClient({ staleTime: Number.POSITIVE_INFINITY });
+  signIn(queryClient, "41");
+  const keys = ["CORE-1", "CORE-2", "CORE-3"] as const;
+  for (const key of keys) queryClient.setQueryData(["issue", key], { key });
+  const refreshed = (key: string) => queryClient.getQueryState(["issue", key])?.isInvalidated;
+  // A key no event below names: only a whole-cache refresh would reach it.
+  const unnamed = ["github-link-checks", "https://github.com/sjawhar/legion/pull/1", "c0ffee"];
+  queryClient.setQueryData(unnamed, { loaded: true });
+  const wholeCache = countWholeCacheRefreshes(queryClient);
+  const download = Promise.withResolvers<eventRefreshLoad.EventRefreshMap>();
+  const load = spyOn(eventRefreshLoad, "loadEventRefresh").mockImplementationOnce(
+    () => download.promise
+  );
+  const hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
+  try {
+    const socket = sockets.latest();
+    act(() => socket.open());
+    const { sub } = socket.subscribed("events");
+    expect(socket.subscribed("events").resume).toEqual({ since: "41" });
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+    receive(
+      socket,
+      { type: "events_start", sub, since: "41", replay_complete: true },
+      ...keys.map((key, index) =>
+        eventFrame(sub, {
+          ...issueUpdated(42 + index),
+          issue_key: key,
+          payload: { key, title: `title-${key}` },
+        } as DispatchEvent)
+      )
+    );
+    // The download is still out: no event has refreshed anything yet, and a resume already
+    // starts after the last of them, so none is asked for again.
+    await advance(1_000);
+    for (const key of keys) expect(refreshed(key)).toBe(false);
+    expect(rotate().subscribed("events").resume).toEqual({ since: "44" });
+
+    download.resolve(eventRefreshMap);
+    await waitFor(() => {
+      for (const key of keys) expect(refreshed(key)).toBe(true);
+    });
+    await advance(150);
+    expect(queryClient.getQueryState(unnamed)?.isInvalidated).toBe(false);
+    expect(wholeCache.count()).toBe(0);
+    expect(load).toHaveBeenCalledTimes(1);
+  } finally {
+    hook.unmount();
+    load.mockRestore();
+    wholeCache.restore();
+    realClock();
+  }
+});
+
+// An event's refresh waits on the map's download, and nothing can take that wait back once the
+// feed stops: the person signs out, or another person's sign-in mounts the app again on the same
+// query client. The download ending after that, whether it lands or fails, refreshes nothing: no
+// read is asked for a feed that is gone, under whoever is signed in by then.
+type MapDownload = ReturnType<typeof Promise.withResolvers<eventRefreshLoad.EventRefreshMap>>;
+const downloadEnds = [
+  ["lands", (download: MapDownload) => download.resolve(eventRefreshMap)],
+  [
+    "fails",
+    (download: MapDownload) =>
+      download.reject(new TypeError("Failed to fetch dynamically imported module")),
+  ],
+] as const;
+
+test.each(downloadEnds)(
+  "an event waiting on the map's download asks no read once the feed has stopped and the download %s",
+  async (_ends, end) => {
+    jest.useFakeTimers();
+    const queryClient = newClient();
+    signIn(queryClient);
+    // A detail the next app on this client still renders, which the event's refresh would fetch.
+    let fetches = 0;
+    const unsubscribe = new QueryObserver(queryClient, {
+      queryFn: async () => {
+        fetches += 1;
+        return { key: "CORE-1" };
+      },
+      queryKey: ["issue", "CORE-1"],
+    }).subscribe(() => {});
+    const wholeCache = countWholeCacheRefreshes(queryClient);
+    const download = Promise.withResolvers<eventRefreshLoad.EventRefreshMap>();
+    const load = spyOn(eventRefreshLoad, "loadEventRefresh").mockImplementationOnce(
+      () => download.promise
+    );
+    const hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
+    try {
+      await waitFor(() => expect(fetches).toBe(1));
+      const { socket, sub } = openFeed("0", true);
+      await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+      receive(socket, eventFrame(sub, issueUpdated(1)));
+      hook.unmount();
+
+      end(download);
+      // Past the batch window, a whole-cache refresh's first one, and the scheduler's interval.
+      await advance(2_000);
+      expect(fetches).toBe(1);
+      expect(queryClient.getQueryState(["issue", "CORE-1"])?.isInvalidated).toBe(false);
+      expect(wholeCache.count()).toBe(0);
+    } finally {
+      hook.unmount();
+      unsubscribe();
+      load.mockRestore();
+      wholeCache.restore();
+      realClock();
+    }
+  }
+);
+
+// A write's own event ends its hold on its queries' reads (`holdBackReads`), and the feed hears it
+// as it arrives (`hearLiveEvent`), before the event waits on the map's chunk for its refresh: the
+// hold names its own queries and needs nothing of the map. So a read held back for a write that
+// Dispatch has already taken goes out while that chunk is still downloading, rather than once it
+// lands - or, where it never does, once the hold's deadline has passed.
+test("a read held back for a write goes out on the write's event while the map's download is still out", async () => {
+  const queryClient = newClient({ staleTime: Number.POSITIVE_INFINITY }, DispatchQueryClient);
+  signIn(queryClient);
+  let reads = 0;
+  const unsubscribe = new QueryObserver(queryClient, {
+    queryFn: async () => {
+      reads += 1;
+      return { read: reads };
+    },
+    queryKey: ["user-agent-state"],
+  }).subscribe(() => {});
+  const download = Promise.withResolvers<eventRefreshLoad.EventRefreshMap>();
+  const load = spyOn(eventRefreshLoad, "loadEventRefresh").mockImplementationOnce(
+    () => download.promise
+  );
+  let release: EndReadHold | undefined;
+  let hook: RenderHookResult<void, unknown> | undefined;
+  try {
+    await waitFor(() =>
+      expect(queryClient.getQueryData<{ read: number }>(["user-agent-state"])).toEqual({ read: 1 })
+    );
+    // Alice's write to her session states holds the read the page asks next, until its event.
+    release = holdBackReads(queryClient, {
+      endsOn: (event, viewer) =>
+        event.type === "user_agent_state.updated" && event.payload.login === viewer,
+      keys: [["user-agent-state"]],
+    });
+    void queryClient.invalidateQueries({ queryKey: ["user-agent-state"] });
+
+    hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
+    const { socket, sub } = openFeed("0", true);
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+    expect(reads, "the write holds the read back").toBe(1);
+
+    receive(
+      socket,
+      eventFrame(sub, {
+        actor: { id: "alice", kind: "user" },
+        created_at: "2026-09-23T00:00:00Z",
+        id: 1,
+        issue_key: null,
+        notify: false,
+        payload: { login: "alice", session_id: "planner" },
+        seq: 1,
+        type: "user_agent_state.updated",
+      } as DispatchEvent)
+    );
+    // The download is never let land in this row.
+    await waitFor(() => expect(reads).toBe(2));
+    expect(load).toHaveBeenCalledTimes(1);
+  } finally {
+    hook?.unmount();
+    release?.();
+    unsubscribe();
+    load.mockRestore();
   }
 });
 

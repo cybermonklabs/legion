@@ -11,12 +11,7 @@
  * bar acts on. They sit on either side of the box, and only the filter chip can be removed.
  */
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
-import {
-  type ProjectDocumentRoute,
-  parseIssuePath,
-  parseProjectPath,
-  routeProjectOf,
-} from "../refs/routes";
+import { parseIssuePath, parseProjectPath, routeProjectOf } from "../refs/page-routes";
 
 /** How much of a block's own text the chip names it by. */
 const BLOCK_TEXT_MAX = 60;
@@ -150,13 +145,4 @@ export function barTargets(level: BarScopeLevel, page: BarTargets): BarTargets {
     issue: level === "project" ? undefined : page.issue,
     project: page.project,
   };
-}
-
-/** The project document the page shows, whose name the chip reads it by. */
-export function documentRouteOf(
-  pathname: string,
-  search: string
-): ProjectDocumentRoute | undefined {
-  const route = parseProjectPath(pathname, search);
-  return route?.kind === "document" ? route : undefined;
 }

@@ -9,12 +9,8 @@ import { afterAll, describe, jest, test } from "bun:test";
 import { act, render } from "@testing-library/react";
 import type { ComponentType } from "react";
 
-import {
-  relativeTimeLabel,
-  resetTimestampTick,
-  TICK_INTERVAL_MS,
-  Timestamp,
-} from "../features/refs/Timestamp";
+import { relativeTimeLabel } from "../features/refs/relative-time";
+import { resetTimestampTick, TICK_INTERVAL_MS, Timestamp } from "../features/refs/Timestamp";
 import { quietConsoleError } from "./act-warnings";
 import { type HeldCount, heldCount, useHeldCount } from "./held-count";
 

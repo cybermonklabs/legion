@@ -175,8 +175,8 @@
 #      and ci-caches-changes.yaml) whose `key:` is neither exactly that
 #      of the matching actions/cache/restore nor that key followed by `-${{ github.sha }}`, or
 #      whose `path:` is not exactly that restore's, for a restore of ci.yaml or of a workflow
-#      ci.yaml calls - dispatch-browser.yaml's binaries, multiprocess, embedder and visual jobs
-#      restore go-envoy and go-envoy-test for the dispatch-browser job - or of any other workflow
+#      ci.yaml calls - dispatch-browser.yaml's binaries job restores go-dispatch-browser for the
+#      dispatch-browser job - or of any other workflow
 #      of .github/workflows that restores it (the release builds, the nightly browser re-record,
 #      the fill workflows' own restores), since a drift there misses as silently (the keys compared
 #      as text, trailing whitespace aside, the paths as ordered lists of stripped lines), naming

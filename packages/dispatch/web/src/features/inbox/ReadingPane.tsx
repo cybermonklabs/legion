@@ -3,10 +3,10 @@ import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useStat
 
 import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
-import { whoAmIQuery } from "../../api/queries";
+import { artifactQueryOptions, whoAmIQuery } from "../../api/queries";
 import type { AskApproval, InboxRow } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import { borderDefault } from "../../theme/classes";
+import { borderDefault } from "../../theme/shell-classes";
 import { versionsNewestFirst } from "../artifacts/ArtifactHeader";
 import { CHANGED_BLOCK_CLASS } from "../doc/change-marks";
 import { scrollElementToTop } from "../doc/scroll-block";
@@ -16,12 +16,7 @@ import { textSourceOf } from "../refs/text-references";
 import { AskCard } from "./AskCard";
 import { isDecisionAsk } from "./ask-decision";
 import type { InboxListRow } from "./list-row";
-import {
-  artifactQueryOptions,
-  DocumentPane,
-  PaneFrame,
-  useSettledOnDocument,
-} from "./PaneDocument";
+import { DocumentPane, PaneFrame, useSettledOnDocument } from "./PaneDocument";
 import { holdSection, type SectionHold } from "./pane-placement";
 import { ReadingPaneHead } from "./ReadingPaneHead";
 import { ThreadPane } from "./ThreadPane";

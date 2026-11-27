@@ -2,14 +2,14 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { createContext, Fragment, type ReactNode, useContext } from "react";
 import { Link } from "react-router-dom";
 import { ChevronIcon } from "../../components/DisclosureToggle";
+import { textMutedOnCanvas } from "../../theme/classes";
 import {
   focusVisibleRing,
   linkHoverText,
   linkText,
-  textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { PlainText } from "../refs/plain-text";
 import { Timestamp } from "../refs/Timestamp";
 import { PriorityDescription } from "./PriorityDescription";

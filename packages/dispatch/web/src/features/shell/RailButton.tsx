@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { kbdHint, railHoverBg, railHoverText, railSecondaryText } from "../../theme/classes";
+import { kbdHint, railHoverBg, railHoverText, railSecondaryText } from "../../theme/shell-classes";
 
 /** A rail control that stands for a keyboard binding: its label, then the keys that also run it,
  *  so a person who has not learned the binding can still reach what it opens. `className` carries

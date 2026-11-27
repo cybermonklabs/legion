@@ -60,16 +60,27 @@ plain-HTTP proxy) unless `PLAYWRIGHT_BASE_URL` selects a deployed server, and
 `e2e/global-teardown.ts` stops them. It keeps the stacks' logs unless the run
 showed that it passed. A run of one stack writes none, since that stack's
 servers write to the run's own stderr.
+The hook also makes one directory for the run under the temporary directory,
+once its preflight has passed, or as it returns for servers you started. Bun
+keeps the compiled modules of each `dispatch` command a row starts there, in
+place of each row's own HOME, and the directory and its variable go when the
+run ends (`e2e/cli-transpiler-cache.ts`). A run of the stubbed layer alone
+makes none.
 Playwright runs under Node, which reads `@legion/contracts` from that package's
 built `dist/`, and a fresh checkout has no `dist/`: `bun install` makes none.
 The hook does not build it and cannot. Playwright loads
 `e2e/playwright.config.ts` before it runs any hook, and that config imports the
 package, so a run that has not built it is already dead when the hook is
-reached. Whoever starts Playwright builds it instead: `bun run e2e` and the
-package's other e2e scripts run `build:contracts` first, every CI job that runs
-the suite carries a `Build contracts for dispatch e2e` step
+reached. Whoever starts Playwright builds it instead: `bun run e2e` and each
+other e2e script that builds anything run `build:contracts` first, every CI job
+that runs the suite carries a `Build contracts for dispatch e2e` step
 (`.github/workflows/dispatch-browser.yaml`), and a Playwright command you type
-yourself needs `bun run build:contracts` once.
+yourself needs `bun run build:contracts` once. The three `:run` scripts,
+`e2e:clock:run`, `e2e:embedder:run` and `e2e:multiprocess:run`, are the
+Playwright command alone: like a command you type, each needs
+`bun run build:contracts` once and the dashboards it serves already built. So
+after `bun run e2e` from an unchanged tree, `bun run e2e:clock:run` runs the
+wall-clock rows without building again.
 The hook refuses the run before it starts a
 harness or a Postgres when Playwright has not downloaded a browser the run
 needs, naming `bun run e2e:install` and how large that download is.
@@ -111,7 +122,7 @@ server serves on a port the OS chooses and holds until it serves: the Dispatch
 server on a socket `scripts/e2e/lib/held-port.py` hands it, each Bun listener by
 binding port 0. Each reports its port on its listening line, and
 `e2e/global-setup.ts` writes them into the `DISPATCH_E2E_STACKS` manifest every
-worker inherits, which is the only variable that hook writes, so
+worker inherits, which is the only stack variable that hook writes, so
 no run shares a port with another and
 none empties the database behind a server it did not start. Set, a port is
 used as given, and an occupied one fails with `address already in use`.
@@ -325,7 +336,11 @@ DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5
 ```
 
 It builds the dashboard twice (`web/dist`, and `web/dist-b` under another build id), then runs
-Playwright with `DISPATCH_E2E_PROCESSES=2`: Dispatch A on
+Playwright with `DISPATCH_E2E_PROCESSES=2`.
+Each half is a script you can call on its own: `bun run build:web-b` writes the second bundle,
+and `bun run e2e:multiprocess:run` runs Playwright over bundles that are already built, which
+is what CI does with the bundles its `binaries` job made.
+The run is: Dispatch A on
 `DISPATCH_E2E_PORT_A` serving `web/dist`, Dispatch B on `DISPATCH_E2E_PORT_B` serving
 `DISPATCH_E2E_WEB_DIST_B` (here `web/dist-b`; default A's), and `e2e/round-robin-proxy.ts` on
 `DISPATCH_E2E_PORT`, which alternates requests and websockets between them. As every harness
@@ -378,8 +393,10 @@ DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch_<issue>?sslm
   DISPATCH_E2E_SIGNIN=oidc bun run e2e:multiprocess
 ```
 
-It needs `DISPATCH_E2E_PROCESSES=2`, which `e2e:multiprocess` sets; any value other than `oidc`
-or unset is refused.
+It needs `DISPATCH_E2E_PROCESSES=2`, which `e2e:multiprocess:run` sets and `e2e:multiprocess`
+reaches through it; any value other than `oidc` or unset is refused.
+The script builds the issuer from this checkout, or runs a prebuilt `dev-oidc-issuer` that
+`DISPATCH_E2E_SIGNIN_ISSUER_BIN` names, as `DISPATCH_E2E_SERVER_BIN` does for the server.
 
 The rules a row follows:
 
@@ -1080,9 +1097,10 @@ engine, viewport, origin and server-process count. The iPhone project uses Chrom
 13 viewport, touch, and user-agent emulation. A deployed run (`bun run e2e:deployed`) uses the
 same projects but the two stubbed ones and the three `-alone` ones, so its `iphone` project also
 runs only the `@phone` tests, and it holds no wall-clock row: that command names no project, and
-the three wall-clock projects are out of the default selection. Listed at this head, a deployed
-run holds 1,302 rows in 169 files, and the other 51 are a wall-clock run of its own, under the
-same base URL:
+the three wall-clock projects are out of the default selection. Listed at `fc1baefb` on 2026-11-16
+(`PLAYWRIGHT_BASE_URL=https://<host> bunx playwright test --config e2e/playwright.config.ts --list`),
+a deployed run holds 1,321 rows in 172 files, and the other 51 are a wall-clock run of its own,
+under the same base URL:
 `bun run build:contracts && PLAYWRIGHT_BASE_URL=… bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1`,
 which is `bun run e2e:clock` less the SPA build that script runs first and a deployed run has
 no use for. `bunx` and not a bare `playwright`, which is on no PATH here (`command -v
@@ -1125,7 +1143,8 @@ stream's worst case comes back inside 1.2 seconds on the fastest of up to eight 
 the Agents page paints six hundred sessions inside 100 milliseconds while holding the main
 thread under 150 ms, the first load inside both of those bounds of up to twenty taken), and
 `firefox-alone` and `webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines.
-Each sets `default: false`, so a run that names no project holds none of their 51 rows, and each
+Each sets `default: false`, so a run that names no project holds none of their 51 rows
+(`bun run e2e:clock:run -- --list` prints `Total: 51 tests in 3 files`), and each
 caps its own workers at one.
 What holds a reading to a quiet machine is the run being one worker wide, and the three files
 reach that in two ways: `e2e/main-thread-hold.ts` fails a measuring row of
@@ -1133,8 +1152,8 @@ reach that in two ways: `e2e/main-thread-hold.ts` fails a measuring row of
 since four workers on one machine make a second of wall clock unmeasurable, and the rows of
 `e2e/agent-workspace-timing.e2e.ts`, which read a clock of their own, take that one worker from
 the command that runs them.
-`bun run e2e:clock` is the command that runs all three projects, and it names `--workers=1`
-beside them; one file in one engine is
+`bun run e2e:clock` is the command that runs all three projects, which its `e2e:clock:run` half
+names with `--workers=1` beside them; one file in one engine is
 `bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts --workers=1`, which names that
 worker count itself rather than taking the configuration's default, and which writes the project
 as `--project=<name>`, since the option is variadic and would read the file after a space as a
@@ -1159,11 +1178,15 @@ reader's choice in this browser draws another way (the new issue page, the proje
 the project page and its Architecture tab, which a project with an architecture source draws -
 over the review corpus and a stress layer that writes
 production's lengths (`e2e/layout-seed.ts`), at 360, 900, 1280, 1440 and 1920 px, and again in
-each state a route names (the Peek drawer open, rows or agents selected). At each width
-`e2e/layout-check.ts` loads the page fresh, waits for `waitForRouteSettled`, and runs
-`measureLayout` (`e2e/layout-measure.ts`) in the page: a page that scrolls sideways, a box that
-does for anything but a code block, one picture wider than the box, a data table or a board's
-lanes, something cut off at a side with no ellipsis (a code block's text, a picture and a fixed
+each state a route names (the Peek drawer open, rows or agents selected). At 360, 900 and 1280 px
+`e2e/layout-check.ts` loads the page fresh, and so at 1440 and 1920 px unless the route is marked
+`reuseWide`: it resizes such a page from 1280 px instead, where the reading there was 1280 px
+wide. Either way it then waits for `waitForRouteSettled`, whose Inbox window of at least 500 ms
+is also the time a resized page has to redraw for its new width, and for the pinned faces, and
+runs `measureLayout` (`e2e/layout-measure.ts`) in the page: a page that scrolls
+sideways, a box that does for anything but a code block, one picture wider than the box, a data
+table or a board's lanes, something cut off at a side with no ellipsis (a code block's text, a
+picture and a fixed
 layer's own text among them), a closed `data-layout-group` showing more entries than its cap, a
 group that declares a cap other than a whole number from 1 to 10 or marks more than one "+N"
 control, and a group the route must mark (`requiredGroups`) of which no shown entry is marked.
@@ -1181,7 +1204,10 @@ in Liberation Mono and Liberation Sans, and the editor's `SF Mono` and the diagr
 `JetBrains Mono` in DejaVu Sans Mono. A reading fails if any of them does not load. The rows run
 in `en-US` and UTC, so a run on any machine measures the text CI measures.
 `e2e/layout-measure.stub.e2e.ts` draws each defect and each allowed
-case, and holds the instrument to reporting the one and not the other.
+case, and holds the instrument to reporting the one and not the other. It holds the settle wait
+after a resize too: on a page whose size observer redraws 250 ms after a resize, `checkLayout`
+must report what it drew at 1440 and at 1920 px, which a reading taken without
+`waitForRouteSettled` misses.
 `e2e/issue-header-layout.stub.e2e.ts` holds today's issue header below its title to a height at
 360 and 1280 px, and each issue tab whole inside its list and the viewport. A row fails on each
 breach no entry of `e2e/layout-breaches.ts` accepts - an entry names the locator the row prints

@@ -46,6 +46,11 @@ import type {
   Version,
 } from "./types";
 
+// The two functions of the map the live feed reads an event with, beside this module's
+// `markCorrectedPost`: the feed loads this module, which already imports the map, so the map and
+// the correction are one chunk and one download (`loadEventRefresh`, `event-refresh-load.ts`).
+export { askThreadsIssue, eventRefreshTargets } from "./event-refresh";
+
 /** What a post's correction writes into each copy of the post: the time of an edit, or the mark
  *  of a delete, with whether the comment's anchor quote is empty as the delete left it
  *  (`quoteCleared`): the delete empties the quote of an insert suggestion no accept made document

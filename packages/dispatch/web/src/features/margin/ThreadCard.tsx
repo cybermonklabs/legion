@@ -7,15 +7,9 @@ import { Pill } from "../../components/Pill";
 import { QueryError } from "../../components/QueryError";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import {
-  borderDefault,
-  calloutDangerBorder,
   calloutSuccessBorder,
-  card,
   dangerHoverText,
-  dangerText,
   inlineWarningText,
-  linkHoverText,
-  linkText,
   quoteAccentBorder,
   quoteBodyText,
   selectedCardBg,
@@ -26,10 +20,19 @@ import {
   suggestionAddedText,
   suggestionRemovedBg,
   suggestionRemovedText,
-  textMutedOnSurfaceMuted,
   textPrimaryOnSurface,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
+import {
+  borderDefault,
+  calloutDangerBorder,
+  card,
+  dangerText,
+  linkHoverText,
+  linkText,
+  textMutedOnSurfaceMuted,
+  textSecondaryOnSurface,
+} from "../../theme/shell-classes";
+import { composerNameOf } from "../conversation/composer-names";
 import { useHeldSend, useHeldSends, useHeldSendsUnder } from "../conversation/held-sends";
 import { KeptReplyToDeleted } from "../conversation/KeptDraftOffers";
 import { KeptReply } from "../conversation/KeptReply";
@@ -37,15 +40,15 @@ import { MentionComposer } from "../conversation/MentionComposer";
 import { passageItem, ReplyQuote } from "../conversation/ReplyQuote";
 import type { SaveCommentEdit } from "../conversation/send-request";
 import { useUnsentDrafts } from "../conversation/unsent-drafts";
-import { composerNameOf } from "../conversation/useKeptDrafts";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { PostBody, PostPreview } from "../refs/PostBody";
 import { EditedMark } from "../refs/PostMarks";
+import { buildIssuePath, buildProjectPath } from "../refs/page-routes";
 import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { ReferenceHostIs } from "../refs/reference-host";
-import { buildIssuePath, buildProjectPath, itemRoute } from "../refs/routes";
+import { itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { threadLayout } from "../threads/thread-layout";

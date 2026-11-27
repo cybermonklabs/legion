@@ -1,5 +1,5 @@
 import { expect, jest, test } from "bun:test";
-import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
+import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts/dispatch-api-constants";
 import { settle } from "../../__tests__/fake-clock";
 import { keyMinted } from "../../__tests__/kept-sends-harness";
 import { ApiError, NetworkError, type WriteMethod } from "../../api/client";

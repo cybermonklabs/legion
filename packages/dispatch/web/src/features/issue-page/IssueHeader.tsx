@@ -2,15 +2,14 @@ import { type ReactNode, useRef, useState } from "react";
 
 import type { Artifact, IssueDetails, UserIssueState } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { pageFailedText, pagePaperBg } from "../../theme/classes";
 import {
   calloutWarningBg,
   calloutWarningBorder,
   calloutWarningText,
-  pageFailedText,
   pageInkText,
   pageMutedText,
-  pagePaperBg,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { IssueStatusNotes } from "../issue/parent-status/IssueStatusNotes";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";

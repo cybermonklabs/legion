@@ -1238,12 +1238,13 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: false,
     surface: "github-reference-card",
   },
-  // The hover card over a reference, portaled once for the whole app. Its title reads every
-  // address in it as its short form, as a card's does (above).
+  // The hover card over a reference, portaled once for the whole app from the shell's layer
+  // (`RefPreviewLayer.tsx`). Its title reads every address in it as its short form, as a card's
+  // does (above).
   {
     files: [
-      "packages/dispatch/web/src/app.tsx",
       "packages/dispatch/web/src/features/refs/RefPreview.tsx",
+      "packages/dispatch/web/src/features/refs/RefPreviewLayer.tsx",
     ],
     reach: "Hover a reference link anywhere, `#ref-preview`",
     record: true,

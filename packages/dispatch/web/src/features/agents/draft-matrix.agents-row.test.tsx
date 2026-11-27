@@ -92,6 +92,11 @@ import { AuthGate } from "../../app";
 import type { ReplyTarget } from "../conversation/composer-model";
 import type { SentRequest } from "../conversation/send-request";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+// Every kind of write is a chunk of its own (`features/writes/kinds.ts`), which the store's take-up
+// of what a reload kept waits for from the sign-in on, and every send a cell presses waits for that
+// take-up (`Writes.resume`, `Writes.run`). The cells are about the composer's drafts, not about that
+// download, so the kinds are loaded here too, and no cell waits for that load.
+import "../writes/kinds";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.

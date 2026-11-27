@@ -11,16 +11,15 @@ import type {
 } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { pillClassName, pillShapeClassName } from "../../components/Pill";
+import { successText, textMutedOnCanvas } from "../../theme/classes";
 import {
   card,
   dangerText,
-  successText,
   surfaceMutedBg,
-  textMutedOnCanvas,
   textMutedOnSurface,
   textMutedOnSurfaceMuted,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { ReplacingUploadNote } from "../artifacts/ArtifactUpload";
 import { AgentName } from "../refs/AgentName";
 import { BlockReferences } from "../refs/ReferencedBy";

@@ -14,6 +14,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { stubFailedCopy } from "../../__tests__/clipboard";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
@@ -1484,6 +1485,46 @@ for (const [board, lanes] of [
   });
 }
 
+// A keyboard move of a card with a parent or an open child places nothing before its dry run
+// answers, and focus follows the card once it is placed. A reader who acts in that wait - a press
+// in another field, and words typed there - has put the focus where they want it, and focus that
+// followed the card then would leave the rest of their keys on the board, where its keys read
+// them. Here the dry run is held until the reader has typed, as a slow server holds it.
+test("a reader who moves to another field before a move's dry run answers keeps the focus and the words typed there", async () => {
+  const user = userEvent.setup();
+  const dryRun = Promise.withResolvers<StatusChangeAnswer>();
+  const statusChanges = answerStatusChanges().mockImplementation(() => dryRun.promise);
+  const patchIssue = patchInFlight();
+  const { cleanup } = renderBoard({}, undefined, parentIssues);
+  const elsewhere = document.createElement("input");
+  elsewhere.setAttribute("aria-label", "Elsewhere");
+  document.body.append(elsewhere);
+  try {
+    const shown = await screen.findByRole("region", { name: "Project board" });
+    act(() => within(shown).getByRole("article", { name: "CORE-1 Parent" }).focus());
+    await user.keyboard("{Shift>}L{/Shift}");
+    // Checking: the card has not moved.
+    expect(statusChanges).toHaveBeenCalledTimes(1);
+    expect(patchIssue).not.toHaveBeenCalled();
+    await user.click(elsewhere);
+    await user.keyboard("ab");
+
+    await act(async () => {
+      dryRun.resolve(fixtureAnswer("dry-run"));
+      await settle();
+    });
+    const inProgress = within(shown).getByRole("region", { name: "In progress" });
+    await waitFor(() => expect(articleLabels(inProgress)).toContain("CORE-1 Parent"));
+    expect(document.activeElement, "focus followed the card from the other field").toBe(elsewhere);
+    expect(elsewhere.value).toBe("ab");
+  } finally {
+    elsewhere.remove();
+    cleanup();
+    patchIssue.mockRestore();
+    statusChanges.mockRestore();
+  }
+});
+
 // A keyboard move of a card with a parent or an open child places nothing before its dry run, so
 // focus follows the card only once the move places it. A move that ends without placing it takes no
 // focus later: the next change of the board's columns leaves focus where the reader put it.
@@ -1532,8 +1573,11 @@ const childIssues: IssueSummary[] = [
 
 // A keyboard move whose question's Move them with it lands moves the card's open child with it.
 // The board says the card's place once the card lands, and the child is in the cell by then: the
-// count holds it, and the card's rank PATCH names it as the card's neighbour there.
-test("Shift+H of a card with an open child, its question's Move them with it landed, announces the count with the child in the cell", async () => {
+// count holds it, and the card's rank PATCH names it as the card's neighbour there. The press in
+// the question asks for the move again, and focus follows the card from that press once the
+// choice lands and the card is placed, though the reader's presses in the question came after the
+// move's own key.
+test("Shift+H of a card with an open child, its question's Move them with it landed, announces the count with the child in the cell and puts the focus on the moved card", async () => {
   const user = userEvent.setup();
   const statusChanges = answerTheQuestion(async () => ({
     changed: [
@@ -1563,9 +1607,39 @@ test("Shift+H of a card with an open child, its question's Move them with it lan
         .getAllByRole("article")
         .map((node) => node.textContent)
     ).toEqual([expect.stringContaining("Parent"), expect.stringContaining("Child")]);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const backlog = within(shown).getByRole("region", { name: "Backlog" });
+    await waitFor(() =>
+      expect(within(backlog).getByRole("article", { name: "CORE-1 Parent" })).toHaveFocus()
+    );
   } finally {
     cleanup();
     patchIssue.mockRestore();
     statusChanges.mockRestore();
+  }
+});
+
+// When neither the clipboard nor the legacy fallback can copy a focused card's reference or key,
+// the board announces that the copy failed rather than saying it copied.
+test("y and Shift+Y announce copy failure rather than Copied when copying fails", async () => {
+  const user = userEvent.setup();
+  const restoreCopy = stubFailedCopy();
+  const { cleanup } = renderBoard({}, undefined, keyboardIssues);
+  try {
+    const board = await screen.findByRole("region", { name: "Project board" });
+    const status = within(board).getByRole("status", { name: "Board announcements" });
+    const alpha = within(board).getByRole("article", { name: "CORE-1 Alpha" });
+    act(() => alpha.focus());
+
+    await user.keyboard("y");
+    await waitFor(() => expect(status.textContent).toBe("Copy failed - dispatch://CORE-1"));
+    expect(status.textContent).not.toContain("Copied");
+
+    await user.keyboard("{Shift>}Y{/Shift}");
+    await waitFor(() => expect(status.textContent).toBe("Copy failed - CORE-1"));
+    expect(status.textContent).not.toContain("Copied");
+  } finally {
+    cleanup();
+    restoreCopy();
   }
 });

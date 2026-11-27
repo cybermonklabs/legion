@@ -12,9 +12,10 @@
  *  once. */
 import { writeFileSync } from "node:fs";
 
-import type { VisualSeed } from "./review-routes";
+import type { ReviewSeed, VisualSeed } from "./review-routes";
 import { seedReviewRoutes } from "./review-seed";
 import { resetDatabase } from "./seed";
+import { midnightToSeedAfter } from "./visual-day";
 
 const path = process.argv[2];
 if (path === undefined) {
@@ -22,12 +23,53 @@ if (path === undefined) {
   process.exit(2);
 }
 
-await resetDatabase();
 // No Playwright row runs this seed, so no expect timeout applies; 15 s is far above the 230 ms
 // the Inbox was read settling in (the sampler e2e/workspace.ts cites), so only a seed that does
 // not settle fails it.
 const seedBoundMs = 15_000;
-const seed = await seedReviewRoutes({ boundMs: seedBoundMs });
+
+/** The corpus, written on one UTC day with room after it for every row's clock
+ *  (e2e/visual-day.ts says why). A seed begun in the last two minutes of a day could not be kept
+ *  however quickly it ran, so it waits for that midnight first. A seed that runs into those two
+ *  minutes is written again just after its midnight; that second seed has the whole day ahead of
+ *  it, so a second refusal is a clock this file does not understand, and it throws. */
+async function seedOnOneDay(): Promise<{ readonly seed: ReviewSeed; readonly seededAt: number }> {
+  const now = Date.now();
+  const firstMidnight = midnightToSeedAfter(now, now);
+  if (firstMidnight !== null) {
+    console.error(
+      `e2e/visual-seed.ts: it is ${new Date(now).toISOString()}, and a row's clock could reach ` +
+        `past ${new Date(firstMidnight).toISOString()} however quickly the seed ran; ` +
+        "seeding after that midnight."
+    );
+    await Bun.sleep(new Date(firstMidnight));
+  }
+  // Two seeds at most: the second throws on a refusal rather than sleeping again.
+  for (let attempt = 1; ; attempt += 1) {
+    const startedAt = Date.now();
+    await resetDatabase();
+    const seed = await seedReviewRoutes({ boundMs: seedBoundMs });
+    const seededAt = Date.now();
+    const midnight = midnightToSeedAfter(startedAt, seededAt);
+    if (midnight === null) return { seed, seededAt };
+    const refusal =
+      `e2e/visual-seed.ts: the seed ran from ${new Date(startedAt).toISOString()} to ` +
+      `${new Date(seededAt).toISOString()}, and a row's clock could reach past ` +
+      `${new Date(midnight).toISOString()}, where its day headings would read "Yesterday"`;
+    if (attempt === 2) {
+      throw new Error(
+        `${refusal}. This was the second seed, begun after a midnight with the whole day ahead ` +
+          "of it, so this host's clock is not moving as Date.now() says."
+      );
+    }
+    console.error(`${refusal}; seeding again after that midnight.`);
+    // `Bun.sleep` takes the moment itself and resolves at once for one already past, so a seed
+    // that straddled its midnight is written again at once.
+    await Bun.sleep(new Date(midnight));
+  }
+}
+
+const { seed, seededAt } = await seedOnOneDay();
 
 // A write that fails is the whole run's failure and not the container's: without this file every
 // row of the visual spec skips itself, and the run would pass having compared nothing. So the
@@ -37,7 +79,7 @@ try {
   // corpus was written, so a relative label reads the same whatever the run's own pace
   // (e2e/visual.e2e.ts says why that matters, and why a mask does not do it). Typed as
   // `VisualSeed`, which requires it, so the rows that read it never have to ask.
-  const written: VisualSeed = { ...seed, seededAt: new Date().toISOString() };
+  const written: VisualSeed = { ...seed, seededAt: new Date(seededAt).toISOString() };
   writeFileSync(path, `${JSON.stringify(written, null, 2)}\n`);
 } catch (error) {
   console.error(`e2e/visual-seed.ts could not write the seed to ${path}: ${String(error)}`);

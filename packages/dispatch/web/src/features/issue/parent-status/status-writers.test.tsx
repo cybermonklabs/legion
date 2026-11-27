@@ -34,7 +34,7 @@ import { HeaderSlot } from "../../issue-page/slots/header";
 import { issueStatuses } from "../../project/board-model";
 import { IssueBoard } from "../../project/IssueBoard";
 import { IssuesTable } from "../../project/IssuesTable";
-import { parseIssuePath } from "../../refs/routes";
+import { parseIssuePath } from "../../refs/page-routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../../shell/keymap";
 import { IssueHeader } from "../IssueHeader";

@@ -4,15 +4,15 @@ import type { ReactNode } from "react";
 import { apiErrorMessage } from "../../api/client";
 import type { DecisionResponse, StateResponse } from "../../api/types";
 import type { SubmitGuard } from "../../hooks/useSubmitGuard";
+import { primaryButtonDisabled } from "../../theme/classes";
 import {
   dangerText,
   primaryButtonBg,
-  primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
   secondaryButtonBorder,
   secondaryButtonHoverBorder,
   secondaryButtonText,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 
 /**

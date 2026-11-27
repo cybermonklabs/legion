@@ -2,9 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
-import { api } from "../../api/client";
 import {
   inboxQuery,
+  pinnedIssuesQuery,
   prioritySummaryQuery,
   projectsQuery,
   userAgentStateQuery,
@@ -25,13 +25,12 @@ import {
   railNeedsYouBadgeBg,
   railNeedsYouBadgeText,
   railSecondaryText,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { useLiveViewState } from "../agent-view/live-views";
 import { useAgentPinWrite, usePinnedAgents } from "../agents/pins";
 import { totalUnreadReplies, unreadRepliesLabel } from "../agents/unread";
 import { useInboxCount } from "../inbox/useInboxCount";
 import { PRIORITIES_PATH } from "../priorities/priority-routes";
-import { AgentName, useAgentText } from "../refs/AgentName";
 import {
   buildIssuePath,
   buildProjectPath,
@@ -39,15 +38,18 @@ import {
   parseIssuePath,
   parseProjectPath,
   routeIsInbox,
-} from "../refs/routes";
+} from "../refs/page-routes";
+import { SessionAgentName, useSessionText } from "../refs/SessionName";
 
 /** The rows the Agents heading folds, named so the heading's chevron can say what it controls. */
 const PINNED_AGENTS_ID = "rail-pinned-agents";
 
 /**
- * One pinned agent in the rail (INFRA-812, R1): its running state and name, both `AgentName`'s,
- * its unread replies, what its live view is doing (`live`, `live 30s` or `asleep`, the word the
- * registry computes), and the control that unpins it.
+ * One pinned agent in the rail (INFRA-812, R1): its running state and name, drawn as `AgentName`
+ * draws a session, by the same code (`SessionAgentName`, which the rail imports alone: the entry
+ * chunk carries the rail, and `features/refs/SessionName.tsx` says why), its unread replies, what
+ * its live view is doing (`live`, `live 30s` or `asleep`, the word the registry computes), and
+ * the control that unpins it.
  *
  * The name is the link into the session's live view, and it `replace`s the address when the
  * reader is already in one: a move between pinned agents from the rail is one step of their
@@ -69,19 +71,17 @@ function PinnedAgentRow({
   sessionId: string;
   unread: number;
 }): ReactNode {
-  const name = useAgentText().sessionText(sessionId, undefined);
+  const name = useSessionText()(sessionId, undefined);
   const viewState = useLiveViewState(sessionId);
   return (
     <li
       aria-current={selected ? "page" : undefined}
       className={`flex items-center gap-2 rounded px-2 text-sm ${selected ? railActiveBg : ""}`}
     >
-      <AgentName
+      <SessionAgentName
         className="min-w-0 flex-1"
-        onNavigate={onNavigate}
-        replace={replace}
-        sessionId={sessionId}
-        storedTitle={undefined}
+        subject={{ sessionId, storedTitle: undefined }}
+        variant={{ onNavigate, replace }}
       />
       {unread === 0 ? null : (
         <span
@@ -154,10 +154,7 @@ export function Sidebar({
 }): ReactNode {
   const location = useLocation();
   const inbox = useQuery(inboxQuery());
-  const pinned = useQuery({
-    queryKey: ["issues", "pinned"],
-    queryFn: () => api.listIssues({ pinned: true }),
-  });
+  const pinned = useQuery(pinnedIssuesQuery());
   const projects = useQuery(projectsQuery());
   // The number beside Priorities (INFRA-2947, R8): the two faults added - the work in flight
   // under no priority and the priority work parked in `backlog` or `icebox` - read from the

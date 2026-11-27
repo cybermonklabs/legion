@@ -1,64 +1,47 @@
-import {
-  ASK_URGENCIES,
-  decodeBlockId,
-  hasControlCharacter,
-  isSessionId,
-  itemFromSearch,
-  PLAIN_ISSUE_TABS,
-  SESSION_ID_PATTERN,
-  shortSessionId,
-} from "@legion/contracts";
-import { matchPath } from "react-router-dom";
+/**
+ * The grammar of `dispatch://` references and the addresses that no module of the entry chunk
+ * reads: a reference's route, its dashboard path and its short form, the pages of an agent's
+ * artifact and of a machine, and the words of the Inbox's filters in its address. The page
+ * addresses that the shell reads are in `page-routes.ts`, which this module imports: the entry
+ * chunk imports that module and not this one, so this module and the modules that only it
+ * imports stay out of the entry.
+ */
+import { shortSessionId } from "@legion/contracts/actor-label";
+import { decodeBlockId } from "@legion/contracts/dispatch-block-ref";
+import { hasControlCharacter, itemFromSearch } from "@legion/contracts/dispatch-href";
+import { isSessionId, SESSION_ID_PATTERN } from "@legion/contracts/dispatch-text-rules";
+import { ASK_URGENCIES } from "@legion/contracts/dispatch-tools-constants";
 
 import type { ArtifactOwner } from "../../api/client";
 import type { Artifact } from "../../api/types";
-import { issueProject } from "../../lib/issue-key";
 import { INBOX_ROW_TYPES } from "../inbox/list-row";
 import { EVERYONE_FILTER_VALUE } from "../inbox/sections";
+import { blockFragment, itemOfBlock, parseBlockReference, withBlock } from "./block-reference";
 import {
-  type BlockTarget,
-  blockFragment,
-  itemOfBlock,
-  parseBlockReference,
-  withBlock,
-} from "./block-reference";
+  artifactRoute,
+  buildIssuePath,
+  buildProjectPath,
+  type DispatchRoute,
+  decodedSegment,
+  decodedSlugAndVersion,
+  INBOX_FILTER_FIELDS,
+  type InboxFilterField,
+  type InboxRoute,
+  type IssueRoute,
+  inboxItemOf,
+  isPlainIssueRoute,
+  issueKeyPattern,
+  type ProjectDocumentRoute,
+  type ProjectRoute,
+  parseIssuePath,
+  parseProjectPath,
+  plainIssueTab,
+  projectDocumentRoute,
+  projectKeyPattern,
+} from "./page-routes";
+import { partyReference, roleTokenOnlyPattern } from "./party-mention";
 import { pageInBound, routeInBound } from "./target-id";
 
-export type IssueRoute =
-  | { key: string; kind: "issue" }
-  | ({ key: string; kind: "spec" } & BlockTarget)
-  | { key: string; kind: "verification" }
-  | { key: string; kind: "plan" }
-  | { key: string; kind: "steps" }
-  | { key: string; kind: "conversation" }
-  | { key: string; kind: "activity" }
-  | { key: string; kind: "decisions" }
-  | { key: string; kind: "children" }
-  | { key: string; kind: "artifacts" }
-  | { key: string; kind: "collaborators" }
-  | ({ key: string; kind: "artifact"; slug: string; version?: number } & BlockTarget)
-  | ({ key: string; kind: "ask"; id: string } & BlockTarget)
-  | ({ key: string; kind: "comment"; id: string } & BlockTarget)
-  | ({ key: string; kind: "message"; id: string } & BlockTarget);
-
-/** `project` is the bare `/projects/:key`, which opens on `architecture` when the project has
- *  an architecture source and on `issues` otherwise (`ProjectPage`'s open-on rule); the Issues
- *  tab and its `?label=`/`?status=`/`?q=` filter URLs live at `/issues`. */
-export type ProjectRoute =
-  | { kind: "project"; project: string }
-  | { kind: "architecture"; project: string }
-  | { kind: "issues"; project: string }
-  | { kind: "documents"; project: string }
-  | ({
-      kind: "document";
-      project: string;
-      slug: string;
-      version?: number;
-      item?: { kind: "ask" | "comment"; id: string };
-    } & BlockTarget);
-
-export type DispatchRoute = IssueRoute | ProjectRoute;
-export type ProjectDocumentRoute = Extract<ProjectRoute, { kind: "document" }>;
 /** An artifact of an agent's conversation - a picture sent in a direct message on the Agents
  *  page - named by the agent's session id as written, at `/agents/<session id>/artifacts/<slug>`. */
 export type AgentArtifactRoute = {
@@ -95,14 +78,10 @@ export type PagedReferenceRoute = Exclude<DispatchReferenceRoute, { kind: "perso
  * The five fields the Inbox filters, sorts and groups by. Assignee is one of them, but it keeps
  * a vocabulary of its own in the address - repeated `?assignee=`, with `everyone` and
  * `unassigned` - because a person's email is not a word this page invented, so it rides in
- * `InboxRoute.assignees` rather than in `filters` below.
+ * `InboxRoute.assignees` rather than in `InboxRoute.filters` (`page-routes.ts`).
  */
 export const INBOX_DIMENSIONS = ["priority", "urgency", "type", "project", "assignee"] as const;
 export type InboxDimension = (typeof INBOX_DIMENSIONS)[number];
-
-/** The four dimensions whose chosen values are comma lists in the address. */
-export const INBOX_FILTER_FIELDS = ["priority", "urgency", "type", "project"] as const;
-export type InboxFilterField = (typeof INBOX_FILTER_FIELDS)[number];
 
 /** How the list is ordered, `?sort=`; `newest` is the default and is left out of the address. */
 export const INBOX_SORTS = ["newest", ...INBOX_DIMENSIONS] as const;
@@ -131,81 +110,11 @@ export const INBOX_PRIORITY_VALUES = ["P0", "P1", "P2", "P3", NO_FILTER_VALUE] a
 export const INBOX_URGENCY_VALUES = [...ASK_URGENCIES, NO_FILTER_VALUE] as const;
 export const INBOX_TYPE_VALUES = INBOX_ROW_TYPES;
 
-/** The Inbox at `/`, optionally narrowed to one agent's asks (`?agent=<session id>`); with
- *  `section=needs-you` only the asks waiting on the viewer are shown. Every field below is
- *  absent while it holds its default, so a plain `/` is the Inbox as it opens. */
-export interface InboxRoute {
-  agent?: string;
-  /** The row the Inbox has selected, the one its reading pane shows: an ask's id, or a thread's
-   *  `reply:<thread id>` / `agent:<message id>` (`rowId`, `features/inbox/list-row.ts`). The
-   *  address is the whole memory of that selection, so a link carries the reader's place. */
-  item?: string;
-  section?: "needs-you";
-  /** The text the Inbox's search box narrows the list by, as typed. It is a field of the route
-   *  rather than a search parameter of its own because `buildInboxPath` rebuilds the whole query
-   *  string from this type and `usePaneSelection` navigates with it on every selection change, so
-   *  a parameter outside the type would be dropped by the next `j`. */
-  q?: string;
-  /** Who the listed asks are for. Absent is the page's default, the reader's own work; an empty
-   *  array is the cleared filter, every question; a value is a person's lowercase email or the
-   *  literal `unassigned`. */
-  assignees?: readonly string[];
-  /** `?show=dismissed`, the View menu's **Show** switch on **Dismissed**: what the reader has
-   *  dismissed out of their Inbox, newest dismissal first. Absent is the Inbox itself, every
-   *  undismissed row, read or not. */
-  show?: "dismissed";
-  sort?: InboxSort;
-  group?: InboxGroupBy;
-  /** The chosen values of each filter field, one comma list per field in the address. A field
-   *  with nothing chosen is absent, never an empty array. */
-  filters?: Partial<Record<InboxFilterField, readonly string[]>>;
-}
-export type IssueTab =
-  | "spec"
-  | "verification"
-  | "plan"
-  | "steps"
-  | "conversation"
-  | "children"
-  | "artifacts"
-  | "activity"
-  | "decisions"
-  | "collaborators";
-
 /** The slug of an issue's `decisions.md`, the document its Decisions tab is a view of. */
 export const DECISIONS_DOCUMENT_SLUG = "decisions-md";
 
-/** An issue tab whose whole route is the tab itself (`@legion/contracts`'s `PLAIN_ISSUE_TABS`,
- *  which the server reads the same way): no block, no slug, no id. Each one is parsed from the
- *  segment of its own name, built as `<issue>/<kind>`, shown as `<KEY> <kind>` and is the tab of
- *  its own name, so the chains below hold the seven in one arm rather than one apiece and an eighth
- *  tab is that list. The spec, the conversation and the decisions stay out of it: a spec route
- *  carries a block, the conversation is written `log` in a reference and `conversation` in a
- *  path, and the Decisions tab is a view of the issue's `decisions.md`, which a reference names as
- *  that document. */
-type PlainIssueTab = (typeof PLAIN_ISSUE_TABS)[number];
-
-/** The plain tab a path segment names, or `undefined` for anything else. */
-function plainIssueTab(value: string): PlainIssueTab | undefined {
-  return PLAIN_ISSUE_TABS.find((tab) => tab === value);
-}
-
-type PlainIssueRoute = Extract<IssueRoute, { kind: PlainIssueTab }>;
-
-/** Whether the route is one of those tabs, narrowing it for the builders below and leaving the
- *  rest of the union to the arms that follow. */
-function isPlainIssueRoute(
-  route: DispatchRoute | DispatchReferenceRoute
-): route is PlainIssueRoute {
-  return PLAIN_ISSUE_TABS.some((tab) => tab === route.kind);
-}
-
-const projectKeyPattern = "[A-Z][A-Z0-9]{1,9}";
-const issueKeyPattern = `${projectKeyPattern}-[1-9]\\d*`;
 const issueKeyOnlyPattern = new RegExp(`^${issueKeyPattern}$`);
 const projectKeyOnlyPattern = new RegExp(`^${projectKeyPattern}$`);
-const issuePathPattern = new RegExp(`^/issues/(${issueKeyPattern})(?:/(.*))?$`);
-const projectPathPattern = new RegExp(`^/projects/(${projectKeyPattern})(?:/(.*))?$`);
 /** The slug Dispatch gives a document, the one a reference can name. */
 const artifactSlugPattern = "[a-z0-9]+(?:-[a-z0-9]+)*";
 const artifactSlugOnlyPattern = new RegExp(`^${artifactSlugPattern}$`);
@@ -225,21 +134,11 @@ const agentArtifactPathPattern = /^\/agents\/([^/]+)\/artifacts\/([^/]+)$/;
 /** A component's reference after `dispatch://<PROJECT>/`: the component id, the lowercase slug
  *  the server reads (`text.ComponentIDPattern`). */
 const componentReferencePattern = /^component\/([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)$/;
-/** A role's token, the charset a `role:<token>` delivery route is written in (the server's
- *  `model.ParseRoute`). */
-const roleTokenOnlyPattern = /^[a-z0-9-]+$/;
-/** A session id a `session:<id>` delivery route is written with, the server's `model.ParseRoute`
- *  again. It is narrower than the ids a reference may name (`SESSION_ID_PATTERN`, which takes
- *  `.` and `:` among the rest), so a body can write an agent address no route reaches. */
-const sessionRouteIDPattern = /^[A-Za-z0-9_-]+$/;
 /** A person's login: their email lowercased, the stored form of a login (the server's
  *  `model.CanonicalLogin`). A login written any other way names nobody Dispatch holds. */
 const personLoginOnlyPattern = /^[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 /** One machine's page: `/machines/<machine>`, the machine name as one percent-encoded segment. */
 const machinePathPattern = /^\/machines\/([^/]+)$/;
-
-/** The page of an agent's artifact, the router's pattern for `AgentArtifactRoute`. */
-export const AGENT_ARTIFACT_PATH = "/agents/:sessionId/artifacts/:slug";
 
 /** Agents reference the conversation as `dispatch://KEY/log`; the browser path is `/conversation`. */
 const legacyLogReferencePattern = /^log$/;
@@ -254,95 +153,6 @@ export function isProjectRoute(
     route.kind === "documents" ||
     route.kind === "document"
   );
-}
-
-export function isPrimaryDocumentArtifactRoute(
-  route: IssueRoute,
-  artifact: Pick<Artifact, "kind" | "primary"> | undefined
-): boolean {
-  return route.kind === "artifact" && artifact?.primary === true && artifact.kind === "doc";
-}
-
-export function issueTabForRoute(
-  route: IssueRoute,
-  artifact: Pick<Artifact, "kind" | "primary"> | undefined
-): IssueTab {
-  if (isPlainIssueRoute(route)) {
-    return route.kind;
-  }
-  if (route.kind === "conversation") {
-    return "conversation";
-  }
-  if (route.kind === "decisions") {
-    return "decisions";
-  }
-  if (route.kind === "artifact") {
-    return isPrimaryDocumentArtifactRoute(route, artifact) ? "spec" : "artifacts";
-  }
-  return route.kind === "issue" || route.kind === "spec" ? "spec" : "conversation";
-}
-
-/** A path segment decoded; `undefined` for one that does not decode, decodes empty, or decodes to
- * a control character, which no id or slug holds and the server's `text.Extract` refuses. */
-function decodedSegment(value: string): string | undefined {
-  try {
-    const decoded = decodeURIComponent(value);
-    return decoded === "" || hasControlCharacter(decoded) ? undefined : decoded;
-  } catch {
-    return undefined;
-  }
-}
-
-function version(value: string | null | undefined): number | undefined | null {
-  if (value === null || value === undefined || value === "") {
-    return undefined;
-  }
-  return /^[1-9]\d*$/.test(value) ? Number(value) : null;
-}
-
-/** A route's slug percent-decoded and its version parsed; `undefined` when either names nothing. */
-function decodedSlugAndVersion(
-  slug: string,
-  versionValue: string | null | undefined
-): { slug: string; version: number | undefined } | undefined {
-  const decodedSlug = decodedSegment(slug);
-  const parsedVersion = version(versionValue);
-  return decodedSlug === undefined || parsedVersion === null
-    ? undefined
-    : { slug: decodedSlug, version: parsedVersion };
-}
-
-function artifactRoute(
-  key: string,
-  slug: string,
-  versionValue?: string | null
-): IssueRoute | undefined {
-  const parsed = decodedSlugAndVersion(slug, versionValue);
-  if (parsed === undefined) {
-    return undefined;
-  }
-  return parsed.version === undefined
-    ? { key, kind: "artifact", slug: parsed.slug }
-    : { key, kind: "artifact", slug: parsed.slug, version: parsed.version };
-}
-
-function projectDocumentRoute(
-  project: string,
-  slug: string,
-  versionValue: string | null | undefined,
-  item?: { kind: "ask" | "comment"; id: string }
-): ProjectDocumentRoute | undefined {
-  const parsed = decodedSlugAndVersion(slug, versionValue);
-  if (parsed === undefined) {
-    return undefined;
-  }
-  return {
-    ...(item === undefined ? {} : { item }),
-    kind: "document",
-    project,
-    slug: parsed.slug,
-    ...(parsed.version === undefined ? {} : { version: parsed.version }),
-  };
 }
 
 /** An agent's artifact route; the session id is taken as written, the slug and version as an
@@ -478,86 +288,6 @@ export function parseNodeReference(value: string): DispatchReferenceRoute | unde
   );
 }
 
-export function parseIssuePath(pathname: string, search = ""): IssueRoute | undefined {
-  const match = pathname.match(issuePathPattern);
-  if (match === null) {
-    return undefined;
-  }
-  const key = match[1];
-  const target = match[2];
-  if (key === undefined) {
-    return undefined;
-  }
-  if (target === undefined) {
-    return { key, kind: "issue" };
-  }
-  if (target === "spec") {
-    return { key, kind: "spec" };
-  }
-  const plain = plainIssueTab(target);
-  if (plain !== undefined) {
-    return { key, kind: plain };
-  }
-  if (target === "conversation") {
-    return { key, kind: "conversation" };
-  }
-  if (target === "decisions") {
-    return { key, kind: "decisions" };
-  }
-  const artifact = target.match(/^artifacts?\/([^/?#\s]+)$/);
-  if (artifact !== null) {
-    return artifactRoute(key, artifact[1] ?? "", new URLSearchParams(search).get("v"));
-  }
-  const item = target.match(/^(asks|comments|messages)\/([^/?#\s]+)$/);
-  const id = item?.[2] === undefined ? undefined : decodedSegment(item[2]);
-  if (item === null || id === undefined) {
-    return undefined;
-  }
-  return {
-    id,
-    key,
-    kind: item[1] === "asks" ? "ask" : item[1] === "comments" ? "comment" : "message",
-  };
-}
-
-export function parseProjectPath(pathname: string, search = ""): ProjectRoute | undefined {
-  const match = pathname.match(projectPathPattern);
-  if (match === null) {
-    return undefined;
-  }
-  const project = match[1];
-  const target = match[2];
-  if (project === undefined) {
-    return undefined;
-  }
-  if (target === undefined) {
-    return { kind: "project", project };
-  }
-  if (target === "architecture") {
-    return { kind: "architecture", project };
-  }
-  if (target === "issues") {
-    return { kind: "issues", project };
-  }
-  if (target === "documents") {
-    return { kind: "documents", project };
-  }
-  const document = target.match(/^documents\/([^/?#\s]+)$/);
-  if (document === null) {
-    return undefined;
-  }
-  const item = itemFromSearch(search);
-  if (item === null) {
-    return undefined;
-  }
-  return projectDocumentRoute(
-    project,
-    document[1] ?? "",
-    new URLSearchParams(search).get("version"),
-    item
-  );
-}
-
 /** The route of an agent's artifact page, `/agents/<session id>/artifacts/<slug>[?v=N]`; its
  *  segments are percent-decoded, and the session id then holds to the reference's rule. */
 export function parseAgentArtifactPath(
@@ -574,8 +304,9 @@ export function parseAgentArtifactPath(
 
 /** The page of one machine's tmux layout (`features/machines/MachinePage.tsx`). The machine name
  *  is percent-encoded as a session id is, because it holds dots and may be a whole domain name.
- *  The builder lives here, with every other path the app builds, so a page links to a machine
- *  without importing `features/machines`. */
+ *  The builder lives in `features/refs` with the other paths the app builds, so a page links to
+ *  a machine without importing `features/machines`; it is in this module and not in
+ *  `page-routes.ts` because no module of the entry chunk reads it. */
 export function buildMachinePath(host: string): string {
   return `/machines/${encodeURIComponent(host)}`;
 }
@@ -605,16 +336,6 @@ export function buildAgentsMachinePath(host: string): string {
 export function parseMachinePath(pathname: string): string | undefined {
   const match = pathname.match(machinePathPattern);
   return match === null ? undefined : decodedSegment(match[1] ?? "");
-}
-
-/** The project a route is about: a project path's own key, or an issue path's key without its
- *  number (`issueProject`, the one key-to-project rule); `undefined` elsewhere. */
-export function routeProjectOf(pathname: string): string | undefined {
-  const issueKey = parseIssuePath(pathname)?.key;
-  return (
-    parseProjectPath(pathname)?.project ??
-    (issueKey === undefined ? undefined : issueProject(issueKey))
-  );
 }
 
 /** The reference a `dispatch://` URL or a same-origin dashboard path names as text cites it, as
@@ -723,15 +444,10 @@ export function buildDispatchReference(route: DispatchReferenceRoute): string {
       return `dispatch://agent/${route.session}/artifact/${encodeURIComponent(route.slug)}${
         route.version === undefined ? "" : `@v${route.version}`
       }`;
-    // A party is written as it is read, its name needing no encoding: a session id carries none
-    // of the characters a reference ends at, a role token is `[a-z0-9-]` and a login is a
-    // lowercased email.
     case "agent-session":
-      return `dispatch://agent/${route.session}`;
     case "role":
-      return `dispatch://role/${route.role}`;
     case "person":
-      return `dispatch://person/${route.login}`;
+      return partyReference(route);
     case "component":
       return `dispatch://${route.project}/component/${route.id}`;
   }
@@ -777,46 +493,6 @@ export function isAgentArtifact<T extends Pick<Artifact, "session_id">>(
   artifact: T
 ): artifact is T & { readonly session_id: string } {
   return artifact.session_id !== undefined && artifact.session_id !== null;
-}
-
-/** The session id a `session:<id>` delivery address names, or undefined for any other address
- *  (a `role:` address). */
-export function sessionOfAddress(address: string): string | undefined {
-  return address.startsWith("session:") ? address.slice("session:".length) : undefined;
-}
-
-/** The party a delivery address names, written out kind by kind: `session:<id>` an agent's
- *  session and `role:<token>` a role, as the server's `model.ParseRoute` reads them
- *  (`internal/dispatch/model/model.go`), the grammar it holds every mention target to
- *  (`api.checkMentionRoute`). Undefined for an address of any other form, which no route
- *  reaches. A body can name a party outside this grammar - an agent reference takes the wider
- *  `SESSION_ID_PATTERN` - and such a party is reached by nothing, so the composer says so
- *  rather than listing it as one who is told (`party-references.ts`). A kind added to this
- *  grammar is named here or it is no party, rather than falling to whichever arm is last. */
-export function partyOfAddress(address: string): PartyRoute | undefined {
-  const session = sessionOfAddress(address);
-  if (session !== undefined) {
-    return sessionRouteIDPattern.test(session) ? { kind: "agent-session", session } : undefined;
-  }
-  if (address.startsWith("role:")) {
-    const role = address.slice("role:".length);
-    return roleTokenOnlyPattern.test(role) ? { kind: "role", role } : undefined;
-  }
-  return undefined;
-}
-
-/** The delivery address a party is reached at, or undefined for one no address reaches: a
- *  person, who reads the record and is never a delivering party (R5), and an agent whose
- *  session id is outside the grammar above. */
-export function deliveryAddressOf(route: PartyRoute): string | undefined {
-  switch (route.kind) {
-    case "agent-session":
-      return sessionRouteIDPattern.test(route.session) ? `session:${route.session}` : undefined;
-    case "role":
-      return roleTokenOnlyPattern.test(route.role) ? `role:${route.role}` : undefined;
-    case "person":
-      return undefined;
-  }
 }
 
 /** The route a document is referenced and linked by: an issue's primary document is its `spec`,
@@ -1123,59 +799,6 @@ export function buildReferencePath(route: PagedReferenceRoute, specSlug?: string
     : `${buildIssuePath({ key: route.key, kind: "artifact", slug })}?v=${target.pin}`;
 }
 
-export function buildIssuePath(route: IssueRoute): string {
-  // Encoded although an issue key is `[A-Z][A-Z0-9]{1,9}-<digits>` and so already a path
-  // segment: a key that reached this builder out of a reference a person typed has been read
-  // by a pattern, never trusted, and encoding says so where the path is built rather than at
-  // each of the places one is written into an `href`.
-  const issue = `/issues/${encodeURIComponent(route.key)}`;
-  if (route.kind === "issue") {
-    return issue;
-  }
-  if (route.kind === "spec") {
-    return `${issue}/spec`;
-  }
-  if (isPlainIssueRoute(route)) {
-    return `${issue}/${route.kind}`;
-  }
-  if (route.kind === "conversation") {
-    return `${issue}/conversation`;
-  }
-  if (route.kind === "decisions") {
-    return `${issue}/decisions`;
-  }
-  if (route.kind === "artifact") {
-    const artifact = `${issue}/artifacts/${encodeURIComponent(route.slug)}`;
-    return route.version === undefined ? artifact : `${artifact}?v=${route.version}`;
-  }
-  const segment =
-    route.kind === "ask" ? "asks" : route.kind === "comment" ? "comments" : "messages";
-  return `${issue}/${segment}/${encodeURIComponent(route.id)}`;
-}
-
-export function buildProjectPath(route: ProjectRoute): string {
-  // Encoded for the reason `buildIssuePath` gives: a project key is `[A-Z][A-Z0-9]{1,9}`, so
-  // this is identity for every key the server makes, and the path carries no caller's
-  // characters whatever reached it.
-  const project = `/projects/${encodeURIComponent(route.project)}`;
-  if (route.kind === "project") {
-    return project;
-  }
-  if (route.kind === "architecture" || route.kind === "issues" || route.kind === "documents") {
-    return `${project}/${route.kind}`;
-  }
-  const document = `${project}/documents/${encodeURIComponent(route.slug)}`;
-  const query = new URLSearchParams();
-  if (route.version !== undefined) {
-    query.set("version", String(route.version));
-  }
-  if (route.item !== undefined) {
-    query.set(route.item.kind, route.item.id);
-  }
-  const search = query.toString();
-  return search === "" ? document : `${document}?${search}`;
-}
-
 /** The values a filter field accepts, or undefined for the one field whose vocabulary is the
  *  workspace's own: a project key is whatever somebody created, so only `none` is reserved. */
 function filterVocabulary(field: InboxFilterField): readonly string[] | undefined {
@@ -1203,8 +826,8 @@ export function parseInboxSearch(search: string): InboxRoute {
   if (agent !== null && agent !== "") {
     route.agent = agent;
   }
-  const item = params.get("item")?.trim() ?? "";
-  if (item !== "") {
+  const item = inboxItemOf(params);
+  if (item !== undefined) {
     route.item = item;
   }
   if (params.get("section") === "needs-you") {
@@ -1265,101 +888,4 @@ export function parseInboxSearch(search: string): InboxRoute {
     route.filters = filters;
   }
   return route;
-}
-
-export function buildInboxPath(route: InboxRoute = {}): string {
-  const query = new URLSearchParams();
-  if (route.agent !== undefined) {
-    query.set("agent", route.agent);
-  }
-  if (route.item !== undefined) {
-    query.set("item", route.item);
-  }
-  if (route.section !== undefined) {
-    query.set("section", route.section);
-  }
-  if (route.q !== undefined) {
-    query.set("q", route.q);
-  }
-  if (route.assignees !== undefined) {
-    if (route.assignees.length === 0) {
-      query.append("assignee", EVERYONE_FILTER_VALUE);
-    }
-    for (const assignee of route.assignees) {
-      query.append("assignee", assignee);
-    }
-  }
-  if (route.show !== undefined) {
-    query.set("show", route.show);
-  }
-  if (route.sort !== undefined && route.sort !== "newest") {
-    query.set("sort", route.sort);
-  }
-  if (route.group !== undefined && route.group !== "priority") {
-    query.set("group", route.group);
-  }
-  for (const field of INBOX_FILTER_FIELDS) {
-    const chosen = route.filters?.[field];
-    if (chosen !== undefined && chosen.length > 0) query.set(field, chosen.join(","));
-  }
-  const search = query.toString();
-  return search === "" ? "/" : `/?${search}`;
-}
-
-/**
- * Whether this route has a margin at all: an issue, or a standalone project document. Nothing
- * else does, so the shell reserves no gutter for one and `features/margin/Margin.tsx` renders
- * nothing there. One helper because two answers that disagree leave an 80 px gutter beside a
- * column that is not there. It answers from the route rather than from the resolved margin
- * owner, whose document form only appears once the artifact query lands.
- */
-export function routeHasMargin(pathname: string, search = ""): boolean {
-  return (
-    parseIssuePath(pathname, search) !== undefined ||
-    parseProjectPath(pathname, search)?.kind === "document"
-  );
-}
-
-/** Whether this route is the Inbox page itself, the one place a peek at it has nothing to add.
- *  `app.tsx` renders `InboxPage` at `/credentials/*` as well, for an address kept from before
- *  Dispatch's credential record page was deleted, and ranks `/credentials/machine`, a page of its
- *  own, above that splat, as this does. */
-export function routeIsInbox(pathname: string): boolean {
-  return (
-    pathname === "/" ||
-    (matchPath("/credentials/*", pathname) !== null &&
-      matchPath("/credentials/machine", pathname) === null)
-  );
-}
-
-/** The signed-in person's answers and ask replies (`AnswersPage`), linked from the Inbox page. */
-export const ANSWERS_PATH = "/answers";
-
-/** One person's page (`PersonPage`), linked from the signed-in login in the rail. */
-export const PERSON_PATH = "/people/:login";
-
-/** The page of the person this login names. */
-export function buildPersonPath(login: string): string {
-  return `/people/${encodeURIComponent(login)}`;
-}
-
-/** The live agent view's route pattern, shared by the router and `routeFillsViewport`. */
-export const AGENT_LIVE_PATH = "/agents/:sessionId/live";
-
-/**
- * Whether this route's page owns its scroller whatever the viewport, and so gets exactly the
- * viewport from the shell: the live agent view, whose thread scrolls while its header and
- * composer stay put. The Inbox joins it only while its reading pane shows (`app.tsx` pairs this
- * with `READING_PANE_QUERY`); every other page scrolls the document, which `ViewportAnchor` and
- * the sticky composers depend on.
- */
-export function routeFillsViewport(pathname: string): boolean {
-  return matchPath(AGENT_LIVE_PATH, pathname) !== null;
-}
-
-/** The session whose live view `pathname` names, and `undefined` on every other address. The
- *  address is read here, beside the pattern, because a surface outside this module holds no
- *  live route of its own: its link into a live view is `AgentName`'s (`biome.json`). */
-export function liveViewSessionOf(pathname: string): string | undefined {
-  return matchPath(AGENT_LIVE_PATH, pathname)?.params.sessionId;
 }

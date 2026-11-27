@@ -219,8 +219,5 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · a view, then back`),
     cells(`${HOST} · a document opened, then back`)
   ),
-  ...answers(
-    'IssuePage | IssueOutlinePage | conditional | (useIssuePageChoice()[0] === "outline") ? …',
-    { reason: REASONS[6] }
-  ),
+  ...answers("IssuePage | IssueOutlinePage | conditional | (outline) ? …", { reason: REASONS[6] }),
 ];

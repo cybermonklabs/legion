@@ -28,18 +28,18 @@ import type {
 } from "../../api/types";
 import {
   pageFailedText,
-  pageMutedText,
   pagePathRing,
   pagePathRingFolded,
   pagePointRing,
 } from "../../theme/classes";
+import { pageMutedText } from "../../theme/shell-classes";
 import type { UploadResult } from "../artifacts/ArtifactUpload";
+import { composerNameOf } from "../conversation/composer-names";
 import { heldSends } from "../conversation/held-sends";
 import { unsentDraftsOf } from "../conversation/unsent-drafts";
-import { composerNameOf } from "../conversation/useKeptDrafts";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { relativeTimeLabel } from "../refs/relative-time";
 import { nodeRouteFromHref, shortForm } from "../refs/routes";
-import { relativeTimeLabel } from "../refs/Timestamp";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { KEPT_SEND_RESUME_MS } from "../writes/write-storage";
 import { KEY_HOURS } from "../writes/write-words";

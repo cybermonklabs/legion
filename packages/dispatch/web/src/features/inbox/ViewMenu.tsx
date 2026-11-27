@@ -1,15 +1,14 @@
 import { type ReactNode, useEffect, useId, useRef } from "react";
 
+import { selectedCardBg, textMutedOnCanvas } from "../../theme/classes";
 import {
   borderDefault,
   card,
   focusVisibleRing,
-  selectedCardBg,
   surfaceMutedBg,
-  textMutedOnCanvas,
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import {
   INBOX_GROUP_BYS,
   INBOX_SHOWS,

@@ -1,13 +1,13 @@
-import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools-constants";
 import type { Table } from "@tanstack/react-table";
 import type { ReactNode } from "react";
+import { toolbarControlHeight } from "../../theme/classes";
 import {
   borderDefault,
   surfaceBg,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
-  toolbarControlHeight,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { ColumnsMenu } from "../project/issues-table-controls";
 
 /** The search, the group-by and the column control every table on these pages carries, with

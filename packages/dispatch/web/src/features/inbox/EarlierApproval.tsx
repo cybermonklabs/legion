@@ -5,7 +5,7 @@ import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
 import type { AskApproval } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
-import { dangerText, textMutedOnSurface } from "../../theme/classes";
+import { dangerText, textMutedOnSurface } from "../../theme/shell-classes";
 import { ChangeView } from "../doc/ChangeView";
 import { cutDecisionBlocks } from "../doc/decision-blocks";
 import { AgentName } from "../refs/AgentName";

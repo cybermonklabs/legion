@@ -2,14 +2,16 @@ import type { ReactNode } from "react";
 
 import {
   backdrop40,
-  card,
   dangerHoverBorder,
   hoverToDangerText,
+  textPrimaryOnSurface,
+} from "../../theme/classes";
+import {
+  card,
   secondaryButtonBorder,
   secondaryButtonText,
   textMutedHoverToSecondary,
-  textPrimaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { useDialog } from "../shell/useDialog";
 
 export interface UnsubscribeDialogProps {

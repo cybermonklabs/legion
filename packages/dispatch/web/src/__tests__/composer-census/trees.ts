@@ -141,8 +141,9 @@ export interface Trees {
   readonly edges: readonly Edge[];
   readonly items: readonly TreeItem[];
   /** What the census met and cannot read, each with where it is: a field's mount it places in no
-   *  component, and a component element, a helper or a slot between a mount and the routes whose
-   *  drawing it cannot follow. Each is a mount or an item the census may be missing. */
+   *  component, a component element, a helper or a slot between a mount and the routes whose
+   *  drawing it cannot follow, and a component above a mount that no element it reads draws.
+   *  Each is a mount or an item the census may be missing. */
   readonly unread: readonly string[];
 }
 
@@ -347,7 +348,17 @@ export function readTrees(program: Program): Trees {
       wanted.set(step.id, known);
       if (fresh.length === 0 && !newHost) continue;
       const child = program.comps.get(step.id) as Comp;
-      for (const use of program.usesById.get(step.id) ?? []) {
+      const uses = program.usesById.get(step.id) ?? [];
+      // A component above a mount that no element the census reads draws would end the climb
+      // here with every item above it missing and nothing unread: one drawn through a call the
+      // census does not follow (a chunk's constant whose loader it cannot resolve, a component
+      // handed on as a value), or drawn in tests alone.
+      if (uses.length === 0) {
+        unread.add(
+          `${where(child.fn)}: ${child.name}, drawn as no element the census reads, above ${host}`
+        );
+      }
+      for (const use of uses) {
         const parents: (Comp | undefined)[] = drawnIn(program, use.element);
         if (parents.length === 0) {
           if (!atTopLevel(use.element)) {

@@ -24,7 +24,9 @@ import { expect, type Locator, type Page, test } from "./test";
 // **Referenced by** panel draws over one fixed answer is in `block-references.stub.e2e.ts`.
 
 // `editArtifact` writes its version inside the request, so the version read below is true within
-// a round trip: the default ladder would not look again until 350 ms.
+// a round trip: Playwright's default intervals, `[100, 250, 500, 1000]`, look again at 100, 350
+// and 850 ms and then every second, and this ladder at 50, 100, 200 and 400 ms and then every
+// half second.
 const PROBE = { intervals: [50, 50, 100, 200, 500] };
 
 // The project every row of this file seeds into. The reset and alice's sign-in are the `test`

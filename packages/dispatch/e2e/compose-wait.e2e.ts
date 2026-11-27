@@ -14,7 +14,7 @@
  *  written down. At that scale no row needs a timeout of its own: each fits the suite's 30 s
  *  (`e2e/playwright.config.ts`). */
 
-import { createIssue, createProject, editArtifact, listComments } from "./api";
+import { createIssue, createProject, editArtifact, getArtifactText, listComments } from "./api";
 import {
   actionBar,
   barAction,
@@ -141,6 +141,23 @@ async function theComment(issueKey: string, artifactId: string) {
   return comment;
 }
 
+/** Waits, with the author's tab away, until the server's sweep has taken the provisional mark.
+ *  The document's token covers its inline marks as well as its text (`TextWithToken`, the
+ *  server's `docs/mutation.go`), and once the tab is severed and every other write of the row is
+ *  in, the sweep is the one thing left to change the document, so the token moving is the mark
+ *  going. The sweep ages a mark whose author has gone from that departure (`sweepUnrecordedMarks`,
+ *  `docs/marks.go`), so it lands one TTL after the sever. A sweep that never ran times this out,
+ *  where a fixed wait let Send attach to the mark that survived and pass. */
+async function untilSwept(artifactId: string): Promise<void> {
+  const marked = (await getArtifactText(artifactId)).token;
+  await expect
+    .poll(async () => (await getArtifactText(artifactId)).token, {
+      intervals: [SAMPLE_MS],
+      message: "the sweep did not take the mark while its author was away",
+    })
+    .not.toBe(marked);
+}
+
 async function reviewIssue() {
   await createProject({ key: "CORE", name: "Core" });
   return createIssue({ project: "CORE", spec: SPEC, title: "Review the spec" });
@@ -218,8 +235,8 @@ test("a comment written across a socket reconnect keeps its anchor", async ({
   }
 });
 
-// SLOW(>=2s): the sweep this row waits out is the server's, a settle delay and an
-// unrecorded-mark TTL after the mark was written, with nothing on the page to drive it.
+// SLOW(>=2s): the sweep this row waits out is the server's, one unrecorded-mark TTL after the
+// tab went away, with nothing on the page to drive it.
 test("a comment written while its author is offline past the TTL keeps its anchor", async ({
   browser,
 }, testInfo) => {
@@ -235,7 +252,7 @@ test("a comment written while its author is offline past the TTL keeps its ancho
     transport.hold();
     await transport.sever();
     log.push("offline");
-    await watchMark(page, markId, writtenAt, PAST_THE_SWEEP_MS, log);
+    await untilSwept(issue.primary_artifact_id);
     await transport.release();
     await expect(connectedDot(page)).toHaveText("connected");
     log.push("online");
@@ -409,8 +426,8 @@ function markOffsets(page: Page): Promise<{ id: string; offset: number }[]> {
  *  never changes: the sweep takes the mark while the tab is away, and Send has to put the comment
  *  on the reading its author selected - the second one here, at character 62 of the paragraph -
  *  not refuse it as text that "was changed or deleted" (dispatch://INFRA-727 acceptance 2). */
-// SLOW(>=2s): the mark goes to the server's sweep while the tab is away, one settle delay and
-// one unrecorded-mark TTL after it was written, which no page clock can bring forward.
+// SLOW(>=2s): the mark goes to the server's sweep while the tab is away, one unrecorded-mark TTL
+// after the tab went away, which no page clock can bring forward.
 test("a comment on words that read twice keeps the reading its author selected", async ({
   browser,
 }) => {
@@ -431,9 +448,8 @@ test("a comment on words that read twice keeps the reading its author selected",
     transport.hold();
     await transport.sever();
     // The sweep's own clock, with the page's transport severed so nothing on screen can stand in
-    // for it: `PAST_THE_SWEEP_MS` is the settle delay, the mark's TTL and the margin above, so
-    // past this window the server has taken the mark.
-    await page.waitForTimeout(PAST_THE_SWEEP_MS);
+    // for it: the row waits on the server until the sweep has taken the mark (`untilSwept`).
+    await untilSwept(issue.primary_artifact_id);
     await transport.release();
     await expect(connectedDot(page)).toHaveText("connected");
 
@@ -742,8 +758,8 @@ async function selectAcrossBlocks(page: Page, from: string, to: string): Promise
  *  to be found: the editor reads the document as one text, break and all, and attaches where
  *  those words read once. Here the sweep takes the mark while the author is away and the
  *  document's own text never changes. */
-// SLOW(>=2s): the mark goes to the server's sweep while the tab is away, one settle delay and
-// one unrecorded-mark TTL after it was written, which no page clock can bring forward.
+// SLOW(>=2s): the mark goes to the server's sweep while the tab is away, one unrecorded-mark TTL
+// after the tab went away, which no page clock can bring forward.
 test("a comment on words that run across two paragraphs keeps its anchor", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
@@ -765,9 +781,8 @@ test("a comment on words that run across two paragraphs keeps its anchor", async
     transport.hold();
     await transport.sever();
     // The sweep's own clock, with the page's transport severed so nothing on screen can stand in
-    // for it: `PAST_THE_SWEEP_MS` is the settle delay, the mark's TTL and the margin above, so
-    // past this window the server has taken the mark.
-    await page.waitForTimeout(PAST_THE_SWEEP_MS);
+    // for it: the row waits on the server until the sweep has taken the mark (`untilSwept`).
+    await untilSwept(issue.primary_artifact_id);
     await transport.release();
     await expect(connectedDot(page)).toHaveText("connected");
 
@@ -873,8 +888,8 @@ const WHOLE_BLOCK_ELSEWHERE_SPEC = [
  *  reader's tab is away long enough for the sweep to take the mark while another writer rewrites
  *  that block to read those words twice, among different text both times. Neither reading is the
  *  reader's, so Send attaches to neither and says so. */
-// SLOW(>=2s): the mark goes to the server's sweep while the tab is away, one settle delay and
-// one unrecorded-mark TTL after it was written, which no page clock can bring forward.
+// SLOW(>=2s): the mark goes to the server's sweep while the tab is away, one unrecorded-mark TTL
+// after the tab went away, which no page clock can bring forward.
 test("a comment on a whole block is not attached to either reading a rewrite of that block leaves", async ({
   browser,
 }) => {
@@ -914,9 +929,9 @@ test("a comment on a whole block is not attached to either reading a rewrite of 
       { actor: { id: "e2e-compose-wait", kind: "session" }, as: "agent" }
     );
     // The sweep's own clock, with the page's transport severed so nothing on screen can stand in
-    // for it: `PAST_THE_SWEEP_MS` is the settle delay, the mark's TTL and the margin above, so
-    // past this window the server has taken the mark.
-    await page.waitForTimeout(PAST_THE_SWEEP_MS);
+    // for it: the row waits on the server, past the rewrite above, until the sweep has taken the
+    // mark (`untilSwept`).
+    await untilSwept(issue.primary_artifact_id);
     await transport.release();
     await expect(connectedDot(page)).toHaveText("connected");
     await expect(documentEditor(page)).toContainText("We said Ship it now.");
@@ -938,8 +953,8 @@ test("a comment on a whole block is not attached to either reading a rewrite of 
  *  take the mark, and the same words read once more somewhere else, among words they never read
  *  beside them. That is another passage, so the comment stays unattached and the reader is told,
  *  rather than being moved there with nothing said. */
-// SLOW(>=2s): the mark goes to the server's sweep while the tab is away, one settle delay and
-// one unrecorded-mark TTL after it was written, which no page clock can bring forward.
+// SLOW(>=2s): the mark goes to the server's sweep while the tab is away, one unrecorded-mark TTL
+// after the tab went away, which no page clock can bring forward.
 test("a comment on a whole block that is deleted is not moved to the one reading left elsewhere", async ({
   browser,
 }) => {
@@ -978,9 +993,9 @@ test("a comment on a whole block that is deleted is not moved to the one reading
       { actor: { id: "e2e-compose-wait", kind: "session" }, as: "agent" }
     );
     // The sweep's own clock, with the page's transport severed so nothing on screen can stand in
-    // for it: `PAST_THE_SWEEP_MS` is the settle delay, the mark's TTL and the margin above, so
-    // past this window the server has taken the mark.
-    await page.waitForTimeout(PAST_THE_SWEEP_MS);
+    // for it: the row waits on the server, past the edit above, until the sweep has taken the
+    // mark (`untilSwept`).
+    await untilSwept(issue.primary_artifact_id);
     await transport.release();
     await expect(connectedDot(page)).toHaveText("connected");
     await expect(documentEditor(page)).toContainText("Nothing of the sort.");
@@ -1016,8 +1031,8 @@ const HARD_BREAK_SPEC = [
  *  edges, however much the document's text reads like it does: a hard break is a newline there,
  *  and so is every line of a code block. The comment belongs to neither, so once the reader's own
  *  block has lost the words Send attaches nothing and says so. */
-// SLOW(>=2s): the mark goes to the server's sweep while the tab is away, one settle delay and
-// one unrecorded-mark TTL after it was written, which no page clock can bring forward.
+// SLOW(>=2s): the mark goes to the server's sweep while the tab is away, one unrecorded-mark TTL
+// after the tab went away, which no page clock can bring forward.
 test("a comment on a whole block is not moved to a line of another paragraph", async ({
   browser,
 }) => {
@@ -1049,9 +1064,9 @@ test("a comment on a whole block is not moved to a line of another paragraph", a
       { actor: { id: "e2e-compose-wait", kind: "session" }, as: "agent" }
     );
     // The sweep's own clock, with the page's transport severed so nothing on screen can stand in
-    // for it: `PAST_THE_SWEEP_MS` is the settle delay, the mark's TTL and the margin above, so
-    // past this window the server has taken the mark.
-    await page.waitForTimeout(PAST_THE_SWEEP_MS);
+    // for it: the row waits on the server, past the edit above, until the sweep has taken the
+    // mark (`untilSwept`).
+    await untilSwept(issue.primary_artifact_id);
     await transport.release();
     await expect(connectedDot(page)).toHaveText("connected");
     await expect(documentEditor(page)).toContainText("Nothing of the sort.");

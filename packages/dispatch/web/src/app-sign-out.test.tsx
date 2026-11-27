@@ -24,10 +24,12 @@ import { setReplyDraft, useReplyDraft } from "./features/inbox/reply-drafts";
 import { OTHER_TABS_ANSWER_MS, type UnsentChange } from "./features/shell/sign-in-channel";
 import { SEND_DEADLINE_MS, stoppedWriteNote } from "./features/writes/keyed-write";
 import { writesOf } from "./features/writes/write-store";
-// The margin is a lazy part of the shell (`MarginColumn.tsx`), which loads it at `/` too. No row
-// here reads it, and a load that lands between two `act` scopes of a row is React's report of a
-// suspended resource outside `act`. So the module is loaded here, with the test file, and no row
-// starts or waits for it.
+// The Inbox the app draws at `/` is a chunk of its own (`features/inbox/InboxHost.tsx`), and the
+// margin a lazy part of the shell (`MarginColumn.tsx`), which loads it at `/` too. No row here
+// reads either, and a load that lands between two `act` scopes of a row is React's report of a
+// suspended resource outside `act`. So both modules are loaded here, with the test file, and no
+// row starts or waits for them.
+import "./features/inbox/inbox-chunk";
 import "./features/margin/Margin";
 import { warmMarkdownRenderer } from "./features/refs/markdown-engine";
 

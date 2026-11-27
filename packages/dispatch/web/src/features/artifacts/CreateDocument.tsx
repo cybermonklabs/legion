@@ -6,7 +6,7 @@ import { api, apiErrorMessage } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
-import { buildIssuePath, buildProjectPath } from "../refs/routes";
+import { buildIssuePath, buildProjectPath } from "../refs/page-routes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";

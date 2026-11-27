@@ -15,13 +15,20 @@
  * Nothing here marks anything read.
  */
 
-import { inboxThreadRow } from "@legion/contracts";
+import { inboxThreadRow } from "@legion/contracts/dispatch-api-constants";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
-import { agentMessagesQuery, askThreadQuery, issueQuery, myRepliesKey } from "../../api/queries";
+import {
+  agentMessagesQuery,
+  askThreadQuery,
+  issueQuery,
+  listOwnerOf,
+  myRepliesKey,
+  ownerCommentsQuery,
+} from "../../api/queries";
 import type {
   Actor,
   CommentWithTrees,
@@ -37,21 +44,23 @@ import { useSending } from "../../hooks/useSending";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   badgePrimary,
+  quoteAccentBorder,
+  quoteBodyText,
+  textMutedOnCanvas,
+  textPrimaryOnSurfaceMuted,
+} from "../../theme/classes";
+import {
   borderDefault,
   dangerText,
   linkHoverText,
   linkText,
-  quoteAccentBorder,
-  quoteBodyText,
   surfaceMutedBg,
-  textMutedOnCanvas,
   textMutedOnSurfaceMuted,
-  textPrimaryOnSurfaceMuted,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { AgentMessageComposer } from "../agents/AgentMessageComposer";
 import { agentReplyTo, newestAttempt } from "../agents/exchange-delivery";
 import { useMarkShownRepliesRead } from "../agents/unread";
-import { type ComposerOwner, commentListKey } from "../conversation/composer-model";
+import type { ComposerOwner } from "../conversation/composer-model";
 import { rootOf } from "../conversation/conversation-model";
 import { deliveryMode, noDeliveryLine } from "../conversation/delivery";
 import { KeptReplyToDeleted } from "../conversation/KeptDraftOffers";
@@ -314,22 +323,16 @@ function CommentThreadBody({
   thread: MyReplyThreadRow;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const markNewest = useThreadRead(
-    thread,
-    owner.kind === "issue" ? { issue: owner.issueKey } : { artifact: owner.artifactId }
-  );
+  // The thread's owner as the reads of an owner's lists name it: its unread threads and its
+  // comments.
+  const listOwner = listOwnerOf(owner);
+  const markNewest = useThreadRead(thread, listOwner);
   const issueKey = owner.kind === "issue" ? owner.issueKey : undefined;
   const issue = useQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
-  // The reads the issue's Conversation and the document's margin already hold, under their own
-  // keys: the same request, shared rather than made a second time.
-  const commentsKey = commentListKey(owner);
-  const comments = useQuery({
-    queryKey: commentsKey,
-    queryFn: () =>
-      owner.kind === "issue"
-        ? api.listComments(owner.issueKey)
-        : api.listArtifactComments(owner.artifactId),
-  });
+  // The read the issue's Conversation and the document's margin already hold, under the key all
+  // of them take from the one factory: the same request, shared rather than made a second time.
+  const commentsQuery = ownerCommentsQuery(listOwner);
+  const comments = useQuery(commentsQuery);
   if (comments.isPending) return <LoadingSkeleton label="Opening the thread" />;
   if (comments.isError) {
     return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this thread.</p>;
@@ -376,7 +379,7 @@ function CommentThreadBody({
             mutationKey={threadSendKey(thread.thread_id)}
             onClose={noReturn}
             onSent={() => {
-              void queryClient.invalidateQueries({ queryKey: commentsKey });
+              void queryClient.invalidateQueries({ queryKey: commentsQuery.queryKey });
               void queryClient.invalidateQueries({ queryKey: myRepliesKey });
             }}
             owner={owner}

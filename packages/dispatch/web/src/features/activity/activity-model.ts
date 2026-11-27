@@ -1,4 +1,4 @@
-import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
+import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts/dispatch-api-constants";
 
 import type { Actor, DispatchEvent } from "../../api/types";
 import { queuedWait } from "../conversation/delivery";

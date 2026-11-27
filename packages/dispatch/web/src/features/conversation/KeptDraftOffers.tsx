@@ -2,27 +2,22 @@ import type { MutationKey } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import type { Actor } from "../../api/types";
+import { quoteAccentBorder, quoteBodyText } from "../../theme/classes";
 import {
   dangerText,
   linkHoverText,
   linkText,
-  quoteAccentBorder,
-  quoteBodyText,
   textMutedOnSurfaceMuted,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { SendStoppedError } from "../writes/keyed-write";
 import type { ComposerKind, ReplyTarget } from "./composer-model";
+import { composerNameOf } from "./composer-names";
 import { CHANGED_EDIT_LEAD, OFFER_LABELS } from "./composer-words";
 import { useHeldSend, useHeldSends } from "./held-sends";
 import { GoneReply, type GoneReplyWords } from "./KeptReply";
 import type { SentDraft } from "./send-request";
 import { useUnsentDrafts } from "./unsent-drafts";
-import {
-  composerNameOf,
-  type GoneReplyDraft,
-  type KeptDrafts,
-  type OfferedDraft,
-} from "./useKeptDrafts";
+import type { GoneReplyDraft, KeptDrafts, OfferedDraft } from "./useKeptDrafts";
 
 /** Each kind as a kept draft names the one it was written as, beside a compose of another
  *  (`KeptDraftOffers`) or in the margin's list of what its compose kept (`MarginKeptDrafts`). */

@@ -1,15 +1,18 @@
 import { type KeyboardEvent, type ReactNode, useState } from "react";
 import { useLocation } from "react-router-dom";
 
-import { borderDefault, textMutedOnSurface, textSecondaryOnSurface } from "../../theme/classes";
+import {
+  borderDefault,
+  textMutedOnSurface,
+  textSecondaryOnSurface,
+} from "../../theme/shell-classes";
 import { useProjectArtifact } from "../document/useProjectArtifact";
-import { routeProjectOf } from "../refs/routes";
+import { documentRouteOf, routeProjectOf } from "../refs/page-routes";
 import { KeyHints } from "../shell/ShortcutHelp";
 import {
   type BarScopeLevel,
   type BarTargets,
   barTargets,
-  documentRouteOf,
   issueOfPage,
   readSelectedIssues,
   scopeAtCursor,
@@ -38,10 +41,10 @@ export interface BarScope {
  * and `Backspace` widens it to the project.
  *
  * Every value the page itself gives is read on the first render, the cursor because `useDialog`
- * takes the focus in the commit that opens the bar, after that render, and the document's
- * selection is no longer the page's once it has, and the rest so that a hit the reader arrows
- * past or opens cannot move what the chip says and what an offer would act on before the bar
- * closes.
+ * gives the box, the field the bar names, the focus in the commit that opens the bar, after that
+ * render, and the document's selection is no longer the page's once it has, and the rest so that
+ * a hit the reader arrows past or opens cannot move what the chip says and what an offer would
+ * act on before the bar closes.
  */
 export function useBarScope(
   /** What is in the box, as the person typed it: `Backspace` widens the chip on an empty box

@@ -15,7 +15,7 @@ import {
   secondaryButtonCompact,
   textMutedOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { deliveryOutcomeState } from "../conversation/delivery";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { SendExpiredError, SendInterruptedError, SendStoppedError } from "../writes/keyed-write";

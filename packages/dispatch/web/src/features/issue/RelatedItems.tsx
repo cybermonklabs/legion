@@ -1,17 +1,17 @@
-import { relatedCheckFormOf, relatedCheckSearchWords } from "@legion/contracts";
+import { relatedCheckFormOf, relatedCheckSearchWords } from "@legion/contracts/related-forms";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useState } from "react";
 
 import { api } from "../../api/client";
 import type { SearchOwner, Suggestions, WriteSuggestion } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { badgeLow } from "../../theme/classes";
 import {
-  badgeLow,
   linkHoverText,
   linkText,
   textMutedOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { statusText } from "../project/board-model";
 import { textSourceOf } from "../refs/text-references";
 import { AskHitStatus } from "../search/AskHitStatus";

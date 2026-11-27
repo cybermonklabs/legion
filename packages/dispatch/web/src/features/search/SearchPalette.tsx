@@ -1,5 +1,5 @@
 import { snippetSegments } from "@legion/contracts/dispatch-snippet";
-import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools-constants";
 import { useQuery } from "@tanstack/react-query";
 import {
   Fragment,
@@ -16,37 +16,35 @@ import { projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Project, SearchResult } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
-  backdrop50,
   badgeLow,
-  borderDefault,
-  card,
-  inputClasses,
-  kbdHint,
   searchHitBg,
   searchHitText,
   selectedCardBg,
   selectedCardBorder,
-  surfaceMutedBg,
   textMutedOnSelectedCard,
-  textMutedOnSurface,
-  textMutedOnSurfaceMuted,
   textPrimaryOnSurface,
-  textSecondaryOnSurface,
   textSecondaryOnSurfaceMuted,
 } from "../../theme/classes";
+import {
+  backdrop50,
+  borderDefault,
+  card,
+  inputClasses,
+  kbdHint,
+  surfaceMutedBg,
+  textMutedOnSurface,
+  textMutedOnSurfaceMuted,
+  textSecondaryOnSurface,
+} from "../../theme/shell-classes";
 import { statusText } from "../project/board-model";
 import { RefKindIcon } from "../refs/kind-icons";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { DeletedBody, EditedMark } from "../refs/PostMarks";
+import { buildIssuePath, buildProjectPath } from "../refs/page-routes";
 import { postDeletion } from "../refs/post-marks";
-import { referenceTriggerProps } from "../refs/RefPreview";
 import { ReferenceHostIs } from "../refs/reference-host";
-import {
-  buildIssuePath,
-  buildProjectPath,
-  type DispatchReferenceRoute,
-  nodeRouteFromHref,
-} from "../refs/routes";
+import { referenceTriggerProps } from "../refs/reference-trigger";
+import { type DispatchReferenceRoute, nodeRouteFromHref } from "../refs/routes";
 import { textSourceKind, textSourceOf } from "../refs/text-references";
 import { appKeymap, DIALOG_SCOPE, type KeymapAction, useKeymap } from "../shell/keymap";
 import { KeyHints } from "../shell/ShortcutHelp";
@@ -335,9 +333,14 @@ function CommandGroup({
 export function SearchPalette({
   onClose,
   open,
+  typed = "",
 }: {
   onClose: () => void;
   open: boolean;
+  /** What the reader typed after the key that opened the bar while the bar's chunk was on its
+   *  way (`features/shell/asked-surface.tsx`): the start of this open's query, where those keys
+   *  were meant to go. */
+  typed?: string;
 }): ReactNode {
   // A chosen row runs once the bar is gone and `useDialog`'s cleanup has put focus back on
   // whatever opened it: run inside the bar, with focus in its input, it would act on nothing,
@@ -366,6 +369,7 @@ export function SearchPalette({
         pendingAction.current = run;
       }}
       onClose={onClose}
+      typed={typed}
     />
   );
 }
@@ -373,11 +377,13 @@ export function SearchPalette({
 function PaletteDialog({
   onAction,
   onClose,
+  typed,
 }: {
   onAction: (run: () => void) => void;
   onClose: () => void;
+  typed: string;
 }): ReactNode {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(typed);
   // The highlight: the row the reader sees highlighted, held by its id, beside the query whose
   // hits were listed when it was last decided ("" while none were). The two are one state
   // because they are read together, to tell a fresh query's first hits - which take the head -
@@ -399,9 +405,9 @@ function PaletteDialog({
   const whoAmI = useQuery(whoAmIQuery());
   const [recents] = useState(() => readRecents(whoAmI.data?.login));
   // The rows this open offers, decided on its first render, while focus is still on whatever
-  // opened the bar, since `useDialog` moves it into the input after that commit. Read any
-  // later and a `when()` that asks what is focused would answer "the bar", withdrawing every
-  // row bound to the card, row or control the reader was actually on.
+  // opened the bar, since `useDialog` moves it into the input in the commit that render makes.
+  // Read any later and a `when()` that asks what is focused would answer "the bar", withdrawing
+  // every row bound to the card, row or control the reader was actually on.
   const [actions] = useState(() => appKeymap.actions());
   const dialog = useDialog<HTMLDivElement>({ initialFocusRef: inputRef, onClose, open: true });
   // Every global key is masked while any dialog is open; the palette keeps `$mod+k` as its own

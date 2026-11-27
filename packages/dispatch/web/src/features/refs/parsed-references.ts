@@ -1,4 +1,8 @@
-import { type ReferenceReading, referenceReading, type WordsFormatting } from "@legion/contracts";
+import {
+  type ReferenceReading,
+  referenceReading,
+  type WordsFormatting,
+} from "@legion/contracts/dispatch-mentions";
 import { useEffect, useState } from "react";
 
 import {

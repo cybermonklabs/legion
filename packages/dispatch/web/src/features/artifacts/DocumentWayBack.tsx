@@ -11,7 +11,7 @@ import {
 import type { Artifact } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
-import { dangerText } from "../../theme/classes";
+import { dangerText } from "../../theme/shell-classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import { refreshOwnerArtifacts } from "./ArtifactUpload";

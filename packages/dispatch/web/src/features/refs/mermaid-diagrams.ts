@@ -73,7 +73,7 @@ import {
 } from "@legion/proof-editor/mermaid";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 
-import { dangerText } from "../../theme/classes";
+import { dangerText } from "../../theme/shell-classes";
 import type { DrawnSource, MermaidRequest } from "./mermaid-render.worker";
 import { rememberUpTo, type WorkerJob, WorkerQueue } from "./worker-queue";
 

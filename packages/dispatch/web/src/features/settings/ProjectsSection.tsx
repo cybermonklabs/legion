@@ -1,4 +1,4 @@
-import { PROJECT_NAME_MAX } from "@legion/contracts";
+import { PROJECT_NAME_MAX } from "@legion/contracts/dispatch-api-constants";
 import type { Mutation, QueryKey } from "@tanstack/react-query";
 import { useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
@@ -19,20 +19,18 @@ import type {
 } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { dangerHoverText, textMutedOnCanvas, textPrimaryOnSurface } from "../../theme/classes";
 import {
   borderDefault,
-  dangerHoverText,
   dangerText,
   inputClasses,
   linkHoverText,
   linkText,
-  textMutedOnCanvas,
   textMutedOnSurface,
   textPrimaryOnCanvas,
-  textPrimaryOnSurface,
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { Timestamp } from "../refs/Timestamp";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";

@@ -18,19 +18,21 @@ GATE = gate("dispatch_two_builds", TWO_BUILDS_JOB, runs=[
     ]),
     # The browser half's stack connection limit, read before its two browser steps, which
     # start the harness's own Postgres rather than using the service.
-    pinned_step(TWO_BUILDS_JOB, TWO_BUILDS_CONNECTIONS_STEP, ENVOY, BROWSER_CONNECTIONS_SCRIPT, [
+    pinned_step(TWO_BUILDS_JOB, TWO_BUILDS_CONNECTIONS_STEP, ENVOY, TWO_BUILDS_CONNECTIONS_SCRIPT, [
         (ENVOY, ["./internal/dispatch/store/cmd/connections"],
          "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.ServerConnections",
          {"mode": "build"}),
     ]),
 ], reads=reads(
-    ("packages/dispatch/**", at(TWO_BUILDS_JOB, "Browser-test each build's page against the other build's server")),
+    ("packages/dispatch/**", at(TWO_BUILDS_JOB, "Build the dashboard") + " builds the SPA the rows read and "
+     + at(TWO_BUILDS_JOB, "Browser-test each build's page against the other build's server")
+     + " runs them, in packages/dispatch"),
     ("packages/proof-editor/**", "`packages/dispatch/web/vite.config.ts#alias` (build:web), whose @legion/proof-editor entries resolve into it"),
     # packages/contracts/src is no read of this gate's either: the filter's listed block holds
     # the modules dispatch_ui's tsc programs compile and the dispatch command the Go step runs
     # loads, which the changes job lists, and ci_ts_programs.py's LISTED says why this job
     # loads that union and no other. Its `Build contracts for dispatch e2e` step runs
-    # `build:dispatch`, whose four entries compile nothing outside it, and reads the package's
+    # `build:dispatch`, whose entries compile nothing outside it, and reads the package's
     # manifest, which bun_job declares.
     (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "`packages/dispatch/e2e/engine-reading.ts#blockSchema`"),
     ("scripts/e2e/lib/held-port.py", "`packages/dispatch/e2e/run-server.sh#held_port` holds the server's port through it"),

@@ -12,6 +12,7 @@ import type {
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
+import { textMutedOnCanvas } from "../../theme/classes";
 import {
   borderDefault,
   card,
@@ -20,10 +21,9 @@ import {
   linkText,
   secondaryButtonBorder,
   secondaryButtonText,
-  textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import {
   capabilityLabel,
   deliveryMode,

@@ -111,9 +111,9 @@ const test = stubbed(async () => {
 // changed palette becomes the new baseline and passes. It detects a change against a file
 // somebody committed; it cannot bind a rendered element to the swatch `web/src/theme/classes.ts`
 // names for that element's role, because it holds pixels and not that mapping. This row is that
-// binding - the registered tokens, in both schemes, read off the live elements - and it is
-// untagged, so the pass reaches every pull request, where the visual review, which is the
-// full lane's alone (.github/workflows/dispatch-browser.yaml), does not run at all.
+// binding - the registered tokens, in both schemes, read off the live elements - and it carries
+// `@pr`, so it runs on the pull-request lane, where the visual review, which is the full lane's
+// alone (.github/workflows/dispatch-browser.yaml), does not run at all.
 //
 // Every token it reads is what the browser draws from one fixed answer, so it runs against a
 // recording rather than against a harness (packages/dispatch/README.md, "The stubbed layer").

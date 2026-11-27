@@ -1,4 +1,5 @@
-import { isIdPrefix, itemFromSearch } from "@legion/contracts";
+import { itemFromSearch } from "@legion/contracts/dispatch-href";
+import { isIdPrefix } from "@legion/contracts/dispatch-text-rules";
 import { notifyManager, type QueryKey, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
 
@@ -10,8 +11,8 @@ import {
   isItemRoute,
   useItemLanding,
 } from "../issue/useItemLanding";
+import { type IssueRoute, parseIssuePath } from "../refs/page-routes";
 import { askQuery, commentQuery, messageQuery, referencesQuery } from "../refs/reference-target";
-import { type IssueRoute, parseIssuePath } from "../refs/routes";
 import { prefixReference } from "../refs/text-references";
 import {
   type AddressTarget,

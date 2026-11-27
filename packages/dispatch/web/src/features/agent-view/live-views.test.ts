@@ -1,5 +1,5 @@
 import { afterEach, expect, jest, test } from "bun:test";
-import { AGENT_STREAM_WATCH_TTL_MS } from "@legion/contracts";
+import { AGENT_STREAM_WATCH_TTL_MS } from "@legion/contracts/agent-stream";
 
 import { realClock } from "../../__tests__/fake-clock";
 import { LiveViews } from "./live-views";

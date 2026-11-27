@@ -1,7 +1,8 @@
 /** The accessibility layer: every page of `e2e/review-routes.ts`'s scanned set, in light and in
  *  dark, read by axe at WCAG 2.0 and 2.1 level A and AA. The rows are untagged, so only the
- *  `chromium` project runs them and the pass reaches every pull request
- *  (e2e/playwright.config.ts).
+ *  `chromium` project runs them, on the full lane: the pull-request lane runs only `@pr` rows, so
+ *  a pull request meets the pass in the merge queue (e2e/playwright.config.ts,
+ *  .github/workflows/dispatch-browser.yaml).
  *
  *  A row fails on any serious or critical violation `e2e/accessibility-exclusions.ts` does not
  *  cover, and each (route, scheme) prints one `A11Y …` line to stdout, so the shard legs' own job
@@ -34,7 +35,7 @@ type Impact = "critical" | "serious" | "moderate" | "minor";
  *  stale entry would hide the regression it once accepted.
  *
  *  The check is a hook and not a final row because no row can see the run. The shard job
- *  (.github/workflows/dispatch-browser.yaml) puts this whole file on one of its four machines -
+ *  (.github/workflows/dispatch-browser.yaml) puts this whole file on one of its two machines -
  *  e2e/shard-split.ts places a file's rows together - and that machine's four workers split its
  *  rows again, so a final row would sit in one process and judge entries whose routes another
  *  process ran. `afterAll` runs once in each worker, after the rows that worker ran, which is
@@ -79,7 +80,7 @@ for (const route of scannedRoutes) {
       // `toHaveScreenshot`'s own `animations: "disabled"` (`e2e/visual.e2e.ts`). Waiting for
       // `document.getAnimations()` to empty was the other way, and is not this one: it pays
       // the full ease on every scheme of every route, and it never empties on a page holding
-      // an `animate-pulse` skeleton, which runs forever. `e2e/theme.e2e.ts` polls the one
+      // an `animate-pulse` skeleton, which runs forever. `e2e/theme.stub.e2e.ts` polls the one
       // colour it asserts, which a scan of every colour on the page cannot do.
       await page.addStyleTag({
         content: "*, *::before, *::after { transition: none !important; }",
@@ -92,7 +93,17 @@ for (const route of scannedRoutes) {
         // all, and the third would report findings about a state no reader sees
         // (`waitForRouteSettled`).
         await waitForRouteSettled(page, route, listedRequests(page));
-        const results = await new AxeBuilder({ page }).withTags(AXE_TAGS).analyze();
+        // Legacy mode runs `axe.run` in this page. By default @axe-core/playwright (4.14.0's
+        // `analyze`) runs `axe.runPartial` here, then opens a blank page in the context, loads
+        // axe-core into it, hands it the partial results as JSON and runs `axe.finishRun` there:
+        // a page opened and closed for every scan, two to a row. The two ways differ only on a
+        // cross-origin frame, which legacy mode does not read, and the dashboard's pages hold no
+        // frame (below). A route whose page gains a cross-origin frame drops legacy mode, or axe
+        // reads nothing inside that frame.
+        const results = await new AxeBuilder({ page })
+          .withTags(AXE_TAGS)
+          .setLegacyMode(true)
+          .analyze();
         await testInfo.attach(`axe ${route.name} ${colorScheme}.json`, {
           body: JSON.stringify(results, null, 2),
           contentType: "application/json",

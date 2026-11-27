@@ -1,4 +1,4 @@
-import { dispatchWritingBox } from "@legion/contracts";
+import { dispatchWritingBox } from "@legion/contracts/dispatch-writing-boxes";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
@@ -9,19 +9,18 @@ import { QueryError } from "../../components/QueryError";
 import { useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSending } from "../../hooks/useSending";
+import { enabledCardHoverBorder, textPrimaryOnSurfaceMuted } from "../../theme/classes";
 import {
   borderDefault,
   borderStrong,
-  enabledCardHoverBorder,
   pageInkText,
   pageLineBorder,
   pageQuietText,
   surfaceMutedBg,
   textMutedOnSurfaceMuted,
-  textPrimaryOnSurfaceMuted,
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
 import { MentionField } from "../conversation/MentionField";
 import { AgentName } from "../refs/AgentName";

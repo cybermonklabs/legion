@@ -172,6 +172,10 @@ func TestEveryAnswerThatCanHoldAReplyBlockCarriesItsQuote(t *testing.T) {
 		"GET /api/v1/issues/{key}/comments commentThreadPage 200": {getPage(issueComments + "?order=activity"), always("comment", "callback")},
 		"GET /api/v1/issues/{key}/messages messageThreadPage 200": {getPage(issueMessages + "?order=activity"), always("message", "session")},
 		"GET /api/v1/issues/{key}/asks askThreadPage 200":         {getPage("/api/v1/issues/" + f.issue + "/asks?order=activity&thread=1"), always("ask")},
+
+		// The issue page's landing, which carries the issue's comments (issue.comments) and, in
+		// the shell's inbox, the open ask with its thread, each read through its route's loader.
+		"GET /api/v1/landing 200": {get("/api/v1/landing?page=issue&key=" + f.issue), always("comment", "callback", "ask")},
 	}
 
 	found := map[string]bool{}

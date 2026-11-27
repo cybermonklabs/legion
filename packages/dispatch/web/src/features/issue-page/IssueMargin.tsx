@@ -14,11 +14,10 @@ import {
   pageAvatar,
   pageFailedText,
   pageHeaderControl,
-  pageInkText,
   pageLabelChip,
-  pageQuietText,
   pageRowHoverBg,
 } from "../../theme/classes";
+import { pageInkText, pageQuietText } from "../../theme/shell-classes";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { GitHubLink } from "../issue/GitHubLink";
 import { gatedStepEntries, STEP_LABELS } from "../issue/gated-steps";
@@ -28,9 +27,10 @@ import { stateForIssue } from "../issue/pins";
 import { RepoControl, type RepoControlFailure } from "../issue/RepoControl";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
+import { buildIssuePath } from "../refs/page-routes";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
-import { buildDispatchReference, buildIssuePath } from "../refs/routes";
+import { buildDispatchReference } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { BlockedByControl } from "./BlockedByControl";

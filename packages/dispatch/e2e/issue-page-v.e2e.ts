@@ -1116,11 +1116,19 @@ test("the Verification view says nothing of a check's statements before the Veri
     const blocksRoute = `**/api/v1/artifacts/${seeded.verificationArtifactId}/blocks`;
     const answered = (path: string) =>
       page.waitForResponse((response) => new URL(response.url()).pathname === path);
+    // A full page load gets the coverage in the landing read, which stores it under the key the
+    // view reads (`seedIssuePage`, `web/src/api/queries.ts`), so the coverage route is asked only
+    // where the landing carried none; the results read has its own route on every load.
+    const coverageAnswered = () =>
+      page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return (
+          url.pathname === `/api/v1/issues/${seeded.key}/coverage` ||
+          (url.pathname === "/api/v1/landing" && url.searchParams.get("key") === seeded.key)
+        );
+      });
     const readsAnswered = () =>
-      Promise.all([
-        answered(`/api/v1/issues/${seeded.key}/coverage`),
-        answered(`/api/v1/issues/${seeded.key}/results`),
-      ]);
+      Promise.all([coverageAnswered(), answered(`/api/v1/issues/${seeded.key}/results`)]);
     // Every contradiction of the settled view the page draws over `ms`, read every 100 ms.
     const contradictedOver = async (ms: number): Promise<string[]> => {
       const end = Date.now() + ms;

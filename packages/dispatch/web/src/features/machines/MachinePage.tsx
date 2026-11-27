@@ -6,22 +6,24 @@ import { inboxQuery, userAgentStateQuery, whoAmIQuery } from "../../api/queries"
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { useCappedSearchParam } from "../../lib/query-param";
 import {
-  borderDefault,
-  dangerText,
   inlineWarningText,
-  linkHoverText,
-  linkText,
   selectedCardBg,
   selectedCardBorder,
   textMutedOnCanvas,
+} from "../../theme/classes";
+import {
+  borderDefault,
+  dangerText,
+  linkHoverText,
+  linkText,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { tallyBySession } from "../agents/ask-tally";
 import { useAgents } from "../conversation/useAgents";
 import { waitingOnYou } from "../inbox/BlockedOnYou";
+import { relativeTimeLabel } from "../refs/relative-time";
 import { buildAgentsMachinePath, parseMachinePath } from "../refs/routes";
-import { relativeTimeLabel } from "../refs/Timestamp";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import {

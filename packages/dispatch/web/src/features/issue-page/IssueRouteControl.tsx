@@ -2,14 +2,14 @@ import type { ReactNode, Ref } from "react";
 
 import { AGENT_LIST_REFILLING } from "../../api/client";
 import type { IssueDetails } from "../../api/types";
-import { focusVisibleRing, pageInkText, pageQuietText } from "../../theme/classes";
+import { focusVisibleRing, pageInkText, pageQuietText } from "../../theme/shell-classes";
 import {
   RouteReachUnknownMarker,
   UnreachableRouteMarker,
   UnresponsiveRouteMarker,
 } from "../issue/RouteReach";
 import { AgentName, useAgentText } from "../refs/AgentName";
-import { sessionOfAddress } from "../refs/routes";
+import { sessionOfAddress } from "../refs/party-mention";
 import { detailsOpener } from "./details-rows";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";

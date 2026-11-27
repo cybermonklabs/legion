@@ -1,13 +1,8 @@
 import { type ReactNode, useRef, useState } from "react";
 
-import {
-  backdrop50,
-  borderDefault,
-  card,
-  textMutedOnSurface,
-  textPrimaryOnSurface,
-} from "../../theme/classes";
-import type { InboxRoute } from "../refs/routes";
+import { textPrimaryOnSurface } from "../../theme/classes";
+import { backdrop50, borderDefault, card, textMutedOnSurface } from "../../theme/shell-classes";
+import type { InboxRoute } from "../refs/page-routes";
 import { DIALOG_SCOPE } from "../shell/keymap";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
 import { Inbox } from "./Inbox";

@@ -92,6 +92,9 @@ export default class MeasureReporter implements Reporter {
         firstNavigation = step;
       }
     });
+    // Playwright ends a navigation step at the page's `load` event unless the call passes a
+    // `waitUntil`, so this holds the entry chunk's download and parse, and it does not tell how
+    // much of the boot reads that chunk starts has ended by then.
     record.firstPageLoadMs = firstNavigation?.duration ?? 0;
     // One `appendFileSync` of one whole line: a write this small is atomic on Linux, so the
     // lines of several workers interleave but never tear. `JSON.stringify` escapes a newline in

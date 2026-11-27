@@ -10,19 +10,18 @@ import type {
   DeliveryRunJobDetail,
   DeliverySessionGroup,
 } from "../../api/types";
+import { inlineWarningText, textPrimaryOnSurface } from "../../theme/classes";
 import {
   borderStrong,
   dangerText,
   dismissButtonText,
-  inlineWarningText,
   linkText,
   surfaceBg,
   textMutedOnSurface,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { AgentName } from "../refs/AgentName";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import { useDialog } from "../shell/useDialog";
 import { NO_COMPONENT, NO_ISSUE, NO_PRIORITY, NO_SESSION, PLACEHOLDER_LABELS } from "./lib/facets";
 import { parentAgentLabel } from "./lib/parentAgent";

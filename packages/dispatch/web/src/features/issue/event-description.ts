@@ -1,9 +1,9 @@
-import {
-  type BlockInvalidEventPayload,
-  type CommentDeliveryEventPayload,
-  DELETED_POST_DELIVERY_ERROR,
-  type MessageDeliveryEventPayload,
+import type {
+  BlockInvalidEventPayload,
+  CommentDeliveryEventPayload,
+  MessageDeliveryEventPayload,
 } from "@legion/contracts";
+import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts/dispatch-api-constants";
 import type { DispatchEvent } from "../../api/types";
 import {
   askQuestionProse,

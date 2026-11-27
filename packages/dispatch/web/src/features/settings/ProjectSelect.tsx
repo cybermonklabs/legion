@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 
 import type { Project } from "../../api/types";
-import { inputClasses, textPrimaryOnSurface } from "../../theme/classes";
+import { textPrimaryOnSurface } from "../../theme/classes";
+import { inputClasses } from "../../theme/shell-classes";
 
 /** The "Choose a project" picker of the Settings page's architecture sources form and its Legion
  *  daemons form; `disabled` is omitted from the DOM when not given. */

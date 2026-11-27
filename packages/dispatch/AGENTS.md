@@ -17,13 +17,14 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 
 - Keys: `useKeymap` (`features/shell/keymap.ts`); list a new scope in `ShortcutHelp.tsx`'s `SCOPE_ORDER` and `SCOPE_LABELS`, or `?` drops it.
 
-- Colour: import a composite from `theme/classes.ts`; a new pair is a new static composite there.
+- Colour: import a composite from `theme/classes.ts`, or `theme/shell-classes.ts` for strings the entry chunk draws; a new pair is a new static composite there.
 
 - Truncate inside a flex control with `components/TruncatedText.tsx`.
 
 - One primary per screen, chrome after it; type 22px, 15px, `text-sm`, `text-xs`; spacing in 4px steps; colour means state.
 
 - Show an agent only through `features/refs/AgentName.tsx`, or `useAgentText()` for a string; lint misses a namespace import (`import * as`), so review for it.
+  The rail, which the entry chunk carries, imports that module's session half alone (`features/refs/SessionName.tsx`, which says why).
 
 - Editor: never write a class into editor DOM (ProseMirror reads it as an edit); use `ProofEditorHandle` decorations.
   Fix editor gaps in `packages/proof-editor`.
@@ -33,3 +34,9 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 - Each route of `app.tsx` is in `packages/dispatch/e2e/review-routes.ts`, reviewed or excluded with a reason.
 
 - In a unit test, silence `console.error` only with `quietConsoleError()` (`__tests__/act-warnings.ts` says why): a row's own spy or replacement turns the act rule off.
+
+## Browser CI
+
+The pull-request lane runs the `@pr` rows on two legs: `real` starts the stack, and `stub` replays recordings against the downloaded dashboard without a stack.
+The counting-embedder rows run separately after `real` on pull requests and after the wall-clock rows on `full`.
+See [the browser CI notes](../../.github/ci-notes/dispatch-browser.md) for commands and budgets.

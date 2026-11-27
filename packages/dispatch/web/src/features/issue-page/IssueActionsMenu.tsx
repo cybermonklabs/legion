@@ -3,11 +3,10 @@ import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import {
   pageHairBorder,
   pageHeaderControl,
-  pageInkText,
   pagePaperBg,
   pageRowHoverBg,
-  secondaryButtonDisabledText,
 } from "../../theme/classes";
+import { pageInkText, secondaryButtonDisabledText } from "../../theme/shell-classes";
 import { pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 

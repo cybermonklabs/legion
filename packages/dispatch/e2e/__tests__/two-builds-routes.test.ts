@@ -7,7 +7,7 @@ import {
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
   PERSON_PATH,
-} from "../../web/src/features/refs/routes";
+} from "../../web/src/features/refs/page-routes";
 import { walkRoutes } from "../two-builds-routes";
 
 // The two-builds walk (e2e/two-builds.multiprocess.e2e.ts) asks the other build's process for
@@ -23,7 +23,7 @@ const pathConstants: Record<string, string> = {
   PERSON_PATH,
 };
 
-const lazyPages = [...app.matchAll(/^const (\w+) = lazy\(/gm)].map((match) => match[1]);
+const lazyPages = [...app.matchAll(/^const (\w+) = lazyChunk\(/gm)].map((match) => match[1]);
 
 const routerRoutes = [
   ...app.matchAll(/<Route element=\{<(\w+) \/>\} path=(?:"([^"]+)"|\{(\w+)\}) \/>/g),
@@ -43,7 +43,7 @@ describe("the two-builds walk's route list", () => {
     expect(routerRoutes.length).toBeGreaterThan(0);
   });
 
-  test("covers every page app.tsx loads with lazy()", () => {
+  test("covers every page app.tsx loads with lazyChunk()", () => {
     const walkedPages = new Set<string>(walkRoutes.map((route) => route.page));
     expect(lazyPages.filter((page) => page !== undefined && !walkedPages.has(page))).toEqual([]);
   });

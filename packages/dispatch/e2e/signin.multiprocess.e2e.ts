@@ -21,7 +21,8 @@ import { expect, test } from "./test";
  */
 
 /** The page the sign-in returns to, and what shows it rendered signed in: the shell renders a page
- *  only for a person whose `/auth/whoami` answered (AuthGate). */
+ *  only for a person whose `["whoami"]` query answered (AuthGate), from the landing or, where
+ *  that route is absent, from `/auth/whoami`. */
 const next = "/settings";
 
 // The one spec of DISPATCH_E2E_SIGNIN=oidc, where the servers mount no dev sign-in route at all

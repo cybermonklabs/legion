@@ -1,10 +1,7 @@
 import { Children, isValidElement, type ReactNode, useId, useState } from "react";
 
-import {
-  focusVisibleRing,
-  surfaceMutedStrongBg,
-  textSecondaryHoverToPrimary,
-} from "../theme/classes";
+import { surfaceMutedStrongBg, textSecondaryHoverToPrimary } from "../theme/classes";
+import { focusVisibleRing } from "../theme/shell-classes";
 
 /** The most entries a group whose length comes from data shows before its "+N" control, the
  *  layout rule's cap (`packages/dispatch/web/src/AGENTS.md`, Layout; INFRA-1196's R13). */

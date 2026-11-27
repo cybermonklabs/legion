@@ -2,12 +2,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
 import { api, issueStateRequest } from "../../api/client";
-import { userStateQuery } from "../../api/queries";
+import { ownerAsksQuery, ownerCommentsQuery, userStateQuery } from "../../api/queries";
 import type { UserState } from "../../api/types";
 import { stateForIssue } from "../issue/pins";
 import { useDwell } from "../shell/useDwell";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
-import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
+import { issueMessagesQuery } from "./useIssueTree";
 
 /**
  * The issue's read mark, and the only writer of it (`user_issue_state.last_read_seq`, which the
@@ -45,8 +45,8 @@ export function IssueReadMark({ issueKey }: { issueKey: string }): ReactNode {
   // drew. The outline makes these reads and keeps them fresh, so the mark's mount asks for none
   // of them again (`refetchOnMount: false`), and one the outline is already making is that same
   // request, under the same key, not a second one.
-  const asks = useQuery({ ...issueAsksQuery(issueKey), refetchOnMount: false });
-  const comments = useQuery({ ...issueCommentsQuery(issueKey), refetchOnMount: false });
+  const asks = useQuery({ ...ownerAsksQuery({ issue: issueKey }), refetchOnMount: false });
+  const comments = useQuery({ ...ownerCommentsQuery({ issue: issueKey }), refetchOnMount: false });
   const messages = useQuery({ ...issueMessagesQuery(issueKey), refetchOnMount: false });
   const outlineHeld =
     asks.data !== undefined && comments.data !== undefined && messages.data !== undefined;

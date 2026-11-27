@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 import { AGENT_LIST_REFILLING, isAgentListRefilling } from "../api/client";
-import { dangerText, textSecondaryOnSurface } from "../theme/classes";
+import { dangerText, textSecondaryOnSurface } from "../theme/shell-classes";
 
 export interface QueryErrorProps {
   /** The failure itself. An agent list that is refilling (`isAgentListRefilling`) is not a

@@ -13,7 +13,7 @@ import type { ComposerAnchor, ComposerKind } from "../conversation/composer-mode
 import { MentionComposer } from "../conversation/MentionComposer";
 import type { RecordMarkPlacement } from "../doc/editor";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import { Margin } from "./Margin";
 import {
   BRIDGE_BIND_WAIT_MS,

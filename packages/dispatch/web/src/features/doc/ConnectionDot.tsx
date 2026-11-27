@@ -6,11 +6,9 @@ import {
   connectionDotConnecting,
   connectionDotFailed,
   connectionDotOffline,
-  pageQuietText,
-  pageSegmentDoneBg,
   pageWaitingBg,
-  textMutedOnSurface,
 } from "../../theme/classes";
+import { pageQuietText, pageSegmentDoneBg, textMutedOnSurface } from "../../theme/shell-classes";
 import { type ConnectionState, connectionLabel, pendingNotice } from "./connection";
 import type { PendingState } from "./pending-sync";
 

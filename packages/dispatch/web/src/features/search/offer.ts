@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 
 import type { WriteMethod } from "../../api/client";
-import { textMutedOnSurface } from "../../theme/classes";
+import { textMutedOnSurface } from "../../theme/shell-classes";
 import { SendStoppedError } from "../writes/keyed-write";
 import { type Attempt, plainWrite, type Writes } from "../writes/write-store";
 

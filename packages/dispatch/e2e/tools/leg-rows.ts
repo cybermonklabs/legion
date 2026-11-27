@@ -4,9 +4,10 @@
  *
  * Who runs it: .github/scripts/dispatch-browser-reading-rows.sh, in the merge job's step "Reading
  * one, the rows" of .github/workflows/dispatch-browser.yaml, with that job's selected rows
- * directory and every shard leg the run owed (`shard-1` to `shard-4`). The check itself is
- * `legRowFaults` (e2e/leg-rows.ts), which says why the merge job's row count cannot see a row no
- * leg ran.
+ * directory and every shard leg the run owed, read from the run's jobs (`shard-1` and `shard-2`
+ * for the shard job's two-leg matrix), so it holds whatever count the legs ran. The check itself
+ * is `legRowFaults` (e2e/leg-rows.ts), which says why the merge job's row count cannot see a row
+ * no leg ran.
  *
  * It prints one `::error::` line per fault, each naming the rows and the legs, and exits 1; a leg
  * named here whose two lists are not both in the directory is a fault too, since a leg that wrote

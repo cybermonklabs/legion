@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { badgeBlocking } from "../theme/classes";
+import { badgeBlocking } from "../theme/shell-classes";
 
 /** The open-ask count on board cards and list rows. Priority uses the same tag shape but is
  *  editable everywhere it appears, so it lives in `features/issue/PriorityControl`. */

@@ -3,15 +3,18 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { openAgents, plannerMention, seedAgents, shownAgentRows } from "./agents";
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
 import { openIssue, searchPath } from "./keyboard-palette";
-import { expect, test } from "./test";
+import { shellLoads } from "./shell";
+import { expect, type Request, type Route, test } from "./test";
 import { asUser } from "./users";
 
 /**
  * The command palette, in the rows whose claim is the server's: an action that writes and is
  * read back, a search the index answers, a write held in flight, a refusal, and the Agents page,
  * whose rows fold under `Inactive` once their `last_seen` is ten minutes old - which a frozen
- * recording's would be. What the palette draws over one fixed answer - its listing, its focus,
- * the addresses its rows open and the way the list fits a window - is in
+ * recording's would be. One more takes the page offline and back, which the live socket and
+ * the page's reads must live through on a server that answers them: the bar opening once its
+ * chunk comes down after an outage. What the palette draws over one fixed answer - its listing,
+ * its focus, the addresses its rows open and the way the list fits a window - is in
  * `keyboard-palette.stub.e2e.ts`.
  */
 
@@ -70,7 +73,7 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     await expect(close).toBeVisible();
     // Both rows the bound is taken between are drawn, and the render that drew them drew every
     // row: the bar reads its recent items and its actions once, on the render that opens it
-    // (`SearchPalette.tsx:420-429`), and an empty box adds no project and no hit (`:497-524`).
+    // (`SearchPalette.tsx:437-446`), and an empty box adds no project and no hit (`:510-529`).
     const ids = await rows.evaluateAll((options) => options.map((option) => option.id));
     const closeIndex = ids.indexOf(closeId ?? "");
     expect(closeIndex).toBeGreaterThanOrEqual(0);
@@ -490,7 +493,7 @@ test("hits that arrive after the reader has arrowed keep the highlight on the ro
     // instant after.
     const documentsId = await documents.getAttribute("id");
     // The bar filters the actions it read on the render that opened it by the words in the box,
-    // all in one render (`SearchPalette.tsx:429` and `:478-492`), so the render that drew the
+    // all in one render (`SearchPalette.tsx:446` and `:490-509`), so the render that drew the
     // rows waited for above drew every row `go to` leads to.
     const ids = await rows.evaluateAll((options) => options.map((option) => option.id));
     await expect(input).toHaveAttribute("aria-activedescendant", ids[0] ?? "");
@@ -672,6 +675,87 @@ test("a row whose control has gone since the palette opened does nothing", async
     await sleep(100);
     expect((await getIssue(issue.key)).status).toBe("in_progress");
     expect(patches).toBe(0);
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): a cold issue page, then an outage and a return, which the live socket reconnects
+// across, around two opens of the bar.
+// The bar's chunk failing while the browser is offline leaves the bar to open on a later press.
+// Its open asks for the chunk under `importWhenOnline`, and again on every open while it is not
+// in, and Escape in the box that holds the keys meanwhile calls that open off
+// (`web/src/features/shell/asked-surface.tsx`). Otherwise a swallowed offline failure would leave
+// the bar open with nothing drawn, and each later `$mod+k` would ask for nothing until a reload.
+// The bar's prefetch is held on the wire until the page is offline and then fails as a download
+// the outage cut, and every request for the chunk fails while the page is offline.
+//
+// Chromium takes a context offline, and back, in two halves that the row cannot order: the page's
+// own reading of the network (`navigator.onLine`, and its `offline` and `online` events) and the
+// network under the page. Read on this row, the page heard `offline` from 100 ms after
+// `setOffline(true)` had returned to 460 ms before it. A chunk that fails while the page still
+// reads itself online is one the recovery reloads for, as it must for a chunk that fails online
+// (`web/src/features/shell/DeploymentResilience.tsx`), and that took a run of this row down: the
+// ask the page's `online` sent again for the bar's chunk met the network still offline, and the
+// page reloaded under the second press. So no chunk but the bar's is out at either switch. Every
+// other chunk of the page is in before it goes offline; the held prefetch fails only once the page
+// reads itself offline; and once the page is back the bar's chunk is answered by the row
+// (`route.fetch`, which no browser network carries), so no ask the `online` sends can meet a
+// network still offline under a page that reads itself online.
+test("a bar whose chunk failed offline opens on the next press once the browser is back online", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Offline bar" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const load = await shellLoads(page);
+    // The page's script downloads that have not ended, the bar's own among them while it is held.
+    const scripts = new Set<Request>();
+    page.on("request", (request) => {
+      if (request.resourceType() === "script") scripts.add(request);
+    });
+    page.on("requestfinished", (request) => scripts.delete(request));
+    page.on("requestfailed", (request) => scripts.delete(request));
+    const barChunk = /\/assets\/SearchPalette-[^/]+\.js$/u;
+    let network: "held" | "offline" | "online" = "held";
+    const held: Route[] = [];
+    await page.route(barChunk, async (route) => {
+      if (network === "held") held.push(route);
+      else if (network === "offline") await route.abort("internetdisconnected");
+      else await route.fulfill({ response: await route.fetch() });
+    });
+    await openIssue(page, issue.key, "Offline bar");
+    await expect.poll(() => held.length, "the bar's prefetch went out").toBeGreaterThan(0);
+    // The page's own chunks in: the margin and the reference-preview layer, which it asks for
+    // once it has drawn, rendered, and then no script out but the bar's.
+    await load().settled();
+    await expect
+      .poll(
+        () =>
+          [...scripts]
+            .map((request) => new URL(request.url()).pathname)
+            .filter((path) => !barChunk.test(path)),
+        "every chunk of the page but the bar's is in"
+      )
+      .toEqual([]);
+    await context.setOffline(true);
+    await expect
+      .poll(() => page.evaluate(() => navigator.onLine), "the page reads itself offline")
+      .toBe(false);
+    network = "offline";
+    for (const route of held.splice(0)) await route.abort("internetdisconnected");
+
+    await page.keyboard.press("ControlOrMeta+k");
+    await page.keyboard.press("Escape");
+    // Before the window hears `online`, so the request that event asks again for is answered.
+    network = "online";
+    await context.setOffline(false);
+    await page.keyboard.press("ControlOrMeta+k");
+    const bar = page.getByRole("dialog", { name: "Search" });
+    await expect(bar).toBeVisible();
+    await expect(bar.getByRole("combobox", { name: "Search" })).toBeFocused();
   } finally {
     await context.close();
   }

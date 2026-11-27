@@ -16,7 +16,7 @@
 
 import { type ReactNode, type RefObject, useRef } from "react";
 
-import { borderDefault, focusVisibleRing } from "../../theme/classes";
+import { borderDefault, focusVisibleRing } from "../../theme/shell-classes";
 import { useUserPreference } from "../shell/userPreference";
 
 /** How much of the two columns the reading pane takes to begin with. */

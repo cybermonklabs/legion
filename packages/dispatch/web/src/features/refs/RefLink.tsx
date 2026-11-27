@@ -6,10 +6,10 @@ import {
   type WordsPiece,
   wordsAreAddress,
   wordsFormatting,
-} from "@legion/contracts";
+} from "@legion/contracts/dispatch-mentions";
 import { type ReactNode, useContext, useLayoutEffect, useState } from "react";
 
-import { borderDefault } from "../../theme/classes";
+import { borderDefault } from "../../theme/shell-classes";
 import { isPartyRoute } from "./party-references";
 import { useReferenceHref, useReferenceLabel, useReferenceTarget } from "./reference-target";
 import {

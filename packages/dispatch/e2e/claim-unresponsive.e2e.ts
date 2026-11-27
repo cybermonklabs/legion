@@ -9,7 +9,8 @@ import {
   mintAgentToken,
   patchIssue,
 } from "./api";
-import { expect, type Locator, test } from "./test";
+import { endsInZeroMs, expectInstant } from "./instants";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // A session that has missed its heartbeats has not ended: it keeps the issue it is working, the
@@ -56,27 +57,11 @@ async function seedClaim(title: string): Promise<{ issueKey: string; token: stri
  *  holds the record and says the session is unresponsive, with the heartbeat it was last seen
  *  at. Returns that heartbeat. */
 async function stall(msAgo: number): Promise<number> {
-  // A millisecond ending in zero, every run: the server spells the moment as Go does, which
-  // drops that trailing zero (`…:32.15Z` for 150 ms), and the page's `datetime` is that
-  // spelling. Rounding here exercises the difference on every run rather than one in ten,
-  // so expectInstant's comparison of moments is what the assertions below rest on.
-  const lastSeen = Math.floor((Date.now() - msAgo) / 10) * 10;
+  // The page's `datetime` is the server's spelling of this moment.
+  const lastSeen = endsInZeroMs(Date.now() - msAgo);
   await setSessionLastSeen(holder.session_id, lastSeen);
   await setSessionState(holder.session_id, "unresponsive");
   return lastSeen;
-}
-
-// expectInstant reads a <time> element's `datetime` and compares the moment it names with want,
-// rather than its spelling: the server writes the moment as Go formats it, which drops a trailing
-// zero from the milliseconds (`…:32.15Z` for 150 ms), while `Date.toISOString` always writes
-// three digits. Comparing the strings failed about one run in ten on that difference alone.
-async function expectInstant(locator: Locator, want: number, what: string) {
-  await expect(locator).toBeVisible();
-  await expect
-    .poll(async () => Date.parse((await locator.getAttribute("datetime")) ?? ""), {
-      message: `${what} names the moment ${new Date(want).toISOString()}`,
-    })
-    .toBe(want);
 }
 
 // @pr: A claim the server settles: an unresponsive holder keeps it, the page says since when and until when, and a second agent's claim is refused.

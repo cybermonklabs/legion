@@ -1,4 +1,5 @@
-import { type DispatchReadingSurface, mentionDrawn } from "@legion/contracts";
+import type { DispatchReadingSurface } from "@legion/contracts";
+import { mentionDrawn } from "@legion/contracts/dispatch-mentions";
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 
 import type { DisplayTree } from "../../api/types";

@@ -1,4 +1,4 @@
-import { ASK_TURNS } from "@legion/contracts";
+import { ASK_TURNS } from "@legion/contracts/dispatch-api-constants";
 
 import type { Actor, Ask, AskTurn, Comment } from "../../api/types";
 

@@ -1,4 +1,5 @@
-import { badgeLow, hoverToDangerText, secondaryButtonText } from "../../theme/classes";
+import { badgeLow, hoverToDangerText } from "../../theme/classes";
+import { secondaryButtonText } from "../../theme/shell-classes";
 
 /** The pill a session is listed in (subscribed agents, an ask's followers). */
 export const sessionChipClassName = `flex items-center gap-2 rounded-full px-3 py-1 text-sm ${badgeLow.bg} ${badgeLow.text}`;

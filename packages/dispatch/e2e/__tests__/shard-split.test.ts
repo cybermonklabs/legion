@@ -1,14 +1,16 @@
 /** The split of a sharded run by measured row time (`e2e/shard-split.ts`), as the placement
  *  itself and as `e2e/shard-reporter.ts` applies it to the real config.
  *
- *  The second half is what the shard job rests on. Each of its four legs computes the placement
- *  on its own machine, and a leg that placed a file differently from the others would run it
- *  twice or leave it to nobody. So each selection is listed whole and then leg by leg through the
- *  reporter, all four legs, and two things are held: every row of the whole listing is on exactly
- *  one leg (`legRowFaults`, e2e/leg-rows.ts, which names each row that is on none or on two), and
- *  each leg holds exactly the rows the placement of the whole listing gives it. The first catches
- *  a reporter that drops or doubles a file whichever leg it is placed on; the second is what tells
- *  this split from Playwright's own, whose count split is a partition too.
+ *  The second half is what the shard job rests on. Each of its legs - as many as the shard job's
+ *  `matrix` in .github/workflows/dispatch-browser.yaml names, which is where this file reads the
+ *  count - computes the placement on its own machine, and a leg that placed a file differently
+ *  from the others would run it twice or leave it to nobody. So each selection is listed whole
+ *  and then leg by leg through the reporter, every leg, and two things are held: every row of the
+ *  whole listing is on exactly one leg (`legRowFaults`, e2e/leg-rows.ts, which names each row that
+ *  is on none or on two), and each leg holds exactly the rows the placement of the whole listing
+ *  gives it. The first catches a reporter that drops or doubles a file whichever leg it is placed
+ *  on; the second is what tells this split from Playwright's own, whose count split is a
+ *  partition too.
  *
  *  The listings of a selection run one after the other, and the two selections side by side, so
  *  the file holds at most two at once: a listing of the full config is a `node` of about 300 to
@@ -18,8 +20,9 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-import { type ListedRow, pullRequestLaneProjects, rowsOfListing, tagged } from "../configurations";
+import { type ListedRow, rowsOfListing } from "../configurations";
 import { legRowFaults } from "../leg-rows";
+import { referencesLaneFiles } from "../reference-lane";
 import {
   dependencyProjects,
   placeUnits,
@@ -123,7 +126,35 @@ test("a project another names as a dependency or teardown is a setup project, an
   expect(dependencyProjects([{}, { dependencies: [] }])).toEqual(new Set());
 });
 
-const legs = 4;
+/** The shard job's leg count, read from its `matrix` in .github/workflows/dispatch-browser.yaml,
+ *  where the run's legs are written (.github/ci-notes/dispatch-browser.md, "Why the leg count
+ *  stands in three places"). The listings below split each selection as CI's legs split it, so
+ *  the count is CI's own: a number written here as well would be a fourth place for it, and a
+ *  test that listed four legs while CI ran two would hold a placement no leg ever computes. The
+ *  legs must be numbered 1 to N, as `--shard=N/M` numbers them and e2e/shard-reporter.ts keeps
+ *  leg N of M; anything else is refused by name rather than listed. */
+function shardLegs(): number {
+  const workflow = Bun.YAML.parse(
+    readFileSync(
+      new URL("../../../../.github/workflows/dispatch-browser.yaml", import.meta.url),
+      "utf8"
+    )
+  ) as { jobs?: { shard?: { strategy?: { matrix?: { shard?: unknown } } } } } | null;
+  const matrix = workflow?.jobs?.shard?.strategy?.matrix?.shard;
+  if (
+    !Array.isArray(matrix) ||
+    matrix.length === 0 ||
+    matrix.some((leg, index) => leg !== index + 1)
+  ) {
+    throw new Error(
+      ".github/workflows/dispatch-browser.yaml's shard job does not name its legs 1 to N in " +
+        `jobs.shard.strategy.matrix.shard: ${JSON.stringify(matrix)}`
+    );
+  }
+  return matrix.length;
+}
+
+const legs = shardLegs();
 const rowKey = (row: ListedRow) => `${row.project} › ${row.file} › ${row.title}`;
 
 /** One selection listed whole and then each of its legs through the reporter, one listing after
@@ -148,14 +179,14 @@ async function listedLegs(selection: readonly string[]) {
 /** Both selections start here, before any test, so the file holds at most two listings at once. */
 const selections = {
   "the default selection": retained(listedLegs([])),
-  "the pull-request lane": retained(
-    listedLegs([...projectArguments(pullRequestLaneProjects), "--grep", tagged("pr").source])
+  "the references lane": retained(
+    listedLegs([...projectArguments(["chromium"]), ...referencesLaneFiles()])
   ),
 };
 
 for (const [name, listed] of Object.entries(selections)) {
   test(
-    `the four legs of ${name} hold each of its rows once, each leg the rows the placement gives it`,
+    `the ${legs} legs of ${name} hold each of its rows once, each leg the rows the placement gives it`,
     async () => {
       const { sharded, whole: listedWhole } = await listed;
       const whole = rowsOfListing(listedWhole);
@@ -170,7 +201,7 @@ for (const [name, listed] of Object.entries(selections)) {
             selection: whole.map(rowKey),
           }))
         ),
-        `the four legs of ${name} against its whole listing`
+        `the ${legs} legs of ${name} against its whole listing`
       ).toEqual([]);
       const units = new Map<string, Unit>();
       for (const row of whole) {
@@ -196,6 +227,7 @@ for (const [name, listed] of Object.entries(selections)) {
         expect(perLeg[leg - 1], `leg ${leg} of ${name} against its placement`).toEqual(expected);
       }
     },
-    rowLimit("listing", "listing", "listing", "listing", "listing")
+    // One listing of the whole selection, then one for each leg.
+    rowLimit(...Array.from({ length: legs + 1 }, () => "listing" as const))
   );
 }

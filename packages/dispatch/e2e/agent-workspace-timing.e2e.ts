@@ -385,8 +385,9 @@ test("a sleeping view of an ordinary conversation comes back with its fastest wa
 // The clock is the page's own (`watchViewRestore`, installed before the press): the first
 // `pointerdown`, taken in the capture phase before any handler of the press runs, to the first
 // mutation in which that session's view is in front with a turn drawn in it. Nothing of the
-// driver is in the window - a Playwright click's trace snapshots either side of itself are the
-// harness's work, not the page's - and every reading is kept on the result whether or not the
+// driver is in the window - a Playwright click's own round trips, and its trace snapshots where a
+// trace records them (`e2e/playwright.config.ts` records none), are the harness's work, not the
+// page's - and every reading is kept on the result whether or not the
 // row passes, with the three parts it divides into: the re-subscribe, the session's replay
 // arriving, and the view drawing it.
 //
@@ -530,13 +531,14 @@ test("a sleeping view at the stream's worst case comes back with its fastest wak
 //
 // The press is driven from inside the page, in one `evaluate`, and armed in a timer rather
 // than pressed on the `evaluate`'s own line. A Playwright click takes a DOM snapshot for the
-// trace either side of itself (`trace: "retain-on-failure"`), and that snapshotting is the
-// harness's work, not the page's - with the press driven from the browser it added 25 ms to
-// this window and a task of its own. The timer is what leaves a long task to read: React draws
-// the rows in a microtask of the task that pressed the toggle, so a press from the `evaluate`
-// puts the whole draw inside the driver's one task, which is no task of the page's and is
-// never reported as a long one. Every load's two figures are kept on the result in the order
-// they were taken, with the load the row judged, whether or not the row passes.
+// trace either side of itself where the trace records snapshots (the suite's config records none
+// now, `e2e/playwright.config.ts`), and that snapshotting is the harness's work, not the page's:
+// with the press driven from the browser it added 25 ms to this window and a task of its own.
+// The timer is what leaves a long task to read: React draws the rows in a microtask of the task
+// that pressed the toggle, so a press from the `evaluate` puts the whole draw inside the driver's
+// one task, which is no task of the page's and is never reported as a long one. Every load's two
+// figures are kept on the result in the order they were taken, with the load the row judged,
+// whether or not the row passes.
 // SLOW(>=2s): six hundred sessions seeded, then up to twenty pages that each list them all
 // before the one draw each of them is timed for.
 test("the Agents page paints six hundred sessions with a load inside 100 ms whose longest task is under 150, the first of up to twenty", async ({

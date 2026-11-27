@@ -6,15 +6,15 @@ import { api } from "../../api/client";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
+import { textMutedOnCanvas } from "../../theme/classes";
 import {
   borderDefault,
   card,
   dangerText,
   linkHoverText,
   linkText,
-  textMutedOnCanvas,
   textPrimaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { capabilityLabel } from "../conversation/delivery";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownPreview } from "../refs/MarkdownPreview";

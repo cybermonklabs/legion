@@ -1,8 +1,8 @@
 import { useLocation } from "react-router-dom";
 
-import { parseInboxSearch } from "../refs/routes";
+import { inboxItemOf } from "../refs/page-routes";
 import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
-import { inboxEntryState } from "./pane-selection";
+import { inboxEntryState } from "./entry-state";
 
 /**
  * Whether the Inbox page fills the viewport, rather than scrolling as one document, for the
@@ -12,13 +12,18 @@ import { inboxEntryState } from "./pane-selection";
  * scrolled to its section there, and an approval's Next change steps that box. A row the column
  * chose by itself is not one the reader opened (`inboxDefaultPick` on its history entry): below
  * the column's width the Inbox drops it from the address and shows the list.
+ *
+ * The shell reads this in the entry chunk, so it reads the address and the history entry through
+ * the modules the entry holds (`refs/page-routes.ts`, `entry-state.ts`), and not through
+ * `refs/routes.ts` or `pane-selection.ts`, which would bring the reference grammar and the
+ * Inbox's selection into the entry (`MAX_ENTRY_BYTES` in `web/src/asset-sizes-in-build.ts`).
  */
 export function useInboxFillsViewport(): boolean {
   const wide = useMediaQuery(READING_PANE_QUERY);
   const { search, state } = useLocation();
   return (
     wide ||
-    (parseInboxSearch(search).item !== undefined &&
+    (inboxItemOf(new URLSearchParams(search)) !== undefined &&
       inboxEntryState(state).inboxDefaultPick !== true)
   );
 }

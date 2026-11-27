@@ -4,8 +4,9 @@ import { Link } from "react-router-dom";
 
 import { issueQuery } from "../../api/queries";
 import type { Artifact, DispatchEvent } from "../../api/types";
-import { linkText } from "../../theme/classes";
-import { buildIssuePath, buildReferencePath, documentRoute } from "../refs/routes";
+import { linkText } from "../../theme/shell-classes";
+import { buildIssuePath } from "../refs/page-routes";
+import { buildReferencePath, documentRoute } from "../refs/routes";
 import { type SentencePart, SentenceParts } from "./SentenceParts";
 
 type ArtifactVersionEvent = Extract<DispatchEvent, { type: "artifact.version" }>;

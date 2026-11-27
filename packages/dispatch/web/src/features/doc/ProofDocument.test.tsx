@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 
+import { holdWithin } from "../../__tests__/content-drawn";
 import { type FakeDocumentRuntime, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { settle } from "../../__tests__/fake-clock";
 import { answerRequests } from "../../__tests__/network";
@@ -19,6 +20,12 @@ import type { Artifact, Ask, IssueDetails, IssueReferenceSummary, Version } from
 import { heldSends } from "../conversation/held-sends";
 import { marginComposeSendKey } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import {
+  contentDrawn,
+  HOLD_LIMIT_MS,
+  holdUntilContentDraws,
+  whenContentDrawn,
+} from "../shell/content-drawn";
 import { appKeymap } from "../shell/keymap";
 import { colorForLogin } from "./connection";
 
@@ -431,6 +438,55 @@ test("ProofDocument reports connection status and pending edits through the tool
   }
 });
 
+// A live connection that goes offline before its first sync - `/ws/doc` unreachable, for a reader
+// offline or a server that does not answer - leaves a document that does not draw until it can
+// reach Dispatch, which may be never. It ends the shell's hold on the margin and the rest
+// (`features/shell/content-drawn.ts`) then, not at the hold's limit. A tenth of that limit tells
+// the two apart on a busy machine, and a failing run stops after one second, not after ten.
+test("a document whose live connection goes offline before it syncs ends the shell's hold, not at the hold's limit", async () => {
+  // `preloadRouteChunk` in `app.tsx` starts this hold from a landing's address, before React
+  // renders.
+  holdUntilContentDraws();
+  const { connections, editors, status, view } = renderProofDocument();
+  try {
+    await waitFor(() => expect(connections).toHaveLength(1));
+    // The connection is open and has not synced, so the hold is still on: the row cannot pass on
+    // a hold that ended before the connection went offline.
+    expect(await holdWithin(0)).toBe("still on");
+    act(() => status("offline"));
+    expect(await act(() => holdWithin(HOLD_LIMIT_MS / 10))).toBe("ended");
+    // No editor was built, so the hold ended for the offline connection, not for a drawn document.
+    expect(editors).toHaveLength(0);
+  } finally {
+    view.unmount();
+    // A hold this row left on would hold every row after it: end it, and wait for its frame.
+    contentDrawn();
+    await whenContentDrawn();
+  }
+});
+
+// A first handshake to `/ws/doc` that fails - the room unreachable before the socket ever opened -
+// never goes offline: Hocuspocus reports `disconnected` only for a socket that had connected, so
+// the connection stays "connecting" and the close is all the page hears. That close ends the
+// shell's hold too, not the hold's limit.
+test("a document whose first socket closes before it ever connects ends the shell's hold, not at the hold's limit", async () => {
+  holdUntilContentDraws();
+  const { callbacks, connections, editors, toolbar, view } = renderProofDocument();
+  try {
+    await waitFor(() => expect(connections).toHaveLength(1));
+    expect(await holdWithin(0)).toBe("still on");
+    act(() => callbacks.at(-1)?.onClose?.());
+    expect(await act(() => holdWithin(HOLD_LIMIT_MS / 10))).toBe("ended");
+    // The connection never went offline and never synced: the close alone ended the hold.
+    expect(toolbar.current?.connection).toBe("connecting");
+    expect(editors).toHaveLength(0);
+  } finally {
+    view.unmount();
+    contentDrawn();
+    await whenContentDrawn();
+  }
+});
+
 test("the margin's wait for this browser's edits is answered by a report taken after it, and by its bound", async () => {
   const { margin, pending, sync, view } = renderProofDocument();
 
@@ -691,7 +747,7 @@ test("a selection-bar action opens the margin composer for the mark and settles 
     heldSends(queryClient).send(marginComposeSendKey(anchor.artifact), {
       anchor,
       ask: { multiple: false, options: [], urgency: "med" },
-      draft: { body: "Why?", replacement: "" },
+      draft: { body: "Why?", namesParty: false, replacement: "" },
       edit: undefined,
       kind,
       owner: { issueKey: "CORE-1", kind: "issue" },
@@ -869,7 +925,7 @@ test("a closed document's Comment opens a quote composer with no mark, which pos
       heldSends(queryClient).send(marginComposeSendKey(anchor.artifact), {
         anchor,
         ask: { multiple: false, options: [], urgency: "med" },
-        draft: { body: "After the close", replacement: "" },
+        draft: { body: "After the close", namesParty: false, replacement: "" },
         edit: undefined,
         kind: "comment",
         owner: { issueKey: "CORE-1", kind: "issue" },

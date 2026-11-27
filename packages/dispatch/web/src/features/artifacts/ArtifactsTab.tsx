@@ -1,4 +1,4 @@
-import { graphNodeKey, issueReferenceSections } from "@legion/contracts";
+import { graphNodeKey, issueReferenceSections } from "@legion/contracts/dispatch-api-graph";
 import { useQuery } from "@tanstack/react-query";
 import { memo, type ReactNode, useId, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
@@ -8,8 +8,8 @@ import type { Artifact, IssueReferencesAnswer, ReferenceLink } from "../../api/t
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { compareTimestamps } from "../../lib/timestamps";
+import { badgePrimary } from "../../theme/classes";
 import {
-  badgePrimary,
   borderDefault,
   dangerText,
   inputClasses,
@@ -17,20 +17,18 @@ import {
   linkText,
   textMutedOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { DeletedBody, EditedMark } from "../refs/PostMarks";
+import { buildIssuePath, buildProjectPath, parseIssuePath } from "../refs/page-routes";
 import { PlainText } from "../refs/plain-text";
 import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import {
-  buildIssuePath,
-  buildProjectPath,
   buildReferencePath,
   documentRoute,
   isAgentArtifact,
-  parseIssuePath,
   parseNodeReference,
   referenceHref,
 } from "../refs/routes";

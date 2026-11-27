@@ -271,6 +271,43 @@ test("unfollowing a follower while a role route's holder is unknown says the rou
       response,
     });
   });
+  // The same two reads where the landing carries them, which on a cold page is where both come
+  // from: its one answer holds the issue of the page the address names and the Inbox rows of
+  // the shell, each seeded under the key its own route's reader holds
+  // (`web/src/api/queries.ts`, `seedIssuePage` and `seedShell`). Rewriting only the routes
+  // above would leave each page drawing the listener's real answer, where this row is about
+  // what the page draws when that answer never came.
+  await page.route("**/api/v1/landing*", async (route) => {
+    const response = await route.fetch();
+    const body = (await response.json()) as {
+      page: { issue: { issue: Record<string, unknown> | null } | null };
+      shell: { inbox: { id: string; thread: Record<string, unknown> }[] | null };
+    };
+    const landed = body.page.issue;
+    const rows = body.shell.inbox;
+    await route.fulfill({
+      json: {
+        ...body,
+        page: {
+          ...body.page,
+          issue:
+            landed === null || landed.issue === null
+              ? landed
+              : { ...landed, issue: { ...landed.issue, ...unknownReach } },
+        },
+        shell: {
+          ...body.shell,
+          inbox:
+            rows === null
+              ? rows
+              : rows.map((row) =>
+                  row.id === ask.id ? { ...row, thread: { ...row.thread, ...unknownReach } } : row
+                ),
+        },
+      },
+      response,
+    });
+  });
   try {
     await page.goto(`/issues/${issue.key}`);
     const headerMarker = page.getByTestId("issue-route-unknown");
@@ -401,20 +438,32 @@ test("a claim that lands while the Inbox is loading reaches the card that mounts
 
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
-  // The Inbox's first load is composed now, before the claim, and held until the claim has been
-  // handled. No cached thread names the ask yet, so the claim's refresh of the threads on its
-  // issue reaches nothing: only the issue's mark sends the card that mounts from this body to the
-  // ask endpoint. Every later request reaches the server.
+  // The Inbox's first load is composed now, before the claim, and held on the wire until after
+  // it. That load is the landing: its one answer carries the Inbox rows this page draws and
+  // seeds them under the key the list reads them by (`web/src/api/queries.ts`, `seedShell`), so
+  // the page asks `/inbox` not at all and the body the card mounts from is this one. No cached
+  // thread names the ask yet, so the claim's refresh of the threads on its issue reaches
+  // nothing: only the issue's mark sends the card that mounts from this body to the ask
+  // endpoint. Every later request reaches the server.
+  //
+  // The claim is written while this read is held, and so after the body it carries AND after
+  // the event head carried beside it: the page's feed resumes from that head when its socket
+  // opens, which is once this read has landed, so Dispatch replays the claim to the page. That
+  // is what puts a claim the mounted list has never heard of in front of the card, which is
+  // this row's subject; it is held here rather than flushed to an already-open socket because
+  // a page whose viewer read is still out has no socket to flush to.
   const firstFetched = Promise.withResolvers<void>();
   const releaseFirst = Promise.withResolvers<void>();
   let staleClaimant: unknown;
-  let inboxRequests = 0;
-  await page.route("**/api/v1/inbox*", async (route) => {
-    inboxRequests += 1;
-    if (inboxRequests === 1) {
+  let landingReads = 0;
+  await page.route("**/api/v1/landing*", async (route) => {
+    landingReads += 1;
+    if (landingReads === 1) {
       const response = await route.fetch();
-      const rows = (await response.json()) as { id: string; thread: { claimant: unknown } }[];
-      staleClaimant = rows.find((row) => row.id === ask.id)?.thread.claimant;
+      const body = (await response.json()) as {
+        shell: { inbox: { id: string; thread: { claimant: unknown } }[] | null };
+      };
+      staleClaimant = body.shell.inbox?.find((row) => row.id === ask.id)?.thread.claimant;
       firstFetched.resolve();
       await releaseFirst.promise;
       await route.fulfill({ response });
@@ -422,32 +471,26 @@ test("a claim that lands while the Inbox is loading reaches the card that mounts
     }
     await route.fallback();
   });
-  const streamOpened = page.waitForEvent(
-    "websocket",
-    (socket) => new URL(socket.url()).pathname === "/ws/live"
-  );
   const pinnedListRead = () =>
     page.waitForRequest((request) => {
       const url = new URL(request.url());
       return url.pathname === "/api/v1/issues" && url.searchParams.get("pinned") === "true";
     });
   try {
-    const firstPinnedRead = pinnedListRead();
     const navigation = page.goto("/");
-    // The claim goes out once the page's live socket is open and the sidebar has read its pinned
-    // list, so its flush reaches the page while the Inbox load it is timed against is still in
-    // flight, and the rename after it is seen by a pinned list already loaded.
-    await Promise.all([firstFetched.promise, streamOpened, firstPinnedRead]);
+    await firstFetched.promise;
     expect(staleClaimant).toBeNull();
 
     await claimIssue(issue.key, { actor: claimant, as: "agent" });
-    // Events reach the page in order, so once the rename written after the claim has made the
-    // page read its pinned list again, the claim's event has been handled too.
+    // Written after the claim, and the pinned list is read again for it alone - alice pinned
+    // this issue and nothing the Inbox shows. Events reach the page in order, so that read says
+    // the claim before it has been handled too. The wait is registered before the answer is
+    // released, since the read it waits for goes out as soon as the page is up.
     const renameHandled = pinnedListRead();
     await patchIssue(other.key, { title: "Renamed after the claim" });
-    await renameHandled;
     releaseFirst.resolve();
     await navigation;
+    await renameHandled;
 
     // The card mounts from the body that names no claimant, and shows the claim anyway.
     const card = page.getByTestId(`ask-${ask.id}`);

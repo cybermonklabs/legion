@@ -177,11 +177,11 @@ if (clockFile !== undefined) {
 // The population is the one this number governs, and the filter is the point of it: the results
 // that passed, in that window, on rows of the spec files this tree has that ran under the
 // inherited budget rather than one of their own. The filter is per row, not per file, because
-// 29 of the tree's 32 `test.setTimeout`/`test.slow()` calls sit inside a single row: a file is
+// 29 of the tree's 32 `test.setTimeout`/`test.slow()` calls sat inside a single row: a file is
 // not out of the population, a row is, and the other rows of `keyed-writes`, `live-socket`,
 // `phone`, `refetch-budget`, `claim-refilling`, `composer-body-cap`, `machine-login` and
-// `threads-order` are governed by this budget whatever their one slow neighbour asks for. Only
-// `prefix-links`, `reference-cards` and `reference-titles` set a timeout for every row they hold.
+// `threads-order` were governed by this budget whatever their one slow neighbour asked for. Only
+// `prefix-links`, `reference-cards` and `reference-titles` set a timeout for every row they held.
 //
 // Derive it from the measurement rather than from the sources: a report carries, per row, the
 // timeout that row ran under, so a result taken at its project's own timeout is one this budget
@@ -203,7 +203,7 @@ if (clockFile !== undefined) {
 // in deep-links.e2e.ts's "emitted document item hrefs select and scroll their anchored thread" on
 // WebKit. Over the whole of what this tree has, rows with their own timeout included, the
 // maximum is 126,560 ms, and the 21 results above this budget are all in three rows of
-// agent-list-refilling.e2e.ts, whose rows ask for 150 s to 300 s themselves.
+// agent-list-refilling.e2e.ts, whose rows asked for 150 s to 300 s themselves that day.
 //
 // What the window bounds, and what it does not. The population is passing results, and every
 // governed row of the window ran under Playwright's 30 s default, so a row that wanted longer was
@@ -233,8 +233,8 @@ const testTimeout = 60_000;
 // coreBundle.js:64256-64257). It is the context's default timeout as well (`actionTimeout || 0`,
 // node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/index.js:360), so a
 // `waitForResponse` or `waitForFunction` that names no timeout of its own takes it too. The
-// longest such wait this change read is `replayed()` (e2e/keyed-writes.ts), which answers the
-// 18 s server hold of keyed-send.e2e.ts:411, well inside this.
+// longest such wait this bound was read against is `replayed()` (e2e/keyed-writes.ts), which
+// answers the 5 s server hold of keyed-send.e2e.ts's comment row, well inside this.
 //
 // Derived from the population `testTimeout` above measures, not asserted: over those 320,101
 // passing results of 201 ci.yaml runs the slowest WHOLE row is 29,856 ms, so no single action in
@@ -607,7 +607,14 @@ const visualProjects = [
     // would say the same thing on every file and in the name of each the route and the scheme
     // are what a reader is looking for.
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
-    use: { ...devices["Desktop Chrome"], viewport: { height: 800, width: 1280 } },
+    // UTC: the zone the pinned image's Chromium drew every baseline in, named so that the day
+    // the page heads its events with is the day `e2e/visual-seed.ts` keeps the corpus on
+    // (e2e/visual-day.ts). Every context a row makes takes it, as it takes the viewport.
+    use: {
+      ...devices["Desktop Chrome"],
+      timezoneId: "UTC",
+      viewport: { height: 800, width: 1280 },
+    },
     workers: 1,
     retries: 0,
   },
@@ -616,7 +623,7 @@ const visualProjects = [
     testMatch: visualSpecs,
     grep: phoneRowTagged,
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
-    use: { ...devices["iPhone 13"], browserName: "chromium" as const },
+    use: { ...devices["iPhone 13"], browserName: "chromium" as const, timezoneId: "UTC" },
     workers: 1,
     retries: 0,
   },
@@ -753,14 +760,55 @@ export default defineConfig({
     // a trace of a green run and leave the failure none. Locally, with `retries: 0`, the first
     // attempt is the only attempt, so this is the `retain-on-failure` the suite had before.
     //
+    // The trace records every action, the console and the sources, and leaves out three things:
+    // the screencast, a stream of JPEG frames of the page (`screenshots: false`), the DOM snapshot
+    // Playwright takes before and after each action (`snapshots: false`), and the network, which
+    // Playwright 1.64.1 records only beside the DOM snapshots (its tracing starts the HAR tracer
+    // `if (options.snapshotDom)`, node_modules/.bun/playwright-core@1.64.1/node_modules/
+    // playwright-core/lib/coreBundle.js:26932-26933). So a failed row's trace lists what the row
+    // did with no view of the page and no request; the `screenshot` below is the page's view. A
+    // trace is recorded on every first attempt and kept for the few that fail, so
+    // what recording costs, every row pays, and the shard machines are CPU-bound, so that CPU is
+    // the lane's machine time. The screencast: inbox.e2e.ts's 28 rows in the chromium project, on
+    // one worker in an issue pod at a8a344b7 (dispatch://INFRA-1109/artifact/measurement-md),
+    // took 450 s with the screencast, 379 s without it and 357 s with no trace at all, and the
+    // browser's CPU went from 73 s to 31 s, Playwright's own processes from 83 s to 55 s. The DOM
+    // snapshots: the 46 rows of inbox.e2e.ts, board.e2e.ts and issue-page-q.e2e.ts in the
+    // chromium project, on 3 workers on the tree of 1fe87cb2, took 145.8 s and 157.0 s of row
+    // time, summed over the rows, in two rounds with the snapshots, and 138.4 s and 139.1 s
+    // without them (dispatch://INFRA-1109/artifact/r24-cost-diagnosis-tgz).
+    //
+    // Playwright 1.64.1 applies one `snapshots` value to every attempt it records, so recording
+    // DOM snapshots on a retry alone would take a fixture of our own, and the suite has none. A
+    // trace with the DOM and the network comes from a local run of the row with `snapshots: true`
+    // set here, from packages/dispatch: `bunx playwright test --config e2e/playwright.config.ts
+    // --project=<project> e2e/<file>:<line> --retries=0 --trace on`. `--trace on` alone, without
+    // that edit, replaces this option's mode and keeps the rest of it
+    // (node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/common/index.js:583-585).
+    //
     // Recording every first attempt leaves each worker's trace files in its artifacts directory
     // (`<outputDir>/.playwright-artifacts-<n>/traces`) until the worker exits: about 5,500 files
-    // after a hundred rows. Playwright 1.64.1's runner removed them before it let the worker's
-    // stop end, and timed that wait by heartbeats of a worker that had already exited, so a slow
-    // disk printed "worker-<n> process did not exit within 300000ms after stop" for a worker that
-    // had exited. patches/playwright@1.64.1.patch removes them in the background instead, and
-    // e2e/__tests__/playwright-worker-exit.test.ts holds that.
-    trace: "retain-on-first-failure",
+    // after a hundred rows on the default branch, whose traces held the screencast's frames, and
+    // fewer here, where they hold none. Playwright 1.64.1's runner removed them before it let the
+    // worker's stop end, and timed that wait by heartbeats of a worker that had already exited, so
+    // a slow disk printed "worker-<n> process did not exit within 300000ms after stop" for a
+    // worker that had exited. patches/playwright@1.64.1.patch removes them in the background
+    // instead, and e2e/__tests__/playwright-worker-exit.test.ts holds that.
+    trace: {
+      mode: "retain-on-first-failure",
+      screenshots: false,
+      snapshots: false,
+      sources: true,
+    },
+    // The one picture of the page when a row fails: the trace above records neither screencast
+    // frames (`screenshots: false`) nor DOM snapshots (`snapshots: false`). Each time a context
+    // closes during a row, Playwright 1.64.1 takes a temporary picture of every page still open
+    // in it, and keeps those pictures only when the row failed (`captureTemporary` and
+    // `persistTemporary`, node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/
+    // index.js:585-600); a failed row's pages still open when its function ends are pictured
+    // then. So a passing row still pays one picture for each page open at each context's close,
+    // and keeps none of them.
+    screenshot: "only-on-failure",
   },
   // Starts this run's stacks and checks each of them before any row (e2e/global-setup.ts), and
   // stops them afterwards (e2e/global-teardown.ts). Both hooks are declared for every run,

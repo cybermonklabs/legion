@@ -18,7 +18,7 @@ import { replaceQueryData } from "../../api/query-client";
 import type { UserAgentState, UserAgentStates } from "../../api/types";
 import { agentStateWritten } from "../../api/write-events";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
-import { useAgentText } from "../refs/AgentName";
+import { useSessionText } from "../refs/SessionName";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { storeAgentState } from "./unread";
 
@@ -97,7 +97,7 @@ function withPin(state: UserAgentState | undefined, pinned: boolean, at: string)
  */
 export function useAgentPinWrite(): (sessionId: string, pinned: boolean) => Promise<boolean> {
   const queryClient = useQueryClient();
-  const text = useAgentText();
+  const sessionText = useSessionText();
   const reread = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
   }, [queryClient]);
@@ -107,7 +107,7 @@ export function useAgentPinWrite(): (sessionId: string, pinned: boolean) => Prom
       keys: [userAgentStateQuery().queryKey],
     }),
     label: ({ pinned, sessionId }) =>
-      `${pinned ? "Pin" : "Unpin"} ${text.sessionText(sessionId, undefined)}`,
+      `${pinned ? "Pin" : "Unpin"} ${sessionText(sessionId, undefined)}`,
     onError: reread,
     onMutate: ({ pinned, sessionId }) => {
       const at = new Date().toISOString();

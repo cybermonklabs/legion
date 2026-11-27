@@ -37,9 +37,10 @@ name: Dispatch unit suite repeated
 # and its progress preload, and the web-cold lane's preload, so it also runs the job on a later
 # change to any of them before the merge, and on no other pull request. Main's ruleset does not
 # require its check, so it gates nothing. The other route was a job in
-# dispatch-browser-nightly.yaml. That would need a third cron there and an `if:` on that file's
-# two jobs, since both of its crons start every job. And a dispatch of that file to prove this job
-# would start the eight-runner full browser lane beside it.
+# dispatch-browser-nightly.yaml. Such a job would need a third cron there, an `if:` of its own,
+# and a change to the `if:` of each of that file's two jobs, because each names only the one cron
+# it does not run on. And a dispatch of that file to prove this job would start the eight-runner
+# full browser lane beside it.
 #
 # Why 20 reruns a web or harness leg and three legs a lane. Under one seed every rerun repeats one
 # order (Bun 1.4.4, measured when this workflow was written). So the reruns find a row that fails

@@ -313,3 +313,6 @@ packages/pi-envoy/extensions/.smoke-base-*.ts
 
 # Python bytecode (scripts/e2e/lib/as-role.py and any other script run or imported locally).
 __pycache__/
+
+# The bundled copy Vite writes beside a config as it loads it; a load that is cut short leaves it.
+vite.config.*.timestamp-*

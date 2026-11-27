@@ -1,15 +1,11 @@
-import { isIdPrefix } from "@legion/contracts";
+import { isIdPrefix } from "@legion/contracts/dispatch-text-rules";
 import { useQuery } from "@tanstack/react-query";
 
 import { ApiError, ambiguousItems } from "../../api/client";
 import type { IDCandidate, IssueDetails } from "../../api/types";
+import { buildIssuePath, type IssueRoute } from "../refs/page-routes";
 import { askQuery, commentQuery, messageQuery, useWholeRouteRead } from "../refs/reference-target";
-import {
-  buildIssuePath,
-  type DispatchReferenceRoute,
-  documentItemPath,
-  type IssueRoute,
-} from "../refs/routes";
+import { type DispatchReferenceRoute, documentItemPath } from "../refs/routes";
 
 /** The item routes: `/issues/KEY/asks|comments|messages/<id>`. */
 export type ItemRoute = Extract<IssueRoute, { id: string }>;

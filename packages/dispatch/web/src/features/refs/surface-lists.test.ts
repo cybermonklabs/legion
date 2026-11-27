@@ -345,7 +345,8 @@ function collectSourceFiles(root: string): string[] {
       const child = `${relative}/${entry.name}`;
       if (entry.isDirectory()) {
         // The suite's own harnesses stand in for the shell - one of them mounts the hover card
-        // as `app.tsx` does - so they are the suite rather than a surface a reader reaches.
+        // as the shell's layer does (`refs/RefPreviewLayer.tsx`) - so they are the suite rather
+        // than a surface a reader reaches.
         if (entry.name !== "__tests__") {
           walk(child);
         }

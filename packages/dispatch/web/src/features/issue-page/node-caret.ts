@@ -8,7 +8,7 @@ import type { DisplayTree } from "../../api/types";
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { refocusWhenSettled } from "../doc/refocus-when-settled";
 import { scrollElementToTop } from "../doc/scroll-block";
-import { importWhenOnline } from "../shell/DeploymentResilience";
+import { importWhenOnline, keptUntilRejected, renderChunk } from "../shell/chunk-loads";
 import { canHoldFocus } from "./focus-keeper";
 import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 
@@ -365,23 +365,29 @@ function couldEdit(event: KeyboardEvent): boolean {
 
 /** What the hold on a row's editor is built of: ProseMirror's plugins, and the key y-prosemirror
  *  marks each transaction the collaboration brings with. Both are the editor library's own,
- *  which sits behind its own `import()` (`doc/editor.ts`), so they are imported here only once a
- *  row is edited, and kept from then on. */
+ *  which sits behind its own `import()` (`doc/document-chunks.ts`'s `loadEditorLibrary`), so
+ *  they are imported here only once a row is edited, and kept from then on. */
 export type HoldParts = readonly [state: typeof ProseMirrorState, sync: typeof YProseMirror];
-let loadingHoldParts: Promise<HoldParts> | undefined;
+
+/** The two modules, loaded once and kept, a load that failed kept by nothing so the next call
+ *  loads again (`keptUntilRejected`). The row puts no caret until they answer, so a reader waits
+ *  on this download and it goes through `renderChunk`: a failure while only prefetches are out
+ *  reloads for it (`features/shell/chunk-loads.ts`). */
+const loadHoldParts = keptUntilRejected(
+  (): Promise<HoldParts> =>
+    renderChunk(() =>
+      importWhenOnline(() =>
+        Promise.all([import("@milkdown/kit/prose/state"), import("y-prosemirror")])
+      )
+    )
+);
 
 /** Loads what `holdEditsToBlock` is built of, once. A row asks for it as it starts editing, so
  *  it has loaded by the time the page hands the row its editor, and the row gives the hold what
  *  this answers. A load that failed is the caller's to answer for, and the next call loads
  *  again. */
 export function loadEditsHold(): Promise<HoldParts> {
-  loadingHoldParts ??= importWhenOnline(() =>
-    Promise.all([import("@milkdown/kit/prose/state"), import("y-prosemirror")])
-  ).catch((error: unknown) => {
-    loadingHoldParts = undefined;
-    throw error;
-  });
-  return loadingHoldParts;
+  return loadHoldParts();
 }
 
 /** The attribute a block of the editor's document holds its id in (`@legion/proof-editor`'s

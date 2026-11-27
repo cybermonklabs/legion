@@ -27,6 +27,7 @@
     "/api/v1/issues/{key}/results",
     "/api/v1/issues/{key}/subscribers",
     "/api/v1/issues/{key}/summary",
+    "/api/v1/landing",
     "/api/v1/me/agent-tokens",
     "/api/v1/me/agents/state",
     "/api/v1/me/answers",

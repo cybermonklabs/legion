@@ -20,7 +20,7 @@
  * in `serial` mode is never cut across two machines; and the file is what the weights are kept
  * for, since a row title changes far more often than a file name. 311 units hold the full lane's
  * 1,617 rows at f02514268a, and the largest, `chromium` `issue-page-i.e2e.ts`, weighs 309 of the
- * 6,872 s the table expects of them, under a fifth of a leg.
+ * 6,872 s the table expects of them, under a tenth of one of the shard job's two legs.
  *
  * A unit's weight is its rows times the seconds one of its rows took on main
  * (`e2e/shard-weights.json`, which `e2e/tools/shard-weights.ts` writes from main's merged
@@ -129,11 +129,14 @@ export function placeUnits(
   return { loads, placed };
 }
 
-/** How old the table may be before a leg warns: the browser step's 18-minute guard is
- *  534 s x 1.75 x 1.11, and 1.11 is the worst share of the mean the heaviest leg took under a
- *  table up to 7 days old, of the two read (.github/ci-notes/dispatch-browser.md, the browser
- *  step's budget). Past that no table was measured, and one that drifted to the count split's 1.21
- *  would leave a healthy p90 leg on the slowest runner seen near 1,131 s, past the guard. */
+/** How old the table may be before a leg warns: the browser step's 32-minute guard is
+ *  985 s x 1.75 x 1.11, the largest leg of the shard job's full lane at e2399655 under this split
+ *  (shard 1 of run 45151841335, attempt 1) times the slowest runner seen times main's drift, and
+ *  1.11 is the worst share of the mean the heaviest of main's four legs took under a table up to
+ *  7 days old, of the two read (.github/ci-notes/dispatch-browser.md, the browser step's budget).
+ *  Past that no table was measured, and one that drifted to 1.21, the share main's count split
+ *  gave the heaviest of its four legs, would leave that 985 s leg on the slowest runner seen near
+ *  2,086 s, past the guard. */
 export const tableDaysAtMost = 7;
 
 /** The share of a leg's rows that may be placed by an estimate before the leg warns: the reading
@@ -150,7 +153,7 @@ export function tableWarnings(read: string, now: Date, rows: number, estimated: 
   if (!(days <= tableDaysAtMost)) {
     warnings.push(
       `e2e/shard-weights.json was read ${Number.isNaN(days) ? "at no date it names" : `${days.toFixed(1)} days ago`} ` +
-        `(${read}), past the ${tableDaysAtMost} days the browser step's 18-minute guard allows for its drift; ` +
+        `(${read}), past the ${tableDaysAtMost} days the browser step's 32-minute guard allows for its drift; ` +
         "read it again from packages/dispatch: bun e2e/tools/shard-weights.ts --main 17"
     );
   }

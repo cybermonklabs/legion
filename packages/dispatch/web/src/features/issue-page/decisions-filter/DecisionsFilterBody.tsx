@@ -13,13 +13,14 @@ import {
 import { useNavigate } from "react-router-dom";
 
 import type { Artifact, IssueDetails } from "../../../api/types";
+import { abortOnReaderAct, claimUnacted } from "../../../lib/reader-acts";
+import { textMutedOnCanvas } from "../../../theme/classes";
 import {
   focusVisibleRing,
   pageInkText,
   pageMutedText,
   pageQuietText,
-  textMutedOnCanvas,
-} from "../../../theme/classes";
+} from "../../../theme/shell-classes";
 import { useAgentText } from "../../refs/AgentName";
 import {
   PublishedReferenceNames,
@@ -411,8 +412,19 @@ export function DecisionsFilterBody({
   // focus on the first row the list draws of a question it answers, and lands nowhere where the
   // list draws none of them. A decision the list draws before the asks read has answered may
   // yet turn out to be a write-up, which leaves the list once it does, so the address lands on
-  // no decision until the seam can tell.
+  // no decision until the seam can tell. A reader who acts before the row takes the focus
+  // (`READER_ACTS`) - a key, or a press in another field and words typed there - has put the
+  // focus where they want it, so the row takes none then (`revealActs`), though the foot still
+  // unfolds for it. The guard is made in the commit that draws the address, before any read it
+  // waits on answers.
   const taken = useRef<string | undefined>(undefined);
+  const revealActs = useRef<AbortController | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (reveal === undefined) return;
+    const acted = abortOnReaderAct();
+    revealActs.current = acted;
+    return () => acted.abort();
+  }, [reveal]);
   useEffect(() => {
     if (reveal === undefined || taken.current === reveal) return;
     const restated = writeUps?.get(reveal);
@@ -428,6 +440,8 @@ export function DecisionsFilterBody({
     const row = rowOf(body.current, entry.node.id);
     if (row === null) return;
     taken.current = reveal;
+    const acted = revealActs.current;
+    if (acted === undefined || !claimUnacted(acted)) return;
     row.focus();
   }, [drawn, partOf, reveal, writeUps]);
   // Whether the list draws the node the address names, which the page is told

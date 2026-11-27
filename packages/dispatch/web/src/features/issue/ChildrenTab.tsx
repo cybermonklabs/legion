@@ -5,10 +5,10 @@ import type { IssueDetails } from "../../api/types";
 import { CappedGroup } from "../../components/CappedGroup";
 import { EmptyState } from "../../components/EmptyState";
 import { StatusPill } from "../../components/Pill";
-import { card, linkHoverText, linkText, textSecondaryOnSurface } from "../../theme/classes";
+import { card, linkHoverText, linkText, textSecondaryOnSurface } from "../../theme/shell-classes";
 import { statusText } from "../project/board-model";
-import { referenceTriggerProps } from "../refs/RefPreview";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
+import { referenceTriggerProps } from "../refs/reference-trigger";
 import { Timestamp } from "../refs/Timestamp";
 import { GitHubLink } from "./GitHubLink";
 

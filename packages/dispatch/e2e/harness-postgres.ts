@@ -74,14 +74,15 @@ const superuserReserved = 3;
  *  a room, a lease or a socket, and nothing in that failure names the cause. The first stack
  *  that starts reads it, once per run.
  *
- *  `DISPATCH_E2E_PG_CONNECTIONS`, when set, is that number. Every CI job that starts stacks here
- *  sets it from a step that runs `connectionsArgs` before its browser step: the `shard` and
- *  `alone` jobs of `.github/workflows/dispatch-browser.yaml` run in a container with no Go, so
- *  their `binaries` job runs it, and the `visual`, `multiprocess` and `embedder` jobs of that
- *  file and the `dispatch-two-builds` job of `.github/workflows/ci-job-dispatch-two-builds.yaml`
- *  each run it in a step of their own, outside their browser steps' budgets. Unset, which is a
- *  developer's or an issue pod's run, where Go is installed, the harness runs `go` with
- *  `connectionsArgs` itself. */
+ *  `DISPATCH_E2E_PG_CONNECTIONS`, when set, is that number. Every job of
+ *  `.github/workflows/dispatch-browser.yaml` that starts stacks here - `shard`, `alone`,
+ *  `multiprocess`, `embedder` and `visual` - sets it from the `binaries` job's output, which
+ *  runs `connectionsArgs` once for the run: none of those five sets up Go, so no job of that
+ *  file runs this go command but `binaries`. The `dispatch-two-builds` job of
+ *  `.github/workflows/ci-job-dispatch-two-builds.yaml`, which sets up Go for its own build, runs
+ *  it in a step of its own, outside its browser steps' budgets. Unset, which is a developer's or
+ *  an issue pod's run, where Go is installed, the harness runs `go` with `connectionsArgs`
+ *  itself. */
 let maxConnections: Promise<number> | undefined;
 async function readMaxConnections(env: NodeJS.ProcessEnv): Promise<number> {
   const given = env[pgConnectionsVariable];

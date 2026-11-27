@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 
 import { AGENT_LIST_REFILLING } from "../../api/client";
 import { Chip } from "../../components/Chip";
-import { textSecondaryOnCanvas } from "../../theme/classes";
+import { textSecondaryOnCanvas } from "../../theme/shell-classes";
 import { useIssueFilters } from "./issue-filters";
 
 /** The flag chips both issue views share: Needs you and Unread, each toggling the URL-backed

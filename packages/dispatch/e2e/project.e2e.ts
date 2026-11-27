@@ -411,7 +411,14 @@ test("picker keeps a pick on screen: a reload shows the newest pick from its fir
     const page = await context.newPage();
     const shown = await watchShown(page, `Priority of ${key}`, "main");
     const held = await holdIssuePatches(page, key);
-    const reads = logReads(page, detailRead(key));
+    // The issue's detail route, and the landing of its page (`GET /api/v1/landing?page=issue`),
+    // which is the read a cold issue page makes and which carries the issue's detail.
+    const reads = logReads(
+      page,
+      (url) =>
+        detailRead(key)(url) ||
+        (url.pathname === "/api/v1/landing" && url.searchParams.get("key") === key)
+    );
     const picker = pagePicker(page, `Priority of ${key}`);
     await page.goto(`/issues/${key}`);
     await expect(picker).toHaveValue("3");
@@ -427,8 +434,11 @@ test("picker keeps a pick on screen: a reload shows the newest pick from its fir
     held.release();
     await savesEnded(page, held);
 
-    // The reloaded page's first read of the issue was answered while the P1 it sent again was
-    // held: that answer, carrying P3, landed under the newest pick.
+    // The reloaded page's first read of the issue is its landing, which carries P3, and it is
+    // answered before the store sends P1 again: the landing answers who is signed in, and the
+    // store takes up the writes the reload kept for that person once it knows (`app.tsx`,
+    // `AuthenticatedApp`). So that answer lands while both picks are kept and neither is saved,
+    // under the newest pick.
     const timeline = JSON.stringify({ reads, reloadedAt, saves: held.sent });
     const resent = held.sent.find(
       (patch) =>
@@ -437,13 +447,15 @@ test("picker keeps a pick on screen: a reload shows the newest pick from its fir
     );
     const firstRead = reads.find((read) => read.sentAt >= reloadedAt);
     expect(resent, `the reloaded page sent P1 again: ${timeline}`).toBeDefined();
+    expect(firstRead?.url, `the reloaded page's first read of the issue: ${timeline}`).toContain(
+      "/api/v1/landing"
+    );
     expect(
       firstRead?.answeredAt !== undefined &&
         resent !== undefined &&
-        resent.endedAt !== undefined &&
-        firstRead.answeredAt >= resent.arrivedAt &&
-        firstRead.answeredAt <= resent.endedAt,
-      `the first read of the issue after the reload was answered while the resent P1 was held: ${timeline}`
+        firstRead.answeredAt >= reloadedAt &&
+        firstRead.answeredAt <= resent.arrivedAt,
+      `the first read of the issue after the reload was answered before P1 was sent again: ${timeline}`
     ).toBe(true);
 
     // From the reloaded document's first frame: no picker until the page draws one, and then P2

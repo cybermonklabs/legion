@@ -2,9 +2,9 @@ import { expect, test } from "bun:test";
 import {
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_IN_FLIGHT,
-  IDEMPOTENCY_KEY_REUSED,
   retriesUnderKey,
-} from "./dispatch-api-limits";
+} from "./dispatch-api-constants";
+import { IDEMPOTENCY_KEY_REUSED } from "./dispatch-api-limits";
 import { mayHaveReachedServer, outage, retryAfterMs } from "./http-status";
 
 /** Every status from 100 to 599. */

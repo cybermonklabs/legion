@@ -1,4 +1,4 @@
-import { dispatchWritingBox } from "@legion/contracts";
+import { dispatchWritingBox } from "@legion/contracts/dispatch-writing-boxes";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
@@ -11,30 +11,32 @@ import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   backdrop40,
-  card,
-  dangerText,
   focusBorder,
-  focusVisibleRing,
   pageFailedText,
   pageHairBorder,
   pageHeaderControl,
   pageInkBorder,
+  pagePaperBg,
+  primaryButtonDisabled,
+  textPrimaryOnSurface,
+} from "../../theme/classes";
+import {
+  card,
+  dangerText,
+  focusVisibleRing,
   pageInkFill,
   pageInkText,
   pageLineBorder,
   pageMutedText,
-  pagePaperBg,
   pageQuietText,
   primaryButtonBg,
-  primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
   secondaryButtonBorder,
   secondaryButtonHoverBorder,
   secondaryButtonText,
   textMutedOnSurface,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { MentionField } from "../conversation/MentionField";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";

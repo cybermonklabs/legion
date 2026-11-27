@@ -11,7 +11,8 @@ import {
 
 import { AGENT_LIST_REFILLING, isAgentListRefilling, type WriteMethod } from "../../api/client";
 import { useFocusHandOff } from "../../hooks/useFocusHandOff";
-import { pageFailedText, pageHeaderControl, pageQuietText } from "../../theme/classes";
+import { pageFailedText, pageHeaderControl } from "../../theme/classes";
+import { pageQuietText } from "../../theme/shell-classes";
 import { pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 

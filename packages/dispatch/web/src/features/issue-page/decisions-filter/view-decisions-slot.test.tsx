@@ -8,14 +8,15 @@ import { api } from "../../../api/client";
 import {
   artifactBlocksQuery,
   issueCoverageQuery,
+  issueDecisionsQuery,
   issueResultsQuery,
   myRepliesOwnerQuery,
+  ownerAsksQuery,
   referenceTargetsQuery,
   whoAmIQuery,
 } from "../../../api/queries";
 import type { Comment, IssueAskRow, IssueDecisions } from "../../../api/types";
 import { type EventFreshness, useIsHuman } from "../../../hooks/useIsHuman";
-import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { answeredAsk } from "../../inbox/ask-card-fixture";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { buildDispatchReference } from "../../refs/routes";
@@ -38,7 +39,6 @@ import {
   rowTakesFocus,
   stubReads,
 } from "../slots/stage-fixtures";
-import { issueAsksQuery } from "../useIssueTree";
 import {
   decision,
   decisionNode,
@@ -413,8 +413,8 @@ test("coming back to the outline from Decisions after the app's staleTime asks w
     { checks: [], issue: KEY, verification_artifact_id: "" },
     answered
   );
-  client.setQueryData(issueDecisionsQuery(KEY, true).queryKey, decisionsRead([]), answered);
-  client.setQueryData(issueAsksQuery(KEY).queryKey, [], answered);
+  client.setQueryData(issueDecisionsQuery(KEY).queryKey, decisionsRead([]), answered);
+  client.setQueryData(ownerAsksQuery({ issue: KEY }).queryKey, [], answered);
   // The issue holds two threads, so the outline draws rows.
   client.setQueryData(["comments", KEY], [...TWO_THREADS], answered);
   client.setQueryData(["issue-messages", KEY], [], answered);

@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type { Actor, DisplayTree, ReplyBlockWithTrees } from "../../api/types";
-import { linkHoverText, secondaryButtonBorder, textMutedOnCanvas } from "../../theme/classes";
+import { textMutedOnCanvas } from "../../theme/classes";
+import { linkHoverText, secondaryButtonBorder } from "../../theme/shell-classes";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { DeletedBody, EditedMark } from "../refs/PostMarks";

@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import { linkHoverText, linkText } from "../../theme/classes";
-import { referenceTriggerProps } from "./RefPreview";
+import { linkHoverText, linkText } from "../../theme/shell-classes";
+import { referenceTriggerProps } from "./reference-trigger";
 import { parseNodeReference, referenceHref, shortForm } from "./routes";
 
 /**

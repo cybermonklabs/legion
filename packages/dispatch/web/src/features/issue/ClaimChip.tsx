@@ -1,10 +1,5 @@
-import {
-  type ClaimHolderLiveness,
-  type ClaimHolding,
-  claimHolds,
-  claimTakeableAt,
-  claimTakeableNow,
-} from "@legion/contracts";
+import type { ClaimHolderLiveness, ClaimHolding } from "@legion/contracts";
+import { claimHolds, claimTakeableAt, claimTakeableNow } from "@legion/contracts/claim-holds";
 import type { ReactNode } from "react";
 
 import { AGENT_LIST_REFILLING } from "../../api/client";
@@ -12,7 +7,7 @@ import type { IssueClaim } from "../../api/types";
 import { pillClassName, usePillWrapped } from "../../components/Pill";
 import { TruncatedText } from "../../components/TruncatedText";
 import { usePageWords, useTooltips } from "../../components/tooltips";
-import { pageInkText } from "../../theme/classes";
+import { pageInkText } from "../../theme/shell-classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
 import { exactTimeLabel, Timestamp } from "../refs/Timestamp";

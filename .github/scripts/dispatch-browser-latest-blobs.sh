@@ -26,7 +26,7 @@
 # callers that share a run are told apart by it: a pull request labelled full-ci runs
 # dispatch-browser beside dispatch-browser-pr, and one that changes what the reference rows test
 # runs dispatch-references beside dispatch-browser-pr (`dispatch-browser-blob-shard-1-1`,
-# `dispatch-browser-pr-blob-shard-1-1` and `dispatch-references-blob-shard-1-1`); the download
+# `dispatch-browser-pr-blob-real-1` and `dispatch-references-blob-shard-1-1`); the download
 # step's pattern already takes only this caller's.
 #
 # That directory comes in one of two layouts, and which one is the run's, not this job's: it is
@@ -35,9 +35,9 @@
 #
 # Several artifacts matched: each entry of <download-dir> must be a directory named
 # `<job>-blob-<leg>-<attempt>`, where <attempt> is the run of digits at the end and <leg> is
-# everything between the prefix and it (`shard-1`, `alone-webkit-alone`). A name that does not
-# read is a failure, not a file passed over: a blob silently dropped is a merged report short of
-# a leg's rows, which reads as a shorter suite rather than as an error.
+# everything between the prefix and it (`shard-1`, `real`, `stub`, `alone`). A name that does not read is a
+# failure, not a file passed over: a blob silently dropped is a merged report short of a leg's
+# rows, which reads as a shorter suite rather than as an error.
 #
 # One artifact matched: actions/download-artifact extracts it into <download-dir> itself and not
 # into a directory named for it; the note that cites the action's source is
@@ -160,7 +160,7 @@ if [ "${#unreadable[@]}" -gt 0 ]; then
   for name in "${unreadable[@]}"; do
     echo "::error::$download_dir/$name is not a leg's blob report: this step reads a directory" \
       "named ${prefix}<leg>-<attempt>, where <attempt> is the run of digits at the end" \
-      "(${prefix}shard-1-2, ${prefix}alone-webkit-alone-1). Name the upload in" \
+      "(${prefix}shard-1-2, ${prefix}alone-1). Name the upload in" \
       ".github/workflows/dispatch-browser.yaml that way, or narrow the download step's pattern" \
       "so it does not match this artifact."
   done
@@ -170,8 +170,13 @@ fi
 # Each leg's selected directory, copied whole: its blob report and the row count that travels
 # with it come from the one attempt, so a leg contributes both or neither.
 #
-# One leg per line, not `for leg in $(…)`: a leg name is an artifact name's tail and a project
-# may be named with a space, which word splitting would read as two legs. A here-string rather
+# One leg per line, not `for leg in $(…)`: a leg name is an artifact name's tail, and reading it
+# with word splitting would read a name holding a space as two legs, neither with a blob or a row
+# count of its own. No leg this workflow uploads holds a space today - the names are
+# `shard-<N>`, `real`, `stub` and `alone` (.github/workflows/dispatch-browser.yaml) -
+# so this is a defence and not a live case, kept
+# because what it defends against is silent: a split name selects nothing and the merged report
+# comes out a leg short rather than red. A here-string rather
 # than a pipe only to match the merge job's own loop, where it is load-bearing because that loop
 # accumulates its totals; this loop accumulates nothing, so a pipe would have served as well.
 while IFS= read -r leg; do

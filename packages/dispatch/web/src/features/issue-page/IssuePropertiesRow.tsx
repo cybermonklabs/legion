@@ -5,6 +5,8 @@ import { useLocation, useNavigate } from "react-router-dom";
 import {
   artifactBlocksQuery,
   issueCoverageQuery,
+  issueDecisionsQuery,
+  ownerCommentsQuery,
   projectsQuery,
   whoAmIQuery,
 } from "../../api/queries";
@@ -12,20 +14,21 @@ import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
 import {
   bgTransparent,
-  focusVisibleRing,
-  pageInkText,
   pageLabelChip,
-  pageLineBorder,
-  pageMutedText,
-  pageQuietText,
   pageSegmentBg,
-  pageSegmentDoneBg,
   pageSegmentProgressBg,
   pageWaitingBg,
   pageWaitingChip,
 } from "../../theme/classes";
+import {
+  focusVisibleRing,
+  pageInkText,
+  pageLineBorder,
+  pageMutedText,
+  pageQuietText,
+  pageSegmentDoneBg,
+} from "../../theme/shell-classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
-import { issueDecisionsQuery } from "../doc/spec-marks";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl } from "../issue/AssigneeControl";
@@ -44,7 +47,6 @@ import { CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
 import { nodeIdOf as issueNodeIdOf } from "./tree-drafts";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
-import { issueCommentsQuery } from "./useIssueTree";
 import { type WaitingPress, waitingOnReader } from "./waiting";
 
 /**
@@ -96,12 +98,9 @@ export function IssuePropertiesRow({
   // those blocks answer the count reads the Changes by their quotes, as `decision-review.ts` does
   // with no blocks read.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
-  const decisions = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
+  const decisions = useQuery({ ...issueDecisionsQuery(issue.key), ...EVENT_FRESH });
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
-  const comments = useQuery({
-    ...issueCommentsQuery(issue.key),
-    ...EVENT_FRESH,
-  });
+  const comments = useQuery({ ...ownerCommentsQuery({ issue: issue.key }), ...EVENT_FRESH });
   const decisionsDocument = decisionsDocumentId(issue.artifacts, decisions.data);
   const decisionsBlocks = useQuery({
     ...artifactBlocksQuery(decisionsDocument ?? ""),

@@ -185,7 +185,10 @@ type shotCorpus struct {
 }
 
 // shotReadPaths is the path this test sends each route of the list at, in its corpus, with the
-// query the dashboard sends it with where the route reads one.
+// query the dashboard sends it with where the route reads one. The landing is sent for the issue
+// page, whose parts are the most: every page kind reads the same shell parts, and each other
+// part is read by the same function as the route it stands in for, which this list names
+// (TestLandingAnswersWhatThePerResourceRoutesAnswer holds the two answers equal).
 func shotReadPaths(c shotCorpus) map[string]string {
 	// The person page of the signed-in person, as the visual seed's person row opens it.
 	return map[string]string{
@@ -215,6 +218,7 @@ func shotReadPaths(c shotCorpus) map[string]string {
 		"/api/v1/issues/{key}/results":                "/api/v1/issues/" + c.issue + "/results",
 		"/api/v1/issues/{key}/subscribers":            "/api/v1/issues/" + c.issue + "/subscribers",
 		"/api/v1/issues/{key}/summary":                "/api/v1/issues/" + c.issue + "/summary",
+		"/api/v1/landing":                             "/api/v1/landing?page=issue&key=" + c.issue,
 		"/api/v1/me/agent-tokens":                     "/api/v1/me/agent-tokens",
 		"/api/v1/me/agents/state":                     "/api/v1/me/agents/state",
 		"/api/v1/me/answers":                          "/api/v1/me/answers",

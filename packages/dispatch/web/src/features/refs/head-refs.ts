@@ -1,4 +1,4 @@
-import { referenceSpans } from "@legion/contracts";
+import { referenceSpans } from "@legion/contracts/reference-spans";
 
 import { type CodeRange, codeRanges } from "./code-ranges";
 import { type InlineLink, inlineLinks } from "./party-references";

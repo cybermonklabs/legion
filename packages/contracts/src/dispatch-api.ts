@@ -1,7 +1,14 @@
 /**
  * The Dispatch HTTP and event-bus contract. This file is the entry every caller imports
- * (`@legion/contracts` re-exports it whole); nothing outside the package names a module of the
- * split by path.
+ * (`@legion/contracts` re-exports it whole); nothing outside the package imports a module of the
+ * split by path, save the constants module below, which is a subpath of its own and which
+ * `scripts/e2e/verification-results.ts` reads by its file path, since the root package does not
+ * depend on this one. Three files name an area module's path without importing it, and a move that
+ * takes what they look for elsewhere changes them too: `.github/scripts/check-plugin-names.sh`
+ * lists `dispatch-api-search.ts`, and in `packages/envoy`
+ * `internal/dispatch/outbox/expects_reply_never_false_test.go` globs `dispatch-api*.ts` for the
+ * `DispatchEvent` union and a comment of `internal/dispatch/model/display_tree.go` names
+ * `dispatch-api-core.ts`.
  *
  * The wire shapes are generated from the Go route table through `schemas/dispatch-openapi.json`:
  * `dispatch-api.generated.ts` is the one definition of every HTTP request and response body of
@@ -40,10 +47,19 @@
  * unknown fields only where today's reading does, and leaves open the strings a frame may carry a
  * value of that this release does not know (`kind`, `urgency`, an actor's `kind`, a writer's
  * `id`).
+ *
+ * The constants, the header names, the limits and the small rules over them that a reader may
+ * need without the schemas live in `dispatch-api-constants.ts`, published as
+ * `@legion/contracts/dispatch-api-constants`, and are re-exported here whole: a reader that
+ * needs one of them must not be given the zod schemas of the area modules with it, which is
+ * what any import of this module costs (dispatch://INFRA-1109, R13). An area module that reads
+ * one imports it from there. Every import of this module, and of the package index, answers
+ * what it always answered.
  */
 export type * from "./dispatch-api.generated";
 export * from "./dispatch-api-asks";
 export * from "./dispatch-api-comments";
+export * from "./dispatch-api-constants";
 export * from "./dispatch-api-core";
 export * from "./dispatch-api-delivery";
 export * from "./dispatch-api-documents";

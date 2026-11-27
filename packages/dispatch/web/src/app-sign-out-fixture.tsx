@@ -10,6 +10,13 @@ import { liveSocketFor } from "./api/live-socket";
 import { AuthGate } from "./app";
 import type { UnsentChange } from "./features/shell/sign-in-channel";
 import { plainWrite, writesOf } from "./features/writes/write-store";
+// Every kind of write is a chunk of its own (`features/writes/kinds.ts`), which the store's take-up
+// of what a reload kept waits for from the sign-in on, and every write a row presses waits for that
+// take-up (`Writes.resume`, `Writes.run`). Each file that draws the app through this fixture is
+// about sign-in and sign-out, not about that download, and a row on a held clock runs its waits
+// out in a few real milliseconds while `test:web:cold` holds the chunk for a real second. So the
+// kinds are loaded with the fixture.
+import "./features/writes/kinds";
 
 /** The app, alice's writes and the other tabs of this browser, as the sign-out rows drive them:
  *  `app-sign-out.test.tsx`, `app-sign-out.other-tab.test.tsx` and the sign-in draft matrix. */

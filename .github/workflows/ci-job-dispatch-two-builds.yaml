@@ -255,12 +255,24 @@ jobs:
       # gives: Playwright's
       # Node runner reads `@legion/contracts` out of a build this checkout has to make before the
       # config loads, and the entries Dispatch imports are all it needs. `build:dispatch` bundles
-      # those four and so compiles no module outside the set this job's filter lists - not
-      # ./legion-api, which nothing of this job loads. `bun run e2e:multiprocess` below makes the
-      # same build again (packages/dispatch's build:contracts).
+      # those and so compiles no module outside the set this job's filter lists - not
+      # ./legion-api, which nothing of this job loads. It is the job's one contracts build: the
+      # browser steps below run `e2e:multiprocess:run`, not `e2e:multiprocess`, whose
+      # build:contracts would make it again (packages/dispatch/package.json).
       - name: Build contracts for dispatch e2e
         run: bun run build:dispatch
         working-directory: packages/contracts
+      # A's dashboard, web/dist, built once for the two browser steps below. They run
+      # `e2e:multiprocess:run` and not `e2e:multiprocess`: that script builds the contracts, A's
+      # dashboard and B's before it runs, which is what a person's own command must still do, while
+      # this job makes the first in the step above and the second here
+      # (packages/dispatch/package.json). One build serves both: each would build it from the same
+      # tree, and no step sets DISPATCH_BUILD, so its build id is GITHUB_SHA in each
+      # (`packages/dispatch/web/vite.config.ts#__DISPATCH_BUILD__`). B's is not this tree's: both
+      # steps name a B build's own web/ on DISPATCH_E2E_WEB_DIST_B, so this job builds no web/dist-b.
+      - name: Build the dashboard
+        run: bun run build:web
+        working-directory: packages/dispatch
       - name: Build the Dispatch server
         # Dispatch A's; run-server.sh builds it too, inside the harness's boot wait for each server
         # (e2e/harness-start.ts, bounded by the listener's bootMs); built here, A finds it current
@@ -300,7 +312,7 @@ jobs:
           export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
           DISPATCH_E2E_BINARY_B="$DISPATCH_PREVIOUS_BUILD/envoy-dispatch" \
             DISPATCH_E2E_WEB_DIST_B="$DISPATCH_PREVIOUS_BUILD/web" \
-            bun run e2e:multiprocess -- cross-build.multiprocess
+            bun run e2e:multiprocess:run -- cross-build.multiprocess
         working-directory: packages/dispatch
       # The same rows with B the first-rollout build, a release before the fleet columns, which
       # registers no schema numbers: B's page is read-only on A's server while B is live, which the
@@ -320,7 +332,7 @@ jobs:
           DISPATCH_E2E_BINARY_B="$DISPATCH_FIRST_ROLLOUT_BUILD/envoy-dispatch" \
             DISPATCH_E2E_WEB_DIST_B="$DISPATCH_FIRST_ROLLOUT_BUILD/web" \
             DISPATCH_E2E_FIRST_ROLLOUT_COMMIT="$FIRST_ROLLOUT_COMMIT" \
-            bun run e2e:multiprocess -- cross-build.multiprocess
+            bun run e2e:multiprocess:run -- cross-build.multiprocess
         working-directory: packages/dispatch
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()

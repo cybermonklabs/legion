@@ -1,12 +1,14 @@
-import { beforeAll, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { hashKey, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: the Enter and the Escape that end an input method's composition below, which user-event cannot mark as one
-import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+// biome-ignore lint/style/noRestrictedImports: user-event has no form for a key pressed during an IME composition or, as Safari sends it, just after one.
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { COMPOSITION_MARKS } from "../../__tests__/composition-marks";
 import { settle } from "../../__tests__/fake-clock";
+import { ALICE_DETAILS_KEY, openIssueDetails } from "../../__tests__/issue-details";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
@@ -255,20 +257,72 @@ test("a read of the state asked while the header's pin is out waits for its answ
   }
 });
 
+afterEach(() => window.localStorage.removeItem(ALICE_DETAILS_KEY));
+
+/** Opens the header's route or parent editor, as the reader does, from its row of Details, and
+ *  hands back its field. */
+const editors: Record<"parent" | "route", (user: UserEvent) => Promise<HTMLElement>> = {
+  parent: async (user) => {
+    await openIssueDetails(user);
+    await user.click(screen.getByRole("button", { name: "None, set parent issue" }));
+    return screen.getByRole("textbox", { name: "Parent" });
+  },
+  route: async (user) => {
+    await openIssueDetails(user);
+    await user.click(screen.getByRole("button", { name: "Messages default to no route" }));
+    return screen.getByRole("textbox", { name: "Message route" });
+  },
+};
+
+// The Escape that cancels an IME composition is the input method's key: the route's and the
+// parent's editor each stay open with the reader's draft. Chromium and Firefox mark such a key
+// `isComposing`; Safari sends it after the composition's end, unmarked, with keyCode 229. A plain
+// Escape after it is the reader's, and drops the draft and closes the editor. The title's editor
+// takes both keys under both marks in the row below.
+test.each(
+  (["route", "parent"] as const).flatMap((editor) =>
+    COMPOSITION_MARKS.map(([mark, marked]) => [editor, mark, marked] as const)
+  )
+)(
+  "an Escape that ends an IME composition in the %s's editor, marked by %s, leaves the editor open with its draft",
+  async (editor, _mark, marked) => {
+    const client = new QueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    });
+    const view = renderHeader(client, <Header state={unpinnedState} />);
+    try {
+      const field = await editors[editor](view.user);
+      await waitFor(() => expect(field).toHaveFocus());
+      await view.user.clear(field);
+      await view.user.type(field, "CORE-7");
+      // fireEvent: user-event types no key an input method marks (`isComposing`, or Safari's keyCode
+      // 229), so the composition's Escape is sent as the event itself.
+      fireEvent.keyDown(field, { ...marked, key: "Escape" });
+      expect(field).toBeInTheDocument();
+      expect(field).toHaveValue("CORE-7");
+      expect(field).toHaveFocus();
+
+      await view.user.keyboard("{Escape}");
+      expect(field).not.toBeInTheDocument();
+    } finally {
+      view.unmount();
+    }
+  }
+);
+
 // The Enter that ends an input method's composition - of Japanese, Chinese or Korean - takes the
 // word being composed, and the Escape that cancels one drops it: each is the input method's key
 // and no key of the reader's, so the title's editor stays open with its draft and writes nothing.
 // Chromium and Firefox mark such a key `isComposing`; Safari sends it after the composition's end,
 // unmarked, with keyCode 229 (`inputMethodKey`). A plain key after it still ends the edit: Escape
 // puts the issue's title back and writes nothing, and Enter writes the title, once.
-test.each([
-  ["Enter", "isComposing"],
-  ["Enter", "keyCode 229"],
-  ["Escape", "isComposing"],
-  ["Escape", "keyCode 229"],
-] as const)(
+test.each(
+  (["Enter", "Escape"] as const).flatMap((key) =>
+    COMPOSITION_MARKS.map(([mark, marked]) => [key, mark, marked] as const)
+  )
+)(
   "an %s that ends a composition in the title's editor, marked by %s, leaves the editor open with its draft and writes nothing, and a plain one ends the edit",
-  async (key, mark) => {
+  async (key, _mark, marked) => {
     const client = new QueryClient({
       defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
     });
@@ -282,12 +336,7 @@ test.each([
       await view.user.clear(title);
       await view.user.paste("Pin it from the header");
       // user-event has no form for this: it cannot mark a key as an IME composition.
-      fireEvent.keyDown(
-        title,
-        mark === "isComposing"
-          ? { isComposing: true, key }
-          : { isComposing: false, key, keyCode: 229 }
-      );
+      fireEvent.keyDown(title, { ...marked, key });
       expect(title).toBeInTheDocument();
       expect(title).toHaveValue("Pin it from the header");
       expect(title).toHaveFocus();

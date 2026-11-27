@@ -1,4 +1,5 @@
-import { dispatchWritingBox, ISSUE_TITLE_MAX } from "@legion/contracts";
+import { ISSUE_TITLE_MAX } from "@legion/contracts/dispatch-api-constants";
+import { dispatchWritingBox } from "@legion/contracts/dispatch-writing-boxes";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -9,23 +10,22 @@ import type { CreateIssueInput, Issue } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { primaryButtonDisabled, textPrimaryOnSurface } from "../../theme/classes";
 import {
   backdrop50,
   borderDefault,
   card,
   inputClasses,
   primaryButtonBg,
-  primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
   secondaryButtonBorder,
   secondaryButtonHoverBorder,
   secondaryButtonText,
   textMutedOnSurface,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { MentionField } from "../conversation/MentionField";
-import { buildIssuePath, routeProjectOf } from "../refs/routes";
+import { buildIssuePath, routeProjectOf } from "../refs/page-routes";
 import { useDialog } from "../shell/useDialog";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
@@ -46,10 +46,15 @@ const createIssue = (input: CreateIssueInput, bounds: WriteBounds): Promise<Issu
 export function CreateIssueDialog({
   onClose,
   createIssue: create = createIssue,
+  typed = "",
 }: {
   onClose: () => void;
   /** Write seam for tests; defaults to the real API. */
   createIssue?: (input: CreateIssueInput, bounds: WriteBounds) => Promise<Issue>;
+  /** What the reader typed after `c` while this dialog's chunk was on its way
+   *  (`features/shell/asked-surface.tsx`): the start of the title, where those keys were meant to
+   *  go. Setting a field's value puts its caret at the end, so the next key follows them. */
+  typed?: string;
 }): ReactNode {
   const location = useLocation();
   const navigate = useNavigate();
@@ -59,7 +64,7 @@ export function CreateIssueDialog({
   const projects = useQuery(projectsQuery());
   const routeProject = routeProjectOf(location.pathname);
   const [project, setProject] = useState<string | undefined>(undefined);
-  const [title, setTitle] = useState("");
+  const [title, setTitle] = useState(typed);
   const [spec, setSpec] = useState("");
   const submitGuard = useSubmitGuard();
   // The dialog shows a refusal itself, beside the draft it was refused over.

@@ -42,5 +42,8 @@ func (s *server) actingReader(w http.ResponseWriter, r *http.Request) (model.Act
 //     document reads;
 //   - a comment list (answerCommentList) is kept in listAnswers under its owner and its ETag
 //     and handed to the next reader whose request names the same pair, so an answer read for
-//     one person would be served to another.
+//     one person would be served to another;
+//   - the landing's comment parts (landingIssuePage, landingDocumentPage) stand in for that
+//     list, so they read as it reads: read for the caller, they would seed what the list's own
+//     answer does not hold.
 var everyReader = model.Actor{}

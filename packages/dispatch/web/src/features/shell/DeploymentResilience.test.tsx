@@ -1,15 +1,15 @@
-import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, jest, spyOn, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the window focus events below have no user-event form - the deployment check runs on the tab regaining focus, not on any element.
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { REQUEST_DEADLINE_MS } from "../../api/client";
+import { Timeline } from "../delivery/Timeline";
 import * as markdownEngine from "../refs/markdown-engine";
-import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { chunkLoadsOut, prefetchChunk, renderChunk } from "./chunk-loads";
 import {
   DeploymentResilience,
-  importWhenOnline,
   installChunkFailureRecovery,
   spendChunkReload,
 } from "./DeploymentResilience";
@@ -17,19 +17,8 @@ import {
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
 beforeAll(async () => {
-  await warmMarkdownRenderer();
+  await markdownEngine.warmMarkdownRenderer();
 });
-
-function withOnLine<T>(onLine: boolean, run: () => Promise<T>): Promise<T> {
-  const descriptor = Object.getOwnPropertyDescriptor(Navigator.prototype, "onLine");
-  Object.defineProperty(navigator, "onLine", { configurable: true, value: onLine });
-  return run().finally(() => {
-    Reflect.deleteProperty(navigator, "onLine");
-    if (descriptor !== undefined) {
-      Object.defineProperty(Navigator.prototype, "onLine", descriptor);
-    }
-  });
-}
 
 /** A stand-in for the Navigation API's `navigate` event: whether it stays in this document, the
  *  file name a link with `download` asks for, empty when the attribute names none (null for every
@@ -50,6 +39,15 @@ const recoveryUninstalls = new Set<() => void>();
 function installChunkFailureRecoveryForTest(): void {
   recoveryUninstalls.add(installChunkFailureRecovery());
 }
+
+// Whether a chunk failure reloads depends on which chunk downloads are out (`onlyPrefetchesOut`),
+// and those counts are the module's, for the page. A download an earlier test started and did
+// not wait for - the Markdown engine's warm, a chart's library, another file's tab panel - is
+// still out when the next row starts in a random order, and would decide that row. So each row
+// starts from a page with none out.
+beforeEach(async () => {
+  await waitFor(() => expect(chunkLoadsOut()).toBe(0));
+});
 
 afterEach(() => {
   for (const uninstall of recoveryUninstalls) uninstall();
@@ -106,6 +104,141 @@ test("Vite preload errors reload the page three times in five minutes, then not,
   } finally {
     reload.mockRestore();
     dateNow.mockRestore();
+    window.sessionStorage.clear();
+  }
+});
+
+// The entry starts the landed route's chunks before React has rendered anything (`app.tsx`,
+// `preloadRouteChunk`). Nobody is waiting on those downloads, and the router asks for the same
+// chunk when it renders the route, so the prefetch's failure reloads nothing and the render's
+// does.
+test("a chunk the entry only prefetched reloads nothing, and the render's own ask for it does", async () => {
+  window.sessionStorage.clear();
+  installChunkFailureRecoveryForTest();
+  const reload = spyOn(window.location, "reload").mockImplementation(() => undefined);
+  // The one download both asks share, held open until the end of the row.
+  const chunk = Promise.withResolvers<unknown>();
+
+  try {
+    prefetchChunk(() => chunk.promise);
+    window.dispatchEvent(new Event("vite:preloadError", { cancelable: true }));
+    window.dispatchEvent(new Event("pagehide"));
+
+    expect(reload).not.toHaveBeenCalled();
+    expect(storedChunkReloads()).toBeNull();
+
+    const rendered = renderChunk(() => chunk.promise);
+    window.dispatchEvent(new Event("vite:preloadError", { cancelable: true }));
+    window.dispatchEvent(new Event("pagehide"));
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(storedChunkReloads()).toHaveLength(1);
+
+    // The importer still sees the failure itself, prefetched or not.
+    chunk.reject(new Error("Failed to fetch dynamically imported module"));
+    await expect(rendered).rejects.toThrow("Failed to fetch dynamically imported module");
+  } finally {
+    // A download still out would fail every later row: the file's `beforeEach` waits until none
+    // is out and gives up after 30 s. So the row settles it here also when an assertion above
+    // failed. It resolves rather than rejects: resolving a settled promise does nothing, and a
+    // rejection nothing awaits would be an unhandled rejection of its own.
+    chunk.resolve(undefined);
+    reload.mockRestore();
+    window.sessionStorage.clear();
+  }
+});
+
+// The other half of that rule, and the one the suppression gets wrong when a chunk a reader
+// waits on is started outside `renderChunk`: the failing chunk need not be the prefetched one.
+// A reader on an issue page waits for the editor library while the entry's prefetch of some
+// other chunk is still in flight (`app.tsx`, `loadDocumentChunks`), and the editor's failure is
+// a page that cannot draw. It must reload, although a prefetch is out and it is not the chunk
+// the prefetch asked for (dispatch://INFRA-1109).
+test("a render-time chunk that fails while a prefetch is out still reloads", async () => {
+  window.sessionStorage.clear();
+  installChunkFailureRecoveryForTest();
+  const reload = spyOn(window.location, "reload").mockImplementation(() => undefined);
+  // Two downloads, not one: the prefetch's, which never answers inside this row, and the one a
+  // mounted component is awaiting.
+  const prefetched = Promise.withResolvers<unknown>();
+  const awaited = Promise.withResolvers<unknown>();
+
+  try {
+    prefetchChunk(() => prefetched.promise);
+    const rendering = renderChunk(() => awaited.promise);
+    window.dispatchEvent(new Event("vite:preloadError", { cancelable: true }));
+    window.dispatchEvent(new Event("pagehide"));
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(storedChunkReloads()).toHaveLength(1);
+
+    awaited.reject(new Error("Failed to fetch dynamically imported module"));
+    await expect(rendering).rejects.toThrow("Failed to fetch dynamically imported module");
+    prefetched.resolve(undefined);
+  } finally {
+    // As in the row above: neither download may outlive the row, whether or not it passed.
+    awaited.resolve(undefined);
+    prefetched.resolve(undefined);
+    reload.mockRestore();
+    window.sessionStorage.clear();
+  }
+});
+
+// The same rule for a chunk a mounted component imports for itself, which no route or host
+// names: the delivery timeline's charting library (`features/delivery/Timeline.tsx`), without
+// which the chart draws nothing. A prefetch the shell starts at a first paint - the search bar's,
+// the Markdown engine's warm, the writes host's (`write-hosts.tsx`), the Inbox peek's - can still
+// be out while it downloads, and a reader in front of a chart that cannot draw is waiting on it
+// all the same. Started bare, its failure would be read as that prefetch's and reload nothing
+// (dispatch://INFRA-1109).
+test("a chunk a mounted component imports for itself reloads for its failure while a prefetch is out", () => {
+  window.sessionStorage.clear();
+  installChunkFailureRecoveryForTest();
+  const reload = spyOn(window.location, "reload").mockImplementation(() => undefined);
+  // A prefetch that never answers inside this row.
+  const prefetched = Promise.withResolvers<unknown>();
+  prefetchChunk(() => prefetched.promise);
+  // The chart's import starts in the mount effect, which `render` runs; no promise settles before
+  // the failure below, so the import is still out when it is reported.
+  const view = render(
+    <Timeline
+      chosen={[]}
+      colorBy="repo"
+      colorScale={new Map()}
+      components={{}}
+      filters={{
+        author: [],
+        component: [],
+        deployed: [],
+        issue: [],
+        parentAgent: [],
+        priority: [],
+        repo: [],
+        rework: [],
+        search: "",
+        session: [],
+      }}
+      lanes={false}
+      onBrush={() => undefined}
+      onSelect={() => undefined}
+      prs={[]}
+      runs={[]}
+      sessionGroups={[]}
+      waiting={[]}
+      window={{ end: "2026-11-15T00:00:00Z", start: "2026-11-01T00:00:00Z" }}
+    />
+  );
+
+  try {
+    window.dispatchEvent(new Event("vite:preloadError", { cancelable: true }));
+    window.dispatchEvent(new Event("pagehide"));
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(storedChunkReloads()).toHaveLength(1);
+  } finally {
+    view.unmount();
+    prefetched.resolve(undefined);
+    reload.mockRestore();
     window.sessionStorage.clear();
   }
 });
@@ -433,33 +566,6 @@ test("a chunk that fails while the browser is offline is not a stale deployment:
     }
     window.sessionStorage.clear();
   }
-});
-
-test("a chunk that fails offline loads once the browser is back online", async () => {
-  let attempts = 0;
-  const load = () => {
-    attempts += 1;
-    return attempts === 1
-      ? Promise.reject(new TypeError("Failed to fetch"))
-      : Promise.resolve("ok");
-  };
-
-  await withOnLine(false, async () => {
-    const loading = importWhenOnline(load);
-    await Promise.resolve();
-    expect(attempts).toBe(1);
-    window.dispatchEvent(new Event("online"));
-    expect(await loading).toBe("ok");
-    expect(attempts).toBe(2);
-  });
-});
-
-test("a chunk that fails while online is a real failure, not a network blip", async () => {
-  await withOnLine(true, async () => {
-    await expect(
-      importWhenOnline(() => Promise.reject(new TypeError("Failed to fetch")))
-    ).rejects.toThrow("Failed to fetch");
-  });
 });
 
 /** The tab's running page: a script naming its entry chunk, as the built page's module script does. */

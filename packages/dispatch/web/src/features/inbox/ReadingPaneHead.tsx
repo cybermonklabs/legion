@@ -3,18 +3,15 @@ import { Link } from "react-router-dom";
 
 import type { Artifact, AskBlockArtifact, InboxRow, MyReplyRow } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
-import {
-  linkHoverText,
-  linkText,
-  secondaryButtonCompact,
-  textMutedOnCanvas,
-} from "../../theme/classes";
+import { textMutedOnCanvas } from "../../theme/classes";
+import { linkHoverText, linkText, secondaryButtonCompact } from "../../theme/shell-classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { blockFragment } from "../refs/block-reference";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { buildIssuePath, buildReferencePath, documentRoute, itemRoute } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
+import { buildReferencePath, documentRoute, itemRoute } from "../refs/routes";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
 import { AssignToMe } from "./AssignToMe";
 import { askIssueKey } from "./ask-name";

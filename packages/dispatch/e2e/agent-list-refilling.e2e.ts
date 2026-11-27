@@ -5,6 +5,7 @@ import {
   setInterests,
   setListsState,
   setLiveSessions,
+  spendPageTimeUntil,
 } from "./agents";
 import {
   baseUrl,
@@ -33,29 +34,37 @@ import { asUser } from "./users";
 //
 // The Agents page and an agent's conversation page poll the list (the shell's 15 s,
 // `AGENT_REGISTRY_POLL_MS`; these rows' pages every `ROW_POLL_MS`, `pollAgentListEvery`), so they
-// move from a complete read to a refilling one in place, keeping the rows they had; assertions on
-// those two pages wait for that poll with `POLL_TIMEOUT`. The other views read again on a reload
-// or a Retry. A refused read surfaces only once the shared retry policy's two retries are out
-// (`web/src/main.tsx`), and a refusal that names a wait is left alone for it: Dispatch passes the
-// listener's `Retry-After` on with ENVOY_REFILLING (`agentsAnswer` below pins it, the real
-// listener's 5 and the rows' own 1), and each retry waits that long plus a random share of it
-// again (`queryRetryDelay`, `web/src/api/query-client.ts`). At the listener's 5 s a view's first
-// refilling read says so up to 20 s after the page made it; the rows set `ROW_RETRY_AFTER_SECONDS`
-// so each view's wait is up to 4 s. Every assertion that waits for one gives it `REFILL_TIMEOUT`.
-// Running-state marks are found by their accessible names (`Running`, `Not running`, `Running
-// state unknown`: `AgentName`'s mark).
+// move from a complete read to a refilling one in place, keeping the rows they had. The other
+// views read again on a reload or a Retry. A refused read surfaces only once the shared retry
+// policy's two retries are out (`web/src/main.tsx`), and a refusal that names a wait is left alone
+// for it: Dispatch passes the listener's `Retry-After` on with ENVOY_REFILLING (`agentsAnswer`
+// below pins it, the real listener's 5 and the rows' own 1), and each retry waits that long plus a
+// random share of it again (`queryRetryDelay`, `web/src/api/query-client.ts`). At the listener's
+// 5 s a view's first refilling read says so only once up to 20 s of the page's own time are out;
+// the rows set `ROW_RETRY_AFTER_SECONDS`, so each view's wait is up to 4 s. The polls and those
+// waits are page timers: a row about a refilling list installs its context's clock before its
+// first page loads, and each wait for a view to say it is refilling, or to stop, moves that clock
+// until the view does (`untilRefilling` and `untilNotRefilling` below), rather than waiting the
+// timers out. The row whose listener cannot answer at all moves the same clock: each of its views
+// says so only once its read's two retries are out, and its two polling pages only after their
+// next poll, so it moves the clock until each one does (`untilShown`). Running-state marks are
+// found by their accessible names (`Running`, `Not running`, `Running state unknown`:
+// `AgentName`'s mark).
 
 const REFILLING = "The agent list is refilling. Try again in a moment.";
 // The agent list's cadence on these rows' pages.
 const ROW_POLL_MS = 1_000;
 // The `Retry-After` these rows' refilling list carries.
 const ROW_RETRY_AFTER_SECONDS = 1;
-// The two retries of a read Dispatch refused as refilling, each waiting out the answer's own
-// `Retry-After` and up to as much again, and a margin for a loaded runner. An upper bound only:
-// an assertion passes as soon as the view says so.
+// The bound on Dispatch's answer taking up the rows' own `Retry-After`: it serves the listener's
+// answer from a copy at most 5 s old (`routeRosterTTL`), and a margin for a loaded runner. An
+// upper bound only: the poll passes as soon as the answer does.
 const REFILL_TIMEOUT = 20_000;
-// A poll, the refilling read it makes (`REFILL_TIMEOUT`) and a margin, measured from whenever the
-// state flipped.
+// The bound on the two polling pages' reads in the row whose listener cannot answer: one poll
+// (`ROW_POLL_MS`), the two half-second retries of the read it makes and a margin, measured from
+// whenever the state flipped. That row spends this time on the page's clock before it reads them
+// (`untilShown`), so what the bound is left to cover is the real round trips of the reads the
+// jumps fire.
 const POLL_TIMEOUT = 30_000;
 const PLANNER_ROLE = "refill-planner";
 const DOCUMENT_SLUG = "refill-notes";
@@ -118,6 +127,30 @@ const documentPath = `/projects/CORE/documents/${DOCUMENT_SLUG}`;
 
 function refillingNotice(scope: Page | Locator): Locator {
   return scope.getByTestId("agent-list-refilling");
+}
+
+/** Moves the page's clock until `scope` shows the refilling notice: after a read's refusal and its
+ *  two retries, or, on a page that polls the list, its next poll and those. */
+async function untilRefilling(scope: Page | Locator): Promise<void> {
+  await untilShown(refillingNotice(scope), "the refilling notice shows");
+}
+
+/** Moves the page's clock until `scope` shows no refilling notice: a polling page's next poll, or
+ *  the retry it was waiting on, reads the complete list again. */
+async function untilNotRefilling(scope: Page | Locator): Promise<void> {
+  const notice = refillingNotice(scope);
+  await spendPageTimeUntil(
+    notice.page(),
+    async () => (await notice.count()) === 0,
+    "the refilling notice goes"
+  );
+}
+
+/** Moves the page's clock until `locator` shows: how the row whose listener cannot answer waits
+ *  for a view to say so - after its read's two half-second retries, or, on a page that polls the
+ *  list, after its next poll and those - the page timers `untilRefilling` spends as well. */
+async function untilShown(locator: Locator, message: string): Promise<void> {
+  await spendPageTimeUntil(locator.page(), () => locator.isVisible(), message);
 }
 
 /** The planner's live view names its machine and its working directory, each in a part of the
@@ -214,26 +247,30 @@ async function expectFreshViewsRefilling(page: Page, fixture: RefillFixture): Pr
   await openIssueConversation(page, fixture.issueKey);
   // The issue's ask card shows its own recipients notice in the Conversation and the margin.
   const header = page.getByTestId("issue-header");
-  await expect(refillingNotice(header)).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });
+  await untilRefilling(header);
+  await expect(refillingNotice(header)).toHaveText(REFILLING);
   await expect(refillingNotice(header)).toHaveAttribute("role", "status");
   await expect(page.getByRole("button", { name: "Subscribers", exact: true })).toBeVisible();
   await expect(page.getByTestId("issue-route-refilling")).toHaveText(
     `Route reach unknown: ${REFILLING}`
   );
   const suggestions = await openReferencePicker(page);
-  await expect(refillingNotice(suggestions)).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });
+  await untilRefilling(suggestions);
+  await expect(refillingNotice(suggestions)).toHaveText(REFILLING);
   await expectNoAbsenceClaim(page);
   await expectNoUnreachableWording(page);
 
   await page.goto(documentPath);
-  await expect(refillingNotice(page)).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });
+  await untilRefilling(page);
+  await expect(refillingNotice(page)).toHaveText(REFILLING);
   await expect(page.getByRole("region", { name: "Subscribed agents" })).toHaveCount(0);
   await expectNoAbsenceClaim(page);
   await expectNoUnreachableWording(page);
 
   await page.goto("/");
   const recipients = askRecipients(page, fixture.askId);
-  await expect(refillingNotice(recipients)).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });
+  await untilRefilling(recipients);
+  await expect(refillingNotice(recipients)).toHaveText(REFILLING);
   const toggle = recipients.getByRole("button", { name: "Recipients", exact: true });
   await toggle.click();
   await expect(
@@ -253,11 +290,18 @@ async function expectFreshViewsRefilling(page: Page, fixture: RefillFixture): Pr
 test("a list that starts refilling after a complete read claims no agent absent, and recovers", async ({
   browser,
 }) => {
+  // Four pages and a dozen loads of them, each a few seconds' work on a busy machine; the waits
+  // on the agent list are page timers the clock spends, so they cost this deadline only the real
+  // round trips of the reads they wait on and the short pauses between two readings of the page
+  // (`spendPageTimeUntil`, `e2e/agents.ts`).
   test.setTimeout(120_000);
   const fixture = await seedRefillFixture([planner, watcher]);
   const alice = await asUser(browser, "alice");
   await pollAgentListEvery(alice, ROW_POLL_MS);
   try {
+    // The clock is the context's, so all four pages below share it, and moving it for one moves
+    // the timers of each: the polling pages' polls as much as the fresh page's retries.
+    await alice.clock.install();
     // A complete read: every view names the agents and counts what it reaches.
     const agentsPage = await alice.newPage();
     await agentsPage.goto("/agents");
@@ -292,7 +336,8 @@ test("a list that starts refilling after a complete read claims no agent absent,
     // The open composer reads the list again as its suggestions open: the rows it had stay, and
     // the refilling notice stands where the agent and role rows are read from.
     const during = await openReferencePicker(issuePage);
-    await expect(refillingNotice(during)).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });
+    await untilRefilling(during);
+    await expect(refillingNotice(during)).toHaveText(REFILLING);
     await expect(during.getByRole("option", { name: plannerRow })).toBeVisible();
     await expect(issuePage.getByText("No reference matches.")).toHaveCount(0);
 
@@ -300,12 +345,14 @@ test("a list that starts refilling after a complete read claims no agent absent,
 
     // The two polling pages refreshed in place: rows and details from the complete read stay,
     // under the refilling notice, and nothing reads as gone or unreachable.
-    await expect(refillingNotice(agentsPage)).toHaveText(REFILLING, { timeout: POLL_TIMEOUT });
+    await untilRefilling(agentsPage);
+    await expect(refillingNotice(agentsPage)).toHaveText(REFILLING);
     await expect(agentRow(agentsPage, planner.session_id)).toBeVisible();
     await expect(agentsPage.getByRole("alert")).toHaveCount(0);
     await expectNoAbsenceClaim(agentsPage);
     await expectNoUnreachableWording(agentsPage);
-    await expect(refillingNotice(livePage)).toHaveText(REFILLING, { timeout: POLL_TIMEOUT });
+    await untilRefilling(livePage);
+    await expect(refillingNotice(livePage)).toHaveText(REFILLING);
     await expectPlannerFacts(livePage);
     await expectNoAbsenceClaim(livePage);
     await expectNoUnreachableWording(livePage);
@@ -313,14 +360,17 @@ test("a list that starts refilling after a complete read claims no agent absent,
     // The ask card read while the list refilled is the one a Retry brings back.
     await page.goto("/");
     const refilled = askRecipients(page, fixture.askId);
-    await expect(refillingNotice(refilled)).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });
+    await untilRefilling(refilled);
+    await expect(refillingNotice(refilled)).toHaveText(REFILLING);
 
     await setListsState("ok");
 
     // Recovery: the polls take the complete read back, and a Retry or a reload counts again.
-    await expect(refillingNotice(agentsPage)).toHaveCount(0, { timeout: POLL_TIMEOUT });
+    await untilNotRefilling(agentsPage);
+    await expect(refillingNotice(agentsPage)).toHaveCount(0);
     await expect(agentRow(agentsPage, planner.session_id)).toBeVisible();
-    await expect(refillingNotice(livePage)).toHaveCount(0, { timeout: POLL_TIMEOUT });
+    await untilNotRefilling(livePage);
+    await expect(refillingNotice(livePage)).toHaveCount(0);
     await expectPlannerFacts(livePage);
 
     await openIssueConversation(issuePage, fixture.issueKey);
@@ -349,11 +399,18 @@ test("a list that starts refilling after a complete read claims no agent absent,
 });
 
 test("an empty list that starts refilling never says nobody is connected", async ({ browser }) => {
+  // Four pages and ten loads of them, each a few seconds' work on a busy machine; the waits on
+  // the agent list are page timers the clock spends, so they cost this deadline only the real
+  // round trips of the reads they wait on and the short pauses between two readings of the page
+  // (`spendPageTimeUntil`, `e2e/agents.ts`).
   test.setTimeout(120_000);
   const fixture = await seedRefillFixture([]);
   const alice = await asUser(browser, "alice");
   await pollAgentListEvery(alice, ROW_POLL_MS);
   try {
+    // The clock is the context's, so all four pages below share it, and moving it for one moves
+    // the timers of each: the polling pages' polls as much as the fresh page's retries.
+    await alice.clock.install();
     // A complete, empty read is a true absence, and each view says so.
     const agentsPage = await alice.newPage();
     await agentsPage.goto("/agents");
@@ -400,16 +457,19 @@ test("an empty list that starts refilling never says nobody is connected", async
     await setListsState("refilling", { retryAfterSeconds: ROW_RETRY_AFTER_SECONDS });
 
     const during = await openReferencePicker(issuePage);
-    await expect(refillingNotice(during)).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });
+    await untilRefilling(during);
+    await expect(refillingNotice(during)).toHaveText(REFILLING);
     await expect(issuePage.getByText("No reference matches.")).toHaveCount(0);
 
     await expectFreshViewsRefilling(page, fixture);
 
-    await expect(refillingNotice(agentsPage)).toHaveText(REFILLING, { timeout: POLL_TIMEOUT });
+    await untilRefilling(agentsPage);
+    await expect(refillingNotice(agentsPage)).toHaveText(REFILLING);
     await expect(agentsPage.getByRole("alert")).toHaveCount(0);
     await expectNoAbsenceClaim(agentsPage);
     await expectNoUnreachableWording(agentsPage);
-    await expect(refillingNotice(livePage)).toHaveText(REFILLING, { timeout: POLL_TIMEOUT });
+    await untilRefilling(livePage);
+    await expect(refillingNotice(livePage)).toHaveText(REFILLING);
     await expectNoAbsenceClaim(livePage);
     await expectNoUnreachableWording(livePage);
   } finally {
@@ -418,7 +478,6 @@ test("an empty list that starts refilling never says nobody is connected", async
 });
 
 test("a listener refilling from the first read shows every view refilling", async ({ browser }) => {
-  test.setTimeout(120_000);
   const fixture = await seedRefillFixture([planner, watcher]);
   // What every view below reads: Dispatch's own refilling answer, not an unreachable listener,
   // with the listener's `Retry-After` passed on as it is - the real listener's 5, and then the
@@ -441,15 +500,18 @@ test("a listener refilling from the first read shows every view refilling", asyn
   await pollAgentListEvery(alice, ROW_POLL_MS);
   try {
     const page = await alice.newPage();
+    await page.clock.install();
     await page.goto("/agents");
-    await expect(refillingNotice(page)).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });
+    await untilRefilling(page);
+    await expect(refillingNotice(page)).toHaveText(REFILLING);
     await expect(page.getByRole("heading", { name: "Agents", level: 1 })).toBeVisible();
     await expect(page.getByRole("alert")).toHaveCount(0);
     await expectNoAbsenceClaim(page);
     await expectNoUnreachableWording(page);
 
     await page.goto(livePath);
-    await expect(refillingNotice(page)).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });
+    await untilRefilling(page);
+    await expect(refillingNotice(page)).toHaveText(REFILLING);
     await expect(page.getByTestId("agent-list-loading")).toHaveCount(0);
     await expectNoAbsenceClaim(page);
     await expectNoUnreachableWording(page);
@@ -468,6 +530,9 @@ test("a listener that cannot answer reads as unreachable on every view, never as
   const alice = await asUser(browser, "alice");
   await pollAgentListEvery(alice, ROW_POLL_MS);
   try {
+    // The clock is the context's, so all three pages below share it, and moving it for one moves
+    // the timers of each: the polling pages' polls as much as the fresh page's retries.
+    await alice.clock.install();
     const agentsPage = await alice.newPage();
     await agentsPage.goto("/agents");
     await expect(agentRow(agentsPage, planner.session_id)).toBeVisible();
@@ -488,48 +553,60 @@ test("a listener that cannot answer reads as unreachable on every view, never as
 
     const page = await alice.newPage();
     await page.goto("/agents");
-    await expect(page.getByText(/^Could not load agents: /)).toBeVisible();
+    const couldNotLoad = page.getByText(/^Could not load agents: /);
+    await untilShown(couldNotLoad, "the Agents page says it could not load the agents");
+    await expect(couldNotLoad).toBeVisible();
     await expectNoRefillingWording(page);
     await expectNoAbsenceClaim(page);
 
     await page.goto(livePath);
-    await expect(page.getByTestId("agent-list-unreachable")).toHaveText(
+    const unreachable = page.getByTestId("agent-list-unreachable");
+    await untilShown(unreachable, "the live view says the listener is unreachable");
+    await expect(unreachable).toHaveText(
       "Could not check the live session list — Envoy listener unreachable."
     );
     await expectNoRefillingWording(page);
     await expectNoAbsenceClaim(page);
 
     await openIssueConversation(page, fixture.issueKey);
-    await expect(
-      page
-        .getByRole("alert")
-        .filter({ hasText: "Subscribed agents unavailable — Envoy listener unreachable." })
-    ).toBeVisible();
+    const issueSubscribers = page
+      .getByRole("alert")
+      .filter({ hasText: "Subscribed agents unavailable — Envoy listener unreachable." });
+    await untilShown(issueSubscribers, "the issue says its subscribed agents are unavailable");
+    await expect(issueSubscribers).toBeVisible();
     await expect(page.getByRole("button", { name: "Subscribers", exact: true })).toBeVisible();
     await expect(page.getByTestId("issue-route-unknown")).toHaveText("Route reach unknown");
     const suggestions = await openReferencePicker(page);
-    await expect(suggestions.getByTestId("agent-list-unreachable")).toHaveText(
+    const suggestionsUnreachable = suggestions.getByTestId("agent-list-unreachable");
+    await untilShown(
+      suggestionsUnreachable,
+      "the reference picker says the listener is unreachable"
+    );
+    await expect(suggestionsUnreachable).toHaveText(
       "Could not load live agents — Envoy listener unreachable."
     );
     await expectNoRefillingWording(page);
     await expectNoAbsenceClaim(page);
 
     await page.goto(documentPath);
-    await expect(
-      page
-        .getByRole("alert")
-        .filter({ hasText: "Subscribed agents unavailable — Envoy listener unreachable." })
-    ).toBeVisible();
+    const documentSubscribers = page
+      .getByRole("alert")
+      .filter({ hasText: "Subscribed agents unavailable — Envoy listener unreachable." });
+    await untilShown(
+      documentSubscribers,
+      "the document says its subscribed agents are unavailable"
+    );
+    await expect(documentSubscribers).toBeVisible();
     await expectNoRefillingWording(page);
     await expectNoAbsenceClaim(page);
 
     await page.goto("/");
     const recipients = askRecipients(page, fixture.askId);
-    await expect(
-      recipients
-        .getByRole("alert")
-        .filter({ hasText: "Subscribers unavailable — Envoy listener unreachable." })
-    ).toBeVisible();
+    const askSubscribers = recipients
+      .getByRole("alert")
+      .filter({ hasText: "Subscribers unavailable — Envoy listener unreachable." });
+    await untilShown(askSubscribers, "the ask card says its subscribers are unavailable");
+    await expect(askSubscribers).toBeVisible();
     await recipients.getByRole("button", { name: "Recipients", exact: true }).click();
     await expect(
       recipients
@@ -545,14 +622,21 @@ test("a listener that cannot answer reads as unreachable on every view, never as
     await expect(page.getByTestId("issue-route-unreachable")).toHaveCount(0);
 
     // The polling pages refreshed in place: they keep the rows they had and say the refresh
-    // failed, not that the list is refilling.
+    // failed, not that the list is refilling. Each says so after its next poll (`ROW_POLL_MS`) and
+    // that read's two retries, which the clock is moved through.
+    await untilShown(
+      agentsPage.getByRole("alert").filter({ hasText: /^Could not refresh agents: / }),
+      "the Agents page's poll says it could not refresh"
+    );
     await expect(agentsPage.getByRole("alert")).toHaveText(/^Could not refresh agents: /, {
       timeout: POLL_TIMEOUT,
     });
     await expect(agentRow(agentsPage, planner.session_id)).toBeVisible();
     await expectNoRefillingWording(agentsPage);
     await expectNoAbsenceClaim(agentsPage);
-    await expect(livePage.getByTestId("agent-list-unreachable")).toBeVisible({
+    const liveUnreachable = livePage.getByTestId("agent-list-unreachable");
+    await untilShown(liveUnreachable, "the live view's poll says the listener is unreachable");
+    await expect(liveUnreachable).toBeVisible({
       timeout: POLL_TIMEOUT,
     });
     await expectPlannerFacts(livePage);

@@ -1,6 +1,7 @@
 import { type ReactNode, useId, useRef } from "react";
 
 import type { StatusChangeEntry } from "../../../api/types";
+import { textPrimaryOnSurface } from "../../../theme/classes";
 import {
   backdrop50,
   borderDefault,
@@ -11,9 +12,8 @@ import {
   secondaryButtonHoverBorder,
   secondaryButtonText,
   textMutedOnSurface,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../../theme/classes";
+} from "../../../theme/shell-classes";
 import { IN_WORK_STATUSES, statusText } from "../../project/board-model";
 import { useCloseOnNavigation, useDialog } from "../../shell/useDialog";
 import type {

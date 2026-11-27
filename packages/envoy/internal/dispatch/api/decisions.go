@@ -83,32 +83,41 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	key := r.PathValue("key")
+	answer, err := s.loadIssueDecisions(r.Context(), who, r.PathValue("key"), wantsDisplayTrees(r))
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, answer)
+}
+
+// loadIssueDecisions is the read behind GET /api/v1/issues/{key}/decisions: the issue's
+// decisions.md, the open questions its spec still holds, and each decision of that document, all
+// of it read for who. getIssueDecisions answers it, and GET /api/v1/landing carries it on the
+// issue page, which draws the Decisions tab from it. trees is what the request asked for
+// (wantsDisplayTrees), so the landing's copy carries the same trees the route's does.
+func (s *server) loadIssueDecisions(ctx context.Context, who model.Actor, key string, trees bool) (issueDecisions, error) {
 	// One reader for the whole answer: the open questions are the same ask rows the ask list
 	// answers, so a caller that asked for the trees is given each question's here too. The
 	// reader is nil for a caller that did not ask, and every call on it then does nothing.
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	reader := s.readDisplayTrees(ctx, trees)
 	answer := issueDecisions{OpenQuestions: []issueAskRow{}, Decisions: []model.Decision{}}
-	spec, specFound, err := s.issueSpecDocument(r.Context(), key)
+	spec, specFound, err := s.issueSpecDocument(ctx, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return issueDecisions{}, err
 	}
 	if specFound {
-		if answer.OpenQuestions, err = s.specOpenQuestions(r.Context(), who, key, spec.ID, reader); err != nil {
-			s.writeHandlerError(w, err)
-			return
+		if answer.OpenQuestions, err = s.specOpenQuestions(ctx, who, key, spec.ID, reader); err != nil {
+			return issueDecisions{}, err
 		}
 	}
-	document, found, err := s.issueDecisionsDocument(r.Context(), key)
+	document, found, err := s.issueDecisionsDocument(ctx, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return issueDecisions{}, err
 	}
 	if !found {
 		reader.resolve()
-		WriteJSON(w, http.StatusOK, answer)
-		return
+		return answer, nil
 	}
 	reference := artifactReference(document)
 	answer.Document = &reference
@@ -116,12 +125,11 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 	if specFound {
 		specID = spec.ID
 	}
-	if answer.Decisions, err = s.readDecisions(r.Context(), who, document, reference, specID, reader, true); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	if answer.Decisions, err = s.readDecisions(ctx, who, document, reference, specID, reader, true); err != nil {
+		return issueDecisions{}, err
 	}
 	reader.resolve()
-	WriteJSON(w, http.StatusOK, answer)
+	return answer, nil
 }
 
 // artifactReference is a document's own dispatch:// address.
@@ -787,18 +795,30 @@ func (s *server) getDocumentRead(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	read := model.DocumentRead{ArtifactID: document.ID}
-	var version *int
-	var at *time.Time
-	err = s.deps.Store.Pool.QueryRow(r.Context(), `
-		select version, read_at from user_document_reads where login = $1 and artifact_id = $2::uuid
-	`, model.CanonicalLogin(actor.ID), document.ID).Scan(&version, &at)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	read, err := s.loadDocumentRead(r.Context(), actor.ID, document.ID)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	read.Version, read.ReadAt = version, at
 	WriteJSON(w, http.StatusOK, read)
+}
+
+// loadDocumentRead is the row behind GET /api/v1/me/documents/{id}/read: the version of one
+// document one person last read, with version and read_at null when they have read none.
+// getDocumentRead answers it, and GET /api/v1/landing carries it beside the issue's own
+// document, which the Spec tab marks the changed blocks of from it.
+func (s *server) loadDocumentRead(ctx context.Context, login, artifactID string) (model.DocumentRead, error) {
+	read := model.DocumentRead{ArtifactID: artifactID}
+	var version *int
+	var at *time.Time
+	err := s.deps.Store.Pool.QueryRow(ctx, `
+		select version, read_at from user_document_reads where login = $1 and artifact_id = $2::uuid
+	`, model.CanonicalLogin(login), artifactID).Scan(&version, &at)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return model.DocumentRead{}, err
+	}
+	read.Version, read.ReadAt = version, at
+	return read, nil
 }
 
 // documentReadInput is the body of PUT /api/v1/me/documents/{id}/read.

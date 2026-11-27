@@ -1,8 +1,9 @@
-import { mentionName } from "@legion/contracts";
+import { mentionName } from "@legion/contracts/dispatch-mention-sign";
 
 import { AGENT_LIST_REFILLING } from "../../api/client";
 import type { DisplayTree, SearchResultKind } from "../../api/types";
-import type { AgentStateWords } from "./AgentName";
+import { partyLink } from "./party-mention";
+import type { AgentStateWords } from "./SessionName";
 import type { TextSource } from "./text-references";
 
 /**
@@ -356,39 +357,9 @@ export interface RefPickerInsertion {
   readonly link?: { readonly href: string; readonly words: string };
 }
 
-/** What Markdown reads as markup in a link's words: the brackets that would end them, the
- *  backslash that escapes, the delimiters of emphasis, strong, code and strikethrough, which over
- *  a part of the words would make them their author's words rather than a mention
- *  (`@legion/contracts`'s `isMentionWords`), and the `<` and `&` that open inline HTML and a
- *  character reference: `Fix <Suspense> fallback` written as it is reads `<Suspense>` as a tag,
- *  which holds none of the words, and `&amp;` reads as `&`. */
-const LINK_WORDS_MARKUP = /[[\]\\*_`~<&]/gu;
-
-/** A party's name as a link's words, each character Markdown would read as markup written
- *  escaped: a session title is whatever its holder typed - `Planner [2]`, `fix *the* cache`,
- *  `Fix <Suspense> fallback` - and every reader of the link takes the escaped words as exactly
- *  those characters. */
-function linkWords(label: string): string {
-  return label.replace(LINK_WORDS_MARKUP, (character) => `\\${character}`);
-}
-
-/** The mention of a party: a link whose words are the mention sign and its name and whose
- *  address names it (R4), so the stored text reads as the person, session or role it mentions
- *  and still names it after an edit of the words. A link whose words start with the sign and
- *  whose address names a party reads as the sign and that party's current name wherever it is
- *  shown (`@legion/contracts`'s `mentionName`); a link whose words its author wrote another way
- *  keeps those words (R8). The name is written as literal words (`linkWords`), so a name that
- *  holds a formatting character is still a mention's plain words and reads as the party's
- *  current name after a rename. The one writer of that shape, read by the picker's pick below,
- *  by the live composer's (`ReferenceTriggers`) and by the seed a channel owes its own party and
- *  a kept draft's rewrite (`party-references.ts`'s `partyMention`). */
-export function partyLink(name: string, reference: string): string {
-  return `[${mentionName(linkWords(name))}](${reference})`;
-}
-
-/** The text a pick of `row` at `trigger` inserts: a party as its mention; every other kind, and
- *  any kind in a link's address, as the bare address, which the renderer draws by its target's
- *  own title (R8) and which there completes the link the reader is writing. */
+/** The text a pick of `row` at `trigger` inserts: a party as its mention (`partyLink`); every
+ *  other kind, and any kind in a link's address, as the bare address, which the renderer draws by
+ *  its target's own title (R8) and which there completes the link the reader is writing. */
 export function insertionText(
   row: RefPickerRow,
   trigger: Pick<RefPickerTrigger, "inAddress">

@@ -1,17 +1,14 @@
 import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
 
 import type { IssueDetails } from "../../api/types";
+import { focusBorder, pageFailedText, pageHairBorder, pagePaperBg } from "../../theme/classes";
 import {
-  focusBorder,
   focusVisibleRing,
-  pageFailedText,
-  pageHairBorder,
   pageInkText,
   pageLineBorder,
   pageMutedText,
-  pagePaperBg,
   pageQuietText,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import type { IssueDrafts } from "../issue/useIssueDrafts";
 import { HELP_LINES, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";

@@ -17,7 +17,7 @@ import type {
   ReferenceLink,
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import { ArtifactsTab } from "./ArtifactsTab";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in

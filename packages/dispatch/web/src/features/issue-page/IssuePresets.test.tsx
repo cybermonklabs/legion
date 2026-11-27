@@ -1,5 +1,5 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -208,11 +208,11 @@ function DialogOverTheRow(): ReactNode {
 }
 
 // Escape closes the innermost layer. A dialog open over the menu takes it wherever the focus is:
-// on the dialog itself in its first frame, or on the page after a press on the dialog's text.
-// In the second case the key's target is outside the dialog, and only whether a dialog is open
-// tells the menu to leave the key to it. That is `useDialog`'s registry's answer (`dialogOpen()`,
-// decision 318), the one that decides which dialog the key closes and that Details' drawer asks
-// too, so a dialog's markup does not change it.
+// on the dialog itself in its first frame, on the menu's item under it, or on the page after a
+// press on the dialog's text. In the last two cases the key's target is outside the dialog, and
+// only whether a dialog is open tells the menu to leave the key to it. That is `useDialog`'s
+// registry's answer (`dialogOpen()`, decision 318), the one that decides which dialog the key
+// closes and that Details' drawer asks too, so a dialog's markup does not change it.
 test("below 1280 px, Escape with a dialog open over the menu closes the dialog alone, wherever the focus is", async () => {
   const user = userEvent.setup();
   const restoreMatchMedia = stubViewport(PHONE_WIDTH);
@@ -233,8 +233,9 @@ test("below 1280 px, Escape with a dialog open over the menu closes the dialog a
     );
     const dialog = () => screen.queryByRole("dialog", { name: "Over the row" });
 
-    // The dialog holds the focus itself until its control takes it a frame after it opens; with
-    // that frame held, the Escape lands on the dialog, not on the menu's item.
+    // The dialog names no field, so it holds the focus itself until its control takes it a frame
+    // after it opens (`useDialog`); with that frame held, the Escape lands on the dialog, not on
+    // the menu's item.
     const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
     try {
       await user.keyboard("?");
@@ -247,6 +248,32 @@ test("below 1280 px, Escape with a dialog open over the menu closes the dialog a
       frames.mockRestore();
     }
     expect(dialog(), "Escape in the dialog's first frame left it open").toBeNull();
+    expect(
+      screen.queryByRole("menu"),
+      "that Escape closed the menu under the dialog"
+    ).not.toBeNull();
+
+    // The dialog takes the focus in the commit that opens it, with no frame run. The focus is
+    // then put back on the menu's item, outside the dialog, so the Escape lands there. The row
+    // reads that it is there before the Escape: a dialog that kept the focus inside itself would
+    // take the Escape in the dialog, which closes it as well, and the row would pass without the
+    // case it names, the focus outside the dialog.
+    const heldFrames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    try {
+      await user.keyboard("?");
+      expect(dialog(), "? drew no dialog").not.toBeNull();
+      expect(document.activeElement, "the dialog did not take the focus as it opened").toBe(
+        dialog()
+      );
+      act(() => menuItem("spec").focus());
+      expect(document.activeElement, "the focus is not on the menu's item before the Escape").toBe(
+        menuItem("spec")
+      );
+      await user.keyboard("{Escape}");
+    } finally {
+      heldFrames.mockRestore();
+    }
+    expect(dialog(), "Escape with the focus on the menu's item left the dialog open").toBeNull();
     expect(
       screen.queryByRole("menu"),
       "that Escape closed the menu under the dialog"

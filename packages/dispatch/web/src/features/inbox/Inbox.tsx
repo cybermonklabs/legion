@@ -1,5 +1,5 @@
-import { awaitsDecision, INBOX_DISMISSED_PAGE } from "@legion/contracts";
-import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
+import { awaitsDecision, INBOX_DISMISSED_PAGE } from "@legion/contracts/dispatch-api-constants";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools-constants";
 import { useQuery } from "@tanstack/react-query";
 import {
   type FocusEvent,
@@ -20,6 +20,7 @@ import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill, pillClassName } from "../../components/Pill";
 import { TruncatedText } from "../../components/TruncatedText";
 import { capSearchQuery } from "../../lib/query-param";
+import { textMutedOnCanvas } from "../../theme/classes";
 import {
   borderDefault,
   dangerText,
@@ -28,9 +29,8 @@ import {
   linkHoverText,
   linkText,
   surfaceMutedBg,
-  textMutedOnCanvas,
   textMutedOnSurfaceMuted,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { searchWords } from "../agents/agent-search";
 import { CredentialRequestsSection } from "../credentials/CredentialRequestsSection";
 import { type CredentialRequests, useCredentialRequests } from "../credentials/pending";
@@ -39,13 +39,8 @@ import { PriorityControl } from "../issue/PriorityControl";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { COPY_REF_SELECTOR, CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
-import {
-  buildInboxPath,
-  INBOX_FILTER_FIELDS,
-  type InboxRoute,
-  type InboxShow,
-  parseInboxSearch,
-} from "../refs/routes";
+import { buildInboxPath, INBOX_FILTER_FIELDS, type InboxRoute } from "../refs/page-routes";
+import { type InboxShow, parseInboxSearch } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { type KeymapScope, takesTypedText, useKeymap, useKeymapScope } from "../shell/keymap";
@@ -60,9 +55,11 @@ import { formatAskAge } from "./ask-age";
 import { outsideAskCard } from "./ask-card";
 import { type AskOrdinal, askOrdinals } from "./ask-name";
 import { askUrgency } from "./ask-urgency";
-import { BlockedOnYou, waitingOnHuman } from "./BlockedOnYou";
+import { waitingOnHuman } from "./BlockedOnYou";
+import { BlockedOnYou } from "./BlockedOnYouLink";
 import { BulkBar } from "./BulkBar";
 import { DismissControl, RowDismissContext } from "./DismissControl";
+import { inboxEntryState } from "./entry-state";
 import { ALL_GROUP_KEY, group, inFieldFilter, LATER_GROUP_KEY, sortRows } from "./grouping";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { InboxBar, type InboxFilters, type InboxPopover } from "./InboxBar";
@@ -82,7 +79,7 @@ import { MarkCheckbox, ThreadMarkCheckbox } from "./MarkCheckbox";
 import { useMarkAllRead } from "./mark-all";
 import { useMotionHold } from "./motion-hold";
 import { PaneDivider, usePaneWidth } from "./PaneDivider";
-import { inboxEntryState, type PlacedRow, usePaneSelection } from "./pane-selection";
+import { type PlacedRow, usePaneSelection } from "./pane-selection";
 import { useFoldedGroups } from "./preferences";
 import { ReadingPane } from "./ReadingPane";
 import {

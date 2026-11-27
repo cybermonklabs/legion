@@ -17,7 +17,8 @@ import {
   PROGRESS_NOUNS,
 } from "../web/src/features/issue-page/page-words";
 import { priorityTriggerName } from "../web/src/features/priorities/IssuePriorityLine";
-import { buildDispatchReference, buildIssuePath } from "../web/src/features/refs/routes";
+import { buildIssuePath } from "../web/src/features/refs/page-routes";
+import { buildDispatchReference } from "../web/src/features/refs/routes";
 import { setLiveSessions } from "./agents";
 import { createPriority, getIssue, patchIssue, putProjectDefaultRepository } from "./api";
 import { nextFrames } from "./frames";

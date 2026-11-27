@@ -1,15 +1,13 @@
 import { type ReactNode, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { pageHairBorder, pagePaneBg, pagePaperBg } from "../../theme/classes";
 import {
   focusVisibleRing,
-  pageHairBorder,
   pageInkText,
   pageLineBorder,
   pageMutedText,
-  pagePaneBg,
-  pagePaperBg,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "../refs/ref-preview-card";
 import { useDialog, useMediaQuery } from "../shell/useDialog";
 import { ContentsChosen } from "./contents-chosen";

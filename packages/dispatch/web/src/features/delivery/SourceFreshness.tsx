@@ -4,9 +4,9 @@ import { useLiveSocketState } from "../../api/live-socket";
 import {
   connectionDotConnected,
   connectionDotFailed,
-  dangerText,
   textMutedOnCanvas,
 } from "../../theme/classes";
+import { dangerText } from "../../theme/shell-classes";
 import { type DeliveryFreshness, sourceFreshness } from "./lib/freshness";
 
 /** One row naming each source with how long ago it was checked (sourceFreshness): red, with its

@@ -7,7 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { heldDraftWords, stopReplySend } from "../../__tests__/stop-late-write";
 import { ApiError, api } from "../../api/client";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import { SendStoppedError } from "../writes/keyed-write";
 import { Margin } from "./Margin";
 import { MarginProvider, marginReplySendKey } from "./margin-context";

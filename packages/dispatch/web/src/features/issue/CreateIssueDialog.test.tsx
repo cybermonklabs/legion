@@ -65,13 +65,20 @@ function CurrentRoute(): ReactNode {
   return <output data-testid="current-route">{location.pathname}</output>;
 }
 
+/** What `renderDialog` hands a row: the query client, the row's user and its teardown. */
+interface RenderedDialog {
+  queryClient: QueryClient;
+  user: UserEvent;
+  unmount: () => void;
+}
+
 /** The dialog, its project list and its related-item check answered here. */
 function renderDialog(
   user: UserEvent,
   create: (input: CreateIssueInput) => Promise<Issue>,
   path = "/",
   onClose = () => {}
-) {
+): RenderedDialog {
   const listProjects = spyOn(api, "listProjects").mockResolvedValue(projects);
   // Every row types a title, so the dialog's related-item check is answered here instead of
   // reaching the network.
@@ -146,6 +153,31 @@ test("preselects the route's project, submits title and spec, and opens the crea
     expect(closed).toBe(1);
   } finally {
     view.unmount();
+  }
+});
+
+// Create issue names its Title as the field it opens on (`useDialog`'s `initialFocusRef`), and a
+// field that takes text takes the focus in the commit that opens the dialog, so the keys a reader
+// types straight after `c` are the title's. A loaded machine draws the dialog's first frame late,
+// so the row holds the frames while it types: a title that waited for that frame, as a named
+// button does, would leave those keys on the dialog itself, and the title empty.
+test("a key typed in the dialog's first frame lands in its title", async () => {
+  const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+  let view: RenderedDialog | undefined;
+  try {
+    view = renderDialog(userEvent.setup(), () =>
+      Promise.reject(new Error("this row creates no issue"))
+    );
+    const title = screen.getByRole<HTMLInputElement>("textbox", { name: "Title" });
+    expect(document.activeElement, "the title took no focus as the dialog opened").toBe(title);
+    await view.user.keyboard("Fix it");
+    expect(title.value, "the keys typed in the dialog's first frame missed its title").toBe(
+      "Fix it"
+    );
+    await projectPicked();
+  } finally {
+    frames.mockRestore();
+    view?.unmount();
   }
 });
 

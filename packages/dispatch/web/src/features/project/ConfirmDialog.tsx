@@ -1,5 +1,6 @@
 import { type ReactNode, useRef } from "react";
 
+import { textPrimaryOnSurface } from "../../theme/classes";
 import {
   backdrop50,
   borderDefault,
@@ -9,9 +10,8 @@ import {
   secondaryButtonBorder,
   secondaryButtonHoverBorder,
   secondaryButtonText,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { useDialog } from "../shell/useDialog";
 
 /**

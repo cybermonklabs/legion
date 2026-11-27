@@ -26,9 +26,9 @@
 # so that reason does not hold for the token, which is a key of the step's `env:`.
 #
 # It reads $RUNNER_TEMP/selected-blobs, which holds one blob report and one row count per leg and
-# each shard leg's two row lists, and $RUNNER_TEMP/report.json, the merged report; it writes $RUNNER_TEMP/jobs.json, which
-# reading three reads, and the table and the figures it adds to $GITHUB_STEP_SUMMARY. The step
-# keeps its own `timeout-minutes`, which
+# each shard leg's two row lists, and $RUNNER_TEMP/report.json, the merged report; it writes
+# $RUNNER_TEMP/jobs.json, which readings three and five read, and the table and the figures it
+# adds to $GITHUB_STEP_SUMMARY. The step keeps its own `timeout-minutes`, which
 # .github/ci-notes/dispatch-browser.md#the-merge-jobs-measured-steps-and-its-budget sizes against
 # the ladder the read goes through.
 #
@@ -99,21 +99,26 @@ how_ended() {
 # The run's own token is GH_TOKEN, a key of the step's `env:` and never an argument, for the
 # reason this script's head gives. `actions: read` is the caller's, and ci.yaml's job that calls
 # this workflow already holds it.
-# This run's attempt's jobs, read once here and read again by reading three below.
-# The call writes $RUNNER_TEMP/jobs.json: the array of {id, name, conclusion, leg}
-# that both readings take. The jobs API lists the caller's jobs too, and the jobs of ci.yaml's
-# other callers of this workflow that share the run - dispatch-browser beside
-# dispatch-browser-pr on a pull request labelled full-ci, dispatch-references beside
-# dispatch-browser-pr on one that changes what the reference rows test - so the script holds the
-# name to `<caller> / ` and one of this workflow's seven - binaries, shard, alone,
-# multiprocess, embedder, visual and merge - with a matrix leg in brackets after it.
+# This run's attempt's jobs, read once here and read again by reading three below
+# and, on the pull-request and full lanes, by reading five. The call writes
+# $RUNNER_TEMP/jobs.json: the array of {id, name, conclusion, started_at,
+# completed_at, leg} that those readings take - the two timestamps are what reading
+# five sums, and the jobs API answers them whether or not anything asks, so they
+# cost this read nothing. The jobs API lists the caller's jobs too, and the jobs of
+# ci.yaml's other callers of this workflow that share the run - dispatch-browser
+# beside dispatch-browser-pr on a pull request labelled full-ci, dispatch-references
+# beside dispatch-browser-pr on one that changes what the reference rows test - so
+# the script holds the name to this caller and the jobs of this workflow, and maps each
+# blob-producing job to its leg name (`real`, `stub`, `alone` or `shard-N`).
 #
-# The route is `.../runs/<id>/attempts/<n>/jobs?per_page=100` and not `filter=all`.
+# The route is `.../runs/<id>/attempts/<n>/jobs?per_page=30` and not `filter=all`.
 # `filter=all` lists every attempt's jobs, so each re-run made the read heavier:
 # measured 2026-11-08 on run 42468236584 it answers 276 jobs over three pages, with
-# GitHub answering HTTP 502 on pages 2 and 3, where the attempt endpoint answers 46
-# jobs on one page for each of attempts 1 to 6. Job 128737742196 of that run exited 1
-# on that 502 at 12:58:20Z, with 1291 browser rows and 0 failed.
+# GitHub answering HTTP 502 on pages 2 and 3, where the attempt endpoint answered 46
+# jobs on one page of 100 for each of attempts 1 to 6. Job 128737742196 of that run exited 1
+# on that 502 at 12:58:20Z, with 1291 browser rows and 0 failed. The page is 30 jobs and every
+# page is followed, and the head of dispatch-browser-run-reads.sh ("Why thirty jobs to a page")
+# says why.
 #
 # Nor the default filter, `latest`, which gives the same rows today and is what
 # .github/scripts/ci-ok-report.sh reads: a run re-run while this job is running moves
@@ -142,16 +147,14 @@ how_ended() {
 # script's head says the rest.
 .github/scripts/dispatch-browser-run-reads.sh jobs "$jobs" "$caller"
 # The legs this lane owed, read from those jobs rather than written out a second time
-# here. A leg the lane does not run is skipped by its job's own `if:` - the alone and
-# multiprocess jobs on the pull-request lane, and those two, the embedder job and the
-# visual job on the references lane - and owes nothing. A leg that failed before it
-# could upload is in the list and still owes its blob.
+# here. A job the lane skips by design owes nothing. A leg that failed before its blob
+# upload is in the list and still owes its blob.
 # A read that fails leaves the list empty, and the check below says so: `|| true` keeps
 # pipefail and `set -e` from ending the script on jq's status first.
 legs=$(jq -r '.[] | select(.leg != null and .conclusion != "skipped") | .leg' "$jobs" |
   sort) || true
 if [ -z "$legs" ]; then
-  echo "::error::this run's jobs hold no shard or alone leg, so there is nothing to" \
+  echo "::error::this run's jobs hold no browser leg that owes a blob, so there is nothing to" \
     "hold the merged report against"
   exit 1
 fi
@@ -314,9 +317,8 @@ fi
 # must have run on exactly one of them. The counts below cannot see a row no leg ran - it is
 # missing from the legs' count and from the merged report alike - nor a file two legs ran, which
 # both count twice. packages/dispatch/e2e/tools/leg-rows.ts says why and prints one line per
-# fault, naming the rows and legs; the alone legs are not sharded and write no list. It runs
-# before the counts so both readings print, and the step fails on either: each way out below
-# carries its status.
+# fault, naming the rows and legs. The unsharded `real`, `stub` and `alone` legs write no lists.
+# It runs before the counts so both readings print, and the step fails on either.
 mapfile -t shard_legs < <(grep -E '^shard-[0-9]+$' <<< "$legs" || true)
 lists=0
 if [ "${#shard_legs[@]}" -gt 0 ]; then

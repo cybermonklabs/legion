@@ -17,7 +17,7 @@ import { heldSends } from "../conversation/held-sends";
 import { SendMovedError } from "../conversation/send-request";
 import type { RetypeOutcome } from "../doc/editor";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { buildIssuePath, buildProjectPath } from "../refs/routes";
+import { buildIssuePath, buildProjectPath } from "../refs/page-routes";
 import { SendStoppedError } from "../writes/keyed-write";
 import { Margin } from "./Margin";
 import {
@@ -1889,7 +1889,7 @@ test("a stopped compose that gives way to a newer one is offered saying it may h
       heldSends(queryClient).send(marginComposeSendKey(specArtifact.id), {
         anchor: markComposerAnchor,
         ask: { multiple: false, options: [], urgency: "med" },
-        draft: { body: "Stopped words", replacement: "" },
+        draft: { body: "Stopped words", namesParty: false, replacement: "" },
         edit: undefined,
         kind: "comment",
         owner,

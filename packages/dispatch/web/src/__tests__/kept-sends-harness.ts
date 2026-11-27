@@ -1,5 +1,7 @@
+import type { WriteRequest } from "../api/client";
 import type { KeptFiles } from "../features/writes/kept-files";
-import { WriteStorage } from "../features/writes/write-storage";
+import { type KeptWrite, WriteStorage } from "../features/writes/write-storage";
+import { plainWrite } from "../features/writes/write-store";
 
 /** A browser's kept upload files, in memory: what IndexedDB holds for the page across a reload,
  *  with `rows` the files it holds now. */
@@ -108,6 +110,42 @@ export function keptTab(): KeptTab {
     },
     storage,
   };
+}
+
+/** A status pick of CORE-1, as the issue page sends one. */
+export const patch: WriteRequest = {
+  body: { status: "done" },
+  method: "PATCH",
+  path: "/api/v1/issues/CORE-1",
+};
+
+/** The fields of a kept write a row names (`keepWrite`), its request as the page made it. */
+type KeptFields = Omit<KeptWrite, "carried" | "key" | "keyed" | "request"> & {
+  readonly request: WriteRequest | null;
+};
+
+/** Keeps in `storage`, a tab's sessionStorage, under `key`, one write of alice's as a page that
+ *  went away left it: a status pick of CORE-1 out within its deadline, pressed now, as the
+ *  request it last went out as, unless `fields` names otherwise. */
+export function keepWrite(storage: Storage, key: string, fields: Partial<KeptFields> = {}): void {
+  storage.setItem(
+    `dispatch.write:${key}`,
+    JSON.stringify({
+      detail: null,
+      key,
+      kind: plainWrite.name,
+      label: "CORE-1 set to done",
+      login: "alice",
+      presentation: "indicator",
+      pressedAt: Date.now(),
+      request: patch,
+      sent: true,
+      state: { status: "sending" },
+      target: null,
+      version: 1,
+      ...fields,
+    })
+  );
 }
 
 /** The names of the writes the page's own tab keeps across a reload, in its `sessionStorage`. */

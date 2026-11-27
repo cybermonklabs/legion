@@ -2,7 +2,7 @@ import { type ReactNode, useMemo } from "react";
 import { Link } from "react-router-dom";
 
 import type { DisplayTree } from "../../api/types";
-import { pageQuietText } from "../../theme/classes";
+import { pageQuietText } from "../../theme/shell-classes";
 import { useAgentText } from "../refs/AgentName";
 import { DeletedBody, EditedMark } from "../refs/PostMarks";
 import { useLoadedEngine } from "../refs/parsed-references";

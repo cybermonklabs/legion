@@ -246,8 +246,12 @@ def live($job): [mine($job)[] | select(.status != "completed") | .status] | firs
 + ([$always[] | select(. != "changes") | {key: ., value: {result: (ended(.) // live(.))}}] | from_entries)
 + ([$map | keys_unsorted[] | {key: ., value: {result: (ended(.) // live(.))}}] | from_entries)
 JQ
+# Thirty jobs to a page: the route answers each job with its steps, and a page of 100 of them
+# grew past what GitHub answers in time (dispatch-browser-run-reads.sh's head has the
+# measurement). The route names the size, since gh adds per_page=100 to a paginated route that
+# names none.
 if jobs=$(gh_read gh api --paginate \
-  "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
+  "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=30" \
   --jq '.jobs[] | {name, status, conclusion}'); then
   needs=$(jq -n --argjson jobs "$(jq -s . <<<"$jobs")" --argjson changes "$CHANGES" \
     --argjson map "$selected_by" --argjson always "$always_run" "$program")

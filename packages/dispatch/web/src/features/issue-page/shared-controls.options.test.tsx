@@ -43,20 +43,22 @@ import { PinButton } from "../../components/PinButton";
 import { RefusableButton } from "../../components/RefusableButton";
 import { withoutEllipsis } from "../../components/tooltips";
 import {
-  borderDefault,
-  focusVisibleRing,
-  inputClasses,
   pageFailedText,
   pageHairBorder,
   pageHeaderControl,
+  pagePaperBg,
+  textPrimaryOnSurface,
+} from "../../theme/classes";
+import {
+  borderDefault,
+  focusVisibleRing,
+  inputClasses,
   pageInkText,
   pageLineBorder,
   pageMutedText,
-  pagePaperBg,
   pageQuietText,
   textMutedOnSurface,
-  textPrimaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
 import { AskCard } from "../inbox/AskCard";
@@ -5222,12 +5224,11 @@ function setClipboard(clipboard: Pick<Clipboard, "writeText"> | undefined): void
 }
 
 // Where the clipboard is missing (an origin that is not secure) or refuses, `copyText` copies
-// through a temporary text box that takes the focus and leaves the page, which drops the focus to
-// the body. Inside `NoTooltips` the focus returns to the copy button after each copy: at once
-// where the clipboard is missing, and once the copy settles where the clipboard refused, on a
-// second press made while the first copy's "Copied" still shows too. Outside `NoTooltips` the
-// focus stays where the copy left it, the body.
-test("inside NoTooltips a copy pressed by Enter keeps the focus on its button", async () => {
+// through a temporary text box that takes the focus and leaves the page, and gives the focus back
+// to the copy button as the copy ends, on both surfaces: at once where the clipboard is missing,
+// and once the copy settles where the clipboard refused, on a second press made while the first
+// copy's "Copied" still shows too.
+test("a copy pressed by Enter keeps the focus on its button", async () => {
   const user = userEvent.setup();
   await withCopyFallback(async (copied) => {
     for (const surface of ["inside", "outside"] as const) {
@@ -5258,7 +5259,7 @@ test("inside NoTooltips a copy pressed by Enter keeps the focus on its button", 
                   : document.activeElement?.outerHTML;
             expect({ clipboard, focus, press }).toEqual({
               clipboard,
-              focus: surface === "inside" ? "the copy button" : "the body",
+              focus: "the copy button",
               press,
             });
           }
@@ -5270,11 +5271,11 @@ test("inside NoTooltips a copy pressed by Enter keeps the focus on its button", 
   });
 });
 
-// A reader who moves the focus to another control while a copy is out keeps it there: the
-// clipboard refuses after the move, and the fallback's text box takes the focus and leaves it on
-// the body, so inside `NoTooltips` the focus goes back to where the reader put it, not to the
-// copy button. Outside `NoTooltips` the focus stays where the copy left it, the body.
-test("inside NoTooltips a copy leaves a focus the reader moved elsewhere where it is", async () => {
+// A reader who moves the focus to another control while a copy is out keeps it there, on both
+// surfaces: the clipboard refuses after the move, the fallback's text box takes the focus and
+// leaves the page, and `copyText` gives the focus back to where the reader put it, not to the
+// copy button.
+test("a copy leaves a focus the reader moved elsewhere where it is", async () => {
   const user = userEvent.setup();
   await withCopyFallback(async (copied) => {
     for (const surface of ["inside", "outside"] as const) {
@@ -5304,12 +5305,62 @@ test("inside NoTooltips a copy leaves a focus the reader moved elsewhere where i
         await scope.findByText("Copied");
         await settleReads();
         expect(copied).toEqual(["copy"]);
-        expect(document.activeElement).toBe(surface === "inside" ? elsewhere : document.body);
+        expect(document.activeElement).toBe(elsewhere);
       } finally {
         undraw(view);
       }
     }
   });
+});
+
+// A reader who moves the focus to another control while a copy is out, and whose control then
+// leaves the page, has the focus on the body when the clipboard refuses: the fallback's text box
+// takes the focus and leaves the page, and `copyText` gives the focus back to the body it found it
+// on, which takes no focus. Inside `NoTooltips` the copy then gives the focus back to its button,
+// the last element the focus held since the press that is still on the page; `returnFocus` is
+// what does it, once the copy settles. Outside `NoTooltips` the press records nothing and the
+// focus stays on the body, as on `main`.
+test("inside NoTooltips a copy whose reader's new focus left the page while the copy was out gives the focus back to its button", async () => {
+  const user = userEvent.setup();
+  // A browser's `focus()` on the body, which is no focusable area, does nothing; happy-dom's
+  // fires `focusin` on it, which the press would record as the focus landing there.
+  const bodyFocus = spyOn(document.body, "focus").mockImplementation(() => {});
+  try {
+    await withCopyFallback(async (copied) => {
+      for (const surface of ["inside", "outside"] as const) {
+        const refused = Promise.withResolvers<void>();
+        setClipboard({ writeText: () => refused.promise });
+        copied.length = 0;
+        const view = draw(<CopyButton value="CORE-1" what="issue key" />, surface);
+        const other = draw(<button type="button">Elsewhere</button>, surface);
+        try {
+          const scope = within(view.container);
+          const button = scope.getByRole("button", { name: "Copy issue key CORE-1" });
+          const elsewhere = within(other.container).getByRole("button", { name: "Elsewhere" });
+          button.focus();
+          await user.keyboard("{Enter}");
+          await settleReads();
+          // The copy is out: the clipboard has not answered, and the fallback has not run.
+          expect(copied).toEqual([]);
+          expect(document.activeElement).toBe(button);
+
+          elsewhere.focus();
+          undraw(other);
+          expect(document.activeElement).toBe(document.body);
+          refused.reject(new Error("denied"));
+          await scope.findByText("Copied");
+          await settleReads();
+          expect(copied).toEqual(["copy"]);
+          expect(document.activeElement).toBe(surface === "inside" ? button : document.body);
+        } finally {
+          if (other.container.isConnected) undraw(other);
+          undraw(view);
+        }
+      }
+    });
+  } finally {
+    bodyFocus.mockRestore();
+  }
 });
 
 // A copy's write to the clipboard is the button's write: inside `NoTooltips` a press while it is

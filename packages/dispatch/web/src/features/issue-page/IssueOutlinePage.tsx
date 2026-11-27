@@ -1,23 +1,27 @@
 import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useContext } from "react";
 import { Link, useLocation } from "react-router-dom";
 
 import { ApiError } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { DOCUMENT_SCROLL_ATTRIBUTE } from "../../hooks/useFootInset";
+import { textMutedOnCanvas } from "../../theme/classes";
 import {
   linkHoverText,
   linkText,
-  textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
-import { type IssueRoute, parseIssuePath } from "../refs/routes";
+} from "../../theme/shell-classes";
+import { type IssueRoute, parseIssuePath } from "../refs/page-routes";
+import { ReferenceNamesProvider } from "../refs/reference-names";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { IssueContentsPane, PAGE_INSET } from "./contents-frame";
 import { useDrawerPage } from "./drawer-page";
+import { ShellFrameContext } from "./frame-context";
+import { ShellNavigationContext } from "./shell-navigation";
+import { ShortcutHelpOpener } from "./shortcut-help-opener";
 import type { SlotProps } from "./slot-props";
 import { DetailsSlot } from "./slots/details";
 import { FootSlot } from "./slots/foot";
@@ -26,22 +30,40 @@ import { ProvidersSlot } from "./slots/providers";
 import { StageSlot } from "./slots/stage";
 import { ViewRowSlot } from "./slots/view-row";
 
-/** The new issue page's root, drawn at an issue's address for a reader who chose it. Everything
- *  it draws, a refused address included, is inside the element that carries `data-issue-page`,
- *  so a row can tell from the first frame which page drew a state. */
+/**
+ * The new issue page's root, drawn at an issue's address for a reader who chose it. Everything
+ * it draws, a refused address included, is inside the element that carries `data-issue-page`,
+ * so a row can tell from the first frame which page drew a state.
+ *
+ * The providers only this page reads are its own, mounted here around all it draws: the names
+ * its one batched read found for the references it draws (`ReferenceNamesProvider`, which every
+ * reader of those names on this page sits under, Details' panel among them; the margin's own
+ * cards draw beside the router, outside it, and read their own targets), the navigation its
+ * header draws its `☰` from, and what its Keys control opens. The last two are the shell's,
+ * which hands them over in its frame context (`frame-context.ts`): the shell draws that context
+ * for every reader, so a change of the issue-page choice mounts nothing above this page, and a
+ * provider only this page reads costs nothing in the entry chunk.
+ */
 export function IssueOutlinePage(): ReactNode {
   const { pathname, search } = useLocation();
   const route = parseIssuePath(pathname, search);
+  const shell = useContext(ShellFrameContext);
   return (
-    <div data-issue-page="">
-      {route === undefined ? (
-        <NotFoundPage />
-      ) : (
-        // key={route.key}: a move to another issue starts every slot fresh, as today's page
-        // keys `IssueDetail`.
-        <IssueOutline key={route.key} route={route} />
-      )}
-    </div>
+    <ReferenceNamesProvider>
+      <ShellNavigationContext.Provider value={shell?.navigation}>
+        <ShortcutHelpOpener.Provider value={shell?.openHelp}>
+          <div data-issue-page="">
+            {route === undefined ? (
+              <NotFoundPage />
+            ) : (
+              // key={route.key}: a move to another issue starts every slot fresh, as today's page
+              // keys `IssueDetail`.
+              <IssueOutline key={route.key} route={route} />
+            )}
+          </div>
+        </ShortcutHelpOpener.Provider>
+      </ShellNavigationContext.Provider>
+    </ReferenceNamesProvider>
   );
 }
 

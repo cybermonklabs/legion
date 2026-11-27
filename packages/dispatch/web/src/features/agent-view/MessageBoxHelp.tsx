@@ -1,15 +1,15 @@
 import { type ReactNode, useRef } from "react";
 
 import { usePanelDismiss } from "../../components/usePanelDismiss";
+import { textPrimaryOnSurface } from "../../theme/classes";
 import {
   card,
   linkText,
   secondaryButtonBorder,
   secondaryButtonHoverBorder,
   secondaryButtonText,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 
 /** A prefix a person types at the start of a message, as the panel shows it. */
 function Prefix({ children }: { children: string }): ReactNode {

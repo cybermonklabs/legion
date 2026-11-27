@@ -227,6 +227,115 @@ export async function pollAgentListEvery(context: BrowserContext, pollMs: number
   }, pollMs);
 }
 
+/** How far `spendPageTimeUntil` moves the page's clock at each jump: the longest wait the shared
+ *  retry policy takes before it asks again for a read Dispatch refused as refilling - the
+ *  listener's `Retry-After: 5`, which Dispatch passes on, and up to as much again
+ *  (`queryRetryDelay`, `web/src/api/query-client.ts`) - so one jump fires whichever retry waits. */
+const PAGE_TIME_STEP_MS = 10_000;
+
+/** How long `spendPageTimeUntil` and `holdPageClockWhen` wait between two readings of the page,
+ *  so a reading after the clock moved is taken once what that move started has drawn. */
+const PAGE_READ_INTERVALS = [50, 50, 100, 200, 500];
+
+/** How far ahead of the page's own reading of its clock `holdPageClockWhen` pauses it. `pauseAt`
+ *  takes a time on the page's clock and refuses one the clock has already passed ("Cannot
+ *  fast-forward to the past"), and the clock runs on between that reading and the call, so the
+ *  pause is set a second ahead. */
+const PAGE_HOLD_LEAD_MS = 1_000;
+
+/**
+ * Spends `ms` of the page's own time in one jump, then sets the page's date back to the wall
+ * clock's: the timers the jump fired keep the time they were moved, and only `Date.now()` goes
+ * back. The clock is the page's context's (`page.clock` is its `BrowserContext`'s), so every page
+ * of that context moves with it; a row installs it before the context's first page loads.
+ *
+ * The date goes back because nothing but the page's timers moves with this clock. The server
+ * sends each live socket a heartbeat every 15 s of real time, and the page replaces a socket that
+ * has carried no frame for 45 s by its own date (`LIVE_SOCKET_SILENT_MS`, read by
+ * `replaceIfSilent` in `web/src/api/live-socket.ts`): a date left ahead by a few jumps passes that
+ * between two heartbeats, and the new socket sends every subscription again. And the fake
+ * listener and a row's seeds date what they write by the wall clock, so the page reads a
+ * `last_seen` against the time it was written in.
+ */
+export async function spendPageTime(page: Page, ms: number): Promise<void> {
+  await page.clock.fastForward(ms);
+  await page.clock.setSystemTime(Date.now());
+}
+
+/**
+ * Spends the page's own time, one `PAGE_TIME_STEP_MS` jump at a time (`spendPageTime`), until
+ * `ready` answers true: how a row waits for a view to say the agent list is refilling, or to stop
+ * saying so, without waiting out the page's timers on the wall clock. A view says so only once
+ * the retry policy's two retries of the refused read are out, and each retry waits on a page
+ * timer armed when the refusal before it comes back over the real network, so no single jump
+ * fires both: a jump fires the retry whose refusal is in, and the pause between two jumps lets
+ * the next refusal come back. A page that polls the agent list every 15 s
+ * (`AGENT_REGISTRY_POLL_MS`) polls as the jumps pass its interval. `message` names what is waited
+ * for, for a failure to say.
+ */
+export async function spendPageTimeUntil(
+  page: Page,
+  ready: () => Promise<boolean>,
+  message: string
+): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        // The page is read before the clock moves, a poll interval after the last jump, so what
+        // that jump started has drawn: a poll it fired sends a read that has not answered yet
+        // back to loading, and a reading taken straight after the jump could still show the
+        // refusal the page has just let go of.
+        if (await ready()) return true;
+        await spendPageTime(page, PAGE_TIME_STEP_MS);
+        return false;
+      },
+      { intervals: PAGE_READ_INTERVALS, message }
+    )
+    .toBe(true);
+}
+
+/**
+ * Spends the page's own time as `spendPageTimeUntil` does until `ready` answers true, then holds
+ * the page's clock still there: no page timer fires until the row calls `page.clock.resume()`, so
+ * what the view says stays on the page while the row asserts it. A row asserts here what a view
+ * says, and what it does not say, while a read stands refused. A read that holds no data goes
+ * back to loading each time a poll sends it again, until its retries are refused again, and the
+ * view says nothing of the refusal in that time. An assertion that something is absent retries
+ * for the whole expect timeout, so on a running clock it can pass in such a window, whatever the
+ * view says while the refusal stands.
+ *
+ * The pause moves the clock `PAGE_HOLD_LEAD_MS` ahead and fires every page timer that falls due
+ * in that time, and a poll among them sends the read back to loading. So the page is read again a
+ * poll interval after the pause, once what the pause fired has drawn, and if `ready` no longer
+ * answers true the clock runs again and the time is spent until it does.
+ */
+export async function holdPageClockWhen(
+  page: Page,
+  ready: () => Promise<boolean>,
+  message: string
+): Promise<void> {
+  let held = false;
+  await expect
+    .poll(
+      async () => {
+        const shown = await ready();
+        if (held && shown) return true;
+        if (held) {
+          await page.clock.resume();
+          held = false;
+        } else if (shown) {
+          await page.clock.pauseAt((await page.evaluate(() => Date.now())) + PAGE_HOLD_LEAD_MS);
+          held = true;
+        } else {
+          await spendPageTime(page, PAGE_TIME_STEP_MS);
+        }
+        return false;
+      },
+      { intervals: PAGE_READ_INTERVALS, message }
+    )
+    .toBe(true);
+}
+
 /** One Legion agent registry entry as the daemon writes it to the listener
  *  (`packages/envoy/internal/legionagents` `Entry`); `role_token` is
  *  `roleToken(legion_project, issue, role)` from `@legion/contracts`. */
@@ -453,8 +562,9 @@ export async function seedAgents(): Promise<string> {
   return issue.key;
 }
 
-/** The keymap binds only once sign-in resolves (`AuthGate` renders a skeleton until
- *  `/auth/whoami` answers), so a key pressed before the page renders reaches no handler. */
+/** The keymap binds only once sign-in resolves (`AuthGate` renders a skeleton until the
+ *  `["whoami"]` query answers, whose cold read is `GET /api/v1/landing`), so a key pressed before
+ *  the page renders reaches no handler. */
 export async function openAgents(page: Page): Promise<void> {
   await page.goto("/agents");
   await expect(page.getByRole("heading", { name: "Agents", level: 1 })).toBeVisible();

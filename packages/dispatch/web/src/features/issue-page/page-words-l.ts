@@ -10,21 +10,16 @@
  * - Import nothing from `page-words.ts`, not even a type. Import only the type `PartWords` from
  *   `./page-words-parts`, values from `./page-structure`, and the shared words the box at the
  *   foot of the outline draws, from the modules of words that write them for every composer
- *   (`conversation/composer-words.ts`, `conversation/delivery.ts`, `writes/write-words.ts`,
- *   `artifacts/upload-words.ts`). Each of those imports only other modules of words, types and
- *   constants of `@legion/contracts`, so this file still loads where no component can: a browser
- *   spec's Node loader reads `page-words.ts`, and cannot read a module that imports a JSON file
- *   as the components do. A value import from `page-words.ts` or `./page-words-parts` makes an
- *   import cycle.
+ *   (`conversation/composer-words.ts`, `conversation/send-words.ts`, `conversation/delivery.ts`,
+ *   `writes/write-words.ts`, `artifacts/upload-words.ts`). Each of those imports only other
+ *   modules of words, types and constants of `@legion/contracts`, so this file still loads where
+ *   no component can: a browser spec's Node loader reads `page-words.ts`, and cannot read a module
+ *   that imports a JSON file as the components do. A value import from `page-words.ts` or
+ *   `./page-words-parts` makes an import cycle.
  */
-import {
-  ADDRESS_WORDS,
-  COMPOSER_WORDS,
-  DELIVERY_COMMANDS,
-  DISCARD_DRAFT_LABEL,
-  OFFER_LABELS,
-} from "../conversation/composer-words";
+import { COMPOSER_WORDS, DISCARD_DRAFT_LABEL, OFFER_LABELS } from "../conversation/composer-words";
 import { MODE_LABELS, TITLES_JOINER } from "../conversation/delivery";
+import { ADDRESS_WORDS, DELIVERY_COMMANDS } from "../conversation/send-words";
 import { STOP_TRYING_LABEL, STOPPING_LABEL, STOPPING_REASON } from "../writes/write-words";
 import { freeze } from "./page-structure";
 import type { PartWords } from "./page-words-parts";

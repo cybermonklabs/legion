@@ -9,14 +9,13 @@ import { issueQuery } from "../../api/queries";
 import type { DisplayTree } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { LabelPill, StatusPill } from "../../components/Pill";
+import { priorityBadge, textPrimaryOnSurface } from "../../theme/classes";
 import {
   card,
   linkText,
-  priorityBadge,
   textMutedOnSurface,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { type IssueStatus, statusLabel } from "../project/board-model";
 import { AgentName } from "./AgentName";
 import { type BlockItemKind, itemOfBlock } from "./block-reference";
@@ -24,8 +23,15 @@ import { MarkdownPreview } from "./MarkdownPreview";
 import { PostPreview } from "./PostBody";
 import { EditedMark } from "./PostMarks";
 import { type PostDeletion, postDeletion } from "./post-marks";
-import * as previewCard from "./ref-preview-card";
-import { REF_PREVIEW_CARD_ID, refPreviewCardContains } from "./ref-preview-card";
+import {
+  caretRefPreviewTrigger,
+  focusAsksForCard,
+  hoverPreviewsOff,
+  pointerAsksForCard,
+  REF_PREVIEW_CARD_ID,
+  refPreviewCardContains,
+  refPreviewTriggerOf,
+} from "./ref-preview-card";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
 import { ReferenceHostIs } from "./reference-host";
 import {
@@ -40,7 +46,6 @@ import {
   useReferenceQuery,
 } from "./reference-target";
 import {
-  buildDispatchReference,
   type DispatchReferenceRoute,
   isProjectRoute,
   parseNodeReference,
@@ -48,11 +53,6 @@ import {
 } from "./routes";
 import { referenceTargetKind } from "./target-id";
 import { type TextSource, textSourceOf } from "./text-references";
-
-/** Every hover-card trigger: a Markdown anchor `collectReferenceAnchors` tagged, a Proof link
- * mark (`data-dispatch-href`, the sanitized mark's real target), or a React link that set
- * `data-dispatch-ref` — see `referenceTriggerProps`. */
-const TRIGGER_SELECTOR = "[data-dispatch-ref],[data-dispatch-href]";
 
 interface PreviewTarget {
   readonly anchor: HTMLElement;
@@ -154,25 +154,14 @@ function subscribe(notify: () => void): () => void {
   };
 }
 
-/** The attribute a React-rendered link spreads to become a hover-card trigger; the Markdown and
- * Proof surfaces carry the same attributes on the anchors they render themselves. */
-export function referenceTriggerProps(route: DispatchReferenceRoute): {
-  "data-dispatch-ref": string;
-} {
-  return { "data-dispatch-ref": buildDispatchReference(route) };
-}
-
-function triggerOf(node: EventTarget | null): HTMLElement | null {
-  return node instanceof Element ? node.closest<HTMLElement>(TRIGGER_SELECTOR) : null;
-}
-
 /** The one region the pointer may roam without closing the card: the current target's anchor -
  * the open card's, or the one a pending hover is waiting on - and the card itself. Every pointer
  * transition is judged against this predicate, in the document listeners alone, so no close
  * depends on the order in which two event systems see one `pointerout`. */
 function inHoverZone(node: EventTarget | null): boolean {
   return (
-    state !== undefined && (triggerOf(node) === state.target.anchor || refPreviewCardContains(node))
+    state !== undefined &&
+    (refPreviewTriggerOf(node) === state.target.anchor || refPreviewCardContains(node))
   );
 }
 
@@ -245,6 +234,19 @@ function attachTriggers(): () => void {
       refPreview.leave();
     }
   };
+  /** Starts the hover on `trigger`: its card opens after the usual delay. Each caller first finds
+   *  that a hover there asks for a card: a pointer that arrives (`pointerAsksForCard`), or the
+   *  layer that arrives under a resting pointer, below. A surface its reader works from the
+   *  keyboard opens no card for either (the new issue page, R6, `hoverPreviewsOff`); its
+   *  references still open theirs on keyboard focus. */
+  const startHover = (trigger: HTMLElement) => {
+    const route = routeOf(trigger);
+    if (route !== undefined) {
+      keptUnderAStillPointer = false;
+      anchorWas = { anchor: trigger, ...placeOf(trigger) };
+      refPreview.hoverStart(trigger, route);
+    }
+  };
   const onPointerOver = (event: PointerEvent) => {
     // Inside the zone there is nothing to open: a pointer arriving from outside it only cancels
     // the close its leaving armed, whatever kind of pointer it is.
@@ -255,26 +257,10 @@ function attachTriggers(): () => void {
       }
       return;
     }
-    // No card on touch (a tap follows the link), and none while a button is held (a
-    // drag-selection passing over a link is not a hover).
-    if (event.pointerType === "touch" || event.buttons !== 0) {
-      return;
-    }
-    const trigger = triggerOf(event.target);
-    if (trigger === null || trigger === triggerOf(event.relatedTarget)) {
-      return;
-    }
-    // A surface its reader works from the keyboard opens no card for a resting pointer (the new
-    // issue page, R6); its references still open theirs on keyboard focus, below.
-    if (previewCard.hoverPreviewsOff(trigger)) {
-      return;
-    }
-    const route = routeOf(trigger);
-    if (route !== undefined) {
-      keptUnderAStillPointer = false;
-      anchorWas = { anchor: trigger, ...placeOf(trigger) };
-      refPreview.hoverStart(trigger, route);
-    }
+    // The rule of a pointer that asks for a card is the failed layer's rule too
+    // (`pointerAsksForCard` in `ref-preview-card.ts`, which `CardAsked` reads).
+    const trigger = pointerAsksForCard(event);
+    if (trigger !== null) startHover(trigger);
   };
   const onPointerOut = (event: PointerEvent) => {
     if (!inHoverZone(event.target) || inHoverZone(event.relatedTarget)) {
@@ -302,11 +288,11 @@ function attachTriggers(): () => void {
     }
     refPreview.leave();
   };
-  const onFocusIn = (event: FocusEvent) => {
-    const trigger = triggerOf(event.target);
-    // `:focus-visible` is the browser's own keyboard-versus-pointer verdict: a mouse click or a
-    // tap focuses a link without matching it, so only keyboard navigation opens the card.
-    if (trigger === null || !trigger.matches(":focus-visible")) {
+  const onFocusIn = ({ target }: { target: EventTarget | null }) => {
+    // Only keyboard navigation opens the card, by the rule the failed layer reads too
+    // (`focusAsksForCard` in `ref-preview-card.ts`).
+    const trigger = focusAsksForCard(target);
+    if (trigger === null) {
       return;
     }
     const route = routeOf(trigger);
@@ -315,7 +301,7 @@ function attachTriggers(): () => void {
     }
   };
   const onFocusOut = (event: FocusEvent) => {
-    const trigger = triggerOf(event.target);
+    const trigger = refPreviewTriggerOf(event.target);
     // Focus moving from the anchor into its own card is not leaving: a press on the card's link
     // while the anchor holds focus (dnd-kit hands focus back to a board card's link after a
     // drop) must reach the link as a click, not unmount it under the pointer.
@@ -329,10 +315,8 @@ function attachTriggers(): () => void {
    *  card closed by Escape stays closed - and the caret leaving it closes the card it opened. */
   let caretIn: HTMLElement | undefined;
   const onSelectionChange = () => {
-    const at = document.getSelection()?.anchorNode ?? null;
-    const element = at instanceof Element ? at : (at?.parentElement ?? null);
-    const trigger = triggerOf(element);
-    if (trigger?.isContentEditable && previewCard.hoverPreviewsOff(trigger)) {
+    const trigger = caretRefPreviewTrigger();
+    if (trigger !== null) {
       const route = routeOf(trigger);
       if (route !== undefined && caretIn !== trigger) {
         caretIn = trigger;
@@ -354,6 +338,33 @@ function attachTriggers(): () => void {
   document.addEventListener("wheel", onReaderInput, { capture: true, passive: true });
   document.addEventListener("keydown", onReaderInput, { capture: true, passive: true });
   document.addEventListener("pointerdown", onReaderInput, { capture: true, passive: true });
+  // The layer can arrive after the reader has asked for a card. On a landing that draws a live
+  // document, the shell loads it only once the document's first block is in the page
+  // (`features/shell/content-drawn.ts`). After a download that failed, the layer asks for it again
+  // only when the reader asks for a card (`CardAsked` in `RefPreviewLayer.tsx`), so that ask came
+  // before these listeners. No event asks a second time, so what asked is read once, here. A
+  // reference that holds keyboard focus opens its card at once, and so does the link the caret is
+  // in on a surface that opens no card on hover. Else the trigger under a resting pointer: a
+  // pointer at rest sends no `pointerover` until it moves, so the trigger is read from `:hover`,
+  // and its card opens after the usual delay. Only where the primary pointer can hover at all: a
+  // phone keeps `:hover` on the last element tapped, and a tap never opens a card. And not while
+  // the reader holds the primary button down, which the browser marks with `:active` on what it
+  // went down on: the reader's first press is one of the things that end the shell's hold, so the
+  // layer can arrive in the middle of a drag that began on a link, and `onPointerOver` opens no
+  // card while a button is held. And not on a surface that opens no card on hover
+  // (`hoverPreviewsOff`), which `pointerAsksForCard` refuses for a pointer that arrives too.
+  onFocusIn({ target: document.activeElement });
+  if (state === undefined) onSelectionChange();
+  if (
+    state === undefined &&
+    window.matchMedia?.("(hover: hover)").matches &&
+    document.querySelector(":active") === null
+  ) {
+    const trigger = refPreviewTriggerOf(
+      [...document.querySelectorAll<HTMLElement>(":hover")].at(-1) ?? null
+    );
+    if (trigger !== null && !hoverPreviewsOff(trigger)) startHover(trigger);
+  }
   return () => {
     document.removeEventListener("pointermove", onPointerMove);
     document.removeEventListener("pointerover", onPointerOver);

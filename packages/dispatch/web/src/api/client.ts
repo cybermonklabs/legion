@@ -1,9 +1,14 @@
+import type {
+  AskThreadPage,
+  AskThreadRow,
+  CommentThreadPage,
+  IdempotencyLandedCode,
+  InboxThreadKind,
+  MessageThreadPage,
+} from "@legion/contracts";
 import {
-  type AskThreadPage,
-  type AskThreadRow,
   AUTH_NO_IDENTITY,
   answerNotKept,
-  type CommentThreadPage,
   DISPATCH_LOGIN_HEADER,
   everyBuildReadsSearch,
   ID_AMBIGUOUS,
@@ -12,16 +17,13 @@ import {
   IDEMPOTENCY_KEY_HEADER,
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_REPLAYED_HEADER,
-  type IdempotencyLandedCode,
-  type InboxThreadKind,
-  type MessageThreadPage,
   NO_ROUTE_MESSAGE_PREFIX,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
   REFERENCE_TARGETS_MAX,
   retryNoRoute,
   type Sleep,
   sleep,
-} from "@legion/contracts";
+} from "@legion/contracts/dispatch-api-constants";
 
 import {
   type Answer,
@@ -93,10 +95,12 @@ const utf8 = new TextEncoder();
  *  a page it kept and brings back). A small write that starts then, its body under
  *  `maxKeepaliveBodyBytes`, is let finish as the page goes (`keepalive`), under its key or not:
  *  the write a field makes as the tab closes (`InPlaceField`, `PriorityDescription`) has no
- *  reload after it to make it again. A larger one is not, and one that waits then behind a write
- *  of the same target still out (`write-store.ts`'s `#advance`) does not start before the page is
- *  gone. This module listens as it loads, before any field adds its own `pagehide` listener, so
- *  a field's write finds the page going. */
+ *  reload after it to make it again. A larger one is not, and two kinds do not start before the
+ *  page is gone: one that waits behind a write of the same target still out (`write-store.ts`'s
+ *  `#advance`), and one pressed while the take-up of what a reload kept waits whose line holds a
+ *  kept write that take-up will send (`write-store.ts`'s `Writes.run`), which the tab keeps
+ *  behind that write for the next load. This module listens as it loads, before the write store
+ *  or any field adds its own `pagehide` listener, so both find the page going. */
 let pageGoing = false;
 if (typeof window !== "undefined") {
   window.addEventListener("pagehide", () => {
@@ -105,6 +109,13 @@ if (typeof window !== "undefined") {
   window.addEventListener("pageshow", () => {
     pageGoing = false;
   });
+}
+
+/** Whether the page is going (`pageGoing`): read by `write-store.ts` so a write pressed during
+ *  `pagehide` on a line with no kept write ahead of it joins its line at once rather than waiting
+ *  on the take-up of what a reload kept (`Writes.run`). */
+export function isPageGoing(): boolean {
+  return pageGoing;
 }
 
 /** Forgets that the page went: the unit-test preload, between tests, whose `pagehide` ends no
@@ -354,6 +365,19 @@ export function isUnauthorized(error: unknown): boolean {
 export function isEventHeadUnavailable(error: unknown): boolean {
   return (
     error instanceof ApiError && error.status === 503 && error.code === "EVENT_HEAD_UNAVAILABLE"
+  );
+}
+
+/** Whether `error` is the sign-in check's other 503, `EVENT_HEAD_READ_FAILED`: Dispatch could
+ *  not read the event log's head at all, where `EVENT_HEAD_UNAVAILABLE` above says only that no
+ *  id is proven final yet. The page asks again a few times by this code and then shows its error
+ *  with a Retry (`api/query-client.ts`), because unlike the other one this does not end on its
+ *  own. It is a predicate of its own, beside the one per coded error this file already keeps, so
+ *  a caller reads the code in one place rather than spelling the status and the code out again
+ *  (`api/queries.ts`, `refusalIsTheAnswer`). */
+export function isEventHeadReadFailed(error: unknown): boolean {
+  return (
+    error instanceof ApiError && error.status === 503 && error.code === "EVENT_HEAD_READ_FAILED"
   );
 }
 
@@ -898,13 +922,14 @@ export class DispatchApiClient {
    *  goes up (an upload's), as the response's headers arrive and as each piece of its body does,
    *  `read` included: a transfer that keeps moving goes on however slowly, either way, and one
    *  that stops fails as headers that never come do. A caller's `init.signal` still aborts the
-   *  request, as itself. */
+   *  request, as itself. `noRouteRetry` is `answered`'s. */
   private async exchange<T>(
     path: string,
     init: RequestInit,
     deadlineMs: number | null | undefined,
     read: (response: Response) => Promise<T>,
-    uploaded?: (loaded: number, total: number) => void
+    uploaded?: (loaded: number, total: number) => void,
+    noRouteRetry = true
   ): Promise<T> {
     const limit =
       deadlineMs !== undefined
@@ -912,7 +937,9 @@ export class DispatchApiClient {
         : (init.method ?? "GET").toUpperCase() === "GET"
           ? REQUEST_DEADLINE_MS
           : null;
-    if (limit === null) return read(await this.answered(path, init, undefined, uploaded));
+    if (limit === null) {
+      return read(await this.answered(path, init, undefined, uploaded, noRouteRetry));
+    }
     const deadline = new AbortController();
     let timer = setTimeout(() => deadline.abort(), limit);
     const caller = init.signal ?? undefined;
@@ -923,7 +950,9 @@ export class DispatchApiClient {
     try {
       const signal =
         caller === undefined ? deadline.signal : AbortSignal.any([caller, deadline.signal]);
-      return await read(await this.answered(path, { ...init, signal }, arrived, uploaded));
+      return await read(
+        await this.answered(path, { ...init, signal }, arrived, uploaded, noRouteRetry)
+      );
     } catch (error) {
       // An answer Dispatch gave stays its answer and the caller's abort stays the caller's: only
       // what the deadline cut short is a timeout.
@@ -951,12 +980,17 @@ export class DispatchApiClient {
    *  `init`, so the same body: while a release rolls out, the next attempt may reach the build
    *  that serves the route. After the last attempt it throws
    *  `NO_ROUTE_ROLLING_RELEASE_MESSAGE`. An abort of `init.signal` during a wait - the caller's,
-   *  or the deadline's - rejects at once with the abort's reason and sends nothing more. */
+   *  or the deadline's - rejects at once with the abort's reason and sends nothing more.
+   *
+   *  `noRouteRetry` false sends the request once and throws a no-route answer as it came, for a
+   *  read whose caller has a fallback of its own for a Dispatch without the route (`getLanding`):
+   *  there the waits only hold back that fallback. */
   private answered(
     path: string,
     init: RequestInit,
     arrived?: () => void,
-    uploaded?: (loaded: number, total: number) => void
+    uploaded?: (loaded: number, total: number) => void,
+    noRouteRetry = true
   ): Promise<Response> {
     // Every read and write of the page funnels through here, so this one line asks Dispatch for
     // the display tree of every stored text it answers with (`Dispatch-Trees`); no other client
@@ -989,6 +1023,7 @@ export class DispatchApiClient {
       if (!response.ok) throw await errorFrom(response);
       return response;
     };
+    if (!noRouteRetry) return attempt();
     return retryNoRoute(attempt, isNoRoute, {
       exhausted: () =>
         new ApiError(404, { code: "NOT_FOUND", error: NO_ROUTE_ROLLING_RELEASE_MESSAGE }),
@@ -1007,8 +1042,20 @@ export class DispatchApiClient {
     return this.exchange(path, init, deadlineMs, async (response) => response);
   }
 
-  private json<T>(path: string, init: RequestInit = {}, deadlineMs?: number | null): Promise<T> {
-    return this.exchange(path, init, deadlineMs, (response) => response.json() as Promise<T>);
+  private json<T>(
+    path: string,
+    init: RequestInit = {},
+    deadlineMs?: number | null,
+    noRouteRetry = true
+  ): Promise<T> {
+    return this.exchange(
+      path,
+      init,
+      deadlineMs,
+      (response) => response.json() as Promise<T>,
+      undefined,
+      noRouteRetry
+    );
   }
 
   /**
@@ -1018,16 +1065,16 @@ export class DispatchApiClient {
    * `PUT` or a `DELETE` is the same however often it is made, so it carries none. A write that
    * carries no body, or a JSON body under `maxKeepaliveBodyBytes`, is let finish as the page goes
    * (`keepalive`): a `PUT` or a `DELETE` whenever it is sent, and a `POST` or a `PATCH`, key and
-   * all, only when it starts as the page goes (`pageGoing`). A larger one is not, and one that
-   * waits behind a write of the same target still out (`write-store.ts`'s `#advance`) does not
-   * start before the page is gone. A keyed write the page did not let finish is made again under
-   * its key by a reload. The key is the caller's, minted when the person acts (`Writes.run`),
-   * never here; so is `bounds.login` (`Dispatch-Login`), the person who pressed it. A JSON body
-   * goes as JSON and a multipart form as itself, through the upload transport; `bounds.sent` is
-   * told the request as it goes out. Answers what Dispatch answered (nothing for an empty body),
-   * as the request's builder names it (`WriteRequest`), or rejects with its refusal; a 2xx whose
-   * body is not JSON rejects with `UnreadableAnswerError`, a 2xx whose body stops part way with
-   * `NetworkError`, and a replay of an answer Dispatch did not keep with `AnswerNotKeptError`.
+   * all, only when it starts as the page goes (`pageGoing`). A larger one is not; `pageGoing` says
+   * which writes do not start before the page is gone. A keyed write the page did not let finish is
+   * made again under its key by a reload. The key is the caller's, minted when the person acts
+   * (`Writes.run`), never here; so is `bounds.login` (`Dispatch-Login`), the person who pressed it.
+   * A JSON body goes as JSON and a multipart form as itself, through the upload transport;
+   * `bounds.sent` is told the request as it goes out. Answers what Dispatch answered (nothing for
+   * an empty body), as the request's builder names it (`WriteRequest`), or rejects with its
+   * refusal; a 2xx whose body is not JSON rejects with `UnreadableAnswerError`, a 2xx whose body
+   * stops part way with `NetworkError`, and a replay of an answer Dispatch did not keep with
+   * `AnswerNotKeptError`.
    */
   send<T>(
     request: WriteRequest<T>,
@@ -1088,15 +1135,22 @@ export class DispatchApiClient {
    *  shaped read, so the trees are part of the body the document holds. A read states a response
    *  shape of its own only where the document cannot hold it, each saying beside it what that
    *  is: `getIssueEvents` and `listIssueAskThreads`, which go through `json` with `routeUrl`, and
-   *  `getIssueReferences`, which a build older than the document answers with less. */
+   *  `getIssueReferences`, which a build older than the document answers with less.
+   *  `noRouteRetry` is `answered`'s. */
   private async read<P extends PathsOf<"get">>(
     pattern: P,
     params: PathParams<Op<P, "get">>,
     query?: QueryParams<Op<P, "get">>,
     init: RequestInit = {},
-    deadlineMs?: number | null
+    deadlineMs?: number | null,
+    noRouteRetry = true
   ): Promise<Json200<Op<P, "get">>> {
-    return this.json<Json200<Op<P, "get">>>(routeUrl(pattern, params, query), init, deadlineMs);
+    return this.json<Json200<Op<P, "get">>>(
+      routeUrl(pattern, params, query),
+      init,
+      deadlineMs,
+      noRouteRetry
+    );
   }
 
   private async post<P extends PathsOf<"post">>(
@@ -2070,6 +2124,21 @@ export class DispatchApiClient {
   async whoAmIScopes(): Promise<string[]> {
     const whoami = await this.read("/api/v1/whoami", {});
     return whoami.scopes ?? [];
+  }
+
+  /** `GET /api/v1/landing`: one page's whole cold read - the viewer, the shell every page draws,
+   *  and the part of the answer this page needs - in place of the wave of reads each of those
+   *  parts costs on its own. `page` names which part the answer carries, and `key`, `project`
+   *  and `slug` name what that page is about; the route refuses a page it does not know and a
+   *  page whose names are absent with `400 LANDING_INPUT`. A Dispatch older than the route
+   *  answers 404, which is what the caller falls back on (`api/queries.ts`, `readLanding`).
+   *
+   *  Sent once, without the no-route retry every other request has (`answered`): that 404 is
+   *  answered by the caller's fallback, the reads the page made before this route, so sending it
+   *  again through the retry's waits only kept a cold page on its skeleton for them, during the
+   *  very rolling deploy that puts such a Dispatch in front of the browser. */
+  getLanding(read: Query<"/api/v1/landing", "get">) {
+    return this.read("/api/v1/landing", {}, read, {}, undefined, false);
   }
 
   /** Ends this browser's session. `/auth/logout` sits outside Dispatch's keyed layer and is the

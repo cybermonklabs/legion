@@ -7,6 +7,7 @@ import type { Artifact } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { TruncatedText } from "../../components/TruncatedText";
+import { textMutedOnCanvas } from "../../theme/classes";
 import {
   borderDefault,
   borderStrong,
@@ -16,10 +17,9 @@ import {
   linkText,
   surfaceBg,
   surfaceMutedBg,
-  textMutedOnCanvas,
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { formatArtifactBytes, versionsNewestFirst } from "../artifacts/ArtifactHeader";
 import {
   ArtifactDropZone,
@@ -29,7 +29,8 @@ import {
 import { CreateDocument } from "../artifacts/CreateDocument";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { buildIssuePath, buildProjectPath, documentRoute } from "../refs/routes";
+import { buildIssuePath, buildProjectPath } from "../refs/page-routes";
+import { documentRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 
 function documentUpdatedAt(document: Artifact): string {

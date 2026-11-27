@@ -4,6 +4,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
 import { useEventFeed } from "../api/event-feed";
+import { loadEventRefresh } from "../api/event-refresh-load";
 import { liveSocketFor } from "../api/live-socket";
 import { whoAmIQuery } from "../api/queries";
 import { MIN_REFETCH_INTERVAL_MS } from "../api/query-refresh";
@@ -104,6 +105,10 @@ export function correctionFeed(
       const before = failures(failing);
       expect(before.length, "the reads the delivery should fail are held").toBeGreaterThan(0);
       if (!fakeClock) setSystemTime(Date.now() + MIN_REFETCH_INTERVAL_MS);
+      // The feed reads an event only once the chunk of the event map is in, and holds it until
+      // then (`api/event-refresh-load.ts`). The row waits for that download first, so a wait
+      // below spends its budget on the refetch and not on a download a cold run holds back.
+      await loadEventRefresh();
       act(() => socket.receive({ type: "event", sub, id: String(event.id), event }));
       // Past the batch's window and the scheduler's interval behind it, which the fake clock
       // runs only as it is moved.

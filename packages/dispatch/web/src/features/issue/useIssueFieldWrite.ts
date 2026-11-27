@@ -9,7 +9,7 @@ import {
   stoppedWriteNote,
   WriteDiscardedError,
 } from "../writes/keyed-write";
-import { waitingToSend } from "../writes/PendingWritesIndicator";
+import { waitingToSend } from "../writes/shown-writes";
 import { ofKind, useWrites, type Write, type Writes } from "../writes/write-store";
 import {
   fieldWritesOf,

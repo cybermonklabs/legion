@@ -9,19 +9,21 @@ import { displayTree } from "../../__tests__/display-trees";
 import { ApiError, api } from "../../api/client";
 import type { Artifact, ArtifactText, Decision, IssueDecisions } from "../../api/types";
 import {
-  borderDefault,
-  dangerText,
-  inputClasses,
   pageFailedText,
   pageHairBorder,
-  pageInkText,
-  pageLineBorder,
-  pageMutedText,
   pagePaperBg,
   pageWordsText,
   textMutedOnCanvas,
-  textSecondaryOnCanvas,
 } from "../../theme/classes";
+import {
+  borderDefault,
+  dangerText,
+  inputClasses,
+  pageInkText,
+  pageLineBorder,
+  pageMutedText,
+  textSecondaryOnCanvas,
+} from "../../theme/shell-classes";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ReferenceNamesProvider } from "../refs/reference-names";
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";

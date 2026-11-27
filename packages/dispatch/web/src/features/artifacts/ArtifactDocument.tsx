@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 
 import { ambiguousItems, api } from "../../api/client";
-import { whoAmIQuery } from "../../api/queries";
+import { ownerCommentsQuery, whoAmIQuery } from "../../api/queries";
 import type { Artifact, IDCandidate } from "../../api/types";
 import type { Highlight } from "../doc/highlight";
 import { type DocumentToolbar, ProofDocument } from "../doc/ProofDocument";
@@ -106,18 +106,19 @@ export function ArtifactDocument({
       : { id: commentId, kind: "comment" };
   const landing = useSelectedItem(owner, selected);
   // The ask is read under its whole id alone: a prefix is no key anything is cached under. The
-  // comment list is the document's own, the same read whichever comment the address names.
+  // comment list is the document's own, the same read whichever comment the address names: an
+  // issue's document reads the comments anchored in it, a narrower list than the issue's whole
+  // one and a key of its own, and a project document reads the list its margin reads
+  // (`ownerCommentsQuery`).
   const askRead = selected?.kind === "ask" ? landing.id : undefined;
   const comments = useQuery({
+    ...(owner.kind === "issue"
+      ? {
+          queryKey: ["comments", owner.key, artifact.id],
+          queryFn: () => api.listComments(owner.key, artifact.id),
+        }
+      : ownerCommentsQuery({ artifact: owner.artifactId })),
     enabled: commentId !== undefined,
-    queryKey:
-      owner.kind === "issue"
-        ? ["comments", owner.key, artifact.id]
-        : ["artifact", owner.artifactId, "comments"],
-    queryFn: () =>
-      owner.kind === "issue"
-        ? api.listComments(owner.key, artifact.id)
-        : api.listArtifactComments(owner.artifactId),
   });
   const ask = useQuery({
     enabled: askRead !== undefined,

@@ -7,7 +7,8 @@ import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySettings, DeliverySettingsInput } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
-import { borderDefault, textMutedOnCanvas } from "../../theme/classes";
+import { textMutedOnCanvas } from "../../theme/classes";
+import { borderDefault } from "../../theme/shell-classes";
 import {
   ownerRepoPattern,
   settingsFieldLabel,

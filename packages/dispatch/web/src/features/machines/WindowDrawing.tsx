@@ -2,13 +2,15 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 
 import {
   inlineWarningText,
-  surfaceMutedBg,
   surfaceMutedStrongBg,
   surfaceRecessedBg,
-  textMutedOnSurface,
-  textMutedOnSurfaceMuted,
   textPrimaryOnSurfaceMuted,
 } from "../../theme/classes";
+import {
+  surfaceMutedBg,
+  textMutedOnSurface,
+  textMutedOnSurfaceMuted,
+} from "../../theme/shell-classes";
 import { type AgentGroup, agentGroup } from "../agents/agent-groups";
 import type { NeedsYouBySession } from "../agents/ask-tally";
 import { AgentName, useAgentText } from "../refs/AgentName";

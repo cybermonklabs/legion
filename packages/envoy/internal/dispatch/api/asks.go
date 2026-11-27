@@ -858,17 +858,25 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, result)
 		return
 	}
-	asks, lastReplies, err := s.queryOwnerAsks(r.Context(), s.deps.Store.Pool, who, issueOwner(r.PathValue("key")), state)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	rows, err := s.shapeIssueAskRows(r.Context(), who, asks, lastReplies, withThread, wantsDisplayTrees(r))
+	rows, err := s.loadIssueAskRows(r.Context(), who, issueOwner(r.PathValue("key")), state, withThread, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, rows)
+}
+
+// loadIssueAskRows is the read behind GET /api/v1/issues/{key}/asks without order: every ask of
+// one issue in the state ?state= names, each with its newest reply, and with the thread a card
+// draws when the caller asked for one, all of it read for who. listIssueAsks answers it, and GET
+// /api/v1/landing carries the same rows on its issue page, which draws those cards. trees is what
+// the request asked for (wantsDisplayTrees), so the landing's rows carry the trees the route's do.
+func (s *server) loadIssueAskRows(ctx context.Context, who model.Actor, owner owner, state string, withThread, trees bool) ([]issueAskRow, error) {
+	asks, lastReplies, err := s.queryOwnerAsks(ctx, s.deps.Store.Pool, who, owner, state)
+	if err != nil {
+		return nil, err
+	}
+	return s.shapeIssueAskRows(ctx, who, asks, lastReplies, withThread, trees)
 }
 
 // attachIssueAskThreads hangs each row's thread off it, read for who. loadAskThreads leaves

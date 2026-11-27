@@ -1,12 +1,8 @@
 import type { ReactNode } from "react";
 
 import type { RecordResponse } from "../../api/types";
-import {
-  quoteAccentBorder,
-  quoteBodyText,
-  textMutedOnCanvas,
-  textPrimaryOnCanvas,
-} from "../../theme/classes";
+import { quoteAccentBorder, quoteBodyText, textMutedOnCanvas } from "../../theme/classes";
+import { textPrimaryOnCanvas } from "../../theme/shell-classes";
 import { Timestamp } from "../refs/Timestamp";
 import { machineName } from "./logic/machineLogins";
 

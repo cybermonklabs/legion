@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DISPATCH_SCOPES, type DISPATCH_TOKEN_SCOPES } from "./dispatch-api-constants";
 import type { ASK_URGENCIES } from "./dispatch-tools";
 import { GATED_STEPS } from "./legion-roles";
 
@@ -38,31 +39,8 @@ export const ActorOriginSchema = z
 
 export type ActorOrigin = z.output<typeof ActorOriginSchema>;
 
-/** The OAuth scopes a Dispatch credential can hold, mirroring Go's `model.ScopePerson`,
- *  `model.ScopeApprove` and `model.ScopeP0` and the `agent_tokens.scopes` check that stores them.
- *  `person` acts as the credential's own person on every route a person reaches through the
- *  dashboard. `approve` settles what a person settles: a document review, a decision's Keep, the
- *  answer of an approval ask, a machine-login decision, a credential-grant, machine-login or
- *  sign-in revoke, and minting, changing or revoking a personal token. `p0` lets a credential make
- *  an issue's own priority 0 (`POST /api/v1/issues` and `PATCH /api/v1/issues/{key}`). A browser
- *  sign-in holds all three. A personal token holds `p0` only where its maker gave it, and may hold
- *  it alone: no mint gives `p0` by default. A credential holding `approve` holds `person` too.
- *  No broker-issued token, shared token or service-account token holds `p0`, and of the
- *  broker-issued tokens only the approve-only token, which no machine holds, holds `approve`. */
-export const DISPATCH_SCOPES = ["person", "approve", "p0"] as const;
 export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
 
-/** The scope words a personal token can carry, which the agent token list names and `scopes` in
- *  `GET /api/v1/whoami` names for it: the three of `DISPATCH_SCOPES` and `read`. A token that
- *  holds `read` is read-only (`DISPATCH_READ_ONLY_TOKEN`): a personal token holds it alone or
- *  beside `person`, never beside `approve` or `p0`. No mint gives `p0` by default. `read` is a
- *  mark on the token and not a scope a credential acts under, so no act records it, and
- *  `DISPATCH_SCOPES` and `ActorActSchema` keep `person`, `approve` and `p0` alone.
- *  `GET /api/v1/whoami` also names `legion-status` for a Legion daemon's own
- *  broker token, which holds it alone (`WhoamiResponse`): it is that token's leave to write a
- *  Legion issue's status where Dispatch runs with `DISPATCH_LEGION_STATUS_SCOPE` on, so no act
- *  records it either, and no personal token can hold it. */
-export const DISPATCH_TOKEN_SCOPES = ["person", "approve", "p0", "read"] as const;
 export type DispatchTokenScope = (typeof DISPATCH_TOKEN_SCOPES)[number];
 
 /** The agent that made an act for the person it acts for: the session a broker-issued token
@@ -157,30 +135,6 @@ export const InboundWriterSchema = InboundActorSchema.passthrough();
 export const InboundBySchema = z
   .object({ kind: z.string(), id: z.string().optional() })
   .passthrough();
-
-/** How a verified service token's subject reads wherever an actor is shown.
- *
- *  A Kubernetes subject — exactly `system:serviceaccount:<namespace>:<name>` —
- *  renders `<namespace>/<name>`, because the namespace is the half that
- *  disambiguates: every namespace has a `default` service account, so the name
- *  alone names no one once a second namespace authenticates. Every other
- *  subject renders whole. Truncating a subject whose shape is unknown is the
- *  mistake this rule exists to undo, so the fallback shows all of it.
- *
- *  The persisted actor always carries the full subject; this is presentation. */
-export function serviceSubjectLabel(subject: string): string {
-  const parts = subject.split(":");
-  if (
-    parts.length === 4 &&
-    parts[0] === "system" &&
-    parts[1] === "serviceaccount" &&
-    parts[2] !== "" &&
-    parts[3] !== ""
-  ) {
-    return `${parts[2]}/${parts[3]}`;
-  }
-  return subject;
-}
 
 /** What a credential request's kind is, as the secrets broker names it: a secret an agent asked
  *  its person for, or a machine login a launcher asked to enrol. */

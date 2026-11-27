@@ -11,7 +11,7 @@ import {
   secondaryButtonHoverBorder,
   secondaryButtonText,
   textMutedHoverToSecondary,
-} from "../theme/classes";
+} from "../theme/shell-classes";
 import { useTooltips } from "./tooltips";
 
 /** The one pin glyph: an outline that fills with `currentColor` once pinned. */

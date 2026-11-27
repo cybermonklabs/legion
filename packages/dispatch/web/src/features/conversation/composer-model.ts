@@ -1,5 +1,3 @@
-import type { QueryKey } from "@tanstack/react-query";
-
 import type { Actor, DeliveryCapability, DisplayTree } from "../../api/types";
 import type { RecordMarkPlacement } from "../doc/editor";
 import type { DeletablePost } from "../refs/post-marks";
@@ -12,14 +10,6 @@ export type ComposerOwner =
   | { readonly kind: "issue"; readonly issueKey: string }
   | { readonly kind: "artifact"; readonly artifactId: string; readonly project: string }
   | { readonly kind: "session"; readonly sessionId: string };
-
-/** The key of the comment list a draft's `owner` reads: an issue's (`["comments", key]`) or a
- *  project document's (`["artifact", id, "comments"]`). */
-export function commentListKey(owner: Exclude<ComposerOwner, { kind: "session" }>): QueryKey {
-  return owner.kind === "issue"
-    ? ["comments", owner.issueKey]
-    : ["artifact", owner.artifactId, "comments"];
-}
 
 export type ComposerKind = "ask" | "comment" | "suggestion";
 

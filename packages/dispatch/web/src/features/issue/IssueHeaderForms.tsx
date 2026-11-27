@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 
 import { TruncatedText } from "../../components/TruncatedText";
 import { inputMethodKey } from "../../lib/input-method-key";
+import { surfaceMutedStrongBg, textSecondaryHoverToPrimary } from "../../theme/classes";
 import {
   borderTransparent,
   dangerText,
@@ -13,14 +14,13 @@ import {
   secondaryButtonBorder,
   secondaryButtonDisabledText,
   secondaryButtonText,
-  surfaceMutedStrongBg,
   textMutedHoverToSecondary,
   textMutedOnSurface,
-  textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
-import { buildIssuePath, sessionOfAddress } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
+import { sessionOfAddress } from "../refs/party-mention";
 import type { IssueDrafts } from "./useIssueDrafts";
 
 /** What the issue's message route is, said under its value in Details, with the id

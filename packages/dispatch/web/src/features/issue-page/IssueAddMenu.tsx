@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import type { IssueDetails } from "../../api/types";
+import { abortOnReaderAct, claimUnacted } from "../../lib/reader-acts";
 import { pageHeaderControl, pageMenu, pageMenuItem } from "../../theme/classes";
 import { assigneeControlName } from "../issue/AssigneeControl";
 import { componentsControlName } from "../issue/IssueComponentsLine";
@@ -298,7 +299,16 @@ export function IssueAddMenu({
           const shut = control?.closest("[hidden]") != null;
           if (drawer !== undefined && (inHeader ? drawer.open : shut && !drawer.open)) {
             drawer.setOpen(!inHeader);
-            requestAnimationFrame(() => requestAnimationFrame(reach));
+            // A reader who acts before the two frames below have run (`READER_ACTS`) - a key, or
+            // a press in another field and words typed there - has put the focus where they want
+            // it, so the frames reach nothing then.
+            const acted = abortOnReaderAct();
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() => {
+                if (!claimUnacted(acted)) return;
+                reach();
+              })
+            );
             return;
           }
           reach();

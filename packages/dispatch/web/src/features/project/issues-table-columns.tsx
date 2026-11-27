@@ -6,14 +6,13 @@ import { AttentionBadge } from "../../components/Badge";
 import { LabelPill, StatusPill } from "../../components/Pill";
 import { issueProject } from "../../lib/issue-key";
 import { compareTimestamps } from "../../lib/timestamps";
+import { checkboxAccent, textMutedOnCanvas } from "../../theme/classes";
 import {
-  checkboxAccent,
   linkHoverText,
   linkText,
-  textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { ClaimChip } from "../issue/ClaimChip";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
@@ -21,8 +20,8 @@ import { ProgressChips } from "../issue/ProgressChips";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import { PriorityChip } from "../priorities/PriorityChip";
 import { AgentName } from "../refs/AgentName";
-import { referenceTriggerProps } from "../refs/RefPreview";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
+import { referenceTriggerProps } from "../refs/reference-trigger";
 import { Timestamp } from "../refs/Timestamp";
 import { type IssueStatus, issueStatuses, statusLabel } from "./board-model";
 import type { IssueListing } from "./issues-table-data";

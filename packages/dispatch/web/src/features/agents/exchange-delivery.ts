@@ -16,7 +16,7 @@ import type {
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { deliveryMode, plainDelivery } from "../conversation/delivery";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import type { AgentReply } from "./AgentMessageComposer";
 
 /** The most recent delivery attempt across a root message and every reply under it. */

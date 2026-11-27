@@ -1,7 +1,11 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import { primaryButtonBg, primaryButtonHoverBg, textSecondaryOnCanvas } from "../../theme/classes";
+import {
+  primaryButtonBg,
+  primaryButtonHoverBg,
+  textSecondaryOnCanvas,
+} from "../../theme/shell-classes";
 import { useDocumentTitle } from "./useDocumentTitle";
 
 /** Shared not-found view: an unrecognized top-level route, an unrecognized issue sub-route, and

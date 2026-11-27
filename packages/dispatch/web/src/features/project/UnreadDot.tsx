@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 import type { IssueSummary } from "../../api/types";
-import { badgeBlocking } from "../../theme/classes";
+import { badgeBlocking } from "../../theme/shell-classes";
 
 export function issueIsUnread(issue: IssueSummary, lastReadSequence: number): boolean {
   return issue.last_seq > lastReadSequence;

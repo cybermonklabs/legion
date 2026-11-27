@@ -10,20 +10,22 @@ import { QueryError } from "../../components/QueryError";
 import { useSettled } from "../../hooks/useSettled";
 import { useRepeatableSearchParams, useSearchParamsUpdate } from "../../lib/url-array-params";
 import {
-  borderStrong,
   dragHandleBg,
-  linkText,
-  surfaceBg,
-  surfaceMutedBg,
   switchOffBg,
   switchOnBg,
   switchThumbBg,
   textMutedOnCanvas,
-  textPrimaryOnCanvas,
   textPrimaryOnSurface,
   textPrimaryOnSurfaceMuted,
-  textSecondaryOnCanvas,
 } from "../../theme/classes";
+import {
+  borderStrong,
+  linkText,
+  surfaceBg,
+  surfaceMutedBg,
+  textPrimaryOnCanvas,
+  textSecondaryOnCanvas,
+} from "../../theme/shell-classes";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { DeliverySettingsForm } from "./DeliverySettingsForm";
 import { DrillDown } from "./DrillDown";

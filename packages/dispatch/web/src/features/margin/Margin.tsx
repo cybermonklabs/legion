@@ -1,26 +1,25 @@
-import { type ReactNode, useEffect, useLayoutEffect, useRef } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 
+import { pageHairBorder, pagePaperBg } from "../../theme/classes";
 import {
   borderDefault,
   focusVisibleRing,
-  pageHairBorder,
   pageInkText,
   pageLineBorder,
   pageMutedText,
-  pagePaperBg,
   railBg,
   railBorder,
   railHoverBg,
   railText,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { DETAILS_ATTRIBUTE, type MarginDrawer, useMarginDrawer } from "../issue-page/margin-slot";
+import { routeHasMargin } from "../refs/page-routes";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "../refs/ref-preview-card";
-import { routeHasMargin } from "../refs/routes";
 import { DIALOG_SCOPE, useKeymap } from "../shell/keymap";
 import {
   COMPACT_VIEWPORT_QUERY,
-  dialogOpen,
+  escapeClosesDrawer,
   PHONE_VIEWPORT_QUERY,
   useDialog,
   useMediaQuery,
@@ -30,8 +29,10 @@ import { useMargin } from "./margin-context";
 import {
   clampMarginWidth,
   DEFAULT_MARGIN_WIDTH,
+  MARGIN_COLUMN_CLASS,
   MARGIN_WIDTH_STEP,
   MIN_MARGIN_WIDTH,
+  marginColumnWidth,
   maxMarginWidth,
 } from "./margin-width";
 import { useMarginSheet } from "./useMarginSheet";
@@ -58,7 +59,7 @@ export function Margin({
   const resizePointer = useRef<
     { pointerId: number; startWidth: number; startX: number } | undefined
   >(undefined);
-  const marginWidth = clampMarginWidth(width ?? DEFAULT_MARGIN_WIDTH);
+  const marginWidth = marginColumnWidth(width);
   const maxWidth = maxMarginWidth();
   const setClampedMarginWidth = (nextWidth: number) => {
     onWidthChange?.(clampMarginWidth(nextWidth));
@@ -142,7 +143,7 @@ export function Margin({
         </aside>
       ) : null}
       <div
-        className={isCompactViewport ? "contents" : "relative order-3 shrink-0"}
+        className={isCompactViewport ? "contents" : MARGIN_COLUMN_CLASS}
         data-testid={isCompactViewport ? undefined : "desktop-margin-shell"}
         hidden={railShown || (!isCompactViewport && !hasMargin)}
         style={isCompactViewport ? undefined : { width: `${marginWidth}px` }}
@@ -256,12 +257,53 @@ function DetailsDrawer({
   const isPhoneViewport = useMediaQuery(PHONE_VIEWPORT_QUERY);
   const closeButton = useRef<HTMLButtonElement>(null);
   const box = useRef<HTMLElement | null>(null);
-  const { open, page, setOpen } = drawer;
+  const { open: asked, openedFrom, page, setDrawn, setOpen } = drawer;
   // The shell hands a new `setOpen` whenever its drawer changes - a new `page` among them - so
   // the effects below read the latest through this ref and run on `open` alone: a drawer that
   // stays open neither moves the focus nor records a new opener.
   const setOpenNow = useRef(setOpen);
   setOpenNow.current = setOpen;
+  const openedFromNow = useRef(openedFrom);
+  openedFromNow.current = openedFrom;
+  // Below the phone's width the drawer is a sheet over the whole page, a dialog that takes the
+  // focus as it opens (`useDialog`), so the rule below for an open the margin's chunk drew late -
+  // take no focus from where the reader went - cannot hold there by leaving the focus alone: a
+  // sheet that opened late would take it, and cover the page the reader went on in. So a sheet the
+  // drawer finds asked for as it mounts - an open pressed before the margin's chunk was in - does
+  // not open where the focus has left what held it at that press (`openedFrom`) for another
+  // control: the open is called off, in a render of its own before the browser paints, and the
+  // reader stays where they went. It is read once, as the drawer mounts: every later open is
+  // drawn as soon as it is asked, with the drawer mounted - a press, or a compose or a card the
+  // margin opens it for (above) - and not after a chunk the reader may have gone on from. The
+  // read of the focus is in `useState`'s initializer, which React calls in the mount render alone
+  // and in no later render, so no render after the mount reads the document; the call-off is a
+  // state of this mount, set back as the open is called off, so a later open draws as it always
+  // did. A focus that went nowhere - a press on the page's text - calls nothing off: the sheet
+  // then takes the focus from nowhere, as the drawer does from the phone's width up (below).
+  const [calledOff, setCalledOff] = useState(() => {
+    const active = document.activeElement;
+    return (
+      asked &&
+      isPhoneViewport &&
+      openedFrom !== undefined &&
+      active !== openedFrom &&
+      active instanceof HTMLElement &&
+      active !== document.body
+    );
+  });
+  const open = asked && !calledOff;
+  useLayoutEffect(() => {
+    if (!calledOff) return;
+    setCalledOff(false);
+    setOpenNow.current(false);
+  }, [calledOff]);
+  // Until the drawer is drawn, the shell's Escape calls off an open of Details
+  // (`MarginDrawer.setDrawn`); from its mount on, Escape is the drawer's own (below, and
+  // `useDialog` on a phone).
+  useLayoutEffect(() => {
+    setDrawn?.(true);
+    return () => setDrawn?.(false);
+  }, [setDrawn]);
   // The phone's sheet covers the page, so it is a dialog: the focus stays inside it, the page
   // under it does not scroll, and Escape closes it and gives the focus back (`useDialog`).
   const sheet = useDialog<HTMLElement>({
@@ -291,7 +333,11 @@ function DetailsDrawer({
   // holds no focus of its own: opening it puts the focus on its Close, and closing it - by Close,
   // by Escape, or by the page's own control - gives the focus back to where it was taken from
   // when that focus is still in the drawer or nowhere. Both happen in the commit that opens or
-  // closes it, so a focus the reader moves the moment it has closed is never taken back.
+  // closes it, so a focus the reader moves the moment it has closed is never taken back. A drawer
+  // opened before the margin's chunk was in opens only once that chunk lands, which can be long
+  // after the press, and the reader may have gone on meanwhile - into a field, onto another
+  // control: it takes the focus only from where the press found it (`openedFrom`) or from
+  // nowhere, and never from where the reader is now.
   const opener = useRef<HTMLElement | null>(null);
   useLayoutEffect(() => {
     if (!open || isPhoneViewport) return;
@@ -303,28 +349,17 @@ function DetailsDrawer({
       active instanceof HTMLElement && active !== document.body && !drawerBox?.contains(active)
         ? active
         : null;
-    closeButton.current?.focus({ preventScroll: true });
+    const from = openedFromNow.current;
+    if (from === undefined || active === from || opener.current === null) {
+      closeButton.current?.focus({ preventScroll: true });
+    }
     // Escape closes the drawer before the page's own Escape does anything else: the press is the
-    // drawer's alone. A field keeps its own Escape, which leaves the field, wherever it is -
-    // inside the drawer or beside it. So does a layer over the drawer or inside it: an open
-    // dialog - the navigation's sheet, the list of keys - closes on its own Escape and leaves the
-    // drawer open under it, with the focus on the dialog itself (its first frame), on its field,
-    // or gone to the page (a press on the list's text), and a menu open in the drawer closes
-    // before the drawer does, since Escape closes the innermost layer.
+    // drawer's alone. This Escape and the shell's for a Details not drawn yet read one rule, which
+    // says which presses they pass by (`escapeClosesDrawer`). The drawn drawer adds one check of
+    // its own: a menu open in it closes before the drawer does, since Escape closes the innermost
+    // layer, and a drawer not drawn yet holds no menu.
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented) return;
-      const target = event.target;
-      const field =
-        target instanceof HTMLElement &&
-        (target.isContentEditable ||
-          target.tagName === "SELECT" ||
-          target.tagName === "TEXTAREA" ||
-          (target instanceof HTMLInputElement &&
-            !["button", "checkbox", "radio", "reset", "submit"].includes(target.type)));
-      if (field) return;
-      if (target instanceof Element && target.closest('[role="dialog"]') !== null) return;
-      if (dialogOpen()) return;
-      if (box.current?.querySelector('[role="menu"]') != null) return;
+      if (!escapeClosesDrawer(event) || box.current?.querySelector('[role="menu"]') != null) return;
       event.preventDefault();
       setOpenNow.current(false);
     };

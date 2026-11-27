@@ -1,20 +1,19 @@
-import { ISSUE_TITLE_MAX } from "@legion/contracts";
+import { ISSUE_TITLE_MAX } from "@legion/contracts/dispatch-api-constants";
 import { type FormEvent, type ReactNode, useRef, useState } from "react";
 
+import { primaryButtonDisabled, textPrimaryOnSurface } from "../../theme/classes";
 import {
   backdrop50,
   borderDefault,
   card,
   inputClasses,
   primaryButtonBg,
-  primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
   secondaryButtonBorder,
   secondaryButtonHoverBorder,
   secondaryButtonText,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { useDialog } from "../shell/useDialog";
 
 /**

@@ -12,6 +12,7 @@ import { searchResultKind, stepActive } from "../search/search-model";
 import { useAgentText } from "./AgentName";
 import { withBlock } from "./block-reference";
 import { headRefs } from "./head-refs";
+import { partyOfAddress } from "./party-mention";
 import { type MentionOption, mentionOptions, stoppedRoleOptions } from "./party-options";
 import {
   groupRows,
@@ -44,7 +45,6 @@ import {
   documentRoute,
   nodeRouteFromHref,
   parseNodeReference,
-  partyOfAddress,
   shortForm,
 } from "./routes";
 import { textSourceKind, textSourceOf } from "./text-references";
@@ -180,7 +180,7 @@ function partyRow(
   named: string
 ): RefPickerRow | undefined {
   // A `role:<token>` option names a role; a `session:` one names a session, which is the pair
-  // `partyOfAddress` reads an address by (`routes.ts`).
+  // `partyOfAddress` reads an address by (`party-mention.ts`).
   const party = partyOfAddress(option.target);
   if (delivers && party === undefined) return undefined;
   // A session option's holder is its own name, which is its row's label.

@@ -19,8 +19,8 @@ import (
 
 // refusalCodes are the codes of the step write's and the plan write's refusals that no retry
 // changes. Each is stated once, in packages/contracts (the STEP_*_CODE and PLAN_*_CODE constants of
-// src/dispatch-tools.ts), and generated into internal/contracts: Dispatch's routes answer them from
-// there, and the Legion daemon, a Go module of its own, reads them through
+// src/dispatch-tools-constants.ts), and generated into internal/contracts: Dispatch's routes answer
+// them from there, and the Legion daemon, a Go module of its own, reads them through
 // github.com/sjawhar/envoy/steprecord and ends an outbox row on them.
 var refusalCodes = []string{
 	contracts.StepInputCode,

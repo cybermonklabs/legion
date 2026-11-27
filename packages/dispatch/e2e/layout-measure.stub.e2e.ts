@@ -15,6 +15,7 @@ import { expect, type Page, type Route } from "@playwright/test";
 
 import type { KnownLayoutBreach } from "./layout-breaches";
 import {
+  checkLayout,
   judgeReading,
   type LayoutFailure,
   PINNED_FACE_SHEET,
@@ -22,7 +23,7 @@ import {
   pinFontFaces,
 } from "./layout-check";
 import { type LayoutBreach, type LayoutReading, measureLayout } from "./layout-measure";
-import { openCappedGroups } from "./layout-routes";
+import { type LayoutRoute, type LayoutSeed, openCappedGroups } from "./layout-routes";
 import { ONE_PIXEL_PNG } from "./one-pixel-png";
 import { trackDocumentRequests, waitForRouteSettled } from "./review-routes";
 import { stubbed } from "./stub/stub-test";
@@ -80,10 +81,16 @@ function failureIdentities(failures: readonly LayoutFailure[]): unknown[] {
   });
 }
 
+/** The viewport the controls draw in: a phone's width. */
+const PHONE_SIZE = { height: 900, width: 360 } as const;
+
 /** Draws `body` as a page's own region at a phone's width, and reads it as a layout row reads a
- *  page. */
+ *  page. The viewport is written only when it is another size: a row's later cases find it set. */
 async function measure(page: Page, body: string): Promise<LayoutReading> {
-  await page.setViewportSize({ height: 900, width: 360 });
+  const size = page.viewportSize();
+  if (size === null || size.width !== PHONE_SIZE.width || size.height !== PHONE_SIZE.height) {
+    await page.setViewportSize(PHONE_SIZE);
+  }
   await page.setContent(
     `<!doctype html><html><body style="margin: 0"><main data-testid="main-content">${body}</main></body></html>`
   );
@@ -748,6 +755,86 @@ test("the settle wait waits on the shown document's Inbox reads and on no replac
   const settledAt = Date.now();
   await answer;
   expect(settledAt - answeredAt).toBeGreaterThanOrEqual(250);
+});
+
+/** Where the resize row's page is served from. */
+const REDRAWING_ORIGIN = "http://layout-resize.test";
+
+/** How long the resize row's page waits, once its size observer sees a new width, to redraw. */
+const REDRAW_DELAY_MS = 250;
+
+/** How far past the viewport the resize row's page draws its box when it redraws. */
+const REDRAWN_PAST_PX = 40;
+
+/** The heading the resize row's route waits for. */
+const REDRAWING_HEADING = "A page that redraws after a resize";
+
+/** A page whose size observer redraws it once the window's width has changed: `REDRAW_DELAY_MS`
+ *  after the observer sees a new width, and then in an animation frame, it makes one box
+ *  `REDRAWN_PAST_PX` wider than the viewport. Loaded at any width, it draws nothing past it. Its
+ *  120 entries lift its own region over a reading's floor (`MIN_ELEMENTS`). */
+const redrawingPage = `<!doctype html><html><body style="margin: 0">
+<main data-testid="main-content"><h1>${REDRAWING_HEADING}</h1>
+<div data-testid="redrawn" style="height: 20px"></div>${entries(120)}</main>
+<script>
+let seen;
+let redraw;
+new ResizeObserver(() => {
+  const width = document.documentElement.clientWidth;
+  if (seen !== undefined && width !== seen) {
+    clearTimeout(redraw);
+    redraw = setTimeout(() => requestAnimationFrame(() => {
+      const box = document.querySelector('[data-testid="redrawn"]');
+      box.style.width = width + ${REDRAWN_PAST_PX} + "px";
+    }), ${REDRAW_DELAY_MS});
+  }
+  seen = width;
+}).observe(document.documentElement);
+</script></body></html>`;
+
+/** The resize row's route, read as a layout row reads one: loaded fresh at 360, 900 and 1280 px,
+ *  and resized from there to 1440 and 1920 px (`reuseWide`). */
+const redrawingRoute: LayoutRoute = {
+  name: "resize-redraw",
+  path: () => `${REDRAWING_ORIGIN}/`,
+  // `checkLayout` reads no router pattern, and this page is no route of the router's: `*` is the
+  // router's pattern for a path no route of its own takes.
+  pattern: "*",
+  ready: (page) => [page.getByRole("heading", { name: REDRAWING_HEADING })],
+  reuseWide: true,
+};
+
+// `checkLayout` reads a `reuseWide` route at 1440 and 1920 px by resizing the page it read at the
+// width before, and waits for the page to settle again before it reads (`waitForRouteSettled`).
+// This row holds that wait. Its page's size observer redraws after a resize, and each resized
+// reading must report what it drew, a page `REDRAWN_PAST_PX` wider than the viewport, while no
+// width loaded fresh reports it. A reading taken without the wait reads the page as it was before
+// the redraw, and reports nothing.
+//
+// The delay. The wait holds the Inbox number's quiet window, 500 ms, before it lets the reading
+// be taken (`waitForRouteSettled`); the page's observer runs in the first frame drawn at the new
+// width, and the redraw comes 250 ms after it, in an animation frame. So a reading taken after
+// the wait comes about 250 ms after the redraw, and one taken without it - three evaluations
+// after the resize, tens of milliseconds on a quiet runner - about 250 ms before it.
+// SLOW(>=2s): five readings, each after the settle wait's 500 ms window.
+test("checkLayout reads a resized width only once the page has redrawn for it @pr", async ({
+  page,
+}) => {
+  await page.route(`${REDRAWING_ORIGIN}/`, (route) =>
+    route.fulfill({ body: redrawingPage, contentType: "text/html" })
+  );
+  // `checkLayout` reads one field of its seed, `seededAt`, where it pins the page's clock; this
+  // route's path reads none.
+  const seed = { seededAt: "2026-01-01T00:00:00.000Z" } as LayoutSeed;
+  const failure = await checkLayout(page, redrawingRoute, seed).then(
+    () => "",
+    (error: Error) => error.message
+  );
+  const redrawnAt = (width: number) => `page ${width + REDRAWN_PAST_PX}px in a ${width}px viewport`;
+  expect(failure.match(/page \d+px in a \d+px viewport/g)).toEqual([
+    redrawnAt(1440),
+    redrawnAt(1920),
+  ]);
 });
 
 test("a layout reading fails on a blank page and on an entry its reading did not match @pr", async ({

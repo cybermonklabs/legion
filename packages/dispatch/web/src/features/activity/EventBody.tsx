@@ -1,9 +1,10 @@
-import { actorActText } from "@legion/contracts";
+import { actorActText } from "@legion/contracts/actor-label";
 import { Fragment, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type { DispatchEvent, DisplayTree } from "../../api/types";
-import { linkText, textMutedOnSurface, textPrimaryOnSurface } from "../../theme/classes";
+import { textPrimaryOnSurface } from "../../theme/classes";
+import { linkText, textMutedOnSurface } from "../../theme/shell-classes";
 import { AskOptionList } from "../inbox/AskOptionList";
 import { eventDescription } from "../issue/event-description";
 import { AskResolutionLine } from "../refs/AgentName";
@@ -11,8 +12,9 @@ import { askResolutionReason } from "../refs/actor";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { PostBody } from "../refs/PostBody";
 import { EditedMark } from "../refs/PostMarks";
+import { buildIssuePath } from "../refs/page-routes";
 import { postDeletion } from "../refs/post-marks";
-import { buildIssuePath, buildReferencePath, itemRoute } from "../refs/routes";
+import { buildReferencePath, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { SentenceParts } from "./SentenceParts";

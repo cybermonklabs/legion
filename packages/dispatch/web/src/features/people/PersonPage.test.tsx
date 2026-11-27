@@ -6,8 +6,8 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { api } from "../../api/client";
 import type { IssueReferenceSummary, PersonNode, PersonNodes } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { PERSON_PATH } from "../refs/page-routes";
 import { ReferenceNamesProvider } from "../refs/reference-names";
-import { PERSON_PATH } from "../refs/routes";
 import { PersonPage } from "./PersonPage";
 
 // The line draws through the shared renderer, whose Markdown engine loads lazily, and the rows

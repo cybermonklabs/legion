@@ -1,21 +1,10 @@
-import { awaitsDecision } from "@legion/contracts";
+import { awaitsDecision } from "@legion/contracts/dispatch-api-constants";
 import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
-import { Link } from "react-router-dom";
 
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type { CredentialPendingRow, InboxRow } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
-import {
-  borderDefault,
-  surfaceMutedBg,
-  surfaceMutedStrongBg,
-  textSecondaryHoverToPrimary,
-  textSecondaryOnSurface,
-  textSecondaryOnSurfaceMuted,
-} from "../../theme/classes";
 import { useCredentialRequests } from "../credentials/pending";
-import { formatAskAge } from "./ask-age";
 import { isMine } from "./sections";
 import { isSnoozed } from "./snooze";
 
@@ -23,9 +12,9 @@ import { isSnoozed } from "./snooze";
  *  deferred. Whose turn it is, not whose question it is: who answers it is the person the ask
  *  waits on, which `needsYou` below adds. An agent's progress note keeps its ask waiting on the
  *  agent, whoever replied last; a snooze keeps its ask off every "needs you" surface - the nav
- *  badge, the sidebar, this banner - until it returns, because deferring it is the viewer
- *  saying it does not need them now. A row that carries no snooze at all (an issue header's
- *  `open_asks`) is never deferred. */
+ *  badge, the sidebar, the Inbox's banner (`BlockedOnYouLink.tsx`) - until it returns, because
+ *  deferring it is the viewer saying it does not need them now. A row that carries no snooze at
+ *  all (an issue header's `open_asks`) is never deferred. */
 export function waitingOnHuman<
   T extends Pick<InboxRow, "waiting_on"> & Partial<Pick<InboxRow, "snoozed_until">>,
 >(asks: readonly T[]): T[] {
@@ -68,7 +57,7 @@ export function waitingOnYou(asks: readonly InboxRow[], viewer: string | undefin
  *  refuses still counts but is never the oldest: the broker's `requested_at` reaches here
  *  verbatim, and the badges render in the app shell, outside every page's error boundary, so a
  *  throw here would take down every page. */
-function needsYou(
+export function needsYou(
   asks: readonly InboxRow[],
   credentialRequests: readonly CredentialPendingRow[],
   viewer: string | undefined
@@ -93,49 +82,4 @@ export function useNeedsYouCount(): number {
   const viewer = useQuery(whoAmIQuery()).data?.login;
   const { requests } = useCredentialRequests();
   return needsYou(inbox.data ?? [], requests, viewer).count;
-}
-
-export function BlockedOnYou({
-  asks,
-  className,
-  credentialRequests = [],
-  variant = "banner",
-  viewer,
-}: {
-  asks: readonly InboxRow[];
-  className?: string;
-  /** The credential requests the Inbox lists above its asks; the project pill has none. */
-  credentialRequests?: readonly CredentialPendingRow[];
-  variant?: "banner" | "pill";
-  /** The signed-in person's lowercase login, whose questions this counts; nothing is counted
-   *  until the caller's `/auth/whoami` read resolves. */
-  viewer: string | undefined;
-}): ReactNode {
-  const { count, oldest } = needsYou(asks, credentialRequests, viewer);
-  if (count === 0) return null;
-
-  if (variant === "pill") {
-    return (
-      <Link
-        className={`${className ?? ""} inline-flex min-h-11 items-center rounded-full px-3 text-xs font-medium md:min-h-9 md:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}`}
-        to="/"
-      >
-        Blocked on you · {count}
-      </Link>
-    );
-  }
-
-  // A count of every waiting ask, not one urgency, so the strip stays structural: the spec
-  // reserves the urgency hues for urgency and priority. `w-full` is load-bearing - below
-  // 1280 px an unlayered `a:not(.prose a) { display: inline-flex }` in styles.css beats
-  // Tailwind's `block`, and without it the strip sits beside the controls above the list.
-  return (
-    <Link
-      className={`block w-full rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnSurfaceMuted}`}
-      to="/"
-    >
-      Blocked on you: {count} {count === 1 ? "item" : "items"}
-      {oldest === undefined ? null : `, oldest ${formatAskAge(oldest)}`}
-    </Link>
-  );
 }

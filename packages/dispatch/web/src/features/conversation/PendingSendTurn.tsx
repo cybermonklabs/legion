@@ -2,13 +2,13 @@ import type { ReactNode } from "react";
 
 import { apiErrorMessage } from "../../api/client";
 import { RefusableButton } from "../../components/RefusableButton";
+import { textMutedOnCanvas } from "../../theme/classes";
 import {
   dangerText,
   surfaceMutedBg,
-  textMutedOnCanvas,
   textMutedOnSurfaceMuted,
   textPrimaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";

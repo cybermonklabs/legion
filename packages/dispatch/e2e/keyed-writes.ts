@@ -58,6 +58,21 @@ export function watchWrites<T>(
   return writes;
 }
 
+/** When the page sent each `method` request to `path` from here on, in order, in milliseconds of
+ *  the run's own clock (`Date.now()` as the request event reaches the row): the requests
+ *  `watchWrites` lists, at the same indexes, for a row that reads how far apart two attempts went
+ *  out. The run's clock and not the page's, since a row that drives the page's clock moves no
+ *  real time, and what a send time is read against - a hold on Dispatch's side - is real time. */
+export function watchSendTimes(page: Page, method: string, path: string): number[] {
+  const times: number[] = [];
+  page.on("request", (request) => {
+    if (request.method() === method && new URL(request.url()).pathname === path) {
+      times.push(Date.now());
+    }
+  });
+  return times;
+}
+
 /** The first answer the page gets to a `method` request to `path` that Dispatch replayed from a
  *  key it already answered (`Idempotency-Replayed: ?1`). */
 export function replayed(page: Page, method: string, path: string): Promise<Response> {

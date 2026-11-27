@@ -11,7 +11,8 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { watchPicturePath } from "../refs/reference-target";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
-import { AskBlockCard } from "./AskBlockCard";
+import { renderChunk } from "../shell/chunk-loads";
+import { AskBlockCardHost } from "./AskBlockCardHost";
 import { type ChangeBaseline, changeMarksAgainst } from "./change-marks";
 import { colorForLogin } from "./connection";
 import { DocumentReferences, useReferenceClick } from "./document-references";
@@ -196,8 +197,9 @@ export function VersionView({
       // The baseline is drawn - or parsed, where its answer carried no reading - by the shared
       // headless engine, which the shell warms after the first paint: awaiting that load marks a
       // version opened straight by its own URL too, rather than racing the warm-up and marking
-      // nothing.
-      await warmMarkdownRenderer().catch(() => undefined);
+      // nothing. Under `renderChunk`, since the marks wait on it: the warm is a prefetch nobody
+      // waits on, and this wait is told apart from it here (`features/shell/chunk-loads.ts`).
+      await renderChunk(warmMarkdownRenderer).catch(() => undefined);
       if (!mounted) return;
       editor.setChangeDecorations(changeMarksAgainst(baseline, editor.view.state.doc));
     };
@@ -264,7 +266,7 @@ export function VersionView({
         {askBlockHosts.map((host) => {
           const blockId = String(host.node.attrs.blockId);
           return (
-            <AskBlockCard
+            <AskBlockCardHost
               ask={asks.find((candidate) => candidate.block_id === blockId)}
               host={host}
               inBody={false}

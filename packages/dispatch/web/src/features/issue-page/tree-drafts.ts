@@ -1,4 +1,5 @@
-import { parseBlockPointerValue, referenceSpans } from "@legion/contracts";
+import { parseBlockPointerValue } from "@legion/contracts/dispatch-block-ref";
+import { referenceSpans } from "@legion/contracts/reference-spans";
 
 import { artifactAtAddress, primarySpec, roleDocument } from "../../api/issue-cache";
 import type {

@@ -1,4 +1,4 @@
-import { DISPATCH_SCOPES, DISPATCH_TOKEN_SCOPES } from "@legion/contracts";
+import { DISPATCH_SCOPES, DISPATCH_TOKEN_SCOPES } from "@legion/contracts/dispatch-api-constants";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
@@ -14,23 +14,25 @@ import { QueryError } from "../../components/QueryError";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
-  borderDefault,
-  card,
   checkboxAccent,
   dangerHoverText,
+  successText,
+  textMutedOnCanvas,
+  textPrimaryOnSurface,
+} from "../../theme/classes";
+import {
+  borderDefault,
+  card,
   dangerText,
   inputClasses,
   primaryButtonBg,
   primaryButtonHoverBg,
-  successText,
   surfaceMutedBg,
-  textMutedOnCanvas,
   textMutedOnSurface,
   textPrimaryOnCanvas,
-  textPrimaryOnSurface,
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { Timestamp } from "../refs/Timestamp";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";

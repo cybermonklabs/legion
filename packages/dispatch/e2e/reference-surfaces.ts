@@ -17,6 +17,7 @@ import {
 import { blockId, openedThreadCard, setSheet } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { replyRowId } from "./inbox-threads";
+import { pressOnceTheShellListens } from "./keyboard";
 import { sessionIds } from "./session-ids";
 
 /**
@@ -334,33 +335,6 @@ export const FOUND_REFERENCE = `${DRAWN_REFERENCE}, [data-dispatch-missing]`;
  *  it (a reference card's two lines of its target, a reply's quote of its parent). */
 export const RENDERED_BODY = ".dispatch-markdown:not([data-markdown-preview])";
 
-/** The reference each element in scope matching `selector` names, in the order they are drawn:
- *  a Dispatch picture's `data-dispatch-picture`, a missing target's `data-dispatch-missing`,
- *  any other's `data-dispatch-ref`. */
-export function referenceTargetsIn(scope: Locator, selector: string): Promise<string[]> {
-  return scope
-    .locator(selector)
-    .evaluateAll((elements) =>
-      elements.map(
-        (element) =>
-          element.getAttribute("data-dispatch-picture") ??
-          element.getAttribute("data-dispatch-missing") ??
-          element.getAttribute("data-dispatch-ref") ??
-          ""
-      )
-    );
-}
-
-/** The `data-dispatch-href` of every title a document editor draws in scope, in the order it
- *  draws them (`@legion/proof-editor`'s reference decorations). */
-export function editorTitlesIn(scope: Locator): Promise<string[]> {
-  return scope
-    .locator("a.dispatch-reference")
-    .evaluateAll((elements) =>
-      elements.map((element) => element.getAttribute("data-dispatch-href") ?? "")
-    );
-}
-
 /** A margin thread's collapsed card: the toggle holding its one-line preview. On the phone
  *  layout the margin is a bottom sheet, which this opens first. */
 export async function collapsedMarginThread(
@@ -404,6 +378,11 @@ export async function closeMarginThread(page: Page, project: string): Promise<vo
   await expect(thread).toHaveCount(0);
 }
 
+/** The attribute an Answers row carries its ask's id in, and the inert one-line preview inside
+ *  that row (`web/src/features/answers/AnswersPage.tsx`). */
+export const ANSWER_ROW_ATTRIBUTE = "data-answer-row";
+export const ANSWER_PREVIEW = "[data-markdown-preview]";
+
 /**
  * The one-line preview a reader still meets: an answered ask's question on the Answers page
  * (`web/src/features/answers/AnswersPage.tsx`, a `MarkdownPreview`). Its host is a record a
@@ -416,7 +395,7 @@ export async function closeMarginThread(page: Page, project: string): Promise<vo
  * read.
  */
 export function answeredQuestionPreview(page: Page, askId: string): Locator {
-  return page.locator(`[data-answer-row="${askId}"]`).locator("[data-markdown-preview]").first();
+  return page.locator(`[${ANSWER_ROW_ATTRIBUTE}="${askId}"]`).locator(ANSWER_PREVIEW).first();
 }
 
 /** Opens the Inbox drawer, whose every row is the card that draws its own thread rather than a
@@ -424,8 +403,7 @@ export function answeredQuestionPreview(page: Page, askId: string): Locator {
  *  (`e2e/inbox-pane.ts`). The drawer opens over another page, so this navigates to one. */
 export async function openInboxReplies(page: Page): Promise<void> {
   await page.goto("/agents");
-  await page.locator("body").focus();
-  await page.keyboard.press("i");
+  await pressOnceTheShellListens(page, "i");
   await expect(page.getByRole("dialog", { name: "Inbox" })).toBeVisible();
 }
 

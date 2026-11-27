@@ -1,4 +1,4 @@
-import { setListsState, setLiveSessions } from "./agents";
+import { holdPageClockWhen, setListsState, setLiveSessions, spendPageTimeUntil } from "./agents";
 import { claimIssue, createIssue, createProject, mintAgentToken } from "./api";
 import { pickFilterOption } from "./filters";
 import { expect, test } from "./test";
@@ -15,15 +15,22 @@ import { asUser } from "./users";
 // Dispatch passes the listener's `Retry-After` on with that refusal, and the shared retry policy
 // leaves a read that names a wait alone for it before each of its two retries, plus a random
 // share of it again (`queryRetryDelay`, `web/src/api/query-client.ts`). At the real listener's 5 s
-// a view's first refilling read says so up to 20 s after the page made it; the row's refilling
-// list names `ROW_RETRY_AFTER_SECONDS` instead (`setListsState`), so up to 4 s, and
-// `REFILL_TIMEOUT` is an upper bound with a margin. agent-list-refilling.e2e.ts pins that Dispatch
-// passes the listener's own 5 on.
+// a view's first refilling read says so only once up to 20 s of the page's own time are out; the
+// row's refilling list names `ROW_RETRY_AFTER_SECONDS` instead (`setListsState`), so up to 4 s.
+// agent-list-refilling.e2e.ts pins that Dispatch passes the listener's own 5 on. Those waits are
+// page timers: the row installs the page's clock before the page loads and moves it until each
+// view says what the row asserts (`spendPageTimeUntil`, `e2e/agents.ts`), rather than waiting
+// them out.
+//
+// Under a refilling list each of the shell's 15 s polls of the registry
+// (`AGENT_REGISTRY_POLL_MS`) makes the chip drop its note and the filter its own until the
+// retries are refused again. So each view is asserted with the page's clock held still at a
+// moment it says the list refills; `holdPageClockWhen` (`e2e/agents.ts`) says why the clock is
+// held.
 
 const holder = { session_id: "claim-refill-session", title: "Claim refill holder" };
 const REFILLING = "The agent list is refilling. Try again in a moment.";
 const ROW_RETRY_AFTER_SECONDS = 1;
-const REFILL_TIMEOUT = 20_000;
 
 async function seedSessionClaim(): Promise<string> {
   await createProject({ key: "CORE", name: "Core" });
@@ -42,11 +49,11 @@ async function seedSessionClaim(): Promise<string> {
 test("a refilling agent list never lapses a session's claim on the chip or in the Claimed by filter @pr", async ({
   browser,
 }) => {
-  test.setTimeout(90_000);
   const key = await seedSessionClaim();
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
+    await page.clock.install();
     await page.goto(`/issues/${key}`);
     const chip = page.getByTestId("issue-claim");
     await expect(chip).toHaveAttribute("title", /Claimed /);
@@ -54,21 +61,32 @@ test("a refilling agent list never lapses a session's claim on the chip or in th
 
     await setListsState("refilling", { retryAfterSeconds: ROW_RETRY_AFTER_SECONDS });
     await page.reload();
-    await expect(page.getByTestId("issue-header").getByTestId("agent-list-refilling")).toHaveText(
-      REFILLING,
-      { timeout: REFILL_TIMEOUT }
+    // The header's notice comes from the issue's subscribers read and the chip's word from the
+    // agent list: two reads, each retried on timers of its own, so the clock moves until each
+    // says so.
+    const notice = page.getByTestId("issue-header").getByTestId("agent-list-refilling");
+    await spendPageTimeUntil(page, () => notice.isVisible(), "the header's refilling notice shows");
+    await expect(notice).toHaveText(REFILLING);
+    await holdPageClockWhen(
+      page,
+      async () => ((await chip.getAttribute("title")) ?? "").includes(REFILLING),
+      "the chip's title names the refilling list"
     );
     await expect(chip).toHaveAttribute(
       "title",
-      /Couldn't check whether that session is still running: The agent list is refilling\. Try again in a moment\.$/,
-      { timeout: REFILL_TIMEOUT }
+      /Couldn't check whether that session is still running: The agent list is refilling\. Try again in a moment\.$/
     );
     await expect(chip).not.toHaveAttribute("title", /no longer running/);
 
+    // The clock is the context's, so a page loaded while it is held loads held, and the query
+    // client hands each read's answer to the views on a page timer: none would reach the issues
+    // page. So the clock runs again before that page loads, as it ran for the issue page.
+    await page.clock.resume();
     await page.goto("/projects/CORE/issues?unclaimed=1");
-    await expect(page.getByTestId("unclaimed-unchecked")).toHaveText(
-      `Couldn't check which claims have lapsed, so every claim counts as held: ${REFILLING}`,
-      { timeout: REFILL_TIMEOUT }
+    const unchecked = page.getByTestId("unclaimed-unchecked");
+    await holdPageClockWhen(page, () => unchecked.isVisible(), "the filter's note shows");
+    await expect(unchecked).toHaveText(
+      `Couldn't check which claims have lapsed, so every claim counts as held: ${REFILLING}`
     );
     await expect(
       page.getByRole("table", { name: "Project issues table" }).locator(`[data-issue-row="${key}"]`)

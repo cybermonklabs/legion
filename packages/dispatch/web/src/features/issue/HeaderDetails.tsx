@@ -15,7 +15,7 @@ import {
   secondaryButtonHoverBorder,
   secondaryButtonText,
   textMutedOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { useUserPreference } from "../shell/userPreference";
 
 /** One property of the issue in Details: its name and its value. */

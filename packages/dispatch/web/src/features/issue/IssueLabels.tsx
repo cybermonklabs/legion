@@ -5,18 +5,16 @@ import { projectIssuesQuery } from "../../api/queries";
 import { CappedGroup } from "../../components/CappedGroup";
 import { MultiSelect } from "../../components/MultiSelect";
 import { type PageWords, usePageWords, withoutEllipsis } from "../../components/tooltips";
+import { pageLabelChip, pagePaperBg, surfaceMutedStrongBg } from "../../theme/classes";
 import {
-  pageLabelChip,
   pageLineBorder,
   pageMutedText,
-  pagePaperBg,
   secondaryButtonBorder,
   secondaryButtonDisabledText,
   secondaryButtonHoverBorder,
   secondaryButtonText,
-  surfaceMutedStrongBg,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 
 const maxLabelLength = 40;
 const maxLabels = 20;

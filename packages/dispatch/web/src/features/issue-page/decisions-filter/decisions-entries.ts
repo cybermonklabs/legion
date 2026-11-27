@@ -2,16 +2,19 @@ import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 
 import { roleDocument } from "../../../api/issue-cache";
-import { artifactBlocksQuery } from "../../../api/queries";
+import {
+  artifactBlocksQuery,
+  issueDecisionsQuery,
+  ownerAsksQuery,
+  ownerCommentsQuery,
+} from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
-import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
 import { decisionChanges } from "../decision-review";
 import type { DocumentBlocks, TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
-import { issueAsksQuery, issueCommentsQuery } from "../useIssueTree";
 import {
   askIdOf,
   type DecisionsEntry,
@@ -29,7 +32,7 @@ import {
  *
  * The reads are the ones the page's tree is built from: the three reads the tree reads, under
  * the keys `useIssueTree.ts` reads them by, the asks by the tree's own definition of that read
- * (`issueAsksQuery`), and the decisions document's blocks under the tree's own key for them
+ * (`ownerAsksQuery`), and the decisions document's blocks under the tree's own key for them
  * (`artifactBlocksQuery`, for the document `roleDocument` names), so the view adds no request of
  * its own. Each takes the tree's freshness too (`EVENT_FRESH`), whose own doc gives the reason.
  * The blocks are why a Change stands under the decision whose section holds its anchor
@@ -132,13 +135,13 @@ export function useDecisionsEntries({
   /** The tree as the Decisions view leaves it. */
   view: TreeNode;
 }): DecisionsEntries {
-  const decisionsRead = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
+  const decisionsRead = useQuery({ ...issueDecisionsQuery(issue.key), ...EVENT_FRESH });
   const decisions = decisionsRead.data;
-  const asksRead = useQuery({ ...issueAsksQuery(issue.key), ...EVENT_FRESH });
+  const asksRead = useQuery({ ...ownerAsksQuery({ issue: issue.key }), ...EVENT_FRESH });
   const asks = asksRead.data;
   // The issue's comments, which hold the changes a person asked of a decision
-  // (`decision-review.ts`), under the key the tree reads them by (`issueCommentsQuery`).
-  const comments = useQuery({ ...issueCommentsQuery(issue.key), ...EVENT_FRESH }).data;
+  // (`decision-review.ts`), under the key the tree reads them by (`ownerCommentsQuery`).
+  const comments = useQuery({ ...ownerCommentsQuery({ issue: issue.key }), ...EVENT_FRESH }).data;
   // The blocks of the decisions document, which name the section each Change's anchor stands
   // in and so the decision it changes, under the key the tree reads them by. An issue with no
   // decisions document reads none.

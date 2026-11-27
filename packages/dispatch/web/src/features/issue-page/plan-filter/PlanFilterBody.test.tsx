@@ -11,12 +11,13 @@ import { api } from "../../../api/client";
 import {
   artifactBlocksQuery,
   issueCoverageQuery,
+  issueDecisionsQuery,
   issueResultsQuery,
+  ownerAsksQuery,
   whoAmIQuery,
 } from "../../../api/queries";
 import type { Artifact, ArtifactBlock, IssueDetails } from "../../../api/types";
 import { pageFocusedRow } from "../../../theme/classes";
-import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
@@ -53,7 +54,6 @@ import { ProvidersSlot } from "../slots/providers";
 import { ViewStage } from "../slots/stage";
 import { ViewPlanSlot } from "../slots/view-plan";
 import { blockNodeId, treeContext } from "../tree-drafts";
-import { issueAsksQuery } from "../useIssueTree";
 import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody";
 
 /**
@@ -1031,12 +1031,12 @@ function slotClient({
     issue: KEY,
     verification_artifact_id: "",
   });
-  client.setQueryData(issueDecisionsQuery(KEY, true).queryKey, {
+  client.setQueryData(issueDecisionsQuery(KEY).queryKey, {
     decisions: [],
     document: null,
     open_questions: [],
   });
-  client.setQueryData(issueAsksQuery(KEY).queryKey, []);
+  client.setQueryData(ownerAsksQuery({ issue: KEY }).queryKey, []);
   for (const read of ["comments", "issue-messages"]) client.setQueryData([read, KEY], []);
   if (planHeld) {
     client.setQueryData(artifactBlocksQuery(PLAN_ARTIFACT).queryKey, [

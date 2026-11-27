@@ -16,12 +16,13 @@ import {
   useState,
 } from "react";
 
+import { abortOnReaderAct, claimUnacted } from "../../lib/reader-acts";
+import { textPrimaryOnSurface } from "../../theme/classes";
 import {
   inputClasses,
   textMutedOnSurface,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { draftParties } from "../refs/party-references";
 import { RefPickerList } from "../refs/RefPickerList";
 import {
@@ -262,7 +263,15 @@ export function MentionField({
     const after = applyInsertion(current, insertion);
     setCaret(after.caret);
     onChange({ body: after.text });
+    // The caret goes after the pick a frame on, once the host has drawn the pick's text into the
+    // box: set now, it would be set in the old text, which the host's render of the new one
+    // replaces. A reader who acts before that frame (`READER_ACTS`) - a key typed straight after
+    // the pick, or a press elsewhere - has put the focus and the caret where they want them, and
+    // the words they typed meanwhile are there; a late frame that put the caret back after the
+    // pick would split them, so it does nothing.
+    const acted = abortOnReaderAct();
     requestAnimationFrame(() => {
+      if (!claimUnacted(acted)) return;
       element.current?.focus();
       element.current?.setSelectionRange(after.caret, after.caret);
     });

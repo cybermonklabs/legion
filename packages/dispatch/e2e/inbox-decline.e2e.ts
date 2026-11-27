@@ -15,6 +15,7 @@ import {
 import { paragraphsOf } from "./bodies";
 import { documentEditor, indexedBlockAsk } from "./editor";
 import { askCard, inboxPane, inboxRow, selectRow } from "./inbox-pane";
+import { pressOnceTheShellListens } from "./keyboard";
 import { READING_PANE_WIDTH } from "./reading-pane";
 import { resetDatabase } from "./seed";
 import { signIn } from "./users";
@@ -186,8 +187,7 @@ test("an approval request beside a question in one Inbox draws no Decline to ans
   // as two cards in one list, which is what this row compares. The page itself reads an
   // approval as the document under review, at every width (INFRA-575, INFRA-5200).
   await page.goto("/agents");
-  await page.locator("body").focus();
-  await page.keyboard.press("i");
+  await pressOnceTheShellListens(page, "i");
   const drawer = page.getByRole("dialog", { name: "Inbox" });
   await expect(drawer.locator("[data-inbox-row]")).toHaveCount(2);
 

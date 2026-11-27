@@ -3,8 +3,8 @@
  *
  * How the counter reaches the built page: the dashboard the server serves is a Vite build, so no
  * hook of this suite is inside it. This rewrites every JavaScript asset the browser asks for as
- * it is served (`context.route`), turning each call of a parse function into the same call
- * through a counting property name:
+ * it is served (`context.route`), an `/assets/` file once for the whole worker (`countedAssets`),
+ * turning each call of a parse function into the same call through a counting property name:
  *
  *   engine.parseMarkdown(markdown, softBreaks)  ->  engine[count("display")](markdown, softBreaks)
  *   editor.setMarkdown(markdown)                ->  editor[count("editor")](markdown)
@@ -23,10 +23,11 @@
  * `postMessage` of every worker built from the parse worker's own bundle: zero bodies posted is
  * zero parses in the worker, whether or not that bundle was rewritten too.
  *
- * `rewrittenParseCallSites` is how many call sites the rewrite replaced: a build that renames
- * them leaves it at zero, so a row that asserts it is above zero cannot pass vacuously.
+ * `rewrittenParseCallSites` is how many call sites the rewrite replaced in what a context's pages
+ * were served, a kept file's on each serve of it: a build that renames them leaves it at zero,
+ * so a row that asserts it is above zero cannot pass vacuously.
  */
-import type { BrowserContext, Page } from "@playwright/test";
+import type { BrowserContext, Page, Route } from "@playwright/test";
 
 /** The parses one page made, by the engine that made them. */
 export interface ParseCounts {
@@ -74,6 +75,72 @@ function counted(source: string): { code: string; rewritten: number } {
 /** How many call sites the rewrite replaced in the assets each context was served. */
 const rewrittenCallSites = new WeakMap<BrowserContext, number>();
 
+/** A JavaScript file as the rewrite serves it: its counted body, and the answer the server gave
+ *  with it. */
+interface CountedAsset {
+  readonly body: Buffer;
+  readonly headers: Record<string, string>;
+  /** How many call sites the rewrite replaced in it, which every serve of it adds. */
+  readonly rewritten: number;
+  readonly status: number;
+}
+
+/**
+ * Every `/assets/` file rewritten so far in this worker, by its address, kept for every page and
+ * every context that asks for it after the first. Vite names each file there by its bytes, and
+ * the server never serves other bytes under that name (`assetRoots` in `routes/router.go`), so the
+ * rewrite of a file is the same each time it is asked for.
+ *
+ * And it is asked for again on every page: routing turns the browser's HTTP cache off in the
+ * context it routes, so each new page fetches its whole module graph once more, over 1,300 files
+ * for a walk of fifteen pages. Each of those was a fetch from the server, a decode, a pass of the
+ * rewrite and a copy of the body in the trace, all on the worker's one thread and all on the path
+ * of a page's load.
+ */
+const countedAssets = new Map<string, Promise<CountedAsset>>();
+
+/** Fetches what `route` asks for from the server, and rewrites it. */
+async function fetchCounted(route: Route): Promise<CountedAsset> {
+  const response = await route.fetch();
+  try {
+    const { code, rewritten } = counted(await response.text());
+    const headers = { ...response.headers() };
+    // The body is the decoded one, so what the response said about its encoding and its length
+    // no longer holds.
+    delete headers["content-encoding"];
+    delete headers["content-length"];
+    return { body: Buffer.from(code), headers, rewritten, status: response.status() };
+  } finally {
+    // The request context keeps each body it fetched until the context closes, and this one has
+    // been read into the rewrite.
+    await response.dispose();
+  }
+}
+
+/**
+ * The rewrite of what `route` asks for: the one kept for an `/assets/` file fetched before, else
+ * a fetch of its own, which an `/assets/` file keeps. A fetch that fails, or an answer other than
+ * 200, is not the file, so it is not kept: the next request for that file fetches it again.
+ */
+function countedAsset(route: Route): Promise<CountedAsset> {
+  const url = route.request().url();
+  const kept = countedAssets.get(url);
+  if (kept !== undefined) {
+    return kept;
+  }
+  const asset = fetchCounted(route);
+  if (new URL(url).pathname.startsWith("/assets/")) {
+    countedAssets.set(url, asset);
+    const forget = () => {
+      if (countedAssets.get(url) === asset) countedAssets.delete(url);
+    };
+    asset.then((served) => {
+      if (served.status !== 200) forget();
+    }, forget);
+  }
+  return asset;
+}
+
 /**
  * Counts every markdown parse the pages of `context` make, from now on. Install it before the
  * first page is opened: an asset already in the browser's cache is served unrewritten.
@@ -109,15 +176,11 @@ export async function countParses(context: BrowserContext): Promise<void> {
     };
   });
   await context.route(/\.js(\?|$)/, async (route) => {
-    const response = await route.fetch();
-    const { code, rewritten } = counted(await response.text());
-    const headers = { ...response.headers() };
-    // The body is the decoded one, so what the response said about its encoding and its length
-    // no longer holds.
-    delete headers["content-encoding"];
-    delete headers["content-length"];
-    rewrittenCallSites.set(context, (rewrittenCallSites.get(context) ?? 0) + rewritten);
-    await route.fulfill({ body: code, headers, status: response.status() });
+    const asset = await countedAsset(route);
+    // Every serve adds its file's call sites, the kept ones too: the count is of what this
+    // context's pages were served, whichever context's page fetched it first.
+    rewrittenCallSites.set(context, (rewrittenCallSites.get(context) ?? 0) + asset.rewritten);
+    await route.fulfill({ body: asset.body, headers: asset.headers, status: asset.status });
   });
 }
 

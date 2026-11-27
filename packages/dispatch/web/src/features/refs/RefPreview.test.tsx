@@ -5,6 +5,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { type ReactNode, useEffect, useRef } from "react";
 import { Link, MemoryRouter } from "react-router-dom";
 
+import { caretAt } from "../../__tests__/caret";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
@@ -20,9 +21,10 @@ import type {
 } from "../../api/types";
 import { MarkdownBody } from "./MarkdownBody";
 import { warmMarkdownRenderer } from "./markdown-engine";
-import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
+import { closeRefPreview, RefPreviewHost } from "./RefPreview";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./ref-preview-card";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
+import { referenceTriggerProps } from "./reference-trigger";
 import { shortForm } from "./routes";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -81,7 +83,9 @@ const issues: Record<string, IssueDetails> = {
   "CORE-2": issue("CORE-2", "Second target"),
 };
 
-function Harness({ children }: { children?: ReactNode }): ReactNode {
+/** Two references and the host after them. `host={false}` leaves the host out, for a test that
+ *  draws it later, as the layer does once its chunk comes down. */
+function Harness({ children, host = true }: { children?: ReactNode; host?: boolean }): ReactNode {
   return (
     <MemoryRouter>
       <QueryClientProvider
@@ -94,7 +98,7 @@ function Harness({ children }: { children?: ReactNode }): ReactNode {
           second
         </Link>
         {children}
-        <RefPreviewHost />
+        {host ? <RefPreviewHost /> : null}
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -413,13 +417,6 @@ test("on the issue page, the caret in an editor's link opens its card, and leavi
   try {
     const link = view.container.querySelector<HTMLElement>("[data-dispatch-href]");
     if (link === null) throw new Error("the editable body drew no link mark");
-    const caretAt = (node: Node, offset: number) => {
-      // One move of the caret, as a browser reports it: emptying the selection first would report
-      // a caret outside every link in between.
-      document.getSelection()?.collapse(node, offset);
-      // user-event has no form that moves the caret inside an editable root.
-      fireEvent(document, new Event("selectionchange"));
-    };
     act(() => {
       caretAt(link.firstChild as Node, 3);
     });
@@ -437,6 +434,54 @@ test("on the issue page, the caret in an editor's link opens its card, and leavi
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   } finally {
     view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
+// The layer can arrive after the reader has asked for a card: after a download that failed, the
+// layer asks for its chunk again only for such an ask (`RefPreviewLayer.tsx`), and no event asks
+// a second time. So the host opens the card for what asked when it mounts: the reference that
+// holds keyboard focus, and on the issue page the editor's link the caret is in.
+test("a host drawn after a keyboard focus on a reference opens that reference's card", () => {
+  const getIssue = mockIssues();
+  const view = render(<Harness host={false} />);
+  try {
+    act(() => {
+      screen.getByRole("link", { name: "second" }).focus();
+    });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    view.rerender(<Harness />);
+    expect(screen.getByRole("tooltip")).toHaveTextContent("CORE-2");
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
+test("a host drawn after the caret entered an editor's link on the issue page opens that link's card", () => {
+  const getIssue = mockIssues();
+  const page = (host: boolean) => (
+    <Harness host={host}>
+      <div {...NO_HOVER_FRAME}>
+        <EditableBody />
+      </div>
+    </Harness>
+  );
+  const view = render(page(false));
+  try {
+    const link = view.container.querySelector<HTMLElement>("[data-dispatch-href]");
+    if (link === null) throw new Error("the editable body drew no link mark");
+    act(() => {
+      document.getSelection()?.collapse(link.firstChild as Node, 3);
+    });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    view.rerender(page(true));
+    expect(screen.getByRole("tooltip")).toHaveTextContent("CORE-1");
+  } finally {
+    view.unmount();
+    // A browser moves the caret out of nodes that leave the page, and the test DOM keeps it in
+    // them: a host that a later test draws would read it there.
+    document.getSelection()?.removeAllRanges();
     getIssue.mockRestore();
   }
 });

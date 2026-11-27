@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 
 import type { Actor } from "../../api/types";
-import { surfaceMutedStrongBg, textSecondaryOnSurface } from "../../theme/classes";
+import { surfaceMutedStrongBg } from "../../theme/classes";
+import { textSecondaryOnSurface } from "../../theme/shell-classes";
 import { useAgentText } from "../refs/AgentName";
 
 /** A turn's author badge: the initials of the author's name (`useAgentText().initials`: the

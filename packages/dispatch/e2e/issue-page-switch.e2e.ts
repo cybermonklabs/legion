@@ -1,7 +1,15 @@
 import { EMPTY_STATE_LINES } from "../web/src/features/issue-page/page-words";
 import { createIssue, createProject } from "./api";
 import { withIssuePage } from "./issue-page-option";
-import { openRail } from "./rail";
+import { editTitleButton } from "./issue-page-p";
+import { closeRail, openRail } from "./rail";
+import {
+  FRAME_SHELL_CHUNK,
+  fetchedChunk,
+  holdAssetUntilReleased,
+  recordTabReloads,
+  tabReloads,
+} from "./shell";
 import { expect, type Locator, type Page, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser, signIn, withAlice } from "./users";
@@ -332,6 +340,33 @@ test("with the setting on, an issue's loading, failure, absence and refused addr
     return route.fallback();
   });
 
+  // The landing carries the issue as well: its one answer seeds the issue under the key the new
+  // page reads it by (`web/src/api/queries.ts`, `seedIssuePage`), so a cold load given that part
+  // would never ask the read held above, and the page would draw no loading state and no
+  // failure of its own. This row is about the new page's own states while that read is held,
+  // refused or answered, so the landing answers the issue as it answers an issue it could not
+  // read - null (`issue.detail` in `packages/envoy/internal/dispatch/api/landing.go`) - which the
+  // seed leaves alone, and the page reads the issue from its own route. Every other part of the
+  // answer stays as the server gave it. Each of the four loads below is a cold load and asks the
+  // landing again, so this holds for each of them; the Retry asks the route, not the landing,
+  // since the page does not reload. It stays past `page.unroute(issueRead)` and changes nothing
+  // there: the landing of the missing key has no issue to remove, and the address of the unknown
+  // tab is no issue page, so its landing is the Inbox's and carries no issue page at all.
+  await page.route("**/api/v1/landing*", async (route) => {
+    const response = await route.fetch();
+    const body = (await response.json()) as {
+      page: { issue: Record<string, unknown> | null };
+    };
+    const landed = body.page.issue;
+    await route.fulfill({
+      json:
+        landed === null
+          ? body
+          : { ...body, page: { ...body.page, issue: { ...landed, issue: null } } },
+      response,
+    });
+  });
+
   // Each state below is the first draw of an address the reader opens, so each is a load.
   await page.goto(`/issues/${issue.key}`);
   await expect(newPage.getByText("Loading issue…", { exact: true })).toBeVisible();
@@ -363,5 +398,227 @@ test("with the setting on, an issue's loading, failure, absence and refused addr
 
   await page.goto(`/issues/${issue.key}/no-such-tab`);
   await expect(heading).toHaveText("Page not found");
+  if (isPhone) await assertPageFits(page);
+});
+
+/** The Settings switch, on `page`. */
+function issuePageCheckbox(page: Page): Locator {
+  return page
+    .getByRole("region", { name: "Preview" })
+    .getByRole("checkbox", { exact: true, name: "New issue page" });
+}
+
+// The switch changes which issue page the reader is drawn and nothing above it: the shell, the
+// page the reader is on and every part drawn beside them stay mounted for both choices
+// (`AppShell`, `web/src/app.tsx`). So the checkbox the reader pressed is the one that keeps the
+// focus, in each direction. Two shells for the two choices would mount everything again at the
+// press, and the focus would land on the document's body.
+// SLOW(>=2s): a cold load of Settings, whose sections each read the server before the switch is
+// pressed twice.
+test("turning the new issue page on and off in Settings keeps the focus on its checkbox @phone", async ({
+  page,
+}, testInfo) => {
+  const isPhone = testInfo.project.name === "iphone";
+  if (!isPhone) await page.setViewportSize(desktop);
+  await page.goto("/settings");
+  const checkbox = issuePageCheckbox(page);
+  await checkbox.focus();
+  await page.keyboard.press("Space");
+  await expect(checkbox).toBeChecked();
+  await expect(checkbox).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(checkbox).not.toBeChecked();
+  await expect(checkbox).toBeFocused();
+  if (isPhone) await assertPageFits(page);
+});
+
+// A choice made in another tab reaches this one through the window's `storage` event
+// (`web/src/features/issue-page/stored-choice.ts`), and it too changes nothing above the issue
+// page: this tab's Settings stays mounted, with what the reader typed into its new-project form
+// and has not sent (`web/src/features/settings/ProjectsSection.tsx`). Two shells for the two
+// choices would mount this tab's whole page again at the other tab's press, and the form would
+// come back empty.
+// SLOW(>=2s): two tabs each load Settings cold, and the other tab's switch is pressed twice.
+test("another tab turning the new issue page on and off leaves this tab's unsent form text @phone", async ({
+  context,
+  page,
+}, testInfo) => {
+  const isPhone = testInfo.project.name === "iphone";
+  const second = await context.newPage();
+  for (const tab of [page, second]) {
+    if (!isPhone) await tab.setViewportSize(desktop);
+    await tab.goto("/settings");
+  }
+  const projectName = page.getByRole("textbox", { exact: true, name: "Name" });
+  await projectName.fill("Unsent project");
+
+  await issuePageCheckbox(second).check();
+  // This tab's own switch reads the choice the other tab stored, so the event has reached it.
+  await expect(issuePageCheckbox(page)).toBeChecked();
+  await expect(projectName).toHaveValue("Unsent project");
+  await issuePageCheckbox(second).uncheck();
+  await expect(issuePageCheckbox(page)).not.toBeChecked();
+  await expect(projectName).toHaveValue("Unsent project");
+  if (isPhone) await assertPageFits(page);
+});
+
+// The same for an agent token's value, which Settings shows once, as the token is minted, and
+// never again (`web/src/features/settings/AgentTokensSection.tsx`): a reader who had not copied
+// it yet when the other tab turned the new page on would have lost it for good.
+// SLOW(>=2s): two tabs each load Settings cold, and the token is minted through the server.
+test("another tab turning the new issue page on leaves this tab's shown-once agent token @phone", async ({
+  context,
+  page,
+}, testInfo) => {
+  const isPhone = testInfo.project.name === "iphone";
+  const second = await context.newPage();
+  for (const tab of [page, second]) {
+    if (!isPhone) await tab.setViewportSize(desktop);
+    await tab.goto("/settings");
+  }
+  await page.getByLabel("Token label").fill("Architect");
+  await page.getByRole("button", { name: "New token" }).click();
+  const shown = page
+    .getByRole("status")
+    .filter({ hasText: "Copy this token now." })
+    .locator("code")
+    .first();
+  // textContent waits for the code element to attach, and an element's text is never null, so
+  // the `?? ""` in the last check below only narrows the type.
+  const token = await shown.textContent();
+  expect(token).toMatch(/^dsp_/);
+
+  await issuePageCheckbox(second).check();
+  await expect(issuePageCheckbox(page)).toBeChecked();
+  await expect(shown).toHaveText(token ?? "");
+});
+
+// The new page's frame is a chunk of its own (`web/src/features/issue-page/frame-chunk.ts`),
+// which the entry starts at boot only in a browser where some login chose the new page. So
+// Settings starts it as it draws the switch (`IssuePagePreference.tsx`): a reader who turns the
+// page on finds it in, or on its way, rather than waiting on a download only the press began.
+// SLOW(>=2s): a cold load of Settings, read until its frame's download is in the page's timing.
+test("Settings asks for the new issue page's frame before the reader turns it on @phone", async ({
+  page,
+}, testInfo) => {
+  const isPhone = testInfo.project.name === "iphone";
+  if (!isPhone) await page.setViewportSize(desktop);
+  await page.goto("/settings");
+  await expect(issuePageCheckbox(page)).not.toBeChecked();
+  await fetchedChunk(page, FRAME_SHELL_CHUNK);
+  if (isPhone) await assertPageFits(page);
+});
+
+// On an issue's address the frame changes the shell (`frameOf`, `frame-shell.tsx`), and its chunk
+// can still be on the wire when another tab turns the new page on. This tab then draws the new page
+// in today's shell, and draws the frame around it once the chunk is in (`ChosenShell`,
+// `web/src/app.tsx`). The late frame changes what the reader sees, and nothing else: the shell and
+// the page in it stay mounted, so the text the reader typed into the page meanwhile, and the focus
+// in it, are still there. Two shells for the two states, or the page drawn again in the frame,
+// would take both. Today's page itself goes at the other tab's press, with or without the frame, as
+// the switch says (`IssuePage.tsx`), so the text goes into the new page's title, the issue page's
+// own text field, while the frame is held.
+// SLOW(>=2s): two tabs each load cold, the issue and Settings, and the other tab's switch is
+// pressed while this tab's frame is held on the wire.
+test("another tab turning the new issue page on while this tab's frame is on the wire leaves the text typed into the page, and the focus, as the frame comes @phone", async ({
+  context,
+  page,
+}, testInfo) => {
+  const isPhone = testInfo.project.name === "iphone";
+  const issue = await seedIssue();
+  const second = await context.newPage();
+  if (!isPhone) {
+    await page.setViewportSize(desktop);
+    await second.setViewportSize(desktop);
+  }
+  const frameChunk = await holdAssetUntilReleased(page, FRAME_SHELL_CHUNK);
+  await page.goto(`/issues/${issue.key}`);
+  await expectTodaysPage(page);
+  await second.goto("/settings");
+
+  await issuePageCheckbox(second).check();
+  await expect(newPageHeading(page)).toHaveText(issue.title);
+  // The frame's download is held from its first request on, so `url` answers only once the switch
+  // has asked for it; the poll bounds that wait and names a switch that asks for no frame.
+  let frameAsked = false;
+  void frameChunk.url.then(() => {
+    frameAsked = true;
+  });
+  await expect.poll(() => frameAsked, { message: "the switch asked for no frame" }).toBe(true);
+  // The frame marks its `main` as no place for reference cards (`frame-shell.tsx`), at every
+  // width; today's shell does not.
+  const frameMain = page.locator("main[data-no-hover-preview]");
+  await expect(frameMain, "the frame was drawn with its chunk held").toHaveCount(0);
+  // The header lays its Edit title over the title's heading (`IssueTitleRow.tsx`), and that
+  // button opens the editor, as a reader's click on the title does.
+  await editTitleButton(page).click();
+  const title = page.getByRole("textbox", { exact: true, name: "Issue title" });
+  const unsent = "Ship the release notes, not sent yet";
+  await title.fill(unsent);
+  await expect(title).toBeFocused();
+
+  frameChunk.release();
+  await expect(frameMain, "the frame did not come once its chunk was in").toHaveCount(1);
+  await expect(title, "the frame took the focus from the page's field").toBeFocused();
+  await expect(title, "the frame took the text typed into the page").toHaveValue(unsent);
+  if (isPhone) await assertPageFits(page);
+});
+
+// The new page's frame can fail to download while the browser is online - a deployment that
+// replaced the build the page loaded - with no recovery reload to follow: the tab's three reloads
+// are spent here, as a tab whose assets kept failing has spent them. The shell is then today's,
+// the one every reader who has not turned the new page on is drawn, which needs nothing of that
+// chunk (`web/src/app.tsx`): the reader stays signed in, with today's navigation, and the issue's
+// address draws the new page without its frame. A failure thrown into the render would reach the
+// app's top boundary (`web/src/main.tsx`), which replaces the whole app. The failure is not kept
+// for the life of the page: once the chunk can come down, turning the new page off and on again
+// in Settings asks for the frame again, and the issue's address draws the new page in it.
+// SLOW(>=2s): two loads of the issue, the first only to spend the tab's reloads in its own
+// storage, and a walk to Settings and back by links.
+test("with the new issue page's frame failing to download online and no reload to follow, the reader gets today's shell, signed in, and turning the page off and on asks again @phone", async ({
+  context,
+  page,
+}, testInfo) => {
+  const isPhone = testInfo.project.name === "iphone";
+  const issue = await seedIssue();
+  if (!isPhone) await page.setViewportSize(desktop);
+  await page.goto(`/issues/${issue.key}`);
+  await expectTodaysPage(page);
+  const spent = await recordTabReloads(page, [3, 2, 1]);
+
+  await withIssuePage(context, "alice");
+  const refused: string[] = [];
+  await page.route(FRAME_SHELL_CHUNK, (route) => {
+    refused.push(route.request().url());
+    return route.abort();
+  });
+  await page.goto(`/issues/${issue.key}`);
+  await expect(newPageHeading(page)).toHaveText(issue.title);
+  expect(refused, "the new page's shell was never asked for").not.toEqual([]);
+  await expect(page.getByTestId("error-boundary")).toHaveCount(0);
+  await expect(page.getByTestId("icon-rail")).toHaveCount(0);
+  if (isPhone) await assertPageFits(page);
+  await openRail(page);
+  await expect(page.getByText("Signed in as alice")).toBeVisible();
+  expect(await tabReloads(page), "the failure reloaded the page").toEqual(spent);
+
+  await page.unroute(FRAME_SHELL_CHUNK);
+  await closeRail(page);
+  await setMarker(page);
+  await openSettings(page);
+  const checkbox = issuePageCheckbox(page);
+  await expect(checkbox).toBeChecked();
+  await checkbox.uncheck();
+  await checkbox.check();
+  await openIssue(page, issue.key);
+  await expect(newPageHeading(page)).toHaveText(issue.title);
+  // The frame marks its `main` as no place for reference cards (`frame-shell.tsx`), at every
+  // width; today's shell does not.
+  await expect(
+    page.locator("main[data-no-hover-preview]"),
+    "turning the new page off and on again drew it without its frame"
+  ).toHaveCount(1);
+  await expect(page.getByTestId("error-boundary")).toHaveCount(0);
+  expect(await marked(page), "the walk reloaded the page").toBe(true);
   if (isPhone) await assertPageFits(page);
 });

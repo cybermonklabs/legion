@@ -1,16 +1,27 @@
-import { beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  expect,
+  jest,
+  type Mock,
+  setSystemTime,
+  spyOn,
+  test,
+} from "bun:test";
+import { RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts/dispatch-api-constants";
 import {
   focusManager,
   onlineManager,
   QueryClient,
   QueryClientProvider,
 } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: the composer's own form submit, and the presses a held clock delivers inside one `act`
+// biome-ignore lint/style/noRestrictedImports: the composer's own form submit, the presses a held clock delivers inside one `act`, and a key pressed during an IME composition or, as Safari sends it, just after one
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { COMPOSITION_MARKS } from "../../__tests__/composition-marks";
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
@@ -50,6 +61,13 @@ import { messageDeliveryFields } from "./delivery-fixture";
 import "../agent-view/AgentConversationPage";
 import "../margin/Margin";
 import "./BroadcastPage";
+// Every kind of write is a chunk of its own (`features/writes/kinds.ts`), which the store's take-up
+// of what a reload kept waits for from the sign-in on, and every send a row presses waits for that
+// take-up (`Writes.resume`, `Writes.run`). The rows here are about the sends, not about that
+// download, and a row on a held clock runs its waits out in a few real milliseconds while
+// `test:web:cold` holds the chunk for a real second: a send pressed then would not have gone out
+// when the row counts its attempts. So the kinds are loaded here too.
+import "../writes/kinds";
 import type { AgentPart } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
@@ -123,6 +141,19 @@ beforeEach(() => {
 function ago(ms: number): number {
   return Date.now() - ms;
 }
+
+// The groups read a session's age against the clock: Active within two minutes, Quiet past ten
+// (`agent-groups.ts`). The hook above dates `now` as each row begins, and this one holds the
+// clock there for the row, so a row that runs long, as one can in a loaded parallel run, reads
+// every age as it was written - the Reviewer, seen five minutes before `now`, does not go Quiet
+// while the row draws - a row's own `jest.useFakeTimers()` starts from it, and a time `ago` dates
+// is that far before `now` too.
+beforeEach(() => {
+  setSystemTime(new Date(now));
+});
+afterEach(() => {
+  setSystemTime();
+});
 
 function datedAgents() {
   return [
@@ -1300,6 +1331,45 @@ test("Agents sends without an issue through the agent message route", async () =
     page.restore();
   }
 });
+
+// One Escape in an agent's composer does one thing. Two rules read Escape there: the composer's
+// own on its form (`MentionComposer`), and the `agents` scope's `back` (`keyboard.ts`), which the
+// composer keeps the key from. The Escape that cancels an IME composition is the input method's,
+// and neither rule acts on it: the draft and the focus stay. The keymap passes over a key marked
+// `isComposing`, but Safari sends that key after the composition's end, unmarked, with keyCode
+// 229, so the composer keeps it from the keymap too. A plain Escape after it is the composer's
+// alone: over a draft it asks first, and the focus does not go back to the row as well.
+test.each(COMPOSITION_MARKS)(
+  "an Escape that ends an IME composition in an agent's composer, marked by %s, leaves the draft and the focus there",
+  async (_mark, composing) => {
+    const user = userEvent.setup();
+    const page = renderAgents();
+
+    try {
+      const region = await screen.findByRole("region", { name: "Agents" });
+      const planner = card(region, "Planner");
+      await expand(user, planner, "Planner");
+      const comment = within(planner).getByRole<HTMLTextAreaElement>("textbox", {
+        name: "Comment",
+      });
+      await type(user, comment, "Still composing");
+      // fireEvent: user-event types no key an input method marks (`isComposing`, or Safari's keyCode
+      // 229), so the composition's Escape is sent as the event itself.
+      fireEvent.keyDown(comment, { ...composing, key: "Escape" });
+      expect(comment).toHaveFocus();
+      expect(comment.value).toBe("Still composing");
+      expect(within(planner).queryByText("Discard draft?")).not.toBeInTheDocument();
+
+      await user.keyboard("{Escape}");
+      expect(within(planner).getByText("Discard draft?")).toBeInTheDocument();
+      expect(comment).toHaveFocus();
+      expect(comment.value).toBe("Still composing");
+    } finally {
+      page.view.unmount();
+      page.restore();
+    }
+  }
+);
 
 const coreIssue: IssueSummary = {
   advances: [],
@@ -4091,6 +4161,48 @@ test("i on a row collapsed with its picker open goes back into the picker's sele
   }
 });
 
+// Enter on a row opens it and puts the focus in its composer a frame on, once the row's details
+// are drawn. A reader who acts before that frame - a press in the search box, and words typed
+// there - has put the focus where they want it, and a late frame that took it into the row's
+// composer would leave the rest of their words there. Here that frame is held until the reader
+// has typed, as a loaded machine holds it.
+test("a reader who moves to the search box before Enter's frame keeps the focus and the words typed there", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents();
+  const held: FrameRequestCallback[] = [];
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    const search = within(region).getByRole<HTMLInputElement>("searchbox", {
+      name: "Search agents",
+    });
+    act(() => {
+      planner.focus();
+    });
+    const frames = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      held.push(callback);
+      return held.length;
+    });
+    try {
+      await user.keyboard("{Enter}");
+      expect(within(planner).getByRole("textbox", { name: "Comment" })).toBeTruthy();
+      await user.click(search);
+      await user.keyboard("pl");
+    } finally {
+      frames.mockRestore();
+    }
+    act(() => {
+      for (const callback of held.splice(0)) callback(performance.now());
+    });
+    expect(document.activeElement, "Enter's frame took the focus from the search box").toBe(search);
+    expect(search.value).toBe("pl");
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 // One failed poll of the registry is not the agents leaving: each row keeps what it holds - here
 // a draft - and the page says the list could not be refreshed.
 test("a registry poll that fails keeps every row and what it holds, and says so", async () => {
@@ -4540,7 +4652,10 @@ test("/ falls through to the Dispatch-wide search dialog when no agents are conn
 
     await user.keyboard("/");
 
-    expect(screen.getByRole("dialog", { name: "Search" })).toBeTruthy();
+    // `find`, not `get`: the bar is a chunk of its own, which its host starts downloading as it
+    // mounts (`features/search/SearchPaletteHost.tsx`), and the dialog draws only once that
+    // download is in, which can be after the keystroke.
+    expect(await screen.findByRole("dialog", { name: "Search" })).toBeTruthy();
   } finally {
     page.view.unmount();
     page.restore();

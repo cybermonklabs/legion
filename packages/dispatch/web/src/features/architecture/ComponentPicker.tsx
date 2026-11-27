@@ -3,12 +3,8 @@ import { type ReactNode, useMemo, useState } from "react";
 import type { ArchitectureTreeComponent } from "../../api/types";
 import { MultiSelect } from "../../components/MultiSelect";
 import { usePageWords } from "../../components/tooltips";
-import {
-  pageLineBorder,
-  pageMutedText,
-  pagePaperBg,
-  secondaryButtonCompact,
-} from "../../theme/classes";
+import { pagePaperBg } from "../../theme/classes";
+import { pageLineBorder, pageMutedText, secondaryButtonCompact } from "../../theme/shell-classes";
 
 /** The trigger inside `NoTooltips`: `secondaryButtonCompact`'s shape in the new issue page's
  *  colours, as its other compact secondary controls draw it: the header control's rule and

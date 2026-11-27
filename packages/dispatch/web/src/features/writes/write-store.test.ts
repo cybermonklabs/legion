@@ -1,20 +1,23 @@
 import { afterEach, beforeEach, expect, jest, spyOn, test } from "bun:test";
-import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
+import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts/dispatch-api-constants";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 
 import { onFakeClock, settle } from "../../__tests__/fake-clock";
 import {
   type KeptTab,
+  keepWrite,
   keptTab,
   keyMinted,
   type MemoryFiles,
   memoryFiles,
+  patch,
   UnloadTarget,
 } from "../../__tests__/kept-sends-harness";
 import { answerSends, type SendAnswers } from "../../__tests__/send-answers";
 import {
   ApiError,
   api,
+  isPageGoing,
   NetworkError,
   RequestTimeoutError,
   type WriteBounds,
@@ -31,7 +34,7 @@ import {
   WriteDiscardedError,
 } from "./keyed-write";
 import { KEPT_SEND_RESUME_MS, type KeptState } from "./write-storage";
-import { defineWriteKind, plainWrite, type Write, Writes } from "./write-store";
+import { defineWriteKind, kindsRegistered, plainWrite, type Write, Writes } from "./write-store";
 
 /** A page's query client, signed in: the store stamps every write with this login at its press
  *  and resumes only this login's, as the app's does. */
@@ -64,12 +67,6 @@ function attemptOf(
     return answer();
   };
 }
-
-const patch: WriteRequest = {
-  body: { status: "done" },
-  method: "PATCH",
-  path: "/api/v1/issues/CORE-1",
-};
 
 /** A pin of CORE-1: a `PUT` sends no `Idempotency-Key`, since making it again is the same
  *  change. */
@@ -183,22 +180,7 @@ function resuming(
   request: WriteRequest = patch,
   of: { readonly kind: string; readonly detail: unknown } = { detail: null, kind: "write" }
 ): Writes {
-  tab.storage.setItem(
-    `dispatch.write:${key}`,
-    JSON.stringify({
-      ...of,
-      key,
-      label: "CORE-1 set to done",
-      login: "alice",
-      presentation: "indicator",
-      pressedAt: Date.now(),
-      request,
-      sent: true,
-      state,
-      target: null,
-      version: 1,
-    })
-  );
+  keepWrite(tab.storage, key, { ...of, request, state });
   const writes = new Writes(signedIn(), tab.page(), memoryFiles());
   writes.resume("alice");
   return writes;
@@ -396,27 +378,1140 @@ test("a write survives a reload and resumes once, PUT included, and an old one c
   });
 });
 
-// A write pressed in this page before the app takes up what a reload kept is kept in the tab from
-// its press, so the take-up finds it there too: it is this page's write, already in its line, and
-// is not taken up a second time beside itself. The app's resume runs in the shell's effect, which
-// React runs after every effect of the shell's children, so a child's write on mount comes first.
-test("a write pressed before the take-up of a reload's writes is not taken up beside itself", async () => {
+/** A pick of `issue`'s status on that issue's line, made from its request alone, as the issue page
+ *  presses one: its body names the status picked. */
+function pickOn(writes: Writes, issue: string, status: string): Promise<unknown> {
+  return writes.run({
+    detail: null,
+    kind: plainWrite,
+    label: `${issue} set to ${status}`,
+    presentation: "indicator",
+    request: { ...patch, body: { status }, path: `/api/v1/issues/${issue}` },
+    target: `issue:${issue}`,
+  });
+}
+
+/** A pick of CORE-1's status on the issue's line. */
+function statusPick(writes: Writes, status: string): Promise<unknown> {
+  return pickOn(writes, "CORE-1", status);
+}
+
+// The app's take-up of what a reload kept waits for every kind of write, which is a chunk of its
+// own (`kinds.ts`), and the store holds every write pressed meanwhile, whatever order the page's
+// effects pressed it in: kept in the tab from its press, it sends nothing while the take-up
+// waits, and goes out as soon as the take-up is done, in its line behind the writes the take-up
+// put there, in press order. The take-up finds it kept in the tab too: it is this page's write,
+// already in the store, and is not taken up a second time beside itself.
+test("a write pressed before the take-up of a reload's writes waits for it, then goes behind the kept writes in press order, and is not taken up beside itself", async () => {
   await onFakeClock(async () => {
     const tab = keptTab();
-    const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+    const bodies: unknown[] = [];
+    const send = spyOn(api, "send").mockImplementation(async (request) => {
+      bodies.push(request.body);
+      // The page before the reload never hears back; the reloaded one hears at once.
+      if (bodies.length === 1) await Promise.withResolvers<never>().promise;
+      return null as never;
+    });
+    const before = new Writes(signedIn(), tab.page(), memoryFiles());
+    const kinds = Promise.withResolvers<void>();
     try {
-      const hang = () => Promise.withResolvers<never>().promise;
-      void statusWrite(writes, hang).catch(() => {});
+      void statusPick(before, "done").catch(() => {});
       await settle();
-      const key = row(writes)?.key ?? "";
-      expect(tab.kept(key)).toMatchObject({ login: "alice", state: { status: "sending" } });
+      const keptKey = row(before)?.key ?? "";
+      const after = new Writes(signedIn(), tab.page(), memoryFiles());
 
-      writes.resume("alice");
+      after.resume("alice", () => kinds.promise);
+      const pressed = [statusPick(after, "todo"), statusPick(after, "backlog")];
       await settle();
-      expect(writes.rows().map((write) => write.key)).toEqual([key]);
-      expect(tab.kept(key)).toMatchObject({ login: "alice" });
+      expect(bodies).toEqual([{ status: "done" }]);
+      expect(after.rows().map((write) => [write.label, write.status])).toEqual([
+        ["CORE-1 set to todo", "queued"],
+        ["CORE-1 set to backlog", "queued"],
+      ]);
+      const heldKeys = after.rows().map((write) => write.key);
+      for (const key of heldKeys) {
+        expect(tab.kept(key)).toMatchObject({ login: "alice", state: { status: "queued" } });
+      }
+
+      kinds.resolve();
+      await settle();
+      expect(bodies).toEqual([
+        { status: "done" },
+        { status: "done" },
+        { status: "todo" },
+        { status: "backlog" },
+      ]);
+      expect(send.mock.calls.slice(1).map(([, bounds]) => bounds?.key)).toEqual([
+        keptKey,
+        ...heldKeys,
+      ]);
+      expect(await Promise.all(pressed)).toEqual([null, null]);
+      expect(after.rows()).toEqual([]);
     } finally {
+      // The kinds let in whichever step failed, and their take-up run against this row's `send`:
+      // a take-up left waiting stays in the module's `takeUpsWaiting`, and a later row's
+      // `kindsRegistered` would end it and send its writes through that row's own `api.send`.
+      kinds.resolve();
+      await settle();
+      send.mockRestore();
       tab.close();
+    }
+  });
+});
+
+// The take-up ends once the kinds of write are in, whichever load brought them: its own ask can
+// fail with no reload to follow - the page being left, the reader staying at the leave prompt
+// that the writes the reload kept (`WriteStorage.load`) or a write pressed meanwhile open, or the
+// tab's recovery reloads spent - and another load of the same chunk then brings them in (the
+// writes host's prefetch), which `kinds.ts` reports once its imports have defined every kind
+// (`kindsRegistered`). The write pressed meanwhile then goes out behind the kept one, as it does
+// after a take-up's own load.
+test("a take-up whose own ask for the kinds of write failed ends once another load registers them, and the write pressed meanwhile goes out behind the kept one", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const bodies: unknown[] = [];
+    const send = spyOn(api, "send").mockImplementation(async (request) => {
+      bodies.push(request.body);
+      // The page before the reload never hears back; the reloaded one hears at once.
+      if (bodies.length === 1) await Promise.withResolvers<never>().promise;
+      return null as never;
+    });
+    const before = new Writes(signedIn(), tab.page(), memoryFiles());
+    try {
+      void statusPick(before, "done").catch(() => {});
+      await settle();
+      const keptKey = row(before)?.key ?? "";
+      const after = new Writes(signedIn(), tab.page(), memoryFiles());
+
+      after.resume("alice", () => Promise.reject(new TypeError("Failed to fetch")));
+      await settle();
+      const pressed = statusPick(after, "todo");
+      await settle();
+      expect(bodies).toEqual([{ status: "done" }]);
+      expect(after.rows().map((write) => [write.label, write.status])).toEqual([
+        ["CORE-1 set to todo", "queued"],
+      ]);
+      const pressedKey = row(after)?.key ?? "";
+
+      kindsRegistered();
+      await settle();
+      expect(bodies).toEqual([{ status: "done" }, { status: "done" }, { status: "todo" }]);
+      expect(send.mock.calls.slice(1).map(([, bounds]) => bounds?.key)).toEqual([
+        keptKey,
+        pressedKey,
+      ]);
+      expect(await pressed).toBeNull();
+      expect(after.rows()).toEqual([]);
+    } finally {
+      // The take-up ended whichever step failed, against this row's `send`, so none is left in
+      // the module's `takeUpsWaiting` for a later row's `kindsRegistered` to end.
+      kindsRegistered();
+      await settle();
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// A take-up's own ask for the kinds of write can fail and leave the page where it is - the page
+// being left, the reader staying at the leave prompt that the writes the reload kept
+// (`WriteStorage.load`) or a write pressed meanwhile open, or the tab's recovery reloads spent -
+// and then the next write pressed asks for them again (`Writes.run`), since a reader now waits
+// on them. That load brings them in and ends the take-up: the kept write goes out, and the one
+// pressed behind it. Without that ask both would wait for a load nothing on the page had started.
+test("a write pressed after the take-up's ask for the kinds of write failed asks for them again, and both writes go out once they are in", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const kept = keyMinted(Date.now());
+    keepWrite(tab.storage, kept, { target: "issue:CORE-1" });
+    const send = spyOn(api, "send").mockResolvedValue(null as never);
+    try {
+      const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+      let asked = 0;
+      writes.resume("alice", () => {
+        asked += 1;
+        return asked === 1 ? Promise.reject(new TypeError("Failed to fetch")) : Promise.resolve();
+      });
+      await settle();
+      expect(asked).toBe(1);
+      expect(send).not.toHaveBeenCalled();
+
+      const pressed = statusPick(writes, "todo");
+      const pressedKey = row(writes)?.key ?? "";
+      await settle();
+      expect(asked, "the write pressed after the failed load asks for the kinds again").toBe(2);
+      expect(send.mock.calls.map(([, bounds]) => bounds?.key)).toEqual([kept, pressedKey]);
+      expect(await pressed).toBeNull();
+      expect(writes.rows()).toEqual([]);
+    } finally {
+      // The take-up ended whichever step failed, against this row's `send`, so none is left in
+      // the module's `takeUpsWaiting` for a later row's `kindsRegistered` to end.
+      kindsRegistered();
+      await settle();
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// With nothing kept for the person there is nothing to take up, so `resume` ends the take-up at
+// once and asks for no kinds of write: a press goes straight to its line, however long the kinds
+// would take. Another person's kept write, which the take-up drops unmade, is nothing of alice's
+// to take up.
+test("a resume with nothing kept for the person asks for no kinds of write, and a press goes straight out", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    keepWrite(tab.storage, keyMinted(Date.now()), { login: "bob", target: "issue:CORE-1" });
+    const send = spyOn(api, "send").mockResolvedValue(null as never);
+    try {
+      const writes = new Writes(signedIn("alice"), tab.page(), memoryFiles());
+      writes.signedIn("alice");
+      let asked = 0;
+      writes.resume("alice", () => {
+        asked += 1;
+        return Promise.withResolvers<never>().promise;
+      });
+      const pressed = statusPick(writes, "todo");
+      await settle();
+      expect(asked, "the take-up asked for the kinds with nothing to take up").toBe(0);
+      expect(send.mock.calls.map(([request]) => request.body)).toEqual([{ status: "todo" }]);
+      expect(await pressed).toBeNull();
+      expect(writes.rows()).toEqual([]);
+    } finally {
+      // A take-up left waiting, had a step failed, ends here against this row's `api.send`.
+      kindsRegistered();
+      await settle();
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// A write pressed while the take-up waits joins its line only once the take-up is done, behind
+// the writes the take-up puts there (the rows above). Until then it is kept in the tab from its
+// press, so leaving the page asks for it, as for any write still out. The kept write here is a
+// refusal, which leaving does not ask for, so the ask is the press's alone.
+test("a write pressed while the take-up waits is kept from its press, and leaving asks for it until it lands", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const kept = keyMinted(Date.now());
+    keepWrite(tab.storage, kept, {
+      state: { refusal: { kind: "error", message: "not now" }, status: "refused" },
+      target: "issue:CORE-1",
+    });
+    const unload = new UnloadTarget();
+    const send = spyOn(api, "send").mockResolvedValue(null as never);
+    const kinds = Promise.withResolvers<void>();
+    try {
+      const writes = new Writes(signedIn("alice"), tab.page(unload), memoryFiles());
+      writes.signedIn("alice");
+      writes.resume("alice", () => kinds.promise);
+      await settle();
+      expect(unload.asks(), "leaving asked for the kept refusal").toBe(false);
+
+      const pressed = statusPick(writes, "todo");
+      await settle();
+      const [held] = writes.rows();
+      expect(held?.status).toBe("queued");
+      expect(tab.kept(held?.key ?? "")).toMatchObject({ login: "alice" });
+      expect(send).not.toHaveBeenCalled();
+      expect(unload.asks(), "leaving asked nothing for the write pressed meanwhile").toBe(true);
+
+      kinds.resolve();
+      await settle();
+      expect(send.mock.calls.map(([, bounds]) => bounds?.key)).toEqual([held?.key]);
+      expect(await pressed).toBeNull();
+      expect(writes.rows().map((write) => [write.key, write.status])).toEqual([[kept, "refused"]]);
+      expect(unload.asks()).toBe(false);
+    } finally {
+      kinds.resolve();
+      await settle();
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+/** A page whose take-up of what a reload kept waits for the kinds of write, and a write alice
+ *  pressed meanwhile (`pressedWhileTakingUp`). */
+interface TakingUp {
+  /** Lets the kinds of write in, whichever step of the row failed, and waits for the take-up to
+   *  run against this page's `api.send`, so none is left in the module's `takeUpsWaiting` for a
+   *  later row's `kindsRegistered` to end; then puts `api.send` back and ends the tab's pages. */
+  readonly end: () => Promise<void>;
+  /** The write pressed meanwhile, as the store held it then. */
+  readonly held: Write;
+  /** The key of the write the reload kept. */
+  readonly kept: string;
+  /** The load of the kinds of write the take-up waits for: `resolve` lets them in, and `asked` is
+   *  how many loads of them the store has started. */
+  readonly kinds: { readonly asked: () => number; readonly resolve: () => void };
+  /** The press of `held`, settled with its answer or its refusal. */
+  readonly pressed: Promise<unknown>;
+  /** The key of each write that went out, in order. */
+  readonly sent: () => readonly (string | undefined)[];
+  /** Whether the page was going (`isPageGoing`) as each write went out, in the same order: what
+   *  makes `api/client.ts` send it with `keepalive`. */
+  readonly goingWhenSent: () => readonly boolean[];
+  readonly tab: KeptTab;
+  readonly writes: Writes;
+}
+
+/** A page reloaded while alice's pick of CORE-1's status was out, kept in the tab as `keptAs`
+ *  says (out within the resume window unless it names otherwise), whose take-up of it waits for
+ *  the kinds of write (`resume`): `kinds` is that load, which the row lets land.
+ *  Alice presses another write meanwhile (`press`, a pick of todo on the same line unless named),
+ *  which the store holds for the take-up, kept in the tab from its press. Dispatch answers every
+ *  write at once. */
+async function pressedWhileTakingUp(
+  press: (writes: Writes) => Promise<unknown> = (writes) => statusPick(writes, "todo"),
+  keptAs: Parameters<typeof keepWrite>[2] = {}
+): Promise<TakingUp> {
+  const tab = keptTab();
+  const kept = keyMinted(Date.now());
+  keepWrite(tab.storage, kept, { target: "issue:CORE-1", ...keptAs });
+  const going: boolean[] = [];
+  const send = spyOn(api, "send").mockImplementation(async () => {
+    going.push(isPageGoing());
+    return null as never;
+  });
+  const kinds = Promise.withResolvers<void>();
+  const end = async () => {
+    kinds.resolve();
+    await settle();
+    send.mockRestore();
+    tab.close();
+  };
+  try {
+    const writes = new Writes(signedIn("alice"), tab.page(), memoryFiles());
+    writes.signedIn("alice");
+    let asked = 0;
+    writes.resume("alice", () => {
+      asked += 1;
+      return kinds.promise;
+    });
+    const pressed = press(writes).catch((error: unknown) => error);
+    await settle();
+    const [held] = writes.rows();
+    if (held === undefined) throw new Error("the store holds no write pressed meanwhile");
+    expect(held.status).toBe("queued");
+    expect(tab.kept(held.key)).toMatchObject({ login: "alice" });
+    return {
+      end,
+      goingWhenSent: () => going,
+      held,
+      kept,
+      kinds: { asked: () => asked, resolve: kinds.resolve },
+      pressed,
+      sent: () => send.mock.calls.map(([, bounds]) => bounds?.key),
+      tab,
+      writes,
+    };
+  } catch (error) {
+    // A step above that throws hands the row no `end` for its `finally`, so it runs here: the spy
+    // on `api.send`, the tab's pages and the take-up still waiting would otherwise outlive this
+    // row, and a later row's `kindsRegistered` would end that take-up through its own `api.send`.
+    await end();
+    throw error;
+  }
+}
+
+/** That nothing of alice's two writes is left, under `name`: none went out, under anyone's name,
+ *  neither is in the store, and the tab keeps neither. Read once the kinds are in, and again
+ *  once alice has signed in after that, as a sign-in the take-up kept a write for would send it. */
+async function nothingLeft(name: string, of: TakingUp): Promise<void> {
+  const check = async (when: string) => {
+    await tick(60_000);
+    expect([name, when, of.sent()]).toEqual([name, when, []]);
+    expect([name, when, of.writes.rows()]).toEqual([name, when, []]);
+    expect([name, when, of.tab.kept(of.held.key), of.tab.kept(of.kept)]).toEqual([
+      name,
+      when,
+      undefined,
+      undefined,
+    ]);
+  };
+  await check("once the kinds are in");
+  of.writes.signedIn("alice");
+  await check("once alice signs in again");
+}
+
+/** That each of `ways`, done to a page of its own while the take-up waits, lets alice's two writes
+ *  go: nothing of either is left (`nothingLeft`), and the press of the one pressed meanwhile is
+ *  refused, stopped. */
+async function dropsBoth(ways: Readonly<Record<string, (writes: Writes) => void>>): Promise<void> {
+  for (const [name, way] of Object.entries(ways)) {
+    const taking = await pressedWhileTakingUp();
+    try {
+      way(taking.writes);
+      taking.kinds.resolve();
+      await nothingLeft(name, taking);
+      expect([name, await taking.pressed]).toEqual([name, expect.any(SendStoppedError)]);
+    } finally {
+      await taking.end();
+    }
+  }
+}
+
+// A sign-out that lands while the take-up waits for the kinds of write - this page's, or the
+// preload's `clear` - lets every write go at once: the one pressed meanwhile, its press refused,
+// and the one the reload kept, so the take-up has nothing left to take up. Neither goes out, once
+// the kinds are in or at the next sign-in.
+test("a sign-out that lands while the take-up waits drops the write pressed meanwhile and the kept one, and sends neither", async () => {
+  await onFakeClock(() =>
+    dropsBoth({
+      "this page's sign-out": (writes) => writes.signedOut("alice"),
+      "the preload's clear": (writes) => writes.clear(),
+    })
+  );
+});
+
+// W26. Another person's sign-in while the take-up waits drops every write of the person before at
+// once: the one pressed meanwhile, and the one the reload kept of theirs - whoever is signed in
+// once the kinds are in: that person, or the person before again, or no one after a lapse.
+// Neither goes out as anyone.
+test("another person's sign-in while the take-up waits drops the first person's write pressed meanwhile and the kept one, and sends neither", async () => {
+  await onFakeClock(() => {
+    const signIns =
+      (...logins: readonly (string | undefined)[]) =>
+      (writes: Writes) => {
+        for (const login of logins) writes.signedIn(login);
+      };
+    return dropsBoth({
+      "bob signs in": signIns("bob"),
+      "bob signs in, then alice again": signIns("bob", "alice"),
+      "bob signs in, then his session lapses": signIns("bob", undefined),
+      "alice's session lapses, then bob signs in": signIns(undefined, "bob"),
+    });
+  });
+});
+
+// W26. A tab can keep the write of someone no longer signed in there - bob's, kept from his session
+// before the reload - and load signed in as alice, whose sign-in drops it, as it drops every write
+// of another login. It goes as the take-up begins, not once the kinds of write are in: bob signing
+// in from another tab while they download takes none of it up, and nothing goes out as anyone.
+test("another person's write a reload kept goes as the take-up begins, so their sign-in while the kinds download sends none of it", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const bobs = keyMinted(Date.now());
+    keepWrite(tab.storage, bobs, { login: "bob", target: "issue:CORE-1" });
+    const send = spyOn(api, "send").mockResolvedValue(null as never);
+    const kinds = Promise.withResolvers<void>();
+    try {
+      const writes = new Writes(signedIn("alice"), tab.page(), memoryFiles());
+      writes.signedIn("alice");
+      writes.resume("alice", () => kinds.promise);
+      await settle();
+
+      writes.signedIn("bob");
+      kinds.resolve();
+      await tick(60_000);
+      expect(
+        send.mock.calls.map(([, bounds]) => bounds?.key),
+        "the take-up sent the write the tab kept of bob's before alice signed in"
+      ).toEqual([]);
+      expect(writes.rows()).toEqual([]);
+      expect(tab.kept(bobs)).toBeUndefined();
+    } finally {
+      // Let in whichever step failed, so no take-up is left in the module's `takeUpsWaiting`
+      // for a later row's `kindsRegistered` to end against that row's `api.send`.
+      kinds.resolve();
+      await settle();
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// W26. Alice's take-up waits for the kinds of write when bob signs in from another tab, which drops
+// what the reload kept of hers at once, as hers - the person the take-up began for - and not by a
+// take-up of whoever is signed in once the kinds are in: that take-up would read bob's kept
+// writes, find none, and remove hers from the tab's storage only as an entry of another login,
+// which leaves the page still counting it as out. The page would then ask the reader to confirm
+// leaving for a write it has already let go, and keep asking until it is closed or the person
+// signs out here. So the row reads, besides the tab and the sends, whether leaving still asks: it
+// asked while the take-up waited, since the kept write was then in the tab's storage alone
+// (`WriteStorage.load`).
+test("a take-up waiting when another person signs in drops what the reload kept of the person it began for, and leaving asks for it no more", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const alices = keyMinted(Date.now());
+    keepWrite(tab.storage, alices, { target: "issue:CORE-1" });
+    const unload = new UnloadTarget();
+    const send = spyOn(api, "send").mockResolvedValue(null as never);
+    const kinds = Promise.withResolvers<void>();
+    try {
+      const writes = new Writes(signedIn("alice"), tab.page(unload), memoryFiles());
+      writes.signedIn("alice");
+      writes.resume("alice", () => kinds.promise);
+      await settle();
+      expect(
+        unload.asks(),
+        "leaving asked nothing for the write the take-up waits to take up"
+      ).toBe(true);
+
+      writes.signedIn("bob");
+      kinds.resolve();
+      await tick(60_000);
+      expect(send).not.toHaveBeenCalled();
+      expect(writes.rows()).toEqual([]);
+      expect(tab.kept(alices)).toBeUndefined();
+      expect(writes.unsent("alice")).toEqual([]);
+      expect(
+        unload.asks(),
+        "leaving still asks for the write of alice's the take-up dropped once bob signed in"
+      ).toBe(false);
+    } finally {
+      // Let in whichever step failed, so no take-up is left in the module's `takeUpsWaiting`
+      // for a later row's `kindsRegistered` to end against that row's `api.send`.
+      kinds.resolve();
+      await settle();
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// Another person's sign-in forgets what the reload kept of the person the take-up began for at
+// once, with no kind of write in: the kinds may never come. The tab keeps none of it from then on,
+// so leaving the page asks for none of it, and a reload signed in as that person, the kinds in,
+// takes none of it up. The take-up, left nothing to take up, ends there too, so bob's own press
+// goes straight out.
+test("another person's sign-in while the take-up waits for kinds that never come forgets the first person's kept write at once", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const alices = keyMinted(Date.now());
+    keepWrite(tab.storage, alices, { target: "issue:CORE-1" });
+    const unload = new UnloadTarget();
+    const client = signedIn("alice");
+    const send = spyOn(api, "send").mockResolvedValue(null as never);
+    try {
+      const writes = new Writes(client, tab.page(unload), memoryFiles());
+      writes.signedIn("alice");
+      writes.resume("alice", () => Promise.withResolvers<never>().promise);
+      await settle();
+      expect(unload.asks()).toBe(true);
+
+      client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "bob" });
+      writes.signedIn("bob");
+      expect(tab.kept(alices), "bob's sign-in left alice's kept write in the tab").toBeUndefined();
+      expect(unload.asks(), "leaving still asks for alice's kept write").toBe(false);
+      expect(writes.unsent("alice")).toEqual([]);
+      const bobs = statusPick(writes, "todo");
+      await settle();
+      expect(send.mock.calls.map(([request]) => request.body)).toEqual([{ status: "todo" }]);
+      expect(await bobs).toBeNull();
+
+      const reloaded = new Writes(signedIn("alice"), tab.page(), memoryFiles());
+      reloaded.signedIn("alice");
+      reloaded.resume("alice", async () => undefined);
+      await tick(60_000);
+      expect(
+        send.mock.calls.map(([request]) => request.body),
+        "a reload signed in as alice took up the write bob's sign-in dropped"
+      ).toEqual([{ status: "todo" }]);
+      expect(reloaded.rows()).toEqual([]);
+    } finally {
+      // A take-up left waiting, had a step failed, ends here against this row's `api.send`.
+      kindsRegistered();
+      await settle();
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// The person's sign-out landing in another tab while their take-up waits (`dropLogin`) forgets
+// what the reload kept of theirs at once, with no kind of write in, as it does before the take-up
+// begins: the kinds may never come, the tab keeps none of it, and a reload signed in as them
+// takes none of it up. A 401 that lands another tab's sign-out of theirs is that landing too.
+test("another tab's sign-out that lands while the take-up waits for kinds that never come forgets the kept write at once", async () => {
+  await onFakeClock(async () => {
+    const ways: Readonly<Record<string, (writes: Writes) => void>> = {
+      "still signed in here": (writes) => writes.dropLogin("alice"),
+      "a 401 while that tab's sign-out holds them": (writes) => {
+        writes.holdFor("alice");
+        writes.signedIn(undefined);
+      },
+    };
+    for (const [name, way] of Object.entries(ways)) {
+      const tab = keptTab();
+      const kept = keyMinted(Date.now());
+      keepWrite(tab.storage, kept, { target: "issue:CORE-1" });
+      const unload = new UnloadTarget();
+      const send = spyOn(api, "send").mockResolvedValue(null as never);
+      try {
+        const writes = new Writes(signedIn("alice"), tab.page(unload), memoryFiles());
+        writes.signedIn("alice");
+        writes.resume("alice", () => Promise.withResolvers<never>().promise);
+        await settle();
+        expect([name, writes.unsent("alice")]).toEqual([
+          name,
+          [{ key: kept, label: "CORE-1 set to done" }],
+        ]);
+
+        way(writes);
+        expect(
+          [name, tab.kept(kept)],
+          "the sign-out's landing left the kept write in the tab"
+        ).toEqual([name, undefined]);
+        expect([name, unload.asks()]).toEqual([name, false]);
+        expect([name, writes.unsent("alice")]).toEqual([name, []]);
+
+        const reloaded = new Writes(signedIn("alice"), tab.page(), memoryFiles());
+        reloaded.signedIn("alice");
+        reloaded.resume("alice", async () => undefined);
+        await tick(60_000);
+        expect([name, send.mock.calls.length]).toEqual([name, 0]);
+        expect([name, reloaded.rows()]).toEqual([name, []]);
+      } finally {
+        kindsRegistered();
+        await settle();
+        send.mockRestore();
+        tab.close();
+      }
+    }
+  });
+});
+
+// Alice's take-up waits for the kinds of write when bob signs in from another tab. An upload of
+// his can be pressed in the moment before this page hears of that sign-in - the store reads who
+// is signed in at the press (`signedInLogin`) - and waits for the take-up, kept in the tab with
+// its file. Bob's sign-in then drops what the reload kept of alice's, at once, and nothing else:
+// his upload keeps its file, which a reload before it lands needs to make the upload again, and
+// goes out as the take-up, left nothing to take up, ends.
+test("another person's sign-in that drops what the reload kept of the person the take-up began for keeps the file of an upload pressed meanwhile", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const alices = keyMinted(Date.now());
+    keepWrite(tab.storage, alices, { target: "issue:CORE-1" });
+    const files = memoryFiles();
+    const client = signedIn("alice");
+    const send = spyOn(api, "send").mockResolvedValue(null as never);
+    const kinds = Promise.withResolvers<void>();
+    try {
+      const writes = new Writes(client, tab.page(), files);
+      writes.signedIn("alice");
+      writes.resume("alice", () => kinds.promise);
+      client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "bob" });
+      void uploadWrite(writes, spec, () => Promise.withResolvers<never>().promise).catch(() => {});
+      await settle();
+      const [bobs] = writes.rows();
+      expect([bobs?.login, bobs?.status]).toEqual(["bob", "queued"]);
+      const key = bobs?.key ?? "";
+      expect(files.rows.get(key)).toBe(spec);
+
+      writes.signedIn("bob");
+      await settle();
+      expect(tab.kept(alices)).toBeUndefined();
+      expect(writes.rows().map((write) => [write.key, write.status])).toEqual([[key, "sending"]]);
+      expect(tab.kept(key)).toMatchObject({ login: "bob" });
+      expect(
+        files.rows.get(key),
+        "the drop of alice's kept writes deleted the file of bob's upload"
+      ).toBe(spec);
+
+      kinds.resolve();
+      await tick(60_000);
+      expect(send).not.toHaveBeenCalled();
+      expect(files.rows.get(key)).toBe(spec);
+    } finally {
+      kinds.resolve();
+      await settle();
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// W48, W57. A sign-out of the person in another tab, out when the take-up ends, holds both the
+// write the reload kept and the one pressed meanwhile, each in its line and saying so, and none
+// goes out; its landing there (`dropLogin`) then drops both, unsent.
+test("another tab's sign-out out when the take-up ends holds the write pressed meanwhile and the kept one, and its landing drops both unsent", async () => {
+  await onFakeClock(async () => {
+    const taking = await pressedWhileTakingUp();
+    try {
+      taking.writes.holdFor("alice");
+      taking.kinds.resolve();
+      await tick(60_000);
+      expect(taking.sent()).toEqual([]);
+      expect(
+        taking.writes.rows().map((write) => [write.key, write.status, write.signingOutElsewhere])
+      ).toEqual([
+        [taking.held.key, "queued", true],
+        [taking.kept, "queued", true],
+      ]);
+
+      taking.writes.dropLogin("alice");
+      await nothingLeft("another tab's sign-out", taking);
+      expect(await taking.pressed).toBeInstanceOf(SendStoppedError);
+    } finally {
+      await taking.end();
+    }
+  });
+});
+
+// W48. This page's sign-out, pressed while the take-up waits for the kinds of write, goes out at
+// once, however long the kinds take: ending the session needs no kind of write, and only sending
+// a kept write waits for them. It holds every other write of its person in turn, so neither the
+// kept write nor the one pressed before it goes out, and its landing drops both, unsent. It goes
+// out once: the end of the take-up does not send it again.
+test("this page's sign-out pressed while the take-up waits goes out at once, and its landing drops the other writes unsent", async () => {
+  await onFakeClock(async () => {
+    const taking = await pressedWhileTakingUp();
+    try {
+      const landed = Promise.withResolvers<unknown>();
+      let signOuts = 0;
+      const signOut = taking.writes
+        .run({
+          detail: null,
+          endsWithSession: true,
+          inline: true,
+          kind: plainWrite,
+          label: "Sign out",
+          method: "POST",
+          presentation: "indicator",
+          write: () => {
+            signOuts += 1;
+            return landed.promise;
+          },
+        })
+        .catch((error: unknown) => error);
+      await settle();
+      expect(signOuts, "the sign-out waited for the kinds of write").toBe(1);
+      expect(taking.sent()).toEqual([]);
+
+      landed.resolve({ ok: true });
+      expect(await signOut).toEqual({ ok: true });
+      expect(taking.sent()).toEqual([]);
+      taking.writes.signedOut("alice");
+      taking.kinds.resolve();
+      await nothingLeft("this page's sign-out", taking);
+      expect(signOuts, "the sign-out went out again once the take-up ended").toBe(1);
+      expect(await taking.pressed).toBeInstanceOf(SendStoppedError);
+    } finally {
+      await taking.end();
+    }
+  });
+});
+
+// W57. A 401 while another tab's sign-out of the person holds their writes - or just after that
+// tab went without saying how it ended (`releaseUnsettled`) - is that sign-out landing: every
+// write of theirs goes at once, the one pressed meanwhile and the one the reload kept, and neither
+// waits for a sign-in the person discarded them before.
+test("a 401 that lands another tab's sign-out while the take-up waits drops the write pressed meanwhile and the kept one, and sends neither", async () => {
+  await onFakeClock(() =>
+    dropsBoth({
+      "while that tab's sign-out holds them": (writes) => {
+        writes.holdFor("alice");
+        writes.signedIn(undefined);
+      },
+      "just after that tab went": (writes) => {
+        writes.holdFor("alice");
+        writes.releaseUnsettled("alice");
+        writes.signedIn(undefined);
+      },
+    })
+  );
+});
+
+// W26, W57. The person's sign-out landing in another tab while the take-up waits (`dropLogin`)
+// drops every write of theirs here at once: the one pressed meanwhile, and the one the reload
+// kept - whether this page still reads them signed in, or has read the 401 that follows - and
+// neither goes out, once the kinds are in or at their next sign-in.
+test("another tab's sign-out that lands while the take-up waits drops the write pressed meanwhile and the kept one, and sends neither", async () => {
+  await onFakeClock(() =>
+    dropsBoth({
+      "still signed in here": (writes) => writes.dropLogin("alice"),
+      "then the 401 here": (writes) => {
+        writes.dropLogin("alice");
+        writes.signedIn(undefined);
+      },
+    })
+  );
+});
+
+// Before the take-up begins - while the sign-in check the page loaded with is still out, or on a
+// page that loaded signed out, so the app has not called `resume` - the writes the reload kept are
+// in the tab's storage alone. Another tab's sign-out of their person asks this tab what it would
+// discard (`unsent`), and its landing here (`dropLogin`) discards them: the person's next sign-in
+// takes none of them up.
+test("another tab's sign-out before the take-up begins names the write the reload kept, and its landing drops it unsent", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const kept = keyMinted(Date.now());
+    keepWrite(tab.storage, kept, { target: "issue:CORE-1" });
+    const send = spyOn(api, "send").mockResolvedValue(null as never);
+    try {
+      const writes = new Writes(signedIn("alice"), tab.page(), memoryFiles());
+      expect(writes.unsent("alice"), "the sign-out was not told of the kept write").toEqual([
+        { key: kept, label: "CORE-1 set to done" },
+      ]);
+      writes.dropLogin("alice");
+      expect(tab.kept(kept), "the sign-out's landing left the kept write in the tab").toBe(
+        undefined
+      );
+      expect(writes.unsent("alice")).toEqual([]);
+
+      writes.signedIn("alice");
+      writes.resume("alice");
+      await tick(60_000);
+      expect(send, "the next sign-in sent the write the sign-out discarded").not.toHaveBeenCalled();
+      expect(writes.rows()).toEqual([]);
+    } finally {
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// The take-up reads an upload's file before it takes the upload up (`#takeUp`), and a drop of
+// the person's writes can land while that read is out: another person's sign-in, or the person's
+// sign-out landing in another tab or in this page. The upload goes with the rest, unsent, its
+// record and its file with it, rather than being taken up once the read answers and sent for a
+// person who discarded it. The read here has its file in hand before the drop and answers after
+// it, as a browser's read of its kept files can.
+test("a sign-in or a sign-out that lands while the take-up reads an upload's file drops the upload unsent", async () => {
+  await onFakeClock(async () => {
+    const drops: Readonly<Record<string, (writes: Writes) => void>> = {
+      "bob signs in": (writes) => writes.signedIn("bob"),
+      "alice's sign-out lands in another tab": (writes) => writes.dropLogin("alice"),
+      "alice's sign-out lands here": (writes) => writes.signedOut("alice"),
+    };
+    for (const [name, drop] of Object.entries(drops)) {
+      const tab = keptTab();
+      const files = memoryFiles();
+      const send = spyOn(api, "send").mockResolvedValue({ artifact: {}, version: {} } as never);
+      const answer = Promise.withResolvers<void>();
+      const reading = Promise.withResolvers<void>();
+      try {
+        const before = new Writes(signedIn(), tab.page(), files);
+        void uploadWrite(before, spec, () => Promise.withResolvers<never>().promise).catch(
+          () => {}
+        );
+        await settle();
+        const key = row(before)?.key ?? "";
+        expect(files.rows.get(key)).toBe(spec);
+
+        const after = new Writes(signedIn(), tab.page(), {
+          ...files,
+          get: async (of) => {
+            const file = await files.get(of);
+            reading.resolve();
+            await answer.promise;
+            return file;
+          },
+        });
+        after.signedIn("alice");
+        after.resume("alice", async () => undefined);
+        await reading.promise;
+        drop(after);
+        answer.resolve();
+        await settle();
+        expect([name, send.mock.calls.length]).toEqual([name, 0]);
+        expect([name, after.rows()]).toEqual([name, []]);
+        expect([name, tab.kept(key)]).toEqual([name, undefined]);
+        expect([name, files.rows.has(key)]).toEqual([name, false]);
+      } finally {
+        answer.resolve();
+        await settle();
+        send.mockRestore();
+        tab.close();
+      }
+    }
+  });
+});
+
+// A quiet write is let go once five minutes pass from its press without Dispatch confirming it,
+// as a reload lets one that old go unmade: so is one pressed while the take-up waits, which is
+// never sent once the take-up ends past that.
+test("a quiet write pressed while the take-up waits is let go five minutes after its press, unsent", async () => {
+  await onFakeClock(async () => {
+    const taking = await pressedWhileTakingUp((writes) =>
+      writes.run({
+        detail: null,
+        kind: plainWrite,
+        label: "CORE-1 marked read",
+        presentation: "quiet",
+        request: { ...put },
+      })
+    );
+    try {
+      await tick(KEPT_SEND_RESUME_MS + 1_000);
+      expect(taking.writes.rows()).toEqual([]);
+      expect(taking.tab.kept(taking.held.key)).toBeUndefined();
+      taking.kinds.resolve();
+      await tick(60_000);
+      expect(taking.sent()).not.toContain(taking.held.key);
+      expect(taking.writes.rows().map((write) => write.key)).not.toContain(taking.held.key);
+      expect(taking.tab.kept(taking.held.key)).toBeUndefined();
+      expect(await taking.pressed).toBeInstanceOf(SendStoppedError);
+    } finally {
+      await taking.end();
+    }
+  });
+});
+
+// A write pressed while the take-up waits has sent nothing, so the reader may discard it: its
+// press is refused, the tab keeps nothing of it, and once the take-up ends only the kept write
+// goes out.
+test("a write pressed while the take-up waits and discarded then is never sent, and only the kept one goes out", async () => {
+  await onFakeClock(async () => {
+    const taking = await pressedWhileTakingUp();
+    try {
+      expect(taking.writes.discard(taking.held.id)).toBe(true);
+      expect(await taking.pressed).toBeInstanceOf(WriteDiscardedError);
+      expect(taking.tab.kept(taking.held.key)).toBeUndefined();
+      taking.kinds.resolve();
+      await tick(60_000);
+      expect(taking.sent()).toEqual([taking.kept]);
+      expect(taking.writes.rows()).toEqual([]);
+      expect(taking.tab.kept(taking.held.key)).toBeUndefined();
+    } finally {
+      await taking.end();
+    }
+  });
+});
+
+// W32. A lapse while the take-up waits keeps both writes, in the store and in the tab - the one
+// pressed meanwhile, and the one the reload kept, taken up under the login the take-up began
+// with - and nothing goes out until the same person signs in, whether before or after the kinds
+// are in: then both go, the kept one first, and land.
+test("a lapse while the take-up waits keeps the write pressed meanwhile and the kept one until the same person's sign-in sends both", async () => {
+  await onFakeClock(async () => {
+    for (const kindsFirst of [true, false]) {
+      const name = kindsFirst ? "the kinds in before the sign-in" : "the sign-in first";
+      const taking = await pressedWhileTakingUp();
+      try {
+        taking.writes.signedIn(undefined);
+        if (kindsFirst) {
+          taking.kinds.resolve();
+          await tick(60_000);
+          expect([name, taking.sent()]).toEqual([name, []]);
+          expect([name, taking.writes.rows().map((write) => [write.key, write.status])]).toEqual([
+            name,
+            [
+              [taking.held.key, "queued"],
+              [taking.kept, "queued"],
+            ],
+          ]);
+        }
+        expect([name, taking.tab.kept(taking.held.key), taking.tab.kept(taking.kept)]).toEqual([
+          name,
+          expect.objectContaining({ login: "alice" }),
+          expect.objectContaining({ login: "alice" }),
+        ]);
+        taking.writes.signedIn("alice");
+        if (!kindsFirst) {
+          await tick(60_000);
+          expect([name, taking.sent()]).toEqual([name, []]);
+          taking.kinds.resolve();
+        }
+        await tick(60_000);
+        expect([name, taking.sent()]).toEqual([name, [taking.kept, taking.held.key]]);
+        expect([name, await taking.pressed]).toEqual([name, null]);
+        expect([name, taking.writes.rows()]).toEqual([name, []]);
+        expect([name, taking.tab.kept(taking.held.key), taking.tab.kept(taking.kept)]).toEqual([
+          name,
+          undefined,
+          undefined,
+        ]);
+      } finally {
+        await taking.end();
+      }
+    }
+  });
+});
+
+// One load of the kinds of write is out at a time (`resume`). Every write pressed while the
+// take-up waits asks for them, since a reader now waits on them, but one asked while a load is out
+// - two presses during a slow download, or while that load waits offline for the network
+// (`importWhenOnline`) - starts no second download beside it.
+test("writes pressed while the take-up's load of the kinds of write is out start no second load", async () => {
+  await onFakeClock(async () => {
+    const taking = await pressedWhileTakingUp((writes) =>
+      Promise.all([statusPick(writes, "todo"), statusPick(writes, "backlog")])
+    );
+    try {
+      const pressedKeys = taking.writes.rows().map((write) => write.key);
+      expect(pressedKeys).toHaveLength(2);
+      expect(taking.kinds.asked(), "two presses during the load start no second one").toBe(1);
+
+      taking.kinds.resolve();
+      await settle();
+      expect(taking.sent()).toEqual([taking.kept, ...pressedKeys]);
+      expect(await taking.pressed).toEqual([null, null]);
+      expect(taking.kinds.asked()).toBe(1);
+    } finally {
+      await taking.end();
+    }
+  });
+});
+
+// A write pressed while the take-up waits stays out of its line so that a kept write taken up
+// after a newer press on its line would not land after it (`Writes.run`). A line the reload kept
+// no write on has no such write to land after, so when the page goes (`pagehide`) the write joins
+// its line and is sent as the page goes, as a write pressed with no take-up waiting is: a tab
+// closed in that window has no reload to send it later. A write with no target has no line and
+// goes too; two on one line keep press order. The kept write still waits for the kinds, which
+// never came in this row until the end, and goes out then.
+test("a write pressed while the take-up waits, on a line the reload kept no write on, goes out when the page goes", async () => {
+  await onFakeClock(async () => {
+    const taking = await pressedWhileTakingUp((writes) =>
+      Promise.all([
+        pickOn(writes, "CORE-2", "todo"),
+        pickOn(writes, "CORE-2", "backlog"),
+        writes.run({
+          detail: null,
+          kind: plainWrite,
+          label: "CORE-1 pinned",
+          presentation: "indicator",
+          request: { ...put },
+        }),
+      ])
+    );
+    try {
+      const [first, second, noLine] = taking.writes.rows().map((write) => write.key);
+      expect(taking.sent()).toEqual([]);
+
+      window.dispatchEvent(new Event("pagehide"));
+      await settle();
+      expect(taking.sent().filter((key) => key !== noLine)).toEqual([first, second]);
+      expect(taking.sent()).toContain(noLine);
+      expect(taking.goingWhenSent()).toEqual([true, true, true]);
+      expect(taking.writes.rows()).toEqual([]);
+
+      taking.kinds.resolve();
+      await settle();
+      expect(taking.sent().at(-1)).toBe(taking.kept);
+      expect(taking.sent()).toHaveLength(4);
+      expect(await taking.pressed).toEqual([null, null, null]);
+    } finally {
+      await taking.end();
+    }
+  });
+});
+
+// The page can be going while a field's own `pagehide` listener presses a write, which runs after
+// the store's own: `run` reads the page's going from `api/client.ts` and treats that press by the
+// same rule. On a line with no kept write it joins its line at once; on a line that holds one it
+// stays out, kept in the tab.
+test("a write pressed while the page is going, on a line the reload kept no write on, goes out at once, and one on a line that holds a kept write stays out", async () => {
+  await onFakeClock(async () => {
+    const taking = await pressedWhileTakingUp();
+    try {
+      let fieldPressed: Promise<unknown[]> | undefined;
+      // A field's own listener, added after the store's.
+      const field = () => {
+        fieldPressed = Promise.all([
+          pickOn(taking.writes, "CORE-2", "todo"),
+          pickOn(taking.writes, "CORE-1", "backlog"),
+        ]);
+      };
+      window.addEventListener("pagehide", field);
+      try {
+        window.dispatchEvent(new Event("pagehide"));
+      } finally {
+        window.removeEventListener("pagehide", field);
+      }
+      const [, onOtherLine, onKeptLine] = taking.writes.rows().map((write) => write.key);
+      await settle();
+      expect(taking.sent()).toEqual([onOtherLine]);
+      expect(taking.goingWhenSent()).toEqual([true]);
+      expect(taking.tab.kept(onKeptLine ?? "")).toMatchObject({ state: { status: "queued" } });
+
+      taking.kinds.resolve();
+      await settle();
+      expect(taking.sent()).toEqual([onOtherLine, taking.kept, taking.held.key, onKeptLine]);
+      expect(await fieldPressed).toEqual([null, null]);
+    } finally {
+      await taking.end();
+    }
+  });
+});
+
+// A write pressed meanwhile on a line that holds a write the reload kept stays out of its line when
+// the page goes, and the tab keeps it behind the kept write, so the next load sends it after that
+// write (`WriteStorage.load` sorts by press time, and the take-up joins its line in that order).
+// A `pageshow` changes nothing already released, and the take-up goes on: a write pressed after it
+// waits as before.
+test("a write pressed while the take-up waits, on a line that holds a kept write, stays out of its line when the page goes, kept in the tab behind that write", async () => {
+  await onFakeClock(async () => {
+    const taking = await pressedWhileTakingUp(
+      (writes) => Promise.all([statusPick(writes, "todo"), pickOn(writes, "CORE-2", "todo")]),
+      { pressedAt: Date.now() - 1_000 }
+    );
+    try {
+      const [onKeptLine, onOtherLine] = taking.writes.rows().map((write) => write.key);
+
+      window.dispatchEvent(new Event("pagehide"));
+      await settle();
+      expect(taking.sent()).toEqual([onOtherLine]);
+      expect(taking.writes.rows().map((write) => [write.key, write.status])).toEqual([
+        [onKeptLine, "queued"],
+      ]);
+      // What the next load takes up, in the order it takes it up.
+      expect(
+        taking.tab
+          .page()
+          .load("alice")
+          .map((write) => write.key)
+      ).toEqual([taking.kept, onKeptLine]);
+
+      window.dispatchEvent(new Event("pageshow"));
+      const after = pickOn(taking.writes, "CORE-2", "backlog");
+      await settle();
+      const afterKey = taking.writes.rows()[1]?.key;
+      expect(taking.sent()).toEqual([onOtherLine]);
+
+      taking.kinds.resolve();
+      await settle();
+      expect(taking.sent().filter((key) => key !== afterKey)).toEqual([
+        onOtherLine,
+        taking.kept,
+        onKeptLine,
+      ]);
+      expect(taking.sent()).toContain(afterKey);
+      expect(await after).toBeNull();
+    } finally {
+      await taking.end();
+    }
+  });
+});
+
+// A kept write that the take-up does not send on its own holds no line: a refused one, and one
+// pressed longer ago than `KEPT_SEND_RESUME_MS`, which is taken up refused (`#resume`) and starts
+// nothing in its line. A write on such a line with no take-up waiting goes out at once, so a
+// write pressed meanwhile on such a line goes out when the page goes, and the kept record stays
+// refused.
+test("a write pressed while the take-up waits, on a line whose only kept write is refused or too old to be sent on its own, goes out when the page goes", async () => {
+  await onFakeClock(async () => {
+    const cases: Readonly<Record<string, Parameters<typeof keepWrite>[2]>> = {
+      "a refused one": {
+        state: { refusal: { kind: "error", message: "not now" }, status: "refused" },
+      },
+      "one pressed too long ago": { pressedAt: Date.now() - KEPT_SEND_RESUME_MS - 1_000 },
+    };
+    for (const [name, keptAs] of Object.entries(cases)) {
+      const taking = await pressedWhileTakingUp(undefined, keptAs);
+      try {
+        window.dispatchEvent(new Event("pagehide"));
+        await settle();
+        expect([name, taking.sent()]).toEqual([name, [taking.held.key]]);
+        expect([name, taking.goingWhenSent()]).toEqual([name, [true]]);
+
+        taking.kinds.resolve();
+        await settle();
+        expect([name, taking.sent()]).toEqual([name, [taking.held.key]]);
+        expect([name, taking.writes.rows().map((write) => [write.key, write.status])]).toEqual([
+          name,
+          [[taking.kept, "refused"]],
+        ]);
+      } finally {
+        // The next case's page has not gone.
+        window.dispatchEvent(new Event("pageshow"));
+        await taking.end();
+      }
     }
   });
 });
@@ -495,6 +1590,106 @@ test("a retried upload's file moves to its new key, and a reload resumes it ther
       expect(after.rows()).toEqual([]);
     } finally {
       send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// The sign-in page's Discard of a write the reload kept as refused, which the store has not taken
+// up - a page that loads signed out takes up nothing until someone signs in (`app.tsx`) - is
+// made from its record alone, with no kind of write in (`discardKept`): the record goes from the
+// tab's storage and from the store's records, and an upload's file with it, as the store's own
+// Discard of that write drops them. A write kept out is not the reader's to drop, and stays.
+test("a refused upload the reload kept and the store has not taken up is discarded from its record alone, its file with it", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const files = memoryFiles();
+    const before = new Writes(signedIn(), tab.page(), files);
+    try {
+      void uploadWrite(before, spec, () => Promise.reject(verdict)).catch(() => {});
+      await settle();
+      expect(row(before)?.status).toBe("refused");
+      const key = row(before)?.key ?? "";
+      expect(files.rows.get(key)).toBe(spec);
+      const out = keyMinted(Date.now() + 1);
+      keepWrite(tab.storage, out);
+
+      const after = new Writes(signedIn(), tab.page(), files);
+      expect(new Set(after.notTakenUp().map((write) => write.key))).toEqual(new Set([key, out]));
+      expect(after.discardKept(out), "a write kept out was discarded").toBe(false);
+      expect(after.discardKept(key)).toBe(true);
+      expect(tab.kept(key)).toBeUndefined();
+      expect(files.rows.has(key)).toBe(false);
+      expect(after.notTakenUp().map((write) => write.key)).toEqual([out]);
+      expect(tab.kept(out)).toBeDefined();
+      expect(after.discardKept(key), "the record was discarded twice").toBe(false);
+    } finally {
+      tab.close();
+    }
+  });
+});
+
+// A take-up waits for the kinds of write only for what the reload kept of its person (`resume`).
+// Once the sign-in page's Discard leaves it nothing to take up, it ends, as a drop of the
+// person's kept writes ends it (`#dropKept`): a write pressed meanwhile goes out with no kind of
+// write in, rather than waiting for a download that may never come.
+test("a take-up that a kept refusal's Discard leaves nothing to take up ends, and the write pressed meanwhile goes out", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const key = keyMinted(Date.now());
+    keepWrite(tab.storage, key, { state: { refusal: { kind: "stopped" }, status: "refused" } });
+    const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+    try {
+      writes.resume("alice", () => Promise.withResolvers<never>().promise);
+      let attempts = 0;
+      const pressed = statusWrite(writes, async () => {
+        attempts += 1;
+        return null;
+      });
+      await settle();
+      expect(attempts, "the press did not wait for the take-up").toBe(0);
+
+      expect(writes.discardKept(key)).toBe(true);
+      await settle();
+      expect(attempts).toBe(1);
+      expect(await pressed).toBeNull();
+      expect(writes.notTakenUp()).toEqual([]);
+    } finally {
+      kindsRegistered();
+      await settle();
+      tab.close();
+    }
+  });
+});
+
+// The sign-in page reads what the reload kept through the store's listeners (`useNotTakenUp`).
+// The store holds every person's kept records from its making, and the take-up keeps only the
+// records of the person signed in (`resume`). The listeners hear of that change, or a reader
+// would still show the other person's writes.
+test("a take-up that keeps only the signed-in person's records of the reload tells the store's listeners", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const alices = keyMinted(Date.now());
+    const bobs = keyMinted(Date.now() + 1);
+    keepWrite(tab.storage, alices, { state: { refusal: { kind: "stopped" }, status: "refused" } });
+    keepWrite(tab.storage, bobs, {
+      login: "bob",
+      state: { refusal: { kind: "stopped" }, status: "refused" },
+    });
+    const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+    // What `useNotTakenUp` reads each time the store tells its listeners: `notTakenUp`.
+    const heard: string[][] = [];
+    const stop = writes.subscribe(() => heard.push(writes.notTakenUp().map((write) => write.key)));
+    try {
+      expect(new Set(writes.notTakenUp().map((write) => write.key))).toEqual(
+        new Set([alices, bobs])
+      );
+      writes.resume("alice", () => Promise.withResolvers<never>().promise);
+      expect(heard, "the take-up changed the list and told no listener").toEqual([[alices]]);
+    } finally {
+      stop();
+      kindsRegistered();
+      await settle();
       tab.close();
     }
   });
@@ -1101,6 +2296,34 @@ test("a store tells each kind of itself and its client once, as it is made", () 
   }
 });
 
+// The app's kinds come in a chunk of their own, after its store was made (`kinds.ts`), and a kind
+// keeps of a client from its store's start: a kind defined after a store is opened on it then,
+// once, as a store opens every kind defined before it. Any other store still alive in this file
+// is opened too, so the row reads the calls made with its own. A kind once defined stays for the
+// whole process, so it records only while the row runs (`told`, above), and keeps no store alive
+// after it.
+test("a kind defined after a store was made is told once of that store and its client", () => {
+  const tab = keptTab();
+  let openedOn: unknown[][] | undefined = [];
+  try {
+    const client = signedIn();
+    const writes = new Writes(client, tab.page(), memoryFiles());
+    defineWriteKind<null>({
+      kept: (value): value is null => value === null,
+      // New on each run, since a name defined before opens nothing: `--rerun-each` runs the row
+      // again in the same process.
+      name: `test-defined-after-the-store-${crypto.randomUUID()}`,
+      opened: (of, store) => {
+        openedOn?.push([of, store]);
+      },
+    });
+    expect(openedOn.filter(([, store]) => store === writes)).toEqual([[client, writes]]);
+  } finally {
+    openedOn = undefined;
+    tab.close();
+  }
+});
+
 // A kind undoes a dropped write from what it remembers of its person's answers, so the store
 // drops the writes a change of who is signed in takes with it before it has the kinds let go of
 // that: another person's sign-in, and a lapse that is the person's sign-out in another tab
@@ -1248,6 +2471,52 @@ test("a sign-out out holds its person's writes until Dispatch answers it", async
     expect(writes.rows()).toEqual([]);
   });
 });
+
+// A sign-out that waits its turn and is discarded signed no one out, so every write of its
+// person it held goes on, as after a refused one. The app's sign-out never waits so: it has no
+// line, and a take-up of what a reload kept does not hold it back either, since it joins its
+// line at once (`Writes.run`). So this one is pressed on the line of alice's status change, which
+// keeps failing at the connection: the sign-out waits behind it and holds it, and alice discards
+// the sign-out.
+test("a sign-out discarded while it waits its turn lets the writes it held go on", async () => {
+  await onFakeClock(async () => {
+    const { writes } = storeOf();
+    let attempts = 0;
+    const failing = () => {
+      attempts += 1;
+      return Promise.reject(dropped());
+    };
+    void statusWrite(writes, failing, { target: "issue:CORE-1" }).catch(() => {});
+    await settle();
+    const signOut = writes
+      .run({
+        detail: null,
+        endsWithSession: true,
+        kind: plainWrite,
+        label: "Sign out",
+        presentation: "indicator",
+        request: sends.answer({ method: "POST", path: "/auth/logout" }, async () => ({ ok: true })),
+        target: "issue:CORE-1",
+      })
+      .catch((error: unknown) => error);
+    await settle();
+    const held = attempts;
+    await tick(10_000);
+    expect(attempts, "the sign-out did not hold the status change").toBe(held);
+    const waiting = writes.rows().find((write) => write.label === "Sign out");
+    expect([waiting?.status, waiting?.sent]).toEqual(["queued", false]);
+
+    expect(writes.discard(waiting?.id ?? 0)).toBe(true);
+    expect(await signOut).toBeInstanceOf(WriteDiscardedError);
+    await tick(2_000);
+    expect(
+      attempts,
+      "the status change stayed held after its person's sign-out was discarded"
+    ).toBeGreaterThan(held);
+    expect(writes.rows().map((write) => write.label)).toEqual(["CORE-1 set to done"]);
+  });
+});
+
 // A hold let go because its tab went, while Dispatch still named the person
 // (`releaseUnsettled`), is not the end of that sign-out: the gone tab's own request may still
 // reach Dispatch after this page's read did. A lapse within `KEYED_SEND_ATTEMPT_MS` of that
@@ -1832,23 +3101,7 @@ test("a resumed write whose key Dispatch has forgotten makes no attempt", async 
  *  was planned as, as every write waiting its turn is, and `sent` says nothing has gone out
  *  under its key. */
 function neverSent(tab: KeptTab, key: string, pressedAt: number): Writes {
-  tab.storage.setItem(
-    `dispatch.write:${key}`,
-    JSON.stringify({
-      detail: null,
-      key,
-      kind: "write",
-      label: "CORE-1 set to done",
-      login: "alice",
-      presentation: "indicator",
-      pressedAt,
-      request: patch,
-      sent: false,
-      state: { status: "queued" },
-      target: null,
-      version: 1,
-    })
-  );
+  keepWrite(tab.storage, key, { pressedAt, sent: false, state: { status: "queued" } });
   const writes = new Writes(signedIn(), tab.page(), memoryFiles());
   writes.resume("alice");
   return writes;
@@ -1926,23 +3179,14 @@ test("a resumed write that sent nothing makes its attempt on the first Retry", a
     try {
       const spent = keyMinted(Date.now() - IDEMPOTENCY_KEY_TTL_MS);
       composedAttempts = 0;
-      tab.storage.setItem(
-        `dispatch.write:${spent}`,
-        JSON.stringify({
-          detail: null,
-          key: spent,
-          kind: composedWrite.name,
-          label: "A message",
-          login: "alice",
-          presentation: "composer",
-          pressedAt: Date.now() - KEPT_SEND_RESUME_MS - 1,
-          request: null,
-          sent: false,
-          state: { status: "sending" },
-          target: null,
-          version: 1,
-        })
-      );
+      keepWrite(tab.storage, spent, {
+        kind: composedWrite.name,
+        label: "A message",
+        presentation: "composer",
+        pressedAt: Date.now() - KEPT_SEND_RESUME_MS - 1,
+        request: null,
+        sent: false,
+      });
       const writes = new Writes(signedIn(), tab.page(), memoryFiles());
       writes.resume("alice");
       await settle();
@@ -2416,6 +3660,98 @@ test("a refused write that went out takes the place of the unsent claim of the s
       } finally {
         reload.close();
       }
+    }
+  });
+});
+
+// The take-up of what a reload kept waits for the kinds of write (`resume`), and a kind says which
+// unsent claim a refused write of its own carries (`WriteKind.supersedes`). So the refused write
+// that went out takes the place of the unsent claim of its text in the take-up, once the kinds are
+// in, as the row above does with no wait. Until then the store holds neither write, and the tab
+// keeps both.
+test("a take-up that waits for the kinds of write lets a kept refused write take the place of the unsent claim of its text once they are in", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const kinds = Promise.withResolvers<void>();
+    try {
+      const kept = { ...keptClaimed, label: "Rename the priority", state: keptConflict };
+      keepWrite(tab.storage, "sent-key", { ...kept, pressedAt: Date.now() });
+      keepWrite(tab.storage, "claim-key", { ...kept, pressedAt: Date.now() + 1, sent: false });
+      const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+      writes.resume("alice", () => kinds.promise);
+      await settle();
+      expect(writes.rows(), "the take-up took a write up before the kinds were in").toEqual([]);
+      expect(writes.notTakenUp().map((write) => write.key)).toEqual(["sent-key", "claim-key"]);
+      expect(tab.kept("claim-key")).toMatchObject({ sent: false, state: keptConflict });
+
+      kinds.resolve();
+      await settle();
+      expect(writes.rows()).toMatchObject([
+        { detail: { text: "Mine" }, key: "sent-key", sent: true, status: "refused" },
+      ]);
+      expect(writes.notTakenUp()).toEqual([]);
+      expect(tab.kept("sent-key")).toMatchObject({ sent: true, state: keptConflict });
+      expect(tab.kept("claim-key"), "the tab still keeps the unsent claim").toBeUndefined();
+    } finally {
+      // Let in whichever step failed, so no take-up is left in the module's `takeUpsWaiting`
+      // for a later row's `kindsRegistered` to end.
+      kinds.resolve();
+      await settle();
+      tab.close();
+    }
+  });
+});
+
+// A drop of the person's writes ends a take-up that waits for the kinds of write, and the take-up
+// does nothing once they come (`resume`). A surface that claims a text after a refused write of
+// that text went out keeps its claim while it draws it (two rows up). So the kinds coming late let
+// no such claim go. Here bob's sign-in drops what the reload kept of alice's, and his own write
+// and claim follow.
+test("a take-up a drop ended lets no unsent claim a surface still draws go once the kinds of write come", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    keepWrite(tab.storage, keyMinted(Date.now()), { target: "issue:CORE-1" });
+    const client = signedIn("alice");
+    const kinds = Promise.withResolvers<void>();
+    surface.claims = true;
+    try {
+      const writes = new Writes(client, tab.page(), memoryFiles());
+      writes.signedIn("alice");
+      writes.resume("alice", () => kinds.promise);
+      await settle();
+      client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "bob" });
+      writes.signedIn("bob");
+      expect(writes.notTakenUp()).toEqual([]);
+
+      void claimedPress(writes, () => Promise.reject(changed));
+      await settle();
+      const claim = writes.claimUnsent({
+        detail: { text: "Mine" },
+        kind: claimedWrite,
+        label: "Rename the priority",
+        refusal: changed,
+        request: patch,
+      });
+      expect(writes.rows()).toMatchObject([
+        { claimed: true, detail: { text: "Mine" }, login: "bob", sent: true, status: "refused" },
+        { claimed: true, detail: { text: "Mine" }, id: claim, sent: false, status: "refused" },
+      ]);
+      const claimKey = writes.rows()[1]?.key ?? "";
+
+      kinds.resolve();
+      await settle();
+      expect(
+        writes.rows().map((one) => one.id),
+        "the kinds coming let go the unsent claim a surface still draws"
+      ).toContain(claim);
+      expect(tab.kept(claimKey)).toMatchObject({ sent: false, state: keptConflict });
+    } finally {
+      // Let in whichever step failed, so no take-up is left in the module's `takeUpsWaiting`
+      // for a later row's `kindsRegistered` to end.
+      kinds.resolve();
+      await settle();
+      surface.claims = false;
+      tab.close();
     }
   });
 });

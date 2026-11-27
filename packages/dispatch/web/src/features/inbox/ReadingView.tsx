@@ -1,7 +1,7 @@
 import { type ReactNode, type RefCallback, type RefObject, useLayoutEffect, useRef } from "react";
 
 import type { InboxRow } from "../../api/types";
-import { focusVisibleRing, linkHoverText, linkText } from "../../theme/classes";
+import { focusVisibleRing, linkHoverText, linkText } from "../../theme/shell-classes";
 import { COPY_REF_SELECTOR } from "../refs/CopyRefButton";
 import { closestMatching } from "../shell/roving";
 import { ROW_SELECTOR } from "./inbox-row";

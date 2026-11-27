@@ -17,6 +17,7 @@ import { needsYouCards } from "./editor";
 import { nextFrames } from "./frames";
 import { issueDetailsButton, issueDetailsRow, openIssueDetails } from "./issue-details";
 import { clearIssueCreator, resetDatabase } from "./seed";
+import { chunkFile, holdAssetUntilReleased } from "./shell";
 import { expect, type Locator, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
@@ -46,9 +47,19 @@ test("database reset clears fake Envoy subscribers before the next issue", async
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    const subscribers = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === `/api/v1/issues/${issue.key}/subscribers`
-    );
+    // The subscribers of this issue, by whichever read carries them: the landing of this page
+    // on a cold load, whose one answer holds them and seeds them under the key the control
+    // reads them by (`web/src/api/queries.ts`, `seedIssuePage`), and the subscribers' own route
+    // for a read after that. What the row needs of it is that it answered - the fake Envoy was
+    // asked for this recycled key and said nobody follows it - so either carrier is that
+    // answer.
+    const subscribers = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === `/api/v1/issues/${issue.key}/subscribers` ||
+        (url.pathname === "/api/v1/landing" && url.searchParams.get("key") === issue.key)
+      );
+    });
     await page.goto(`/issues/${issue.key}`);
     expect((await subscribers).status()).toBe(200);
     await openIssueDetails(page);
@@ -1142,16 +1153,21 @@ test("issue header suggests its project's default repository, and a child resolv
     // A project with no default repository has nothing to suggest, and its issues take a
     // repository all the same: Details carries the row with an empty suggestion list. The box
     // takes its suggestion from the project list, so the row waits until the bare issue's page
-    // reads that list, and then reads the box. A read that the page before it made for the
-    // project.created event does not count.
+    // has read that list, and then reads the box: in the landing of this page, which carries the
+    // list in its shell and seeds it under the key the box reads it by
+    // (`web/src/api/queries.ts`, `seedShell`), or on its own route for a read after that. A read
+    // that the page before it made for the project.created event does not count.
     await createProject({ key: "BARE", name: "Bare" });
     const bare = await createIssue({ project: "BARE", title: "No default repository" });
     expect(bare.resolved_repo).toBeNull();
-    const projectsRead = page.waitForResponse(
-      (response) =>
-        new URL(response.url()).pathname === "/api/v1/projects" &&
-        new URL(page.url()).pathname === `/issues/${bare.key}`
-    );
+    const projectsRead = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        (url.pathname === "/api/v1/projects" &&
+          new URL(page.url()).pathname === `/issues/${bare.key}`) ||
+        (url.pathname === "/api/v1/landing" && url.searchParams.get("key") === bare.key)
+      );
+    });
     await page.goto(`/issues/${bare.key}`);
     await projectsRead;
     await expect(issueDetailsRow(page, "parent")).toContainText("Parent");
@@ -1416,6 +1432,93 @@ test("Details stays as the reader left it, open or closed, from one issue to the
     await expect(heading("Third issue")).toBeVisible();
     await expect(issueDetailsButton(page)).toHaveAttribute("aria-expanded", "false");
     await expect(page.getByTestId("issue-details")).toBeHidden();
+  } finally {
+    await context.close();
+  }
+});
+
+/** One animation frame of the page's own clock, the step the row below spends it in. */
+const FRAME_MS = 16;
+
+/** The most of the page's clock the row below lets a tab's panel take to draw once its chunk has
+ *  run: ten frames. A panel drawn in an ordinary update needs none of it, since React schedules
+ *  that render on a message task and not a timer; and it is well inside the 300 ms React holds
+ *  back a `Suspense` boundary's content after its fallback (`FALLBACK_THROTTLE_MS` in react-dom),
+ *  whose timer a paused clock fires only as the row spends it. */
+const PANEL_DRAWN_WITHIN_MS = 160;
+
+// A landing on an issue tab draws the shell, the issue and the tab strip while the tab's own
+// chunk is still on its way, with the tab's skeleton in its panel, and then the panel as soon as
+// the chunk has run. Every panel but the Spec's is a chunk of its own
+// (`web/src/features/issue/tab-chunks.ts`), which the entry starts beside the landing read
+// (`preloadRouteChunk`'s tab arm, `web/src/app.tsx`) and the panel joins, drawn through
+// `chunkComponent` (`web/src/features/shell/chunk-component.tsx`): its skeleton until the chunk is
+// in, then the panel in an ordinary update. Behind `lazy` and a `Suspense`, as the panels were
+// before 82e36c8d, the panel's first render suspends and React holds the boundary's content until
+// 300 ms after its skeleton, on a page timer, so a chunk that landed early still drew its panel
+// late. The page's clock is paused here, so that timer fires only as the row spends the clock,
+// and the row spends at most `PANEL_DRAWN_WITHIN_MS` of it once the chunk has run.
+test("a landing on an issue tab draws the shell and the tab strip while the tab's chunk is out, and the panel as soon as it lands", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Held plan tab" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const plan = await holdAssetUntilReleased(page, chunkFile("PlanTab"));
+    // `install()` leaves the clock running at real speed, and `pauseAt` stops it, a second
+    // ahead of the run's clock, since the page's clock refuses to move backwards and the two can
+    // differ a little. It is paused before the load, so no page timer is armed for it to fire.
+    await page.clock.install();
+    await page.clock.pauseAt(Date.now() + 1_000);
+    await page.goto(`/issues/${issue.key}/plan`);
+
+    // A paused page draws no answer of its own accord (TanStack delivers each query's on a
+    // zero-delay page timer), so the wait spends the clock a frame at a time until the page has
+    // drawn the shell, the tab strip and the plan tab's skeleton.
+    const panel = page.locator("#issue-plan-panel");
+    const skeleton = panel.getByRole("status", { name: "Loading the plan tab" });
+    const tabs = page.getByRole("tablist", { name: "Issue detail" });
+    await expect
+      .poll(
+        async () => {
+          await page.clock.runFor(FRAME_MS);
+          return [
+            await page.getByTestId("app-shell").count(),
+            await tabs.count(),
+            await skeleton.count(),
+          ];
+        },
+        { intervals: [FRAME_MS] }
+      )
+      .toEqual([1, 1, 1]);
+
+    plan.release();
+    // An import of the chunk's own address settles once its module has run, and with it the
+    // panel's download, which is the same module. Read from the hold, not the page's resource
+    // timing (`ranChunk`), which the page's installed clock leaves empty.
+    await page.evaluate((url) => import(url).then(() => undefined), await plan.url);
+    let spent = 0;
+    await expect
+      .poll(
+        async () => {
+          // A throw ends the poll at once, so the row fails on the bound and not on the expect
+          // timeout after it.
+          if (spent >= PANEL_DRAWN_WITHIN_MS) {
+            throw new Error(
+              `the plan tab's panel did not draw in ${spent} ms of the page's clock after its chunk had run`
+            );
+          }
+          await page.clock.runFor(FRAME_MS);
+          spent += FRAME_MS;
+          return panel.getByTestId("plan-empty").count();
+        },
+        { intervals: [FRAME_MS] }
+      )
+      .toBe(1);
+    await expect(skeleton).toHaveCount(0);
+    await expect(tabs).toBeVisible();
   } finally {
     await context.close();
   }

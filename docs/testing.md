@@ -608,6 +608,24 @@ and each command runs there.
   `drop database … with (force)`, which refuses a login that is not a superuser, as CI's is not,
   while an autovacuum worker is attached (the doc of `dropDatabase` says why).
 
+## A Dispatch browser-suite command run by hand
+
+Which of `packages/dispatch/package.json`'s e2e scripts build `@legion/contracts` before
+Playwright runs, and what the three `:run` scripts and a Playwright command typed by hand need
+built first, is in `packages/dispatch/README.md` ("End-to-end tests").
+
+One leg of CI's pull-request lane is the shard job's command without its blob reporter and its
+memory and CPU samplers, run from `packages/dispatch` with a Postgres provider
+`e2e/harness-postgres.ts` reads, here the browser image's own binaries:
+
+```bash
+DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin bunx playwright test --config e2e/playwright.config.ts --project=chromium --project=iphone --project=stub --project=stub-phone --grep='(^|\s)@pr(\s|$)' --shard=1/2 --workers 4
+```
+
+A full-lane leg names the projects of the `full` arm in
+`.github/scripts/dispatch-browser-shard-suite.sh`, the script the shard job runs, in place of
+those four, and passes no `--grep`.
+
 ## Unix sockets in Go tests
 
 A unix socket path must be 107 bytes or shorter. Linux's `sun_path` holds 108 bytes with the

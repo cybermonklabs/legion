@@ -21,7 +21,7 @@ const REASONS = {
   9: "9. An Agent row's box is drawn only while its session is in the live list; a session that leaves it and comes back unmounts and draws the box again at the same thread, as the move to another row and back does.",
   10: "10. A thread in a document is drawn inside the document's page where its block is found and beside it where the document fails or the block is gone (`ThreadPane`, `DocumentPane`, `ProofDocument`, keyed by the document); moving between the two draws the box afresh at the same thread, as the move to another row and back does, and a version or an admission that hides the document's page keeps the box mounted at its thread.",
   11: "11. A box answers its thread's root; a read that no longer holds the root draws no box, since there is no message left to answer, and a read that holds it again draws the box at the same thread, as the move to another row and back does.",
-  12: "12. The Inbox page draws a thread's box in one place for the row the reader is on: in the reading column beside the list from the column's width (`columns`), and below it in the reading view that stands in the list's place (`readingView`), both the same `ReadingPane`; the drawer draws it in each thread row's card (`renderRow`'s `if (mode !== \"cards\")`), in a drawer that closing takes away (`InboxDrawer`); and the page is drawn on its own route (`app.tsx`'s `/` and `/credentials/*`). A resize across that width, opening a row or going back to the list, closing the drawer, leaving the page, a column with no row selected or an empty list, and the Inbox's loading line or error unmount the box as the move to another row does, and the box drawn on return is the one that row draws, at the same thread's send name. The list stays mounted, hidden, under the reading view (`<div hidden={readingView}>`), and a card of the drawer is never under it.",
+  12: "12. The Inbox page draws a thread's box in one place for the row the reader is on: in the reading column beside the list from the column's width (`columns`), and below it in the reading view that stands in the list's place (`readingView`), both the same `ReadingPane`; the drawer draws it in each thread row's card (`renderRow`'s `if (mode !== \"cards\")`), in a drawer that closing takes away (`InboxDrawer`); and the page is drawn on its own route (`app.tsx`'s `/` and `/credentials/*`). A resize across that width, opening a row or going back to the list, closing the drawer, leaving the page, a column with no row selected or an empty list, and the Inbox's loading line or error unmount the box as the move to another row does, and the box drawn on return is the one that row draws, at the same thread's send name. The list stays mounted, hidden, under the reading view (`<div hidden={readingView}>`), and a card of the drawer is never under it. The page draws the Inbox through `InboxHost`, which hands it what the page hands the host, nothing; the shell draws the drawer through `InboxDrawerHost`, which hands it the shell's `open` as it is, draws no drawer until the reader first opens it, and keeps it drawn from then on (`asked` only ever turns true), so that return starts the drawer's mount and never ends one.",
   13: "13. Below the reading column's width the Inbox page lists short rows, which draw no box, and the one row the reader opens is read in place of the list in the column's own `ReadingPane` (`readingView`), so its box is the column's and what ends it is (12)'s. The drawer (`pane={false}`) draws every thread row as a card that draws its thread's own box at every width (`ThreadRowCard`), so no move takes a box from one row to another there, and each box stays at its thread while its row is listed; what ends a card's box is (12)'s: closing the drawer the compact header's Peek opens (`inboxDrawerOpen`), the row leaving the list. The box's own moves are the same `ThreadBody`'s as the rows above. The layout's other branches in `Inbox` (its `mode`), `usePaneSelection` and `useReadingViewLanding` pick, focus and scroll the row, open and close the reading view through the address and its history entry (`inboxOverList`, `inboxDefaultPick`), draw the list beside the column, and end the line that says the open row left (`rowLeft`), and move no box; the app shell's forms are the sign-in file's.",
   14: "14. A root its author deleted takes no reply (`409 POST_DELETED`), so no box is drawn under it, as the margin's card draws no reply composer there, and the box leaves the page as a read without the root takes it (11): a reply the reader kept for the thread - typed in the box, or a send refused or stopped - is drawn itself in its place, saying the comment was deleted, with Discard my draft and no Send (`KeptReplyToDeleted`); `ThreadBody.test.tsx`'s \"a comment thread whose root is deleted draws no box, and keeps the reply typed there\" holds it.",
 } as const;
@@ -365,9 +365,16 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers('AppShell | InboxPage | route | <Route path="/credentials/*">', {
     reason: REASONS[12],
   }),
-  ...answers("AppShell | InboxDrawer | address prop | open={inboxDrawerOpen}", {
+  ...answers("AppShell | InboxDrawerHost | address prop | open={inboxDrawerOpen}", {
     reason: REASONS[12],
   }),
+  ...answers("InboxDrawerHost | InboxDrawer | address prop | open={open}", {
+    reason: REASONS[12],
+  }),
+  ...answers("InboxDrawerHost | InboxDrawer | early return | if (!asked.current) return …", {
+    reason: REASONS[12],
+  }),
+  ...answers("InboxHost | Inbox | address prop | <Inbox {...props}>", { reason: REASONS[12] }),
   ...answers('Inbox | ReadingPane | form | (mode === "columns") ? …', { reason: REASONS[13] }),
   ...answers("Inbox | ReadingPane | form | (readingView) ? …", { reason: REASONS[13] }),
   ...answers("Inbox | ReadingPane | form | <div className>", { reason: REASONS[13] }),
@@ -377,8 +384,8 @@ export const coverage: readonly CoverageEntry[] = [
   }),
   ...answers("Inbox | ThreadCardRow | form | <div hidden={readingView}>", { reason: REASONS[13] }),
   ...answers("Inbox | ThreadCardRow | form | <div className>", { reason: REASONS[13] }),
-  ...answers("InboxPage | Inbox | form | <section className>", { reason: REASONS[13] }),
-  ...answers("AppShell | InboxDrawer | form | open={inboxDrawerOpen}", { reason: REASONS[13] }),
+  ...answers("InboxPage | InboxHost | form | <section className>", { reason: REASONS[13] }),
+  ...answers("AppShell | InboxDrawerHost | form | open={inboxDrawerOpen}", { reason: REASONS[13] }),
   ...answers("Inbox | - | form | (columns) ? …", { reason: REASONS[13] }),
   ...answers("Inbox | - | form | if (keysOnShownRow && paneSelection.selectedNow.current === id)", {
     reason: REASONS[13],

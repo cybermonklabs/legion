@@ -3,7 +3,8 @@ import type { CSSProperties, ReactNode } from "react";
 
 import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
-import { pageGuideLineBg, pageQuietText } from "../../theme/classes";
+import { pageGuideLineBg } from "../../theme/classes";
+import { pageQuietText } from "../../theme/shell-classes";
 import { useAgentText } from "../refs/AgentName";
 import { EVENT_FRESH } from "../refs/reference-target";
 import type { PointMark } from "./current-point";

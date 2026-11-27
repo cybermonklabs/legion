@@ -1,4 +1,4 @@
-import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools-constants";
 import type { Column, Table } from "@tanstack/react-table";
 import {
   type ReactNode,
@@ -16,19 +16,21 @@ import type { RowNoun } from "../../components/DataTable";
 import { MultiSelect } from "../../components/MultiSelect";
 import { useFootInset } from "../../hooks/useFootInset";
 import {
-  borderDefault,
-  card,
   checkboxAccent,
   issueStatusScale,
-  surfaceBg,
-  surfaceMutedBg,
   surfaceMutedHoverBg,
   tableFilterActive,
   textMutedOnCanvas,
-  textPrimaryOnCanvas,
-  textSecondaryOnCanvas,
   toolbarControlHeight,
 } from "../../theme/classes";
+import {
+  borderDefault,
+  card,
+  surfaceBg,
+  surfaceMutedBg,
+  textPrimaryOnCanvas,
+  textSecondaryOnCanvas,
+} from "../../theme/shell-classes";
 import { useMediaQuery } from "../shell/useDialog";
 import { issueStatuses, statusLabel } from "./board-model";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";

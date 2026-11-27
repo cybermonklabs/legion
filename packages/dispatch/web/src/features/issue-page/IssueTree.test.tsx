@@ -27,6 +27,7 @@ import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "r
 import { prosemirrorJSONToYXmlFragment } from "y-prosemirror";
 import * as Y from "yjs";
 
+import { COMPOSITION_MARKS } from "../../__tests__/composition-marks";
 import { correction } from "../../__tests__/correction-feed";
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock } from "../../__tests__/fake-clock";
@@ -34,7 +35,12 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { markCorrectedPost } from "../../api/corrected-post";
 import { primarySpec } from "../../api/issue-cache";
-import { issueCoverageQuery, issueResultsQuery, referenceTargetsQuery } from "../../api/queries";
+import {
+  issueCoverageQuery,
+  issueResultsQuery,
+  ownerAsksQuery,
+  referenceTargetsQuery,
+} from "../../api/queries";
 import type {
   Artifact,
   Comment,
@@ -50,12 +56,13 @@ import { compiledBlockSchema } from "../doc/schema";
 import { writePin } from "../issue/pin-write";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { buildIssuePath, parseIssuePath } from "../refs/page-routes";
 import {
   type PublishedReferences,
   ReferenceNamesProvider,
   usePublishReferenceNames,
 } from "../refs/reference-names";
-import { buildDispatchReference, buildIssuePath, parseIssuePath } from "../refs/routes";
+import { buildDispatchReference } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { writesOf } from "../writes/write-store";
@@ -106,7 +113,6 @@ import { FAILED_READ_RETRY } from "./slots/failed-read-line";
 import { ProvidersSlot } from "./slots/providers";
 import { SLOT_FILLED, StageSlot, VIEW_SLOTS, type ViewSlots } from "./slots/stage";
 import { TAB_STOP_ROW } from "./tree-focus";
-import { issueAsksQuery } from "./useIssueTree";
 import type { OnEditing, OnEditor } from "./useNodeEditing";
 import { overflowing } from "./words-scroll-fixtures";
 
@@ -414,7 +420,7 @@ function renderTree(
       </QueryClientProvider>
     </MemoryRouter>
   );
-  // Under the names store, as the shell draws every page (`app.tsx`).
+  // Under the names store, as the new issue page's root draws its rows (`IssueOutlinePage.tsx`).
   const view = render(draw(), { wrapper: ReferenceNamesProvider });
   return {
     address: () => seen.path,
@@ -523,7 +529,7 @@ function renderPageTree(root: TreeNode, reader = "alice") {
       </QueryClientProvider>
     </MemoryRouter>
   );
-  // Under the names store, as the shell draws every page (`app.tsx`).
+  // Under the names store, as the new issue page's root draws its rows (`IssueOutlinePage.tsx`).
   const view = render(draw(root), { wrapper: ReferenceNamesProvider });
   return {
     ask: (id: string | undefined, focusBranch: boolean) =>
@@ -4300,10 +4306,7 @@ test("Shift+Tab from the row's editor goes to the row past a control another blo
 // A Tab pressed in an input method's composition is the input method's - marked `isComposing`,
 // or unmarked with keyCode 229 as Safari sends the key that ends one - and ends no editing: the
 // focus stays in the row's editor, and the row keeps its editing.
-test.each([
-  ["isComposing", { isComposing: true }],
-  ["keyCode 229", { isComposing: false, keyCode: 229 }],
-] as const)(
+test.each(COMPOSITION_MARKS)(
   "a Tab pressed in an input-method composition in the row's editor, marked by %s, leaves the editing and the focus as they were",
   async (_mark, modifiers) => {
     setViewport(1440);
@@ -11023,7 +11026,7 @@ test("a failed one more names read's line stays drawn, with the focus on its Ret
   const asksOut = Promise.withResolvers<never>();
   try {
     const body = renderAddressedBody(`/issues/${KEY}`, [], StageSlot, issueDetails(), [
-      issueAsksQuery(KEY).queryKey,
+      ownerAsksQuery({ issue: KEY }).queryKey,
     ]);
     const { container } = body.view;
     await failedLines(container, 2, "asks and one more names");
@@ -11045,7 +11048,7 @@ test("a failed one more names read's line stays drawn, with the focus on its Ret
     // gate; a comment citing the issue the one more read failed on arrives meanwhile.
     asks.mockReturnValueOnce(asksOut.promise as never);
     await act(async () => {
-      void body.client.invalidateQueries({ queryKey: issueAsksQuery(KEY).queryKey });
+      void body.client.invalidateQueries({ queryKey: ownerAsksQuery({ issue: KEY }).queryKey });
     });
     await waitFor(
       () => expect(asks.mock.calls.length, "the asks read did not run again").toBe(2),

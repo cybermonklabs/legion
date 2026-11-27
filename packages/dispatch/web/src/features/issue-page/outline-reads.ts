@@ -2,16 +2,20 @@ import { type QueryObserverResult, useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { primarySpec, roleDocument } from "../../api/issue-cache";
-import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../api/queries";
+import {
+  artifactBlocksQuery,
+  issueCoverageQuery,
+  issueDecisionsQuery,
+  issueResultsQuery,
+  ownerAsksQuery,
+  ownerCommentsQuery,
+} from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
-import { issueDecisionsQuery } from "../doc/spec-marks";
 import type { PublishedReferences } from "../refs/reference-names";
 import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import type { IssueTreeReads, TreeNode } from "./issue-tree";
 import { STATE_LINES } from "./page-words";
 import {
-  issueAsksQuery,
-  issueCommentsQuery,
   issueMessagesQuery,
   type NamesFailure,
   treeDocumentIds,
@@ -123,7 +127,7 @@ function sixReads(key: string) {
       bringsQuestions: false,
       line: "decisions",
       message: STATE_LINES.issue_decisions_unreadable,
-      query: { ...issueDecisionsQuery(key, true), ...EVENT_FRESH },
+      query: { ...issueDecisionsQuery(key), ...EVENT_FRESH },
     },
     {
       bringsQuestions: false,
@@ -135,13 +139,13 @@ function sixReads(key: string) {
       bringsQuestions: true,
       line: "asks",
       message: STATE_LINES.asks_unreadable,
-      query: { ...issueAsksQuery(key), ...EVENT_FRESH },
+      query: { ...ownerAsksQuery({ issue: key }), ...EVENT_FRESH },
     },
     {
       bringsQuestions: false,
       line: "comments",
       message: STATE_LINES.comments_unreadable,
-      query: { ...issueCommentsQuery(key), ...EVENT_FRESH },
+      query: { ...ownerCommentsQuery({ issue: key }), ...EVENT_FRESH },
     },
     {
       bringsQuestions: false,

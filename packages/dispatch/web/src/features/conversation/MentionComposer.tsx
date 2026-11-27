@@ -2,7 +2,7 @@ import {
   type DispatchWriting,
   type DispatchWritingBox,
   dispatchWritingBox,
-} from "@legion/contracts";
+} from "@legion/contracts/dispatch-writing-boxes";
 import type { MutationKey } from "@tanstack/react-query";
 import {
   type FormEvent,
@@ -34,36 +34,39 @@ import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useFootInset } from "../../hooks/useFootInset";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
-  borderDefault,
-  borderStrong,
   calloutInfoBg,
   calloutInfoBorder,
-  calloutWarningBg,
-  calloutWarningBorder,
-  calloutWarningText,
   checkboxAccent,
   dangerHoverBorder,
-  dangerText,
-  dismissButtonText,
   focusRing,
   hoverToDangerText,
-  linkHoverText,
-  linkText,
   pageComposer,
   pageComposerControl,
   pageFailedText,
-  pageMutedText,
-  primaryButtonBg,
   quoteAccentBorder,
   quoteBodyText,
+  textPrimaryOnSurface,
+} from "../../theme/classes";
+import {
+  borderDefault,
+  borderStrong,
+  calloutWarningBg,
+  calloutWarningBorder,
+  calloutWarningText,
+  dangerText,
+  dismissButtonText,
+  linkHoverText,
+  linkText,
+  pageMutedText,
+  primaryButtonBg,
   secondaryButtonText,
   surfaceBg,
   textMutedOnSurface,
   textMutedOnSurfaceMuted,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import {
   appendToDraft,
   type DraftUpload,
@@ -73,11 +76,11 @@ import {
 import { ASK_URGENCIES_ASCENDING, URGENCY_LABELS } from "../inbox/ask-urgency";
 import { useComposerRegistry } from "../margin/margin-context";
 import { useAgentText } from "../refs/AgentName";
+import { partyOfAddress } from "../refs/party-mention";
 import { mentionOptions } from "../refs/party-options";
-import { draftParties } from "../refs/party-references";
+import { draftParties, outgoingDraft } from "../refs/party-references";
 import { postDeletion } from "../refs/post-marks";
 import { isCompositionKey, type RefPickerWords } from "../refs/ref-picker";
-import { partyOfAddress } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
 import {
   retriesUnderItsKey,
@@ -88,7 +91,13 @@ import {
 import { StopTrying } from "../writes/StopTrying";
 import { endedStopped, stoppedNote } from "../writes/useKeyedWrite";
 import { KEY_HOURS } from "../writes/write-words";
-import { type FollowedBlocks, followEdit, spansFromBlocks, textareaValue } from "./block-spans";
+import {
+  carriedIdsOf,
+  type FollowedBlocks,
+  followEdit,
+  spansFromBlocks,
+  textareaValue,
+} from "./block-spans";
 import {
   type AskOptionDraft,
   type Draft,
@@ -112,12 +121,8 @@ import {
   type ReplyParent,
   type ReplyTarget,
 } from "./composer-model";
-import {
-  COMPOSER_WORDS,
-  type ComposerWords,
-  DELIVERY_COMMANDS,
-  DISCARD_DRAFT_LABEL,
-} from "./composer-words";
+import { composerNameOf } from "./composer-names";
+import { COMPOSER_WORDS, type ComposerWords, DISCARD_DRAFT_LABEL } from "./composer-words";
 import {
   deliveryModesOf,
   MODE_LABELS,
@@ -134,7 +139,6 @@ import { ReplyQuote } from "./ReplyQuote";
 import {
   type Address,
   addressWords,
-  carriedIdsOf,
   type DeliveryPlan,
   deliveryPlan,
   heldSeeds,
@@ -148,11 +152,12 @@ import {
   saveCommentEdit,
   unedited,
 } from "./send-request";
+import { DELIVERY_COMMANDS } from "./send-words";
 import { type AwayAddress, type AwayDraft, useUnsentDrafts } from "./unsent-drafts";
 import { useAgents } from "./useAgents";
 import { useComposerSend } from "./useComposerSend";
 import { useDraftHomes } from "./useDraftHomes";
-import { composerNameOf, mountDraft, type OfferedDraft, useKeptDrafts } from "./useKeptDrafts";
+import { mountDraft, type OfferedDraft, useKeptDrafts } from "./useKeptDrafts";
 
 /** Where a composer says a reply to a deleted post goes instead, after
  *  `COMPOSER_WORDS.deletedReply`; the issue page's box says both in one sentence of its host's
@@ -1165,11 +1170,17 @@ export function MentionComposer({
     const form = formRef.current;
     if (form === null || dormant) return;
     const handleEscape = (event: globalThis.KeyboardEvent) => {
-      // A key that ends an IME composition is the input method's, not the composer's
-      // (`isCompositionKey`): it closes nothing, cancels no reply and asks nothing, as
-      // `NameVersionDialog.tsx`'s Enter does.
-      if (isCompositionKey(event)) return;
       if (event.key !== "Escape") return;
+      // The Escape that ends an input method's composition is the input method's, not the
+      // composer's (`inputMethodKey`): it closes nothing, cancels no reply and asks nothing, as
+      // `NameVersionDialog.tsx`'s Enter does, and the draft stays. It goes no further either. The
+      // page's keymap passes over a key marked `isComposing` only, and Safari's comes unmarked,
+      // so it would reach a binding of Escape beneath the composer: the agents scope's `back`,
+      // which leaves an agent's composer, or an open dialog's close.
+      if (inputMethodKey(event)) {
+        event.stopPropagation();
+        return;
+      }
       // An open picker takes Escape on the field's own listener and stops it there, so this
       // never sees it: Escape shuts the list, and the one after it reaches the composer.
       // The issue page's line stays mounted with its draft whatever ends it, so Escape there
@@ -1254,15 +1265,26 @@ export function MentionComposer({
     );
     setConfirmingDiscard(false);
   };
+  /** Who this draft addresses, read from its own words (`draftParties`): the delivering
+   *  parties, whose advertised modes the notices below are drawn from, and whether it names a
+   *  party at all, which is what decides that a typed `/btw` is a command. */
+  const parties = useMemo(() => draftParties(body), [body]);
   /** The send as the composer's own state addresses and shapes it: what Send puts on the wire,
-   *  and what a held send is compared with to tell an untouched draft from an edited one. */
+   *  and what a held send is compared with to tell an untouched draft from an edited one. Its
+   *  draft carries whether its text names a party, read here from the text it sends, where the
+   *  grammar of references is loaded (`outgoingDraft`), so the send needs none. A send of the
+   *  body this render drew takes this render's reading of it (`parties`), so a render that
+   *  compares a held send parses the body no second time. */
   const composedRequest = (
     sentBody = body,
     sentReplacement = replacement
   ): Omit<SentRequest, "sendKey"> => ({
     anchor,
     ask: { multiple, options: submittedAskOptions(askOptions), urgency },
-    draft: { body: sentBody, replacement: sentReplacement },
+    draft: outgoingDraft(
+      { body: sentBody, replacement: sentReplacement },
+      sentBody === body ? parties.named : undefined
+    ),
     edit:
       edit === undefined
         ? undefined
@@ -1300,10 +1322,6 @@ export function MentionComposer({
         replacementField.current?.textarea()?.value ?? replacement
       )
     );
-  /** Who this draft addresses, read from its own words (`draftParties`): the delivering
-   *  parties, whose advertised modes the notices below are drawn from, and whether it names a
-   *  party at all, which is what decides that a typed `/btw` is a command. */
-  const parties = useMemo(() => draftParties(body), [body]);
   const effectiveTargets: readonly string[] =
     owner.kind === "session"
       ? [`session:${owner.sessionId}`]

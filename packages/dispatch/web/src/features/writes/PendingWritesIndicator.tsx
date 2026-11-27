@@ -17,12 +17,20 @@ import {
   dangerText,
   secondaryButtonCompact,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { focusOnDocument } from "../shell/roving";
 import { conflictWords } from "./conflicts";
 import { retryNote, SendInterruptedError, SendStoppedError } from "./keyed-write";
+import { PENDING_WRITES_FRAME, PendingWritesStatus } from "./pending-writes-frame";
 import { StopTrying } from "./StopTrying";
-import { useWriteSelection, useWrites, type Write, writeDraft } from "./write-store";
+import {
+  changesCount,
+  heldForSignOut,
+  indicatorWrites,
+  uploadedPercent,
+  waitingToSend,
+} from "./shown-writes";
+import { useWriteSelection, useWrites, writeDraft } from "./write-store";
 
 /** Why `refusal` left a write unsaved, in the reader's words. One that ended without Dispatch's
  *  verdict - stopped, its key run out, or interrupted by a reload - may have landed, and what its
@@ -64,38 +72,6 @@ function DraftToCopy({ text }: { text: string }): ReactNode {
       </button>
     </span>
   );
-}
-
-/** The writes the indicator shows: every one shown there that Dispatch has not yet made, but for
- *  a refusal a surface mounted now settles with the reader (`claimed`), which is that surface's. */
-function shown(rows: readonly Write[]): readonly Write[] {
-  return rows.filter(
-    (row) =>
-      row.presentation === "indicator" &&
-      row.status !== "made" &&
-      !(row.status === "refused" && row.claimed)
-  );
-}
-
-/** Whether `row` waits its turn behind an earlier write to its target and was never sent. */
-export function waitingToSend(row: Write): boolean {
-  return row.status === "queued" && !row.sent;
-}
-
-/** Whether `row` waits for its person's sign-out in another tab of this browser: none of its
- *  attempts starts until that tab says how it ended (`Writes.holdFor`). A refused one waits for
- *  nothing. */
-export function heldForSignOut(row: Write): boolean {
-  return row.signingOutElsewhere && row.status !== "refused";
-}
-
-/** How much of `row`'s upload has gone up, while its body is still going up on its first try;
- *  `undefined` for any other write. Until an attempt of it has failed, it is uploading, not being
- *  tried again. */
-export function uploadedPercent(row: Write): number | undefined {
-  return (row.status === "sending" || row.status === "late") && !row.retried
-    ? row.uploaded
-    : undefined;
 }
 
 /** Focuses the first of `candidates` that takes the focus, without scrolling; says whether one
@@ -246,7 +222,7 @@ function usePanelFocusReturn(): RefObject<HTMLElement | null> {
  */
 export function PendingWritesIndicator(): ReactNode {
   const writes = useWrites();
-  const rows = useWriteSelection("indicator", shown);
+  const rows = useWriteSelection("indicator", indicatorWrites);
   // Before the early return, so it outlives the panel going while nothing is pending.
   const panel = usePanelFocusReturn();
   if (rows.length === 0) return null;
@@ -262,21 +238,21 @@ export function PendingWritesIndicator(): ReactNode {
       waitingToSend(row) ||
       uploadedPercent(row) !== undefined
   );
-  const count = out.length === 1 ? "1 change" : `${out.length} changes`;
+  const count = changesCount(out.length);
   const actionable = rows.some((row) => row.status === "late" || row.status === "refused");
   return (
     <section
       aria-label="Pending changes"
-      className={`w-full max-w-md rounded-xl border px-3 py-2 text-xs shadow-lg ${card} ${
+      className={`${PENDING_WRITES_FRAME} ${card} ${
         actionable ? calloutWarningBorder : borderDefault
       }`}
       data-testid="pending-writes"
       ref={panel}
     >
       {out.length === 0 ? null : (
-        <p aria-live="polite" className={`font-medium ${textSecondaryOnSurface}`} role="status">
+        <PendingWritesStatus>
           {late ? `Dispatch has not confirmed ${count} — still trying` : `Saving ${count}…`}
-        </p>
+        </PendingWritesStatus>
       )}
       {named.length === 0 ? null : (
         <ul className={`max-h-48 space-y-1 overflow-y-auto ${out.length === 0 ? "" : "mt-2"}`}>

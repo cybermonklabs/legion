@@ -4,7 +4,8 @@
  *  way - the new issue page and the project's board - and the project page and its Architecture
  *  tab, which draw from the architecture source the stress layer syncs on the server. A route may
  *  also carry states - what the page draws once the reader has acted on it - each read at every
- *  width after the plain load.
+ *  width after the plain load, and the mark that lets its widest two widths resize the page it
+ *  read at 1280 px rather than load it again (`reuseWide`).
  *
  *  `e2e/layout-rule.stub.e2e.ts` reads them all, against a recording of their HTTP answers and of
  *  the document and live sockets they draw from (`e2e/layout-sockets.ts`), on every pull request.
@@ -133,6 +134,14 @@ export interface LayoutRoute {
    *  where it is fewer than `MIN_ELEMENTS` (`e2e/layout-check.ts`), with why. The route's ready
    *  locators still have to be on the screen first, so a sign-in page or a skeleton still fails. */
   readonly minElements?: { readonly count: number; readonly reason: string };
+  /** Read at 1440 and 1920 px by resizing the page read at 1280 px, not by loading it again
+   *  (`RESIZED_WIDTHS` in `e2e/layout-check.ts`). Set only on a route whose page, from 1280 px
+   *  up, follows a change of width - in CSS, or in code that listens for the resize - and holds
+   *  nothing a resize keeps from the width before: no state, no width read once as it loads, no
+   *  placement made once, no measurement kept for what is not drawn. A route without it loads
+   *  fresh at every width, which is what a new route does until its page is checked; a route with
+   *  states never carries it (`checkLayout` refuses that). */
+  readonly reuseWide?: true;
 }
 
 /** The Peek drawer, the Inbox over the page it is opened from: the compact header's Peek below
@@ -260,15 +269,32 @@ function shortPage(measured: number): NonNullable<LayoutRoute["minElements"]> {
   };
 }
 
-/** What a reviewed route adds here: its states, the groups it must mark and its floor. */
+/** What a reviewed route adds here: its states, the groups it must mark, its floor, and whether
+ *  its widest widths resize the page (`reuseWide`). A reviewed route that is not marked loads
+ *  fresh at every width, each for its reason:
+ *  - `agents`, `project-issues` and every `issue-` route: each state leaves a drawer, a selection
+ *    or the issue header's Details open (`ISSUE_STATES`).
+ *  - `priorities`, `priorities-in-flight`, `priorities-backlog` and `priority`: their tables
+ *    (`useTableLayout`, `web/src/features/project/issues-table-layout.ts`) keep the measurements
+ *    of rows they do not draw when the window's width changes.
+ *  - `inbox`: its reading column places its document at the question's section only while the
+ *    placement's hold lasts (`web/src/features/inbox/PaneDocument.tsx`), so a resized column
+ *    keeps the place the width before chose, and its ready locator, "Skip to the answer", would
+ *    prove that placement rather than one at the new width.
+ *  - `issue-conversation`: it places the reader at the newest turn once
+ *    (`web/src/features/conversation/use-follow-latest.ts`, whose placement follows no resize),
+ *    and a scroll it did not make after that is read as the reader's own, which draws "Jump to
+ *    latest". */
 const additions: Readonly<
-  Record<string, Pick<LayoutRoute, "minElements" | "requiredGroups" | "states">>
+  Record<string, Pick<LayoutRoute, "minElements" | "requiredGroups" | "reuseWide" | "states">>
 > = {
   agents: { requiredGroups: ["roles"], states: [peekDrawer, allAgentsSelected] },
-  answers: { minElements: shortPage(32) },
-  broadcast: { minElements: shortPage(48) },
-  broadcasts: { minElements: shortPage(14) },
-  "credentials-machine": { minElements: shortPage(24) },
+  answers: { minElements: shortPage(32), reuseWide: true },
+  broadcast: { minElements: shortPage(48), reuseWide: true },
+  broadcasts: { minElements: shortPage(14), reuseWide: true },
+  "credentials-machine": { minElements: shortPage(24), reuseWide: true },
+  delivery: { reuseWide: true },
+  inbox: { states: [inboxItemOpened, inboxBackToList] },
   // Each child's links are a capped group of their own, in every state: a state's groups replace
   // the route's.
   "issue-children": {
@@ -278,17 +304,18 @@ const additions: Readonly<
       requiredGroups: [...(state.requiredGroups ?? []), "child-links"],
     })),
   },
-  inbox: { states: [inboxItemOpened, inboxBackToList] },
-  machine: { minElements: shortPage(46) },
-  machines: { minElements: shortPage(15) },
-  "not-found": { minElements: shortPage(4) },
-  person: { minElements: shortPage(27) },
+  machine: { minElements: shortPage(46), reuseWide: true },
+  machines: { minElements: shortPage(15), reuseWide: true },
+  "not-found": { minElements: shortPage(4), reuseWide: true },
+  person: { minElements: shortPage(27), reuseWide: true },
+  pipeline: { reuseWide: true },
   // The Labels cell of the stress issue's row in the priority's issues table: its 13 labels.
   priority: { requiredGroups: ["labels"] },
-  "project-document": { minElements: shortPage(49) },
-  "project-documents": { minElements: shortPage(40) },
+  "project-document": { minElements: shortPage(49), reuseWide: true },
+  "project-documents": { minElements: shortPage(40), reuseWide: true },
   // The Labels cell of the stress issue's row: its 13 labels, a list of R3.
   "project-issues": { requiredGroups: ["labels"], states: [twoRowsSelected] },
+  settings: { reuseWide: true },
 };
 
 const reviewed: readonly LayoutRoute[] = reviewRoutes
@@ -343,6 +370,8 @@ export const layoutRoutes: readonly LayoutRoute[] = [
         )
         .first(),
     ],
+    // Not `reuseWide`: the page's one measurer of cut words (`issue-page/clamp-measurer.ts`)
+    // leaves a row in view at the cut it last had, so a resized page keeps the width before's.
   },
   {
     name: "project-board",
@@ -361,6 +390,7 @@ export const layoutRoutes: readonly LayoutRoute[] = [
     ready: (page) => [page.locator("[data-board-card]").first()],
     // The stress issue's card draws its 13 labels, a list of R3.
     requiredGroups: ["labels"],
+    reuseWide: true,
   },
   {
     name: "project",
@@ -372,6 +402,7 @@ export const layoutRoutes: readonly LayoutRoute[] = [
       page.getByRole("heading", { exact: true, level: 1, name: "Core" }),
       page.getByRole("tab", { name: "Architecture", selected: true }),
     ],
+    reuseWide: true,
   },
   {
     name: "project-architecture",
@@ -382,6 +413,7 @@ export const layoutRoutes: readonly LayoutRoute[] = [
     ready: (page) => [
       page.getByTestId("architecture-source").filter({ hasText: `${ARCHITECTURE_REPO}/main` }),
     ],
+    reuseWide: true,
   },
   {
     minElements: shortPage(45),
@@ -394,6 +426,7 @@ export const layoutRoutes: readonly LayoutRoute[] = [
     ready: (page) => [
       page.getByTestId("agent-message-assistant").filter({ hasText: AGENT_REPLY_OPENING }),
     ],
+    reuseWide: true,
   },
   {
     minElements: shortPage(41),
@@ -406,5 +439,6 @@ export const layoutRoutes: readonly LayoutRoute[] = [
       page.getByRole("heading", { name: AGENT_PICTURE }),
       page.getByRole("img", { name: `${AGENT_PICTURE} version 1` }),
     ],
+    reuseWide: true,
   },
 ];

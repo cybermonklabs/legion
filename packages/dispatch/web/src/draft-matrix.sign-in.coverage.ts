@@ -11,7 +11,8 @@ const REASONS = {
   2: '2. `app-sign-out.test.tsx`, "a composer\'s typed text is not shown to another person signed in from another tab", is this cell, and it is not repeated here.',
   3: "3. Signed out (`signedOut`), the page takes the shell and every composer away, which `app-sign-out.test.tsx` holds to the same rule as (2).",
   4: "4. In `AppShell`, above every host, the layout draws the shell around the page: the compact header with its Menu and the Inbox's Peek (whose drawer is the Inbox files' reason), the navigation drawer and the focus it keeps (`useDialog`), the sidebar or its rail, the main column's classes and its statement that the document scrolls its content (`DOCUMENT_SCROLL_ATTRIBUTE`), by which the foot's hook gives `<main>` its end room below the page (`useFootInset`), and the keyboard fit of a page that fills the screen (`useKeyboardFit`). Each draws or moves something beside the route element and the margin a host is in, never them, so no composer moves, and the rows above make their moves at the test page's width.",
-  5: "5. On the new issue page, once its reader turns it on (`issueFrame`), the shell draws the frame's icon rail beside the page where the width allows it (`railFits`, `iconRailShown`) in place of the sidebar and its rail, its navigation sheet over the page at every width (`shellNavigation`: the rail's foot control and the header's `☰` open it), and no compact header of its own, and it draws the navigation's contents compact there (`NavigationContents`' `compact`). Each draws or moves something beside the route element and the margin a host is in, as (4) says, so no composer moves.",
+  5: "5. On the new issue page, once its reader turns it on and its frame is in (`issueFrame`: `AppShell` computes its `frame` from the frame chunk's `frameOf`), the shell draws the frame's icon rail beside the page where the width allows it (`frameOf`'s `rail`, on `railFits`) in place of the sidebar and its rail, its navigation sheet over the page at every width (the rail's foot control and the header's `☰` open it, the header's where the rail does not fit: `frameOf`'s `navigation`), and no compact header of its own, and it draws the navigation's contents compact there (`NavigationContents`' `compact`). Each draws or moves something beside the route element and the margin a host is in, as (4) says, so no composer moves.",
+  6: "6. Which issue page is drawn is the person's choice (`ChosenShell`, which reads `useStoredIssuePageChoice` for the login it is handed), and the shell is one `AppShell` inside the margin's provider for both: the choice hands it only the frame's code (`frameOf`), so a change of the choice, in Settings or in another tab of this browser (its `storage` event), moves no host and ends no composer's mount (`e2e/issue-page-switch.e2e.ts` holds the focus, a form's unsent text and an agent token's shown-once value to that). For a reader who chose the new page the shell's first draw waits for the frame's chunk under the sign-in check's skeleton (`drawn`), before any composer is drawn, and never again. The rows above draw today's shell, and none changes the choice.",
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
@@ -71,7 +72,10 @@ export const coverage: readonly CoverageEntry[] = [
     },
     { row: "the same person's sign-in from another tab keeps the shell and the words typed in it" }
   ),
-  ...answers("AppShell | InboxDrawer | form | <div className>", { reason: REASONS[4] }),
+  ...answers("ChosenShell | AppShell | early return | if (!drawn) return …", {
+    reason: REASONS[6],
+  }),
+  ...answers("AppShell | InboxDrawerHost | form | <div className>", { reason: REASONS[4] }),
   ...answers("AppShell | MarginColumn | form | <div className>", { reason: REASONS[4] }),
   ...answers("AppShell | - | form | (isCompactViewport && !issueFrame) ? …", {
     reason: REASONS[4],
@@ -86,10 +90,6 @@ export const coverage: readonly CoverageEntry[] = [
   ),
   ...answers("useDialog | - | form | (open) ? …", { reason: REASONS[4] }),
   ...answers("useDialog | - | form | if (!open) return …", { reason: REASONS[4] }),
-  ...answers("AppShell | - | form | (issueFrame && !railFits) ? …", { reason: REASONS[5] }),
   ...answers("AppShell | - | form | isCompactViewport || …", { reason: REASONS[5] }),
-  ...answers("AppShell | - | form | (iconRailShown) ? …", { reason: REASONS[5] }),
-  ...answers("AppShell | - | form | (isCompactViewport || issueFrame) ? …", {
-    reason: REASONS[5],
-  }),
+  ...answers("AppShell | - | form | (isCompactViewport) ? …", { reason: REASONS[5] }),
 ];

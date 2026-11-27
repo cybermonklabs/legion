@@ -15,7 +15,7 @@ beforeAll(async () => {
 const refused: SentRequest = {
   anchor: undefined,
   ask: { multiple: false, options: [], urgency: "med" },
-  draft: { body: "Status please", replacement: "" },
+  draft: { body: "Status please", namesParty: false, replacement: "" },
   edit: undefined,
   kind: "comment",
   owner: { kind: "session", sessionId: "planner-session" },
@@ -95,7 +95,7 @@ test("a comment on a statement is sent with its quote and no occurrence", async 
     const quote = "The box stays at the foot of the screen while the outline scrolls.";
     const sent: SentRequest = {
       ...refused,
-      draft: { body: "Even on a phone?", replacement: "" },
+      draft: { body: "Even on a phone?", namesParty: false, replacement: "" },
       owner: { issueKey: "CORE-1", kind: "issue" },
       pickedDelivery: undefined,
       statement: { artifact: "core-1-spec", quote, row: "core-1-spec#b-r1" },

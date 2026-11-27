@@ -39,7 +39,8 @@ rows=$(jq -r '[.. | objects | select(has("specs")) | .specs[] as $spec | $spec.t
 } >> "$GITHUB_STEP_SUMMARY"
 echo "::notice title=dispatch-browser flake rate::$flaky flaky rows of $total, $rate per cent"
 # One line per flaky row, so a log reader gets what the summary got. A row's trace is in
-# its leg's dispatch-browser-test-results artifact, which is uploaded on a green run too.
+# its leg's <job>-test-results artifact, <job> being the id of the job that calls
+# dispatch-browser.yaml, which is uploaded on a green run too.
 [ -z "$rows" ] || echo "$rows" | while IFS= read -r row; do
   echo "::notice title=dispatch-browser flaky row::$row"
 done

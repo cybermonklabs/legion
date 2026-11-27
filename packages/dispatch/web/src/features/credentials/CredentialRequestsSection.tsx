@@ -1,4 +1,4 @@
-import { awaitsDecision } from "@legion/contracts";
+import { awaitsDecision } from "@legion/contracts/dispatch-api-constants";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
@@ -7,14 +7,14 @@ import { api, apiErrorMessage } from "../../api/client";
 import type { CredentialPendingRow } from "../../api/types";
 import { LabelPill } from "../../components/Pill";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { textMutedOnCanvas } from "../../theme/classes";
 import {
   dangerText,
   focusVisibleRing,
   linkHoverText,
   linkText,
   secondaryButtonCompact,
-  textMutedOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { useAgents } from "../conversation/useAgents";
 import { Timestamp } from "../refs/Timestamp";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";

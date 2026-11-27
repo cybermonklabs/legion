@@ -8,7 +8,8 @@
 import type { ReactNode } from "react";
 
 import type { AskUrgency, IssuePriority } from "../../api/types";
-import { badgeBlocking, badgeHigh, badgeLow, badgeMed, priorityBadge } from "../../theme/classes";
+import { badgeHigh, badgeLow, badgeMed, priorityBadge } from "../../theme/classes";
+import { badgeBlocking } from "../../theme/shell-classes";
 import { URGENCY_LABELS } from "./ask-urgency";
 import { TYPE_LABELS } from "./grouping";
 import type { InboxRowType } from "./list-row";

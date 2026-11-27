@@ -10,10 +10,10 @@
  * `composer-census.test.ts` holds every item to an entry of a draft matrix file's coverage list
  * (`coverage.ts`).
  *
- * The census fails closed: what it meets and cannot read, a field drawn in no component it reads
- * or a component element between a mount and the routes whose drawing it cannot follow, is
- * listed as unread (`Census.unread`), and the test fails on each, since a mount or an item may be
- * behind it.
+ * The census fails closed: what it meets and cannot read, a field drawn in no component it reads,
+ * a component element between a mount and the routes whose drawing it cannot follow, or a
+ * component above a mount that no element it reads draws, is listed as unread (`Census.unread`),
+ * and the test fails on each, since a mount or an item may be behind it.
  *
  * Each item is named by a key that no line number enters: the component whose code holds it,
  * the place it is about (a mount, by its host and the element it is, at the mount itself and in a

@@ -50,7 +50,8 @@ import type {
   ReferenceTargets,
   UserState,
 } from "../../api/types";
-import { linkText, pageFailedText, pageHeaderControl, pageInkText } from "../../theme/classes";
+import { pageFailedText, pageHeaderControl } from "../../theme/classes";
+import { linkText, pageInkText } from "../../theme/shell-classes";
 import { assigneeControlName } from "../issue/AssigneeControl";
 import { componentsControlName } from "../issue/IssueComponentsLine";
 import { labelsControlName } from "../issue/IssueLabels";
@@ -64,9 +65,10 @@ import {
   priorityTriggerName,
 } from "../priorities/IssuePriorityLine";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { buildIssuePath } from "../refs/page-routes";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { ReferenceNamesProvider } from "../refs/reference-names";
-import { buildDispatchReference, buildIssuePath } from "../refs/routes";
+import { buildDispatchReference } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
@@ -100,6 +102,7 @@ import {
   useMarginSlotFill,
 } from "./margin-slot";
 import { NoTooltips } from "./NoTooltips";
+import { framesByHand } from "./outline-fixtures";
 import { MARGIN_SECTION_NAMES, PROPERTY_LABELS } from "./page-structure";
 import {
   ANSWER_LINES,
@@ -221,11 +224,12 @@ function detailsQueryClient(): QueryClient {
 /** Details as the details slot draws it (`slots/details.tsx`), alone and inside `NoTooltips`:
  *  the panel over its own set of the issue's writes, on the cached issue, so a write's landing
  *  is what the panel draws next. `beside` is drawn above it, over writes of its own. It is drawn
- *  under the names store, as the app draws the margin's slot (`app.tsx`), which nothing
- *  publishes to unless `beside` does. `drawer` is the Details drawer it is drawn in; with none,
- *  Details makes none of the reads it makes only while open. `redraw` draws the same Details in
- *  the drawer it is handed, as a drawer that opens or closes does. `queryClient` is the client
- *  every read goes through, by default a new `detailsQueryClient()`. */
+ *  under the names store, as the new issue page draws Details' panel into the margin from inside
+ *  the store (`IssueOutlinePage.tsx`), which nothing publishes to unless `beside` does. `drawer`
+ *  is the Details drawer it is drawn in; with none, Details makes none of the reads it makes only
+ *  while open. `redraw` draws the same Details in the drawer it is handed, as a drawer that opens
+ *  or closes does. `queryClient` is the client every read goes through, by default a new
+ *  `detailsQueryClient()`. */
 function renderDetails(
   beside?: (issue: IssueDetails) => ReactNode,
   drawer?: MarginDrawer,
@@ -4901,6 +4905,55 @@ test("Add's Assignee closes an open Details, then puts the focus on the header's
       expect(assignee, "Add's Assignee put no focus on the header's select").toHaveFocus()
     );
   } finally {
+    header.remove();
+    unmount();
+    getReferences.mockRestore();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// Add's Assignee reaches the header's select two frames on, once Details has closed. A reader who
+// acts in those frames - a press in another field, and words typed there - has put the focus
+// where they want it, and a late frame that took it to the select would leave the rest of their
+// keys there. Here both frames are held until the reader has typed, as a loaded machine holds
+// them.
+test("a reader who moves to another field before Add's Assignee reaches the header keeps the focus and the words typed there", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
+  // Open, Details reads what waits on the issue.
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  getIssue.mockResolvedValue(assigneeOnly);
+  const { assignee, header } = assigneeHeader();
+  const elsewhere = document.createElement("input");
+  elsewhere.setAttribute("aria-label", "Elsewhere");
+  document.body.append(header, elsewhere);
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
+    const frames = framesByHand();
+    try {
+      await user.click(screen.getByRole("menuitem", { name: PROPERTY_LABELS.assignee }));
+      await user.click(elsewhere);
+      await user.keyboard("ab");
+      // The first frame only asks for the second.
+      await frames.run();
+      await frames.run();
+    } finally {
+      frames.restore();
+    }
+    expect(document.activeElement, "Add's frames took the focus from the other field").toBe(
+      elsewhere
+    );
+    expect(elsewhere.value).toBe("ab");
+    expect(assignee).not.toHaveFocus();
+  } finally {
+    elsewhere.remove();
     header.remove();
     unmount();
     getReferences.mockRestore();

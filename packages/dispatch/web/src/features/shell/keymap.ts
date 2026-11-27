@@ -232,7 +232,9 @@ export function takesTypedText(element: Element | null): boolean {
   return element.tagName === "TEXTAREA";
 }
 
-function isEditableTarget(target: EventTarget | null): boolean {
+/** Whether `target` takes typed text, so a key there is the field's own: a binding fires there
+ *  only when it says so (`inEditable`). */
+export function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
     return false;
   }

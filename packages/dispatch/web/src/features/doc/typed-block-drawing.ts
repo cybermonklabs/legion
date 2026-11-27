@@ -1,14 +1,17 @@
-import { parseBlockPointerValue } from "@legion/contracts";
+/**
+ * The drawing of a typed block that the editor's node views and the read-only text engine share.
+ * It imports only types from `prosemirror-model` and small value modules - no editor library, no
+ * `picture-view`, no React component; the one React package it reaches is `react-router-dom`,
+ * whose `matchPath` `../refs/page-routes` reads - so the text engine's chunk
+ * (`markdown-engine-*.js`, which every page fetches at boot) draws typed blocks without pulling
+ * the editor in.
+ */
+import { parseBlockPointerValue } from "@legion/contracts/dispatch-block-ref";
 import type { DOMOutputSpec, Node as ProseMirrorNode } from "prosemirror-model";
 
 import type { AskOption, AskUrgency, BlockTypeSchema } from "../../api/types";
-import {
-  askBlockTint,
-  askUrgencyAccent,
-  borderDefault,
-  textMutedOnSurfaceMuted,
-  textPrimaryOnSurface,
-} from "../../theme/classes";
+import { askBlockTint, askUrgencyAccent, textPrimaryOnSurface } from "../../theme/classes";
+import { borderDefault, textMutedOnSurfaceMuted } from "../../theme/shell-classes";
 import { URGENCY_LABELS } from "../inbox/ask-urgency";
 import { parseNodeReference, referenceHref, shortForm } from "../refs/routes";
 

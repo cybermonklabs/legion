@@ -16,7 +16,8 @@ import { seedDecisionBody } from "./decision-bodies";
 import { connectedDot, documentEditor, openSpec } from "./editor";
 import {
   ANCHOR,
-  answeredQuestionPreview,
+  ANSWER_PREVIEW,
+  ANSWER_ROW_ATTRIBUTE,
   FOUND_REFERENCE,
   HOST_KEY,
   OTHER_KEY,
@@ -27,7 +28,6 @@ import {
   RENDERED_BODY,
   type ReferenceWorld,
   referenceAgent,
-  referenceTargetsIn,
   type SettledQuestion,
   seedReferenceWorld,
   settledQuestions,
@@ -354,10 +354,19 @@ function madeTitles(
 }
 
 /**
- * Checks that every reference in scope to a target this world made reads as its title. A
- * one-line preview cuts a title that does not fit and ends it with an ellipsis, so what is
- * shown is the title or its own opening. It lists the references once, so its caller waits
- * first until the references in scope are the row's links.
+ * What a reference that shows `shown` reads as, against its target's `title`: the title, where it
+ * shows the title or the title's own opening, which a one-line preview ends with an ellipsis when
+ * the title does not fit; otherwise what it shows, which is what a failure prints.
+ */
+function readsAs(shown: string, title: string): string {
+  const opening = shown.endsWith("…") ? shown.slice(0, -1) : shown;
+  return title.startsWith(opening) && (shown === title || shown.endsWith("…")) ? title : shown;
+}
+
+/**
+ * Checks that every reference in scope to a target this world made reads as its title
+ * (`readsAs`). It lists the references once, so its caller waits first until the references in
+ * scope are the row's links.
  */
 async function expectMadeTitles(
   scope: Locator,
@@ -374,22 +383,85 @@ async function expectMadeTitles(
     // references this link names are all drawn when they are read here.
     for (const each of await scope.locator(selector(link)).all()) {
       // A reference is drawn before its target's title reaches it, so what it reads is polled
-      // until it is the title or the title's opening. The poll answers the title for either,
-      // and otherwise what the reference shows, which is what a failure prints.
+      // until it is the title or the title's opening.
       await expect
-        .poll(
-          async () => {
-            const shown = (await each.textContent()) ?? "";
-            const opening = shown.endsWith("…") ? shown.slice(0, -1) : shown;
-            return title.startsWith(opening) && (shown === title || shown.endsWith("…"))
-              ? title
-              : shown;
-          },
-          { message: `${rowName(item)}: ${link} reads as its title or the title's opening` }
-        )
+        .poll(async () => readsAs((await each.textContent()) ?? "", title), {
+          message: `${rowName(item)}: ${link} reads as its title or the title's opening`,
+        })
         .toBe(title);
     }
   }
+}
+
+/** What one element draws for its references, in the first match of a scope inside it. */
+interface DrawnReferences {
+  /** The element's own value of the `idAttribute` its caller names, which the caller matches the
+   *  element by; null where it names none. */
+  readonly id: string | null;
+  /** What each reference names, in the order they are drawn: a Dispatch picture's
+   *  `data-dispatch-picture`, a missing target's `data-dispatch-missing`, any other's
+   *  `data-dispatch-ref`. */
+  readonly links: readonly string[];
+  /** What each reference that names its target by `data-dispatch-ref` shows, in the same order. */
+  readonly shown: readonly { readonly ref: string; readonly text: string }[];
+  /** How many references the scope draws by `data-dispatch-ref` that are no link into their
+   *  target (`a[href]`). */
+  readonly unlinked: number;
+}
+
+/**
+ * What each element of `elements` draws for the references matching `references` in the first
+ * match of `scope` inside it, as `elements.nth(i).locator(scope).first()` reads it: every element
+ * read in one pass of the page, so a whole list is read at one moment for the price of one read.
+ * An element with no such scope draws nothing, as a locator of a scope that is not there reads
+ * nothing.
+ */
+function drawnReferences(
+  elements: Locator,
+  read: { readonly idAttribute?: string; readonly references: string; readonly scope: string }
+): Promise<DrawnReferences[]> {
+  return elements.evaluateAll(
+    (all, { idAttribute, references, scope }) =>
+      all.map((element) => {
+        const root = element.querySelector(scope);
+        const drawn = Array.from(root?.querySelectorAll(references) ?? []);
+        return {
+          id: idAttribute === undefined ? null : element.getAttribute(idAttribute),
+          links: drawn.map(
+            (reference) =>
+              reference.getAttribute("data-dispatch-picture") ??
+              reference.getAttribute("data-dispatch-missing") ??
+              reference.getAttribute("data-dispatch-ref") ??
+              ""
+          ),
+          shown: drawn.flatMap((reference) => {
+            const ref = reference.getAttribute("data-dispatch-ref");
+            return ref === null ? [] : [{ ref, text: reference.textContent ?? "" }];
+          }),
+          unlinked: root?.querySelectorAll("[data-dispatch-ref]:not(a[href])").length ?? 0,
+        };
+      }),
+    read
+  );
+}
+
+/** What each reference `shown` holds to a target this world made reads as (`readsAs`). */
+function titlesShown(
+  shown: DrawnReferences["shown"],
+  titles: ReadonlyMap<string, string>
+): string[] {
+  return shown.flatMap(({ ref, text }) => {
+    const title = titles.get(ref);
+    return title === undefined ? [] : [readsAs(text, title)];
+  });
+}
+
+/** The titles `item`'s links to a target this world made read as, in the row's order. */
+function titlesOf(item: Case, titles: ReadonlyMap<string, string>): string[] {
+  return item.links.flatMap((link) => {
+    const title = titles.get(link);
+    return title === undefined ? [] : [title];
+  });
 }
 
 test("a margin thread's replies link each reference the shared table links and nothing else, and a link opens its target", async ({
@@ -441,29 +513,51 @@ test("a margin thread's replies link each reference the shared table links and n
     const card = await openMarginThread(page, testInfo.project.name, root.id);
     const replies = card.locator("li[data-reply]");
     await expect(replies).toHaveCount(cases.length);
-    const body = (item: Case) => replies.nth(cases.indexOf(item)).locator(RENDERED_BODY).first();
-    for (const item of cases) {
-      // The reader finds exactly the row's links; each whose target this world holds is a link,
-      // and each it does not hold is its writer's words (R8), which `reference-naming.e2e.ts`
-      // holds on its own rows.
-      await expect
-        .poll(() => referenceTargetsIn(body(item), FOUND_REFERENCE), { message: rowName(item) })
-        .toEqual([...item.links]);
-      await expect(
-        body(item).locator("[data-dispatch-ref]:not(a[href])"),
-        rowName(item)
-      ).toHaveCount(0);
-      await expectMadeTitles(body(item), (link) => `a[data-dispatch-ref="${link}"]`, titles, item);
-    }
+    // Every reply read in one pass and compared at once: a reply that finds other references
+    // than its row's, draws one as no link, or whose link to a target this world made does not
+    // read as that target's title, is named in the comparison beside every reply that holds. The
+    // reader finds exactly the row's references; each whose target this world holds is a link,
+    // and each it does not hold is its writer's words (R8), which `reference-naming.e2e.ts` holds
+    // on its own rows. It is polled, since a reference is drawn before its target's title
+    // reaches it.
+    const expected = cases.map((item) => ({
+      links: [...item.links],
+      row: rowName(item),
+      titles: titlesOf(item, titles),
+      unlinked: 0,
+    }));
+    await expect
+      .poll(
+        async () =>
+          (
+            await drawnReferences(replies, { references: FOUND_REFERENCE, scope: RENDERED_BODY })
+          ).map((reply, at) => {
+            const item = cases[at];
+            return {
+              links: reply.links,
+              row: item === undefined ? `reply ${at}, which no row wrote` : rowName(item),
+              titles: titlesShown(reply.shown, titles),
+              unlinked: reply.unlinked,
+            };
+          }),
+        { message: "each reply links its row's references, and each made target's as its title" }
+      )
+      .toEqual(expected);
 
     // A bare key opens its issue.
-    await body(caseOf(cases, "See XCORE-1 here."))
+    await replies
+      .nth(cases.indexOf(caseOf(cases, "See XCORE-1 here.")))
+      .locator(RENDERED_BODY)
+      .first()
       .getByRole("link", { exact: true, name: `${world.other.key} ${world.other.title}` })
       .click();
     await expect(page).toHaveURL(new RegExp(`/issues/${OTHER_KEY}$`));
     await expect(page.getByRole("heading", { name: world.other.title }).first()).toBeVisible();
 
-    // A `#id` opens the document at that question, which starts below the fold.
+    // A `#id` opens the document at that question, which starts below the fold. It is followed
+    // from the thread opened again on a new load, not first from the thread already open: the
+    // jump within the document folds that thread, so the bare key above could not be followed
+    // from it afterwards.
     await openSpec(page, world.host.key, ANCHOR);
     const reopened = await openMarginThread(page, testInfo.project.name, root.id);
     await reopened
@@ -533,25 +627,57 @@ test("the one-line preview shows each reference the shared table links as its ta
     await page.goto("/answers");
     const rows = page.locator("[data-answer-row]");
     const more = page.getByRole("button", { name: "Show more" });
-    await expect(async () => {
-      if (await more.isVisible()) {
-        await more.click();
-      }
-      expect(await rows.count()).toBe(asks.size);
-    }).toPass();
-    for (const [item, ask] of asks) {
-      const preview = answeredQuestionPreview(page, ask);
-      await expect
-        .poll(() => referenceTargetsIn(preview, FOUND_REFERENCE), { message: rowName(item) })
-        .toEqual([...item.links]);
-      await expectMadeTitles(preview, (link) => `[data-dispatch-ref="${link}"]`, titles, item);
-      // The Answers row is a record a reader reads (`DISPATCH_READING_SURFACES`'s
-      // `answers-subject`), so each reference it draws is a link into its target; a preview
-      // inside a control draws the same text with no link in it.
-      await expect(preview.locator("[data-dispatch-ref]:not(a[href])"), rowName(item)).toHaveCount(
-        0
-      );
+    // The list draws a page at a time, with Show more under it while more are left; a press
+    // reads "Loading…" on a disabled button until the next page is drawn. So each press waits
+    // for the rows of the page it asked for, rather than retrying the whole step on a backoff,
+    // and the claim is the count once no Show more is left.
+    await expect(rows.first()).toBeVisible();
+    // One instant's answer is safe: `AnswersPage.tsx` draws the rows and Show more in one render.
+    while (await more.isVisible()) {
+      const drawn = await rows.count();
+      await more.click();
+      await expect(rows).not.toHaveCount(drawn);
     }
+    await expect(rows).toHaveCount(asks.size);
+    // Every preview read in one pass and compared at once, so a row that differs is named in the
+    // comparison beside every row that holds. An ask's preview is the first one in its row, as
+    // `answeredQuestionPreview` reads it, and an ask with no row draws nothing. The Answers row is
+    // a record a reader reads (`DISPATCH_READING_SURFACES`'s `answers-subject`), so each
+    // reference it draws is a link into its target, in the same reading that shows its
+    // references; a preview inside a control draws the same text with no link in it.
+    const expected = [...asks.keys()].map((item) => ({
+      links: [...item.links],
+      row: rowName(item),
+      titles: titlesOf(item, titles),
+      unlinked: 0,
+    }));
+    await expect
+      .poll(
+        async () => {
+          const previews = new Map<string, DrawnReferences>();
+          for (const preview of await drawnReferences(rows, {
+            idAttribute: ANSWER_ROW_ATTRIBUTE,
+            references: FOUND_REFERENCE,
+            scope: ANSWER_PREVIEW,
+          })) {
+            if (preview.id !== null && !previews.has(preview.id)) previews.set(preview.id, preview);
+          }
+          return [...asks].map(([item, ask]) => {
+            const preview = previews.get(ask);
+            return {
+              links: preview?.links ?? [],
+              row: rowName(item),
+              titles: titlesShown(preview?.shown ?? [], titles),
+              unlinked: preview?.unlinked ?? 0,
+            };
+          });
+        },
+        {
+          message:
+            "each preview shows its row's references, each made target's as its title, each as a link",
+        }
+      )
+      .toEqual(expected);
   } finally {
     await context.close();
   }
@@ -624,43 +750,38 @@ test("the live editor draws each reference the shared table links whose target e
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    const open = async () => {
-      await page.goto(`/issues/${world.host.key}/artifacts/${DOCUMENT.slug}`);
-      await expect(documentEditor(page)).toContainText(questionText("q2", DOCUMENT.slug));
-      await expect(connectedDot(page)).toHaveText("connected");
-    };
-    await open();
+    await page.goto(`/issues/${world.host.key}/artifacts/${DOCUMENT.slug}`);
+    await expect(documentEditor(page)).toContainText(questionText("q2", DOCUMENT.slug));
+    await expect(connectedDot(page)).toHaveText("connected");
     const expected = Object.fromEntries(cases.map((item) => [String(item.index), [...item.drawn]]));
     await expect.poll(() => drawnTitlesByRow(page), { timeout: 60_000 }).toEqual(expected);
+    // The editor is the one scope of every row, so the titles a link draws are the same elements
+    // for each row that writes it: each link's titles are read once, under the first row that
+    // links it, rather than again for every row after it.
+    const read = new Set<string>();
     for (const item of cases) {
+      const links = item.links.filter((link) => !read.has(link));
+      for (const link of links) read.add(link);
       await expectMadeTitles(
         documentEditor(page),
         (link) => `a.dispatch-reference[data-dispatch-href="${link}"]`,
         titles,
-        item
+        { ...item, links }
       );
     }
-    // The poll of every row's drawn references above waited for each of these, so one read
-    // lists them all.
-    for (const title of await documentEditor(page).locator("a.dispatch-reference").all()) {
-      await expect(title).toBeVisible();
-    }
-
-    // A bare key opens its issue, and the document's stored text is what was written.
-    await documentEditor(page)
-      .locator(`a.dispatch-reference[data-dispatch-href="dispatch://${world.other.key}"]`)
-      .first()
-      .click();
-    await expect(page).toHaveURL(new RegExp(`/issues/${OTHER_KEY}$`));
-    await expect(page.getByRole("heading", { name: world.other.title }).first()).toBeVisible();
-    expect((await getArtifactText(uploaded.artifact.id)).markdown).toBe(stored);
+    // The poll of every row's drawn references above waited for each of these, so none is still
+    // to come, and one count of those that are not visible reads them all.
+    await expect(
+      documentEditor(page).locator("a.dispatch-reference").filter({ visible: false })
+    ).toHaveCount(0);
 
     // A `#id` opens this document at its own question, which stands above the fold it is
-    // followed from.
-    await open();
-    // The line the `#id` row was written as. The editor draws a resolved reference's title in
-    // front of the reference's own text, which it keeps and hides, so the line reads
-    // `See <the question>#q2 for the rollout.`: the words around the reference name the line.
+    // followed from. Nothing above has scrolled the page, since polls, reads of an element's text
+    // and visibility checks move nothing, so it is followed from where the load left the page.
+    // The line it is followed from is the one the `#id` row was written as. The editor draws a
+    // resolved reference's title in front of the reference's own text, which it keeps and hides,
+    // so the line reads `See <the question>#q2 for the rollout.`: the words around the reference
+    // name the line.
     const question = documentEditor(page)
       .locator("p")
       .filter({ hasText: /^See .*#q2 for the rollout\.$/ })
@@ -677,6 +798,17 @@ test("the live editor draws each reference the shared table links whose target e
       new RegExp(`/issues/${HOST_KEY}/artifacts/${DOCUMENT.slug}#b-q2$`)
     );
     await expect(block).toBeInViewport();
+    expect((await getArtifactText(uploaded.artifact.id)).markdown).toBe(stored);
+
+    // A bare key opens its issue, followed from the same page: the jump put the selection in the
+    // question's block, and the editor hides a title only where the selection touches it, so the
+    // key's titles are still drawn. And the document's stored text is what was written.
+    await documentEditor(page)
+      .locator(`a.dispatch-reference[data-dispatch-href="dispatch://${world.other.key}"]`)
+      .first()
+      .click();
+    await expect(page).toHaveURL(new RegExp(`/issues/${OTHER_KEY}$`));
+    await expect(page.getByRole("heading", { name: world.other.title }).first()).toBeVisible();
     expect((await getArtifactText(uploaded.artifact.id)).markdown).toBe(stored);
   } finally {
     await context.close();

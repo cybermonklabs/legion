@@ -1,4 +1,4 @@
-import { mentionDrawn } from "@legion/contracts";
+import { mentionDrawn } from "@legion/contracts/dispatch-mentions";
 import type { EditorReferences, OfferedReference, ReferenceTarget } from "@legion/proof-editor";
 import { useQueryClient } from "@tanstack/react-query";
 import {

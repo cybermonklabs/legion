@@ -10,8 +10,8 @@ import {
   primaryButtonBg,
   primaryButtonHoverBg,
   textSecondaryOnSurface,
-} from "../../theme/classes";
-import * as markdownEngine from "../refs/markdown-engine";
+} from "../../theme/shell-classes";
+import { onlyPrefetchesOut, prefetchChunk } from "./chunk-loads";
 
 // The tab's recovery reloads, as a JSON array of the epoch-millisecond times they started: a chunk
 // that failed to download reloads the page while fewer than CHUNK_RELOAD_BUDGET of them fall in the
@@ -47,6 +47,10 @@ interface Navigation {
 declare global {
   interface Window {
     readonly navigation?: Navigation;
+    /** Set while this bundle's chunk-failure recovery is installed, and read by `web/index.html`'s
+     *  inline script: a `<link rel="modulepreload">` that fails while the bundle runs is one the
+     *  bundle itself asked for, and `installChunkFailureRecovery` below judges it. */
+    __dispatchChunkRecovery?: boolean;
   }
 }
 
@@ -207,9 +211,40 @@ function spendAskedChunkReload(): void {
   }
 }
 
+// Chunk downloads nobody is waiting for, and chunk downloads a reader is waiting for: which of
+// the two a failure is decides whether it reloads.
+//
+// The entry starts the landed route's chunks beside the landing read, before React has rendered
+// anything (`app.tsx`, `preloadRouteChunk`), and the router asks for the same chunk again when it
+// renders that route (`renderChunk`, which every `lazyChunk` route there goes through). A
+// prefetch is nobody waiting: its failure says only that the download has not happened yet, and
+// the router's own ask for the same chunk fails a moment later, in front of a reader whose page
+// cannot draw. That second failure is the one this recovery was written for.
+//
+// Reloading for the prefetch instead costs the reader what the render's failure does not. It
+// throws the document away while it is still loading - measured on the stubbed layer: with the
+// prefetch judged, the three reloads of a chunk that never downloads all happen before the
+// document fires `load`, so the reader is shown nothing at all until the budget is spent - and a
+// download that only the prefetch lost, one the render would have got, would spend a reload for
+// nothing. So a failure while a prefetch is still out and no render is waiting on a chunk is read
+// as the prefetch's, and reloads nothing.
+//
+// WHAT THAT RULE RESTS ON is that every chunk a reader waits for is started under `renderChunk`,
+// every chunk nobody waits for under `prefetchChunk`, and no chunk under neither: the rule can
+// see only the chunks those two started. `chunk-loads.ts`, where they and `lazyChunk` live,
+// says how that is held - for a component a `Suspense` waits on, by construction, since `lazy`
+// itself is refused everywhere in `web/src` but that module (the `noRestrictedImports` rule of
+// the repository's `biome.json`) - and which chunks were started bare until dispatch://INFRA-1109.
+
 // Reloads the page for a chunk that failed to download while online, from the tab's budget.
 function reloadForChunkFailure(): void {
   if (leavingPage) {
+    return;
+  }
+  // A chunk a prefetch started and no render has asked for yet: the render asks again, and
+  // that failure is the one a reader meets (above). That holds for the Markdown engine's warm too,
+  // whose failed load is not kept (`features/refs/markdown-engine.ts`, `loadEngine`).
+  if (onlyPrefetchesOut()) {
     return;
   }
   // A chunk that fails to download while the browser is offline is a network outage, not a
@@ -233,10 +268,13 @@ function reloadForChunkFailure(): void {
 // reads as a module and fails on with a TypeError that says nothing about the download; a
 // prevented stylesheet failure loads the module without its styles. So the handler never
 // prevents it: the importer always sees the failure itself, and the page also reloads from the
-// tab's budget, never while it is being left. A failed chunk or stylesheet Vite preloaded through a
-// `<link>` is seen first by `web/index.html`'s inline script, which reloads; a reload fires
-// `beforeunload` before it returns, so this event for the same failure finds the page being left
-// and spends nothing more.
+// tab's budget, never while it is being left. A failed chunk or stylesheet Vite preloaded through
+// a `<link rel="modulepreload">` is a download this bundle asked for, so `web/index.html`'s
+// inline script leaves it to this handler while `__dispatchChunkRecovery` says the handler is
+// installed: Vite reports the same failure here, with the prefetch rule above and the offline and
+// leaving rules applied, while the inline script knows only the path. The inline script keeps
+// every failure of the document's own assets - the entry chunk, its preload links and the main
+// stylesheet - since those fail before this bundle can run, or while it never does.
 export function installChunkFailureRecovery(): () => void {
   const navigation = window.navigation;
   window.addEventListener("beforeunload", markPageLeaving);
@@ -248,6 +286,7 @@ export function installChunkFailureRecovery(): () => void {
   window.addEventListener("keydown", markPageStaying, { capture: true });
   document.addEventListener("visibilitychange", markPageStayingWhenVisible);
   window.addEventListener("vite:preloadError", reloadForChunkFailure);
+  window.__dispatchChunkRecovery = true;
 
   return () => {
     window.removeEventListener("beforeunload", markPageLeaving);
@@ -258,29 +297,9 @@ export function installChunkFailureRecovery(): () => void {
     window.removeEventListener("keydown", markPageStaying, { capture: true });
     document.removeEventListener("visibilitychange", markPageStayingWhenVisible);
     window.removeEventListener("vite:preloadError", reloadForChunkFailure);
+    window.__dispatchChunkRecovery = undefined;
     markPageStaying();
   };
-}
-
-// The other half of the offline-chunk policy above: the editor, Yjs, and Hocuspocus are
-// code-split so the issue route does not pay for them until a document mounts. A chunk that
-// fails to download while the browser is offline is retried once the network returns; Chromium
-// caches a failed module fetch in its module map, so that retry can reject again, in which case
-// the failure propagates like an online one and reaches `reloadForChunkFailure`, which reloads
-// while the tab's budget lasts.
-export async function importWhenOnline<T>(load: () => Promise<T>): Promise<T> {
-  for (;;) {
-    try {
-      return await load();
-    } catch (error) {
-      if (navigator.onLine) {
-        throw error;
-      }
-      await new Promise<void>((resolve) => {
-        window.addEventListener("online", () => resolve(), { once: true });
-      });
-    }
-  }
 }
 
 /**
@@ -298,9 +317,39 @@ export function DeploymentResilience(): ReactNode {
   const bannerRef = useRef<HTMLElement>(null);
   useFootInset(bannerRef, updateAvailable, "banner");
 
+  // The headless Markdown engine, warmed once this component has painted. Its module
+  // (`features/refs/markdown-engine.ts`) is fetched here rather than imported, and it is a chunk
+  // of its own (`markdown-engine-*.js`, which carries the typed-block drawing as well, beside
+  // the parse worker's queue and the stored-tree builder it shares with the editor's chunks): this
+  // component is in the entry chunk, which every page parses before it draws anything, and this
+  // warm was the engine's one importer there. The entry fell by 13,554 bytes when it stopped
+  // importing it (measured 2026-11-15, dispatch://INFRA-1109). Every surface that draws a body
+  // imports the engine itself, from a route or a host that is a chunk of its own already, so a
+  // page that draws a body has the engine's chunk come down with that chunk, whatever this warm
+  // does.
+  //
+  // What a reader loses by its being late: nothing they can point at. The warm now waits on one
+  // more download, the engine module's own, which the chunk of a page that draws a body brings
+  // down with it anyway - on a cold landing beside the landing read (`app.tsx`,
+  // `preloadRouteChunk`) - and no body draws before that read has answered.
+  //
+  // Under `prefetchChunk`, the engine's own downloads - the headless editor and its serializer -
+  // as well as its module: nobody is waiting on this warm. A body that draws awaits the same load
+  // under `renderChunk` (`features/refs/markdown-engine.ts`, `withEngine`), and so does a past
+  // version's change marks (`features/doc/VersionView.tsx`), and a failure while either waits is
+  // the one that reloads. The warm ran outside the prefetch until dispatch://INFRA-1109, as it
+  // had when this module imported the engine statically, which left those downloads under
+  // neither function (`chunk-loads.ts`).
+  //
+  // A warm that fails reloads nothing and keeps nothing: the next body drawn asks again
+  // (`features/refs/markdown-engine.ts`, `loadEngine`; `e2e/shell.e2e.ts`).
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void markdownEngine.warmMarkdownRenderer().catch(() => undefined);
+      prefetchChunk(() =>
+        import("../refs/markdown-engine").then((markdownEngine) =>
+          markdownEngine.warmMarkdownRenderer()
+        )
+      );
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);

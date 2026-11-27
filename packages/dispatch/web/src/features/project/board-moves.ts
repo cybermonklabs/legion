@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 
 import { ApiError, issuePatchRequest } from "../../api/client";
-import { boardMoveMutationKey } from "../../api/queries";
+import { boardMoveMutationKey, projectIssuesQueryKey } from "../../api/queries";
 import type { Issue, IssueSummary, StatusChangeAnswer, UpdateIssueInput } from "../../api/types";
 import {
   cardHasParentOrOpenChild,
@@ -13,7 +13,6 @@ import {
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { type IssueStatus, moveIssue, moveIssueToLane, type PriorityLane } from "./board-model";
-import { projectIssuesQueryKey } from "./issue-filters";
 
 export const staleBoardMessage =
   "The board changed while you were moving this card - refreshed, try again.";

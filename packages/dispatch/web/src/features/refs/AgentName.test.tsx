@@ -7,7 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
 import { queryRetry } from "../../api/query-client";
 import type { Actor, Agent } from "../../api/types";
-import { liveDotBg, offlineDotBorder, unknownDotBorder } from "../../theme/classes";
+import { liveDotBg, offlineDotBorder, unknownDotBorder } from "../../theme/shell-classes";
 import { useAgents } from "../conversation/useAgents";
 import { AgentName, AskResolutionLine, askResolutionParts, useAgentText } from "./AgentName";
 import { AGENT_REGISTRY_POLL_MS, AgentRegistryPoller, agentRegistryPollMs } from "./agent-registry";

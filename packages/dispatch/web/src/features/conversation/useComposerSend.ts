@@ -24,8 +24,9 @@ export interface ComposerSend {
   readonly discard: () => void;
   /** Stops trying a late send (Stop trying; `HeldSends.stop`). */
   readonly stop: () => void;
-  /** Keeps what the reader wrote over a refusal, for the composer that mounts next. */
-  readonly keep: (draft: HeldDraft) => void;
+  /** Keeps what the reader wrote over a refusal, for the composer that mounts next. `draft` is
+   *  read only while a refusal is held (`HeldSends.keep`). */
+  readonly keep: (draft: () => HeldDraft) => void;
   /** Takes a refusal that lives at `from`, the address the composer showed, to where the reader
    *  moved the composer with its own controls (`HeldSends.carry`). */
   readonly carry: (from: Address, to: CarriedAddress) => void;

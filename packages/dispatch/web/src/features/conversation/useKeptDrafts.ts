@@ -1,4 +1,3 @@
-import { hashKey, type MutationKey } from "@tanstack/react-query";
 import {
   type Ref,
   type RefObject,
@@ -12,7 +11,7 @@ import {
 
 import type { ArtifactOwner } from "../../api/client";
 import type { AskUrgency } from "../../api/types";
-import { SendStoppedError } from "../writes/keyed-write";
+import { outgoingDraft } from "../refs/party-references";
 import { textareaValue } from "./block-spans";
 import {
   type AskOptionDraft,
@@ -32,7 +31,7 @@ import {
   type ReplyTarget,
 } from "./composer-model";
 import { WRITTEN_ELSEWHERE_WORDS } from "./composer-words";
-import type { HeldSend, HeldSends } from "./held-sends";
+import type { HeldSend } from "./held-sends";
 import {
   type Address,
   addressWords,
@@ -87,36 +86,6 @@ function keptNames({ composerName, inline, standing }: KeptUnder) {
      *  draft is that thread's until the reader sends or drops it. */
     unsentName: standing || inline ? composerName : undefined,
   };
-}
-
-/** The name of the composer that sends under `mutationKey` (`KeptUnder.composerName`): its send's
- *  own name, which is what it keeps the reader's drafts under (`keptNames`). The margin keeps and
- *  reads a compose's drafts under it from outside the composer (`giveWay`, `useMarginSheet`). */
-export function composerNameOf(mutationKey: MutationKey): string {
-  return hashKey(mutationKey);
-}
-
-/**
- * What a margin compose's refusal becomes once a newer compose on its document takes its place,
- * which is the host's move for it and carries nothing. A send the reader stopped may have been
- * delivered, so it is not reduced to a draft: it waits under `aside` unchanged, its mark with it
- * (`HeldSends.setAside`), for the newer compose to offer (`stoppedOfferOf`). Any other refusal
- * goes, its mark with it, and its draft is kept under the compose's name for the words it was
- * written about and in the kind it was written as (`awayDraftOf`), where the compose keeps a draft
- * by address (`keptNames`' `awayName`) and the newer compose offers it (`keptForOtherWords`).
- */
-export function giveWay(
-  refused: HeldSend & { readonly status: "refused" },
-  aside: MutationKey,
-  store: HeldSends,
-  unsent: UnsentDrafts
-): void {
-  if (refused.refusal instanceof SendStoppedError) {
-    store.setAside(refused.mutationKey, aside);
-    return;
-  }
-  unsent.keepAway(composerNameOf(refused.mutationKey), awayDraftOf(refused));
-  store.discard(refused.mutationKey);
 }
 
 /** What Send says while the refusal the composer holds lives at another address than the one it
@@ -541,23 +510,27 @@ export function useKeptDrafts({
   // What the reader wrote over a refusal goes back to the held send (`keep`, which a send still
   // out ignores), so the composer that mounts next shows it - and so a reload does: a refusal's
   // draft is the only copy of that message, and the entry it is kept in is what survives the
-  // page (`write-storage.ts`). It is written as this composer unmounts, a short wait after it
-  // mounts and after each keystroke, and as the page goes, which no unmount follows. A composer
-  // that mounts over a refusal so keeps the very draft the send holds, and a keep of what the
-  // send holds already writes nothing (`holdsAlready`). A refusal the host has moved the
-  // composer off (`elsewhere`) keeps the draft it was written with: what is typed over it there
-  // is for that other address. So does an edit's refusal while it waits beside a newer body
-  // (`changed`): the field shows that body, not the reader's edit.
+  // page (`write-storage.ts`). It goes with whether its text names a party, read here, where the
+  // grammar of references is loaded (`outgoingDraft`), so a Retry the store makes of it names
+  // whom the edit names (`HeldSends.retry`). That reading parses the whole body, so the draft is
+  // handed over as a function, which the store calls only while a refusal is held
+  // (`HeldSends.keep`). It is written as this composer unmounts, a short wait after it mounts and
+  // after each keystroke, and as the page goes, which no unmount follows. A composer that mounts
+  // over a refusal so keeps the very draft the send holds, and a keep of what the send holds
+  // already writes nothing (`holdsAlready`). A refusal the host has moved the composer off
+  // (`elsewhere`) keeps the draft it was written with: what is typed over it there is for that
+  // other address. So does an edit's refusal while it waits beside a newer body (`changed`): the
+  // field shows that body, not the reader's edit.
   // The issue page's box keeps its mentions with the draft as it holds them then (`seedsField`),
   // so a box that mounts again over the send takes out none the reader's edits let go of.
   const keepDraft = useRef(() => {});
   keepDraft.current = () => {
     if (elsewhere !== undefined || changed !== undefined) return;
-    outgoing.keep({
+    outgoing.keep(() => ({
       ask: { multiple, options: submittedAskOptions(askOptions), urgency },
-      draft: { body, replacement },
+      draft: outgoingDraft({ body, replacement }),
       ...seedsField(),
-    });
+    }));
   };
   useEffect(() => () => keepDraft.current(), []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the draft's own fields are the trigger; the write reads them as they stand
@@ -837,8 +810,9 @@ export function useKeptDrafts({
     const offRefusal = refusalAt(before.address);
     if (offRefusal) {
       // Written now, since the debounced write reads the address the composer shows by then, and
-      // with the mentions of the address it leaves, which the box holds until it arrives.
-      outgoing.keep({ ask, draft: leaving, ...seedsField() });
+      // with the mentions of the address it leaves, which the box holds until it arrives: the
+      // store reads the draft as it keeps it, before the arrival below sets them.
+      outgoing.keep(() => ({ ask, draft: outgoingDraft(leaving), ...seedsField() }));
     } else if (awayName !== undefined) {
       if (wroteOver(before.fresh)) {
         unsent.keepAway(awayName, {

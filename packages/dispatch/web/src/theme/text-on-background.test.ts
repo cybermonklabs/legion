@@ -5,6 +5,7 @@ import * as ts from "typescript";
 
 import * as classes from "./classes";
 import type * as P from "./palette";
+import * as shellClasses from "./shell-classes";
 
 /**
  * `palette.test.ts` verifies every *registered* foreground/background pair meets WCAG AA.
@@ -49,12 +50,16 @@ const THEME_DIR = import.meta.dir;
 const WEB_SRC_ROOT = join(THEME_DIR, "..");
 
 // ------------------------------------------------------------------------------------------
-// Step 1: classify every string-valued `classes.ts` export as a background and/or text role,
-// by parsing its own source text (not the evaluated module — the tokens must appear literally
-// for Tailwind's scanner to see them, exactly `no-raw-colors.test.ts`'s premise).
+// Step 1: classify every string-valued export of the theme's two modules of classes
+// (`classes.ts`, and `shell-classes.ts`, the strings the entry chunk draws) as a background
+// and/or text role, by parsing their own source text (not the evaluated modules — the tokens
+// must appear literally for Tailwind's scanner to see them, exactly `no-raw-colors.test.ts`'s
+// premise).
 // ------------------------------------------------------------------------------------------
 
-const classesSource = readFileSync(join(THEME_DIR, "classes.ts"), "utf8");
+const classesSource = ["classes.ts", "shell-classes.ts"]
+  .map((name) => readFileSync(join(THEME_DIR, name), "utf8"))
+  .join("\n");
 const EXPORT_PATTERN = /export const ([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"]*)";/g;
 
 interface SwatchPair {
@@ -144,12 +149,12 @@ test("classifies a non-trivial number of background and text composites", () => 
 test("reads a page token through the swatch pair PAGE_COLORS says it renders", () => {
   // `pageInkFill` is `bg-page-ink text-page-paper`: neither token names a Tailwind shade, so
   // only the page-token branch can resolve them.
-  expect(classes.pageInkFill).toBe("bg-page-ink text-page-paper");
+  expect(shellClasses.pageInkFill).toBe("bg-page-ink text-page-paper");
   const expected = {
     bg: { dark: "slate-100", light: "page-ink" },
     text: { dark: "slate-950", light: "page-paper" },
   };
-  expect(classifyComposite(classes.pageInkFill)).toEqual(expected);
+  expect(classifyComposite(shellClasses.pageInkFill)).toEqual(expected);
   expect(bgComposites.get("pageInkFill")).toEqual(expected.bg);
   expect(textComposites.get("pageInkFill")).toEqual(expected.text);
 });

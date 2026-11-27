@@ -2,15 +2,14 @@ import { type FocusEvent, type ReactNode, useId, useRef, useState } from "react"
 
 import type { Project } from "../../api/types";
 import { Chip } from "../../components/Chip";
+import { surfaceMutedHoverBg, textPrimaryOnSurface } from "../../theme/classes";
 import {
   borderDefault,
   card,
   inputClasses,
-  surfaceMutedHoverBg,
   textMutedOnSurface,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { issueStatuses, statusLabel } from "../project/board-model";
 import { type SearchBarFilters, type SearchFilterName, searchFilterChips } from "./search-filters";
 

@@ -15,7 +15,12 @@ import { useContext } from "react";
 
 import { ApiError, api, artifactVersionPath } from "../../api/client";
 import { artifactAtAddress, primarySpec } from "../../api/issue-cache";
-import { issueCollaboratorsQuery, issueQuery, usersQuery } from "../../api/queries";
+import {
+  issueCollaboratorsQuery,
+  issueQuery,
+  liveTextQueryOptions,
+  usersQuery,
+} from "../../api/queries";
 import type {
   ArchitectureComponentRead,
   Artifact,
@@ -42,12 +47,12 @@ import {
 import { itemOfBlock } from "./block-reference";
 import { knownSessionQuery } from "./known-sessions";
 import { type ReferenceNaming, useMarkdownHeadline } from "./markdown-engine";
+import type { IssueRoute } from "./page-routes";
 import { deletedLineText, editedName, type PostDeletion, postDeletion } from "./post-marks";
 import { RecordIssue, recordedRoles, roleHolders } from "./role-holders";
 import {
   buildDispatchReference,
   type DispatchReferenceRoute,
-  type IssueRoute,
   issueOrDocumentTitle,
   type ReferencedArtifact,
   referencedArtifact,
@@ -297,10 +302,13 @@ export const agentArtifactsQuery = (session: string | undefined) =>
     queryFn: () => api.listAgentArtifacts(session ?? ""),
   });
 
-/** A document's live text, or one immutable version of it when the reference pins a version. */
+/** A document's live text, or one immutable version of it when the reference pins a version.
+ *  The live text is the entry the document's own page reads and the landing seeds, so its key
+ *  is that read's own (`liveTextQueryOptions`) and a card reads the one entry the page holds. */
 export const artifactTextQuery = (id: string | undefined, version: number | undefined) =>
   queryOptions<ArtifactText | ArtifactVersionContent>({
-    queryKey: ["artifact", id, version ?? "text"],
+    queryKey:
+      version === undefined ? liveTextQueryOptions(id ?? "").queryKey : ["artifact", id, version],
     queryFn: () =>
       version === undefined
         ? api.getArtifactText(id ?? "")

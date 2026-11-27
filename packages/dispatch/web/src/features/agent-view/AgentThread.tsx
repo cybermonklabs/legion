@@ -11,7 +11,8 @@ import {
   unstable_useTriggerPopoverScopeContext,
   useAuiState,
 } from "@assistant-ui/react";
-import { type AgentStreamCommand, dispatchWritingBox } from "@legion/contracts";
+import type { AgentStreamCommand } from "@legion/contracts";
+import { dispatchWritingBox } from "@legion/contracts/dispatch-writing-boxes";
 import { type ReactNode, type RefObject, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { ChevronIcon } from "../../components/DisclosureToggle";
@@ -19,25 +20,27 @@ import { RefusableButton } from "../../components/RefusableButton";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useFootInset } from "../../hooks/useFootInset";
 import {
+  cardHoverBorder,
+  selectedCardBg,
+  selectedCardBorder,
+  textMutedOnCanvas,
+  textOptionDescription,
+  textPrimaryOnSurface,
+} from "../../theme/classes";
+import {
   borderDefault,
   calloutDangerBorder,
   card,
-  cardHoverBorder,
   dangerText,
   disclosureButtonText,
   inputClasses,
   primaryButtonBg,
   primaryButtonHoverBg,
-  selectedCardBg,
-  selectedCardBorder,
   surfaceMutedBg,
-  textMutedOnCanvas,
   textMutedOnSurfaceMuted,
-  textOptionDescription,
   textPrimaryOnCanvas,
-  textPrimaryOnSurface,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { PendingSendTurn } from "../conversation/PendingSendTurn";
 import type { SessionSends } from "../conversation/useSessionSends";
 import { AgentName } from "../refs/AgentName";

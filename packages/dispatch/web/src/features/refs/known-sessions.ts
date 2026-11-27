@@ -1,4 +1,5 @@
-import { KNOWN_SESSIONS_MAX, referenceTargetFits } from "@legion/contracts";
+import { KNOWN_SESSIONS_MAX } from "@legion/contracts/dispatch-api-constants";
+import { referenceTargetFits } from "@legion/contracts/dispatch-text-rules";
 import { queryOptions } from "@tanstack/react-query";
 
 import { api } from "../../api/client";

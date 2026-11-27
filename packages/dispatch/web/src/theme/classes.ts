@@ -2,27 +2,40 @@ import type { IssueStatus } from "@legion/contracts/dispatch-tools";
 
 import type { Swatch } from "./palette";
 import * as P from "./palette";
+import {
+  badgeBlocking,
+  calloutDangerBg,
+  calloutWarningBg,
+  focusVisibleRing,
+  pageInkText,
+  primaryButtonBg,
+  primaryButtonEnabledHoverBg,
+} from "./shell-classes";
 
 /**
- * The only place a component-facing `dark:`-paired className string gets built. Every exported
- * class string below is a **static literal** — Tailwind's build-time scanner (`@tailwindcss/
- * vite`) finds which utility classes to generate by reading source files as plain text; it does
- * not evaluate JavaScript, so a class name assembled at runtime by concatenating a prefix
- * variable with a swatch-name variable never appears as literal text anywhere, and Tailwind
- * silently omits it from the built stylesheet. `classes-in-build-css.ts`, run with
- * `bun run check:classes` after the production build, checks every token below against the output
- * CSS; `no-raw-colors.test.ts` additionally rejects a hyphen glued directly onto a template
- * expression in this very file, the construction that assembles a class name at runtime.
+ * One of the two places a component-facing `dark:`-paired className string gets built: this
+ * module, and `shell-classes.ts`, which holds the strings the entry chunk's modules draw, apart
+ * from the pairs and checks this one builds as it loads. Every exported class string of either
+ * is a **static literal** — Tailwind's build-time scanner (`@tailwindcss/vite`) finds which
+ * utility classes to generate by reading source files as plain text; it does not evaluate
+ * JavaScript, so a class name assembled at runtime by concatenating a prefix variable with a
+ * swatch-name variable never appears as literal text anywhere, and Tailwind silently omits it
+ * from the built stylesheet. `classes-in-build-css.ts`, run with `bun run check:classes` after
+ * the production build, checks every token of both against the output CSS;
+ * `no-raw-colors.test.ts` additionally rejects a hyphen glued directly onto a template
+ * expression in either file, the construction that assembles a class name at runtime.
  *
  * Nothing outside `theme/` should write a `bg-`/`text-`/`border-`/`ring-`/`placeholder-` color
  * literal directly — `no-raw-colors.test.ts` greps `web/src` (excluding `theme/`) for exactly
- * that and fails on any hit, so a new component cannot bypass this module and a re-color has one
- * place to change.
+ * that and fails on any hit, so a new component cannot bypass these modules and a re-color has
+ * one place to change.
  *
  * `CONTRAST_CHECKS` is built up alongside each role that pairs text against a background, using
  * the OKLCH swatches from `palette.ts` (contrast math has no Tailwind-scanning constraint — it
  * never touches a className). Keeping each literal string and its OKLCH pair next to each other
- * is what keeps them from drifting apart.
+ * is what keeps them from drifting apart; a string of the shell's is kept in
+ * `shell-classes.ts`, so the entry parses no pair, and its pair and check stay here under the
+ * role's name.
  */
 
 export interface ColorPair {
@@ -65,15 +78,9 @@ export const SURFACE_MUTED_STRONG = pair(P.SLATE_200, P.SLATE_700);
 /** An input recessed inside a `SURFACE` card needs to read as a level below it. */
 export const SURFACE_RECESSED = pair(P.WHITE, P.SLATE_950);
 
-export const surfaceBg = "bg-white dark:bg-slate-900";
-export const surfaceMutedBg = "bg-slate-100 dark:bg-slate-800";
 export const surfaceMutedHoverBg = "hover:bg-slate-100 dark:hover:bg-slate-800";
 export const surfaceMutedStrongBg = "bg-slate-200 dark:bg-slate-700";
 export const surfaceRecessedBg = "bg-white dark:bg-slate-950";
-/** An `animate-pulse` skeleton placeholder: `SURFACE_MUTED`'s shades reused directly (both
- * `bg-slate-100` and `bg-slate-200` skeletons in the app already resolve to the same
- * `dark:bg-slate-800`; this consolidates the light side to one shade). */
-export const skeletonBg = surfaceMutedBg;
 
 // ---------------------------------------------------------------------------------------------
 // Text
@@ -88,26 +95,11 @@ export const TEXT_DISABLED = pair(P.SLATE_400, P.SLATE_600);
  * AA. This pairing needs its own, slightly stronger light shade to actually clear 4.5:1. */
 export const TEXT_MUTED_ON_SURFACE_MUTED = pair(P.SLATE_600, P.SLATE_400);
 
-export const textPrimaryOnCanvas = "text-slate-900 dark:text-slate-100";
 export const textPrimaryOnSurface = "text-slate-900 dark:text-slate-100";
-export const textSecondaryOnCanvas = "text-slate-700 dark:text-slate-300";
-export const textSecondaryOnSurface = "text-slate-700 dark:text-slate-300";
 export const textMutedOnCanvas = "text-slate-500 dark:text-slate-400";
-export const textMutedOnSurface = "text-slate-500 dark:text-slate-400";
 export const textPrimaryOnSurfaceMuted = "text-slate-900 dark:text-slate-100";
 export const textSecondaryOnSurfaceMuted = "text-slate-700 dark:text-slate-300";
-export const textMutedOnSurfaceMuted = "text-slate-600 dark:text-slate-400";
 export const textMutedOnSelectedCard = "text-slate-600 dark:text-slate-400";
-/** A dialog/composer "Close" button: secondary at rest, primary-emphasis on hover. Not
- * registered separately — both ends reuse `TEXT_SECONDARY`/`TEXT_PRIMARY`'s own checks. */
-export const dismissButtonText =
-  "text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100";
-/** A disclosure chevron: disabled-shade at rest, secondary-emphasis on hover. */
-export const disclosureButtonText =
-  "text-slate-400 dark:text-slate-600 hover:text-slate-700 dark:hover:text-slate-300";
-/** A "dismiss"/cancel affordance already showing muted text: secondary-emphasis on hover. */
-export const textMutedHoverToSecondary =
-  "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300";
 /** A toggle already showing secondary text: primary-emphasis on hover (e.g. an editable field's
  * placeholder-affordance button). */
 export const textSecondaryHoverToPrimary =
@@ -115,7 +107,6 @@ export const textSecondaryHoverToPrimary =
 /** `SURFACE_MUTED` used as a disabled-state background (e.g. a `<select>` that greys out rather
  * than just dimming its text). */
 export const surfaceMutedDisabledBg = "disabled:bg-slate-100 dark:disabled:bg-slate-800";
-export const kbdHint = `${surfaceMutedBg} ${textMutedOnSurfaceMuted}`;
 
 registerText("primary text on canvas", TEXT_PRIMARY, CANVAS);
 registerText("primary text on surface", TEXT_PRIMARY, SURFACE);
@@ -145,14 +136,11 @@ export const CARD_HOVER_ACCENT = pair(P.SKY_400, P.SKY_300);
 /** An outline button or input's hover affordance — decorative; not registered. */
 export const CONTROL_HOVER_ACCENT = pair(P.SKY_500, P.SKY_400);
 
-export const borderDefault = "border-slate-200 dark:border-slate-800";
-export const borderStrong = "border-slate-300 dark:border-slate-700";
 /** A plain (non-accent) hover affordance on an editable field that otherwise has no border,
  * e.g. an inline title showing its editability on hover without a persistent outline. */
 export const borderStrongHover = "hover:border-slate-300 dark:hover:border-slate-700";
 export const focusBorder = "focus:border-sky-600 dark:focus:border-sky-400";
 export const focusRing = "focus:ring-sky-600 dark:focus:ring-sky-400";
-export const focusVisibleRing = "focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400";
 /** `focusVisibleRing` for a wrapper whose focusable control is invisible inside it (e.g. a
  * native `<select>` laid over a badge): the ring shows on the wrapper when the control has
  * keyboard focus. */
@@ -180,9 +168,6 @@ export const DANGER_HOVER_BORDER = pair(P.ROSE_300, P.ROSE_800);
 export const SUCCESS_TEXT = pair(P.EMERALD_700, P.EMERALD_400);
 export const SUCCESS_HOVER_TEXT = pair(P.EMERALD_900, P.EMERALD_300);
 
-export const linkText = "text-sky-700 dark:text-sky-400";
-export const linkHoverText = "hover:text-sky-900 dark:hover:text-sky-300";
-export const dangerText = "text-rose-700 dark:text-rose-400";
 export const dangerHoverText = "hover:text-rose-900 dark:hover:text-rose-300";
 export const dangerHoverBorder = "hover:border-rose-300 dark:hover:border-rose-800";
 export const successText = "text-emerald-700 dark:text-emerald-400";
@@ -271,11 +256,6 @@ export const CALLOUT_INFO_TITLE_TEXT = pair(P.SKY_950, P.SKY_300);
 /** Standalone warning/orphaned-anchor text that isn't inside a bordered callout box. */
 export const INLINE_WARNING_TEXT = pair(P.AMBER_800, P.AMBER_300);
 
-export const calloutDangerBorder = "border-rose-200 dark:border-rose-900";
-export const calloutDangerBg = "bg-rose-50 dark:bg-rose-950";
-export const calloutWarningBorder = "border-amber-200 dark:border-amber-900";
-export const calloutWarningBg = "bg-amber-50 dark:bg-amber-950";
-export const calloutWarningText = "text-amber-950 dark:text-amber-300";
 export const calloutSuccessBorder = "border-emerald-200 dark:border-emerald-900";
 export const calloutSuccessBg = "bg-emerald-50 dark:bg-emerald-950";
 export const calloutSuccessText = "text-emerald-900 dark:text-emerald-300";
@@ -453,10 +433,6 @@ export const BADGE_LOW_TEXT = TEXT_SECONDARY;
 export const BADGE_PRIMARY_BG = pair(P.SKY_100, P.SKY_950);
 export const BADGE_PRIMARY_TEXT = pair(P.SKY_800, P.SKY_300);
 
-export const badgeBlocking = {
-  bg: "bg-rose-100 dark:bg-rose-950",
-  text: "text-rose-800 dark:text-rose-300",
-};
 export const badgeHigh = {
   bg: "bg-amber-100 dark:bg-amber-950",
   text: "text-amber-800 dark:text-amber-300",
@@ -588,11 +564,6 @@ export const STATUS_CONNECTING_TEXT = pair(P.AMBER_800, P.AMBER_300);
 export const STATUS_OFFLINE_BG = SURFACE_MUTED_STRONG;
 export const STATUS_OFFLINE_TEXT = TEXT_SECONDARY;
 
-export const statusConnecting = {
-  bg: "bg-amber-100 dark:bg-amber-950",
-  text: "text-amber-800 dark:text-amber-300",
-};
-
 registerText("connected pill", STATUS_CONNECTED_TEXT, STATUS_CONNECTED_BG);
 registerText("connecting pill", STATUS_CONNECTING_TEXT, STATUS_CONNECTING_BG);
 registerText("offline pill", STATUS_OFFLINE_TEXT, STATUS_OFFLINE_BG);
@@ -607,20 +578,6 @@ export const connectionDotConnecting = "bg-amber-500 dark:bg-amber-400";
 export const connectionDotOffline = "bg-slate-400 dark:bg-slate-500";
 export const connectionDotFailed = "bg-rose-500 dark:bg-rose-400";
 
-/** A small circular status dot inline next to an agent's name (the agent state mark's filled
- * dot for a running session) — unlike the `STATUS_CONNECTED_BG`/`STATUS_OFFLINE_BG` pill
- * palettes above, it has no label text of its own, so it uses a bolder, more saturated fill to
- * stay legible at that size. Purely decorative — no contrast check applies. */
-export const liveDotBg = "bg-emerald-500 dark:bg-emerald-400";
-/** The agent state mark's rings (`features/refs/AgentName.tsx`), beside `liveDotBg`'s filled dot
- * for a running session: a session that has missed its heartbeats without ending is a solid
- * amber ring, one the registry no longer lists a hollow slate ring, and one whose state is
- * unknown (no successful registry read yet, or the latest failed) a dashed neutral ring. Filled,
- * amber, hollow and dashed are the distinction that does not rest on colour alone.
- * Decorative — the mark's own `aria-label` names the state, so no contrast check applies. */
-export const stalledDotBorder = "border-amber-500 dark:border-amber-400";
-export const offlineDotBorder = "border-slate-400 dark:border-slate-600";
-export const unknownDotBorder = "border-slate-400 dark:border-slate-500";
 /** The Inbox row's unread mark: a small filled dot beside a thread whose newest write the
  *  reader has not read. Like `liveDotBg` it carries no label text of its own, so it takes a
  *  saturated fill to stay legible at that size, and the row's own bold title says the same
@@ -631,15 +588,6 @@ export const unreadDotBg = "bg-sky-500 dark:bg-sky-400";
 // Buttons and inputs
 // ---------------------------------------------------------------------------------------------
 
-/** The primary submit/CTA button: one fixed background+text color pair in both schemes
- * (white on sky-700, unchanged from light to dark — `bg-sky-600` with white text measured
- * 4.02:1, under AA; `sky-700` measures 5.86:1). Owns its own text color so no caller writes a
- * raw `text-white` literal. */
-export const primaryButtonBg = "bg-sky-700 text-white";
-export const primaryButtonHoverBg = "hover:bg-sky-800";
-/** The primary hover while the button can be pressed: `not-refused:` (`styles.css`) skips a
- *  `disabled` button and one refused with `aria-disabled` alike. */
-export const primaryButtonEnabledHoverBg = "not-refused:hover:bg-sky-800";
 export const PRIMARY_BUTTON_DISABLED_BG = pair(P.SLATE_300, P.SLATE_700);
 /** A primary button that cannot be pressed, `disabled` or refused with `aria-disabled` (the
  * `refused:` variant, `styles.css`): slate-700 on slate-300 (slate-300 on slate-700 in dark),
@@ -666,12 +614,6 @@ registerText(
   PRIMARY_BUTTON_DISABLED_BG
 );
 
-export const secondaryButtonText = "text-slate-700 dark:text-slate-300";
-export const secondaryButtonBorder = "border-slate-300 dark:border-slate-700";
-export const secondaryButtonHoverBorder =
-  "not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400";
-/** A secondary button that cannot be pressed, `disabled` or refused (`refused:`, `styles.css`). */
-export const secondaryButtonDisabledText = "refused:text-slate-400 dark:refused:text-slate-600";
 /** `secondaryButtonHoverBorder` and `secondaryButtonDisabledText` for a box a button draws inside
  *  itself, as the priorities' trigger draws its "+" square inside its hit area: keyed to the
  *  button, which carries `group`, since `refused:` tests the element it is on and the box is
@@ -680,22 +622,6 @@ export const secondaryButtonGroupHoverBorder =
   "group-not-refused:group-hover:border-sky-500 dark:group-not-refused:group-hover:border-sky-400";
 export const secondaryButtonGroupDisabledText =
   "group-refused:text-slate-400 dark:group-refused:text-slate-600";
-
-/** An input/select/textarea's resting border and background, plus its focus border. Pass
- * `recessed: true` when the control sits inside a `SURFACE` card (its dark background needs to
- * read one level below the card, i.e. `SURFACE_RECESSED`); leave it `false` when the control
- * sits directly on `CANVAS` (its dark background reads one level above the canvas, i.e. plain
- * `SURFACE`). Both branches are complete literal strings — Tailwind's scanner sees both,
- * regardless of which one is returned at runtime. */
-export function inputClasses(recessed: boolean): string {
-  return recessed
-    ? "border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400"
-    : "border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-sky-400";
-}
-
-/** The compact secondary button the Architecture lists, the component picker and the broadcast
- *  Sends strip share: a 44 px tap target through phone widths, 28 px from `sm`. */
-export const secondaryButtonCompact = `min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`;
 
 /** The one height of every control a table's toolbar draws - its search box, its selects, its
  *  buttons and its flag chips - from 1280 px up: the search box's own, a `text-sm` line inside
@@ -714,25 +640,6 @@ export const toolbarControlHeight = "xl:h-8.5 xl:min-h-0";
 
 const RAIL_BG_SWATCH = P.SLATE_950;
 const railFixed = (swatch: Swatch): ColorPair => ({ dark: swatch, light: swatch });
-
-export const railBg = "bg-slate-950";
-export const railBorder = "border-slate-800";
-export const railHoverBg = "hover:bg-slate-800";
-export const railText = "text-slate-100";
-export const railSecondaryText = "text-slate-300";
-export const railMutedText = "text-slate-400";
-export const railAccentText = "text-sky-300";
-export const railAccentHoverText = "hover:text-sky-200";
-export const railHoverText = "hover:text-slate-100";
-export const railActiveBg = "bg-slate-800";
-export const railFocusOverlayBg = "focus:bg-slate-950";
-export const railFocusOverlayText = "focus:text-slate-100";
-export const railDangerText = "text-rose-300";
-export const railBadgeBg = "bg-sky-500";
-export const railBadgeText = "text-slate-950";
-/** The Inbox count uses amber because it means the viewer, not merely any agent, must act. */
-export const railNeedsYouBadgeBg = "bg-amber-500";
-export const railNeedsYouBadgeText = "text-slate-950";
 
 registerText("rail primary text", railFixed(P.SLATE_100), railFixed(RAIL_BG_SWATCH));
 registerText("rail secondary text", railFixed(P.SLATE_300), railFixed(RAIL_BG_SWATCH));
@@ -816,10 +723,6 @@ function pageColor(name: keyof typeof PAGE_COLORS): ColorPair {
 
 /** The page itself: its white paper, its ink and the two greys under it, and its rules. */
 export const pagePaperBg = "bg-page-paper";
-export const pageInkText = "text-page-ink";
-export const pageMutedText = "text-page-muted";
-export const pageQuietText = "text-page-quiet";
-export const pageLineBorder = "border-page-line";
 export const pageHairBorder = "border-page-hair";
 /** The Contents pane at the page's left, its marked row, and the guide a nested row hangs from. */
 export const pagePaneBg = "bg-page-pane";
@@ -852,9 +755,6 @@ export const pageHeaderControl = `inline-flex min-h-6 min-w-6 shrink-0 items-cen
  *  hairline rule, its paper and its ink, the rule in the ink while it holds the caret. */
 export const pageField =
   "border-page-hair bg-page-paper text-page-ink placeholder:text-page-quiet focus:border-page-ink";
-/** The header's one filled control, Approve, filled with the page's ink as the composer's Send
- *  is (the prototype's own palette: the issue page draws no application blue). */
-export const pageInkFill = "bg-page-ink text-page-paper";
 /** An issue's status as the header's pill draws it (the prototype's `.st-*`): in progress, under
  *  test and in review in the in-progress blue, done in the passed green, and every other status
  *  in the not-run grey. The pill's glyph and its word say the status; the colour repeats it. */
@@ -868,10 +768,6 @@ export const pageWaitingChip = "border-page-waiting bg-page-waiting-tint text-pa
 export const pageLabelChip = "border-page-hair bg-page-pane text-page-muted";
 /** A person's initial in a filled circle (the prototype's `.ava`). */
 export const pageAvatar = "bg-page-ink text-page-paper";
-/** The children's progress as a row of segments, one per child (the prototype's `.segs`): done
- *  in the passed green, in progress in the in-progress blue, the rest in the hairline grey. The
- *  two counts beside it say the same in words, so the bar is decoration. */
-export const pageSegmentDoneBg = "bg-page-passed";
 export const pageSegmentProgressBg = "bg-page-in-progress";
 export const pageSegmentBg = "bg-page-hair";
 /** A row of Details (the prototype's `.frow`): its rule, and the hover of a row that is a
@@ -1178,22 +1074,12 @@ registerText("icon rail accent", pageColor("icon-rail-accent"), pageColor("icon-
 /** A modal/drawer/sheet backdrop: a fixed translucent black, unchanged between schemes (a
  * backdrop is never itself read as text or a surface color — no contrast check applies). */
 export const backdrop40 = "bg-slate-950/40";
-export const backdrop50 = "bg-slate-950/50";
 /** The darker backdrop a picture opened at full size sits on (`picture-lightbox.ts`). */
 export const backdrop80 = "bg-slate-950/80";
 
-/** A layout-preserving invisible border: reserves the border's width so a hover/focus state
- * that adds a real border doesn't shift the element, or so a loading skeleton matches its live
- * counterpart's box size exactly. Transparent has no color to differ between schemes — no
- * `dark:` variant, no contrast check. */
-export const borderTransparent = "border-transparent";
 /** An invisible fill, same reasoning as `borderTransparent` (an editable field that only shows
  * its surface color once something else — a hover border, a focus ring — signals it's live). */
 export const bgTransparent = "bg-transparent";
-/** Hides text while reserving its layout space, e.g. a skeleton placeholder revealing its own
- * pulsing background instead of the real (not-yet-loaded) text. Same reasoning as
- * `borderTransparent`. */
-export const textTransparent = "text-transparent";
 
 /** The active-tab underline/indicator border: identical values to `FOCUS_ACCENT`, reused under
  * its own name since a tab indicator is a different semantic role even though it happens to
@@ -1255,9 +1141,6 @@ export const chartBar = {
 // ---------------------------------------------------------------------------------------------
 // Sizing-agnostic composites the components import directly
 // ---------------------------------------------------------------------------------------------
-
-export const card = "border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900";
-export const canvasText = "bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100";
 
 /**
  * A 32 px fade at the trailing edge of a horizontally scrolling strip. It is a mask, not a

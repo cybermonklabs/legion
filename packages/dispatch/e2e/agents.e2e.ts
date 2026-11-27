@@ -39,6 +39,7 @@ import { inboxList } from "./inbox-pane";
 import { type KeyedWrite, keyedWrite } from "./keyed-writes";
 import { setCreatedAt } from "./seed";
 import { sessionIds } from "./session-ids";
+import { landingWithout } from "./shell";
 import { expect, type Locator, type Page, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
@@ -1853,11 +1854,21 @@ test("a session that registers under the filter after select-all is not swept in
 // A request for the agents that never reaches the server - a dropped connection, as a busy box
 // drops one - is retried, so the page loads rather than saying it could not load agents until its
 // next poll, 15 s later.
+//
+// The request dropped is the page's own first read of the agents. A cold page is handed the agent
+// list in its landing answer, which seeds it under the key the Agents page reads it by
+// (`seedShell`, `web/src/api/queries.ts`), and a page given it sends no `/api/v1/agents` of its
+// own when it loads: the first such request is then the 15 s poller's, so the row held that one,
+// waited fifteen seconds for it, and asserted a list the landing had drawn, which no retry ever
+// decided. So the landing here answers with no agent list - null, what a Dispatch with no Envoy
+// listener answers, which the seed leaves to the list's own route - and the read the page makes
+// as it mounts is the one held and dropped, as the 10 s bound on the heading below means.
 test("the Agents page loads through one dropped request for its agents", async ({ browser }) => {
   await setLiveSessions([planner]);
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
+    await landingWithout(page, "agents");
     const first = await holdFirstRequest(page, /\/api\/v1\/agents$/u);
     await page.goto("/agents");
     await (await first.held).abort("connectionreset");

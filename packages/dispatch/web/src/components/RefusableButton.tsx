@@ -1,14 +1,12 @@
 import { type ReactNode, useId } from "react";
 
+import { pagePaperBg, pageSend, primaryButton } from "../theme/classes";
 import {
   pageInkFill,
   pageLineBorder,
   pageMutedText,
-  pagePaperBg,
-  pageSend,
-  primaryButton,
   secondaryButtonCompact,
-} from "../theme/classes";
+} from "../theme/shell-classes";
 import { useTooltips } from "./tooltips";
 
 /** Each look whole, refused or not: the `refused:` variant (`styles.css`) paints `disabled` and

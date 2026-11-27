@@ -1,4 +1,4 @@
-import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
+import { MAX_ISSUE_ADVANCES } from "@legion/contracts/dispatch-api-constants";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
@@ -10,18 +10,20 @@ import { CappedGroup } from "../../components/CappedGroup";
 import { MultiSelect } from "../../components/MultiSelect";
 import { usePageWords } from "../../components/tooltips";
 import {
-  dangerText,
-  focusVisibleRing,
   pageFailedText,
-  pageInkText,
-  pageMutedText,
   pagePaneBg,
-  pageQuietText,
-  secondaryButtonBorder,
   secondaryButtonGroupDisabledText,
   secondaryButtonGroupHoverBorder,
-  secondaryButtonText,
 } from "../../theme/classes";
+import {
+  dangerText,
+  focusVisibleRing,
+  pageInkText,
+  pageMutedText,
+  pageQuietText,
+  secondaryButtonBorder,
+  secondaryButtonText,
+} from "../../theme/shell-classes";
 import { useDetailsRefusal } from "../issue/HeaderDetails";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";

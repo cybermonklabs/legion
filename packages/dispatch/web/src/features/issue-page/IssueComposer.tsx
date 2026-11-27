@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
+import { ownerCommentsQuery } from "../../api/queries";
 import type { Actor } from "../../api/types";
 import { pageComposer } from "../../theme/classes";
 import {
@@ -17,9 +18,10 @@ import {
   type OutlineNames,
 } from "../conversation/MentionComposer";
 import { type StatementAnchor, sameStatement, saveCommentEdit } from "../conversation/send-request";
-import { AgentName, type AgentStateWords } from "../refs/AgentName";
+import { AgentName } from "../refs/AgentName";
 import type { RefPickerWords } from "../refs/ref-picker";
 import { EVENT_FRESH } from "../refs/reference-target";
+import type { AgentStateWords } from "../refs/SessionName";
 import { useMediaQuery } from "../shell/useDialog";
 import { FOOT_HEIGHT_PROPERTY, HEADER_SCROLLS_QUERY } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
@@ -44,7 +46,7 @@ import {
 } from "./page-words";
 import { TAB_STOP_ROW } from "./tree-focus";
 import { nodesInOrder } from "./tree-keys";
-import { issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
+import { issueMessagesQuery } from "./useIssueTree";
 
 /** The kinds the line writes, as its chips before Send, in this order: a comment, which is on at
  *  first, and a question, which is an ask of the issue with no options (R2). A later part adds a
@@ -404,7 +406,7 @@ function WriteLine({
   // it keeps them (`OutlineWriterProvider`), so they cost no request of their own: the post a reply
   // answers as it stands now, which tells the composer a post its author deleted while the line
   // was open (`MentionComposer`'s `replyParent`).
-  const comments = useQuery({ ...issueCommentsQuery(issueKey), ...EVENT_FRESH });
+  const comments = useQuery({ ...ownerCommentsQuery({ issue: issueKey }), ...EVENT_FRESH });
   const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH });
   // A statement's comment carries the statement's document, its whole words and its row alone,
   // never the author a Reply aimed the line with, so a send held over a refusal or a reload
@@ -571,7 +573,7 @@ function EditLine({
   const queryClient = useQueryClient();
   // The comment's author, which the target line names it by, from the read the outline is drawn
   // from.
-  const comments = useQuery(issueCommentsQuery(issueKey));
+  const comments = useQuery(ownerCommentsQuery({ issue: issueKey }));
   const author = comments.data?.find((one) => one.id === editing.id)?.author;
   const owner = useMemo(() => ({ issueKey, kind: "issue" as const }), [issueKey]);
   const mutationKey = useMemo(
@@ -610,7 +612,9 @@ function EditLine({
       owner={owner}
       saveEdit={async (id, body, carried, bounds) => {
         const saved = await saveCommentEdit(id, body, carried, bounds);
-        await queryClient.invalidateQueries({ queryKey: issueCommentsQuery(issueKey).queryKey });
+        await queryClient.invalidateQueries({
+          queryKey: ownerCommentsQuery({ issue: issueKey }).queryKey,
+        });
         return saved;
       }}
     />

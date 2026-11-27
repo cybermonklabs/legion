@@ -1,5 +1,6 @@
 import { type ReactNode, useRef, useState } from "react";
 
+import { textPrimaryOnSurface } from "../../theme/classes";
 import {
   backdrop50,
   borderDefault,
@@ -7,8 +8,7 @@ import {
   inputClasses,
   kbdHint,
   textMutedOnSurface,
-  textPrimaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import {
   ALT_KEY_LABEL,
   type KeyBindingDescription,
@@ -78,12 +78,16 @@ const SCOPE_ORDER: readonly KeymapScope[] = [
 export function ShortcutHelp({
   onClose,
   snapshot,
+  typed = "",
 }: {
   onClose: () => void;
   snapshot: readonly KeyBindingDescription[] | null;
+  /** What the reader typed after `?` while this sheet's chunk was on its way
+   *  (`asked-surface.tsx`): the start of the filter, where those keys were meant to go. */
+  typed?: string;
 }): ReactNode {
   const open = snapshot !== null;
-  const [filter, setFilter] = useState("");
+  const [filter, setFilter] = useState(typed);
   const filterRef = useRef<HTMLInputElement>(null);
   const dialog = useDialog<HTMLDivElement>({ initialFocusRef: filterRef, onClose, open });
   useCloseOnNavigation(open, onClose);

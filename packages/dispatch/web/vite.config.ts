@@ -114,11 +114,79 @@ export default defineConfig({
     dedupe: ["prosemirror-model"],
     alias: {
       "decode-named-character-reference": characterReferenceDecoder,
+      // Every subpath of `@legion/contracts` this tree reads, named before the package itself:
+      // Vite's alias matches a prefix, so `@legion/contracts` alone would resolve every subpath
+      // to a path inside `index.ts`. The subpaths are what keeps the barrel out of this bundle
+      // - one import of it reaches every module of the package, and rollup may drop none whose
+      // top level builds anything, which is how the whole `DISPATCH_TEXT_REFERENCES` table and
+      // zod's schema modules were in the entry chunk of a page that reads neither
+      // (dispatch://INFRA-1109, R13). Each is published by that package's own `exports`, which
+      // is what Bun, tsc and every other consumer read. Three keys are read by no shipped module
+      // of this bundle today - `dispatch-api` by nothing in the repository,
+      // `dispatch-text-references` by three Bun tests, which resolve through `exports` and never
+      // see this config, and `dispatch-tools` by a type import alone (`theme/classes.ts`, which
+      // the build erases) and by browser rows, which Playwright resolves through `exports` too -
+      // and the three are kept so that a value import of one resolves to its module rather than
+      // being rewritten into `index.ts` by the bare key below it.
+      "@legion/contracts/actor-label": fileURLToPath(
+        new URL("../../contracts/src/actor-label.ts", import.meta.url)
+      ),
+      "@legion/contracts/agent-stream": fileURLToPath(
+        new URL("../../contracts/src/agent-stream.ts", import.meta.url)
+      ),
+      "@legion/contracts/claim-holds": fileURLToPath(
+        new URL("../../contracts/src/claim-holds.ts", import.meta.url)
+      ),
+      "@legion/contracts/dispatch-api": fileURLToPath(
+        new URL("../../contracts/src/dispatch-api.ts", import.meta.url)
+      ),
+      "@legion/contracts/dispatch-api-constants": fileURLToPath(
+        new URL("../../contracts/src/dispatch-api-constants.ts", import.meta.url)
+      ),
+      "@legion/contracts/dispatch-api-graph": fileURLToPath(
+        new URL("../../contracts/src/dispatch-api-graph.ts", import.meta.url)
+      ),
+      "@legion/contracts/dispatch-block-ref": fileURLToPath(
+        new URL("../../contracts/src/dispatch-block-ref.ts", import.meta.url)
+      ),
+      "@legion/contracts/dispatch-href": fileURLToPath(
+        new URL("../../contracts/src/dispatch-href.ts", import.meta.url)
+      ),
+      "@legion/contracts/dispatch-issue-tabs": fileURLToPath(
+        new URL("../../contracts/src/dispatch-issue-tabs.ts", import.meta.url)
+      ),
+      "@legion/contracts/dispatch-mention-sign": fileURLToPath(
+        new URL("../../contracts/src/dispatch-mention-sign.ts", import.meta.url)
+      ),
+      "@legion/contracts/dispatch-mentions": fileURLToPath(
+        new URL("../../contracts/src/dispatch-mentions.ts", import.meta.url)
+      ),
+      "@legion/contracts/dispatch-text-references": fileURLToPath(
+        new URL("../../contracts/src/dispatch-text-references.ts", import.meta.url)
+      ),
+      "@legion/contracts/dispatch-text-rules": fileURLToPath(
+        new URL("../../contracts/src/dispatch-text-rules.ts", import.meta.url)
+      ),
+      "@legion/contracts/dispatch-writing-boxes": fileURLToPath(
+        new URL("../../contracts/src/dispatch-writing-boxes.ts", import.meta.url)
+      ),
+      "@legion/contracts/legion-roles": fileURLToPath(
+        new URL("../../contracts/src/legion-roles.ts", import.meta.url)
+      ),
+      "@legion/contracts/related-forms": fileURLToPath(
+        new URL("../../contracts/src/related-forms.ts", import.meta.url)
+      ),
+      "@legion/contracts/reference-spans": fileURLToPath(
+        new URL("../../contracts/src/reference-spans.ts", import.meta.url)
+      ),
       "@legion/contracts/dispatch-snippet": fileURLToPath(
         new URL("../../contracts/src/dispatch-snippet.ts", import.meta.url)
       ),
       "@legion/contracts/dispatch-tools": fileURLToPath(
         new URL("../../contracts/src/dispatch-tools.ts", import.meta.url)
+      ),
+      "@legion/contracts/dispatch-tools-constants": fileURLToPath(
+        new URL("../../contracts/src/dispatch-tools-constants.ts", import.meta.url)
       ),
       "@legion/contracts/http-status": fileURLToPath(
         new URL("../../contracts/src/http-status.ts", import.meta.url)
@@ -155,13 +223,39 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    // The largest chunk is ECharts (an `index-*.js` of 1,134,772 bytes raw), which only the
-    // Delivery page loads, and the entry is 781,007 bytes, both past Vite's 500 kB default.
+    // The entry - the one `assets/index-*.js` that dist/index.html names - has a budget of
+    // 500,000 bytes, which `web/src/asset-sizes-in-build.ts` holds. That file also keeps the
+    // history of the entry's size: each reading, and each move that took code out of the entry.
+    // `bun run check:asset-sizes` prints the entry's size for a build, and the `dispatch-ui` job
+    // runs it on each pull request that changes the dashboard.
+    // The build splits out of the entry what no first paint draws, so every page parses less
+    // before it draws anything (dispatch://INFRA-1109): the Inbox and its peek, the ask card, the
+    // search bar, the Create issue dialog, the shortcut sheet, the reference-preview layer, the
+    // event-refresh map, the headless Markdown engine the shell warms at boot, the new issue
+    // page's frame shell, the pending-writes indicator and the kinds of write are each a chunk of
+    // their own, and `@legion/contracts`' subpaths keep that package's reference table and zod's
+    // schema modules out of a page that reads neither - in the editor's chunks too, which import
+    // that package by subpath alone (`packages/proof-editor/src/block-pointers.ts`).
+    // `chunkSizeWarningLimit` is the size in kB (1,000 bytes) over which Vite warns about a chunk
+    // after minification. The warning stops nothing: the build passes over it. Vite's default is
+    // 500. This value sits over the ECharts chunk (an `index-*.js`), which only the Delivery page
+    // loads, so that chunk does not warn on every build. A chunk that grows past it warns again.
     // beautiful-mermaid and ELK live only in the Mermaid worker's bundle
-    // (features/refs/mermaid-render.worker.ts, 1,565,608 bytes), fetched once a body or a
-    // document holds a mermaid block; Vite emits it as an asset and holds it to no chunk limit.
-    // The editor's lazy chunk (`lib-*.js`, 204,492 bytes) carries none of the renderer.
+    // (features/refs/mermaid-render.worker.ts), fetched once a body or a document holds a mermaid
+    // block. Vite emits that worker as an asset, not a chunk, so this setting does not apply to
+    // it. The editor's lazy chunk (`lib-*.js`) carries none of the renderer. `bun run build:web`
+    // lists the size of each asset and chunk.
     chunkSizeWarningLimit: 1200,
+    // No modulepreload polyfill. Vite's copy of it is 710 bytes of the entry chunk, and it does
+    // nothing in a browser that has `<link rel=modulepreload>`: Chrome 66+, Safari 17+ and
+    // Firefox 115+. Every browser without that link also lacks `Promise.withResolvers`, which
+    // only Chrome 119+, Safari 17.4+ and Firefox 121+ have, and the app's own code calls it: each
+    // write the page makes (`run` in `features/writes/write-store.ts`) and each upload
+    // (`xhrUpload` in `api/client.ts`). So in those browsers every write fails as the reader
+    // makes it, with the polyfill or without it: they do not run the app, and the polyfill acted
+    // only in browsers the app already excludes. No browser that runs the app changes without it.
+    // Turned off for the entry's budget (dispatch://INFRA-1109, 2026-11-23).
+    modulePreload: { polyfill: false },
     emptyOutDir: true,
   },
   server: {

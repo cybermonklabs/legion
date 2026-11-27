@@ -1181,8 +1181,9 @@ echo "case: rule 3 — the path spellings the rule leaves open"
 # segments too. An extra slash after `download` is NOT one of them, whatever a server answers:
 # the trailing wildcard swallows it, so the rule reads that URL, and the case below this one
 # drives it.
-# This gate's header names these as open, and a named gap is a claim: this
-# case is what holds that claim true, and it turns red the day the rule closes them.
+# check-ci-tools.sh names these as open beside its patterns (WHAT IS NOT READ), and a named gap
+# is a claim: this case is what holds that claim true, and it turns red the day the rule closes
+# them.
 root=$(fixture reach-open-path-spellings)
 cat > "$root/.github/workflows/open-paths.yaml" <<'YAML'
 name: Open paths
@@ -1199,7 +1200,7 @@ jobs:
           curl -fsSL -O https://github.com/./other/thing/releases/download/v3.0.0/thing-3.0.0.tar.gz
 YAML
 run_gate "$root"
-check "exits 0, which is the gap this gate's header names" "$(is "$status" 0)"
+check "exits 0, which is the gap check-ci-tools.sh names" "$(is "$status" 0)"
 
 echo 'case: rule 3 — an extra slash after download, which the rule does read'
 # The case above lists the path spellings the rule misses. This one is the neighbour that looks

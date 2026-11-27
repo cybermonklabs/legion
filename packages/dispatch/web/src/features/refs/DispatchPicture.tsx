@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { artifactVersionPath } from "../../api/client";
-import { borderDefault } from "../../theme/classes";
+import { borderDefault } from "../../theme/shell-classes";
 import { isPlainClick, openPictureLightbox } from "./picture-lightbox";
 import { pictureThumbnailClassName, RefLink } from "./RefLink";
 import { useReferenceTarget } from "./reference-target";

@@ -1,7 +1,7 @@
 import { type ReactNode, useRef } from "react";
 
 import { useFootInset } from "../../hooks/useFootInset";
-import { card, kbdHint, textMutedOnSurface } from "../../theme/classes";
+import { card, kbdHint, textMutedOnSurface } from "../../theme/shell-classes";
 import { usePendingChord } from "./keymap";
 
 /** Shows a half-typed chord (`g …`) so the pending key is visible until it completes or times out.

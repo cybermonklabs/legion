@@ -932,36 +932,52 @@ export function waitingPressInHistory(page: Page): Promise<number | null> {
   });
 }
 
-/** A title of `lines` lines at the header's width: words added until the heading, drawn whole,
- *  takes that many lines of its own line height. */
-export async function titleOfLines(page: Page, lines: number): Promise<string> {
-  const words = ["The", "header", "keeps", "the", "press", "that", "ends", "a", "title", "edit"];
-  let title = "Edit";
-  for (let index = 0; index < 400; index += 1) {
-    title = `${title} ${words[index % words.length]}`;
-    // The caller waits for the header drawn first, and each call lays out and measures its own
-    // hidden copy within the call.
-    const drawn = await page.evaluate((text) => {
-      const heading = document.querySelector<HTMLElement>(
-        "[data-issue-page] [data-issue-header] h1"
-      );
-      if (heading === null) return 0;
-      const probe = heading.cloneNode() as HTMLElement;
-      probe.textContent = text;
-      probe.style.display = "block";
-      probe.style.webkitLineClamp = "unset";
-      probe.style.width = `${heading.getBoundingClientRect().width}px`;
-      probe.style.position = "absolute";
-      probe.style.visibility = "hidden";
-      heading.parentElement?.append(probe);
+/** For each count of `lines`, the first title that takes that many lines at the header's width:
+ *  words added until the heading, drawn whole, takes that many lines of its own line height. One
+ *  page function adds the words and measures each title on one hidden copy of the heading, laid
+ *  out at the heading's width, so a word costs a layout and no round trip, and every count is
+ *  read off the same walk of titles. It waits for the document's fonts first, so a title is
+ *  measured in the face the header draws it in and not in the fallback a typeface still loading
+ *  leaves. The caller waits for the header drawn first. */
+export function titlesOfLines(page: Page, lines: readonly number[]): Promise<string[]> {
+  return page.evaluate(async (lines) => {
+    await document.fonts.ready;
+    const heading = document.querySelector<HTMLElement>("[data-issue-page] [data-issue-header] h1");
+    if (heading === null) throw new Error("the header draws no title");
+    const words = ["The", "header", "keeps", "the", "press", "that", "ends", "a", "title", "edit"];
+    const probe = heading.cloneNode() as HTMLElement;
+    probe.style.display = "block";
+    probe.style.webkitLineClamp = "unset";
+    probe.style.width = `${heading.getBoundingClientRect().width}px`;
+    probe.style.position = "absolute";
+    probe.style.visibility = "hidden";
+    heading.parentElement?.append(probe);
+    const wanted = new Set(lines);
+    const found = new Map<number, string>();
+    try {
       const lineHeight = Number.parseFloat(getComputedStyle(probe).lineHeight);
-      const count = Math.round((probe.getBoundingClientRect().height - 2) / lineHeight);
+      let title = "Edit";
+      for (let index = 0; index < 400 && found.size < wanted.size; index += 1) {
+        title = `${title} ${words[index % words.length]}`;
+        probe.textContent = title;
+        const drawn = Math.round((probe.getBoundingClientRect().height - 2) / lineHeight);
+        if (wanted.has(drawn) && !found.has(drawn)) found.set(drawn, title);
+      }
+    } finally {
       probe.remove();
-      return count;
-    }, title);
-    if (drawn === lines) return title;
-  }
-  throw new Error(`no title takes ${lines} lines`);
+    }
+    return lines.map((count) => {
+      const title = found.get(count);
+      if (title === undefined) throw new Error(`no title takes ${count} lines`);
+      return title;
+    });
+  }, lines);
+}
+
+/** The first title that takes `lines` lines at the header's width (`titlesOfLines`). */
+export async function titleOfLines(page: Page, lines: number): Promise<string> {
+  const [title] = await titlesOfLines(page, [lines]);
+  return title;
 }
 
 /** The page's clipboard, as `holdClipboard` replaces it. */

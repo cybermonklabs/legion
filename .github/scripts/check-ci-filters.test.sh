@@ -3124,7 +3124,7 @@ check "names the step, its job and the file that does not have it" \
 # A job that calls a reusable workflow gives it its steps, so the go commands, the `env:` blocks
 # and the shells that decide what that job compiles are in the called file. The check reads them
 # there, exactly as it reads a job's own steps: ci.yaml's dispatch-browser job does this with
-# dispatch-browser.yaml, whose multiprocess job builds the Dispatch server.
+# dispatch-browser.yaml, whose binaries job builds the Dispatch server.
 
 # calls_workflow <root>: a `suite` job that calls .github/workflows/suite.yaml, whose `rows` job
 # builds ./cmd/app, with the output, the ci-ok map entry and the gate that go with it.
@@ -4812,10 +4812,9 @@ check "names the job, the key and what to save under instead" \
   "$(contains "$out" "job fill saves under .*hashFiles('mod/go.mod').*, which holds hashFiles(): the save evaluates it after the build.*save under the key the lookup computed")"
 
 # A job of ci.yaml that calls a local workflow gives it its steps, cache steps among them: the
-# real dispatch-browser job restores go-envoy and go-envoy-test in the binaries, multiprocess,
-# embedder and visual jobs of dispatch-browser.yaml. So the rule reads those jobs' restores as it
-# reads ci.yaml's own, and names the file that holds them. Read over ci.yaml alone, the fill below
-# would be a family nothing restores.
+# real dispatch-browser job restores go-dispatch-browser in the binaries job of dispatch-browser.yaml.
+# So the rule reads that workflow's restores as it reads ci.yaml's own, and names the file that
+# holds them. Read over ci.yaml alone, the fill below would be a family nothing restores.
 #
 # suite_cache <root>: a second family, go-suite, that ci-caches.yaml's fill job saves and only
 # the called workflow's `rows` job restores. Call it after cache_workflow and calls_workflow.
@@ -4851,6 +4850,52 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the called workflow's job and both keys" \
   "$(contains "$out" 'job fill saves family go-suite under key .*, but job rows of .github/workflows/suite.yaml restores it under .*-v2')"
+
+# suite_refill <root>: go-suite made a family ci-caches.yaml fills again on every push and only a
+# called workflow reads, as go-dispatch-browser is: the fill job restores the newest go-suite
+# entry (its key, and that key and a `-` as restore-keys) and saves under that key and the
+# commit, and the called workflow's `rows` job restores the key with its OS's prefix as
+# restore-keys, as dispatch-browser.yaml's binaries job restores go-dispatch-browser. Call it
+# after cache_workflow and calls_workflow.
+suite_refill() {
+  cat >> "$1/.github/workflows/ci-caches.yaml" <<'YAML'
+      - id: go-suite
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-suite-${{ runner.os }}
+          restore-keys: go-suite-${{ runner.os }}-
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-suite-${{ runner.os }}-${{ github.sha }}
+YAML
+  replace "$1/.github/workflows/suite.yaml" "      - name: Build the app" \
+    $'      - id: go-suite-cache\n        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: |\n            ~/go/pkg/mod\n            ~/.cache/go-build\n          key: go-suite-${{ runner.os }}\n          restore-keys: ${{ format(\'go-suite-{0}-\', runner.os) }}\n      - name: Build the app'
+}
+
+echo "case: a family filled again on every push that only a called workflow's job restores"
+root=$(fixture cache-called-workflow-refill)
+cache_workflow "$root"
+calls_workflow "$root"
+suite_refill "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a called workflow's restore key that drifted from a family saved under the commit"
+root=$(fixture cache-called-workflow-refill-drift)
+cache_workflow "$root"
+calls_workflow "$root"
+suite_refill "$root"
+replace "$root/.github/workflows/suite.yaml" 'key: go-suite-${{ runner.os }}' 'key: go-suite-${{ runner.os }}-v2'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the called workflow's job and both keys" \
+  "$(contains "$out" 'job fill saves family go-suite under key .*github.sha.*, but job rows of .github/workflows/suite.yaml restores it under .*-v2')"
 
 # ci-caches.yaml's race build fills the cache ci.yaml's race step restores, so the packages it
 # compiles are DAEMON_RACE_PACKAGES, each spelled as a go command spells it. A package on one

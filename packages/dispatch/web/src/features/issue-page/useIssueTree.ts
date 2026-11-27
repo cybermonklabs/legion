@@ -6,12 +6,14 @@ import { primarySpec, roleDocument } from "../../api/issue-cache";
 import {
   artifactBlocksQuery,
   issueCoverageQuery,
+  issueDecisionsQuery,
   issueResultsQuery,
+  ownerAsksQuery,
+  ownerCommentsQuery,
   referenceTargetsQuery,
   whoAmIQuery,
 } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
-import { issueDecisionsQuery } from "../doc/spec-marks";
 import { type PublishedReferences, usePublishReferenceNames } from "../refs/reference-names";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildDispatchReference, parseNodeReference } from "../refs/routes";
@@ -270,25 +272,6 @@ function useNamesFailures(reads: readonly NamesRead[]): number {
   return failures;
 }
 
-/** The issue's asks as the tree reads them: every ask, open or closed (`listIssueAsks` with
- *  `all`), under the key the margin, a document's ask blocks and the feed's ask rules read and
- *  refresh (`["asks", key]`). One definition, so a view that observes the same read takes the
- *  key from here and cannot drift from it; such a view, like the tree, adds how it is kept fresh
- *  (`EVENT_FRESH`). */
-export const issueAsksQuery = (key: string) =>
-  queryOptions({
-    queryKey: ["asks", key],
-    queryFn: () => api.listIssueAsks(key, "all"),
-  });
-
-/** The issue's comments as the tree reads them (`listComments`), under the key the feed's rules
- *  refresh (`["comments", key]`); a view of the same read takes its key from here. */
-export const issueCommentsQuery = (key: string) =>
-  queryOptions({
-    queryKey: ["comments", key],
-    queryFn: () => api.listComments(key),
-  });
-
 /** The issue's messages as the tree reads them (`listIssueMessages`), under the key the feed's
  *  rules refresh (`["issue-messages", key]`); a view of the same read takes its key from here. */
 export const issueMessagesQuery = (key: string) =>
@@ -355,12 +338,12 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // tree already names needs a rule. No rule names `["whoami"]`, which the tree reads with
   // `EVENT_FRESH` too: the reader's login does not change while a page is open.
   const coverage = useQuery({ ...issueCoverageQuery(key), ...EVENT_FRESH });
-  const decisions = useQuery({ ...issueDecisionsQuery(key, true), ...EVENT_FRESH });
+  const decisions = useQuery({ ...issueDecisionsQuery(key), ...EVENT_FRESH });
   const results = useQuery({ ...issueResultsQuery(key), ...EVENT_FRESH });
-  const asks = useQuery({ ...issueAsksQuery(key), ...EVENT_FRESH });
+  const asks = useQuery({ ...ownerAsksQuery({ issue: key }), ...EVENT_FRESH });
   // Under the keys the margin, the history and the focused row's facts read too, so a reader
   // opening the panel after the tree finds them answered rather than read a second time.
-  const comments = useQuery({ ...issueCommentsQuery(key), ...EVENT_FRESH });
+  const comments = useQuery({ ...ownerCommentsQuery({ issue: key }), ...EVENT_FRESH });
   const messages = useQuery({ ...issueMessagesQuery(key), ...EVENT_FRESH });
   // The reader, whose own turn an open question may be (`IssueTreeReads.viewer`): the shell's
   // one read of who is signed in, so it costs no request of its own.

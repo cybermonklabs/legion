@@ -1,10 +1,11 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
+import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts/dispatch-api-constants";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
+import { stubFailedCopy } from "../../__tests__/clipboard";
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { keptTab, keyMinted } from "../../__tests__/kept-sends-harness";
 import { answerSends } from "../../__tests__/send-answers";
@@ -18,6 +19,7 @@ import {
   sameKeyRetryNote,
 } from "./keyed-write";
 import { PendingWritesIndicator } from "./PendingWritesIndicator";
+import { PendingWritesHost } from "./write-hosts";
 import { KEPT_SEND_RESUME_MS } from "./write-storage";
 import { defineWriteKind, plainWrite, type Writes, writesOf } from "./write-store";
 
@@ -144,14 +146,17 @@ test("the indicator counts the writes out, names a late one, and clears when it 
   }
 });
 
-/** The indicator on a page as the shell draws it: after a control the reader comes to it from
- *  (`Elsewhere`, drawn while `elsewhere` holds), before another control and a line of plain text,
- *  and beside the page's main region, which takes the focus as `app.tsx`'s does. */
+/** The indicator on a page as the shell draws it: through its host (`PendingWritesHost`), which
+ *  mounts it once a write is out and keeps it mounted as the last one goes, so the focus it hands
+ *  on as its panel goes is handed on in the commit that takes the panel away; after a control the
+ *  reader comes to it from (`Elsewhere`, drawn while `elsewhere` holds), before another control
+ *  and a line of plain text, and beside the page's main region, which takes the focus as
+ *  `app.tsx`'s does. */
 function ShellPage({ elsewhere }: { readonly elsewhere: boolean }): ReactNode {
   return (
     <>
       {elsewhere ? <button type="button">Elsewhere</button> : null}
-      <PendingWritesIndicator />
+      <PendingWritesHost />
       <button type="button">Other</button>
       <p>Page text</p>
       <main id="main-content" tabIndex={-1} />
@@ -861,6 +866,44 @@ test("a conflict reads why, offers the reader's text to copy and Discard, and no
   } finally {
     unmount();
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
+  }
+});
+
+// When neither the clipboard nor the legacy fallback copies the reader's draft from a conflict,
+// the button says so rather than claiming "Copied".
+test("a conflict's Copy your text button reports copy failure rather than Copied when copying fails", async () => {
+  const user = userEvent.setup();
+  const restoreCopy = stubFailedCopy();
+  const { client, unmount } = mountIndicator();
+  const writes = writesOf(client);
+  const text = "My title,\n  on two lines";
+  try {
+    act(() => {
+      void writes
+        .run({
+          detail: { text },
+          kind: draftedWrite,
+          label: "Rename the priority “P1”",
+          method: "PATCH",
+          presentation: "indicator",
+          write: () =>
+            Promise.reject(
+              new ApiError(409, { code: "PRIORITY_CHANGED", error: "the title was written" })
+            ),
+        })
+        .catch(() => undefined);
+    });
+    await settle();
+    const indicator = await screen.findByTestId("pending-writes");
+
+    await user.click(within(indicator).getByRole("button", { name: "Copy your text" }));
+    expect(
+      await within(indicator).findByRole("button", { name: "Copy failed - select the text" })
+    ).toBeTruthy();
+    expect(within(indicator).queryByRole("button", { name: "Copied" })).toBeNull();
+  } finally {
+    unmount();
+    restoreCopy();
   }
 });
 

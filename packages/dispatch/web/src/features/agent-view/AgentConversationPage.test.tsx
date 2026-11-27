@@ -1,11 +1,13 @@
 import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import type {
+  AgentStreamCommand,
+  AgentStreamFrame,
+  AgentStreamSettingsReported,
+} from "@legion/contracts";
 import {
-  type AgentStreamCommand,
-  type AgentStreamFrame,
-  type AgentStreamSettingsReported,
   IDEMPOTENCY_KEY_TTL_MS,
   LIVE_SOCKET_MAX_AGE_CLOSE,
-} from "@legion/contracts";
+} from "@legion/contracts/dispatch-api-constants";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -3180,7 +3182,9 @@ test("a rebuild from a replay that cleared the window after its reading draws no
 
   await waitFor(() => expect(screen.queryByTestId("agent-context-ring")).toBeNull());
   expect(within(screen.getByTestId("agent-composer-footer")).queryByText(/%/)).toBeNull();
-  expect(within(screen.getByTestId("agent-thread")).getByText("Before the rotation.")).toBeTruthy();
+  // The text is drawn by the Markdown engine, a lazy chunk (`markdown-engine.ts`) that may still
+  // be coming down when the ring has gone: so it is waited for, as the rotation rows above do.
+  await within(screen.getByTestId("agent-thread")).findByText("Before the rotation.");
 });
 
 // R1. The ring's panel goes with the ring, and the next reading draws the ring closed: a panel the

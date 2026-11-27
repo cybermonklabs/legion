@@ -8,11 +8,12 @@ import {
   removedEvenIfGone,
   type WriteBounds,
 } from "../../api/client";
+import { type ListOwner, ownerSubscribersQuery } from "../../api/queries";
 import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
 import { useIsHuman } from "../../hooks/useIsHuman";
-import { textMutedOnSurface } from "../../theme/classes";
+import { textMutedOnSurface } from "../../theme/shell-classes";
 import { RouteReachUnknownMarker, UnreachableRouteMarker } from "../issue/RouteReach";
 import { UnsubscribeDialog } from "../issue/UnsubscribeDialog";
 import { AgentName, useAgentText } from "../refs/AgentName";
@@ -32,34 +33,32 @@ type AskOwner = Pick<Ask, "artifact_id" | "issue_key">;
 /** The topic family an ask's owner routes through: the issue's or the document's, as a press of
  *  the card's Unsubscribe carries it. */
 interface OwnerSubscription {
-  id: string;
   label: string;
-  list: () => Promise<Subscriber[]>;
   noun: "issue" | "document";
+  owner: ListOwner;
   remove: (sessionId: string, bounds: WriteBounds) => Promise<void>;
 }
 
 /** The subscribers list shared with the owner's header: the issue's Subscribed agents panel
- *  (`IssueHeader`) or the project document page. Same key, so a removal from either surface
- *  refreshes both, and a `subscription.removed` on the live event feed refreshes this card too. */
+ *  (`IssueHeader`) or the project document page. Same key, which all three take from
+ *  `ownerSubscribersQuery` by the `owner` named here, so a removal from either surface refreshes
+ *  both, and a `subscription.removed` on the live event feed refreshes this card too. */
 function ownerSubscription(owner: AskOwner): OwnerSubscription | undefined {
   if (owner.issue_key !== null) {
     const key = owner.issue_key;
     return {
-      id: key,
       label: key,
-      list: () => api.getIssueSubscribers(key),
       noun: "issue",
+      owner: { issue: key },
       remove: (sessionId, bounds) => api.unsubscribeIssueSession(key, sessionId, bounds),
     };
   }
   if (owner.artifact_id !== undefined && owner.artifact_id !== null) {
     const id = owner.artifact_id;
     return {
-      id,
       label: "this document",
-      list: () => api.getArtifactSubscribers(id),
       noun: "document",
+      owner: { artifact: id },
       remove: (sessionId, bounds) => api.unsubscribeArtifactSession(id, sessionId, bounds),
     };
   }
@@ -246,19 +245,13 @@ export function AskRecipients({
   // (`DocumentPage`), so an Inbox of cards on one issue shares one fetch with its header. Each
   // fetch is two Envoy listener round trips (interests + sessions), so it is held fresh for a
   // while rather than refetched on every mount and focus; the event feed's invalidation still
-  // refreshes it.
-  const subscribersQuery = useQuery({
+  // refreshes it. An ask with no owner has no list to read, and `enabled` holds the read.
+  const subscribersRead = useQuery({
+    ...ownerSubscribersQuery(subscription?.owner),
     enabled: subscription !== undefined && human,
-    queryKey: ["subscribers", subscription?.id],
-    queryFn: () => {
-      if (subscription === undefined) {
-        throw new Error("Ask recipients query requires an owner.");
-      }
-      return subscription.list();
-    },
     staleTime: 30_000,
   });
-  const subscriberRows = subscribersQuery.data ?? EMPTY_SUBSCRIBERS;
+  const subscriberRows = subscribersRead.data ?? EMPTY_SUBSCRIBERS;
   const text = useAgentText();
   const { count, issueRows, routeSession, subscribers, unknownRoute } = reachRows({
     claimant,
@@ -270,7 +263,7 @@ export function AskRecipients({
   });
   // `Reaches N` counts nobody from a subscriber read that failed: it says nothing of how many
   // there are, and the card says why instead.
-  const counted = !subscribersQuery.isError;
+  const counted = !subscribersRead.isError;
   const [confirming, setConfirming] = useState<Confirming | undefined>(undefined);
   const [open, setOpen] = useState(false);
   // Each is a `DELETE`: made again after one that landed, it finds the session off the ask
@@ -305,14 +298,16 @@ export function AskRecipients({
     label: (press) =>
       `${text.sessionText(press.sessionId, subscribers.find((row) => row.session_id === press.sessionId)?.title)} unsubscribed from ${press.subscription?.label ?? "this ask"}`,
     onSuccess: (_result, press) =>
-      queryClient.invalidateQueries({ queryKey: ["subscribers", press.subscription?.id] }),
+      queryClient.invalidateQueries({
+        queryKey: ownerSubscribersQuery(press.subscription?.owner).queryKey,
+      }),
   });
 
   if (
     followers.length === 0 &&
     issueRows.length === 0 &&
     subscribers.length === 0 &&
-    !subscribersQuery.isError
+    !subscribersRead.isError
   ) {
     return null;
   }
@@ -440,13 +435,13 @@ export function AskRecipients({
           )}
         </>
       )}
-      {subscribersQuery.isError ? (
+      {subscribersRead.isError ? (
         <div className="mt-2">
           <QueryError
-            error={subscribersQuery.error}
+            error={subscribersRead.error}
             message="Subscribers unavailable — Envoy listener unreachable."
-            onRetry={() => subscribersQuery.refetch()}
-            retrying={subscribersQuery.isFetching}
+            onRetry={() => subscribersRead.refetch()}
+            retrying={subscribersRead.isFetching}
           />
         </div>
       ) : null}

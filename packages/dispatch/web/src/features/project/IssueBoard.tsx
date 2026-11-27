@@ -16,35 +16,40 @@ import type { CSSProperties, ReactNode } from "react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { projectIssuesQuery, userStateQuery } from "../../api/queries";
+import { projectIssuesQuery, projectIssuesQueryKey, userStateQuery } from "../../api/queries";
 import type { IssueSummary, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill, Pill, StatusPill } from "../../components/Pill";
 import { copyText } from "../../lib/clipboard";
+import { abortOnReaderAct, claimUnacted } from "../../lib/reader-acts";
+import {
+  cardHoverBorder,
+  selectedCardBorder,
+  textMutedOnCanvas,
+  textPrimaryOnSurface,
+} from "../../theme/classes";
 import {
   borderDefault,
   borderStrong,
   card,
-  cardHoverBorder,
   focusVisibleRing,
   linkHoverText,
   linkText,
-  selectedCardBorder,
   surfaceMutedBg,
-  textMutedOnCanvas,
-  textPrimaryOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { ClaimChip } from "../issue/ClaimChip";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { ProgressChips } from "../issue/ProgressChips";
 import { ParentStatusDialog } from "../issue/parent-status/ParentStatusDialog";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
-import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
-import { buildDispatchReference, buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
+import { closeRefPreview } from "../refs/RefPreview";
+import { referenceTriggerProps } from "../refs/reference-trigger";
+import { buildDispatchReference } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching } from "../shell/roving";
 import {
@@ -72,7 +77,7 @@ import {
 } from "./board-model";
 import { useBoardMoves } from "./board-moves";
 import { CollapsedColumn } from "./CollapsedColumn";
-import { projectIssuesQueryKey, useIssueFilters } from "./issue-filters";
+import { useIssueFilters } from "./issue-filters";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 const boardCollisionDetection: CollisionDetection = (args) => {
@@ -440,13 +445,20 @@ export function IssueBoard({
   // lands on the rail). A move sets it only once it has placed the card (its `onPlaced`), so a
   // move that ends without placing it takes no focus later. The effect runs on the
   // `columns`/`boardLanes` render - the announcement's own render comes first, before the query
-  // observer has notified, and would focus the doomed node.
+  // observer has notified, and would focus the doomed node. A reader who acts before focus
+  // follows (`READER_ACTS`) - `j` to another card, or a press in another field and words typed
+  // there while the move's dry run is out - has put the focus where they want it, so the card
+  // takes none then (`acted`). A choice in the question the move asks is a press that asks for
+  // the move again, and the guard is made anew from it (`moveActs`).
   const [announcement, setAnnouncement] = useState("");
   const focusAfterMove = useRef<{
+    acted: AbortController;
     key: string;
     status: IssueStatus;
     laneId: string | null;
   } | null>(null);
+  /** The guard of the last keyboard move, which a choice in that move's question makes anew. */
+  const moveActs = useRef<{ acted: AbortController } | undefined>(undefined);
   const boardNode = (selector: string) => boardRef.current?.querySelector<HTMLElement>(selector);
   /** The `data-board-column` selector for `status`, scoped to `laneId` (`null` outside a
    *  swimlane). */
@@ -461,6 +473,7 @@ export function IssueBoard({
       return;
     }
     focusAfterMove.current = null;
+    if (!claimUnacted(pending.acted)) return;
     (
       boardNode(`[data-board-card="${pending.key}"]`) ??
       boardNode(laneColumnSelector(pending.status, pending.laneId))
@@ -531,6 +544,8 @@ export function IssueBoard({
     // moved is already in its cell, so the count holds them. A move that ends without placing
     // the card (kept, cancelled or refused) says nothing and takes no focus.
     const lane: PriorityLane | undefined = laneId === null ? undefined : laneFromKey(laneId);
+    const acts = { acted: abortOnReaderAct() };
+    moveActs.current = acts;
     /** Says where the card stands now - its position and count in the visible cell, the one the
      *  user sees, or nothing while it is not in that cell - and has focus follow it once the
      *  board has drawn it there (`focusAfterMove`). */
@@ -545,7 +560,7 @@ export function IssueBoard({
       if (position !== -1) {
         setAnnouncement(announceMove(key, target.status, position + 1, column.length));
       }
-      focusAfterMove.current = { key, status: target.status, laneId };
+      focusAfterMove.current = { acted: acts.acted, key, status: target.status, laneId };
     };
     if (lanes && lane !== undefined) {
       void moveCardToLane(key, target.status, lane, target.insertionIndex, placed);
@@ -683,8 +698,24 @@ export function IssueBoard({
   ]);
   // The question belongs to the board's moves (`useBoardMoves`), not to the list: it is drawn
   // whatever the list read shows, so a read that fails while it is open leaves it to be answered,
-  // and its answer ends the move that holds every later read of the list.
-  const questionDialog = question === undefined ? null : <ParentStatusDialog question={question} />;
+  // and its answer ends the move that holds every later read of the list. A choice in it asks for
+  // the move again, so a keyboard move's focus follows the card from that press (`moveActs`).
+  const questionDialog =
+    question === undefined ? null : (
+      <ParentStatusDialog
+        question={{
+          ...question,
+          choose: (option) => {
+            const acts = moveActs.current;
+            if (acts !== undefined) {
+              acts.acted.abort();
+              acts.acted = abortOnReaderAct();
+            }
+            question.choose(option);
+          },
+        }}
+      />
+    );
   const body = issues.isPending ? (
     <LoadingSkeleton label="Loading board" />
   ) : issues.isError ? (

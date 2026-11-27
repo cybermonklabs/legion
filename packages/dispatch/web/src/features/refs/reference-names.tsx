@@ -20,13 +20,13 @@ import { referenceTargetKind } from "./target-id";
 import { firstWordedBlock } from "./tree-fragment";
 
 /**
- * The names a page has already read for the references it draws, shared with every surface the
- * shell mounts beside it.
+ * The names a page has already read for the references it draws, shared with every surface of
+ * that page.
  *
  * A link to a block shows the block's own words, and reading them one link at a time is one
  * `GET /api/v1/references` per pointer - the read `GET /api/v1/reference-targets` makes once for
  * them all (its declaration in `packages/envoy/internal/dispatch/api`). A page that has
- * made that batched read publishes what it read here, and every surface under the shell names a
+ * made that batched read publishes what it read here, and every surface under the store names a
  * reference from it instead of asking for it again: the plain-text projection before it mounts a
  * read of its own (`plain-text.tsx`), and the new issue page's rows. A page that publishes
  * nothing leaves every surface exactly as it was, reading its own targets.
@@ -44,11 +44,20 @@ import { firstWordedBlock } from "./tree-fragment";
  * beside its name (`KnownReferences.lines`), and a chip cuts what it draws to its own room where
  * it draws it.
  *
- * The store sits above the router, beside the margin's slot (`issue-page/margin-slot.tsx`),
- * because the margin is mounted beside the router and its cards draw the same references as the
- * page's own column: a context inside the page would not reach them. A page publishes in the
- * layout phase of the commit that draws what it read, so the page hands its own subtree the same
- * value in the render that draws it as well (`PublishedReferenceNames`).
+ * The store is the new issue page's own, mounted at its root (`issue-page/IssueOutlinePage.tsx`):
+ * that page is the one publisher (`issue-page/useIssueTree.ts`), and what it draws is under the
+ * store - its rows, the rows of its views and filters, and Details' panel, which the page draws
+ * into the margin through a portal (`issue-page/slots/details.tsx`). Nothing else the shell draws
+ * beside the router is under it - the margin's own cards, the peek, the previews - so their
+ * plain-text projections find no name here and read their own targets. Mounted above the shell
+ * for one issue-page choice alone, it would make a change of that choice mount the whole shell
+ * again (`issue-page/frame-context.ts`); mounted in the shell for every reader, it would bring
+ * this module and the grammar of references it reads (`routes.ts`) into the entry chunk, which
+ * reads only the page addresses (`page-routes.ts`). A surface the shell draws that is to read
+ * these names needs the store to reach it: the margin's cards are drawn beside the router, so
+ * they would need the store handed through Details' fill (`issue-page/margin-slot.tsx`). A page
+ * publishes in the layout phase of the commit that draws what it read, so the page hands its own
+ * subtree the same value in the render that draws it as well (`PublishedReferenceNames`).
  *
  * More than one surface can publish at once: the page's own column and a sheet that draws the
  * outline beside it each read the tree and publish what they read. The store keeps one value per

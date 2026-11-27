@@ -5,15 +5,8 @@ import { issueCoverageQuery } from "../../api/queries";
 import type { RequirementCoverage } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { pillShapeClassName } from "../../components/Pill";
-import {
-  card,
-  dangerText,
-  inlineWarningText,
-  surfaceMutedBg,
-  textMutedOnCanvas,
-  textMutedOnSurface,
-  textPrimaryOnSurface,
-} from "../../theme/classes";
+import { inlineWarningText, textMutedOnCanvas, textPrimaryOnSurface } from "../../theme/classes";
+import { card, dangerText, surfaceMutedBg, textMutedOnSurface } from "../../theme/shell-classes";
 import { BlockReferences } from "../refs/ReferencedBy";
 
 /** One requirement of the spec. Its head line's groups, in this order: its words, which wrap

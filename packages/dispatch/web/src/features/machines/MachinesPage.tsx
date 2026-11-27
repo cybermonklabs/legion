@@ -3,14 +3,14 @@ import { Link } from "react-router-dom";
 
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
+import { textMutedOnCanvas } from "../../theme/classes";
 import {
   borderDefault,
   dangerText,
   linkHoverText,
   linkText,
-  textMutedOnCanvas,
   textPrimaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { useAgents } from "../conversation/useAgents";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { machineList } from "./machine-model";

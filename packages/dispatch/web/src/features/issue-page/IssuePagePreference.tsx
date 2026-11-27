@@ -1,12 +1,25 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
 
-import { checkboxAccent, textPrimaryOnCanvas, textSecondaryOnCanvas } from "../../theme/classes";
+import { checkboxAccent } from "../../theme/classes";
+import { textPrimaryOnCanvas, textSecondaryOnCanvas } from "../../theme/shell-classes";
+import { prefetchChunk } from "../shell/chunk-loads";
 import { useIssuePageChoice } from "./choice";
+import { loadFrame } from "./frame-chunk";
 
 /** Settings' Preview section: the one control that turns the new issue page on or off for the
  *  reader, in this browser. The issue page itself holds no such control. */
 export function IssuePagePreference(): ReactNode {
   const [choice, choose] = useIssuePageChoice();
+  // The new page's frame is a chunk of its own (`frame-chunk.ts`), which the entry starts at boot
+  // only in a browser where some login chose the new page (`app.tsx`, `preloadRouteChunk`). A
+  // reader who turns the page on here is drawn the frame from it, in this tab and in every other
+  // tab of the login, so it is started as this switch draws: the press then finds it in, or on
+  // its way, rather than starting the download itself. Nobody waits on it yet, which is what
+  // `prefetchChunk` tells the chunk-failure recovery (`features/shell/DeploymentResilience.tsx`);
+  // a chunk already in is not asked for again.
+  useEffect(() => {
+    prefetchChunk(loadFrame);
+  }, []);
   return (
     <section aria-labelledby="issue-page-preview-heading">
       <h2

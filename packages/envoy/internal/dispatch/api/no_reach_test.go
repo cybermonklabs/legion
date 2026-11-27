@@ -653,6 +653,8 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/credential-requests":  url.Values{"approver": {"me"}}.Encode(),
 		"GET /api/v1/near-copy-checks":     url.Values{"project": {"TEST"}}.Encode(),
 		"GET /api/v1/deploys":              url.Values{"repo": {owned.deployRepo}}.Encode(),
+		// The landing names the page it lands on; with none it refuses the request (LANDING_INPUT).
+		"GET /api/v1/landing": url.Values{"page": {"issue"}, "key": {owned.issue}}.Encode(),
 		// The session that opened the seeded ask (createIssueAsk writes it as sessionActor): its
 		// ask.opened event and its follow of the ask are records knownSessionsStatement counts.
 		"GET /api/v1/agents/known": url.Values{"id": {sessionActor()["id"].(string)}}.Encode(),

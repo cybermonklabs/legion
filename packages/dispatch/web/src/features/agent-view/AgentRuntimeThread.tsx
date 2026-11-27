@@ -3,7 +3,8 @@ import {
   type ThreadMessageLike,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
-import { type AgentStreamCommand, isShellCommandReport } from "@legion/contracts";
+import type { AgentStreamCommand } from "@legion/contracts";
+import { isShellCommandReport } from "@legion/contracts/agent-stream";
 import { type ReactNode, useCallback, useLayoutEffect, useMemo } from "react";
 
 import type { Message, MessageRead } from "../../api/types";

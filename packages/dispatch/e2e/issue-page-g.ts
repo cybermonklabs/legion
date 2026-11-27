@@ -71,6 +71,7 @@ const SELECTORS = {
   answerAuthor: "[data-answer-author]",
   answerLine: "[data-node-answer]",
   answerText: "[data-answer-text]",
+  branchMore: "[data-branch-more] button",
   gap: "[data-gap]",
   issuePage: "[data-issue-page]",
   nodeAuthor: "[data-node-author]",
@@ -250,10 +251,13 @@ function cssValue(value: string): string {
   return value;
 }
 
-/** How many presses `unfoldEveryBranch` makes before it gives up: well past the branches the
- *  seed holds, so a tree that draws the control whatever is pressed fails here rather than at
- *  the row's deadline. */
+/** How many branches `unfoldEveryBranch` and `unfoldInPage` open before they give up: well past
+ *  the branches the seed holds, so a tree that draws the control whatever is pressed fails here
+ *  rather than at the row's deadline. */
 const BRANCHES_OPENED_AT_MOST = 200;
+
+/** What both fail with when a branch is still shut after `BRANCHES_OPENED_AT_MOST` openings. */
+const STILL_FOLDED = `the tree still draws a folded branch after ${BRANCHES_OPENED_AT_MOST} openings`;
 
 /**
  * Opens every branch a fold left shut, as a reader does to read past one: these rows were drawn
@@ -268,7 +272,7 @@ const BRANCHES_OPENED_AT_MOST = 200;
 export async function unfoldEveryBranch(page: Page): Promise<void> {
   const controls = nodeRows(page)
     .getByRole("button", { exact: true, name: CONTROL_LABELS.unfold })
-    .or(issuePage(page).locator("[data-branch-more] button"));
+    .or(issuePage(page).locator(SELECTORS.branchMore));
   for (let pressed = 0; pressed < BRANCHES_OPENED_AT_MOST; pressed += 1) {
     const first = controls.first();
     // A caller waits for the tree it opens first - a settled load, or an expect.poll that reads
@@ -279,10 +283,46 @@ export async function unfoldEveryBranch(page: Page): Promise<void> {
     }
     await first.click();
   }
-  expect(
-    await controls.count(),
-    `the tree still draws a folded branch after ${BRANCHES_OPENED_AT_MOST} openings`
-  ).toBe(0);
+  expect(await controls.count(), STILL_FOLDED).toBe(0);
+}
+
+/**
+ * Opens every branch a fold left shut, as `unfoldEveryBranch` does, by a click inside the page on
+ * each control in turn until none is drawn, at most `BRANCHES_OPENED_AT_MOST` times, and leaves
+ * the focus on no row as that helper does. A pointer's press also focuses the row it lands on and
+ * scrolls the control into view, and Playwright's click first waits until the control stands
+ * still and takes the pointer: fifteen of those cost three seconds of the row in
+ * `issue-page-i.e2e.ts` that reads each node under the parent the model stores. A row that reads
+ * where each node is drawn - its level, its id and type, the words that name its other parent,
+ * and its chips - reads nothing a press's focus or scroll changes, so the controls' own click is
+ * all it needs. A row that reads what a press focuses keeps `unfoldEveryBranch`.
+ */
+export async function unfoldInPage(page: Page): Promise<void> {
+  const left = await issuePage(page).evaluate(
+    async (root, { branchMore, label, nodeRow, openings }) => {
+      const controls = `${nodeRow} button[aria-label="${label}"], ${branchMore}`;
+      for (let opened = 0; opened < openings; opened += 1) {
+        const shut = [...root.querySelectorAll<HTMLElement>(controls)].find((control) =>
+          control.checkVisibility()
+        );
+        if (shut === undefined) return 0;
+        shut.click();
+        // The branch the click opens is drawn by the next frame, with any control it holds.
+        const drawn = Promise.withResolvers<void>();
+        requestAnimationFrame(() => drawn.resolve());
+        await drawn.promise;
+      }
+      return root.querySelectorAll(controls).length;
+    },
+    {
+      branchMore: SELECTORS.branchMore,
+      label: CONTROL_LABELS.unfold,
+      nodeRow: SELECTORS.nodeRow,
+      openings: BRANCHES_OPENED_AT_MOST,
+    }
+  );
+  expect(left, STILL_FOLDED).toBe(0);
+  await focusThePage(page);
 }
 
 /** How long `expectSeedDrawn` waits for the seed's rows and the names their chips read. */

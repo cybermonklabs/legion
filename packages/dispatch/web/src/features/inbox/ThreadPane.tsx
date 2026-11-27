@@ -9,13 +9,13 @@
  * placed, fall back to the thread alone with the text it is anchored to.
  */
 
-import { inboxThreadRow } from "@legion/contracts";
+import { inboxThreadRow } from "@legion/contracts/dispatch-api-constants";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { askThreadQuery } from "../../api/queries";
 import type { MyReplyRow, MyReplyThreadRow } from "../../api/types";
-import { textPrimaryOnCanvas } from "../../theme/classes";
+import { textPrimaryOnCanvas } from "../../theme/shell-classes";
 import type { ProofDocumentProps } from "../doc/ProofDocument";
 import { PostPreview } from "../refs/PostBody";
 import { EditedMark } from "../refs/PostMarks";

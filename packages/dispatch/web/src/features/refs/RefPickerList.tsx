@@ -3,15 +3,14 @@ import { type ReactNode, useId } from "react";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
 import {
-  dangerText,
   selectedCardBg,
   surfaceMutedHoverBg,
   surfaceRecessedBg,
-  textMutedOnSurface,
   textOptionDescription,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import { AgentName, type AgentStateWords } from "./AgentName";
+import { dangerText, textMutedOnSurface } from "../../theme/shell-classes";
+import { AgentName } from "./AgentName";
 import { RefKindIcon } from "./kind-icons";
 import { PlainText } from "./plain-text";
 import {
@@ -22,6 +21,7 @@ import {
   type RefPickerRow,
   type RefPickerWords,
 } from "./ref-picker";
+import type { AgentStateWords } from "./SessionName";
 import type { RefPicker } from "./useRefPicker";
 
 /** A line a picker row draws whole where its surface draws no tooltips (the issue page), in the

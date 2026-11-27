@@ -1,16 +1,17 @@
-import { type DispatchReadingSurface, referenceSpans, trimReference } from "@legion/contracts";
+import type { DispatchReadingSurface } from "@legion/contracts";
+import { referenceSpans, trimReference } from "@legion/contracts/reference-spans";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 
 import { api } from "../../api/client";
+import { cardHoverBorder } from "../../theme/classes";
 import {
   borderDefault,
-  cardHoverBorder,
   linkText,
   surfaceMutedBg,
   textMutedOnSurfaceMuted,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { DeletedBody, EditedMark } from "./PostMarks";
 import { ReferenceHostIs } from "./reference-host";

@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import type { CredentialPendingRow, InboxRow } from "../../api/types";
-import { BlockedOnYou } from "./BlockedOnYou";
+import { BlockedOnYou } from "./BlockedOnYouLink";
 import { withWaitingOnPerson } from "./inbox-fixture";
 
 function request(record_id: string, requested_at: string): CredentialPendingRow {

@@ -1,10 +1,10 @@
 import { z } from "zod";
-import { ActorSchema, InboundActorSchema } from "./dispatch-api-core";
 import {
   DELIVERY_ATTEMPT_STATES,
   DELIVERY_CAPABILITIES,
   SETTLED_DELIVERY_STATES,
-} from "./dispatch-api-limits";
+} from "./dispatch-api-constants";
+import { ActorSchema, InboundActorSchema } from "./dispatch-api-core";
 import {
   carriedBodyFields,
   ReplyBlockSchema,

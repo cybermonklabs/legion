@@ -1,18 +1,18 @@
 import { z } from "zod";
 import { askFields } from "./dispatch-api-asks";
 import {
+  ASK_TURNS,
+  DELIVERY_ATTEMPT_STATES,
+  DELIVERY_CAPABILITIES,
+  SETTLED_DELIVERY_STATES,
+} from "./dispatch-api-constants";
+import {
   ActorSchema,
   AnchorSchema,
   anchorFields,
   anchorPositionFields,
   InboundActorSchema,
 } from "./dispatch-api-core";
-import {
-  ASK_TURNS,
-  DELIVERY_ATTEMPT_STATES,
-  DELIVERY_CAPABILITIES,
-  SETTLED_DELIVERY_STATES,
-} from "./dispatch-api-limits";
 import {
   carriedBodyFields,
   ReplyBlockSchema,

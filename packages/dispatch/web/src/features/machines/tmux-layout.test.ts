@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { TMUX_LAYOUT_MAX } from "@legion/contracts";
+import { TMUX_LAYOUT_MAX } from "@legion/contracts/dispatch-api-constants";
 
 import { parseTmuxLayout, type TmuxLayoutPane } from "./tmux-layout";
 

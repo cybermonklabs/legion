@@ -9,7 +9,7 @@
  * the selection and the row itself all ask the same seven questions of whichever row they hold.
  */
 
-import { inboxThreadRow } from "@legion/contracts";
+import { inboxThreadRow } from "@legion/contracts/dispatch-api-constants";
 
 import type {
   Ask,

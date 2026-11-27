@@ -129,10 +129,10 @@ import type { OutlineWriter } from "../issue-page/outline-writer";
 import { COMPOSER_ANSWER_WORDS, CONTROL_LABELS } from "../issue-page/page-words";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { ReplyTarget } from "./composer-model";
+import { composerNameOf } from "./composer-names";
 import { heldSends } from "./held-sends";
 import { type SentRequest, saveCommentEdit } from "./send-request";
 import { unsentDraftsOf } from "./unsent-drafts";
-import { composerNameOf } from "./useKeptDrafts";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.

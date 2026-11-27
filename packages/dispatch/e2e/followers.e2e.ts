@@ -81,7 +81,9 @@ test("the ask card lists every session that wrote to the ask and a human can unf
       .poll(
         async () => ((await listAskFollowers(ask.id)).followers ?? []).map((row) => row.session_id),
         // The server answered the unfollow before the card dropped the chip above, so this is
-        // true within a round trip; the default ladder would not look again until 350 ms.
+        // true within a round trip: Playwright's default intervals, `[100, 250, 500, 1000]`, look
+        // again at 100, 350 and 850 ms and then every second, and this ladder at 50, 100, 200 and
+        // 400 ms and then every half second.
         { intervals: [50, 50, 100, 200, 500] }
       )
       .toEqual([asker.id]);

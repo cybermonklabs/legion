@@ -1,4 +1,4 @@
-import { MAX_ISSUE_BLOCKERS } from "@legion/contracts";
+import { MAX_ISSUE_BLOCKERS } from "@legion/contracts/dispatch-api-constants";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { ApiError, issuePatchRequest } from "../../api/client";

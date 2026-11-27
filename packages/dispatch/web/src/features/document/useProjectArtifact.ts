@@ -1,25 +1,16 @@
 import { type UseQueryResult, useQuery } from "@tanstack/react-query";
 
-import { api } from "../../api/client";
+import { projectArtifactQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
-import type { ProjectDocumentRoute } from "../refs/routes";
+import type { ProjectDocumentRoute } from "../refs/page-routes";
 
 /**
- * The project document a route names, by `project/slug`. The `["artifact-ref", …]` key is the
- * one the live socket's event feed invalidates when a document changes, so every caller shares
- * one cache entry.
+ * The project document a route names, by `project/slug` (`projectArtifactQuery`). Every caller
+ * shares that one cache entry, which the landing seeds and the live socket's event feed refreshes
+ * when a document changes.
  */
 export function useProjectArtifact(
   route: ProjectDocumentRoute | undefined
 ): UseQueryResult<Artifact> {
-  return useQuery({
-    enabled: route !== undefined,
-    queryKey: ["artifact-ref", `${route?.project}/${route?.slug}`],
-    queryFn: () => {
-      if (route === undefined) {
-        throw new Error("Project document query requires a document route.");
-      }
-      return api.getProjectArtifact(route.project, route.slug);
-    },
-  });
+  return useQuery({ ...projectArtifactQuery(route), enabled: route !== undefined });
 }

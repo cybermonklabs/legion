@@ -1,4 +1,4 @@
-import { dispatchWritingBox } from "@legion/contracts";
+import { dispatchWritingBox } from "@legion/contracts/dispatch-writing-boxes";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createContext,
@@ -11,24 +11,26 @@ import {
 } from "react";
 
 import { api } from "../../api/client";
+import { issueDecisionsQuery } from "../../api/queries";
 import type { Artifact, Decision, DisplayTree, IssueDecisions } from "../../api/types";
 import { useTooltips } from "../../components/tooltips";
 import {
-  borderDefault,
-  dangerText,
   focusBorder,
   pageFailedText,
   pageHairBorder,
-  pageInkText,
-  pageLineBorder,
-  pageMutedText,
   pagePaperBg,
   pageWordsText,
   textMutedOnCanvas,
-  textSecondaryOnCanvas,
 } from "../../theme/classes";
+import {
+  borderDefault,
+  dangerText,
+  pageInkText,
+  pageLineBorder,
+  pageMutedText,
+  textSecondaryOnCanvas,
+} from "../../theme/shell-classes";
 import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
-import { issueDecisionsQuery } from "../doc/spec-marks";
 import { useDecisionHeadingWords } from "../issue/decision-heading";
 import { usePlainHeadline } from "../refs/plain-text";
 import { EVENT_FRESH } from "../refs/reference-target";
@@ -152,7 +154,11 @@ export function DecisionActions({
   tabStops?: boolean;
 }): ReactNode {
   const issueKey = document?.issue_key ?? "";
-  const decisions = useQuery({ ...issueDecisionsQuery(issueKey, issueKey !== ""), ...EVENT_FRESH });
+  const decisions = useQuery({
+    ...issueDecisionsQuery(issueKey),
+    enabled: issueKey !== "",
+    ...EVENT_FRESH,
+  });
   const decision = (decisions.data?.decisions ?? []).find((row) => row.ref === nodeReference);
   if (decision === undefined || document === undefined || isClosed) return null;
   return (
@@ -431,7 +437,7 @@ function ChangeComposer({
             setReading(false);
             const anchor = changeAnchor(
               decision,
-              queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
+              queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey).queryKey)
                 ?.decisions,
               tree
             );

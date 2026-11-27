@@ -1,4 +1,4 @@
-import { GATED_STEPS } from "@legion/contracts";
+import { GATED_STEPS } from "@legion/contracts/legion-roles";
 
 import { primarySpec, roleDocument } from "../../api/issue-cache";
 import type { ArtifactWithTrees, GatedStep, IssueDetails, Project } from "../../api/types";

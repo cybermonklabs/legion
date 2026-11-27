@@ -1,7 +1,8 @@
-import { type DispatchHrefItem, decodeBlockId, itemFromSearch } from "@legion/contracts";
+import { decodeBlockId } from "@legion/contracts/dispatch-block-ref";
+import { type DispatchHrefItem, itemFromSearch } from "@legion/contracts/dispatch-href";
 
 import type { Ask, Comment, MessageRead } from "../../api/types";
-import { buildIssuePath, type IssueRoute } from "../refs/routes";
+import { buildIssuePath, type IssueRoute } from "../refs/page-routes";
 import { agentsOnlyIds } from "./agents-only";
 import type { TreeNode } from "./issue-tree";
 import type { Preset } from "./page-words";
@@ -13,8 +14,8 @@ import { blockNodeId } from "./tree-drafts";
  * Every address the old page's nine tabs answered still resolves, and this module is the one
  * place that says what each one opens: which preset, which document is opened in place of the
  * outline, which node the page unfolds the path to and puts the focus on, whether the node menu
- * is open, and which version is pinned. `refs/routes.ts` still parses the address; this reads the
- * route it answers.
+ * is open, and which version is pinned. `refs/page-routes.ts` still parses the address; this
+ * reads the route it answers.
  *
  * It is pure and holds no React, so the page, the margin's panel and the unit tests all read an
  * address the same way.

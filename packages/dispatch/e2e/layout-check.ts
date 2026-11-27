@@ -3,7 +3,12 @@ import { readFileSync } from "node:fs";
 import { expect, type Page } from "@playwright/test";
 
 import { type KnownLayoutBreach, type LayoutBreachKind, layoutBreaches } from "./layout-breaches";
-import { LAYOUT_WIDTHS, type LayoutReading, measureLayout } from "./layout-measure";
+import {
+  LAYOUT_WIDTHS,
+  type LayoutReading,
+  type LayoutWidth,
+  measureLayout,
+} from "./layout-measure";
 import type { LayoutRoute, LayoutSeed, LayoutState } from "./layout-routes";
 import { type InFlightRequests, trackDocumentRequests, waitForRouteSettled } from "./review-routes";
 
@@ -77,6 +82,13 @@ const LAYOUT_SHEET_ID = "layout-pinned-sheet";
 
 const pinnedPages = new WeakSet<Page>();
 
+/** Each pinned face's file by its path under `e2e/fonts/`, read the first time a page of this
+ *  worker asks for it and answered from here after that: the files are committed and do not
+ *  change during a run. Only the read is kept: each request a document sends still reaches the
+ *  page's routes, so one registered after this (the 404 for one face in
+ *  `e2e/layout-measure.stub.e2e.ts`) still answers it first. */
+const faceFiles = new Map<string, Buffer>();
+
 /** Adds the layout sheet to every document the page loads from now on, before its first frame,
  *  and answers the faces' requests from `e2e/fonts/`; once per page. An init script, not a style
  *  tag added after the load: a page can replace its document after `page.goto` returns - a
@@ -94,10 +106,12 @@ async function installLayoutSheet(page: Page): Promise<void> {
       await route.fulfill({ body: `no pinned face ${asked}`, status: 404 });
       return;
     }
-    await route.fulfill({
-      body: readFileSync(new URL(`./fonts/${face.dir}/${face.file}`, import.meta.url)),
-      contentType: "font/ttf",
-    });
+    let body = faceFiles.get(asked);
+    if (body === undefined) {
+      body = readFileSync(new URL(`./fonts/${asked}`, import.meta.url));
+      faceFiles.set(asked, body);
+    }
+    await route.fulfill({ body, contentType: "font/ttf" });
   });
   await page.addInitScript(addLayoutSheet, { id: LAYOUT_SHEET_ID, sheet: LAYOUT_SHEET });
 }
@@ -125,22 +139,26 @@ function addLayoutSheet({ id, sheet }: { id: string; sheet: string }): void {
 /** Fails unless every pinned face loaded in the page's current document. A route that stopped
  *  answering, or a sheet that never reached the page, would leave the text in the host's own
  *  faces, which only a host with other fonts than CI's would show; `document.fonts.ready`
- *  resolves either way, so each face is asked for by its family and weight. */
+ *  resolves either way, so each face is asked for by its family and weight. The faces are asked
+ *  for together, since no load waits on another, and each that did not load is named in
+ *  `PINNED_FACES`' order. */
 async function expectPinnedFacesLoaded(page: Page): Promise<void> {
   const wanted = PINNED_FACES.map(({ family, weight }) => ({ family, weight }));
   const unloaded = await page.evaluate(async (faces) => {
-    const missing: string[] = [];
-    for (const { family, weight } of faces) {
-      try {
-        const loaded = await document.fonts.load(`${weight} 16px ${JSON.stringify(family)}`);
-        if (loaded.length === 0 || loaded.some((face) => face.status !== "loaded")) {
-          missing.push(`${family} ${weight}`);
+    const missing = await Promise.all(
+      faces.map(async ({ family, weight }) => {
+        try {
+          const loaded = await document.fonts.load(`${weight} 16px ${JSON.stringify(family)}`);
+          if (loaded.length === 0 || loaded.some((face) => face.status !== "loaded")) {
+            return `${family} ${weight}`;
+          }
+          return null;
+        } catch {
+          return `${family} ${weight} (load rejected)`;
         }
-      } catch {
-        missing.push(`${family} ${weight} (load rejected)`);
-      }
-    }
-    return missing;
+      })
+    );
+    return missing.filter((face): face is string => face !== null);
   }, wanted);
   expect(unloaded, "pinned faces that did not load: the font route or the sheet is broken").toEqual(
     []
@@ -369,6 +387,17 @@ async function loadSettled(
   await waitForRouteSettled(page, route, inFlight);
 }
 
+/** The widths a route marked `reuseWide` reads by resizing the page it read at the width before,
+ *  rather than by loading it fresh: the two past the wide layout's first width, 1280 px
+ *  (`WIDE_LAYOUT_MIN_PX` in `e2e/review-routes.ts`). Every width query the app reads switches at
+ *  1280 px or below (`web/src/features/shell/useDialog.ts`, `issue-page/IssuePresets.tsx`,
+ *  `issue-page/contents-frame.tsx`, `issue-page/identity-block.ts`,
+ *  `project/issues-table-controls.tsx`), and so does the one read of the document's width
+ *  `doc/ProofDocument.tsx` makes as it opens an editor, so 1280, 1440 and 1920 px stand on one
+ *  side of each of them. 360, 900 and 1280 px load fresh on every route: the two compact widths
+ *  and the first wide one are each read on a cold load. */
+const RESIZED_WIDTHS: ReadonlySet<LayoutWidth> = new Set<LayoutWidth>([1440, 1920]);
+
 /** Reads the settled page: the pinned faces loaded in the document that is current now, then
  *  `measureLayout`. */
 async function measureSettledPage(page: Page): Promise<LayoutReading> {
@@ -387,8 +416,8 @@ export function requiredGroupsOf(
   return [...(route.requiredGroups ?? []), ...(state?.requiredGroups ?? [])];
 }
 
-/** A route row's time budget, which follows `checkLayout`'s readings: one per width as the page
- *  loads, and one per width in each of its states. Six seconds a reading is twice what one cost
+/** A route row's time budget, which follows `checkLayout`'s readings: one per width of the plain
+ *  page, and one per width in each of its states. Six seconds a reading is twice what one cost
  *  on CI (2.9 s on the agents row of D's branch, run 45301444362, whose 20 readings ran out of
  *  Playwright's 60 s); a route of few readings keeps that 60 s. */
 export function layoutRowTimeoutMs(route: Pick<LayoutRoute, "states">): number {
@@ -396,10 +425,28 @@ export function layoutRowTimeoutMs(route: Pick<LayoutRoute, "states">): number {
   return Math.max(60_000, readings * 6_000);
 }
 
-/** Reads `route` at every width of `LAYOUT_WIDTHS`: the page loaded fresh and settled, and then,
- *  for each of its states, loaded fresh again, settled, acted on and settled again. Fails once,
- *  after every reading, with every failure `judgeReading` found. */
+/** Reads `route` at every width of `LAYOUT_WIDTHS`: the page loaded fresh and settled, and then
+ *  each of its states acted on and settled again. The first state acts on the page the plain
+ *  reading has just read, since that reading changes nothing the state draws: `measureLayout`
+ *  only reads, and the faces `expectPinnedFacesLoaded` loads are the ones the state's own reading
+ *  requires anyway. Each later state acts on the page loaded fresh again, so it draws over
+ *  nothing an earlier state opened. Fails once, after every reading, with every failure
+ *  `judgeReading` found.
+ *
+ *  A route marked `reuseWide` reads each width of `RESIZED_WIDTHS` on the page it read at the
+ *  width before, resized and settled again, where that reading's viewport was its width: the
+ *  document's width (`LayoutReading.viewport`, `document.documentElement.clientWidth`) is the
+ *  width `ProofDocument.tsx` read as it opened its editor, so a page that read another width at
+ *  1280 px may have decided on the compact side, and the next width loads fresh instead. A
+ *  route with states is refused the mark, since a state leaves a drawer or a selection open on
+ *  the page the next width would resize. Every reading is taken and judged the same either way. */
 export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSeed): Promise<void> {
+  if (route.reuseWide === true && (route.states?.length ?? 0) > 0) {
+    throw new Error(
+      `${route.name} is marked reuseWide and has states: a state leaves a drawer or a selection ` +
+        "open, so a route with states loads fresh at every width"
+    );
+  }
   await route.prepare?.(page.context());
   await installLayoutSheet(page);
   // The page answers from routes, so its settle wait reads requests by the document that sent
@@ -413,18 +460,39 @@ export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSe
   const address = route.path(seed);
   const minElements = route.minElements?.count;
   const failures: LayoutFailure[] = [];
+  // Whether the plain reading just taken read the width the viewport was set to, which a resize
+  // to the next width needs.
+  let readItsWidth = false;
   for (const width of LAYOUT_WIDTHS) {
+    const resized = route.reuseWide === true && RESIZED_WIDTHS.has(width) && readItsWidth;
     await page.setViewportSize({ height: HEIGHT, width });
-    await loadSettled(page, route, address, inFlight);
+    if (resized) {
+      // The same wait a load gets: the route's ready locators on the screen, and the Inbox
+      // number holding one value for its whole window, at least 500 ms, again. That window is
+      // the time a page that redraws for the new width - in a size observer or a `resize`
+      // listener - has to draw before the reading. Not `resizeSettled` of `e2e/frames.ts`, which
+      // waits out the new issue page's resize. It waits for no animation frame: under the clock
+      // pinned above (`setFixedTime`), the page's `requestAnimationFrame` is Playwright's own
+      // timer, which fires every 16 ms, so a wait for two frames waited for two of its ticks and
+      // for no frame the browser draws. The row "checkLayout reads a resized width only once the
+      // page has redrawn for it" of `e2e/layout-measure.stub.e2e.ts` holds this wait: its page's
+      // size observer redraws 250 ms after a resize, and with this wait taken out the row reads
+      // each resized width before that redraw and fails.
+      await waitForRouteSettled(page, route, inFlight);
+    } else {
+      await loadSettled(page, route, address, inFlight);
+    }
     const plain = { route: route.name, width };
+    const reading = await measureSettledPage(page);
+    readItsWidth = reading.viewport === width;
     failures.push(
-      ...judgeReading(plain, await measureSettledPage(page), {
+      ...judgeReading(plain, reading, {
         groups: requiredGroupsOf(route),
         minElements,
       })
     );
-    for (const state of route.states ?? []) {
-      await loadSettled(page, route, address, inFlight);
+    for (const [index, state] of (route.states ?? []).entries()) {
+      if (index > 0) await loadSettled(page, route, address, inFlight);
       await state.act(page);
       await waitForRouteSettled(page, route, inFlight);
       const acted = { route: route.name, state: state.name, width };

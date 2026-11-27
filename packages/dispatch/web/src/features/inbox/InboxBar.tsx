@@ -7,13 +7,12 @@ import {
   focusVisibleRing,
   surfaceMutedBg,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
+import { INBOX_FILTER_FIELDS, type InboxFilterField } from "../refs/page-routes";
 import {
-  INBOX_FILTER_FIELDS,
   INBOX_PRIORITY_VALUES,
   INBOX_TYPE_VALUES,
   INBOX_URGENCY_VALUES,
-  type InboxFilterField,
   NO_FILTER_VALUE,
 } from "../refs/routes";
 import { AssigneeFilter } from "./AssigneeFilter";

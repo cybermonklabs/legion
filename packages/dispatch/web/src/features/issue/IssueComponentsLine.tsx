@@ -16,21 +16,23 @@ import {
 import {
   badgeHigh,
   badgePrimary,
+  pageFailedText,
+  pageLabelChip,
+  pageWaitingChip,
+} from "../../theme/classes";
+import {
   dangerText,
   linkHoverText,
   linkText,
-  pageFailedText,
   pageInkText,
-  pageLabelChip,
   pageMutedText,
   pageQuietText,
-  pageWaitingChip,
   textMutedOnSurface,
   textSecondaryOnSurface,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { ComponentPicker } from "../architecture/ComponentPicker";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import { ARCHITECTURE_SOURCES_HEADING_ID } from "../settings/ArchitectureSourcesSection";
 import { useDetailsRefusal } from "./HeaderDetails";
 import { useIssueComponents } from "./useIssueComponents";

@@ -1,6 +1,10 @@
 import type { ReactNode } from "react";
 
-import { calloutWarningBg, calloutWarningBorder, calloutWarningText } from "../../theme/classes";
+import {
+  calloutWarningBg,
+  calloutWarningBorder,
+  calloutWarningText,
+} from "../../theme/shell-classes";
 import {
   DRAFT_KEPT_UNITS,
   type NotKeptReason,

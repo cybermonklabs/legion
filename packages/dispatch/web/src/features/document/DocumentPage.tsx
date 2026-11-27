@@ -3,23 +3,21 @@ import { type ReactNode, useCallback, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { api, isSubscriberNotFound, removedEvenIfGone } from "../../api/client";
+import { ownerSubscribersQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
-import { dangerText } from "../../theme/classes";
+import { dangerText } from "../../theme/shell-classes";
 import { ArtifactDocument } from "../artifacts/ArtifactDocument";
 import { ArtifactBlobView, ArtifactHeader } from "../artifacts/ArtifactHeader";
 import { ArtifactQueryStates } from "../artifacts/ArtifactQueryStates";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { SubscribedAgents } from "../issue/SubscribedAgents";
 import { useAgentText } from "../refs/AgentName";
+import { buildProjectPath, parseProjectPath } from "../refs/page-routes";
 import { ReferencedBy } from "../refs/ReferencedBy";
-import {
-  buildDispatchReference,
-  buildProjectPath,
-  documentRoute as documentReferenceRoute,
-  parseProjectPath,
-} from "../refs/routes";
+import { buildDispatchReference, documentRoute as documentReferenceRoute } from "../refs/routes";
 import { firstHighlightTerm } from "../search/search-model";
+import { useEndHoldWhen } from "../shell/content-drawn";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { useProjectArtifact } from "./useProjectArtifact";
@@ -34,10 +32,7 @@ import { useProjectArtifact } from "./useProjectArtifact";
  */
 function DocumentSubscribers({ artifact }: { readonly artifact: Artifact }): ReactNode {
   const queryClient = useQueryClient();
-  const subscribers = useQuery({
-    queryKey: ["subscribers", artifact.id],
-    queryFn: () => api.getArtifactSubscribers(artifact.id),
-  });
+  const subscribers = useQuery(ownerSubscribersQuery({ artifact: artifact.id }));
   const agentText = useAgentText();
   // The press carries the document it unsubscribes from, its id and its name: the route takes the
   // id, and the sentence of a stopped unsubscribe the name, from the press rather than from the
@@ -55,7 +50,9 @@ function DocumentSubscribers({ artifact }: { readonly artifact: Artifact }): Rea
       );
     },
     onSuccess: (_result, { artifactId }) =>
-      void queryClient.invalidateQueries({ queryKey: ["subscribers", artifactId] }),
+      void queryClient.invalidateQueries({
+        queryKey: ownerSubscribersQuery({ artifact: artifactId }).queryKey,
+      }),
   });
 
   return (
@@ -115,6 +112,14 @@ export function DocumentPage(): ReactNode {
     artifact.data === undefined || project === undefined
       ? "Document · Dispatch"
       : `${artifact.data.name} · ${project} · Dispatch`
+  );
+  // The shell's code that draws no part of a document waits on this landing until the document
+  // draws (`features/shell/content-drawn.ts`). A page whose read failed, or whose artifact is a
+  // file, draws none, and would otherwise hold that code until the reader's first key or click.
+  useEndHoldWhen(
+    documentRoute === undefined ||
+      artifact.isError ||
+      (artifact.isSuccess && artifact.data?.kind !== "doc")
   );
 
   if (documentRoute === undefined) {

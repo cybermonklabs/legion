@@ -1,11 +1,7 @@
 import { type KeyboardEvent, type ReactNode, useRef } from "react";
 
-import {
-  activeTabIndicatorBorder,
-  activeTabIndicatorText,
-  borderDefault,
-  textSecondaryOnCanvas,
-} from "../theme/classes";
+import { activeTabIndicatorBorder, activeTabIndicatorText } from "../theme/classes";
+import { borderDefault, textSecondaryOnCanvas } from "../theme/shell-classes";
 import { Pill } from "./Pill";
 
 export interface TabDefinition<Id extends string> {

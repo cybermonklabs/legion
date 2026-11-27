@@ -1,4 +1,4 @@
-import { actorActText } from "@legion/contracts";
+import { actorActText } from "@legion/contracts/actor-label";
 import { Fragment, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
@@ -15,18 +15,15 @@ import {
   calloutSuccessBorder,
   calloutSuccessText,
   calloutSuccessTimestampText,
-  card,
   inlineWarningText,
-  linkHoverText,
-  linkText,
-  textMutedOnSurface,
   textPrimaryOnSuccessCallout,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import { card, linkHoverText, linkText, textMutedOnSurface } from "../../theme/shell-classes";
 import { AgentName, AskResolutionLine } from "../refs/AgentName";
 import { askResolutionBadge, askResolutionReason } from "../refs/actor";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import type { DwellRef } from "../shell/useDwell";

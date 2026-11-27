@@ -1,7 +1,8 @@
 import { type ReactNode, type Ref, type RefObject, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 
-import { pageInkText, pageQuietText, pageRowBorder } from "../../theme/classes";
+import { pageRowBorder } from "../../theme/classes";
+import { pageInkText, pageQuietText } from "../../theme/shell-classes";
 import { IssueLine } from "./BlockedByControl";
 import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
 import { statusGlyph } from "./issue-status";

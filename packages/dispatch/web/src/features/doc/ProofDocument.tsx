@@ -1,5 +1,6 @@
-import { decodeBlockId, isIdPrefix } from "@legion/contracts";
-import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
+import { decodeBlockId } from "@legion/contracts/dispatch-block-ref";
+import { isIdPrefix } from "@legion/contracts/dispatch-text-rules";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
@@ -18,28 +19,30 @@ import {
   isDocumentSchemaError,
   isDocumentUnloadable,
 } from "../../api/client";
-import { artifactBlocksQuery } from "../../api/queries";
+import {
+  artifactBlocksQuery,
+  artifactQueryOptions,
+  liveTextQueryOptions,
+  ownerAsksQuery,
+} from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
 import { copyText } from "../../lib/clipboard";
+import { badgeMed, pageFailedText, pageLabelChip, pagePaperBg } from "../../theme/classes";
 import {
-  badgeMed,
   dangerText,
   linkHoverText,
   linkText,
-  pageFailedText,
   pageInkText,
-  pageLabelChip,
   pageLineBorder,
   pageMutedText,
-  pagePaperBg,
   secondaryButtonBorder,
   secondaryButtonHoverBorder,
   secondaryButtonText,
   textSecondaryOnCanvas,
-} from "../../theme/classes";
+} from "../../theme/shell-classes";
 import { versionsNewestFirst } from "../artifacts/ArtifactHeader";
 import {
   ArtifactDropZone,
@@ -50,23 +53,20 @@ import {
 import { useMargin } from "../margin/margin-context";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { blockFragment } from "../refs/block-reference";
+import { buildIssuePath, buildProjectPath } from "../refs/page-routes";
 import { PlainText } from "../refs/plain-text";
 import { watchPicturePath } from "../refs/reference-target";
-import {
-  buildDispatchReference,
-  buildIssuePath,
-  buildProjectPath,
-  documentRoute,
-} from "../refs/routes";
+import { buildDispatchReference, documentRoute } from "../refs/routes";
 import { textSourceOf, uniquePrefixMatch } from "../refs/text-references";
-import { importWhenOnline } from "../shell/DeploymentResilience";
+import { chunk, chunkComponent } from "../shell/chunk-component";
+import { importWhenOnline, renderChunk } from "../shell/chunk-loads";
+import { contentDrawn } from "../shell/content-drawn";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { AskBlockCard } from "./AskBlockCard";
+import { AskBlockCardHost } from "./AskBlockCardHost";
 import type { AnchoredBlockHost } from "./ask-block";
-import { ChangeView } from "./ChangeView";
 import type { ConnectionState, DocumentConnection } from "./connection";
 import { colorForLogin } from "./connection";
 import { DocumentRefPicker } from "./DocumentRefPicker";
@@ -91,7 +91,25 @@ import { DocumentRuntime } from "./runtime";
 import { compiledBlockSchema, compiledSchemaCreatable } from "./schema";
 import { readLineText, useSpecMarks } from "./spec-marks";
 import type { AskBlockHost } from "./typed-block-drawing";
-import { VersionView } from "./VersionView";
+
+// A past version of the document, and its changes against the live text: each drawn only on an
+// address that names a version (`version`), which is the reader's own choice - the version
+// picker, or a link to one. Imported statically, they put the word-diff library and the past
+// version's own editor into what every document page fetched before its live editor drew:
+// 8,863 bytes of `ChangeView` and `diff`, with `VersionView` and the change marks in this
+// chunk, on a cold `/issues/CORE-1` in the R13 reading of dispatch://INFRA-1109. Each draws
+// through `chunkComponent`, under `renderChunk` like every chunk a render waits on, since a
+// reader who asked for the version is waiting for it (`features/shell/DeploymentResilience.tsx`);
+// and not through `lazy` and `Suspense`, which would hold the version back 300 ms after its
+// chunk is in (`features/shell/chunk-component.tsx`).
+const ChangeView = chunkComponent(
+  chunk(() => import("./ChangeView").then((module) => module.ChangeView)),
+  <p>Loading version…</p>
+);
+const VersionView = chunkComponent(
+  chunk(() => import("./VersionView").then((module) => module.VersionView)),
+  <p>Loading version…</p>
+);
 
 /** The one block of `root` whose id starts with `prefix`, or undefined where none does or two
  *  or more do (`uniquePrefixMatch`). The editor's own rendered blocks are the answer, the same
@@ -106,14 +124,6 @@ function wholeBlockId(root: HTMLElement, prefix: string): string | undefined {
 }
 
 const CONTROL_CHARACTERS = /\p{Cc}/gu;
-
-/** The live document's text as the server reads it now. A read of it decides whether the editor
- * may connect: the server answers `409 DOC_SCHEMA` for a stored tree outside the Proof schema. */
-export const liveTextQueryOptions = (artifactId: string) =>
-  queryOptions({
-    queryKey: ["artifact", artifactId, "text"],
-    queryFn: () => api.getArtifactText(artifactId),
-  });
 
 /** Why an admission left the live editor closed, from its own `/text` read: a tree outside the
  * Proof schema the page offers to repair from markdown, a stored history that cannot load the page
@@ -346,10 +356,7 @@ export function ProofDocument({
   const failedText = tooltips ? dangerText : pageFailedText;
   const countChip = tooltips ? `${badgeMed.bg} ${badgeMed.text}` : pageLabelChip;
   const controlOnPage = `${pageLineBorder} ${pagePaperBg} ${pageMutedText}`;
-  const artifactQuery = useQuery({
-    queryKey: ["artifact", artifact.id],
-    queryFn: () => api.getArtifact(artifact.id),
-  });
+  const artifactQuery = useQuery(artifactQueryOptions(artifact.id));
   const liveTextQuery = useQuery(liveTextQueryOptions(artifact.id));
   // The repair replaces this document, so it uploads under the document's own name whatever the
   // picked file is called; a closed issue takes none.
@@ -412,11 +419,9 @@ export function ProofDocument({
     queryKey: ["artifact", artifact.id, "version", version],
     queryFn: () => api.getArtifactVersion(artifact.id, version ?? 0),
   });
-  const asksQuery = useQuery({
-    queryKey: owner.kind === "issue" ? ["asks", owner.key] : ["artifact", artifact.id, "asks"],
-    queryFn: () =>
-      owner.kind === "issue" ? api.listIssueAsks(owner.key) : api.listArtifactAsks(artifact.id),
-  });
+  const asksQuery = useQuery(
+    ownerAsksQuery(owner.kind === "issue" ? { issue: owner.key } : { artifact: artifact.id })
+  );
   /** Every ask indexed from a typed block of this document, in every state — the rendered blocks
    * read who asked from these, and an answered block still names its asker. */
   const blockAsks = useMemo(
@@ -444,16 +449,20 @@ export function ProofDocument({
       if (created === null) return;
       // Over any read of the document still out: asked before the version was made, it would
       // take the version back off the list (`replaceQueryData`).
-      replaceQueryData<Artifact>(queryClient, ["artifact", artifact.id], (current) => {
-        const source = current ?? artifact;
-        return {
-          ...source,
-          versions: [
-            ...(source.versions ?? []).filter(({ number }) => number !== created.number),
-            created,
-          ],
-        };
-      });
+      replaceQueryData<Artifact>(
+        queryClient,
+        artifactQueryOptions(artifact.id).queryKey,
+        (current) => {
+          const source = current ?? artifact;
+          return {
+            ...source,
+            versions: [
+              ...(source.versions ?? []).filter(({ number }) => number !== created.number),
+              created,
+            ],
+          };
+        }
+      );
       onVersionChange(created.number);
     },
   });
@@ -723,6 +732,9 @@ export function ProofDocument({
       failed = true;
       setConnection("failed");
       setLoadError(error instanceof Error ? error.message : String(error));
+      // A document that cannot draw ends the shell's wait for it
+      // (`features/shell/content-drawn.ts`).
+      contentDrawn();
     };
     const teardown = () => {
       disposeEditorBindings?.();
@@ -841,6 +853,9 @@ export function ProofDocument({
     // A blocked admission waits for the next successful read of the text, which a repair upload
     // or a rebuild brings about, and is admitted again (`readmitRef`). An admission that found
     // content this build cannot read yet reads the text again on its own timer instead.
+    // `staleTime: 0` is what makes each of these reads the admission's own: the landing seed puts
+    // the document's text in that key before any of this mounts (`api/queries.ts`,
+    // `seedDocument`), and this read goes out all the same.
     const admit = () => {
       const textRead = queryClient
         .fetchQuery({ ...liveTextQueryOptions(artifact.id), staleTime: 0 })
@@ -848,9 +863,11 @@ export function ProofDocument({
           () => undefined,
           async (error: unknown) => {
             if (isArtifactNotFound(error)) {
+              // Under `renderChunk`: the admission waits on this delete before it settles on
+              // the block the page then draws (`features/shell/chunk-loads.ts`).
               try {
-                const { deletePendingEdits } = await importWhenOnline(
-                  () => import("./pending-edits")
+                const { deletePendingEdits } = await renderChunk(() =>
+                  importWhenOnline(() => import("./pending-edits"))
                 );
                 await deletePendingEdits(artifact.id);
               } catch (deleteError) {
@@ -878,6 +895,9 @@ export function ProofDocument({
             setAdmission((previous) =>
               previous?.kind === block.kind && previous.message === block.message ? previous : block
             );
+            // The document does not draw while it waits, so the shell's wait for it ends
+            // (`features/shell/content-drawn.ts`), as it does for any other blocked admission.
+            contentDrawn();
             const delay = SCHEMA_REFUSAL_DELAYS_MS[newerReads] ?? NEWER_CONTENT_RELOAD_MS;
             newerReads += 1;
             refusalTimer = window.setTimeout(admit, delay);
@@ -886,6 +906,7 @@ export function ProofDocument({
           if (block !== undefined) {
             setConnection("failed");
             setAdmission(block);
+            contentDrawn();
             readmitRef.current = () => {
               readmitRef.current = undefined;
               refusals = 0;
@@ -923,9 +944,20 @@ export function ProofDocument({
               setConnection("connecting");
               refusalTimer = window.setTimeout(admit, delay);
             },
+            // `onStatus("offline")` below fires only for a socket that had connected: a first
+            // handshake that fails reaches the page as a close alone, and a document whose room
+            // is unreachable would otherwise hold the margin and the rest for `HOLD_LIMIT_MS`
+            // (`features/shell/content-drawn.ts`).
+            onClose: () => {
+              if (!failed) contentDrawn();
+            },
             onStatus: (status) => {
               if (!failed) {
                 setConnection(status);
+                // A document that cannot reach Dispatch does not draw until it can, which may be
+                // never, so the shell's wait for it ends here, not at its limit
+                // (`features/shell/content-drawn.ts`).
+                if (status === "offline") contentDrawn();
               }
             },
             onPending: (state) => {
@@ -1028,6 +1060,10 @@ export function ProofDocument({
                   setEditorHandle(handle);
                   onEditorHandleRef.current?.(handle);
                   disposeEditorBindings = bindEditor(handle, connection);
+                  // The editor is built on a synced document, so its blocks are in the page now:
+                  // the shell's code that draws no part of them may come down
+                  // (`features/shell/content-drawn.ts`).
+                  contentDrawn();
                 })
                 .catch(reportLoadFailure);
             },
@@ -1041,6 +1077,8 @@ export function ProofDocument({
 
     return () => {
       mounted = false;
+      // A document that leaves the page before it drew is no longer what the reader waits for.
+      contentDrawn();
       window.clearTimeout(refusalTimer);
       readmitRef.current = undefined;
       teardown();
@@ -1284,7 +1322,7 @@ export function ProofDocument({
         {askBlockHosts.map((host) => {
           const blockId = String(host.node.attrs.blockId);
           return (
-            <AskBlockCard
+            <AskBlockCardHost
               ask={blockAsks.find((candidate) => candidate.block_id === blockId)}
               host={host}
               inBody={false}

@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 
+import { abortOnReaderAct, claimUnacted } from "../../lib/reader-acts";
 import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
 import { freeze } from "./page-structure";
 import { firstUsable, firstUsableIn } from "./usable-control";
@@ -72,8 +73,13 @@ export function useOpenDetailsAt(): (row: DetailsRow, press?: boolean) => void {
           .querySelector<HTMLElement>(`aside[${DETAILS_ATTRIBUTE}]`)
           ?.dispatchEvent(new CustomEvent<DetailsRow>(DETAILS_ROW_REQUEST_EVENT, { detail: row }));
       }
+      // A reader who acts before the two frames below have run (`READER_ACTS`) - a key, or a
+      // press in another field and words typed there - has put the focus where they want it, so
+      // the frames do nothing then.
+      const acted = abortOnReaderAct();
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
+          if (!claimUnacted(acted)) return;
           const found = document.querySelector<HTMLElement>(
             `${drawer === undefined ? "" : `aside[${DETAILS_ATTRIBUTE}] `}[${DETAILS_ROW_ATTRIBUTE}="${row}"]`
           );

@@ -19,9 +19,13 @@ import { useLocation } from "react-router-dom";
 
 import { issueQuery, whoAmIQuery } from "../../api/queries";
 import { useProjectArtifact } from "../document/useProjectArtifact";
-import { buildIssuePath, buildProjectPath, parseIssuePath } from "../refs/routes";
+import {
+  buildIssuePath,
+  buildProjectPath,
+  documentRouteOf,
+  parseIssuePath,
+} from "../refs/page-routes";
 import { userPreferenceStorageKey } from "../shell/userPreference";
-import { documentRouteOf } from "./bar-scope";
 
 /** How many recent items the browser keeps, which is also how many the bar lists: enough to hold
  *  a morning's work, short enough that the list a person opens is still one glance. */

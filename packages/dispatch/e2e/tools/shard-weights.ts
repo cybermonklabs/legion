@@ -20,13 +20,14 @@
  * table has no entry for is placed by. Seconds are rounded to the hundredth.
  *
  * When to run it: each sharded leg prints how many of its rows were placed by their project's
- * median because their file has no entry here (`e2e/shard-reporter.ts`). Read on 2026-11-22, a
- * table four days old placed that day's full lane at 1.11 times the mean on its heaviest leg and
- * one seven days old at 1.02, against 1.00 for a fresh one and 1.21 for Playwright's count split:
- * neither had the issue page's new files, and where the placement put those was close to chance.
- * The browser step's guard holds up to that 1.11, so each leg warns when the table is more than 7
- * days old or a tenth of its rows are estimated (`tableWarnings`, e2e/shard-split.ts): read it
- * again then.
+ * median because their file has no entry here (`e2e/shard-reporter.ts`). Read on 2026-11-22 over
+ * main's four legs, a table four days old placed that day's full lane at 1.11 times the mean on
+ * its heaviest leg and one seven days old at 1.02, against 1.00 for a fresh one and 1.21 for
+ * Playwright's count split: neither had the issue page's new files, and where the placement put
+ * those was close to chance. The browser step's guard holds up to that 1.11, which has not been
+ * read for the shard job's two legs and is kept for them as it was read for four, so each leg
+ * warns when the table is more than 7 days old or a tenth of its rows are estimated
+ * (`tableWarnings`, e2e/shard-split.ts): read it again then.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";

@@ -1,13 +1,8 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { usePageWords, useTooltips } from "../../components/tooltips";
-import {
-  badgePrimary,
-  borderStrong,
-  borderTransparent,
-  textMutedOnCanvas,
-  textSecondaryOnCanvas,
-} from "../../theme/classes";
+import { badgePrimary, textMutedOnCanvas } from "../../theme/classes";
+import { borderStrong, borderTransparent, textSecondaryOnCanvas } from "../../theme/shell-classes";
 import { orderLabel, priorityName } from "./priorities-model";
 import { priorityPath } from "./priority-routes";
 

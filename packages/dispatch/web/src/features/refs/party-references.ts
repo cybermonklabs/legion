@@ -1,23 +1,19 @@
-import { trimReference } from "@legion/contracts";
+import { trimReference } from "@legion/contracts/reference-spans";
 
+import type { OutgoingDraft, SentDraft } from "../conversation/send-request";
 import { codeRanges } from "./code-ranges";
-import { partyLink } from "./ref-picker";
-import {
-  buildDispatchReference,
-  type DispatchReferenceRoute,
-  deliveryAddressOf,
-  type PartyRoute,
-  partyOfAddress,
-} from "./routes";
+import { deliveryAddressOf } from "./party-mention";
+import type { DispatchReferenceRoute, PartyRoute } from "./routes";
 import { readTextReferences, type TextReference } from "./text-references";
 
 /**
- * Who a draft addresses, read out of its own words. A mention is a reference:
- * the party is written into the text as a link whose words are the mention sign and its name and
- * whose address names it, and nothing at all is kept beside the text. So every surface that asks
- * who a draft names - the delivery chips under a box, the composer's delivery notices, whether a
- * typed `/btw` is a command, and the request Send makes - asks here, and this asks the one reader
- * of what a text cites (`readTextReferences`), the twin of the server's own. What the writer is
+ * Who a draft addresses, read out of its own words. A mention is a reference: the party is
+ * written into the text as a link whose words are the mention sign and its name and whose
+ * address names it, and nothing that names a party is kept beside the text. So every surface that
+ * asks who a draft names - the delivery chips under a box, the composer's delivery notices,
+ * whether a typed `/btw` is a command, and the one answer a send keeps beside its text, which
+ * the request Send makes reads (`outgoingDraft`) - asks here, and this asks the one reader of
+ * what a text cites (`readTextReferences`), the twin of the server's own. What the writer is
  * told and what the server will read can therefore never be two readings of the same draft. The
  * server reads the address alone, never a link's words, so the words decide only what a reader
  * sees (`@legion/contracts`'s `referenceReading`).
@@ -36,16 +32,18 @@ export function isPartyRoute(route: DispatchReferenceRoute): route is PartyRoute
   return route.kind === "agent-session" || route.kind === "role" || route.kind === "person";
 }
 
-/** The mention of the party at `target`, written as the link that names it: the mention sign
- *  and `title` for the words, or the sign and the address itself where the party has no name
- *  that fits on one line. Undefined for an address that names no party, which is then mentioned
- *  by nothing. */
-export function partyMention(target: string, title: string): string | undefined {
-  const route = partyOfAddress(target);
-  if (route === undefined) return undefined;
-  const named = title.trim();
-  const words = named === "" || /[\r\n]/.test(named) ? target : named;
-  return partyLink(words, buildDispatchReference(route));
+/** `draft` as the held-send store holds it to send (`OutgoingDraft`): with whether its text
+ *  names a party (`draftParties`), read here once, as the composer hands the draft over - at the
+ *  press, and as it keeps what the reader wrote over a refusal - and by the kinds chunk for a
+ *  send an older build kept (`kinds.ts`). A caller that has read that text's parties already
+ *  hands their answer in (`named`), so the text is not parsed twice. The send reads that answer,
+ *  so the entry chunk, which makes a kept send's attempt and a Retry's, holds none of the
+ *  grammar. */
+export function outgoingDraft(
+  { body, replacement }: SentDraft,
+  named = draftParties(body).named
+): OutgoingDraft {
+  return { body, namesParty: named, replacement };
 }
 
 /** What a draft's text says about who it addresses. */

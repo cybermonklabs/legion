@@ -1,4 +1,3 @@
-import { isViewer } from "./event-refresh";
 import type { ReadHold } from "./query-client";
 import type { DispatchEvent } from "./types";
 
@@ -13,6 +12,22 @@ import type { DispatchEvent } from "./types";
  * one hold alone (`hearLiveEvent`).
  */
 type WriteEvent = NonNullable<ReadHold["endsOn"]>;
+
+/**
+ * Whether `login` is the signed-in viewer's, compared as the server compares logins. The event
+ * map (`event-refresh.ts`) reads it too, and takes it from here rather than this module from
+ * there: the map is a chunk of its own that the feed downloads once the page has drawn
+ * (`event-refresh-load.ts`), and this module is in the entry chunk every page parses first - the
+ * agent pins the shell draws (`features/agents/pins.ts`) and the Inbox's writes import it - so
+ * one import of the map from here would put the whole map back in that entry.
+ */
+export function isViewer(login: string | undefined, viewer: string | undefined): boolean {
+  return (
+    login !== undefined &&
+    viewer !== undefined &&
+    login.trim().toLowerCase() === viewer.trim().toLowerCase()
+  );
+}
 
 /** An agent's pin (`PUT /api/v1/me/agents/{session}/state`): that session's state, the viewer's.
  *  The event names the session, so a pin of another session leaves the hold; a read mark of the

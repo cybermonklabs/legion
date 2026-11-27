@@ -12,6 +12,7 @@ import { expect } from "@playwright/test";
 import { listMyReplies } from "./api";
 import { inboxPane } from "./inbox-pane";
 import { holdReadMarks, replyRowId } from "./inbox-threads";
+import { pressOnceTheShellListens } from "./keyboard";
 import { stubbed } from "./stub/stub-test";
 import {
   collapsedParts,
@@ -125,8 +126,7 @@ test("the Inbox's pane, its reading view and the drawer's card read a thread in 
     await verticalOrder(collapsedParts(body, 4, body.getByRole("textbox", { name: "Reply" })))
   ).toEqual(["root", "box", "reply-6", "reply-5", "fold"]);
   await page.goto("/agents");
-  await page.locator("body").focus();
-  await page.keyboard.press("i");
+  await pressOnceTheShellListens(page, "i");
   const card = page
     .getByRole("dialog", { name: "Inbox" })
     .locator(`[data-inbox-row="${id}"] [data-inbox-thread-body]`);

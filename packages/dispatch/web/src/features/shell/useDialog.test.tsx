@@ -2,10 +2,12 @@ import { expect, spyOn, test } from "bun:test";
 import { act, render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
+import { COMPOSITION_MARKS } from "../../__tests__/composition-marks";
 import { KeymapProvider } from "./KeymapProvider";
-import { useDialog } from "./useDialog";
+import { useKeymap } from "./keymap";
+import { escapeClosesDrawer, useDialog } from "./useDialog";
 
 function Dialog({
   label,
@@ -39,6 +41,11 @@ test("Escape pressed outside an open dialog still closes it", async () => {
     </KeymapProvider>
   );
   try {
+    // The dialog takes the focus in the commit that opens it, and user-event sends its key to
+    // whatever holds the focus, so the focus the dialog took is given up here: the key has to
+    // reach the dialog from outside it, as one does after a press on the dialog's own text has
+    // given the focus to the page.
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
     await user.keyboard("{Escape}");
     expect(closed).toBe(1);
   } finally {
@@ -86,6 +93,137 @@ test("Escape closes the most recently opened of two sibling (non-nested) open di
   }
 });
 
+/** The issue header's Approve, with Request changes over it that Shift+R opens, its focus to start
+ *  on the reason field below its Cancel. */
+function ApproveOrRequestChanges({ onApprove }: { onApprove: () => void }): ReactNode {
+  const [open, setOpen] = useState(false);
+  const reason = useRef<HTMLTextAreaElement>(null);
+  useKeymap("global", [
+    { id: "request-changes", keys: "Shift+R", label: "Request changes", run: () => setOpen(true) },
+  ]);
+  const dialog = useDialog<HTMLDivElement>({
+    initialFocusRef: reason,
+    onClose: () => setOpen(false),
+    open,
+  });
+  return (
+    <>
+      <button onClick={onApprove} type="button">
+        Approve
+      </button>
+      {open ? (
+        <div aria-label="Request changes" ref={dialog.containerRef} role="dialog">
+          <button type="button">Cancel</button>
+          <textarea aria-label="What should change" ref={reason} />
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+// The dialog takes the focus in the commit that opens it, so the keys typed straight after the
+// press that opened it are its own. A key that still reached the opener pressed it: in CI a space
+// typed into Request changes, 32 ms after Shift+R on Approve had opened it, pressed Approve and
+// approved the request instead.
+test("keys typed straight after a dialog opens land in its initial focus and none in its opener", async () => {
+  // No wait between two keys, so Shift+R and the keys after it run in one task; and no frame
+  // runs, so nothing a frame would do has happened by the time they are typed.
+  const user = userEvent.setup({ delay: null });
+  const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+  let approvals = 0;
+  const view = render(
+    <KeymapProvider>
+      <ApproveOrRequestChanges onApprove={() => (approvals += 1)} />
+    </KeymapProvider>
+  );
+  try {
+    const approve = view.getByRole("button", { name: "Approve" });
+    act(() => approve.focus());
+    await user.keyboard("{Shift>}R{/Shift}One change.");
+
+    expect(approvals, "a key typed after Shift+R pressed Approve").toBe(0);
+    const reason = view.getByRole("textbox", { name: "What should change" });
+    expect(document.activeElement, "the focus did not start on the reason").toBe(reason);
+    expect(reason).toHaveValue("One change.");
+
+    // What held the focus before the dialog took it is where closing gives it back.
+    await user.keyboard("{Escape}");
+    expect(view.queryByRole("dialog", { name: "Request changes" })).toBeNull();
+    expect(document.activeElement, "closing left the focus off Approve").toBe(approve);
+  } finally {
+    frames.mockRestore();
+    view.unmount();
+  }
+});
+
+/** A field that focuses itself in a passive effect as it mounts, as the margin sheet's composer
+ *  does once the sheet is open (`MentionComposer`'s `autoFocus`). */
+function FocusesItselfInAnEffect(): ReactNode {
+  const field = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => field.current?.focus(), []);
+  return <textarea aria-label="Comment" ref={field} />;
+}
+
+/** A sheet a press on Open opens, whose Comment field focuses itself: by its own passive effect,
+ *  or by `autoFocus`, which React carries out in the commit before any layout effect of the
+ *  sheet's. Its Close comes first, where the sheet's own initial focus would go. */
+function SheetAroundAField({ field }: { field: "autoFocus" | "effect" }): ReactNode {
+  const [open, setOpen] = useState(false);
+  const dialog = useDialog<HTMLDivElement>({ onClose: () => setOpen(false), open });
+  return (
+    <>
+      <button onClick={() => setOpen(true)} type="button">
+        Open
+      </button>
+      {open ? (
+        <div aria-label="Sheet" ref={dialog.containerRef} role="dialog">
+          <button type="button">Close</button>
+          {field === "effect" ? (
+            <FocusesItselfInAnEffect />
+          ) : (
+            // biome-ignore lint/a11y/noAutofocus: a field that takes the focus as it is drawn is the case under test
+            <textarea aria-label="Comment" autoFocus />
+          )}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+// A field inside the dialog that focuses itself as the dialog opens keeps that focus: one that
+// did so first is left alone, and one that does so after the dialog has moved the focus moves it
+// last. Either way, closing gives the focus back to the control the dialog was opened from, as
+// WAI-ARIA's dialog pattern has it, and not to the page's body. So it does after the `autoFocus`
+// field, which takes the focus in the commit that opens the dialog, before any layout effect of
+// the dialog's, and which the dialog's close unmounts.
+test("a field that focuses itself as its dialog opens keeps the focus, and closing gives it back to the opener", async () => {
+  for (const field of ["autoFocus", "effect"] as const) {
+    const user = userEvent.setup();
+    const view = render(
+      <KeymapProvider>
+        <SheetAroundAField field={field} />
+      </KeymapProvider>
+    );
+    try {
+      const opener = view.getByRole("button", { name: "Open" });
+      await user.click(opener);
+      expect(document.activeElement, `the ${field} field lost the focus`).toBe(
+        view.getByRole("textbox", { name: "Comment" })
+      );
+      await user.keyboard("{Escape}");
+      expect(
+        view.queryByRole("dialog", { name: "Sheet" }),
+        `the ${field} sheet stayed open`
+      ).toBeNull();
+      expect(document.activeElement, `closing the ${field} sheet left the focus off Open`).toBe(
+        opener
+      );
+    } finally {
+      view.unmount();
+    }
+  }
+});
+
 /** A control that opens a dialog over itself, as Approve's Shift+R opens Request changes over
  *  Approve, and counts its own presses. */
 function ControlUnderADialog({ onPress }: { onPress: () => void }) {
@@ -109,9 +247,10 @@ function ControlUnderADialog({ onPress }: { onPress: () => void }) {
   );
 }
 
-// The dialog's field takes the focus a frame after the dialog opens, and a loaded machine draws
-// that frame late. A key typed before it reaches nothing behind the dialog: the dialog holds the
-// focus itself from the commit that opens it. The frame is held here, so the field never takes it.
+// A dialog that names no control gives the focus to its first control a frame after it opens, and
+// a loaded machine draws that frame late. A key typed before it reaches nothing behind the dialog:
+// the dialog holds the focus itself from the commit that opens it. The frame is held here, so the
+// first control never takes it.
 test("a key typed in a dialog's first frame presses nothing behind the dialog", async () => {
   const user = userEvent.setup();
   let pressed = 0;
@@ -216,6 +355,65 @@ test("the frame after it opens, a dialog gives the focus to its first control an
     await user.click(view.getByText("Words of the dialog"));
     expect(document.activeElement, "a press on the dialog's text focused the dialog").toBe(
       document.body
+    );
+  } finally {
+    frames.restore();
+    view.unmount();
+  }
+});
+
+/** A control that opens a dialog naming its Confirm button as the control it opens on
+ *  (`initialFocusRef`), as `ConfirmDialog` does, and counts the presses of that Confirm. */
+function ConfirmOverAControl({ onConfirm }: { onConfirm: () => void }): ReactNode {
+  const [open, setOpen] = useState(false);
+  const confirm = useRef<HTMLButtonElement>(null);
+  const dialog = useDialog<HTMLDivElement>({
+    initialFocusRef: confirm,
+    onClose: () => setOpen(false),
+    open,
+  });
+  return (
+    <>
+      <button onClick={() => setOpen(true)} type="button">
+        Delete
+      </button>
+      {open ? (
+        <div aria-label="Delete it?" ref={dialog.containerRef} role="dialog">
+          <button type="button">Cancel</button>
+          <button onClick={onConfirm} ref={confirm} type="button">
+            Confirm
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+// A named button is no field to type into: an Enter or a Space typed in the dialog's first frame,
+// before the reader has seen what the dialog asks, would press it, and a Confirm would confirm.
+// So a dialog that names one holds the focus itself as it opens, as one that names nothing does,
+// and gives the focus to the button a frame later. A loaded machine draws that frame late, so the
+// row holds it while it types.
+test("an Enter or a Space typed in the first frame of a dialog that names its Confirm presses nothing, and the frame gives Confirm the focus", async () => {
+  const user = userEvent.setup();
+  let confirmed = 0;
+  const view = render(
+    <KeymapProvider>
+      <ConfirmOverAControl onConfirm={() => (confirmed += 1)} />
+    </KeymapProvider>
+  );
+  const frames = holdFrames();
+  try {
+    await user.click(view.getByRole("button", { name: "Delete" }));
+    const dialog = view.getByRole("dialog", { name: "Delete it?" });
+    await user.keyboard("{Enter} ");
+    expect(confirmed, "a key typed in the dialog's first frame pressed its Confirm").toBe(0);
+    expect(document.activeElement, "the dialog gave its Confirm the focus as it opened").toBe(
+      dialog
+    );
+    frames.run();
+    expect(document.activeElement, "the frame gave the dialog's Confirm no focus").toBe(
+      view.getByRole("button", { name: "Confirm" })
     );
   } finally {
     frames.restore();
@@ -650,3 +848,30 @@ test("a dialog opened inside another in one commit gives the focus back into the
     view.unmount();
   }
 });
+// An Escape that ends an input method's composition does not close Details: Chromium marks that
+// key `isComposing`, and Safari sends it after compositionend with `isComposing` false and
+// keyCode 229 (WebKit bug 165004). A plain Escape on the page still closes Details.
+test.each(COMPOSITION_MARKS)(
+  "escapeClosesDrawer ignores an Escape that ends a composition, marked by %s",
+  (_mark, marked) => {
+    const seen: boolean[] = [];
+    const onKeyDown = (event: KeyboardEvent) => {
+      seen.push(escapeClosesDrawer(event));
+    };
+    document.addEventListener("keydown", onKeyDown);
+    try {
+      document.body.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...marked, key: "Escape" })
+      );
+      document.body.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" })
+      );
+      expect(seen, "the composition Escape closed Details or the plain Escape did not").toEqual([
+        false,
+        true,
+      ]);
+    } finally {
+      document.removeEventListener("keydown", onKeyDown);
+    }
+  }
+);

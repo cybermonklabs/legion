@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { baseUrl, e2eAgentToken } from "./api";
+import { cliTranspilerCacheEnv } from "./cli-transpiler-cache";
 
 // The command is the one agents run - `packages/envoy-client/bin/dispatch.ts`, its own process -
 // so a row spawns that entry rather than calling the library behind it.
@@ -27,7 +28,10 @@ export interface CliRun {
  * pane exports one, so an inherited environment would send another Dispatch's token - or point the
  * command at another Dispatch entirely through its own `DISPATCH_URL` or `ENVOY_CONFIG_FILE`.
  * `HOME` and `DISPATCH_STATE_DIR` are the row's own temporary directory, so the command reads no
- * developer's `envoy.json` and writes its session state nowhere but there.
+ * developer's `envoy.json` and writes its session state nowhere but there. The one path outside
+ * it is Bun's transpiler cache, the run's own directory where `globalSetup` made one
+ * (`e2e/cli-transpiler-cache.ts`): it holds compiled modules and nothing the command reads as
+ * configuration or state, and each call is still a fresh `bun` process of its own.
  *
  * `options.token` is the bearer the command presents: the harness's shared agent token unless a
  * row hands it one of its own, which is how a row runs the command under a person's own personal
@@ -53,6 +57,7 @@ export function runDispatch(
       DISPATCH_SESSION_ID: cliSession,
       DISPATCH_URL: baseUrl,
       DISPATCH_TOKEN: token,
+      ...cliTranspilerCacheEnv(),
     },
   };
   const child =

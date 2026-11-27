@@ -1,4 +1,4 @@
-import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
+import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts/dispatch-api-constants";
 
 /**
  * The words a write says while it is out, late or stopped, in one module that imports nothing but

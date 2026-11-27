@@ -139,7 +139,7 @@ import type { IssueDetails } from "../../api/types";
 import type { ComposerKind } from "../conversation/composer-model";
 import type { SentRequest } from "../conversation/send-request";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import { marginComposeSendKey, marginReplySendKey, useMargin } from "./margin-context";
 import {
   DESKTOP_WIDTH,

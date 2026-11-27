@@ -1,4 +1,5 @@
-import { isIdPrefix, referenceSpans } from "@legion/contracts";
+import { isIdPrefix } from "@legion/contracts/dispatch-text-rules";
+import { referenceSpans } from "@legion/contracts/reference-spans";
 
 import { routeItem } from "./block-reference";
 import { codeRanges, isInCode } from "./code-ranges";

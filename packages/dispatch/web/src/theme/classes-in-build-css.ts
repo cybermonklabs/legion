@@ -3,20 +3,21 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import * as classes from "./classes";
+import * as shellClasses from "./shell-classes";
 
 /**
- * The exact regression this check exists to catch: a class string in `classes.ts` that
- * Tailwind's static content scanner cannot see (because it was assembled at runtime instead of
- * written as a literal) silently produces no CSS rule. `no-raw-colors.test.ts` rejects the
- * construction pattern that causes this; this script independently verifies the *outcome* —
- * every class token every `classes.ts` export can produce must have a matching rule in the real,
- * currently-built stylesheet.
+ * The exact regression this check exists to catch: a class string in `classes.ts` or
+ * `shell-classes.ts` that Tailwind's static content scanner cannot see (because it was
+ * assembled at runtime instead of written as a literal) silently produces no CSS rule.
+ * `no-raw-colors.test.ts` rejects the construction pattern that causes this; this script
+ * independently verifies the *outcome* — every class token every export of either module can
+ * produce must have a matching rule in the real, currently-built stylesheet.
  */
 const DIST_CSS_DIR = join(import.meta.dir, "..", "..", "dist", "assets");
 
 function collectClassTokens(): Set<string> {
   const tokens = new Set<string>();
-  for (const value of Object.values(classes)) {
+  for (const value of [...Object.values(classes), ...Object.values(shellClasses)]) {
     if (typeof value === "string") {
       for (const token of value.split(/\s+/)) {
         if (token.length > 0) {
@@ -36,10 +37,10 @@ function collectClassTokens(): Set<string> {
     }
   }
   // `inputClasses(recessed)` returns one of two literal strings chosen at runtime — both are
-  // static text in classes.ts (Tailwind's scanner sees both), but neither is reachable by
-  // iterating `classes`'s own exports, since the function itself is the export.
+  // static text in shell-classes.ts (Tailwind's scanner sees both), but neither is reachable by
+  // iterating the module's own exports, since the function itself is the export.
   for (const recessed of [true, false]) {
-    for (const token of classes.inputClasses(recessed).split(/\s+/)) {
+    for (const token of shellClasses.inputClasses(recessed).split(/\s+/)) {
       if (token.length > 0) {
         tokens.add(token);
       }
@@ -73,7 +74,10 @@ function main(): void {
   );
   const css = cssFiles.map((name) => readFileSync(join(DIST_CSS_DIR, name), "utf8")).join("\n");
   const tokens = [...collectClassTokens()].sort();
-  assert.ok(tokens.length > 50, "Expected classes.ts to expose more than 50 class tokens.");
+  assert.ok(
+    tokens.length > 50,
+    "Expected classes.ts and shell-classes.ts to expose more than 50 class tokens."
+  );
   for (const token of tokens) {
     assert.ok(
       css.includes(escapeClassName(token)),

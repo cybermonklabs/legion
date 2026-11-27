@@ -19,7 +19,9 @@ GATE = gate("docs", "docs", runs=[
     ("docs/site/**", f"{at_docs('Typecheck the docs site')}, screenshots (docs/site/media/shots.ts) and build (generate.ts + astro build) in docs/site"),
     ("packages/dispatch/**", f"{at_docs('Build the Dispatch dashboard the screenshots show')}; `docs/site/media/harness.ts#startHarness` boots packages/dispatch/e2e/harness-start.ts"),
     ("packages/proof-editor/src/**", "`packages/dispatch/web/vite.config.ts#@legion/proof-editor` aliases (build:web)"),
-    (CONTRACTS_SRC, '`packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-snippet"`, `packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-tools"`, `packages/dispatch/web/vite.config.ts#"@legion/contracts/http-status"` and `packages/dispatch/web/vite.config.ts#"@legion/contracts"` aliases; `docs/site/generators/dispatch-tools.ts#dispatchToolSpecs`'),
+    (CONTRACTS_SRC, "`packages/dispatch/web/vite.config.ts#alias`, whose @legion/contracts entries, one for each subpath "
+                    "the dashboard reads and one for the package, resolve into it (build:web); "
+                    "`docs/site/generators/dispatch-tools.ts#dispatchToolSpecs`"),
     # This gate is the one reader of envoy-client's sources that does not compile
     # cipher-client with them: every generator entry resolves to src/dispatch-command.ts,
     # whose program holds no cipher-client source (`bunx tsc --listFilesOnly`, 0 of 7), so
