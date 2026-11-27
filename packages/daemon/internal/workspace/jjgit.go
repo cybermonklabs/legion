@@ -62,7 +62,7 @@ func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Durati
 	// remove the lock files it holds, then SIGKILL to the group, and procgroup.WaitDelay as the
 	// bound on the wait for a child that still holds the pipes once the command itself has gone
 	// (procgroup.Configure, which also answers whether that stop is what ended the command).
-	killed := procgroup.Configure(cmd)
+	killed := procgroup.KilledByContext(cmd)
 	// A start that failed leaves cmd.Process nil (procgroup.Run), so a budget already spent before
 	// the start still reads as a timeout below.
 	err := procgroup.Run(cmd, start)
