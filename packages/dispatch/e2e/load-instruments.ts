@@ -711,8 +711,9 @@ export type ActInput =
   | { readonly key: string; readonly kind: "key" };
 
 /** What shows a step was done. `view`: the control `current` finds reads as current and the
- *  document holds a row of a view that was not in it at the event, and the view's place shows it
- *  loads where `busy` is in the document. `expanded`: the row the step pressed the fold control of
+ *  document holds a new row outside the busy part of the view. A fallback row drawn while
+ *  the tree still reads busy does not finish the press. `busy` finds the loading place.
+ *  `expanded`: the row the step pressed the fold control of
  *  reads `aria-expanded` as `value`. `ring`: the focus is on the visible row after (1) or before
  *  (-1) the one it was on at the event, in the viewport under the header. `more`: the document
  *  holds a row of a view that was not in it at the event, one a paging control drew. `focus`: the
@@ -1199,7 +1200,9 @@ export function instrumentPage(config: PageConfig): void {
       case "view":
         return (
           control(result.current) !== null &&
-          [...document.querySelectorAll(config.viewRows)].some((row) => !on.before.has(row))
+          [...document.querySelectorAll(config.viewRows)].some(
+            (row) => !on.before.has(row) && row.closest('[aria-busy="true"]') === null
+          )
         );
       case "expanded": {
         const row = on.row === null ? null : resolve(on.row);
@@ -1384,7 +1387,7 @@ export function instrumentPage(config: PageConfig): void {
     reveal: (step) => {
       if (step.input.kind !== "press") return true;
       const aim = step.input.target;
-      if (aim.kind === "folded" || (aim.kind === "fold" && aim.within === "viewport")) return true;
+      if (aim.kind === "folded") return true;
       if (aim.kind === "row") {
         const row = aimedRow(aim, armed?.before);
         if (row === null) return false;
@@ -1392,7 +1395,16 @@ export function instrumentPage(config: PageConfig): void {
         row.scrollIntoView({ behavior: "instant", block: "center", inline: "nearest" });
         return false;
       }
-      const found = aim.kind === "control" ? control(aim) : (target(aim, foot())?.control ?? null);
+      const top = foot();
+      // During a desktop load we arm the first fold in the viewport without scrolling.
+      // After the load, `makeSteps` asks to reveal it: if the first screen holds no branch,
+      // scroll to the first foldable row before arming the very same viewport press.
+      const found =
+        aim.kind === "control"
+          ? control(aim)
+          : (target(aim, top)?.control ??
+            target({ ...aim, within: "document" }, top)?.control ??
+            null);
       if (found === null) return false;
       const box = found.getBoundingClientRect();
       const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);

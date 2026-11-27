@@ -66,12 +66,14 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { Browser, Page } from "@playwright/test";
 
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import type { Preset } from "../web/src/features/issue-page/page-words";
 import { listIssueAsks } from "./api";
+import { BLOCK_EDITOR_READY_MARK, blockEditorMeasures, waitForMark } from "./block-editor";
 import {
   AFTER_LOAD_ENTERS,
   actAddress,
@@ -94,6 +96,7 @@ import {
 } from "./issue-page-load";
 import { withIssuePage } from "./issue-page-option";
 import { owedUnless } from "./issue-page-t-tree";
+import { typefaceAddress } from "./issue-page-typeface";
 import {
   type ActReading,
   actReading,
@@ -970,6 +973,12 @@ function printAct(label: string, width: number, run: number, made: ProfiledAct):
     );
   }
   printLongest(`act-${label}`, width, run, made.load, longestIn(record, from, to));
+  if (label.startsWith("during-")) {
+    const peak = longestTask(record);
+    if (peak !== null && peak.duration > 200) {
+      printLongest(`load-${label}`, width, run, made.load, peak);
+    }
+  }
 }
 
 // SLOW(>=2s): two cold loads for each act of the width, each act made at its first moment and the
@@ -1216,11 +1225,19 @@ async function shiftLoad(
   rate: number,
   label: string,
   run: number,
-  address: string
+  address: string,
+  heldTypeface?: string
 ): Promise<void> {
   const load = await openLoad(browser, rate, address, "all");
   try {
     await load.page.addInitScript(shiftProbe);
+    if (heldTypeface !== undefined) {
+      await load.page.route(heldTypeface, async (route) => {
+        const answer = await route.fetch();
+        await delay(3_000);
+        await route.fulfill({ response: answer });
+      });
+    }
     await load.goto();
     const end = await waitForLoadEnd(load.page, load.requests);
     const record = await recordOf(load.page);
@@ -1257,10 +1274,12 @@ test("the layout shifts of the named rows' loads", async ({ browser, loadSeeds }
   const conversation = presetPath(seeded.key, "conversation");
   const finder = await openLoad(browser, rate, conversation, "none");
   let lastRow: string;
+  let font: string | undefined;
   try {
     await finder.goto();
     await waitForLoadEnd(finder.page, finder.requests);
     lastRow = namedRow(seeded.key, await outlineRows(finder.page)).address;
+    font = await typefaceAddress(finder.page);
   } finally {
     await finder.context.close();
   }
@@ -1270,13 +1289,58 @@ test("the layout shifts of the named rows' loads", async ({ browser, loadSeeds }
     ...(question === null ? [] : [["question", question.address] as const]),
     ["spec", presetPath(seeded.key, "spec")],
     ["conversation", conversation],
+    ["typeface-held", conversation],
   ];
   const only = process.env.ISSUE_PAGE_SHIFT_LOADS;
   for (const [label, address] of addresses) {
     if (only !== undefined && !new RegExp(only).test(label)) continue;
     console.log(`SHIFT ${label} address=${address}`);
     for (let run = 1; run <= ACT_RUNS; run += 1) {
-      await shiftLoad(browser, rate, label, run, address);
+      await shiftLoad(
+        browser,
+        rate,
+        label,
+        run,
+        address,
+        label === "typeface-held" ? font : undefined
+      );
+    }
+  }
+});
+
+// SLOW(>=2s): cold loads followed through the block editor's ready mark.
+test("the longest task between load end and block editor readiness", async ({
+  browser,
+  loadSeeds,
+}, testInfo) => {
+  test.skip(process.env.ISSUE_PAGE_LOAD_LONGEST !== "1");
+  refuseASharedRun();
+  test.setTimeout(PROBE_MS);
+  const width = loadWidth(testInfo);
+  const rate = loadCpuRate(testInfo.project.name);
+  const seeded = await loadSeeds.shape();
+  const address = presetPath(seeded.key, "conversation");
+  for (let run = 1; run <= RUNS; run += 1) {
+    const load = await openLoad(browser, rate, address, "all");
+    try {
+      await load.cdp.send("Profiler.start");
+      await load.goto();
+      const end = await waitForLoadEnd(load.page, load.requests);
+      const ready = await waitForMark(load.page, BLOCK_EDITOR_READY_MARK);
+      const measures = await blockEditorMeasures(load.page, end, ready);
+      const anchoredAt = await anchor(load.page);
+      const { profile } = await load.cdp.send("Profiler.stop");
+      const record = await recordOf(load.page);
+      console.log(`READY ${width} ${run} end=${end} ready=${ready} ${JSON.stringify(measures)}`);
+      printLongest(
+        "editor-ready",
+        width,
+        run,
+        { anchoredAt, profile, record },
+        longestIn(record, end, ready)
+      );
+    } finally {
+      await load.context.close();
     }
   }
 });

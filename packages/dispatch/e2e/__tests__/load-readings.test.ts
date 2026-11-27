@@ -1006,6 +1006,87 @@ test("at 390 px a fold acts on the first row in the document that holds children
   });
 });
 
+test("a fold after the load scrolls to the first foldable row if none is in the viewport", async () => {
+  const fold = LOAD_ACTS[1440].find((act) => act.kind === "fold");
+  const aim = fold?.steps[0]?.input;
+  if (fold === undefined || aim?.kind !== "press" || aim.target.kind !== "fold") {
+    throw new Error("the acts at 1440 px hold no fold of a row");
+  }
+  let top = 1_200;
+  let scrolls = 0;
+  const attributes = { "aria-expanded": "true", "data-node-id": "spec#b-r1" };
+  const bullet = standInElement("Fold", () => boxAt(14, top, 16, 16), {
+    around: () => row,
+    onScroll: () => {
+      scrolls += 1;
+      top = 450;
+    },
+  });
+  const row: StandInElement = standInElement("branch", () => boxAt(0, top, 900, 96), {
+    attributes,
+    inside: () => [bullet],
+  });
+  const browser = standInBrowser({
+    drawn: () => [bullet, row],
+    height: 900,
+    press: (hit) => {
+      if (hit === bullet) attributes["aria-expanded"] = "false";
+    },
+    selected: { [aim.target.row]: () => [row], [VIEW_ROW_SELECTOR]: () => [row] },
+  });
+  await withStandIns(browser.globals, async (instruments) => {
+    const made = await makeSteps(browser.page, 0, fold.steps, "now");
+    expect(scrolls).toBe(1);
+    expect(browser.pressed).toEqual(["Fold"]);
+    expect(actReading(instruments.record(), made.last).shown).not.toBeNull();
+  });
+});
+
+test("a view's preliminary rows while its tree still reads busy are not the press result", async () => {
+  const step = LOAD_ACTS[1440].find((act) => act.view === "spec")?.steps[0];
+  if (
+    step?.input.kind !== "press" ||
+    step.input.target.kind !== "control" ||
+    step.result.kind !== "view"
+  ) {
+    throw new Error("the acts at 1440 px hold no press on Spec");
+  }
+  let pressed = false;
+  let busy = true;
+  const label = standInElement("Spec", () => boxAt(0, 0, 0, 0), { words: "Spec" });
+  const spec = standInElement("Spec", () => boxAt(120, 100, 60, 32), {
+    find: () => label,
+    tag: "BUTTON",
+  });
+  const tree = standInElement("Spec tree", () => boxAt(100, 200, 900, 100));
+  const statement = standInElement("A statement", () => boxAt(100, 200, 900, 96), {
+    around: (selector) => (busy && selector === '[aria-busy="true"]' ? tree : null),
+  });
+  const browser = standInBrowser({
+    drawn: () => [spec, ...(pressed ? [statement] : [])],
+    height: 900,
+    press: (hit) => {
+      if (hit === spec) pressed = true;
+    },
+    selected: {
+      [step.input.target.selector]: () => [spec],
+      [step.result.current.selector]: () => (pressed ? [spec] : []),
+      [step.result.busy]: () => (pressed && busy ? [tree] : []),
+      [VIEW_ROW_SELECTOR]: () => (pressed ? [statement] : []),
+    },
+  });
+  await withStandIns(browser.globals, async (instruments) => {
+    await armStep(browser.page, 0, step, "now");
+    await makeInput(browser.page, step);
+    await browser.page.waitForFunction(() => true);
+    expect(instruments.record().acts[0]?.loading).not.toBeNull();
+    expect(instruments.record().acts[0]?.result).toBeNull();
+    busy = false;
+    await browser.page.waitForFunction(() => true);
+    expect(instruments.record().acts[0]?.result).not.toBeNull();
+  });
+});
+
 test("Row 2 names the last row Conversation draws by its own address, a child issue's at ?node= of its key, and else the last row before it that an address names", () => {
   const rows = [
     { id: "LAY-10", type: "child_issue" },

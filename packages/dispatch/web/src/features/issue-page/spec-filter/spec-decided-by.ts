@@ -355,19 +355,26 @@ function nodesById(
     for (const ask of heldAsks) {
       if (ask.kind !== "question" || nodes.has(ask.id)) continue;
       nodes.set(ask.id, {
+        alsoUnder: [],
         ...(ask.answer === null ? {} : { answer: answerOf(ask.answer) }),
         at: ask.created_at,
         author: ask.author,
         children: [],
         chips: [],
+        facts: [],
         gaps: [],
+        held: 0,
         id: ask.id,
+        question: ask.state === "open",
         ...(issueKey === undefined
           ? {}
           : { reference: buildDispatchReference({ id: ask.id, key: issueKey, kind: "ask" }) }),
+        replaced: false,
         text: ask.question,
         ...(ask.question_tree === undefined ? {} : { tree: ask.question_tree }),
+        transcluded: false,
         type: "ask",
+        waiting: false,
       });
     }
   }

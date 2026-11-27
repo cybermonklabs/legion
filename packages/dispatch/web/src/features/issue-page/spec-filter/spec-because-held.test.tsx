@@ -47,13 +47,22 @@ afterEach(() => {
   cleanup();
 });
 
-const NO_THREAD = {
-  answers: [],
-  replies: [],
-} as const;
-
 function asThreadRow(id: string, text: string): IssueAskThreadRow {
-  return { ...askRead(id, text), ...NO_THREAD };
+  return {
+    ...askRead(id, text),
+    last_reply: null,
+    thread: {
+      answers: [],
+      claimant: null,
+      edits: [],
+      followers: [],
+      replies: [],
+      route: null,
+      route_holder: null,
+      route_status: null,
+      route_status_reason: null,
+    },
+  };
 }
 
 function WatchReads({
@@ -88,9 +97,10 @@ function renderSpec({
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
+  const results = { checks: [], issue: KEY, verification_artifact_id: "" };
   const spies = [
     spyOn(api, "getIssueCoverage").mockResolvedValue(coverageRead(["r1", "r2"])),
-    spyOn(api, "getIssueResults").mockResolvedValue({ checks: [], issue: KEY }),
+    spyOn(api, "getIssueResults").mockResolvedValue(results),
     spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead(decisions)),
     spyOn(api, "listIssueAskThreads").mockImplementation(() =>
       asks === undefined ? new Promise<never>(() => {}) : Promise.resolve([...asks])
@@ -99,9 +109,9 @@ function renderSpec({
       outlineFetching ? new Promise<TreeAnswer>(() => {}) : Promise.resolve(treeAnswer([]))
     ),
   ];
-  client.setQueryData(whoAmIQuery().queryKey, { email: `${READER}@example.com`, login: READER });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: READER });
   client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead(["r1", "r2"]));
-  client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [], issue: KEY });
+  client.setQueryData(issueResultsQuery(KEY).queryKey, results);
   if (outlineFetching) void client.prefetchQuery(outlineQuery(KEY, "conversation"));
   client.setQueryData(issueDecisionsQuery(KEY, true).queryKey, decisionsRead(decisions));
   if (asks !== undefined) {
@@ -153,7 +163,7 @@ function renderSpec({
 
 test("at Spec's first drawing with the asks read held and Conversation's outline read still out, a statement under an answered ask draws its because line and heading at once; without the outline read in flight, it does not", () => {
   const r1 = statement("r1", {
-    parentLine: { id: "ask-1", line: "Does the built page work for you?", type: "ask" },
+    parentLine: { id: "ask-1", text: "Does the built page work for you?", type: "ask" },
   });
   const emptyRoot = issueTree([]);
   const specView = issueTree([r1]);
