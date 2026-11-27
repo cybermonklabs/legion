@@ -658,8 +658,9 @@ func TestTheDefectCallsAnswerTheirGoldens(t *testing.T) {
 }
 
 // Both calls refuse a key that is no issue key before they read anything (INVALID_ISSUE), and an
-// issue the record does not hold under the fact lock (ISSUE_NOT_FOUND). Neither records or
-// withdraws anything.
+// issue the record does not hold under the fact lock (ISSUE_NOT_FOUND). Neither records nor
+// withdraws anything. The architect's grant drives both, since a phase worker's names its own
+// issue and the route refuses it any other DEFECT_CALLER_NOT_ALLOWED before the record is read.
 func TestTheDefectCallsRefuseAKeyThatIsNoIssueAndAnIssueTheRecordLacks(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -674,9 +675,8 @@ func TestTheDefectCallsRefuseAKeyThatIsNoIssueAndAnIssueTheRecordLacks(t *testin
 			t.Parallel()
 			h, _, _ := statusHarness(t)
 			acceptPhase(t, h, statusRoot, phase.Retro)
-			implementer := newLiveClaim(t, h, statusRoot, claim.RoleImplementer)
 			architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
-			refused(t, reportDefectAs(h, implementer.grant(t), tc.issue, defectText, defectHead, ""), tc.status, tc.code)
+			refused(t, reportDefectAs(h, architect.grant(t), tc.issue, defectText, defectHead, ""), tc.status, tc.code)
 			refused(t, withdrawDefectAs(h, architect.grant(t), tc.issue, "1", "fixed"), tc.status, tc.code)
 			if rows := defectRows(t, h, statusRoot); len(rows) != 0 {
 				t.Fatalf("defects of %s = %+v, want none", statusRoot, rows)
