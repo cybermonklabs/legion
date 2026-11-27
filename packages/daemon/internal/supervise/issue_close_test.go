@@ -72,27 +72,34 @@ func TestAnIssueCloseRetiresTheClaimAndKeepsItsSessionForAReopen(t *testing.T) {
 	}
 }
 
-// A release the runtime refuses changes nothing — the claim keeps its state and its session — so
-// the close can be asked again, as a tree close can.
-func TestAnIssueCloseWhoseReleaseFailsKeepsTheClaimForTheRetry(t *testing.T) {
+// A release the runtime refuses once the close's retirement is written leaves the claim retired,
+// with its session kept for a reopen, and the release is made again at the probe interval until
+// the runtime takes it (D7 of dispatch://INFRA-4099's plan): the record stands, and the process the
+// runtime would not release is not left to a close nobody asks again.
+func TestAnIssueCloseWhoseReleaseFailsRetiresTheClaimAndReleasesItAgain(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
+	process := h.locator()
 	h.rt.FailRelease(errBoom)
 
-	if err := h.handle(RequestIssueClose{Claim: testToken}); err == nil {
-		t.Fatal("the close succeeded, want the runtime's refusal")
+	if err := h.handle(RequestIssueClose{Claim: testToken}); err != nil {
+		t.Fatalf("the close whose release the runtime refused = %v, want none: the retirement is written", err)
 	}
-	h.wantState(StateIdle)
+	h.wantState(StateRetired)
 	if c := h.claim(); c.Session != session || c.SessionFile != sessionFile {
 		t.Fatalf("claim %+v after the refused release, want its session kept", c)
 	}
+	if stored := h.store.load(testToken); stored.State != StateRetired || stored.Session != session {
+		t.Fatalf("stored %+v, want the retired claim with its session", stored)
+	}
+	h.wantCalls("Release", 1)
 
 	h.rt.FailRelease(nil)
-	h.must(RequestIssueClose{Claim: testToken})
-	h.wantState(StateRetired)
-	if c := h.claim(); c.Session != session || c.SessionFile != sessionFile {
-		t.Fatalf("claim %+v after the retried close, want its session kept", c)
+	h.advance(testProbe)
+	if again := h.wantCalls("Release", 2)[1].Released; again.Claim != testToken || again.Locator == nil || *again.Locator != process {
+		t.Fatalf("the release made again was %+v, want %s at %+v", again, testToken, process)
 	}
+	h.wantState(StateRetired)
 }
 
 // A claim a tree close already retired keeps its session for a re-admission to resume, and the

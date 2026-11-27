@@ -3008,20 +3008,18 @@ func TestAStalePluginRelaunchThatRunsMarksTheClaim(t *testing.T) {
 // suspended claim then carries the mark of a relaunch that replaced nothing, which this test
 // reads at the mark.
 func TestAStalePluginRelaunchAHeldSuspensionEndsMarksNothing(t *testing.T) {
-	h := newHarness(t)
+	// The project's controller is relaunched onto the current contract in its turn, where any
+	// other role's relaunch waits for the turn to end (refreshPlugin), so its relaunch meets the
+	// suspension held for that turn over a live process (holdSuspension). A stop the runtime
+	// refuses no longer leaves a hold standing: the suspension is written first (D6 of
+	// dispatch://INFRA-4099's plan).
+	h := newHarnessOf(t, controllerClaim())
 	h.reach(StateWorking)
 	h.m.deps.PluginContract = 25
 	h.m.deps.PluginRelaunchable = true
 
-	// The operator's suspend arrives in a turn and is held for that turn's end, and the stop the
-	// end runs is refused by the runtime, so the hold stands over a claim that still records its
-	// process (holdSuspension, suspendHeld).
 	if err := h.handle(RequestSuspend{Claim: h.token, By: SuspendedByOperator}); !suspensionHeld(err) {
 		t.Fatalf("the suspend of a claim in a turn = %v, want the hold", err)
-	}
-	h.rt.FailSuspend(errBoom)
-	if err := h.handleQuiet(StreamTurnEnd{Claim: h.token}); err == nil {
-		t.Fatal("the turn's end ran the held suspension; this test needs a stop the runtime refuses")
 	}
 	if h.m.held == nil {
 		t.Fatal("the suspension is no longer held; this test needs one held over a live process")

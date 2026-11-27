@@ -70,12 +70,14 @@ func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place
 		errors.Is(err, treelifecycle.ErrLifecycleClosed):
 		return err
 	case err != nil:
+		m.recorded(ctx, err)
 		return m.writeFailed("AdmitClaim", err)
 	}
 	m.rowState = bound.State
 	if len(m.owedStops()) == 0 {
-		m.settleOwedWrite("AdmitClaim")
+		m.settleOwedWrite(ctx, "AdmitClaim")
 	}
+	m.recorded(ctx, nil)
 	m.claim.TreeEpoch = bound.TreeEpoch
 	if admitted != nil {
 		admitted()
@@ -195,7 +197,7 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 	}
 	if errors.Is(err, treelifecycle.ErrCleanupReserved) {
 		m.log.Warn("supervise: the tree's cleanup is reserved and the retired process is stopped; suspending the claim for the tree's close", "error", err)
-		return errors.Join(err, m.suspended(ctx, SuspendedByDaemon, nil))
+		return errors.Join(err, m.suspended(ctx, SuspendedByDaemon, nil, stopOwed))
 	}
 	m.log.Warn("supervise: the lifecycle check of the retired process's relaunch failed; trying it again at the probe interval", "error", err)
 	m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(m.pluginRelaunch, relaunch))
@@ -274,7 +276,7 @@ func relaunchAgain(m *Machine, ctx context.Context, _ Event) error {
 	relaunch := m.relaunch
 	m.relaunch = nil
 	if m.held != nil {
-		return m.suspendedFor(ctx, *m.held, true)
+		return m.suspendedFor(ctx, *m.held, true, stopOwed)
 	}
 	return relaunch(ctx)
 }

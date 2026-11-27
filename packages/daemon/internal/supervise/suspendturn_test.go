@@ -52,10 +52,11 @@ func TestASuspensionArrivingMidTurnWaitsForTheTurnToEnd(t *testing.T) {
 	h.wantCalls("Suspend", 1)
 }
 
-// A stop the runtime refuses at the turn's end stays held and is retried at the probe interval. A
-// deadline asked for later than that retry — a carried child's new tree stopping the role at the old
-// root's linger expiry — moves the held deadline but does not push the retry back: the retry still
-// fires at the probe interval, in the next turn the claim started meanwhile.
+// A stop the runtime refuses at the turn's end comes after the suspension's record is written, so
+// the claim is suspended and the stop is made again at the probe interval (D7 of
+// dispatch://INFRA-4099's plan). A suspension asked for later with a deadline beyond that retry —
+// a carried child's new tree stopping the role at the old root's linger expiry — reaches a claim
+// already suspended and does not push the retry back: the retry still fires at the probe interval.
 func TestALaterDeadlineDoesNotPushBackARefusedStopsRetry(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateWorking)
@@ -63,17 +64,16 @@ func TestALaterDeadlineDoesNotPushBackARefusedStopsRetry(t *testing.T) {
 		t.Fatalf("suspend mid-turn returned %v, want ErrSuspendHeld", err)
 	}
 	h.rt.FailSuspend(errBoom)
-	if err := h.handle(StreamTurnEnd{Claim: testToken}); !errors.Is(err, errBoom) {
-		t.Fatalf("turn end with a refused stop returned %v, want the runtime's error", err)
+	if err := h.handle(StreamTurnEnd{Claim: testToken}); err != nil {
+		t.Fatalf("turn end with a refused stop returned %v, want none: the suspension is written", err)
 	}
+	h.wantState(StateSuspended)
 	h.wantCalls("Suspend", 1)
 	h.rt.FailSuspend(nil)
-	h.must(StreamTurnStart{Claim: testToken})
-	h.wantState(StateWorking)
 	later := RequestSuspend{Claim: testToken, Reason: "LEGION-209 moved from tree LEGION-208 to tree LEGION-209", By: SuspendedByDaemon,
 		Deadline: h.clock.Now().Add(testProbe + 15*time.Second)}
-	if err := h.handle(later); !errors.Is(err, ErrSuspendHeld) {
-		t.Fatalf("the suspend with a later deadline returned %v, want ErrSuspendHeld", err)
+	if err := h.handle(later); err != nil {
+		t.Fatalf("the suspend with a later deadline returned %v, want none for a claim already suspended", err)
 	}
 	h.advance(testProbe)
 	h.wantCalls("Suspend", 2)
@@ -234,42 +234,50 @@ func TestTheOperatorsSuspensionMovesADaemonsDeadlineEarlierAndTakesTheHoldOver(t
 	}
 }
 
-// A held suspension whose stop the runtime refuses stays held and is tried again at the probe
-// interval, so it lands with nothing else retrying it — an operator's suspend has no outbox row.
-// At the turn's end the claim is left idle meanwhile, and is handed nothing while it is stopped.
+// A held suspension whose stop the runtime refuses is written before that stop, so the claim is
+// suspended at once and the stop is tried again at the probe interval until it lands (D7 of
+// dispatch://INFRA-4099's plan), with nothing else retrying it — an operator's suspend has no
+// outbox row. Nothing is sent to the claim meanwhile.
 func TestAHeldSuspensionWhoseStopFailsIsTriedAgainUntilItLands(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		stop func(h *harness)
-		held ClaimState
 	}{
-		{"at the stop timeout", func(h *harness) { h.advance(testStop) }, StateWorking},
+		{"at the stop timeout", func(h *harness) { h.advance(testStop) }},
 		{"at the turn's end", func(h *harness) {
-			if err := h.handle(StreamTurnEnd{Claim: testToken}); !errors.Is(err, errBoom) {
-				h.t.Fatalf("turn end with a failing stop returned %v, want the runtime's error", err)
+			if err := h.handle(StreamTurnEnd{Claim: testToken}); err != nil {
+				h.t.Fatalf("turn end with a failing stop returned %v, want none: the suspension is written", err)
 			}
-		}, StateIdle},
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateWorking)
+			process := h.locator()
 			if err := h.handle(RequestSuspend{Claim: testToken, By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
 				t.Fatalf("suspend mid-turn returned %v, want ErrSuspendHeld", err)
 			}
 			h.rt.FailSuspend(errBoom)
 
 			tc.stop(h)
-			h.wantState(tc.held)
-			if tc.held == StateIdle {
-				h.must(RequestDeliver{Claim: testToken, Task: "an operator's task"})
+			h.wantState(StateSuspended)
+			if stored := h.store.load(testToken); stored.State != StateSuspended {
+				t.Fatalf("the row reads %s, want the suspension written before the refused stop", stored.State)
 			}
-			h.observe(runtime.Alive)
-			h.wantPrompts(1)
+			h.wantCalls("Suspend", 1)
+			prompts := len(h.prompts())
 
+			h.advance(testProbe)
+			h.wantCalls("Suspend", 2)
 			h.rt.FailSuspend(nil)
 			h.advance(testProbe)
+			if stops := h.wantCalls("Suspend", 3); stops[2].Locator != process {
+				t.Fatalf("the stop that landed was of %+v, want the process the suspension ended, %+v", stops[2].Locator, process)
+			}
+			h.advance(testProbe)
+			h.wantCalls("Suspend", 3)
 			h.wantState(StateSuspended)
-			h.wantPrompts(1)
+			h.wantPrompts(prompts)
 		})
 	}
 }
@@ -370,9 +378,9 @@ func TestAProcessThatDiesWhileItsSuspensionWaitsIsSuspendedNotRelaunched(t *test
 	h.wantCalls("Suspend", 1)
 }
 
-// A prompt retirement while a suspension is held is that suspension's stop: the process is alive,
-// so a stop the runtime refuses leaves the claim working and still holding the suspension, retried
-// at the probe interval, rather than marked suspended over a process that still runs. Nothing is
+// A prompt retirement while a suspension is held is that suspension's stop: the suspension is
+// written first, so the claim is suspended with its process let go, and a stop the runtime refuses
+// is made again at the probe interval (D6 and D7 of dispatch://INFRA-4099's plan). Nothing is
 // charged — here the retirement would be the claim's last, which would fail it. The phase task was
 // on its way when a turn began, and the shim refuses to adopt the working copy for it at the
 // prompt-failure limit. A refusal of the agent's own cannot reach that limit here: one that
@@ -407,9 +415,9 @@ func TestAPromptRetirementWhileASuspensionIsHeldRunsTheHeldStop(t *testing.T) {
 	gated.release <- struct{}{}
 	h.m.Wait()
 
-	h.wantState(StateWorking)
-	if c := h.claim(); !c.SuspensionHeld || c.Locator == nil {
-		t.Fatalf("after the refused stop the claim is %+v, want its process kept and the suspension still held", c)
+	h.wantState(StateSuspended)
+	if c := h.claim(); c.SuspensionHeld || c.Locator != nil || c.SuspendedBy != SuspendedByOperator {
+		t.Fatalf("after the refused stop the claim is %+v, want it suspended by the operator with its process let go", c)
 	}
 	h.wantCalls("Suspend", 1)
 	h.rt.FailSuspend(nil)

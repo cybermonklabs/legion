@@ -320,6 +320,7 @@ func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 		delete(m.heldNames, h)
 	}
 	if err != nil {
+		m.recorded(ctx, err)
 		return ReleasedNames{}, m.writeFailed("ReleaseHolds", err)
 	}
 	// The write was the claim as memory holds it, the mark aside, so it is also any claim write
@@ -328,8 +329,9 @@ func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 	m.rowState = c.State
 	m.claim.Abandoned.Released = c.Abandoned.Released
 	if len(m.owedStops()) == 0 {
-		m.settleOwedWrite("ReleaseHolds")
+		m.settleOwedWrite(ctx, "ReleaseHolds")
 	}
+	m.recorded(ctx, nil)
 	m.log.Info("supervise: released the names of a claim's other sessions",
 		"freed", len(released.Freed), "checked", released.Checked, "abandoned", released.Abandoned)
 	return released, nil

@@ -739,35 +739,39 @@ func TestAFreshSessionIsRefusedForAClaimInATurn(t *testing.T) {
 	}
 }
 
-// A ready claim a suspension is held over is answered in this route's own words rather than
-// started: a fresh session suspends a ready claim as the operator and then resumes it, and
-// the suspension it runs lets the held request go with the process (supervise's letGo), so
-// the operator's own suspend — answered 202 and still waiting on its retry — would be
-// dropped unrun and the worker started again in a new session. The hold is the operator's, so
-// the controller's door refuses it first, in the hold's own code (wantHeldRefusal). The
-// compaction's answer to the same claim is its own route's (compact_test.go), and the fixture
-// both read is shared (recovery_refusals_test.go).
-func TestAFreshSessionOfAReadyClaimUnderAHeldSuspensionIsRefused(t *testing.T) {
+// A claim whose held suspension's stop the runtime refused reads suspended by the operator: the
+// suspension is written before its stop (D6 of dispatch://INFRA-4099's plan), and the stop is made
+// again at the probe interval (D7), so no hold is left over a ready claim for either door to
+// answer. The controller's door refuses the operator's suspension, in its own code, and changes
+// nothing; the operator's door starts the agent again in a new session, as it starts every claim
+// the operator suspended, never resuming the session it leaves behind.
+func TestAFreshSessionOfAClaimWhoseHeldStopTheRuntimeRefusedTreatsItAsSuspended(t *testing.T) {
 	for _, door := range freshSessionDoors() {
 		t.Run(door.name, func(t *testing.T) {
 			h := compactHarness(t, nil)
-			token := suspensionHeldOverAReadyAgent(t, h)
-			launches := len(h.runtime.CallsOf("Resume")) + len(h.runtime.CallsOf("Spawn"))
+			token := suspendedWithItsStopOwed(t, h)
+			calls := len(h.runtime.Calls())
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
-			door.wantHeldRefusal(t, recorder, token, supervise.SuspendedByOperator, claimUnsettled,
-				heldSuspensionRefusal(token, freshSessionName, "a fresh session", wantFreshSessionLive))
-			m, _ := h.supervisor.Machine(token)
-			if view := m.View(); view.State != supervise.StateReady || !view.SuspensionHeld {
-				t.Errorf("the refused claim is %s holding %v, want the ready claim with the operator's own hold, still waiting on its retry",
-					view.State, view.SuspensionHeld)
+			if door.by == supervise.SuspendedByController {
+				door.wantHeldRefusal(t, recorder, token, supervise.SuspendedByOperator, claimUnsettled,
+					heldSuspensionRefusal(token, freshSessionName, "a fresh session", wantFreshSessionLive))
+				if after := h.stored(token); after.Session != "ses_implementer" || after.State != supervise.StateSuspended {
+					t.Errorf("the refused claim is %s recording session %q, want it suspended with the session it had", after.State, after.Session)
+				}
+				return
 			}
-			if after := h.stored(token); after.Session != "ses_implementer" {
-				t.Errorf("the refused claim records session %q, want the session it had", after.Session)
+			if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
+				t.Fatalf("the operator's fresh session = %d, want 200 or 202; body %s", recorder.Code, recorder.Body)
 			}
-			if got := len(h.runtime.CallsOf("Resume")) + len(h.runtime.CallsOf("Spawn")); got != launches {
-				t.Errorf("the runtime was asked for %d launches, want the %d made before the refusal", got, launches)
+			if after := h.stored(token); after.Session != "" {
+				t.Errorf("the fresh session left session %q on the claim, want it forgotten", after.Session)
+			}
+			for _, call := range h.runtime.Calls()[calls:] {
+				if call.Method == "Resume" {
+					t.Errorf("the fresh session resumed %q, want a new session spawned", call.Spec.ResumeSessionFile)
+				}
 			}
 		})
 	}

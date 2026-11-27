@@ -369,7 +369,9 @@ func (m *Machine) providerErrorClears(ctx context.Context, cause string) error {
 	p := m.claim.Pending
 	p.ProviderErrorRetries++
 	p.ProviderErrorNote = providerErrorTask(cause)
-	if err := m.saved(m.claimWriteFailed("PutClaimAndDelivery", m.putClaimAndDelivery(ctx, m.stored(), *p))); err != nil {
+	written := m.putClaimAndDelivery(ctx, m.stored(), *p)
+	m.recorded(ctx, written)
+	if err := m.saved(m.claimWriteFailed("PutClaimAndDelivery", written)); err != nil {
 		return err
 	}
 	after := promptRetryDelay(p.ProviderErrorRetries)

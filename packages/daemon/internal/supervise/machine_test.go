@@ -453,24 +453,6 @@ func TestSuspendKeepsTheSessionAndDropsTheLocator(t *testing.T) {
 	}
 }
 
-func TestASuspendThatFailsChangesNothing(t *testing.T) {
-	h := newHarness(t)
-	h.reach(StateIdle)
-	loc := h.locator()
-	h.rt.FailSuspend(errBoom)
-
-	if err := h.handle(RequestSuspend{Claim: testToken, By: SuspendedByOperator}); !errors.Is(err, errBoom) {
-		t.Fatalf("suspend returned %v, want the runtime's error", err)
-	}
-	h.wantState(StateIdle)
-	if lines := h.logs.lines(`msg="supervise: suspended"`); len(lines) != 0 {
-		t.Errorf("a failed suspend logged %q", lines)
-	}
-	if h.locator() != loc {
-		t.Errorf("locator %+v, want %+v", h.locator(), loc)
-	}
-}
-
 func TestSuspendingASuspendedClaimIsANoOp(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateSuspended)
@@ -594,16 +576,6 @@ func wantReleasedWithNoLocator(t *testing.T, h *harness, token claim.Token) {
 	if released.Claim != token || released.Locator != nil {
 		t.Errorf("released %+v, want %s with no locator", released, token)
 	}
-}
-
-func TestAStopThatFailsChangesNothing(t *testing.T) {
-	h := newHarness(t)
-	h.reach(StateReady)
-	h.rt.FailRelease(errBoom)
-	if err := h.handle(RequestStop{Claim: testToken, By: SuspendedByOperator}); !errors.Is(err, errBoom) {
-		t.Fatalf("stop returned %v, want the runtime's error", err)
-	}
-	h.wantState(StateReady)
 }
 
 // A worker's agent reporting its own end ends the claim: the process is released — under tmux a

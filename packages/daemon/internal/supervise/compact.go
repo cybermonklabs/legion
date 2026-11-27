@@ -304,17 +304,18 @@ func (m *Machine) compactionLostProcess() {
 // returns (api's compact).
 //
 // A claim a suspension is held over is taken for nothing either, whatever state the hold found
-// it in. The take reaches a ready or idle claim, and either can carry a hold: a stop the
-// runtime refused at the agent's ready leaves the claim ready with the hold intact, and one it
-// refused at a turn's end leaves it idle with the hold intact, each retried at the probe
-// interval (ready, turnEnded, suspendHeld). What such a claim waits for is the hold's end, and
-// that end stops its process more often than not: the compaction would spend ten minutes of a
-// model on a session the hold is about to take, and its own end would hand the claim to that
-// hold rather than back to its agent (ErrCompactSuspended). Unlike the two above, this is a
-// refusal of the claim in the state the hold found it, as every other action refuses a held
-// claim (RefusedError, holdSuspension, stop): the one door that answers a hold then answers
-// both recoveries, in one sentence, rather than this guard writing a second copy of it
-// (api's refuseState, refuseHeldSuspension).
+// it in. The take reaches a ready or idle claim, and an idle one can carry a hold: a project
+// pause's hold over a turn that ended before its prompt's result waits for that result
+// (stopWaitsForResult). A stop the runtime refuses no longer leaves a hold standing over a ready
+// or idle claim: a held suspension is written before its stop, and the stop is made again once
+// the claim reads suspended (suspendHeld, D6 and D7 of dispatch://INFRA-4099's plan). What such a
+// claim waits for is the hold's end, and that end stops its process more often than not: the
+// compaction would spend ten minutes of a model on a session the hold is about to take, and its
+// own end would hand the claim to that hold rather than back to its agent (ErrCompactSuspended).
+// Unlike the two above, this is a refusal of the claim in the state the hold found it, as every
+// other action refuses a held claim (RefusedError, holdSuspension, stop): the one door that
+// answers a hold then answers both recoveries, in one sentence, rather than this guard writing a
+// second copy of it (api's refuseState, refuseHeldSuspension).
 func compactStart(m *Machine, ctx context.Context, _ Event) error {
 	conn, ok := m.deps.Conns.Conn(m.claim.Token)
 	if !ok {

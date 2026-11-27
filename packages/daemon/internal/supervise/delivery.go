@@ -633,7 +633,9 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 			stored.GivenEntry = request.Entry
 			stored.Handshake = m.claim.Handshake.queued(request.Entry, request.Generation, d.QueuedAt)
 		}
-		if err := m.writeFailed("PutClaimAndDelivery", m.putClaimAndDelivery(ctx, stored, d)); err != nil {
+		written := m.putClaimAndDelivery(ctx, stored, d)
+		m.recorded(ctx, written)
+		if err := m.writeFailed("PutClaimAndDelivery", written); err != nil {
 			return err
 		}
 		m.claim.DeliveredRows, m.claim.GivenEntry, m.claim.Handshake = stored.DeliveredRows, stored.GivenEntry, stored.Handshake
@@ -1576,12 +1578,15 @@ func (m *Machine) retirePending(ctx context.Context) error {
 		return m.deps.Store.RetireDelivery(ctx, retired, p.ID)
 	})
 	// The row holds a delivery this machine is not retiring, so what it lacks is exactly the
-	// delivery memory holds; the mark is what has the next settle write it there.
+	// delivery memory holds; the mark is what has the next settle write it there. The claim write
+	// went with the refused delete, so what waits for the claim's record waits on for the write
+	// that makes it (awaitingRecord).
 	if errors.Is(err, ErrOtherDelivery) {
 		m.unsaved = true
 		return err
 	}
 	if err != nil && !errors.Is(err, ErrNoSuchDelivery) && m.sortWriteFailure("RetireDelivery", err) == WriteRefused {
+		m.recorded(ctx, err)
 		return err
 	}
 	// The prompts the retired task waited on a result for go with it (Machine.outstanding): their
@@ -1594,11 +1599,13 @@ func (m *Machine) retirePending(ctx context.Context) error {
 		m.log.Warn("supervise: the store holds no such delivery; the refusal is of a retirement it has already made",
 			"delivery", p.ID, "error", err)
 		m.oweWrite("RetireDelivery", err)
+		m.recorded(ctx, err)
 		return nil
 	case err != nil:
 		// Owed: the retirement stands in memory and on the mark, for the repair to make.
 		m.oweWrite("RetireDelivery", err)
 		m.owedWrite.retire = p.ID
+		m.recorded(ctx, err)
 		return err
 	}
 	m.rowState = retired.State
@@ -1606,7 +1613,8 @@ func (m *Machine) retirePending(ctx context.Context) error {
 		// The row holds no delivery now, so no retirement the mark held is left to make.
 		m.owedWrite.retire = ""
 	}
-	m.settleOwedWrite("RetireDelivery")
+	m.settleOwedWrite(ctx, "RetireDelivery")
+	m.recorded(ctx, nil)
 	return nil
 }
 
@@ -2239,6 +2247,7 @@ func (m *Machine) takeBackInterrupted(ctx context.Context, why string, outOfMemo
 	if untold || handshakeMoved {
 		method = "PutClaimAndDelivery"
 		err = m.putClaimAndDelivery(ctx, stored, next)
+		m.recorded(ctx, err)
 	} else {
 		err = m.putDelivery(ctx, next)
 	}
@@ -2501,6 +2510,7 @@ func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 	if moved || handshakeMoved {
 		method = "PutClaimAndDelivery"
 		err = m.putClaimAndDelivery(ctx, m.stored(), next)
+		m.recorded(ctx, err)
 	} else {
 		err = m.putDelivery(ctx, next)
 	}

@@ -185,7 +185,7 @@ const (
 	// TimerProbe is the re-probe of an uncertain process.
 	TimerProbe TimerKind = "probe"
 	// TimerSuspend is the held suspension's timer (holdSuspension): the stop timeout of its wait for
-	// the agent's turn, and the retry of a stop that failed.
+	// the agent's turn, and the retry of a take-back of that turn's task that failed.
 	TimerSuspend TimerKind = "suspend"
 	// TimerRelaunch is the retry of a relaunch left waiting with no process (relaunchLater): one whose
 	// lifecycle check failed with no cleanup reserved, a launch whose write failed, or a request's
@@ -219,6 +219,13 @@ const (
 	// interval (awaitRead). It is decided before the table is read (handle), so its rows are named
 	// ignores: a read that lands builds the machine again and disarms it with every other timer.
 	TimerReread TimerKind = "reread"
+	// TimerStopAgain is the next try of a stop or a release of a process the runtime refused once
+	// the record of the decision that ended the process was written (Machine.stopOwed, stopRecorded;
+	// D7 of dispatch://INFRA-4099's plan): the claim reads suspended, failed or retired as its
+	// record does, and the stop is made again at each probe interval until the runtime takes it
+	// (stopAgain). Every other state ignores it by name: a launch let that process go and stops it
+	// or waits it out (stopPrevious, launchTries).
+	TimerStopAgain TimerKind = "stop_again"
 )
 
 // Timer is a timer the machine armed, firing.
@@ -977,6 +984,8 @@ const (
 	onPodStartTimer eventKind = timerPrefix + eventKind(TimerPodStart)
 	// The next try of the read after a refused write whose read failed (awaitRead).
 	onRereadTimer eventKind = timerPrefix + eventKind(TimerReread)
+	// The next try of a stop the runtime refused once its record was written (stopAgain).
+	onStopAgainTimer eventKind = timerPrefix + eventKind(TimerStopAgain)
 
 	onSpawn         eventKind = "request_spawn"
 	onRegister      eventKind = "request_register"
@@ -1387,6 +1396,15 @@ func fillTable(t *builder) {
 	// a row of it: the read that lands builds the machine again, and the build arms no such timer.
 	t.ignore(onRereadTimer, "no read of the claim is owed: a read after a refused claim write that landed built the machine again over the row, which leaves this timer disarmed",
 		slices.Concat(live, processless)...)
+
+	// The next try of a stop or a release the runtime refused once the record of the decision
+	// that ended the process was written (D7 of dispatch://INFRA-4099's plan). That record left the
+	// claim suspended, failed or retired, where the stop is made again; a claim that has left them
+	// since was launched, and the launch let that process go and stops it or waits it out
+	// (stopPrevious, launchTries), and a claim queued or uncertain runs no process of this daemon's.
+	t.row(onStopAgainTimer, "the runtime refused the stop of a process whose claim's record is written: make it again", stopAgain, nil, gone...)
+	t.ignore(onStopAgainTimer, "the claim was launched again since its process's stop was refused, and the launch stops or waits out that process",
+		StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered, StateReady, StateWorking, StateIdle)
 
 	// A re-adopted claim found still speaking another plugin contract, at boot or at a later sweep.
 	t.row(onStalePlugin, "the process speaks another plugin contract: relaunch it onto the current one", refreshStalePlugin,
@@ -2953,6 +2971,14 @@ func bootInterval(m *Machine, ctx context.Context, _ Event) error {
 // (endNeverReady, letGo) — what its agent never did is no turn, so a record comes only of
 // background work the process reported — and the relaunch that follows lets nothing more go.
 //
+// Whether the count spends the launch budget is read before anything is stopped
+// (relaunchSpends; D6 of dispatch://INFRA-4099's plan). A deadline whose count spends it ends the
+// process rather than replacing it: the claim fails over its live process, the failure written
+// before the process is stopped (fail), so a failure the store refuses stops nothing, and what the
+// process ended is recorded as the deadline's first (recordEnd). A deadline that relaunches stops
+// the process first and relaunches it in the same decision, the relaunch's launching write being
+// its record (suspendProcess, writeTry).
+//
 // The deadline of a process of a claim that records a session and no file names an outcome of its
 // own where that process is one an earlier release started, whose registration the fence refused,
 // or a start that had Oh My Pi resume the session by its id and never registered as it
@@ -2974,11 +3000,14 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 			return fmt.Errorf("retire %s, whose agent %s: %w", m.claim.Token, never, err)
 		}
 		incarnation := m.claim.Locator.Incarnation
-		if err := m.suspendProcess(ctx, endNeverReady(never)); err != nil {
-			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
-			return fmt.Errorf("retire %s, whose agent %s: suspend: %w", m.claim.Token, never, err)
-		}
 		o := m.endOutcome(runtime.OutcomeNeverRegistered, "the registration deadline")
+		fails := m.relaunchSpends(o)
+		if !fails {
+			if err := m.suspendProcess(ctx, endNeverReady(never)); err != nil {
+				m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
+				return fmt.Errorf("retire %s, whose agent %s: suspend: %w", m.claim.Token, never, err)
+			}
+		}
 		// The line names the claim (the machine's logger carries it), what its agent never did, and
 		// the launch this retirement counts against its budget (relaunchAfterFailure counts it next),
 		// so a controller whose role claim waits out its registration deadline shows in the daemon's
@@ -2994,6 +3023,9 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 		// (endOutcome) is not, as a death the policy charges nothing is not (died).
 		if Charges(o) {
 			m.sessionEnded("its agent " + never)
+		}
+		if fails {
+			m.recordEnd(ctx, endNeverReady(never))
 		}
 		return m.relaunchAfterFailure(ctx, o, noEnd, nil)
 	}, TimerRegistration, m.deps.Timeouts.Probe)
@@ -3402,7 +3434,7 @@ func stop(m *Machine, ctx context.Context, ev Event) error {
 		return &RefusedError{State: m.claim.State, Request: "stop", Err: err}
 	}
 	if !m.claim.treeRoot() {
-		return m.end(ctx, endStopped)
+		return m.retire(ctx, endStopped)
 	}
 	closable, err := m.treeClosable(ctx)
 	if err != nil {
@@ -3414,16 +3446,18 @@ func stop(m *Machine, ctx context.Context, ev Event) error {
 // treeClose is the workflow's close of the tree, which ends the root claim too. It is the
 // workflow's own decision: it stops every claim of a tree whose linger expired, and the issue
 // record it still holds for that tree is exactly what TreeClosable refuses on, so it is not asked.
-func treeClose(m *Machine, ctx context.Context, _ Event) error { return m.end(ctx, noEnd) }
+func treeClose(m *Machine, ctx context.Context, _ Event) error { return m.retire(ctx, noEnd) }
 
-// issueClose is the workflow's close of a child issue as done: it releases the claim through the
-// runtime, which ends at most this role's process and forgets the claim. It deletes no issue
-// Sandbox — under Agent Sandbox a release deletes only the controller's, whose Sandbox is that
-// claim's and nothing else (Runtime.Release, releaseControllerSandbox) — so an issue's pod and the
-// disk it owns go with the separately fenced IssueSuspend, or with the tree cleanup once every
-// claim of the tree has retired. That is why a merged close leaves the implementer's pod standing:
-// its five siblings take this close and no IssueSuspend is queued (workflow/linger.go). A release
-// that fails changes nothing, so the close can be asked again.
+// issueClose is the workflow's close of a child issue as done: it retires the claim, and once the
+// retirement is written releases the claim through the runtime, which ends at most this role's
+// process and forgets the claim (retire). It deletes no issue Sandbox — under Agent Sandbox a
+// release deletes only the controller's, whose Sandbox is that claim's and nothing else
+// (Runtime.Release, releaseControllerSandbox) — so an issue's pod and the disk it owns go with the
+// separately fenced IssueSuspend, or with the tree cleanup once every claim of the tree has
+// retired. That is why a merged close leaves the implementer's pod standing: its five siblings
+// take this close and no IssueSuspend is queued (workflow/linger.go). A retirement the store
+// refuses releases nothing, so the close can be asked again; a release the runtime refuses once
+// the retirement is written is made again at the probe interval (stopRecorded, TimerStopAgain).
 //
 // The claim keeps the session it recorded, both halves of it. A done issue is reopened — a person
 // moves it back, a production check fails — and its roles are started again on the same issue,
@@ -3441,9 +3475,6 @@ func treeClose(m *Machine, ctx context.Context, _ Event) error { return m.end(ct
 // outcome R8 forbids. Nothing of the workspace is recovered either way: a later start of the
 // issue runs on a pod and a disk of its own, resuming the agent's session on it.
 func issueClose(m *Machine, ctx context.Context, _ Event) error {
-	if err := m.release(ctx); err != nil {
-		return err
-	}
 	return m.retire(ctx, noEnd)
 }
 
@@ -3525,7 +3556,7 @@ func operatorClose(m *Machine, ctx context.Context, _ Event) error {
 	if err := m.closeRefusal(ctx); err != nil {
 		return err
 	}
-	return m.end(ctx, noEnd)
+	return m.retire(ctx, noEnd)
 }
 
 // operatorCloseRetired answers a close of a claim that has already retired. The outcome the
@@ -3565,16 +3596,6 @@ func (m *Machine) treeClosable(ctx context.Context) (bool, error) {
 		return true, nil
 	}
 	return m.deps.TreeClosable(ctx, m.claim)
-}
-
-// end releases the claim's process and retires the claim, which is what every stop and close does
-// once it is allowed, recording what that process ended under cause (retire): the stop's own
-// (endStopped), and noEnd for a close, which ends the claim's work on purpose.
-func (m *Machine) end(ctx context.Context, cause string) error {
-	if err := m.release(ctx); err != nil {
-		return err
-	}
-	return m.retire(ctx, cause)
 }
 
 // rootStopRefusal is ErrRootStop with what stops the root's process in state instead: a suspension,
@@ -3645,27 +3666,21 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // exit is the agent reporting its own end. A worker's or sub-architect's claim ends with it and is
-// released. The tree's root claim ends only with its tree, whose close is a stop: its exit suspends
-// it instead, so it stays resumable and known to the orphan sweep, which would otherwise take
-// whatever the runtime holds for the tree with it. The agent has ended either way, so a runtime
-// that cannot release or suspend its process is logged and the claim moves all the same: a
-// finished agent's claim never stays live, its secret still authenticating. A root's stop records
-// what it ended as a suspension by its exit (endSuspended), as every suspension does; a worker's
-// retirement records nothing (noEnd, retire), since the exit is the agent's own end of its work.
-// The root's suspension sends the clean stop of its Envoy session once the runtime's stop has
-// returned, and none for a stop the runtime refused (stopForSuspension).
+// retired, and released once the retirement is written (retire). The tree's root claim ends only
+// with its tree, whose close is a stop: its exit suspends it instead, so it stays resumable and
+// known to the orphan sweep, which would otherwise take whatever the runtime holds for the tree
+// with it, and its process is stopped once the suspension is written (suspended). The agent has
+// ended either way, so a runtime that cannot release or suspend its process once the claim's
+// record is written is logged, and the stop is made again at the probe interval, the claim moved
+// all the same (stopRecorded, TimerStopAgain): a finished agent's claim never stays live, its
+// secret still authenticating. A root's stop records what it ended as a suspension by its exit
+// (endSuspended), as every suspension does; a worker's retirement records nothing (noEnd, retire),
+// since the exit is the agent's own end of its work. The root's suspension sends the clean stop of
+// its Envoy session once the runtime's stop has returned, and none for a stop the runtime refused.
 func exit(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: the agent reported its exit", "reason", ev.(RequestExit).Reason)
 	if m.claim.treeRoot() {
-		incarnation := m.claim.Locator.Incarnation
-		if err := m.stopForSuspension(ctx, SuspendedByExit, stopOwed); err != nil {
-			m.log.Error("supervise: could not suspend the exited root's process; suspending its claim anyway",
-				"incarnation", incarnation, "error", err)
-		}
-		return m.suspended(ctx, SuspendedByExit, nil)
-	}
-	if err := m.release(ctx); err != nil {
-		m.log.Error("supervise: could not release the exited agent's process; retiring its claim anyway", "error", err)
+		return m.suspended(ctx, SuspendedByExit, nil, stopOwed)
 	}
 	return m.retire(ctx, noEnd)
 }

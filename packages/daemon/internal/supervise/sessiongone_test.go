@@ -385,18 +385,19 @@ func TestASuspensionThatEndsAProcessStopsItsSessionOnce(t *testing.T) {
 			},
 		},
 		{
+			// The release is written first, so it stands; the stop the runtime refused sends no
+			// clean stop, since the process may still run, and is made again at the probe interval
+			// (D7 of dispatch://INFRA-4099's plan).
 			name: "an idle release of an idle claim whose stop the runtime refuses",
 			end: func(t *testing.T, h *harness, _ *[]string) {
 				h.reach(StateIdle)
-				loc := h.locator()
 				h.rt.FailSuspend(refused)
-				if err := h.handle(RequestSuspend{Claim: h.token, Reason: "the idle pod was released", By: SuspendedByReleased}); !errors.Is(err, refused) {
-					t.Fatalf("the release whose stop the runtime refused = %v, want that refusal", err)
+				h.must(RequestSuspend{Claim: h.token, Reason: "the idle pod was released", By: SuspendedByReleased})
+				h.wantState(StateSuspended)
+				if c := h.claim(); c.Locator != nil {
+					t.Fatalf("the claim records %+v, want its process let go with the release written", c.Locator)
 				}
-				h.wantState(StateIdle)
-				if c := h.claim(); c.Locator == nil || *c.Locator != loc {
-					t.Fatalf("the claim records %+v, want the process the runtime would not stop, %+v", c.Locator, loc)
-				}
+				h.wantCalls("Suspend", 1)
 			},
 		},
 		{

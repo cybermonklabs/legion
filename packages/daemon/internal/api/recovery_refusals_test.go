@@ -1682,15 +1682,13 @@ func TestACompactionRefusedUnderAHeldSuspensionOverTheControllerNamesItsKeeper(t
 		heldSuspensionRefusal(token, controllerKeeperName, "a compaction", wantCompactionLive))
 }
 
-// suspensionHeldOverAReadyAgent is the one held claim the machine's own take reaches: the
-// operator's suspend was held for the agent's ready (supervise's holdSuspendUntilReady), and
-// the stop that ready ran was refused by the runtime, which leaves the claim ready with the
-// hold intact and the stop retried at the probe interval (supervise's ready, suspendHeld). The
-// claim is not working, so neither door's switch over the published view is reached for it:
-// the fresh session's refusal is its own door's (api's freshSession), and the compaction's is
-// the one the machine answers in that state, which the same door then writes (supervise's
-// compactStart, api's refuseState).
-func suspensionHeldOverAReadyAgent(t *testing.T, h *harness) claim.Token {
+// suspendedWithItsStopOwed is the claim a held suspension's refused stop leaves: the operator's
+// suspend was held for the agent's ready (supervise's holdSuspendUntilReady), and the ready runs
+// it. The suspension is written before its stop (D6 of dispatch://INFRA-4099's plan), so the stop
+// the runtime then refuses leaves the claim suspended by the operator, its process let go, and the
+// stop made again at the probe interval (D7). No hold is left over a ready claim, so neither door's
+// refusal of a held suspension is reached for it: each answers a claim the operator suspended.
+func suspendedWithItsStopOwed(t *testing.T, h *harness) claim.Token {
 	t.Helper()
 	token, _ := h.launchIn("LEGION-208", "LEGION-209", claim.RoleImplementer)
 	if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil); recorder.Code != http.StatusAccepted {
@@ -1701,17 +1699,18 @@ func suspensionHeldOverAReadyAgent(t *testing.T, h *harness) claim.Token {
 	registered := h.registered(h.bootToken(token), "ses_implementer")
 	if recorder := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: token, SessionID: "ses_implementer", Secret: registered.Secret, Generation: 1,
-	}, nil); recorder.Code == http.StatusNoContent {
-		t.Fatal("the ready whose held stop the runtime refused answered 204, want the runtime's failure")
+	}, nil); recorder.Code == http.StatusInternalServerError {
+		t.Fatalf("the ready whose held stop the runtime refused = %d, want the suspension it wrote first to stand; body %s",
+			recorder.Code, recorder.Body)
 	}
-	// The runtime answers again from here, so the hold is one that lands: its retry at the
-	// probe interval stops the process, which is what every request below is asked over.
 	h.runtime.FailSuspend(nil)
 	m, _ := h.supervisor.Machine(token)
-	view := m.View()
-	if view.State != supervise.StateReady || !view.SuspensionHeld {
-		t.Fatalf("the claim is %s holding %v, want the ready claim with the operator's suspension held",
-			view.State, view.SuspensionHeld)
+	if view := m.View(); view.State != supervise.StateSuspended || view.SuspendedBy != supervise.SuspendedByOperator || view.SuspensionHeld {
+		t.Fatalf("the claim is %s by %q holding %v, want it suspended by the operator with no hold left",
+			view.State, view.SuspendedBy, view.SuspensionHeld)
+	}
+	if stored := h.stored(token); stored.State != supervise.StateSuspended {
+		t.Fatalf("the row reads %s, want the suspension written before the refused stop", stored.State)
 	}
 	return token
 }

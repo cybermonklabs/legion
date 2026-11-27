@@ -872,38 +872,37 @@ func TestAHoldWhosePauseEndedDoesNotStopItsClaim(t *testing.T) {
 }
 
 // A pause's hold whose pause has ended holds nothing back where it does not fire either: the
-// next decision drops it whatever that decision is (dropEndedPauseHold). The claim here is ready
-// with the hold standing — the runtime refused its stop at the agent's ready, which the hold
-// retries at the probe interval — when the pause ends and no resume's event comes. A compaction
-// asked for then is taken rather than refused for the hold, and a task delivered then is sent
-// rather than held back behind it. Dropped only where a hold fires, the hold refused the one and
-// held back the other.
+// next decision drops it whatever that decision is (dropEndedPauseHold). The claim here is idle
+// with the hold standing — the hold waits for the result of the turn it was held for
+// (stopWaitsForResult) — when the pause ends and no resume's event comes. A compaction asked for
+// then is taken rather than refused for the hold, and the result that comes then stops nothing,
+// so a task delivered after it is sent rather than held back behind the hold. Dropped only where a
+// hold fires, the hold refused the one and held back the other. (A stop the runtime refuses at a
+// ready no longer leaves such a hold over a ready claim: the suspension is written before its
+// stop, D6 of dispatch://INFRA-4099's plan.)
 func TestAHoldWhosePauseEndedHoldsNothingBack(t *testing.T) {
-	heldAtReady := func(t *testing.T) (*harness, *stopTransaction) {
+	heldAtIdle := func(t *testing.T) (*harness, *stopTransaction, string) {
 		t.Helper()
 		h, flag, stops := pauseHarness(t, queuedClaim())
-		h.launch()
+		h.reach(StateReady)
+		h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+		h.must(StreamTurnStart{Claim: h.token})
+		task := h.pending().ID
 		flag.set(7)
 		if err := h.handle(pauseStop(h.token, 7)); !errors.Is(err, ErrSuspendHeld) {
-			t.Fatalf("the pause's stop of a launch = %v, want it held until ready", err)
+			t.Fatalf("the pause's stop of a claim in a turn = %v, want it held", err)
 		}
-		h.connect()
-		h.register()
-		h.rt.FailSuspend(errors.New("the runtime refused the stop"))
-		if err := h.handle(RequestReady{Claim: h.token, Generation: h.generation(), Session: session}); err == nil {
-			t.Fatal("the ready whose held stop the runtime refused succeeded, want the runtime's refusal")
-		}
-		if pause, held := h.heldPause(); h.state() != StateReady || !held || pause != 7 {
-			t.Fatalf("after the refused stop the claim is %s holding pause %d (held %v), want it ready with pause 7's hold",
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		if pause, held := h.heldPause(); h.state() != StateIdle || !held || pause != 7 {
+			t.Fatalf("after the turn's end the claim is %s holding pause %d (held %v), want it idle with pause 7's hold",
 				h.state(), pause, held)
 		}
-		h.rt.FailSuspend(nil)
 		flag.set(0)
-		return h, stops
+		return h, stops, task
 	}
 
 	t.Run("a compaction is taken", func(t *testing.T) {
-		h, stops := heldAtReady(t)
+		h, stops, _ := heldAtIdle(t)
 
 		if err := h.m.Compact(h.ctx, testCompactInstructions); err != nil {
 			t.Fatalf("a compaction of a claim whose hold names an ended pause = %v, want it taken", err)
@@ -913,28 +912,30 @@ func TestAHoldWhosePauseEndedHoldsNothingBack(t *testing.T) {
 		if asked := h.conn.Compactions(); len(asked) != 1 {
 			t.Fatalf("Oh My Pi was asked %d compactions, want the one", len(asked))
 		}
-		h.wantState(StateReady)
+		h.wantState(StateIdle)
 		if _, held := h.heldPause(); held {
 			t.Fatal("the hold of the ended pause is still held")
 		}
 		h.advance(testProbe)
-		h.wantState(StateReady)
-		h.wantCalls("Suspend", 1)
+		h.wantState(StateIdle)
+		h.wantCalls("Suspend", 0)
 		stops.wantStops(t)
 	})
 
 	t.Run("a task is sent", func(t *testing.T) {
-		h, stops := heldAtReady(t)
+		h, stops, task := heldAtIdle(t)
 
+		h.must(StreamPromptResult{Claim: h.token, DeliveryID: task, AgentInvoked: true})
 		h.must(RequestDeliver{Claim: h.token, Task: "address the review"})
 
-		if prompts := h.wantPrompts(1); prompts[0].Message != "address the review" {
-			t.Fatalf("the claim was sent %q, want the task delivered", prompts[0].Message)
+		if prompts := h.prompts(); len(prompts) == 0 || prompts[len(prompts)-1].Message != "address the review" {
+			t.Fatalf("the claim was sent %+v, want the task delivered", prompts)
 		}
 		if _, held := h.heldPause(); held {
 			t.Fatal("the hold of the ended pause is still held")
 		}
-		h.wantCalls("Suspend", 1)
+		h.wantState(StateIdle)
+		h.wantCalls("Suspend", 0)
 		stops.wantStops(t)
 	})
 }

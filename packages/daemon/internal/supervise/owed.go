@@ -13,8 +13,9 @@ import (
 // the repair runs rather than a copy taken when the write failed (repair), and it names no store
 // method either: which call the repair makes is decided afresh from what the claim holds then,
 // and the method of each failure is in that failure's own log line. What is left is the durable
-// reports those failed decisions never made, the pause stops they never recorded, and a
-// retirement whose delete they never made.
+// reports those failed decisions never made, the pause stops they never recorded, a retirement
+// whose delete they never made, and what those decisions do outside the machine while the window
+// after a refused write holds their writes back.
 type owedClaimWrite struct {
 	// reports are the durable reports the failed decisions owed, oldest first, made when the
 	// write they waited on lands — at a repair, or at any claim write of a later decision that
@@ -46,6 +47,15 @@ type owedClaimWrite struct {
 	// and leaves this (settleOwedWrite); only a retirement that lands, or a row that holds no
 	// delivery at all, clears it, and a row that holds another one refuses it (repairRetirement).
 	retire string
+	// after is what the decisions whose writes this mark owes do outside the machine once those
+	// writes are made (afterRecord): the stop of a process, a revocation, the stop of a
+	// registration, a forgotten session's report. It holds them only while the window after a
+	// refused claim write holds every write back (errWritesWait, D5 of dispatch://INFRA-4099's
+	// plan): the write that makes the owed write acts on them once it lands (settleOwedWrite) or
+	// fails owed with the store's own answer (recorded), and never on the window's own answer, so
+	// no act runs before its record's write was tried. A refusal drops them with the mark, since
+	// the claim is built again over a row that still records what they would have ended.
+	after afterRecord
 }
 
 // owedReport is one report a decision would have made had its write landed, kept until the write
@@ -331,7 +341,8 @@ func (m *Machine) repairRetirement(ctx context.Context) {
 	case err == nil:
 		m.rowState = c.State
 		m.owedWrite.retire = ""
-		m.settleOwedWrite("RetireDelivery")
+		m.settleOwedWrite(ctx, "RetireDelivery")
+		m.recorded(ctx, nil)
 	case errors.Is(err, ErrNoSuchDelivery):
 		m.log.Warn("supervise: the owed retirement's delivery is no longer in the row; the claim write it carried is made alone",
 			"delivery", id, "error", err)
@@ -340,6 +351,7 @@ func (m *Machine) repairRetirement(ctx context.Context) {
 	case errors.Is(err, ErrOtherDelivery):
 		m.dropOwedWrite("RetireDelivery", err)
 	default:
+		m.recorded(ctx, err)
 		m.repairFailed("RetireDelivery", err)
 	}
 }
@@ -388,17 +400,22 @@ func (m *Machine) dropOwedWrite(method string, err error) {
 //
 // method is the store call that landed, for the line that closes the story (repairedWriteLine):
 // an operator counts the pair of lines, and the one that ends it names the write that made good.
-func (m *Machine) settleOwedWrite(method string) {
+//
+// What the decisions whose writes the mark owed do outside the machine, which the window after a
+// refused write held on the mark (owedClaimWrite.after), is done here too, first, since their
+// record is now written (act, D5 and D6 of dispatch://INFRA-4099's plan).
+func (m *Machine) settleOwedWrite(ctx context.Context, method string) {
 	if m.owedWrite == nil {
 		return
 	}
-	// The reports are taken before the mark goes, since the mark is what holds them.
-	reports, retire := m.owedWrite.reports, m.owedWrite.retire
+	// The reports and the acts are taken before the mark goes, since the mark is what holds them.
+	reports, retire, after := m.owedWrite.reports, m.owedWrite.retire, m.owedWrite.after
 	m.owedWrite = nil
 	if retire != "" {
 		m.owedWrite = &owedClaimWrite{retire: retire}
 	}
 	m.log.Info(repairedWriteLine, "store", method)
+	m.act(ctx, after)
 	m.makeOwedReports(reports)
 }
 

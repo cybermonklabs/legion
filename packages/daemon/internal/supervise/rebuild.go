@@ -92,26 +92,6 @@ func (m *Machine) writesWait() (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// lostSession is a forget of the claim's session held for Deps.SessionLost (Machine.lostTold): the
-// claim at the forget's launch, the forget's cause, and its detail (startFresh).
-type lostSession struct {
-	claim  Claim
-	cause  SessionLoss
-	detail string
-}
-
-// tellLost tells the daemon of the forget the decision now ending made (Machine.lostTold), once:
-// that decision met no refused claim write, since a rebuild drops the forget with what it gives
-// back (giveBackHeld, build). It is unlock's, after settleRefusal.
-func (m *Machine) tellLost() {
-	lost := m.lostTold
-	if lost == nil {
-		return
-	}
-	m.lostTold = nil
-	m.deps.SessionLost(lost.claim, lost.cause, lost.detail)
-}
-
 // settleRefusal ends a decision in which the store refused a claim write (Machine.refusal), and
 // returns at once in one that met none: it clears the refusal, so it runs once whichever of its two
 // callers comes first — handle's own defer, which runs before every other end of a decision of an
@@ -223,7 +203,8 @@ func (m *Machine) rereadWait() error {
 // wake's place through the wake's placeTimer), the wake, a relaunch left waiting, the held
 // suspension, a stale-plugin relaunch's mark and the plugin intent, the send in flight and the
 // prompts outstanding, whose outcomes are then fenced out as stale (forgetSend, forgetOutstanding),
-// and a forget held for the daemon (Machine.lostTold).
+// and what the refused decision was to do outside the machine once its record was written
+// (Machine.awaitingRecord, D6): the refused write acts on nothing.
 //
 // The start parked at the issue pod's gate, the refresh credit and the wake wait the daemon was
 // told of stay in their fields: unlock gives them back against the claim the decision leaves, as it
@@ -235,7 +216,7 @@ func (m *Machine) giveBackHeld() {
 	m.staleRelaunch, m.pluginRelaunch = nil, nil
 	m.forgetSend()
 	m.forgetOutstanding()
-	m.lostTold = nil
+	m.awaitingRecord = afterRecord{}
 }
 
 // rebuild is the second half of the rebuild (D3 and D4 of dispatch://INFRA-4099's plan): the
@@ -278,9 +259,11 @@ func (m *Machine) giveBackHeld() {
 //
 //   - registeredPods: the row's joined with memory's, since the pods an agent registered in are
 //     none of the row's (build).
-//   - previous, stopUnconfirmed: a process this daemon let go still runs in this runtime, which a
-//     restart has none of; but a previous the row records is the claim's process again, and is
-//     cleared with the mark of its stop.
+//   - previous, stopUnconfirmed, stopOwed: a process this daemon let go still runs in this runtime,
+//     which a restart has none of, and so does a stop of it the runtime refused once its record
+//     was written, which is made again at the probe interval (build, TimerStopAgain, D7); but a
+//     previous the row records is the claim's process again, and is cleared with the mark of its
+//     stop and the stop owed of it.
 //   - registration, registrationRefused, identity, enrollmentSent, helloKey: kept where the row
 //     records the process each is for, since that process's shim sends this daemon no second
 //     hello; otherwise the registration is stopped and each is zeroed (keepRowsProcess).
@@ -288,33 +271,40 @@ func (m *Machine) giveBackHeld() {
 //     bound once started; otherwise ended (keepRowsProcess).
 //
 // The claim's enrollment is the row's: one memory holds and the row does not is revoked at the
-// broker, as the boot revokes one its repair detaches (internal/daemon's supervisor.restore).
+// broker, as the boot revokes one its repair detaches (internal/daemon's supervisor.restore). What
+// the refused decision was to do outside the machine is dropped (giveBackHeld), and so is what the
+// owed mark held for its write (owedClaimWrite.after): the row records the process, the
+// enrollment and the registration those acts would have ended.
 //
 // Two things differ from a daemon start's machine on purpose (D4). A process memory records and
 // the row does not — a start whose locator write was refused — is stopped, and it becomes the
 // process the claim last ran (previous): no row names it, and in this daemon's run no orphan sweep
-// stops it. A stop the runtime refuses is logged at Error and leaves stopUnconfirmed set. And a row
-// that names a launch no process carries — a live state with no process, or a released launch
-// (Claim.ReleasedLaunch), the two shapes a daemon start repairs as unfinished — is left to be
-// launched again at the probe interval (relaunchLater), uncharged and paced, since nothing else
-// would relaunch it; the launch's first step is its own claim write (writeTry), so a store that
-// refuses every write starts no process.
+// stops it. A stop the runtime refuses is logged at Error, leaves stopUnconfirmed set, and is owed,
+// made again at the probe interval where the claim is gone and waited out by its next launch
+// otherwise (Machine.stopOwed, TimerStopAgain, D7). And a row that names a launch no process
+// carries — a live state with no process, or a released launch (Claim.ReleasedLaunch), the two
+// shapes a daemon start repairs as unfinished — is left to be launched again at the probe interval
+// (relaunchLater), uncharged and paced, since nothing else would relaunch it; the launch's first
+// step is its own claim write (writeTry), so a store that refuses every write starts no process.
 func (m *Machine) rebuild(ctx context.Context, row Claim) {
 	process, enrollment := m.claim.Locator, m.claim.Enrollment
 	m.keepRowsProcess(row)
 	if enrollment != nil && (row.Enrollment == nil || *row.Enrollment != *enrollment) {
 		m.revoke(*enrollment)
 	}
+	if p := m.previous; p != nil && row.Locator != nil && p.Incarnation == row.Locator.Incarnation {
+		m.previous, m.stopUnconfirmed = nil, false
+		m.clearStopOwed(p)
+	}
 	m.build(row)
 	if process != nil && (row.Locator == nil || row.Locator.Incarnation != process.Incarnation) {
 		m.previous = process
 		if err := m.stopPrevious(ctx); err != nil {
-			m.log.Error("supervise: after a refused claim write, the runtime did not stop the process the claim's row does not record",
-				"incarnation", process.Incarnation, "error", err)
+			m.stopOwed = &owedStop{loc: cloneLocator(process)}
+			m.arm(TimerStopAgain, m.deps.Timeouts.Probe, "")
+			m.log.Error("supervise: after a refused claim write, the runtime did not stop the process the claim's row does not record; the stop is made again at the probe interval",
+				"incarnation", process.Incarnation, "error", err, "retry", m.deps.Timeouts.Probe)
 		}
-	}
-	if p := m.previous; p != nil && row.Locator != nil && p.Incarnation == row.Locator.Incarnation {
-		m.previous, m.stopUnconfirmed = nil, false
 	}
 	if (row.Locator == nil && slices.Contains(live, row.State)) || row.ReleasedLaunch() {
 		m.relaunchLater(m.deps.Timeouts.Probe, m.launchFromTop(launchTry{}))
@@ -325,7 +315,9 @@ func (m *Machine) rebuild(ctx context.Context, row Claim) {
 // keepRowsProcess keeps, of what memory holds about the claim's process, what is about the process
 // row records, and lets the rest go through its own owner: the load of the issue pod's start
 // (endLoad), the pod-session registration (stopRegistration), and the marks of that registration
-// and of the hello, the identity and its enrollment's send, each bound to its incarnation.
+// and of the hello, the identity and its enrollment's send, each bound to its incarnation. The
+// process memory last recorded is the one the claim records, or the one a let-go the store refused
+// moved into previous (letGo), whose marks that let-go left standing for its record.
 func (m *Machine) keepRowsProcess(row Claim) {
 	records := func(incarnation string) bool {
 		return incarnation != "" && row.Locator != nil && row.Locator.Incarnation == incarnation
@@ -345,7 +337,11 @@ func (m *Machine) keepRowsProcess(row Claim) {
 	if !records(m.helloKey.incarnation) {
 		m.helloKey = helloKey{}
 	}
-	if m.claim.Locator == nil || !records(m.claim.Locator.Incarnation) {
+	last := m.claim.Locator
+	if last == nil {
+		last = m.previous
+	}
+	if last == nil || !records(last.Incarnation) {
 		m.enrollmentSent = false
 	}
 }

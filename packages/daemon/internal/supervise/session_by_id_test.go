@@ -523,11 +523,13 @@ func TestAClaimWithASessionAndNoFileWhoseStoreHoldsNoneForgetsItOnce(t *testing.
 	r.wantBudgets(Budgets{})
 }
 
-// The forget is told once, at the end of the decision that made it, so a first fresh spawn that
-// fails still leaves the issue, its architect and the controller told; it is not told before that
-// decision's claim write could be refused (Machine.lostTold). The spawn's failure is the one charge,
-// as any refused start's is, and the retry's spawn is built with the same cause, so the agent that
-// does start is told in its own prompt that it does not continue the session.
+// The forget is told once, by the launch's next claim write, so a first fresh spawn that fails
+// still leaves the issue, its architect and the controller told: the retry's launching write is
+// the first to record the forget, and it is told once that write lands, before the retry's own
+// Spawn, never before a write that could be refused (afterRecord.lost, D6 of
+// dispatch://INFRA-4099's plan). The spawn's failure is the one charge, as any refused start's is,
+// and the retry's spawn is built with the same cause, so the agent that does start is told in its
+// own prompt that it does not continue the session.
 func TestAForgottenSessionIsReportedOnceWhenTheFirstFreshSpawnFails(t *testing.T) {
 	r := newByIDRig(t, byIDClaim(StateQueued, 2), nil)
 	r.rt.ScriptResume(fake.SpawnResult{Err: noSuchSession()})
@@ -541,8 +543,8 @@ func TestAForgottenSessionIsReportedOnceWhenTheFirstFreshSpawnFails(t *testing.T
 	if len(starts) != 3 || !resumedByID(starts[0]) || starts[1].Method != "Spawn" || starts[2].Method != "Spawn" {
 		t.Fatalf("the launch made %s; want a Resume of session %s by its id, the fresh Spawn the runtime refused, and its retry", startsText(starts), idSession)
 	}
-	if lost := r.wantLost(SessionLossGone); lost.spawns != 2 {
-		t.Errorf("the forget was told after %d Spawns; want it told once its decision ended, after the fresh Spawn the runtime refused and its retry", lost.spawns)
+	if lost := r.wantLost(SessionLossGone); lost.spawns != 1 {
+		t.Errorf("the forget was told after %d Spawns; want it told at the retry's launching write, after the fresh Spawn the runtime refused and before its retry", lost.spawns)
 	}
 	built := r.specs.last(t)
 	if built.Generation != starts[2].Spec.Generation {
