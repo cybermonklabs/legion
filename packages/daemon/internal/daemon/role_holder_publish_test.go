@@ -534,7 +534,7 @@ func (r *heldRoleRig) step(name string, state supervise.ClaimState, by supervise
 	}
 	want := []roleHoldersPublished{{Issue: heldRoleIssue, Holders: []dispatch.RoleHolder{}}}
 	if architect != "" {
-		want[0].Holders = []dispatch.RoleHolder{{Role: "architect", Session: architect}}
+		want[0].Holders = []dispatch.RoleHolder{ownHolder(r.t, heldRoleIssue, claim.RoleArchitect, architect)}
 	}
 	if got := r.published(); !reflect.DeepEqual(got, want) {
 		r.t.Errorf("%s: Dispatch was sent %+v, want %+v", name, got, want)
