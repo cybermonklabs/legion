@@ -2799,12 +2799,13 @@ def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, gate
     an AUDITED_SCRIPTS script, those of the entry's reading, which audited_scripts.reading_of gives,
     the function go-test-step-expansion.py reads the same step through. Both sides of the rule read
     a step that way and look for the -run on a `go test` line, never elsewhere in the text. A step
-    that names an audited script in a form no entry reads is a failure by name on either side,
-    since the rule cannot tell what it runs; it is never read as if it named no script. The tagged job
-    and its step are looked for in the file the entry's `workflow` names; the job that runs the
-    untagged tests is looked for in every document of the set, since it may hold its steps in a
-    called file of its own. Returns the
-    report lines."""
+    whose run: holds an audited script's file name in a form no entry reads is a failure by name on
+    either side, since the rule cannot tell what it runs, rather than read as running no script; a
+    run: that spells the name some other way, quotes inside it or the path in a variable, holds no
+    file name (audited_scripts.names_audited) and is read from its own text. The tagged job and its
+    step are looked for in the file the entry's `workflow` names; the job that runs the untagged
+    tests is looked for in every document of the set, since it may hold its steps in a called file
+    of its own. Returns the report lines."""
     report = []
     # Every job id the set holds, in any of its documents: what the untagged job is held to.
     every_job = {job_id for document in documents.values() for job_id in (document.get("jobs") or {})}
@@ -2873,14 +2874,20 @@ def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, gate
     # whose entry is itself stale is named all the same, so it keeps the refusal above rather
     # than drawing a second, confusing one; so does a step the rule cannot read.
     found, unreadable = tag_run_steps(documents)
+
+    def declared(path: str, name: str, step: dict) -> bool:
+        """Whether a TAG_RUNS entry names this step: by its file, its job and the step itself, as
+        an entry is matched above; the one test both loops below make."""
+        return any((entry.workflow, entry.job) == (path, name) and step_matches(step, entry.step) for entry in data.TAG_RUNS)
+
     for path, name, step, why in unreadable:
-        if any((entry.workflow, entry.job) == (path, name) and step_matches(step, entry.step) for entry in data.TAG_RUNS):
+        if declared(path, name, step):
             continue
         problems.append(error(path, f"{name} step \"{step_label(step)}\" {why}; TAG_RUNS reads what a step runs only in "
                                     f"those forms, so it cannot tell whether this step runs only what its tag adds: run the "
                                     f"script as its entry reads it, or read the new form into .github/scripts/audited_scripts.py"))
     for path, name, step in found:
-        if any((entry.workflow, entry.job) == (path, name) and step_matches(step, entry.step) for entry in data.TAG_RUNS):
+        if declared(path, name, step):
             continue
         problems.append(error(path, f"{name} step \"{step_label(step)}\" runs only what its tag adds "
                                     f"(-run), but no TAG_RUNS entry of .github/scripts/ci_job_reads.py names it: the job that "

@@ -66,7 +66,7 @@ merge base in a clone under a temporary directory:
     python3 .github/scripts/go-test-step-expansion.py > "$TMPDIR/head.txt"; echo "head: $?"
     git clone --no-local "$(cd "$store" && realpath "$(cat git_target)")" "$TMPDIR/base"
     git -C "$TMPDIR/base" checkout <merge base>
-    cp .github/scripts/go-test-step-expansion.py "$TMPDIR/base/.github/scripts/"
+    cp .github/scripts/go-test-step-expansion.py .github/scripts/audited_scripts.py "$TMPDIR/base/.github/scripts/"
     (cd "$TMPDIR/base" && python3 .github/scripts/go-test-step-expansion.py) > "$TMPDIR/base.txt"
     echo "base: $?"
     grep '^PAIR' "$TMPDIR/head.txt" > "$TMPDIR/head.pairs"
@@ -76,6 +76,9 @@ merge base in a clone under a temporary directory:
 It reads the repository root off its own path, so the copy under the temporary directory checks
 itself and not the workspace it was copied from, and it reads a step's directory and its
 comment-free lines with `ci_filter_coverage`'s own helpers, which sit beside it in both trees.
+Which steps run an audited script, and what they then run, it reads from `audited_scripts.py`,
+which it imports; a merge base older than that module does not hold it, so the recipe copies it
+beside the tool, with this head's AUDITED_SCRIPTS and the base's scripts, whose digests it checks.
 Each job of ci.yaml holds its steps in a `ci-job-<id>.yaml` of its own, so the set of documents
 it reads is ci.yaml and every workflow a job of it calls, which it derives with that module's
 `called_workflows` (`documents()` below says why it loads them itself).
@@ -159,7 +162,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from audited_scripts import AUDITED_SCRIPTS, Unreadable, reading_of
+from audited_scripts import Unreadable, names_audited, reading_of
 from ci_filter_coverage import called_workflows, script_lines, step_workdir
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -527,7 +530,9 @@ def steps_of(found: dict) -> list[Step]:
                     continue
                 workdir = step_workdir(document, body, step)
                 name = step.get("name") or f"step {index + 1}"
-                audited = any(Path(script_path).name in script for script_path in AUDITED_SCRIPTS)
+                # The one test of whether a run: names an audited script, which reading_of starts
+                # from too, so a step that reaches it here is one that test names.
+                audited = bool(names_audited(script))
                 if not audited and (workdir not in MODULE_DIRS
                                     or not re.search(r"\bgo\s+test\b", "\n".join(script_lines(script)))):
                     continue

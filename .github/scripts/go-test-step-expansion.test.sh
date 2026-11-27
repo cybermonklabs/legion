@@ -328,7 +328,10 @@ check "every EXCEPTIONS entry names steps the reader yields, so none is left una
 # outside the module its lister must run in, refused by both. Before reading_of, TAG_RUNS read each
 # of the three as naming no script, and so read three real steps unlike this tool: the backend
 # count, run from the root, and both legs steps. The case also names the real steps it read
-# through an entry, so a reading of none is not a pass.
+# through an entry, so a reading of none is not a pass, and holds each of them to the steps the
+# verdicts' own steps_of yields: steps_of decides which steps reach audited_step at all, with
+# audited_scripts.names_audited, so a narrower test there would skip a step TAG_RUNS reads, and
+# only that last check would see it.
 echo "case: this tool and TAG_RUNS read every step that is an audited script alike"
 agreement=$(py 'import ci_filter_coverage as cfc
 from audited_scripts import Unreadable
@@ -357,8 +360,10 @@ for path, document in ex.documents().items():
             if step.get("run"):
                 read, _ = both(path, document, job, body, step)
                 if read is not None:
-                    audited.append(step.get("name"))
-print("audited: " + "; ".join(sorted(audited)))
+                    audited.append((path, step.get("name")))
+print("audited: " + "; ".join(sorted(name for _, name in audited)))
+yielded = {step.key for step in ex.steps_of(ex.documents())}
+print("unyielded: " + (" ".join(sorted(f"{path}:{name}" for path, name in audited if (path, name) not in yielded)) or "none"))
 unit = next(step for step in ex.documents()[".github/workflows/ci-job-envoy-go.yaml"]["jobs"]["envoy-go-legs"]["steps"]
             if step.get("name") == "Unit test envoy Go package")
 for label, run in (("root", "packages/envoy/infra/scripts/natslive.sh ./core ./seed ./gcp"),
@@ -375,6 +380,8 @@ for name in "Count the store-form rows on each backend" "Live tests of envoy-inf
   "Race-test the Dispatch API" "Unit test envoy Go package" "Unit test envoy-infra"; do
   check "and it read \"$name\" through its entry" "$(contains "$(grep '^audited: ' <<<"$agreement")" "$name")"
 done
+check "and every step read through an entry is one the verdicts' steps_of yields" \
+  "$(contains "$agreement" '^unyielded: none$')"
 check "the natslive script run from the repository root is the entry's go test to both" \
   "$(contains "$agreement" '^root: go test -count=1 -timeout 25m -tags natslive -run "$pattern" "$pkg"$')"
 check "the same script with an argument list no entry reads is refused by both" \

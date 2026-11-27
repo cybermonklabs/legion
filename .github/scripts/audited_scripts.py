@@ -9,10 +9,15 @@ those forms, and which reading it then gets, is answered once, by reading_of, an
 read what a step runs call it: go-test-step-expansion.py's audited_step, which holds every pair a
 step runs to the rule that it runs once and refuses a script whose text has moved past its digest,
 and ci_filter_coverage.py's step_go_lines, which check-ci-filters.sh's TAG_RUNS rule reads a step's
-go test lines through. A run: that names an audited script in a form no entry reads raises
-Unreadable, which each of them turns into a refusal naming the step, never a reading of the run:
-as if it named no script. go-test-step-expansion.test.sh holds the two to the same reading of every
-step of this head, and checks each digest; the test job runs it.
+go test lines through. A run: whose text holds an audited script's file name is read as one of its
+entry's forms or raises Unreadable, which each of them turns into a refusal naming the step, so
+neither reads such a run: as if it named no script. A run: that spells the name some other way -
+quotes inside it, or the path in a variable - holds no file name and is read as naming no script:
+that is the limit go-test-step-expansion.py's header records for every script it does not audit,
+and no step is written so. Whether a run: names an audited script at all is names_audited's one
+test, which steps_of and reading_of both call. go-test-step-expansion.test.sh holds the two
+readers to the same reading of every step of this head, and checks each digest; the test job runs
+it.
 
 It imports nothing of this repository, so each reader can import it without the other.
 """
@@ -199,19 +204,33 @@ class Reading:
     script: str
 
 
+def names_audited(script: str) -> list[str]:
+    """The AUDITED_SCRIPTS scripts whose file name a run:'s text holds, as plain text. This is the
+    one test of whether a run: names an audited script: reading_of starts from it, and
+    go-test-step-expansion.py's steps_of calls it to decide which steps reach reading_of at all, so
+    a change to what counts as naming a script reaches both. A name spelled some other way - quotes
+    inside it, or the path in a variable - is not held, and such a run: names no script here."""
+    return [path for path in AUDITED_SCRIPTS if path.rsplit("/", 1)[-1] in script]
+
+
 def reading_of(workdir: str, script: str) -> Reading | None:
     """Whether a run: in workdir is an AUDITED_SCRIPTS script, and what it runs if so. None where
-    the run's text holds no such script's file name. A Reading where it is one of the two forms an
-    entry reads: a run: that is the script's path as spelled from workdir (spellings), alone or
-    followed by an argument list the entry's `commands` lists, from any directory, since the script
-    moves into its module itself; or a legs step's `set -o pipefail` and lister piped to
+    the run's text holds no such script's file name (names_audited). A Reading where it is one of
+    the two forms an entry reads: a run: that is the script's path as spelled from workdir
+    (spellings), alone or followed by an argument list the entry's `commands` lists, from the
+    repository root or from any directory on the script's own path, spelled from there, since the
+    script moves into its module itself; or a legs step's `set -o pipefail` and lister piped to
     `xargs [-r] <path> <an argument list the entry's xargs lists>`, run from the entry's module,
     since the lister runs in the step's own directory and the packages it prints must name the same
     directories there. Unreadable for any other text that holds the file name - an operator, another
-    command, a `$(…)`, a comment, another line, an argument list the entry does not list: the test
-    is on the raw text, before any shell reading, so no quoting or substitution hides the script
-    from it, and no such run: is read as if it named none."""
-    named = [path for path in AUDITED_SCRIPTS if path.rsplit("/", 1)[-1] in script]
+    command, a `$(…)`, a comment, another line, an argument list the entry does not list, or a run
+    from a directory off the script's path, such as a `../` spelling from beside the module, which
+    bash would run. Each of those fails closed, by name, on both readers, and that is the design:
+    a reading is of a form a person read, and a form nobody read is refused rather than guessed at.
+    The test is on the raw text, before any shell reading, so a quote or a substitution elsewhere in
+    the run: does not hide a file name the text holds; a run: that spells the name itself some other
+    way holds none, and is None here."""
+    named = names_audited(script)
     if not named:
         return None
     # Only the shell's own blanks and the line's end: Python's strip() also takes Unicode spaces,
