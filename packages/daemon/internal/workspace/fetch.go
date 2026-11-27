@@ -75,7 +75,10 @@ type FetchRequest struct {
 // CacheStream is the repository-cache input to one issue clone. The cache's bearer token is used
 // only for /packs and /tar; /healthz remains public. Bound limits the verification of what /tar
 // streamed, counted from the stream's end; zero takes FetchTimeout. The attempt on the cache's
-// bucket holds BucketFetchTimeout of its own.
+// bucket holds BucketFetchTimeout of its own. Steps, when set, is the step clock of the provision
+// the fill is part of (issuePod.steps), on which StreamCache begins cache-wait, bucket-attempt,
+// cache-transfer, and each verification's pack-check and history-check; nil, as the repository
+// cache's own tests leave it, logs nothing.
 type CacheStream struct {
 	Repo  ghrepo.Repository
 	URL   string
@@ -83,6 +86,7 @@ type CacheStream struct {
 	Log   func(string)
 	Clock Clock
 	Bound time.Duration
+	Steps *Steps
 }
 
 func (s CacheStream) bound() time.Duration {
@@ -149,6 +153,7 @@ func StreamCache(ctx context.Context, run Runner, stream CacheStream, gitDir str
 	if stream.Clock == nil {
 		return StreamReport{}, errors.New("workspace repository cache clock is required")
 	}
+	stream.Steps.Begin("cache-wait")
 	if err := waitForCache(ctx, stream); err != nil {
 		return StreamReport{}, OutsideVolume(err)
 	}
@@ -195,6 +200,7 @@ func (r *StreamReport) fromCache(ctx context.Context, run Runner, stream CacheSt
 		return fmt.Errorf("the fill ended as it filled the clone from the repository cache %s's bucket (%s): %w", stream.URL, failure.Error(), ctx.Err())
 	}
 	r.Source, r.TarReason = SourceTar, failure.Error()
+	stream.Steps.Begin("cache-transfer")
 	if err := held.restore(); err != nil {
 		return fmt.Errorf("remove what the repository cache's bucket filled %s with: %w", gitDir, err)
 	}
@@ -202,7 +208,7 @@ func (r *StreamReport) fromCache(ctx context.Context, run Runner, stream CacheSt
 	streamed, err := unpackCacheInto(ctx, run, stream, gitDir)
 	verifying := stream.Clock.Now()
 	if err == nil {
-		err = verifyCache(ctx, run, stream.Clock, gitDir, verifying.Add(stream.bound()), "cache stream's", stream.bound(), true)
+		err = verifyCache(ctx, run, stream.Clock, stream.Steps, gitDir, verifying.Add(stream.bound()), "cache stream's", stream.bound(), true)
 	}
 	if err != nil {
 		return fmt.Errorf("fill the clone from the repository cache %s: %w", stream.URL, err)
@@ -787,8 +793,10 @@ func unpackCacheInto(ctx context.Context, run Runner, request CacheStream, gitDi
 // bucket, what is left of its attempt's BucketFetchTimeout (fromBucket). One with nothing left
 // fails, naming the bound. A history check that what remained ended before it answered has shown
 // no object missing, so it is no history that is not whole: it fails naming the bound
-// (errHistoryCheckRanOut), with none of git's words.
-func verifyCache(ctx context.Context, run Runner, clock Clock, gitDir string, deadline time.Time, whose string, bound time.Duration, indexHere bool) error {
+// (errHistoryCheckRanOut), with none of git's words. The packs' check and the history's are two
+// steps on steps, pack-check and history-check.
+func verifyCache(ctx context.Context, run Runner, clock Clock, steps *Steps, gitDir string, deadline time.Time, whose string, bound time.Duration, indexHere bool) error {
+	steps.Begin("pack-check")
 	packs, err := filepath.Glob(filepath.Join(gitDir, "objects", "pack", "pack-*.pack"))
 	if err != nil {
 		return err
@@ -820,6 +828,7 @@ func verifyCache(ctx context.Context, run Runner, clock Clock, gitDir string, de
 			return fmt.Errorf("the repository cache's pack %s, which does not verify: %w", filepath.Base(pack), err)
 		}
 	}
+	steps.Begin("history-check")
 	left, err := remaining(clock, deadline, whose, bound, "checking the repository cache's history is whole")
 	if err != nil {
 		return err

@@ -120,7 +120,16 @@ func issuePodInitExit(cmd *cobra.Command, err error, stderr io.Writer) int {
 // launcher starts. A kept volume reuses its clone and workspace; every provision updates the clone
 // from GitHub under its narrow refspecs. What it reads of its process — each variable, the PATH,
 // TMPDIR, the clock and the bound of its fill, and the runner — it reads from ws.
+//
+// It logs each step of the run as the step ends, `workspace-init: step <name> took <seconds>s`, on
+// one step clock (workspace.Steps) that opens as it starts, so the first step, inputs, counts
+// provisionInputs: a refusal there ends no step and leaves stdout empty. A later failure logs
+// `workspace-init: step <name> failed after <seconds>s` for the step it ended, ahead of the error
+// its caller writes last; a run that succeeds logs `workspace-init: steps took <seconds>s` and then
+// its last line, `workspace-init: <dir> on <bookmark> from <default branch>`.
 func workspaceInit(ctx context.Context, ws workspaceProcess, issue, repo, defaultBranch, root, credentialHelper string, stdout io.Writer) error {
+	log := func(line string) { fmt.Fprintln(stdout, "workspace-init: "+line) }
+	steps := workspace.NewSteps(ws.clock, log)
 	inputs, err := provisionInputs(ws, issue, repo, defaultBranch, root, credentialHelper)
 	if err != nil {
 		// Every check before the first write to the volume is provisionInputs', so this one mark
@@ -128,8 +137,9 @@ func workspaceInit(ctx context.Context, ws workspaceProcess, issue, repo, defaul
 		return workspace.OutsideVolume(err)
 	}
 
-	log := func(line string) { fmt.Fprintln(stdout, "workspace-init: "+line) }
+	steps.Begin("stale-locks")
 	if err := workspace.RemoveStaleGitLocks(inputs.located, time.Now(), log); err != nil {
+		steps.Fail()
 		return err
 	}
 	// commandBudget is the slow-command budget of every command carrying no bound of its own, the
@@ -139,10 +149,13 @@ func workspaceInit(ctx context.Context, ws workspaceProcess, issue, repo, defaul
 	provisioned, err := workspace.Provision(ctx, run, workspace.Request{
 		StateDir: root, Repo: inputs.repository, Issue: issue, DefaultBranch: defaultBranch, CredentialHelper: credentialHelper,
 		Source: workspace.ForIssuePod(inputs.token, ws.tempDir(), inputs.cacheURL, inputs.cacheToken, ws.clock, ws.fetchBound, log), Log: log,
+		Steps: steps,
 	})
 	if err != nil {
+		steps.Fail()
 		return err
 	}
+	steps.End()
 	fmt.Fprintf(stdout, "workspace-init: %s on %s from %s\n", provisioned.Dir, provisioned.Bookmark, provisioned.DefaultBranch)
 	return nil
 }

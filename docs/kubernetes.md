@@ -6572,6 +6572,50 @@ reviewer, merger):
    and the delta from GitHub 30 of its own, so neither leaves the delta short; the fill's waits,
    transfers and checks end within 205 minutes (`workspace.FetchBudget`).
 
+   The log also gives the time of each step of the provision: one line as each step ends,
+   `workspace-init: step <name> took <seconds>s`, in seconds with one decimal, and once the last
+   has ended `workspace-init: steps took <seconds>s`, just before the last line,
+   `workspace-init: <dir> on <bookmark> from <default branch>`.
+   One clock in the process times every step (`workspace.Steps`), and each instant of the run
+   belongs to one step, so the steps add up to the total but for each line's rounding to a tenth.
+   A provision that fails logs `workspace-init: step <name> failed after <seconds>s` for the step
+   it failed in, then its error, which stays the log's last line, the one the daemon's quote of the
+   failed container ends with.
+   A refusal of the provision's input, before it touches the volume, logs nothing on stdout.
+   While a provision runs, the step it is in is the one after the last step its log names.
+   A new clone runs these steps, in this order:
+
+   - `inputs`, the checks of the provision's flags, variables, token and tools;
+   - `stale-locks`, the removal of the stale git locks a killed process left;
+   - `clone-stage`, the clone's staging directory beside it, the removal of a stale one, and its
+     `git init`;
+   - where a cache is named, `cache-wait`, the wait for a ready cache; `bucket-attempt`, the
+     bucket's `/packs`, downloads and refs, which ends at once where the cache serves no `/packs`;
+     where the bucket did not fill the clone, `cache-transfer`, the removal of what the bucket's
+     attempt wrote and the stream from `/tar`; then `pack-check`, the packs' checksums (or `git
+     index-pack` for a pack the tar sent without its index), and `history-check`, `git fsck
+     --connectivity-only`.
+     A bucket attempt whose own check fails logs its `pack-check`, and its `history-check` where
+     its packs passed, before `cache-transfer`;
+   - `github-delta`, GitHub's `HEAD`, the origin's configuration and the fetch, with its retries;
+   - `ref-pruning`, the local default branches, the removal of every ref but the default branches'
+     and the issue's, and `origin/HEAD`;
+   - `jj-init` (`jj git init --colocate`), `jj-clone-working-copy` (the clone's sparse clear and
+     the abandon of its working-copy commit) and `jj-track` (the default branches' tracking and the
+     clone's rename into place);
+   - `jj-configuration`, the clone's jj settings;
+   - `workspace-registration`, the issue workspace's `jj workspace add`;
+   - `configuration`, the git worktree's lock and the clone's git configuration;
+   - `checkout`, the wait for a checkout's place and `jj sparse reset`.
+
+   On a clone that is already there, the provision runs `update-stale` (`jj workspace
+   update-stale`) after `stale-locks` where the issue's workspace is there too, and then
+   `jj-configuration`, `github-delta`, `ref-pruning`, `jj-import` (`jj git import`), `jj-track`
+   and `workspace-registration`, which restores the workspace's git worktree where the workspace
+   is there and adds it where not; then, for a workspace that was there, `checkout-check`, whether
+   its checkout finished; then `configuration`, and `checkout` where the workspace is new or
+   holds no sparse pattern.
+
    The clone holds the current GitHub default branch, the issue branch `legion/<KEY>` and its task
    branches `legion/<KEY>.*` when GitHub has them, and no tag.
    Its `remote.origin.fetch` names the current default branch exactly, then the issue's
@@ -10219,6 +10263,10 @@ The daemon probes a pod by reading it and consulting the worker stream's live re
   tar, whose verification has one `workspace.FetchTimeout`, fetches the GitHub delta under another,
   all within `workspace.FetchBudget`, builds the colocated clone and jj workspace under
   `workspace.CloneTimeout`, and checks out the issue's workspace under `workspace.CheckoutTimeout`.
+  Its log (`kubectl -n legion logs <pod> -c workspace-init`) has one line for each step as the
+  step ends, `workspace-init: step <name> took <seconds>s`, so a pod long in `Pending` is in the
+  step after the last one named there, in the order
+  [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) lists them.
   It waits on no other issue pod and takes no lock, since the clone it provisions is on the
   issue's own volume.
   The launch that created the pod waits for the role's launcher, which starts only once the init

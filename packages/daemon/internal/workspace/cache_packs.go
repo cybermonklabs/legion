@@ -215,12 +215,15 @@ var errDownloadStalled = fmt.Errorf("the bucket delivered less than %d bytes in 
 // --connectivity-only`. So it leaves gitDir as unpackCacheInto does, the cache's refs in place. No
 // pack is indexed here: each index comes from the bucket, vouched for by the SHA-256 the cache
 // sent, and a pack without one is an error. On success it records the bucket as the clone's source,
-// the objects it verified, their bytes and the times.
+// the objects it verified, their bytes and the times. Its step, bucket-attempt, covers the ask, the
+// downloads and the refs, and ends at once where the cache serves no /packs; its verification is
+// verifyCache's two steps.
 //
 // It answers a *bucketFailure when the cache's /tar must fill the clone instead (fromCache removes
 // what it wrote first), and any other error for a failure that ends the fill: an answer that
 // refuses the pod's token or names another repository (askCache), which /tar would meet too.
 func (r *StreamReport) fromBucket(ctx context.Context, run Runner, stream CacheStream, gitDir string) error {
+	stream.Steps.Begin("bucket-attempt")
 	started := stream.Clock.Now()
 	deadline := started.Add(BucketFetchTimeout)
 	bounded, cancel := context.WithTimeout(ctx, BucketFetchTimeout)
@@ -243,7 +246,7 @@ func (r *StreamReport) fromBucket(ctx context.Context, run Runner, stream CacheS
 		return err
 	}
 	verifying := stream.Clock.Now()
-	if err := verifyCache(ctx, run, stream.Clock, gitDir, deadline, "bucket attempt's", BucketFetchTimeout, false); err != nil {
+	if err := verifyCache(ctx, run, stream.Clock, stream.Steps, gitDir, deadline, "bucket attempt's", BucketFetchTimeout, false); err != nil {
 		switch {
 		// git's own words for a history that is not whole name the objects the refs reach, which
 		// are the refs' contents: the reason names the check alone.

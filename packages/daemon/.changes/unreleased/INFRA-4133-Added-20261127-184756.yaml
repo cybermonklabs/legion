@@ -1,0 +1,21 @@
+kind: Added
+body: |-
+  An issue pod's `workspace-init` now logs how long each step of its provision took, so the log
+  shows where a slow start spends its time. As each step ends it writes one line,
+  `workspace-init: step <name> took <seconds>s`, in seconds with one decimal, and before its last
+  line, `workspace-init: <dir> on <bookmark> from <default branch>`, it writes the whole run,
+  `workspace-init: steps took <seconds>s`; the steps add up to that total. A new clone's steps are
+  `inputs`, `stale-locks`, `clone-stage`, then with a repository cache `cache-wait`,
+  `bucket-attempt`, `cache-transfer` (where the cache's bucket did not fill the clone), `pack-check`
+  and `history-check`, then `github-delta`, `ref-pruning`, `jj-init`, `jj-clone-working-copy`,
+  `jj-track`, `jj-configuration`, `workspace-registration`, `configuration` and `checkout`. A clone
+  that is already on the volume runs `update-stale`, `jj-configuration`, `github-delta`,
+  `ref-pruning`, `jj-import`, `jj-track`, `workspace-registration`, `checkout-check`,
+  `configuration` and `checkout` where each applies. A provision that fails writes
+  `workspace-init: step <name> failed after <seconds>s` for the step it failed in, and its error
+  stays the log's last line. While a pod is still provisioning, the step it is in is the one after
+  the last step its log names. `docs/kubernetes.md` ("Anatomy of a Sandbox pod") says what each
+  step covers. The tmux runtime's provisions log no step lines.
+time: 2026-11-27T18:47:56Z
+custom:
+    Issue: INFRA-4133

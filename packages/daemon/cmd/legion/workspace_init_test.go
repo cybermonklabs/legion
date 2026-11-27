@@ -807,14 +807,15 @@ func TestWorkspaceInitProvisionsTheIssueWorkspace(t *testing.T) {
 	v := newIssueVolume(t).withRemote(t, "main")
 
 	p := v.start(t, "", "LEGION-42")
-	code, lines := p.wait(t)
+	code, printed := p.wait(t)
 	if code != 0 {
 		t.Fatalf("exit %d, stderr %q", code, p.stderr.String())
 	}
 	workspace := v.workspace("LEGION-42")
 	const fill = "workspace-init: no repository cache named: fetched the default branch of acme/widgets from GitHub ("
+	lines := strings.Split(strings.TrimSuffix(withoutStepLines(strings.Join(printed, "\n")+"\n"), "\n"), "\n")
 	if want := "workspace-init: " + workspace + " on legion/LEGION-42 from main"; len(lines) != 2 || !strings.HasPrefix(lines[0], fill) || lines[1] != want {
-		t.Fatalf("stdout %q, want the fill line then %q", lines, want)
+		t.Fatalf("stdout %q, want the fill line then %q, besides the step lines", printed, want)
 	}
 	if listed := v.jj(t, "workspace", "list", "-R", v.clone()); !strings.Contains(listed, "legion-42:") {
 		t.Fatalf("the clone's workspaces are %q, want legion-42 among them", listed)
@@ -862,7 +863,7 @@ func TestWorkspaceInitProvisionsAtADefaultBranchWithASlash(t *testing.T) {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
 	workspace := v.workspace("LEGION-42")
-	if want := "workspace-init: " + workspace + " on legion/LEGION-42 from release/v7.1\n"; !strings.HasSuffix(stdout, want) || !strings.HasPrefix(stdout, "workspace-init: no repository cache named: fetched the default branch of acme/widgets from GitHub (") {
+	if want, logged := "workspace-init: "+workspace+" on legion/LEGION-42 from release/v7.1\n", withoutStepLines(stdout); !strings.HasSuffix(logged, want) || !strings.HasPrefix(logged, "workspace-init: no repository cache named: fetched the default branch of acme/widgets from GitHub (") {
 		t.Fatalf("stdout %q, want the fill line then %q", stdout, want)
 	}
 	head := v.git(t, "--git-dir="+v.env["WINIT_REMOTE"], "rev-parse", "refs/heads/release/v7.1")
@@ -916,7 +917,7 @@ func TestWorkspaceInitGivesTheCheckoutABoundOfItsOwn(t *testing.T) {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
 	provisionedWorkspace := v.workspace("LEGION-42")
-	if want := "workspace-init: " + provisionedWorkspace + " on legion/LEGION-42 from main\n"; !strings.HasSuffix(stdout, want) || !strings.HasPrefix(stdout, "workspace-init: no repository cache named: fetched the default branch of acme/widgets from GitHub (") {
+	if want, logged := "workspace-init: "+provisionedWorkspace+" on legion/LEGION-42 from main\n", withoutStepLines(stdout); !strings.HasSuffix(logged, want) || !strings.HasPrefix(logged, "workspace-init: no repository cache named: fetched the default branch of acme/widgets from GitHub (") {
 		t.Fatalf("stdout %q, want the fill line then %q", stdout, want)
 	}
 	if _, err := os.Stat(filepath.Join(provisionedWorkspace, "tree.txt")); err != nil {
@@ -1292,7 +1293,8 @@ func (v *issueVolume) holder(t *testing.T) *initProcess {
 
 // fifo opens one end of a fifo — which blocks until the holder opens the other — reads it to EOF
 // when reading, and closes it, bounded by the test binary's deadline less 30 s and by the holder's
-// staying alive and silent.
+// staying alive and printing no line but its step lines (stepLine), which a provision prints as
+// each step before the hold ends.
 func fifo(t *testing.T, path string, flag int, holder *initProcess) string {
 	t.Helper()
 	type opened struct {
@@ -1312,18 +1314,23 @@ func fifo(t *testing.T, path string, flag int, holder *initProcess) string {
 		result.err = err
 		done <- result
 	}()
-	select {
-	case result := <-done:
-		if result.err != nil {
-			t.Fatalf("%s: %v", path, result.err)
+	deadline := time.After(testwait.Bounded(t, 1<<60, 30*time.Second))
+	for {
+		select {
+		case result := <-done:
+			if result.err != nil {
+				t.Fatalf("%s: %v", path, result.err)
+			}
+			return string(result.read)
+		case line, ok := <-holder.lines:
+			if ok && stepLine.MatchString(line) {
+				continue
+			}
+			t.Fatalf("the holder printed %q (open: %v) before reaching %s; stderr %q", line, ok, path, holder.stderr.String())
+		case <-deadline:
+			t.Fatalf("nothing opened the other end of %s before the test binary's deadline", path)
 		}
-		return string(result.read)
-	case line, ok := <-holder.lines:
-		t.Fatalf("the holder printed %q (open: %v) before reaching %s; stderr %q", line, ok, path, holder.stderr.String())
-	case <-time.After(testwait.Bounded(t, 1<<60, 30*time.Second)):
-		t.Fatalf("nothing opened the other end of %s before the test binary's deadline", path)
 	}
-	return ""
 }
 
 // holdsNoToken fails when any file under dir contains the provisioning token.
@@ -1598,7 +1605,7 @@ func TestWorkspaceInitProvisionStreamsANarrowedRepositoryCache(t *testing.T) {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
 	line := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(notServedLine) + `workspace-init: ([0-9,]+) bytes from the repository cache ` + regexp.QuoteMeta(cache) + ` in .+, its history verified in .+; [0-9,]+ bytes from GitHub for the delta \([0-9]+ refs\)$`)
-	match := line.FindStringSubmatch(stdout)
+	match := line.FindStringSubmatch(withoutStepLines(stdout))
 	if match == nil {
 		t.Fatalf("stdout %q, want /tar as the source, then the cache stream and GitHub delta", stdout)
 	}
@@ -1742,7 +1749,7 @@ func TestWorkspaceInitProvisionWritesNoURLCredentials(t *testing.T) {
 
 	code, stdout, stderr := v.answered(t, "the provisioning of LEGION-42", v.args("LEGION-42"))
 	shown := "http://[a URL with credentials]/widgets"
-	if want := "workspace-init: waiting for the repository cache " + shown + " to be ready: Get \"" + shown + "\": "; !strings.HasPrefix(stdout, want) {
+	if want := "workspace-init: waiting for the repository cache " + shown + " to be ready: Get \"" + shown + "\": "; !strings.HasPrefix(withoutStepLines(stdout), want) {
 		t.Errorf("stdout %q, want the wait logged as %q", stdout, want)
 	}
 	if want := "the repository cache " + shown + " was not ready within " + workspace.CacheWaitTimeout.String(); code != workspace.InitExitOutsideVolume || !strings.Contains(stderr, want) {
@@ -1784,7 +1791,7 @@ func TestWorkspaceInitProvisionRetriesATransientFetchFailure(t *testing.T) {
 	}
 	want := "workspace-init: fetch attempt 1 failed; retrying in 5s: error: RPC failed; curl 92 HTTP/2 stream 7 was not closed cleanly: CANCEL (err 8) | fatal: early EOF | fatal: fetch-pack: invalid index-pack output\n" +
 		"workspace-init: fetch attempt 2 failed; retrying in 15s: error: RPC failed; HTTP 408 curl 22 The requested URL returned error: 408 | fatal: expected 'packfile'\n"
-	rest, retried := strings.CutPrefix(stdout, want)
+	rest, retried := strings.CutPrefix(withoutStepLines(stdout), want)
 	if !retried || !strings.HasPrefix(rest, "workspace-init: no repository cache named: fetched the default branch of acme/widgets from GitHub (") {
 		t.Fatalf("stdout %q, want %q then the fill from GitHub", stdout, want)
 	}
@@ -1825,8 +1832,8 @@ func TestWorkspaceInitProvisionLogsNoToken(t *testing.T) {
 	if strings.Contains(stdout+stderr, "ghs_test") {
 		t.Fatalf("provision logged the provisioning token:\nstdout %q\nstderr %q", stdout, stderr)
 	}
-	if want := "workspace-init: fetch attempt 1 failed; retrying in 5s: fatal: unable to access 'https://[a URL with credentials]/acme/widgets/': Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n"; stdout != want {
-		t.Fatalf("stdout %q, want %q", stdout, want)
+	if want := "workspace-init: fetch attempt 1 failed; retrying in 5s: fatal: unable to access 'https://[a URL with credentials]/acme/widgets/': Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n"; withoutStepLines(stdout) != want {
+		t.Fatalf("stdout %q, want %q besides the step lines", stdout, want)
 	}
 	for _, says := range []string{"remote: Invalid username or token ***.", "fatal: Authentication failed for 'https://[a URL with credentials]/acme/widgets/'"} {
 		if !strings.Contains(stderr, says) {

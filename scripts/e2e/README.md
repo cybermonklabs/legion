@@ -1978,7 +1978,9 @@ Each item below names a check, then what it does and what it requires.
   (`legion-<project>-cache-<owner>-<repo>-<hash>`, recorded for teardown first).
   Once the cache is Ready, the root's provision log carries `workspace-init: <n> bytes from the
   repository cache http://<cache>.<namespace>.svc:8418 in <d>, its history verified in <d>; <m>
-  bytes from GitHub for the delta (<k> refs)`, with `<m>` under 1 MiB.
+  bytes from GitHub for the delta (<k> refs)`, with `<m>` under 1 MiB, among the provision's step
+  lines (`workspace-init: step <name> took <seconds>s`, which `docs/kubernetes.md` lists), which
+  the check reads past.
 
 - `gvisor`
 

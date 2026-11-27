@@ -22,7 +22,10 @@ import (
 // Kubernetes. An issue with no branch starts at request.DefaultBranch, which the request must name.
 // Every command on the shared clone runs under request.StoreLock; only the checkout (`jj sparse
 // reset`), which writes the issue's own working copy and nothing of the clone, runs with the lock
-// let go, holding one of request.CheckoutSlot's places instead.
+// let go, holding one of request.CheckoutSlot's places instead. It begins its steps on
+// request.Steps where each starts — update-stale, workspace-registration, checkout-check,
+// configuration and checkout — and hands the step clock to the issue pod's fill, which begins the
+// fill's.
 func Provision(ctx context.Context, run Runner, request Request) (Workspace, error) {
 	workspace, err := Location(request.StateDir, request.Repo, request.Issue)
 	if err != nil {
@@ -56,6 +59,7 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 		return Workspace{}, err
 	}
 	if exists {
+		request.Steps.Begin("update-stale")
 		if _, err := RunCheckedIn(ctx, run, workspace, []string{"jj", "workspace", "update-stale"}); err != nil {
 			return Workspace{}, err
 		}
@@ -63,6 +67,9 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	source, err := request.Source.open(request.Repo, workspace.Bookmark, request.DefaultBranch)
 	if err != nil {
 		return Workspace{}, err
+	}
+	if source.issue != nil {
+		source.issue.steps = request.Steps
 	}
 	defer func() {
 		_ = source.remove()
@@ -77,6 +84,7 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 		return Workspace{}, err
 	}
 
+	request.Steps.Begin("workspace-registration")
 	if exists {
 		if err := restoreGitWorktree(ctx, run, workspace, request.Log); err != nil {
 			return Workspace{}, err
@@ -86,6 +94,7 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	}
 	checkout := !exists
 	if exists {
+		request.Steps.Begin("checkout-check")
 		// A workspace whose checkout never finished — registered with no files, then the checkout
 		// failed or the daemon stopped — is checked out now, or its pane would start in an empty
 		// working copy.
@@ -95,6 +104,7 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 		}
 		checkout = !whole
 	}
+	request.Steps.Begin("configuration")
 	// Every workspace provisioning touches has its git worktree entry locked, one added before
 	// provisioning locked any included, so a bare `git worktree prune` that cannot see it skips it.
 	if err := lockGitWorktree(workspace.Clone, workspace.Dir); err != nil {
@@ -151,6 +161,7 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	// and those steps keeps the runner's slow-command budget.
 	store.unlock()
 	if checkout {
+		request.Steps.Begin("checkout")
 		release, err := request.checkoutPlace(ctx)
 		if err != nil {
 			return Workspace{}, fmt.Errorf("check out workspace %s: wait for a checkout's place: %w", workspace.Dir, err)

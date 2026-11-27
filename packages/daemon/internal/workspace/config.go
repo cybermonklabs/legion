@@ -150,6 +150,11 @@ type Request struct {
 	// CheckoutTimeout; a test sets a short one to prove the checkout is bounded by this and not by
 	// the runner's slow-command budget.
 	CheckoutBound time.Duration
+	// Steps, when set, is the step clock of the provision (Steps): Provision begins its own steps
+	// on it, and hands it to the issue pod's fill, which begins the fill's. workspace-init's
+	// provision sets it, and logs its lines through its own log; the tmux runtime leaves it nil,
+	// which logs nothing, so a pane's provision gains no line.
+	Steps *Steps
 }
 
 // checkoutPlace waits for one of request's checkout places (CheckoutSlot) and returns its release;
@@ -891,7 +896,13 @@ func runCheckedOnClone(ctx context.Context, run Runner, cloneDir string, args ..
 	return RunChecked(ctx, run, argv, nil, cloneDir)
 }
 
+// ensureFetchConfiguration writes the clone's jj settings, the step jj-configuration, and fetches
+// from GitHub: for an issue pod's kept clone its delta (fetchIssuePod), imported into jj
+// (jj-import) with the default branches tracked (jj-track); for a clone the issue pod's fill just
+// made, nothing more (issuePodClone fetched it); and for the tmux runtime's clone, the default
+// branch and the issue's.
 func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, source remote) error {
+	source.steps().Begin("jj-configuration")
 	setting, err := runCheckedOnClone(ctx, run, cloneDir, "config", "get", "git.abandon-unreachable-commits")
 	if err != nil {
 		return err
@@ -912,9 +923,11 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 		if err != nil {
 			return err
 		}
+		source.issue.steps.Begin("jj-import")
 		if _, err := runCheckedOnClone(ctx, run, cloneDir, "git", "import"); err != nil {
 			return err
 		}
+		source.issue.steps.Begin("jj-track")
 		for _, branch := range defaults {
 			if _, err := runCheckedOnClone(ctx, run, cloneDir, "bookmark", "track", originRow(branch)); err != nil {
 				return err
