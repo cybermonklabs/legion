@@ -17,18 +17,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/stream"
 )
 
-// The shared clone live proof (scripts/e2e/shared-clone-kind.sh, whose driver is
+// The issue-clone live proof (scripts/e2e/shared-clone-kind.sh, whose driver is
 // shared_clone_live_test.go, built with -tags e2e) writes its legion.yaml and builds its Sandbox
 // runtime with what is here and in burstable_kind_test.go. They are untagged so `go test` holds
 // them to the loader's and the runtime's current contracts on every run, as the Burstable proof's
 // are.
 
-// sharedCloneLiveRepository is a public repository, so the pods' workspace-fetch and the
-// repository cache clone it without GitHub asking for the placeholder provisioning token, and one
-// large enough that a copy of its objects stands far above what a clone writes itself: about 27 MB
-// on GitHub, on 2026-11-24. Its default branch is master. It is the runtime's cache set
-// (burstableLiveRuntime), so the first pod's launch makes its repository cache, and the second pod,
-// launched once that cache is Ready, fills its feed from the cache's tar.
+// sharedCloneLiveRepository is public, so the pods' workspace-init and repository cache clone it
+// without GitHub asking for the placeholder provisioning token. Its default branch is master. It
+// is the runtime's cache set (burstableLiveRuntime), so the first pod's launch makes its repository
+// cache, and the second pod, launched once that cache is Ready, fills its clone from the cache's
+// tar.
 var sharedCloneLiveRepository = ghrepo.MustParse("tmux/tmux")
 
 // sharedCloneLiveResources is the proof's runtime.kubernetes reservations, sized so two issue pods
