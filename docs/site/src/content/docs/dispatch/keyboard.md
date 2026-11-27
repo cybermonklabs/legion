@@ -54,22 +54,22 @@ These work on every page.
 ## Inbox
 
 From 1280 px the Inbox page is two columns, and these keys act on the **selected** row: the one
-the right column is showing. Below that width, and in the Inbox drawer, they act on the
-**focused** row.
+the right column is showing. Below that width they act on the **focused** row, and on the row you
+opened while it stands in place of the list. In the Inbox drawer they act on the **focused** row.
 
 | Keys | Action |
 | --- | --- |
 | `j` / `k` | Next / previous row |
 | `↓` / `↑` | Next / previous row, while the focus is in the list (below 1280 px, while a row is focused) |
-| `l` | Move the focus into the reading pane, which the arrow keys, Page Up, Page Down, Space, Home and End then scroll (nothing below 1280 px, in the drawer, or with no row selected) |
-| `Enter` | Answer the selected ask (moves into its answer box, opening the note field of an ask block first) |
-| `1` – `9` | Pick option 1–9 of the selected ask |
-| `o` | Open the row's issue, document or thread |
-| `y` | Copy the selected row's reference |
+| `l` | Move the focus into the reading pane, which the arrow keys, Page Up, Page Down, Space, Home and End then scroll (nothing in the drawer, or below 1280 px with no row open) |
+| `Enter` | Answer the selected ask (moves into its answer box, opening the note field of an ask block first); below 1280 px, on a focused row, open it in place of the list |
+| `1` – `9` | Pick option 1–9 of the selected ask; below 1280 px, on a focused row, open it and pick there |
+| `o` | Open the row's issue, document or thread on its own page; below 1280 px a focused thread row's `o` goes to the thread's page too, where a tap on its title opens the row in place |
+| `y` | Copy the selected row's reference; below 1280 px, on a focused ask row, open it and copy from its head |
 | `x` | Tick or untick the selected ask, for a snooze of several at once |
-| `h` | Snooze the selected ask, or every ticked ask |
+| `h` | Snooze the selected ask, or every ticked ask; below 1280 px, on a focused row, open it at its **Snooze** |
 | `f` | Move the focus to the **Search asks** box above the list |
-| `Escape` | From the search box, to the selected row, or the first row where none is selected; from the right column, back to the row `l` was pressed on, else the row it is showing; then back to the row, then off it; from the bulk snooze menu, back to the list; with no row focused, drop every tick |
+| `Escape` | From the search box, to the selected row, or the first row where none is selected; from the right column, back to the row `l` was pressed on, else the row it is showing; then back to the row, then off it; below 1280 px, from an open row - its **Snooze** and **Priority** included - back to the list (from inside its question, first out of the question; in a text field, Escape is the field's); from the bulk snooze menu, back to the list; with no row focused, drop every tick |
 
 `Enter`, `1` – `9`, `x` and `h` are an open question's: a thread row has no options, no answer
 box and no snooze, so they do nothing on one. An agent-message row has no `dispatch://`

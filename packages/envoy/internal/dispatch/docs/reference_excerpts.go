@@ -341,10 +341,7 @@ func removalsOfVersions(ctx context.Context, versions refs.Versions) graphstore.
 			held = append(held, removals)
 		}
 	}
-	switch len(held) {
-	case 0:
-		return graphstore.Uncaused{}
-	case 1:
+	if len(held) == 1 {
 		return held[0]
 	}
 	return graphstore.Joined(held...)
@@ -750,12 +747,7 @@ func blockPointers(blocks []model.ArtifactBlock, tree *pmdoc.Node) []refs.Pointe
 	if len(blocks) == 0 || tree == nil || !pmdoc.HasLinkKinds() {
 		return nil
 	}
-	found := pmdoc.BlockPointers(tree)
-	pointers := make([]refs.Pointer, len(found))
-	for index, pointer := range found {
-		pointers[index] = refs.Pointer{Block: pointer.Block, BlockType: pointer.BlockType, Kind: pointer.Attribute, Target: pointer.Target, Targets: pointer.Targets}
-	}
-	return pointers
+	return refs.PointersOf(tree)
 }
 
 // indexUnrenderedVersion indexes one document version with no rendering, written at versionAt, in

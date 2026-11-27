@@ -18,7 +18,7 @@ import (
 //
 // Each parent's children in next are aligned with that parent's children in live (carryChildren):
 // an unchanged child takes live's id wherever it stands among them, so a version that moves one
-// block keeps the id of that block and of every block the move passes (this issue's spec R13),
+// block keeps the id of that block and of every block the move passes (R13 of the issue-tree spec),
 // and a pointer or an anchor into any of them still resolves. live is compared with its anchor
 // marks stripped, which the markdown never holds, with every untyped block's id masked, and with a
 // typed block's id masked too where next names none for it, along with the whole of that block's
@@ -76,6 +76,12 @@ func (c blockIDCarrier) carryChildren(next, live []*Node) {
 	nextMiddle := nextChildren[left : len(nextChildren)-right]
 	liveMiddle := liveChildren[left : len(liveChildren)-right]
 	if len(nextMiddle) == 0 || len(liveMiddle) == 0 {
+		return
+	}
+	// One child left on each side is a pair unchangedEnds has found changed already, so no pair
+	// of unchangedPairs holds it: it goes to carryKeptRun alone, with no content key read.
+	if len(nextMiddle) == 1 && len(liveMiddle) == 1 {
+		c.carryKeptRun(nextMiddle, liveMiddle)
 		return
 	}
 
@@ -172,7 +178,8 @@ func writeContentKey(hash *maphash.Hash, node *Node) {
 
 // inOrder is the longest run of pairs, which stand in next's order, whose children of live stand
 // in live's order too: the children the version left in place, every other pair being one it
-// moved. Where two runs are as long, it is the one whose children of live stand first.
+// moved. Where two runs are as long, it is the one whose children of live stand first. The run
+// has room for one pair more, the bound carryChildren appends to it.
 func inOrder(pairs []childPair) []childPair {
 	if len(pairs) == 0 {
 		return nil
@@ -194,7 +201,7 @@ func inOrder(pairs []childPair) []childPair {
 			tails[length] = index
 		}
 	}
-	run := make([]childPair, len(tails))
+	run := make([]childPair, len(tails), len(tails)+1)
 	for at, index := len(tails)-1, tails[len(tails)-1]; at >= 0; at, index = at-1, previous[index] {
 		run[at] = pairs[index]
 	}

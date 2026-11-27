@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -83,15 +85,27 @@ func requireCommentsBeforeRefused(t *testing.T, handler http.Handler, key, query
 		t.Errorf("comments_before past the end of %s answered 200, not 400", key)
 		return
 	}
-	var refusal struct {
-		Code  string `json:"code"`
-		Error string `json:"error"`
-	}
+	var refusal refusalAnswer
 	_ = json.Unmarshal(response.Body.Bytes(), &refusal)
 	if response.Code != http.StatusBadRequest || refusal.Code != "INVALID_QUERY" ||
 		!strings.Contains(refusal.Error, "comments_before") || !strings.Contains(refusal.Error, refs.CommentPositionShape) {
 		t.Errorf("comments_before %s on %s (%s) answered status=%d body=%s, want 400 INVALID_QUERY naming comments_before and %s",
 			what, key, query, response.Code, response.Body.String(), refs.CommentPositionShape)
+	}
+}
+
+// seedTupleWithHead writes tuple straight into the store and the head row of its from-node, in
+// one transaction, as a test seeds a fact no route of this build writes.
+func seedTupleWithHead(t *testing.T, database *store.Store, tuple graphstore.Tuple) {
+	t.Helper()
+	ctx := context.Background()
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{tuple}); err != nil {
+			return err
+		}
+		return graphstore.WriteHeads(ctx, tx, []graphstore.NodeKey{{Kind: tuple.FromKind, ID: tuple.FromID}})
+	}); err != nil {
+		t.Fatalf("write the %s of %s:%s to %s:%s with the head row of its from-node: %v", tuple.Kind, tuple.FromKind, tuple.FromID, tuple.ToKind, tuple.ToID, err)
 	}
 }
 
@@ -302,11 +316,7 @@ func TestTheSkeletonLiftsWhatStandsUnderAnotherDocumentToTheIssue(t *testing.T) 
 	if issue.Key != key {
 		t.Fatalf("the issue is %s, want %s", issue.Key, key)
 	}
-	capture := &sqlCapture{pool: database.Pool}
-	if _, err := refs.TreeSubtrees(ctx, capture, []refs.Target{{Kind: graphstore.KindIssue, ID: key}}, key, refs.TreeCut{ReadSeq: 1}); err != nil || len(capture.sql) != 1 {
-		t.Fatalf("read the walk's subtrees statement: %d statements, %v", len(capture.sql), err)
-	}
-	r := headRig{t: t, handler: handler, database: database, counter: counter, walked: capture.sql[0]}
+	r := newHeadRig(t, handler, database, counter, key)
 	child := decodeBody[struct {
 		Key string `json:"key"`
 	}](t, created(t, "the child issue", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
@@ -328,23 +338,10 @@ func TestTheSkeletonLiftsWhatStandsUnderAnotherDocumentToTheIssue(t *testing.T) 
 		notes.Artifact.ID).Scan(&paragraph); err != nil {
 		t.Fatalf("read the paragraph of notes.md: %v", err)
 	}
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the placement of %s: %v", child, err)
-	}
-	defer tx.Rollback(ctx)
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{{
+	seedTupleWithHead(t, database, graphstore.Tuple{
 		FromKind: graphstore.KindIssue, FromID: child, Kind: graphstore.TuplePartOf, ToKind: refs.BlockNodeKind, ToID: paragraph,
 		At: time.Now(), Who: model.Actor{Kind: "user", ID: "alice"}, Asserted: true,
-	}}); err != nil {
-		t.Fatalf("place %s on the paragraph %s: %v", child, paragraph, err)
-	}
-	if err := graphstore.WriteHeads(ctx, tx, []graphstore.NodeKey{{Kind: graphstore.KindIssue, ID: child}}); err != nil {
-		t.Fatalf("write the head row of %s: %v", child, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the placement of %s: %v", child, err)
-	}
+	})
 	r.after("child placed on a paragraph of notes.md", key)
 
 	read := treeRead(t, handler, key, "", "alice", true)

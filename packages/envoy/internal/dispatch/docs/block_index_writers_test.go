@@ -302,7 +302,6 @@ func TestTheIndexPassesAreStoreWritersAndNoRepairExists(t *testing.T) {
 	// each list item a node beside the paragraph it holds.
 	blocks := countRows(t, database, "document_blocks", document)
 	types := blockRowTypes(t, database, document)
-	t.Logf("the tick wrote %d block rows of the %d-item list: %v by type", blocks, deferredItems, types)
 	if blocks != deferredBlocks {
 		t.Fatalf("the tick wrote %d block rows of the %d-item list (%v by type), want %d: the list, and each item and its paragraph",
 			blocks, deferredItems, types, deferredBlocks)
@@ -458,7 +457,7 @@ func requireTheOtherLock(t *testing.T, database *store.Store, document, waitingA
 
 // requireTheItemBlockPassWritesNoStoreRow runs the item block pass (refs.IndexOwedItemBlocks,
 // the tick's third batch) over a comment owed the index of its own blocks, and holds the pass to
-// writing no row of graph_nodes and no row of graph_tuples: this child moves no body block of a
+// writing no row of graph_nodes and no row of graph_tuples: this build moves no body block of a
 // comment, a message or an ask into the store. Every document is indexed first, so the tick
 // that runs the pass has no document of its own to write, and a row of either table that moved
 // is the pass's.
@@ -661,11 +660,15 @@ var indexPasses = map[string]string{
 	// table projects, never a side of a projection to mend the other.
 	"docs/ask_blocks.go#claimCopies": "the copies the settlement's reconciliation read, the blocks its version indexed, and the copied_from each block node of the document holds",
 	// Beside those claims, in the same name and under the same event, a settlement states on each
-	// ask node the readability of its block that the reconciliation read (G1): the reason a block
-	// fails the strict read for, as the node's `invalid` value, and that value's retraction once
-	// the block reads again. It reads the value each node holds only to state what moved, never a
-	// side of a projection to mend the other.
-	"docs/ask_blocks.go#stateInvalidReasons": "the readability the settlement's reconciliation read of the document's ask blocks, and the invalid value each of their asks' nodes holds",
+	// ask node the readability of its block that the reconciliation read, through the writer of
+	// that value (asks.PlanInvalidReasons): the reason a block fails the strict read for, as the
+	// node's `invalid` value, and that value's retraction once the block reads again. It reads the
+	// value each node holds only to state what moved, never a side of a projection to mend the
+	// other.
+	"asks/invalid.go#PlanInvalidReasons": "the readability the settlement's reconciliation read of the document's ask blocks, and the invalid value each of their asks' nodes holds",
+	// Beside it, the retraction of each removed_by the node of an ask whose block reads again
+	// holds, which it reads only to state what moved.
+	"docs/ask_blocks.go#planRemovalRetractions": "the asks whose blocks the settlement's reconciliation read again, and the removed_by each of their nodes holds",
 	// The catch-up of a follow a process of the release before recorded: the follower rows that
 	// build wrote, stated on the ask's node where the node does not state them yet.
 	"asks/followers.go#CatchUpFollower": "the follower rows another build recorded and what the ask's node already states of them",
@@ -728,7 +731,7 @@ var indexPasses = map[string]string{
 	// writes it. Neither reads one side of a projection to mend the other.
 	"api/issue_relations.go#queueIssueRelations": "the request's relations and the issue's own event",
 	"api/issue_relations.go#stateFiledFromNode":  "the row of the item the request's filed_from names",
-	// A session's recorded result and its retraction (the result node, T11 of this branch's plan):
+	// A session's recorded result and its retraction (the result node, T11 of the issue-tree plan):
 	// the record states the result's node, its values and its tuples from the request and the
 	// check block it resolved under the owner locks, and the retraction states the retracted
 	// value of the result its request names where its read phase found the result's node; neither
@@ -918,14 +921,14 @@ var indexPasses = map[string]string{
 	// no node, its own content, read again under its issue's row, and that issue's own row, whose
 	// node the object pass wrote first.
 	"graphcensus/census_issues.go#writeIssueLinkBatch": "each pre-store issue_links row's own content and its issue's row",
-	// The backfill of the comments' anchor blocks (T17b of this branch's plan): each comments
+	// The backfill of the comments' anchor blocks (T17b of the issue-tree plan): each comments
 	// row's own anchor, read again under its owner row, and the anchored_in its node states now,
 	// found by an anti-join since the row names no tuple: the tuple is the marker, as a version's
 	// node is the versions pass's. It states only what levels that node with its own row.
 	"graphcensus/census_anchors.go#writeAnchorBatch": "each comments row's own anchor, read again under its owner row, and the anchored_in its node states",
 	// The ask block pointer backfill compares the marked row with the current asked_on tuple.
 	"graphcensus/census_citations_asks.go#writeAskedOnBatch": "each marked asks row's block_artifact_id and block_id, read again under its owner with the asked_on its node states",
-	// The backfill of the approval requests' documents (R14 of this branch's spec): each marked
+	// The backfill of the approval requests' documents (R14 of the issue-tree spec): each marked
 	// approval ask's approval.documents, read again under its owner row, and the approves tuples
 	// its node states now, found by an anti-join both ways since the row names no tuple: the tuple
 	// is the marker, as an anchor's is. It states only what levels that node with its own row.
@@ -934,7 +937,7 @@ var indexPasses = map[string]string{
 	// the rewrite's own arguments name, and the ask's node address, read to say whether the request
 	// names a node at all. It reads no side of a projection to mend the other.
 	"docs/approval_ask.go#rewriteApprovalAsk": "the documents its caller moved the request to and the request's node address",
-	// The backfill's Keep pass (R32 of this branch's spec): each Keep's decision_keeps row and the
+	// The backfill's Keep pass (R32 of the issue-tree spec): each Keep's decision_keeps row and the
 	// kept_text_sum its decision's node states, read again under the issue's owner row, each held
 	// to the sum of the decision's words with shaped, which a release before summed, and both written
 	// to the sum of the same words without it from that rule alone. It reads neither side to mend
@@ -946,7 +949,7 @@ var indexPasses = map[string]string{
 	// tuple is the marker, as an anchor's is. It states only the tuple of a row that holds none, and
 	// retracts only a tuple whose row is gone.
 	"graphcensus/census_refs.go#writeReferenceBatch": "each refs row of a document whose row names its node, read again under its owner row, and the mentions that node states",
-	// The backfill of the components a process of the release before wrote (R9 of this branch's
+	// The backfill of the components a process of the release before wrote (R9 of the issue-tree
 	// spec): each components row its marker does not mark, its own content and the parent it
 	// names, read again under its source's row, with the part_of its node holds now, so it states
 	// only the part_of that moved into that same node; each component_depends row naming no node,
@@ -1042,13 +1045,13 @@ var indexPasses = map[string]string{
 	// asserts of the document (heldDocumentBlocks); what it states of those - gone, retracted - is
 	// decided by the render that does not hold them, as the parents' plan reads the parents the
 	// store asserts to state the render's. Of each block whose row it writes first and whose node
-	// records its authors (T7 of this branch's plan), it reads the authors of the version that
+	// records its authors (T7 of the issue-tree plan), it reads the authors of the version that
 	// first holds it, off that version's own row, and whether the node states its authors already,
 	// off the store's own authored_by, which it reads only to add none where the node's first write
 	// did.
 	"refs/blocks.go#Queue": "the version's render, the authors of the versions its blocks first stand in, each decision's stored decided_by, the pointer tuples the store holds at each block the render drops, and where another release indexed the document since the store stated it, what the store still asserts against that render",
 	// The parents of a version's blocks, from its render. An authored node's first parent is its
-	// author's (D4 of this branch's plan): the targets its parent attribute, its serves pointer
+	// author's (D4 of the issue-tree plan): the targets its parent attribute, its serves pointer
 	// and its From: line name in the render, read where they stand - a conversation item's issue
 	// and R2's test, a block's document - and after that its parent moves only where its parent
 	// attribute names another target than the parent value the store holds of it, which is read

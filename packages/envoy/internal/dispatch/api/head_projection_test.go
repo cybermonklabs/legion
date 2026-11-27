@@ -48,6 +48,17 @@ type headRig struct {
 	observe func(r headRig, class, key string, logins []string)
 }
 
+// newHeadRig is the rig of the issue key over handler, whose pool counter traces, and database: it
+// holds the walk's subtrees statement as refs.TreeSubtrees sends it for the issue.
+func newHeadRig(t *testing.T, handler http.Handler, database *store.Store, counter *roundTrips, key string) headRig {
+	t.Helper()
+	capture := &sqlCapture{pool: database.Pool}
+	if _, err := refs.TreeSubtrees(context.Background(), capture, []refs.Target{{Kind: graphstore.KindIssue, ID: key}}, key, refs.TreeCut{ReadSeq: 1}); err != nil || len(capture.sql) != 1 {
+		t.Fatalf("read the walk's subtrees statement: %d statements, %v", len(capture.sql), err)
+	}
+	return headRig{t: t, handler: handler, database: database, counter: counter, walked: capture.sql[0]}
+}
+
 // headWho is the writer a write of the release before names on the tuples it appends.
 const headWho = `{"kind":"user","id":"alice"}`
 
@@ -103,17 +114,32 @@ func (r headRig) read(key, view, login string) (int, []byte, []string) {
 }
 
 // walkRead is read with the mark of key taken away for its length, so the route walks the tuples
-// at the head cut, and put back after it as it stood.
+// at the head cut, and put back after it as it stood (withoutMark).
 func (r headRig) walkRead(key, view, login string) (int, []byte) {
 	r.t.Helper()
+	return r.withoutMark(r.t, key, true, func() (int, []byte) {
+		status, body, _ := r.read(key, view, login)
+		return status, body
+	})
+}
+
+// withoutMark runs read with the mark of key taken away for its length, so the read walks the
+// tuples, and puts the mark back as it stood. A key no mark names fails t where required, and is
+// read as it stands otherwise.
+func (r headRig) withoutMark(t *testing.T, key string, required bool, read func() (int, []byte)) (int, []byte) {
+	t.Helper()
 	ctx := context.Background()
 	var filled time.Time
-	if err := r.database.Pool.QueryRow(ctx, `delete from issue_head_marks where issue_key = $1 returning filled_at`, key).Scan(&filled); err != nil {
-		r.t.Fatalf("take the mark of %s away to read its walk: %v", key, err)
+	err := r.database.Pool.QueryRow(ctx, `delete from issue_head_marks where issue_key = $1 returning filled_at`, key).Scan(&filled)
+	marked := err == nil
+	if err != nil && (required || !errors.Is(err, pgx.ErrNoRows)) {
+		t.Fatalf("take the mark of %s away to read its walk: %v", key, err)
 	}
-	status, body, _ := r.read(key, view, login)
-	if _, err := r.database.Pool.Exec(ctx, `insert into issue_head_marks (issue_key, filled_at) values ($1, $2) on conflict (issue_key) do nothing`, key, filled); err != nil {
-		r.t.Fatalf("put the mark of %s back: %v", key, err)
+	status, body := read()
+	if marked {
+		if _, err := r.database.Pool.Exec(ctx, `insert into issue_head_marks (issue_key, filled_at) values ($1, $2) on conflict (issue_key) do nothing`, key, filled); err != nil {
+			t.Fatalf("put the mark of %s back: %v", key, err)
+		}
 	}
 	return status, body
 }
@@ -546,11 +572,8 @@ func requireHeadProjectionStates(t *testing.T, observe func(r headRig, class, ke
 	if issue.Key != key {
 		t.Fatalf("the issue is %s, want %s, which its spec's pointers name", issue.Key, key)
 	}
-	capture := &sqlCapture{pool: database.Pool}
-	if _, err := refs.TreeSubtrees(ctx, capture, []refs.Target{{Kind: graphstore.KindIssue, ID: key}}, key, refs.TreeCut{ReadSeq: 1}); err != nil || len(capture.sql) != 1 {
-		t.Fatalf("read the walk's subtrees statement: %d statements, %v", len(capture.sql), err)
-	}
-	r := headRig{t: t, handler: handler, database: database, counter: counter, walked: capture.sql[0], served: served, observe: observe}
+	r := newHeadRig(t, handler, database, counter, key)
+	r.served, r.observe = served, observe
 	r.requireMarked(key)
 	r.after("issue create", key)
 
@@ -745,9 +768,7 @@ func requireHeadProjectionStates(t *testing.T, observe func(r headRig, class, ke
 	// A fill and a write of the release before: the fill holds the issue's owner lock and its
 	// head-fill lock and writes the mark; the write's trigger waits for the head-fill lock, and once
 	// the fill commits it takes away the mark the fill wrote.
-	if _, err := database.Pool.Exec(ctx, `delete from issue_head_marks where issue_key = $1`, key); err != nil {
-		t.Fatalf("take the mark of %s away for a fill: %v", key, err)
-	}
+	unmarkHead(t, database, key)
 	fill, _ := r.begin()
 	if err := store.LockOwner(ctx, fill, store.IssueOwner(key)); err != nil {
 		t.Fatalf("the fill takes the owner lock of %s: %v", key, err)
@@ -786,9 +807,7 @@ func requireHeadProjectionStates(t *testing.T, observe func(r headRig, class, ke
 	// The other order: a write of the release before first, then the fill of the issue, which waits
 	// at the head-fill lock until the write commits, then fills the issue from what it wrote and
 	// marks it.
-	if _, err := database.Pool.Exec(ctx, `delete from issue_head_marks where issue_key = $1`, key); err != nil {
-		t.Fatalf("take the mark of %s away for a fill: %v", key, err)
-	}
+	unmarkHead(t, database, key)
 	early, _ := r.begin()
 	if _, err := early.Exec(ctx, releaseBeforeTuple, refs.BlockNodeKind, paragraphNode, graphstore.AttributeText, graphstore.KindValue, "The release before rewrote it before the fill."); err != nil {
 		t.Fatalf("the write of the release before ahead of the fill of %s: %v", key, err)
@@ -822,9 +841,7 @@ func requireHeadProjectionStates(t *testing.T, observe func(r headRig, class, ke
 	// the issue's head-fill lock in share mode, so on an unmarked issue neither waits for the other.
 	// On a marked issue the first deletes the mark's row, so the second waits for that row until the
 	// first commits (markedWritesWait); both complete and the mark is gone.
-	if _, err := database.Pool.Exec(ctx, `delete from issue_head_marks where issue_key = $1`, key); err != nil {
-		t.Fatalf("take the mark of %s away for two writes of the release before: %v", key, err)
-	}
+	unmarkHead(t, database, key)
 	r.twoReleaseBeforeWrites("unmarked", key, paragraphNode, requirementNode, false)
 	r.refill(key)
 	r.twoReleaseBeforeWrites("marked", key, paragraphNode, requirementNode, markedWritesWait)

@@ -162,7 +162,7 @@ func TestARunListsAndCountsNoDocumentItMadeOnceThatDocumentIsRemoved(t *testing.
 // whose ?from= lists the run. The document is retired: its node is stated gone, and its row, its
 // slug and its ref_key stay, so no later document takes its node. The retirement retracts no
 // changed_by_run, and none is owed: every read of the run's edges goes through graph_edges, whose
-// tuple arm answers no relation out of a node that is gone (migration 20261117020856,
+// tuple arm answers no relation out of a node that is gone (migration 20261126050002,
 // `node.state <> 'gone'`), and the run's count holds each tuple only while the node it goes out of
 // is not gone (refs' liveVisibleNodeOf), so the run's ?to= and its count both leave the document
 // out, and its ?from= lists no run.

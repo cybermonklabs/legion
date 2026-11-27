@@ -39,10 +39,21 @@ func editAdviceDocument(t *testing.T, handler http.Handler, artifactID, markdown
 	return adviceFromResponse(t, response.Code, response.Body.String())
 }
 
+// queryBlockMarkdown is one typed block of blockType holding words, with its block id: a block the
+// query of the document it is written into takes (R14) - a requirement of a spec, a check of a
+// Verification document, a plan task of a plan - so its write moves that query's record and stales
+// an approval of it, where a write of prose alone, which no query takes, is carried by the record
+// carry (docs.RecordCarryReason) and supersedes nothing.
+func queryBlockMarkdown(blockType, id, words string) string {
+	return ":::" + blockType + "{#" + id + "}\n" + words + "\n:::\n"
+}
+
 // A document edit that stores a version over the one a person approved says so, whatever the
 // document is: that approval is now stale, and whether a Legion design gate was among the things
 // it held open is what the design-gate list beside it answers. The edit after it says nothing:
-// that approval was already stale, and the second edit superseded none.
+// that approval was already stale, and the second edit superseded none. The first edit writes a
+// requirement: R14's record carry carries the approval of a spec across a sentence of prose, which
+// the Spec query does not take.
 func TestDocumentEditAdviceNamesTheApprovalItSuperseded(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
@@ -51,7 +62,8 @@ func TestDocumentEditAdviceNamesTheApprovalItSuperseded(t *testing.T) {
 	issue := createAdviceIssue(t, handler, "GATE", "Approved spec", &spec)
 	approved := approveAdviceDocument(t, handler, issue.PrimaryArtifactID)
 
-	advice := editAdviceDocument(t, handler, issue.PrimaryArtifactID, "A stale sentence, removed.")
+	advice := editAdviceDocument(t, handler, issue.PrimaryArtifactID,
+		queryBlockMarkdown("requirement", "r-stale", "A requirement the approval never read."))
 	superseded := advice.SupersededApproval
 	if superseded == nil {
 		t.Fatalf("advice = %#v, want the approval the edit superseded", advice)
@@ -71,7 +83,9 @@ func TestDocumentEditAdviceNamesTheApprovalItSuperseded(t *testing.T) {
 // edit that supersedes it reports it, named by the review's session. No request for a person's
 // approval restores a plan's approval (Dispatch refuses one on any plan, PLAN_APPROVED_BY_REVIEW,
 // whoever approved it), so the client names `dispatch plan-approve` rather than
-// `dispatch request-approval` for a plan, which it reads from the document's role.
+// `dispatch request-approval` for a plan, which it reads from the document's role. The edit writes
+// a plan task: R14's record carry carries the approval of a plan across a sentence of prose, which
+// the Plan query does not take.
 func TestPlanEditAdviceNamesThePlanReviewsApprovalItSuperseded(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
@@ -85,7 +99,8 @@ func TestPlanEditAdviceNamesThePlanReviewsApprovalItSuperseded(t *testing.T) {
 		t.Fatalf("record the plan review: status=%d body=%s", recorded.Code, recorded.Body.String())
 	}
 
-	advice := editAdviceDocument(t, handler, plan.Artifact.ID, "A step the review never read.")
+	advice := editAdviceDocument(t, handler, plan.Artifact.ID,
+		queryBlockMarkdown("plan_task", "t-unread", "A step the review never read."))
 	superseded := advice.SupersededApproval
 	if superseded == nil || superseded.ApprovedVersion != 1 || superseded.Version != 2 ||
 		superseded.ApprovedBy != "session-plan-review" {
@@ -120,6 +135,8 @@ func TestDocumentEditAdviceSupersedesNoApprovalWhenThereIsNone(t *testing.T) {
 
 // An upload that replaces an approved document supersedes its approval exactly as an edit does:
 // this route always writes a version, so a replacement of an approved spec closes its gate too.
+// The replacement holds a requirement the approved version does not: R14's record carry carries
+// the approval of a spec across a rewrite of its prose alone, which the Spec query does not take.
 func TestDocumentUploadAdviceNamesTheApprovalItSuperseded(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
@@ -130,7 +147,8 @@ func TestDocumentUploadAdviceNamesTheApprovalItSuperseded(t *testing.T) {
 
 	replaced := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 		"actor": adviceSessionActor("session-editor"),
-		"name":  "spec.md", "content": "# Transport\n\nThe design, rewritten.\n",
+		"name":  "spec.md", "content": "# Transport\n\nThe design, rewritten.\n\n" +
+			queryBlockMarkdown("requirement", "r-rewritten", "The transport is rewritten."),
 		"precondition": uploadBase(t, handler, issue.PrimaryArtifactID),
 	})
 	advice := adviceFromResponse(t, replaced.Code, replaced.Body.String())
@@ -175,7 +193,7 @@ func TestNewestReviewAsApprovalReportsOnlyTheVersionItSuperseded(t *testing.T) {
 	}
 }
 
-// The reviews are read in the order their events committed (docs.ReviewOrder), not by
+// The reviews are read in the order their events committed (model.ReviewOrder), not by
 // created_at and id: created_at is the writing transaction's start and id is random, so a review
 // that committed later can carry the earlier pair. That is the approval carry's own shape - a
 // person's approval of the version below commits while the version write is open, and the carry's

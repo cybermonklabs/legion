@@ -62,22 +62,7 @@ func TestACarryCommitsApprovalFirstWhileTheRootWaitsAtAnUnapprovedVersion(t *tes
 	if reason == nil || *reason != readingCarrySentence(approval.Version) {
 		t.Errorf("the carry to N, version %d, reads %v, want the readings carry %q", carried, reason, readingCarrySentence(approval.Version))
 	}
-	var approvedID, approvedSeq, versionID, versionSeq int64
-	if err := database.Pool.QueryRow(ctx, `
-		select approved.id, approved.seq, versioned.id, versioned.seq
-		from (select id, seq from events
-		      where type = 'artifact.approved' and payload->>'artifact_id' = $1 and (payload->>'version')::int = $2
-		      order by id desc limit 1) approved,
-		     (select id, seq from events
-		      where type = 'artifact.version' and payload->>'artifact_id' = $1
-		        and (case jsonb_typeof(payload->'version') when 'object' then payload->'version'->>'number' else payload->>'version' end)::int = $2
-		      order by id desc limit 1) versioned`, spec, carried).Scan(&approvedID, &approvedSeq, &versionID, &versionSeq); err != nil {
-		t.Fatalf("read the readings carry's artifact.approved and N's artifact.version: %v", err)
-	}
-	if approvedID >= versionID || approvedSeq >= versionSeq {
-		t.Errorf("the readings carry to N appended artifact.approved at id %d, seq %d and N's artifact.version at id %d, seq %d while the root waits at G: want the approval first in both",
-			approvedID, approvedSeq, versionID, versionSeq)
-	}
+	requireApprovedBeforeVersion(t, database, spec, carried)
 	var state string
 	if err := database.Pool.QueryRow(ctx, `select state from asks where id = $1`, waiting.ID).Scan(&state); err != nil {
 		t.Fatalf("read the root's request %s: %v", waiting.ID, err)

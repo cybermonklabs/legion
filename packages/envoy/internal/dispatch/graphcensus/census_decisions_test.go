@@ -11,7 +11,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -514,36 +513,11 @@ func requireTheDeferredWriteLeavesNoRow(t *testing.T) {
 		t.Fatalf("create the second document: %v", err)
 	}
 	alice := model.Actor{Kind: "user", ID: "alice"}
-	sources := refs.TypedSources{
-		Authors: func(ids []string) (map[string]model.Actor, error) {
-			authors := make(map[string]model.Actor, len(ids))
-			for _, id := range ids {
-				authors[id] = alice
-			}
-			return authors, nil
-		},
-	}
+	sources := creditedSources(alice)
 	write := func(number int, markdown string, whole bool) {
 		t.Helper()
-		tree, err := pmdoc.Parse(markdown)
-		if err != nil {
-			t.Fatalf("parse version %d: %v", number, err)
-		}
-		pmdoc.EnsureBlockIDs(tree)
-		rendered, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
-		if err != nil {
-			t.Fatalf("render version %d: %v", number, err)
-		}
-		blocks := make([]model.ArtifactBlock, len(offsets))
-		for index, offset := range offsets {
-			blocks[index] = model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To}
-		}
-		var at time.Time
-		if err := database.Pool.QueryRow(ctx, `
-			insert into artifact_versions (artifact_id, number, markdown, authors)
-			values ($1, $2, $3, '[{"kind":"user","id":"alice"}]') returning created_at`, document.artifactID, number, rendered).Scan(&at); err != nil {
-			t.Fatalf("write version %d: %v", number, err)
-		}
+		version := renderVersion(t, parsedTree(t, markdown))
+		at := censusVersion(t, database, document.artifactID, number, version.markdown, alice)
 		tx, err := database.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -554,13 +528,13 @@ func requireTheDeferredWriteLeavesNoRow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read the record of version %d: %v", number, err)
 		}
-		facts, err := refs.DecisionFacts(ctx, tx, document.artifactID, record, versions, blocks, tree, nil, sources)
+		facts, err := refs.DecisionFacts(ctx, tx, document.artifactID, record, versions, version.blocks, version.tree, nil, sources)
 		if err != nil {
 			t.Fatalf("read the typed facts of version %d: %v", number, err)
 		}
 		var stated graphstore.Uncaused
 		if whole {
-			if _, _, stated, _, err = refs.IndexBlocks(ctx, tx, document.artifactID, versions, rendered, blocks, nil, nil, "", facts); err != nil {
+			if _, _, stated, _, err = refs.IndexBlocks(ctx, tx, document.artifactID, versions, version.markdown, version.blocks, nil, nil, "", facts); err != nil {
 				t.Fatalf("index version %d: %v", number, err)
 			}
 		} else {
@@ -614,7 +588,7 @@ func requireTheDeferredWriteLeavesNoRow(t *testing.T) {
 func requireNoCensusDifference(t *testing.T, what string, report *StoreReport) {
 	t.Helper()
 	for _, kind := range report.Kinds {
-		for _, difference := range append(append([]Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
+		for _, difference := range differencesOf(kind) {
 			t.Errorf("%s reads a difference of kind %s at %s: %s", what, kind.Kind, difference.At, difference.Cause)
 		}
 	}

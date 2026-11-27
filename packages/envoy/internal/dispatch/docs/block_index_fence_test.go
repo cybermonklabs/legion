@@ -1199,7 +1199,7 @@ func requireTheBackfillIsFenced(t *testing.T, database *store.Store) {
 // The fence is the block index's record of the version it indexes on its write phase
 // (BlockIndexing.queueStand), which the plan queues only where it won the fence: of one
 // document's version, or of the version of each document an issue room's pass covers, under the
-// tree artifact's owner row (T12a of this branch's plan). The room's pass (stateRoom) adds one:
+// tree artifact's owner row (T12a of the issue-tree plan). The room's pass (stateRoom) adds one:
 // under that row, in the pass's transaction, it clears the mark of each artifact of the room the
 // pass covers no version of. It runs in the reconciliation of the room (indexOwedRoom) and in the
 // repair of a version of the room marked tree_mismatch (repairRoomMismatch), each of which takes
@@ -1259,9 +1259,9 @@ func requireOnlyTheFenceWritesTheOwedRow(t *testing.T) {
 				continue
 			}
 			found++
-			if !heldToTheFence(file, enclosingFunction(text, match[0]), wrote) {
+			if enclosing := enclosingFunction(text, match[0]); !heldToTheFence(file, enclosing, wrote) {
 				t.Errorf("%s writes a revision into document_block_versions in %q, outside the fenced writers %+v:\n%s",
-					file, enclosingFunction(text, match[0]), fencedWriters, statement)
+					file, enclosing, fencedWriters, statement)
 			}
 		}
 		// A send of the fence's statement by its name writes the same revision as its text: each
@@ -1302,7 +1302,7 @@ func heldToTheFence(file, enclosing string, wrote []bool) bool {
 }
 
 // outsideTheFence is the writer R23 reads as outside the fence: the item block pass, which writes
-// no store row in this child. It is named by its file and its `func` line.
+// no store row in this build. It is named by its file and its `func` line.
 var outsideTheFence = []struct{ file, function string }{
 	{"refs/item_blocks.go", "func IndexOwedItemBlocks("},
 }

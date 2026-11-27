@@ -696,7 +696,7 @@ func TestResolvePrefixesHoldsTheScopeChecksOfResolvePrefix(t *testing.T) {
 // An issue born converted keeps its documents' blocks in its room: the room's block index keys
 // each block's row under the room's tree artifact beside the document whose fragment holds it
 // (issue_room_blocks), and records each block's texts under that tree at its document's own
-// version numbers (T12a of this branch's plan). A short block id names a block of the document
+// version numbers (T12a of the issue-tree plan). A short block id names a block of the document
 // its reference names, so both resolvers read that document's blocks in its room: in the spec's
 // scope, its latest version and a version it pins each name the one block of the spec that
 // carries the prefix, and not the block of the Verification document's fragment that carries it

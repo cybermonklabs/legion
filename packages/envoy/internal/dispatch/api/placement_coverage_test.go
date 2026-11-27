@@ -41,7 +41,7 @@ func servingNodeUnder(typ, id, parent string, targets ...string) string {
 func splitPlacementTuples(tuples []graphstore.Tuple) (serves, partOf []graphstore.Tuple) {
 	for _, tuple := range tuples {
 		switch tuple.Kind {
-		case "serves":
+		case servesTupleKind:
 			serves = append(serves, tuple)
 		case graphstore.TuplePartOf:
 			partOf = append(partOf, tuple)
@@ -51,13 +51,13 @@ func splitPlacementTuples(tuples []graphstore.Tuple) (serves, partOf []graphstor
 }
 
 // requirementsServed is how many nodes of type typ - checks, or plan tasks - the coverage read of
-// CORE-1 (over the tuples, as T16a reads it) lists under each of the requirements r1 to r4.
+// CORE-1 (over the tuples) lists under each of the requirements r1 to r4.
 func requirementsServed(t *testing.T, handler http.Handler, typ string) map[string]int {
 	t.Helper()
 	coverage := readCoverage(t, handler, "CORE-1")
 	served := map[string]int{}
 	for _, id := range []string{"r1", "r2", "r3", "r4"} {
-		requirement := coverageOf(t, coverage, id)
+		requirement := requirementOf(t, coverage, id)
 		if typ == planTaskBlockType {
 			served[id] = requirement.PlanTasks
 		} else {
@@ -157,13 +157,7 @@ func valuesHeld(t *testing.T, database *store.Store, address, attribute string) 
 // document's alike: one for a node no write copied.
 func blockNodesNamed(t *testing.T, database *store.Store, id string) int {
 	t.Helper()
-	var count int
-	if err := database.Pool.QueryRow(context.Background(), `
-		select count(*) from graph_nodes where kind = $1 and id like '%#' || $2
-	`, refs.BlockNodeKind, id).Scan(&count); err != nil {
-		t.Fatalf("count the nodes of %s: %v", id, err)
-	}
-	return count
+	return int(countRows(t, database, `select count(*) from graph_nodes where kind = $1 and id like '%#' || $2`, refs.BlockNodeKind, id))
 }
 
 // projectedParent is the document_blocks row's parent_block_id of the block node address, "" for
@@ -216,7 +210,7 @@ func requireServes(t *testing.T, database *store.Store, what, address string, ad
 		want[index] = refs.BlockNodeKind + "/" + target
 	}
 	slices.Sort(want)
-	if held := tupleFarEnds(currentTies(t, database, address, "serves")); !slices.Equal(held, want) {
+	if held := tupleFarEnds(currentTies(t, database, address, servesTupleKind)); !slices.Equal(held, want) {
 		t.Errorf("%s serves %v, want %v", what, held, want)
 	}
 }
@@ -242,11 +236,11 @@ func requirementsSpec(ids []string) string {
 	return spec.String()
 }
 
-// c-placement-and-coverage, its placement half (T7 of the issue-tree plan), with T18's move
-// through its route and the coverage reads through T16a's: placement and coverage are two
-// relations. One check serves three requirements and keeps one place: one node, one id, one
-// part_of to the first requirement of the pointer's written order that is a node of its own issue,
-// one rank, and three serves tuples. The two change apart. A move through PATCH appends one part_of
+// c-placement-and-coverage, its placement half, with the move through its route and the coverage
+// read over the tuples: placement and coverage are two relations. One check serves three
+// requirements and keeps one place: one node, one id, one part_of to the first requirement of the
+// pointer's written order that is a node of its own issue, one rank, and three serves tuples. The
+// two change apart. A move through PATCH appends one part_of
 // tuple and one retraction and writes no serves tuple: the node is stored under the requirement it
 // moved to, still serves its three, and the coverage read still lists it under each of them. A
 // retarget appends one serves tuple and one retraction and writes no part_of, whichever target it
@@ -269,8 +263,7 @@ func TestPlacementAndCoverageAreTwoRelations(t *testing.T) {
 		t.Fatalf("the seeded issue is %s, want CORE-1, which its spec's references name", issue.Key)
 	}
 	// Each issue is born converted: its role documents' blocks are its room's nodes,
-	// `<tree ref_key>#<block>`, which a serves written at the spec's own address reaches (T17 of
-	// this branch's plan).
+	// `<tree ref_key>#<block>`, which a serves written at the spec's own address reaches.
 	core := readDecisionDocument(t, database, "CORE-1", "spec")
 	spec := core.address
 	ref := func(id string) string { return "dispatch://CORE-1/spec#b-" + id }
@@ -282,7 +275,7 @@ func TestPlacementAndCoverageAreTwoRelations(t *testing.T) {
 	// The plan is a role document, a fragment of the spec's room, whose tree keys its blocks' nodes
 	// and rows, so its row projects its parent requirement by its block id; checks.md plays no role,
 	// so it is a room of its own, whose ref_key keys its blocks' nodes, and its row names no block id
-	// of its parent (R5 of this branch's spec).
+	// of its parent (R5 of the issue-tree spec).
 	for _, node := range []struct{ what, upload, typ, id, address, parent, movedParent string }{
 		{"the check", "checks.md", "check", "c1", "CORE-1/checks-md#c1", "", ""},
 		{"the plan node", "plan.md", "plan_task", "t1", core.address("t1"), "r1", "r3"},
@@ -366,11 +359,11 @@ func TestPlacementAndCoverageAreTwoRelations(t *testing.T) {
 	// leaves k2 for k1. Its place changes and nothing it serves or is served by: its serves still
 	// names k2, the coverage read lists the same checks and plan tasks under it, and the store
 	// census, which reads every kind over the whole store, reads zero.
-	before := coverageOf(t, readCoverage(t, handler, "CORE-1"), "r4")
+	before := requirementOf(t, readCoverage(t, handler, "CORE-1"), "r4")
 	moveNodeUnder(t, handler, database, "requirement r4", spec("r4"), spec("k1"))
 	requirePlaced(t, database, "requirement r4 after its move", spec("r4"), refs.BlockNodeKind, spec("k1"), "k1", refs.PlacementStored)
 	requireServes(t, database, "requirement r4 after its move", spec("r4"), spec("k2"))
-	if after := coverageOf(t, readCoverage(t, handler, "CORE-1"), "r4"); after.Checks != before.Checks || after.PlanTasks != before.PlanTasks {
+	if after := requirementOf(t, readCoverage(t, handler, "CORE-1"), "r4"); after.Checks != before.Checks || after.PlanTasks != before.PlanTasks {
 		t.Errorf("the move of r4 left the coverage read listing %d check(s) and %d plan task(s) under it, want the %d and %d it listed before: a move changes no coverage",
 			after.Checks, after.PlanTasks, before.Checks, before.PlanTasks)
 	}

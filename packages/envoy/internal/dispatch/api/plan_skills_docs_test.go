@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -24,19 +23,6 @@ func writtenList(t *testing.T, items []string) string {
 		t.Fatalf("encode the list %q: %v", items, err)
 	}
 	return strings.ReplaceAll(string(encoded), `"`, "&#x22;")
-}
-
-// uploadPlan uploads markdown as the plan of the issue key, plan.md, as alice, and fails, naming
-// the answer, unless the upload is taken.
-func uploadPlan(t *testing.T, handler http.Handler, key, markdown string) {
-	t.Helper()
-	path := "/api/v1/issues/" + key + "/artifacts"
-	response := dispatchRequest(t, handler, http.MethodPost, path, map[string]any{
-		"name": "plan.md", "content": markdown, "precondition": uploadBaseNamed(t, handler, path, "plan.md"),
-	}, "alice")
-	if response.Code != http.StatusCreated {
-		t.Fatalf("the upload of the plan of %s answered %d: %s", key, response.Code, response.Body.String())
-	}
 }
 
 // orderedNode is the plan node of order whose store address is address, in its order or in one
@@ -108,7 +94,7 @@ func TestAPlanTasksSkillsAndDocsReadBackFromTheOrderedRead(t *testing.T) {
 	key := issue.Key
 	serves := "dispatch://" + key + "/spec#b-r1"
 	skills, docs := []string{"writing-plans", "dispatch"}, []string{"docs/testing.md", "packages/envoy/AGENTS.md"}
-	uploadPlan(t, handler, key,
+	uploadDocument(t, handler, "/api/v1/issues/"+key, "plan.md",
 		":::plan_task{#t-reads serves=\""+serves+"\" size=\"1h30m\" skills=\""+writtenList(t, skills)+"\" docs=\""+writtenList(t, docs)+"\"}\n"+
 			"The task that names what to read.\n:::\n\n"+
 			":::plan_task{#t-bare serves=\""+serves+"\" size=\"45m\"}\nThe task that names nothing to read.\n:::\n")

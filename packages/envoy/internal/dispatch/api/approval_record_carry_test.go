@@ -123,16 +123,22 @@ type recordTable struct {
 	spec, verification, plan decisionDocument
 }
 
-// blockID is the id of the spec's block whose text is text.
-func (f *recordTable) blockID(t *testing.T, text string) string {
+// blockIDOfText is the id of the block of the document artifactID whose text, trimmed, is text.
+func blockIDOfText(t *testing.T, handler http.Handler, artifactID, text string) string {
 	t.Helper()
-	for held, id := range blockIDsByText(t, f.rig.handler, f.spec.id) {
+	for held, id := range blockIDsByText(t, handler, artifactID) {
 		if strings.TrimSpace(held) == text {
 			return id
 		}
 	}
-	t.Fatalf("the spec of CORE-1 holds no block reading %q", text)
+	t.Fatalf("the document %s holds no block reading %q", artifactID, text)
 	return ""
+}
+
+// blockID is the id of the spec's block whose text is text.
+func (f *recordTable) blockID(t *testing.T, text string) string {
+	t.Helper()
+	return blockIDOfText(t, f.rig.handler, f.spec.id, text)
 }
 
 // newest is the newest version of each of the issue's spec, Verification document and plan.
@@ -357,15 +363,16 @@ func restoredAndMoved(tree *pmdoc.Node) error {
 }
 
 // TestARecordCarryWaitsForTheRequestOrTheReopen holds the record carry of a version no write's rule
-// carried to (R14): a version whose record digest is the approved one carries the approval when
-// it is next asked for or followed, in the approver's name. request: CORE-1's spec is approved, an
+// carried to (R14): a version whose record digest is the approved one carries the approval, in the
+// approver's name, at the first moment its record is known. request: CORE-1's spec is approved, an
 // upload appends 2,001 list items, which its write leaves to the block-index reconciliation, so the
 // write states no record and its rule carries nothing (docs.StatedWhole needs the version stated);
-// the reconciliation's pass states it with the approved record's digest and carries nothing, its
-// approval being of an earlier version. The approval request route then reads the spec approved by
-// its digest and carries the approval to the latest version (docs.CarryApprovalToLatest): the newest
-// review is alice's, carried from her approval with the record carry's reason, and the request's
-// answer and the approval read approved at the latest version. reopen: CORE-1's spec is approved, a
+// the reconciliation's pass states it with the approved record's digest and carries the approval
+// to it. That pass carried nothing before INFRA-1098's architect decided, on 2026-11-26, that
+// R15's first pass carries such a version (dispatch://INFRA-1253/comment/dfd12b58-03ff-4f84-aa01-3020f8e7651b):
+// the newest review is alice's, carried from her approval with the record carry's reason, and the
+// approval request then finds the latest version approved and opens no ask, its answer and the
+// approval read approved at the latest version. reopen: CORE-1's spec is approved, a
 // word of its requirement moves the record and an approval request opens on that version; the issue
 // closes, alice's browser puts the word back and moves the paragraph before the requirement inside
 // the close margin, and the settlement on the closed issue writes that version and carries nothing.
@@ -399,9 +406,7 @@ func TestARecordCarryWaitsForTheRequestOrTheReopen(t *testing.T) {
 		if got, want := versionDigestOf(t, database, spec.id, deferred), versionDigestOf(t, database, spec.id, approved); got != want {
 			t.Fatalf("version %d of %s, whose list items alone are new, answers the digest %s once its pass stated it, want the approved version %d's, %s", deferred, spec.refKey, got, approved, want)
 		}
-		if reviews := listReviews(t, handler, spec.id); len(reviews) == 0 || reviews[0].Version != approved {
-			t.Fatalf("the reviews of %s read %+v after the pass that stated version %d, want alice's approval of version %d newest: the pass carries an approval of its own version alone", spec.refKey, reviews, deferred, approved)
-		}
+		requireApprovalCarriedByRecord(t, handler, database, spec.id, approved, deferred)
 		requested := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+spec.id+"/approval-requests", map[string]any{"actor": sessionActor()})
 		if requested.Code != http.StatusOK {
 			t.Fatalf("request approval of %s: status=%d body=%s, want 200: the spec stands approved by its digest", spec.refKey, requested.Code, requested.Body.String())

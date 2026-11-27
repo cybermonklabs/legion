@@ -99,6 +99,16 @@ func Parse(markdown string) (*Node, error) {
 	return parseStamped(markdown, NewWriteBudget())
 }
 
+// ParseWithBlockIDs is Parse with mint, rather than the package-level generator
+// (SetBlockIDGenerator), minting the id of every block the markdown leaves without one, so a
+// caller whose ids come from a counter of its own (cmd/dispatch-seed's renderVersion) stamps a
+// parse from it without installing it for the whole process. mint must not be nil, and it must
+// keep returning ids that are new and not empty: the stamp asks it again until it gets one, so a
+// mint that repeats itself never returns.
+func ParseWithBlockIDs(markdown string, mint func() string) (*Node, error) {
+	return parseStampedAt(markdown, fromStart, NewWriteBudget(), mint)
+}
+
 // ParseRendering is Parse of markdown the renderer wrote, a read-back, whose short rows are the
 // tree's: its padding spends a budget of its own (readBackBudget), not a caller write's.
 func ParseRendering(markdown string) (*Node, error) {
@@ -181,17 +191,18 @@ func RenderingOutline(markdown string) (Outline, error) {
 }
 
 func parseStamped(markdown string, budget *WriteBudget) (*Node, error) {
-	return parseStampedAt(markdown, fromStart, budget)
+	return parseStampedAt(markdown, fromStart, budget, mintBlockID)
 }
 
 // parseStampedAt is parseStamped of markdown that stands at at in what the caller wrote, so a
-// refusal names the caller's line and charges nothing for what the server wrote ahead of it.
-func parseStampedAt(markdown string, at origin, budget *WriteBudget) (*Node, error) {
+// refusal names the caller's line and charges nothing for what the server wrote ahead of it, with
+// mint minting the id of every block left without one (ensureBlockIDs).
+func parseStampedAt(markdown string, at origin, budget *WriteBudget, mint func() string) (*Node, error) {
 	doc, err := parseUnstamped(markdown, at, true, budget)
 	if err != nil {
 		return nil, err
 	}
-	EnsureBlockIDs(doc)
+	ensureBlockIDs(doc, mint)
 	return doc, nil
 }
 
@@ -260,31 +271,49 @@ func withWrittenReadBack(doc *Node) (*Node, WrittenReadBack, error) {
 // as ParseForWrite parses a fragment: a leading `---` line is a horizontal rule, as it is anywhere
 // after a document's start. Written where the document begins (opensDocument), a closed
 // front-matter block opening the markdown is front matter, as Parse reads it. Its tables' short
-// rows are padded on budget, the caller write's, which its other fragments share.
+// rows are padded on budget, the caller write's, which its other fragments share. It judges the
+// markdown against no document, so an element this build cannot create yet is refused wherever
+// it is written: a write into a live document parses with ParseFragmentHolding.
 func ParseFragment(markdown string, opensDocument bool, budget *WriteBudget) (*Node, error) {
 	return parseForWrite(markdown, nil, opensDocument, "", budget)
 }
 
-// ParseFragmentInto parses markdown a caller writes inside a block of type parent, after that
-// block's last child, as ParseFragment parses one written between blocks: its blocks are read as
-// that block's children rather than a document's, so a block of a type whose parents name parent
-// - a reading in a decision or an ask (TypedContent) - is read where it is written, as it is
-// nowhere at a document's level. A block's children hold no front matter, so none is read. The
-// tree is a document holding those blocks, as ParseFragment's is; whether they may close the block
-// is InsertInto's to judge, against the children the block holds already.
-func ParseFragmentInto(markdown, parent string, budget *WriteBudget) (*Node, error) {
-	return parseForWrite(markdown, nil, false, parent, budget)
+// ParseFragmentHolding is ParseFragment of markdown written into live - an insert, a replace's
+// `with`, an accepted suggestion - which carries none of live's block IDs into the fragment. An
+// element live already holds need not be creatable by this build, as an upload of the whole
+// document over live may keep it.
+func ParseFragmentHolding(markdown string, opensDocument bool, budget *WriteBudget, live *Node) (*Node, error) {
+	return parseForWriteHolding(markdown, nil, live, opensDocument, "", budget)
 }
 
-// parseForWrite is the parse ParseForWrite, ParseFragment and ParseFragmentInto share. The
-// markdown's tree is judged for repeated ids (RepeatedBlockID) with only the ids it names, then
-// takes the ids of the blocks of live it leaves unchanged (carryBlockIDs), and only then is an id
-// minted for each block still without one (EnsureBlockIDs), so the refusal and the carry see only
-// the ids the markdown named. The tree is held to the content rule of each block a live document
-// keeps in any order (writtenContentError), since a caller wrote it in one piece. within is the
-// type of the block whose children the markdown's blocks are, "" for a document's
-// (validateWithin).
+// ParseFragmentInto parses markdown a caller writes inside a block of type parent of live, after
+// that block's last child, as ParseFragmentHolding parses one written between blocks: its blocks
+// are read as that block's children rather than a document's, so a block of a type whose parents
+// name parent - a reading in a decision or an ask (TypedContent) - is read where it is written, as
+// it is nowhere at a document's level. A block's children hold no front matter, so none is read.
+// It carries none of live's block IDs, and an element live already holds need not be creatable by
+// this build. The tree is a document holding those blocks, as ParseFragment's is; whether they may
+// close the block is InsertInto's to judge, against the children the block holds already.
+func ParseFragmentInto(markdown, parent string, budget *WriteBudget, live *Node) (*Node, error) {
+	return parseForWriteHolding(markdown, nil, live, false, parent, budget)
+}
+
+// parseForWrite is the parse ParseForWrite and ParseFragment share. The markdown's tree is judged
+// for repeated ids (RepeatedBlockID) with only the ids it names, then takes the ids of the blocks
+// of live it leaves unchanged (carryBlockIDs), and only then is an id minted for each block still
+// without one (EnsureBlockIDs), so the refusal and the carry see only the ids the markdown named.
+// The tree is held to the content rule of each block a live document keeps in any order
+// (writtenContentError), since a caller wrote it in one piece. within is the type of the block
+// whose children the markdown's blocks are, "" for a document's (validateWithin).
 func parseForWrite(markdown string, live *Node, readFrontmatter bool, within string, budget *WriteBudget) (*Node, error) {
+	return parseForWriteHolding(markdown, live, live, readFrontmatter, within, budget)
+}
+
+// parseForWriteHolding is parseForWrite whose markdown may keep an element held holds that this
+// build cannot create (refuseUncreatable), live being the tree whose block ids it carries:
+// ParseFragmentHolding and ParseFragmentInto carry none, and hold the live document they write
+// into.
+func parseForWriteHolding(markdown string, live, held *Node, readFrontmatter bool, within string, budget *WriteBudget) (*Node, error) {
 	doc, err := parseMarkdown(LineFeeds(markdown), fromStart, readFrontmatter, within, budget, nil)
 	if err != nil {
 		return nil, err
@@ -296,7 +325,7 @@ func parseForWrite(markdown string, live *Node, readFrontmatter bool, within str
 		return nil, fmt.Errorf("%w: %w", ErrSchema, err)
 	}
 	// A write may keep an element live holds that this build cannot create, never add one.
-	if err := refuseUncreatable([]*Node{doc}, func() *Node { return live }); err != nil {
+	if err := refuseUncreatable([]*Node{doc}, func() *Node { return held }); err != nil {
 		return nil, err
 	}
 	carryBlockIDs(doc, live)
@@ -874,7 +903,7 @@ func parseTableRows(markdown string, width int, budget *WriteBudget) ([]*Node, b
 	// element budget nothing, and no refusal of its elements names one.
 	header := syntheticTableHeader(width)
 	firstLine := 1 + strings.Count(markdown[:start], "\n") - strings.Count(header, "\n")
-	parsed, err := parseStampedAt(header+markdown[start:end]+"\n", origin{line: firstLine, server: len(header)}, budget)
+	parsed, err := parseStampedAt(header+markdown[start:end]+"\n", origin{line: firstLine, server: len(header)}, budget, mintBlockID)
 	// The parse opens with the header written above, so the table under it is the one document-level
 	// table with nothing before it; any other is the fragment's own and keeps its own refusal.
 	if wide := (wideRow{}); errors.As(err, &wide) && wide.firstBlock {

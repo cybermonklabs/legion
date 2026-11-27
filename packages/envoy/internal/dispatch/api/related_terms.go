@@ -78,7 +78,7 @@ func searchTermDocument(alias string) string {
 //
 // A document's vector is the one document_search held of it (migration 20261101182447), read
 // off the document's latest version rather than off that table, which this build reads no row of
-// (R17 of the issue-tree spec): one probe of artifact_versions' unique key a document,
+// (R17 of the issue-tree spec): one probe of artifact_versions' unique key per document,
 // which a count of every item reads anyway. It is the vector the queue's document rows are written
 // from (migration 20261101182522's document_search_term_queue, which fires from 20261101182454's
 // trigger inside the version's own write), so a step pass and a full build hold one definition of
@@ -621,7 +621,7 @@ select p.lexeme from probe p
                         where s.node_kind = '` + graphstore.KindArtifact + `' and s.search @@ p.tq
                         offset 0) s
                  join artifacts a on a.ref_key = s.node_address
-                where a.kind = 'doc' and a.project_key = $1
+                where ` + searchTermDocument("a") + ` and a.project_key = $1
                   and a.issue_key is distinct from $3 and a.id is distinct from $4::uuid)
     or exists (select 1 from comments c
                  left join issues i on i.key = c.issue_key

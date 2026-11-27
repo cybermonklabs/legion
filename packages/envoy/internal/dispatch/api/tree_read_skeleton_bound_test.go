@@ -2,13 +2,13 @@
 
 package api
 
-// This branch's check c-tree-read-bound: the head read of the tree route answers the skeleton of an
-// issue within the three bounds of R8, and pages it within the bounds of nodes and bytes.
+// The check c-tree-read-bound: the head read of the tree route answers the skeleton of an issue
+// within the three bounds of R8, and pages it within the bounds of nodes and bytes.
 //
 // TestTheTreeReadAnswersTheSkeletonWithinItsBounds boots the build of BASELINE_SHA, the release
-// this branch lands after, seeds four issues through its own routes in the sizes of production and
-// reads them as the old issue page does; then it stops that build, boots this checkout's over the
-// same database and reads the same issues through the tree route. It carries the basebuild tag,
+// before, seeds four issues through its own routes in the sizes of production and reads them as
+// the old issue page does; then it stops that build, boots this checkout's over the same database
+// and reads the same issues through the tree route. It carries the basebuild tag,
 // as cmd/dispatch's store_census_test.go does, because it builds the server of an earlier commit
 // out of the repository (git archive), and no CI job builds the tag. It takes about an hour and is
 // run, with the check's replay (TestTheTwoCutsAnswerAsTheUncutWalk, which carries no tag), by name,
@@ -26,7 +26,6 @@ import (
 	"cmp"
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -43,12 +42,14 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -82,10 +83,6 @@ const (
 	skeletonOwedWait = 30 * time.Minute
 	skeletonOwedPoll = 2 * time.Second
 )
-
-// skeletonWriters is how many writes the seeding keeps in flight at once: the corpus is about
-// 9,500 comments, which one at a time cost the run many minutes.
-const skeletonWriters = 8
 
 // skeletonProject is the corpus's project.
 const skeletonProject = "SKEL"
@@ -133,20 +130,10 @@ const (
 )
 
 // skeletonHeld is count, or skeletonViewBlocks where the census gives none.
-func skeletonHeld(count int) int {
-	if count == 0 {
-		return skeletonViewBlocks
-	}
-	return count
-}
+func skeletonHeld(count int) int { return cmp.Or(count, skeletonViewBlocks) }
 
 // heldAsks is how many asks the issue holds: its census's, or skeletonViewAsks where it gives none.
-func (shape skeletonShape) heldAsks() int {
-	if shape.asks == 0 {
-		return skeletonViewAsks
-	}
-	return shape.asks
-}
+func (shape skeletonShape) heldAsks() int { return cmp.Or(shape.asks, skeletonViewAsks) }
 
 // skeletonOtherDocuments is the 65 other documents of the issue of the most blocks: 45,008 blocks
 // in all, the largest of 5,600 and the rest as even as whole blocks make them.
@@ -247,15 +234,9 @@ func startSkeletonServer(t *testing.T, client *http.Client, name, binary, commit
 func stopSkeletonServer(t *testing.T, s *readCostServer) {
 	t.Helper()
 	s.process.Terminate(t)
-	stopped := testwait.Holds(skeletonStopWait, skeletonBootPoll, func() bool {
-		select {
-		case <-s.process.Exited:
-			return true
-		default:
-			return false
-		}
-	})
-	if !stopped {
+	select {
+	case <-s.process.Exited:
+	case <-time.After(skeletonStopWait):
 		t.Fatalf("%s was still running %s after SIGTERM:\n%s", s.name, skeletonStopWait, skeletonTail(s.process.Output.String()))
 	}
 	t.Logf("%s stopped", s.name)
@@ -547,38 +528,79 @@ func skeletonProse(document string, count int) string {
 	return text.String()
 }
 
-// skeletonInParallel runs job for each index below count on skeletonWriters goroutines, and fails
-// with the first error a job answered.
+// skeletonInParallel runs job for each index below count (skeletonJobs) - the corpus is about
+// 9,500 comments, which one at a time cost the run many minutes - and fails with the first error
+// a job answered.
 func skeletonInParallel(t *testing.T, what string, count int, job func(index int) error) {
 	t.Helper()
-	var next sync.Mutex
-	nextIndex := 0
-	var failure error
-	var failed sync.Once
-	var group sync.WaitGroup
-	for range skeletonWriters {
-		group.Add(1)
-		go func() {
-			defer group.Done()
-			for {
-				next.Lock()
-				index := nextIndex
-				nextIndex++
-				next.Unlock()
-				if index >= count || failure != nil {
-					return
-				}
-				if err := job(index); err != nil {
-					failed.Do(func() { failure = err })
-					return
-				}
+	if err := skeletonJobs(count, job); err != nil {
+		t.Fatalf("%s: %v", what, err)
+	}
+}
+
+// skeletonJobs runs job for each index below count, in index order and at most readCostWriters at
+// once, and answers the first error a job answered, starting no further job once one has failed:
+// neither from the loop nor from a Go that waited for the slot the failure freed
+// (TestSkeletonJobsStartNoJobOnceOneFailed).
+func skeletonJobs(count int, job func(index int) error) error {
+	group, failed := errgroup.WithContext(context.Background())
+	group.SetLimit(readCostWriters)
+	for index := range count {
+		if failed.Err() != nil {
+			break
+		}
+		group.Go(func() error {
+			if failed.Err() != nil {
+				return nil
 			}
+			return job(index)
+		})
+	}
+	return group.Wait()
+}
+
+// TestSkeletonJobsStartNoJobOnceOneFailed holds skeletonJobs to starting no job once a job has
+// failed, the job whose slot the loop already waits for among them. In a synctest bubble the first
+// readCostWriters jobs each hold their slot, so the loop waits in the group's Go for the slot of
+// the next; job 0 then fails, which frees the one slot the loop waits for, and the next job never
+// runs. The other jobs let their slots go only once every goroutine of the bubble is blocked again,
+// after the loop took that slot, so no slot a job that succeeded frees reaches the loop first.
+func TestSkeletonJobsStartNoJobOnceOneFailed(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		failure := errors.New("job 0 fails")
+		fail, release := make(chan struct{}), make(chan struct{})
+		var ran [readCostWriters + 1]atomic.Bool
+		answered := make(chan error, 1)
+		go func() {
+			answered <- skeletonJobs(readCostWriters+1, func(index int) error {
+				ran[index].Store(true)
+				switch {
+				case index == 0:
+					<-fail
+					return failure
+				case index < readCostWriters:
+					<-release
+				}
+				return nil
+			})
 		}()
-	}
-	group.Wait()
-	if failure != nil {
-		t.Fatalf("%s: %v", what, failure)
-	}
+		synctest.Wait()
+		close(fail)
+		synctest.Wait()
+		close(release)
+		if err := <-answered; !errors.Is(err, failure) {
+			t.Errorf("skeletonJobs answered %v, want job 0's failure", err)
+		}
+		for index := range readCostWriters {
+			if !ran[index].Load() {
+				t.Errorf("job %d never ran, want every job that took a slot before the failure run", index)
+			}
+		}
+		if ran[readCostWriters].Load() {
+			t.Errorf("job %d ran after job 0 failed, want no job started once one has failed", readCostWriters)
+		}
+	})
 }
 
 // skeletonBaseDecides reports whether the release before, the build of commit, declares the typed
@@ -706,8 +728,8 @@ type skeletonStatements struct {
 
 // jit is `show jit` as the run's database answers it, and it fails the run where it reads other
 // than off: production's Postgres compiles no statement, so every speed and database-time test of
-// this branch reads with jit off, and a reading that compiles them spends what production never
-// does.
+// the issue-tree spec reads with jit off, and a reading that compiles them spends what production
+// never does.
 func (s *skeletonStatements) jit(t *testing.T) string {
 	t.Helper()
 	var jit string
@@ -1186,22 +1208,15 @@ func walkSkeletonPages(t *testing.T, label string, fetch skeletonFetch, path str
 		if len(pages) > 0 && !bytes.Equal(page.CommentsBefore, pages[0].CommentsBefore) {
 			t.Errorf("%s, cursor %q, %d bytes: the page answers comments_before %s, the first page %s", label, cursor, page.bytes, page.CommentsBefore, pages[0].CommentsBefore)
 		}
-		if cursor != "" {
-			named, _ := base64.RawURLEncoding.DecodeString(cursor)
-			if len(page.Nodes) == 0 || page.Nodes[0].Kind+":"+page.Nodes[0].ID != string(named) {
-				t.Errorf("%s, cursor %q, %d bytes: the page does not start at %q, the node its cursor names", label, cursor, page.bytes, named)
-			}
+		if cursor != "" && (len(page.Nodes) == 0 || treeCursor(page.Nodes[0].Kind, page.Nodes[0].ID) != cursor) {
+			t.Errorf("%s, cursor %q, %d bytes: the page does not start at the node its cursor names", label, cursor, page.bytes)
 		}
 		pages = append(pages, page)
 		if page.Cursor == nil {
 			break
 		}
 		cursor = *page.Cursor
-		separator := "?"
-		if strings.Contains(path, "?") {
-			separator = "&"
-		}
-		request = path + separator + "cursor=" + url.QueryEscape(cursor)
+		request = treeCursorTarget(path, cursor)
 	}
 	if len(pages) == 0 {
 		return pages
@@ -1285,7 +1300,7 @@ func holdSkeletonCount(t *testing.T, key, what string, read, want int) {
 // plan tasks, and the decisions view the decisions and the asks.
 func requireSkeletonShape(t *testing.T, s *readCostServer, issues []*skeletonIssue, walks map[string]map[string][]skeletonPage) {
 	t.Helper()
-	for index, issue := range issues {
+	for _, issue := range issues {
 		pages := walks[issue.key]
 		whole := skeletonNodes(pages["no-view"])
 		holdSkeletonCount(t, issue.key, "requirement", skeletonCount(whole, "", "requirement"), skeletonHeld(issue.requirements))
@@ -1330,7 +1345,7 @@ func requireSkeletonShape(t *testing.T, s *readCostServer, issues []*skeletonIss
 		case issue.comments > skeletonCommentPage && (position == nil || *position != oldest):
 			t.Errorf("%s answers comments_before %v, want %q, the oldest comment of its page", issue.key, position, oldest)
 		}
-		if index != 2 {
+		if len(issue.others) == 0 {
 			continue
 		}
 		var detail struct {

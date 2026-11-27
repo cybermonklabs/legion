@@ -49,7 +49,7 @@ var blockIDCensusStatement = `
 	left join shared s on true
 	order by s.issue_key collate "C", s.block_id collate "C"`
 
-// ReadBlockIDCensus reads the census of block ids by issue (this issue's spec R13) in q: each
+// ReadBlockIDCensus reads the census of block ids by issue (R13 of the issue-tree spec) in q: each
 // block id that stands in two or more of the three documents of one issue that move into the
 // issue's room, for the whole instance, and how many issues it read over. It is a published read
 // and not a migration census. A count above zero refuses nothing: a healthy instance holds such

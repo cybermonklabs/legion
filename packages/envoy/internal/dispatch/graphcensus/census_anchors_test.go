@@ -161,6 +161,30 @@ func TestTheAnchorCensusHoldsEachAnchorBlockToItsAnchoredIn(t *testing.T) {
 	}
 }
 
+// seedAnchoredComment writes comment, a comment by alice of issue in project, as this build writes
+// one: its node first, made at createdAt, then its row naming the node, anchored on block b1 of
+// the document whose id is document and whose ref_key is refKey. Its node states no anchored_in,
+// as a process of the release before leaves the row it anchors.
+func seedAnchoredComment(t *testing.T, database *store.Store, project, issue, document, refKey, comment string, createdAt time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	drivenTx(t, database, "write the anchored comment", func(tx pgx.Tx) error {
+		node, tuples := graphstore.CommentFacts(nil, comment, alice, createdAt, graphstore.NoEvent, refKey, "", project, nil)
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, tuples); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			insert into comments (id, issue_key, author, body, anchor, node_kind, node_address, created_at)
+			values ($1::uuid, $2, '{"kind":"user","id":"alice"}', 'A remark on the block.',
+			        jsonb_build_object('artifact_id', $3::text, 'block_id', 'b1', 'mark_id', 'm-b1', 'version', 1,
+			                           'quote', 'The block.', 'orphaned', false),
+			        $4, $1::text, $5)
+		`, comment, issue, document, graphstore.KindComment, createdAt)
+		return err
+	})
+}
+
 // TestTheAnchorBatchTakesTheStoreLockOrder holds writeAnchorBatch (T17b of the issue-tree
 // plan) to the store's lock order, as TestEveryBackfillBatchTakesTheStoreLockOrder holds the other
 // batches: the owner row the comment stands under, its issue's row, first, then the anchored_in and
@@ -176,42 +200,10 @@ func TestTheAnchorCensusHoldsEachAnchorBlockToItsAnchoredIn(t *testing.T) {
 // those two tuples.
 func TestTheAnchorBatchTakesTheStoreLockOrder(t *testing.T) {
 	database := storetest.Open(t)
-	ctx := context.Background()
-	seedLockProject(t, database)
-	alice := model.Actor{Kind: "user", ID: "alice"}
-	var document, refKey, comment string
-	var createdAt time.Time
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `
-			insert into issues (key, project_key, number, title, created_by, rank)
-			values ('LOCK-1', 'LOCK', 1, 'Anchored', '{"kind":"user","id":"alice"}', 'U')
-		`); err != nil {
-			return err
-		}
-		if err := tx.QueryRow(ctx, `
-			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-			values ('LOCK-1', 'LOCK', 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}')
-			returning id::text, ref_key
-		`).Scan(&document, &refKey); err != nil {
-			return err
-		}
-		comment = "11111111-1111-4111-8111-111111111111"
-		createdAt = time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond)
-		node, tuples := graphstore.CommentFacts(nil, comment, alice, createdAt, graphstore.NoEvent, refKey, "", "LOCK", nil)
-		if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, tuples); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx, `
-			insert into comments (id, issue_key, author, body, anchor, node_kind, node_address, created_at)
-			values ($1::uuid, 'LOCK-1', '{"kind":"user","id":"alice"}', 'A remark on the block.',
-			        jsonb_build_object('artifact_id', $2::text, 'block_id', 'b1', 'mark_id', 'm-b1', 'version', 1,
-			                           'quote', 'The block.', 'orphaned', false),
-			        $3, $1::text, $4)
-		`, comment, document, graphstore.KindComment, createdAt)
-		return err
-	}); err != nil {
-		t.Fatalf("seed the anchored comment: %v", err)
-	}
+	document, refKey, _ := seedLockSpec(t, database)
+	const comment = "11111111-1111-4111-8111-111111111111"
+	createdAt := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond)
+	seedAnchoredComment(t, database, "LOCK", "LOCK-1", document, refKey, comment, createdAt)
 
 	owner, project := holdLockOwner(t, database)
 	report := followTheRun(t, database, "writeAnchorBatch", onePass(backfillAnchoredIn), []*lockstep.Hold{owner, project})

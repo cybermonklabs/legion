@@ -130,9 +130,10 @@ export function ArtifactHeader({
   }, [highlight]);
 
   // One button, placed by the branch below: it leads the row's non-wrapping box where there is
-  // no version to diff, and sits before that box where there is one.
+  // no version to diff, and sits before that box where there is one. A toolbar that names no
+  // version (an issue's tree artifact's, `DocumentToolbar.requestNamedVersion`) draws none.
   const nameVersion =
-    toolbar === undefined ? null : (
+    toolbar?.requestNamedVersion === undefined ? null : (
       <button
         className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
         disabled={isClosed || toolbar.isNamingVersion}

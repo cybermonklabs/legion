@@ -532,27 +532,20 @@ func waitForOpenQuestions(t *testing.T, handler http.Handler, key string, want i
 }
 
 // An issue born converted answers its spec's decision as an issue of one-document rooms answers
-// it (the T12b fixes of this branch's plan). The agent's decision, written into the spec's
-// fragment of the issue room, is one entry: its text and its tree are its words, its document is
-// the spec - the spec's id, its dispatch:// address and the decision's block id - and its ref is
-// the spec's address of its block. Its two shaped links, to the two paragraphs the spec's blocks
-// read lists, each name the spec's own address of that block, `<KEY>/spec#<id>`, with the block's
-// id, its text, the version that wrote it, the spec and the block's ref; so the spec's margin,
-// which draws a decision's card beside each block of the spec on screen that a link reaches,
-// draws one beside each paragraph. The release before's decisions member answers the same.
+// it. The agent's decision, written into the spec's fragment of the issue room, is one entry: its
+// text and its tree are its words, its document is the spec - the spec's id, its dispatch://
+// address and the decision's block id - and its ref is the spec's address of its block. Its two
+// shaped links, to the two paragraphs the spec's blocks read lists, each name the spec's own
+// address of that block, `<KEY>/spec#<id>`, with the block's id, its text, the version that wrote
+// it, the spec and the block's ref; so the spec's margin, which draws a decision's card beside each
+// block of the spec on screen that a link reaches, draws one beside each paragraph. The release
+// before's decisions member answers the same.
 func TestAConvertedIssuesDecisionAnswersAsAnUnconvertedIssuesDecisionDoes(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
-	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", "Notices arrive late.\n\nReaders poll for them.\n")
-	spec := readDecisionDocument(t, database, issue.Key, "spec")
-	var room string
-	if err := database.Pool.QueryRow(ctx, `
-		select tree.ref_key from document_rooms moved join artifacts tree on tree.id = moved.room
-		where moved.artifact_id = $1
-	`, spec.id).Scan(&room); err != nil {
-		t.Fatalf("read the room of %s's spec: %v; want the issue born converted", issue.Key, err)
-	}
+	spec := requireIssueRoomFragment(t, database, issue.Key, "spec")
+	room := spec.nodeKey
 	paragraphs := blockIDsByText(t, handler, spec.id)
 	late, poll := paragraphs["Notices arrive late."], paragraphs["Readers poll for them."]
 	if late == "" || poll == "" {

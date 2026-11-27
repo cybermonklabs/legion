@@ -198,7 +198,8 @@ function nextColumn(column: number, char: string): number {
 /**
  * One line of markdown, read from the column that the containers around a block have taken. A
  * column is measured forward from the first character not taken, and only when a reader asks for
- * it, as the Go twin's scanLine measures it (packages/envoy/internal/dispatch/refs/scope.go).
+ * it, as the Go twin's scanLine measures it
+ * (packages/envoy/internal/dispatch/pmdoc/question_blocks.go).
  */
 class ScanLine {
   readonly text: string;
@@ -841,7 +842,7 @@ function setextUnderline(text: string): boolean {
 }
 
 /**
- * directive.go's `FenceColons`: the colons `text` holds when they are all it holds but spaces and
+ * directive.go's `fenceColons`: the colons `text` holds when they are all it holds but spaces and
  * tabs. The colons stand between the two runs of spaces and tabs, so the pattern reads `text` in
  * time linear in its length.
  */
@@ -858,7 +859,7 @@ export function runOf(text: string, index: number, char: string): number {
   return end - index;
 }
 
-/** directive.go's `DirectiveNameByte`: a letter, a digit, `_` or `-`. */
+/** directive.go's `directiveNameByte`: a letter, a digit, `_` or `-`. */
 export function directiveNameChar(char: string): boolean {
   return /^[A-Za-z0-9_-]$/.test(char);
 }

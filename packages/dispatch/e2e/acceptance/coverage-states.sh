@@ -102,37 +102,11 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# coverage_states_block_node SECTION DOCUMENT BLOCK: the store address of block BLOCK of the
-# document whose artifact id is DOCUMENT, as its document_blocks row names it, read in the room the
-# document is edited in (its document_rooms row's room, else the document itself), in
-# coverage_states_node; empty where no row holds the block.
-coverage_states_block_node() {
-  with_vars "$1" "read the node of $3 of $2" \
-    "select coalesce((select b.node_id from document_blocks b
-       where b.artifact_id = coalesce((select r.room from document_rooms r where r.artifact_id = :'doc'::uuid), :'doc'::uuid)
-         and b.block_id = :'block'), '')" \
-    doc="$2" block="$3"
-  coverage_states_node="$answer"
-}
-
-# coverage_states_far_ends SECTION KIND NODE: the far ends of the current KIND tuples out of the
-# block node NODE - for each far end, the newest tuple naming it is asserted - each written
-# <to_kind>:<to_id>, sorted and joined by commas, in $answer.
-coverage_states_far_ends() {
-  with_vars "$1" "read the current $2 tuples out of $3" \
-    "select coalesce(string_agg(t.to_kind || ':' || t.to_id, ',' order by t.to_kind, t.to_id), '')
-     from (select distinct on (to_kind, to_id) to_kind, to_id, asserted from graph_tuples
-           where from_kind = 'block' and from_id = :'node' and kind = :'kind' and to_kind <> 'value'
-           order by to_kind, to_id, seq desc) t
-     where t.asserted" \
-    node="$3" kind="$2"
-}
-
 # coverage_states_serves SECTION CHECK REQUIREMENT: the one current serves tuple out of the check
 # node CHECK names the requirement node REQUIREMENT.
 coverage_states_serves() {
-  coverage_states_far_ends "$1" serves "$2"
-  [[ "$answer" == "block:$3" ]] ||
+  tree_node_far "$1" "$2" serves
+  [[ "$answer" == "$3" ]] ||
     fail "$1" "the store holds the serves tuple from $2 to $3" "the current serves tuples out of $2 name '$answer'"
   pass "$1" "the store holds the serves tuple from $2 to $3, and no other out of it"
 }
@@ -218,7 +192,7 @@ SPEC
 corpus_issue S1 "Coverage states check $stamp" "$work/spec.md"
 readonly key="$corpus_key"
 keys+=("$key")
-[[ "$key" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail S1 "create the issue" "the key $key is no issue key"
+tree_key S1 "create the issue" "$key"
 pass S1 "created $key in $project, whose spec holds r1 to r5"
 
 {
@@ -250,10 +224,10 @@ corpus_edit S1 "edit the words of c4 after its result" "$verification" \
   "$(jq -cn '[{op: "replace", find: "The check of requirement 4 holds these words.", with: "The check of requirement 4 holds other words now."}]')"
 coverage_states_record S1 c5 pass r5
 
-coverage_states_block_node S1 "$verification" c4
-[[ -n "$coverage_states_node" ]] || fail S1 "read the node of c4" "no document_blocks row holds c4 of $verification"
+tree_block_node S1 "$verification" c4
+[[ -n "$tree_block_node_id" ]] || fail S1 "read the node of c4" "no document_blocks row holds c4 of $verification"
 with_vars S1 "read the text sum c4 holds now" \
-  "select text_sha256 from document_blocks where node_id = :'node'" node="$coverage_states_node"
+  "select text_sha256 from document_blocks where node_id = :'node'" node="$tree_block_node_id"
 [[ -n "$answer" && "$answer" != "${result_sum[r4]}" ]] ||
   fail S1 "c4 holds words other than the ones its pass was recorded against" \
     "its text sum is '$answer', its pass's ${result_sum[r4]}"
@@ -266,8 +240,7 @@ coverage_states_states S2 "$key" '{"r1":"gap","r2":"unproven","r3":"unproven","r
 # --- S3: a retracted pass is no result ---------------------------------------------------------------
 
 readonly retracted="${result_id[r5]}"
-[[ "$retracted" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
-  fail S3 "read the id of r5's result" "$retracted is no uuid"
+tree_uuid S3 "read the id of r5's result" "$retracted"
 coverage_states_row S3 "read the node of $retracted" \
   "select md5(row(n.*)::text) from graph_nodes n where n.kind = 'result' and n.id = :'id'" id="$retracted"
 readonly node_before="$answer"
@@ -300,15 +273,15 @@ pass S3 "the result node $retracted holds its reason as the one value of its ret
 
 # --- S4: the answer follows the serves tuple ---------------------------------------------------------
 
-coverage_states_block_node S4 "$verification" c2
-readonly c2_node="$coverage_states_node"
+tree_block_node S4 "$verification" c2
+readonly c2_node="$tree_block_node_id"
 [[ -n "$c2_node" ]] || fail S4 "read the node of c2" "no document_blocks row holds c2 of $verification"
 tree_send GET "/api/v1/issues/$key"
 tree_want 200 S4 "read $key"
 tree_field S4 "read $key" .primary_artifact_id
 readonly spec="$tree_value"
-coverage_states_block_node S4 "$spec" r2
-readonly r2_node="$coverage_states_node"
+tree_block_node S4 "$spec" r2
+readonly r2_node="$tree_block_node_id"
 [[ -n "$r2_node" ]] || fail S4 "read the node of r2" "no document_blocks row holds r2 of $spec"
 coverage_states_serves S4 "$c2_node" "$r2_node"
 coverage_states_coverage S4 "$key"
@@ -358,7 +331,7 @@ SPEC
 corpus_issue S6 "Coverage states check, a Verification document past the block bound $stamp" "$work/large-spec.md"
 readonly large="$corpus_key" large_spec="$corpus_spec"
 keys+=("$large")
-[[ "$large" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail S6 "create the issue" "the key $large is no issue key"
+tree_key S6 "create the issue" "$large"
 {
   printf 'How the two requirements of %s are proved.\n\n' "$large"
   printf ':::check{#cb1 serves="dispatch://%s/spec#b-r1" surface="api" run="bash e2e/acceptance/coverage-states.sh" negative_control="Skip the typed pass and the check is not read."}\nThe first check of the large document.\n:::\n\n' "$large"
@@ -372,17 +345,17 @@ readonly large_version="$tree_value"
 pass S6 "wrote $large's verification.md, $large_verification, at version $large_version: two checks and $filler_blocks blocks more"
 
 # Right after the write, with no wait.
-coverage_states_block_node S6 "$large_verification" cb1
-readonly cb1_node="$coverage_states_node"
-coverage_states_block_node S6 "$large_verification" cb2
-readonly cb2_node="$coverage_states_node"
+tree_block_node S6 "$large_verification" cb1
+readonly cb1_node="$tree_block_node_id"
+tree_block_node S6 "$large_verification" cb2
+readonly cb2_node="$tree_block_node_id"
 [[ -n "$cb1_node" && -n "$cb2_node" ]] ||
   fail S6 "the write of verification.md $large_verification of $large writes its checks at once" \
     "right after the write no document_blocks row holds cb1 ('$cb1_node') or cb2 ('$cb2_node') of $large_verification"
-coverage_states_block_node S6 "$large_spec" r1
-readonly lr1_node="$coverage_states_node"
-coverage_states_block_node S6 "$large_spec" r2
-readonly lr2_node="$coverage_states_node"
+tree_block_node S6 "$large_spec" r1
+readonly lr1_node="$tree_block_node_id"
+tree_block_node S6 "$large_spec" r2
+readonly lr2_node="$tree_block_node_id"
 [[ -n "$lr1_node" && -n "$lr2_node" ]] ||
   fail S6 "read the requirement nodes of $large" "no document_blocks row holds r1 ('$lr1_node') or r2 ('$lr2_node') of $large_spec"
 coverage_states_coverage S6 "$large"

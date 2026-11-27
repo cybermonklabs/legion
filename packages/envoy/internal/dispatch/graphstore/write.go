@@ -258,10 +258,9 @@ func (w Uncaused) split() []Uncaused {
 // room's index pass, each part under the version event of the document it is of. A part keeps
 // the mark write's node write left on the rows of its nodes (nodeMark), with write's sentinel,
 // count (Counting) and armless append (ArmlessFresh), and its base attributes follow the facts of
-// it that preceded write's own: the
-// nodes of one write are parted, not written again, so each part's append states the base
-// attributes of its own nodes and moves them alone. A joined write (Joined) is parted part by
-// part, and each key's pieces are joined again.
+// it that preceded write's own: the nodes of one write are parted, not written again, so each
+// part's append states the base attributes of its own nodes and moves them alone. A joined write
+// (Joined) is parted part by part, and each key's pieces are joined again.
 func Parted(write Uncaused, of func(kind, id string) string) map[string]Uncaused {
 	parted := map[string]Uncaused{}
 	if write.parts != nil {

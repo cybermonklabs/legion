@@ -198,6 +198,12 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		WriteJSON(w, http.StatusConflict, open.body())
 		return
 	}
+	// A node delete whose expected_count moved carries the count now (node_delete.go).
+	var moved *deleteCountMovedError
+	if errors.As(err, &moved) {
+		WriteJSON(w, http.StatusConflict, moved.body())
+		return
+	}
 	documentCode := documentErrorCode(err)
 	switch documentCode {
 	case codeDocServiceUnavailable:

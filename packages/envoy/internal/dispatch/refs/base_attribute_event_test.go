@@ -39,7 +39,7 @@ import (
 //
 // So the test drives the closest a writer can come: two index passes of one document in one
 // transaction, the first dropping a block and the second restoring it, both appended under one
-// event. Under the key this branch ships the log holds both values; under the key it replaces
+// event. Under the key this build ships the log holds both values; under the key it replaces
 // the restore is dropped and the node row reads live while the log's newest value reads gone.
 func TestTwoValuesOfOneBaseAttributeUnderOneEventAreBothHeld(t *testing.T) {
 	ctx := context.Background()

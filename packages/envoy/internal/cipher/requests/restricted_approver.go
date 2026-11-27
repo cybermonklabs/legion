@@ -34,7 +34,10 @@
 // person as its operator, asking Dispatch nothing; a grant on a session that acts for no person (a
 // service's pod, a person's pod BROKER_POD_OPERATORS no longer maps, or a machine's own session) is
 // ended through the broker by nobody but its named approver until Dispatch answers. A machine with
-// no client of Dispatch asks nothing, and every approver stands as before.
+// no client of Dispatch asks nothing, and every approver stands as before. The broker's client
+// keeps each answer (projectaccess.Client.Keep), so while Dispatch does not answer a person it last
+// answered a full member reads as one, and stands as an approver on every route above as while
+// Dispatch answers; only a person kept restricted, or of whom no kind is kept, meets the failure.
 package requests
 
 import (

@@ -65,19 +65,29 @@ type standingSpecRead struct {
 // Like every other advice query this runs behind a savepoint of its own (adviceSavepoint),
 // because a failed statement aborts the transaction it ran in and this must never fail the write
 // it describes. It writes nothing, so the savepoint is always rolled back, which also restores
-// the statement_timeout it set.
-func (s *server) standingReviewAdvice(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, route, issueKey string) standingSpecRead {
-	adviceTx, ok := s.adviceSavepoint(ctx, tx, route, issueKey, "standing_review")
-	if !ok {
-		return standingSpecRead{}
+// the statement_timeout it set. That rollback is the one statement whose failure it does not
+// absorb: one that fails - cancelled by the 500 ms bound the savepoint set, on a starved
+// database - leaves the question's transaction aborted, so it is the error (rollBackAdvice),
+// which the route answers as a 500 rather than sending its write phase on that transaction.
+func (s *server) standingReviewAdvice(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, route, issueKey string) (read standingSpecRead, err error) {
+	adviceTx, err := s.adviceSavepoint(ctx, tx, route, issueKey, "standing_review")
+	if err != nil || adviceTx == nil {
+		return standingSpecRead{}, err
 	}
-	defer func() { _ = adviceTx.Rollback(ctx) }()
-	read, err := readStandingSpec(ctx, adviceTx, ledger, issueKey)
-	if err != nil {
-		s.logAdviceError(route, issueKey, "standing_review", err)
-		return standingSpecRead{}
+	var failed error
+	defer func() {
+		if rollbackErr := rollBackAdvice(ctx, adviceTx, "standing_review", failed); rollbackErr != nil {
+			read, err = standingSpecRead{}, rollbackErr
+		}
+	}()
+	if failed = s.runAdviceQueryHook(ctx, adviceTx, "standing_review"); failed == nil {
+		read, failed = readStandingSpec(ctx, adviceTx, ledger, issueKey)
 	}
-	return read
+	if failed != nil {
+		s.logAdviceError(route, issueKey, "standing_review", failed)
+		return standingSpecRead{}, nil
+	}
+	return read, nil
 }
 
 // standingSpecReview is the review the issue's specification carries as the tables hold it, for a

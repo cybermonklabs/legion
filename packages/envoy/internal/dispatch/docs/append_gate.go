@@ -42,6 +42,11 @@ var ErrRoomBehindHead = fmt.Errorf("%w: the document's room is behind its durabl
 // issue's room (ServeHTTP).
 var ErrRoomMoved = fmt.Errorf("%w: the document was moved into its issue's room", ErrServiceUnavailable)
 
+// movedRoomSQL is the room the document_rooms row of the document $1 names, null for a document
+// that is its own room: the append gate (appendGateStatement) and a room's catch-up
+// (catchUpStatement) each read it beside the room's stored history, in the same statement.
+const movedRoomSQL = `(select moved.room::text from document_rooms moved where moved.artifact_id = $1)`
+
 // appendKind is which rule the gate applies to an append (gateAppend).
 type appendKind int
 
@@ -114,7 +119,7 @@ const appendGateStatement = `
 		(select (extract(epoch from clock_timestamp() - i.closed_at) * 1000000)::bigint
 			from artifacts a join issues i on i.key = a.issue_key where a.id = $1),
 		(select ceiling from doc_checkpoints where artifact_id = $1),
-		(select moved.room::text from document_rooms moved where moved.artifact_id = $1)
+		` + movedRoomSQL + `
 	from doc_updates where artifact_id = $1 and ($2::bigint is null or version <= $2)`
 
 // appendGateRead is what one appendGateStatement read says about a document: latest, its head

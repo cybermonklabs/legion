@@ -180,10 +180,11 @@ type Config struct {
 	// the provider's issuer (an absolute https URL, or http only to a loopback host, for a run on
 	// one machine), the client's id, a file holding the client's secret (read at startup and
 	// trimmed; no variable carries the secret itself, so BROKER_SIGNIN_CLIENT_SECRET is refused),
-	// the Google Workspace domain a person's ID token must name in its hd claim, and how many
-	// seconds a sign-in lasts (an absolute expiry nothing extends, at most 86400, 24 hours, the
-	// default). The first four are required unless BROKER_SIGNIN is off: a broker that signs
-	// people in and is missing any of them refuses to start, naming the ones missing, since
+	// the Google Workspace domain a person's ID token must name in its hd claim (this domain is
+	// the gate, whatever audience the one consent screen both Google clients share is set to), and
+	// how many seconds a sign-in lasts (an absolute expiry nothing extends, at most 86400, 24
+	// hours, the default). The first four are required unless BROKER_SIGNIN is off: a broker that
+	// signs people in and is missing any of them refuses to start, naming the ones missing, since
 	// nobody could approve a secret request on a page nobody can sign in to. With BROKER_SIGNIN
 	// off every one of the five is refused, and SignIn is empty.
 	SignIn approval.SignIn
@@ -308,22 +309,60 @@ type Config struct {
 	// with another port, because the Service port a pod dials need not be the container port the
 	// broker binds.
 	AirlockProxyURL string
-	// BROKER_AIRLOCK_CA_CERT_FILE: the PEM certificate of the airlock proxy's certificate
-	// authority, the one every release hands the command to trust. Required when
-	// BROKER_PROFILES_FILE declares a kind or holds a dpop block, and then read once at start as
-	// half of that authority, with BROKER_AIRLOCK_CA_KEY_FILE; a pair the authority refuses refuses
-	// the start. A deployment with no kind and no dpop block reads neither file. What a release
-	// carries is the
-	// authority's own certificate rather than this file's bytes, so a file that holds more than
-	// the certificate hands a command nothing more. Both broker pods mount the same file from one
+	// BROKER_AIRLOCK_CA_CERT_FILE: the PEM certificates of the proxy's certificate authority for
+	// a deployment without Certificate Authority Service: an intermediate and then each authority
+	// up to and including its root, or a self-signed root alone. Required when
+	// BROKER_PROFILES_FILE declares a kind or holds a dpop block and BROKER_PROXY_CA_POOL is unset,
+	// and then read once at start as half of that authority, with BROKER_AIRLOCK_CA_KEY_FILE; a
+	// pair the authority refuses refuses the start, as does a chain that does not reach its root or
+	// that would sign no trusted leaf for a bound host. With BROKER_PROXY_CA_POOL set it is not
+	// read. A deployment with no kind and no dpop block reads neither file. What a release carries
+	// is the root of the chain rather than this file's bytes, so a file that holds more than the
+	// certificates hands a command nothing more. Both broker pods mount the same file from one
 	// Kubernetes Secret, so a command's trust does not depend on which pod released its values.
 	AirlockCACertFile string
-	// BROKER_AIRLOCK_CA_KEY_FILE: the PEM private key of BROKER_AIRLOCK_CA_CERT_FILE's
-	// certificate authority, which the proxy port signs each host's certificate with. Required
-	// when BROKER_PROFILES_FILE declares a kind or holds a dpop block, and mounted from the same
-	// Kubernetes Secret, which no container but the broker's mounts: it is the key that lets its
-	// holder be any host a command trusts.
+	// BROKER_AIRLOCK_CA_KEY_FILE: the PEM private key of the first certificate of
+	// BROKER_AIRLOCK_CA_CERT_FILE, which the proxy port signs each host's certificate with.
+	// Required with that file, and mounted from the same Kubernetes Secret, which no container but
+	// the broker's mounts: it is the key that lets its holder be any host a command trusts.
 	AirlockCAKeyFile string
+	// BROKER_PROXY_CA_POOL: the pool of Certificate Authority Service each broker pod asks for
+	// its own intermediate, projects/<project>/locations/<location>/caPools/<pool>. With it set,
+	// each pod makes the intermediate's key in its own memory, asks the pool for a certificate of
+	// 7 days at most for it with the pod's own Workload Identity credential, signs every bound
+	// host's leaf with it, asks for the next with 2 days left whatever its life, but no sooner
+	// than 5 minutes after it took that one, and answers GET /healthz 503 NO_INTERMEDIATE while
+	// it holds none; BROKER_AIRLOCK_CA_CERT_FILE and BROKER_AIRLOCK_CA_KEY_FILE are then not
+	// read. Unset, that mounted pair is the proxy's authority. A value of any other shape refuses
+	// the start.
+	ProxyCAPool string
+	// BROKER_PROXY_RELEASE_ROOTS_FILE: a PEM file of root certificates every release carries in
+	// addition to the root of the broker's own chain, so a command trusts a pod that signs under
+	// any of them: a rollout hands out the authority the pods sign with today and the one they
+	// sign with next at once. Read once at start; a file that cannot be read, holds no
+	// certificate, or holds one that is no certificate authority refuses the start. Unset, a
+	// release carries the root of the broker's own chain alone.
+	ProxyReleaseRootsFile string
+	// BROKER_PROXY_TEST_CA_URL: the base URL the pool's certificate requests go to in place of
+	// https://privateca.googleapis.com: a stand-in of Certificate Authority Service (the ca stand
+	// of cmd/dev-proxy-stands), which is sent no credential. Needs BROKER_PROXY_CA_POOL, an
+	// absolute http or https URL. For the broker's local stack alone: refused with
+	// KUBERNETES_SERVICE_HOST set, and on a production start, one with BROKER_FAKE_SECRETS_FILE
+	// unset.
+	ProxyTestCAURL string
+	// BROKER_PROXY_TEST_CLOCK_OFFSET_FILE: a file holding a Go duration ("0s", "120h1m") the
+	// proxy's certificate authority adds to the system's clock, read again at every reading of
+	// that clock, so a local check moves a running broker's leaves and its intermediate's
+	// renewal days on by writing the file. A file that cannot be read or holds no duration at
+	// start refuses the start. For the broker's local stack alone: refused with
+	// KUBERNETES_SERVICE_HOST set, and on a production start.
+	ProxyTestClockOffsetFile string
+	// BROKER_PROXY_TEST_RENEWAL_MARGIN: how long before its intermediate's end a broker asks
+	// for the next one, a Go duration of 0 or more, in place of 2 days; check k27's negative
+	// control sets 0, where the pod asks only once its intermediate has ended. Needs
+	// BROKER_PROXY_CA_POOL. For the broker's local stack alone: refused with
+	// KUBERNETES_SERVICE_HOST set, and on a production start. Nil is unset.
+	ProxyTestRenewalMargin *time.Duration
 	// BROKER_AIRLOCK_IDLE_SECONDS: how long one proxy connection may go with no byte in either
 	// direction before the proxy closes it, default 300, between 10 and 3600. A connection
 	// carries a grant's placeholders, so an abandoned one is state the broker holds for a
@@ -520,7 +559,11 @@ type Config struct {
 	// (requests.Machine.Projects), and while Dispatch cannot say what kind of member a person is,
 	// every enrollment under that person's login and every secret request and release of their
 	// sessions is refused 503 MEMBER_KIND_UNCHECKABLE, and an approval of one decides nothing
-	// (the approval page says it could not decide the request). Set with
+	// (the approval page says it could not decide the request). The broker keeps the kind
+	// Dispatch last answered for each person in person_member_kind (projectaccess.Client.Keep), so
+	// while Dispatch does not answer a person it last answered a full member is served as one,
+	// and only a person it last answered a restricted member, or of whom it keeps no kind, is
+	// refused so. Set with
 	// BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with neither, the broker asks Dispatch
 	// nothing. It then refuses every secret carrying a dispatch-project tag (project-unchecked)
 	// and serves every other secret as before; a token that names no project, and an operator
@@ -536,6 +579,16 @@ type Config struct {
 	// through ciphertoken.AccountToken, which reads the file again once what it last read is 30
 	// seconds old. Set with BROKER_PROJECT_ACCESS_URL or not at all.
 	ProjectAccessTokenFile string
+	// BROKER_HOLD_REQUIRES_DEADLINE: true on the broker of a deployment whose Dispatch runs behind
+	// Identity-Aware Proxy (DISPATCH_IDENTITY=iap), and unset or false everywhere else. With it
+	// true, the hold of refused people (internal/cipher/hold) serves Dispatch's answer that a
+	// person is not held only with the deadline such a Dispatch puts on it (not_held_until), so an
+	// answer naming none is refused 503 HOLD_UNCHECKABLE, and refuses a person of whom the broker
+	// keeps no answer while Dispatch cannot be asked instead of serving them unchecked; and the
+	// hold's refusals say that the Workspace Directory, not a sign-in, ends a hold. It needs
+	// BROKER_PROJECT_ACCESS_URL, which builds the hold: true without it, the start is refused, since
+	// that broker would hold nobody. Anything strconv.ParseBool does not read is refused.
+	HoldRequiresDeadline bool
 	// BROKER_AZURE_TOKEN_FILE: the path of the broker pod's projected ServiceAccount token for
 	// azure-login releases, default /var/run/secrets/azure/tokens/azure-identity-token. Read only
 	// on release, not at boot, and read anew each time so the rotated token is used. The token's
@@ -823,7 +876,7 @@ type Config struct {
 	// <service account email>=<project>=<person>[=<session>] entries, the grammar
 	// BROKER_EXCHANGE_ACCOUNTS uses for a pod, such as
 	// example-fleet@example-project.iam.gserviceaccount.com=EXAMPLE=ada@example.com. A token the
-	// exchange mints for a machine of that account may write that one project, acts for that
+	// exchange mints for a machine of that account names that one project, acts for that
 	// person, and writes under the session the entry fixes; an entry that fixes none requires the
 	// machine to name its own session. The session is everything after the third "=", so it alone
 	// may carry one. The person an entry names is also the one whose Dispatch Inbox lists a request
@@ -874,7 +927,7 @@ type Config struct {
 	// projected token, whitespace-separated
 	// <service account>=<project>=<person>[=<session>] entries, such as
 	// system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com. The token minted
-	// for a pod of the account may write that one project, a project key that exchange.NewSet
+	// for a pod of the account names that one project, a project key that exchange.NewSet
 	// refuses the start over when it is not one, acts for that person, and writes under
 	// the session the entry fixes; an entry that fixes none requires the pod to name its own
 	// session. An entry may name no project (<service account>==<person>): the shared
@@ -882,7 +935,7 @@ type Config struct {
 	// may name neither a project nor a person (<service account>==): an account whose
 	// tokens name no person and no project and act as the account itself, which Dispatch records
 	// their writes under. An entry naming a project and no person is refused: an entry that names
-	// a project names its person, so no account entry's token held to a project is personless. An
+	// a project names its person, so no account entry's token that names a project is personless. An
 	// entry whose fixed session is legion-daemon:<its own project> is a Legion daemon's own: the
 	// token minted for its pods holds the OAuth scope legion-status too. Dispatch reads that scope
 	// (DISPATCH_LEGION_STATUS_SCOPE): where the setting is on, a write of a Legion issue's status
@@ -1154,10 +1207,9 @@ const (
 // domain, and the Workspace's other domains, which are listed beside that domain.
 var signInOffRefuses = append(slices.Clone(SignInSettings), "BROKER_SIGNIN_SESSION_SECONDS", "BROKER_SIGNIN_DEVICE_AUDIENCE", workspaceDomainsSetting)
 
-// airlockProxySettings are the settings the airlock's proxy port cannot run without, every one of
-// them required when the profiles file declares a kind or holds a dpop block (Config.RequireAirlock). Every message that names
-// them names them in this order.
-var airlockProxySettings = []string{"BROKER_AIRLOCK_PROXY_URL", "BROKER_AIRLOCK_CA_CERT_FILE", "BROKER_AIRLOCK_CA_KEY_FILE"}
+// caPoolName is the shape of BROKER_PROXY_CA_POOL: a pool's resource name and nothing else, each
+// part one path segment with no space.
+var caPoolName = regexp.MustCompile(`^projects/[^/\s]+/locations/[^/\s]+/caPools/[^/\s]+$`)
 
 // The five settings the broker's model judge needs, each read by its own name: the endpoint it
 // calls its model at, the model's id, the audience of the identity token it presents there, the
@@ -1963,7 +2015,7 @@ func exchangeListingRefusal(cfg *Config) error {
 // person may be empty with it (<service account>==), an account whose tokens act as the
 // account itself. It refuses, naming the entry: one not of that form, with a blank account, or
 // naming a project and no person, since an entry that names a project names its person, so no
-// account entry's token held to a project is personless; an account that is not
+// account entry's token that names a project is personless; an account that is not
 // system:serviceaccount:<namespace>:<name>, or a namespace's default account (podAccountRefusal);
 // and an account listed twice, since one account writes as one identity. exchange.NewSet is the
 // second gate, and the session name's own form is its to refuse.
@@ -1976,7 +2028,7 @@ func parseExchangeAccounts(setting, value string) ([]exchange.AccountEntry, erro
 			return nil, fmt.Errorf("%s must be <service account>=<project>=<person>[=<session>] entries, the project empty for an entry naming none, the person empty only beside it, and the session everything after the third =, got %q", setting, text)
 		}
 		if fields[1] != "" && fields[2] == "" {
-			return nil, fmt.Errorf("%s names a project and no person in %q; an entry names no person only when it names no project either (<service account>==): an entry that names a project names its person, so no account entry's token held to a project is personless", setting, text)
+			return nil, fmt.Errorf("%s names a project and no person in %q; an entry names no person only when it names no project either (<service account>==): an entry that names a project names its person, so no account entry's token that names a project is personless", setting, text)
 		}
 		if err := podAccountRefusal(setting, text, fields[0]); err != nil {
 			return nil, err
@@ -2227,32 +2279,84 @@ func parseAirlockClusterRanges(value string) ([]netip.Prefix, error) {
 
 // RequireAirlock is the check of the airlock's settings against the profiles file the boot read,
 // proxied naming what of it puts a credential behind the proxy: each kind it declares and each
-// dpop block, in the file's order (AirlockSubjects). A broker whose file declares a kind but that
-// cannot proxy would hold back the value of every secret tagged with that kind and release
-// nothing in its place, so with any of them the three settings the proxy cannot run without are
-// required, the refusal naming the ones missing and what needs them, and, in a cluster, so are the
-// cluster's own ranges, which no fixed rule of the proxy covers (requireClusterRanges). With none,
-// there is no proxy and nothing is required: a deployment that serves GitHub Apps through
-// profiles and declares no kind runs no airlock.
+// dpop block, in the file's order (AirlockSubjects). A broker whose file names either but that
+// cannot proxy would hold back the value of every secret behind it and release nothing in its
+// place, so with any of them the proxy's URL and either the pool each pod gets its intermediate
+// from or the mounted pair are required, the refusal naming the ones missing and what needs them,
+// and, in a cluster, so are the cluster's own ranges, which no fixed rule of the proxy covers
+// (requireClusterRanges). With none, there is no proxy and nothing is required: a deployment that
+// serves GitHub Apps through profiles and declares no kind runs no airlock.
 func (c Config) RequireAirlock(proxied []string) error {
 	if len(proxied) == 0 {
 		return nil
 	}
-	// One value per airlockProxySettings entry, read in that order, so the missing ones are named
-	// in the order the message naming them uses and one list is walked rather than two that could
-	// part.
-	values := []string{c.AirlockProxyURL, c.AirlockCACertFile, c.AirlockCAKeyFile}
+	// Each name stays beside the value it names, so the missing list names the settings whose
+	// values are empty. With the pool named, the mounted pair is not read, so only the URL is
+	// required.
+	type setting struct{ name, value string }
+	settings := []setting{{"BROKER_AIRLOCK_PROXY_URL", c.AirlockProxyURL}}
+	if c.ProxyCAPool == "" {
+		settings = append(settings,
+			setting{"BROKER_AIRLOCK_CA_CERT_FILE", c.AirlockCACertFile},
+			setting{"BROKER_AIRLOCK_CA_KEY_FILE", c.AirlockCAKeyFile},
+		)
+	}
 	var missing []string
-	for i, setting := range airlockProxySettings {
-		if values[i] == "" {
-			missing = append(missing, setting)
+	for _, setting := range settings {
+		if setting.value == "" {
+			missing = append(missing, setting.name)
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("BROKER_PROFILES_FILE declares %s, so the broker runs the airlock's proxy for them and needs %s; missing %s",
-			strings.Join(proxied, ", "), strings.Join(airlockProxySettings, ", "), strings.Join(missing, ", "))
+		return fmt.Errorf("BROKER_PROFILES_FILE declares %s, so the broker runs the airlock's proxy for them and needs %s, and BROKER_PROXY_CA_POOL or both of %s; missing %s",
+			strings.Join(proxied, ", "), "BROKER_AIRLOCK_PROXY_URL", "BROKER_AIRLOCK_CA_CERT_FILE and BROKER_AIRLOCK_CA_KEY_FILE", strings.Join(missing, ", "))
 	}
 	return requireClusterRanges(c.AirlockClusterRanges, c.kubernetesServiceHost)
+}
+
+// loadProxyChain holds the proxy chain's settings to their forms: the pool to its resource name,
+// the stand-in's URL to an absolute http or https URL, and the renewal margin (margin, which it
+// parses into cfg) to a duration of 0 or more. The stand-in and the margin need the pool, since
+// without one nothing asks a stand-in or renews. A broker in a cluster refuses each of the
+// local stack's three settings: KUBERNETES_SERVICE_HOST set to a non-empty value says it runs in
+// one (requireClusterRanges reads it the same way), and a cluster's broker that dialled a
+// stand-in, moved its own clock or kept an intermediate to its end would be a deployment no
+// operator configured.
+func loadProxyChain(cfg *Config, margin string) error {
+	margin = strings.TrimSpace(margin)
+	if cfg.ProxyCAPool != "" && !caPoolName.MatchString(cfg.ProxyCAPool) {
+		return fmt.Errorf("BROKER_PROXY_CA_POOL must be a pool's resource name, projects/<project>/locations/<location>/caPools/<pool>, got %q", cfg.ProxyCAPool)
+	}
+	for _, setting := range []struct {
+		name, value string
+	}{
+		{"BROKER_PROXY_TEST_CA_URL", cfg.ProxyTestCAURL},
+		{"BROKER_PROXY_TEST_CLOCK_OFFSET_FILE", cfg.ProxyTestClockOffsetFile},
+		{"BROKER_PROXY_TEST_RENEWAL_MARGIN", margin},
+	} {
+		if setting.value != "" && cfg.kubernetesServiceHost != "" {
+			return fmt.Errorf("%s is for the broker's local stack alone and KUBERNETES_SERVICE_HOST is set, so this broker runs in a cluster; take it out", setting.name)
+		}
+	}
+	if cfg.ProxyTestCAURL != "" {
+		if cfg.ProxyCAPool == "" {
+			return errors.New("BROKER_PROXY_TEST_CA_URL names where the pool's certificate requests go, and no BROKER_PROXY_CA_POOL names a pool")
+		}
+		if err := httpURLSetting("BROKER_PROXY_TEST_CA_URL", cfg.ProxyTestCAURL); err != nil {
+			return err
+		}
+	}
+	if margin != "" {
+		if cfg.ProxyCAPool == "" {
+			return errors.New("BROKER_PROXY_TEST_RENEWAL_MARGIN says when a pod asks for its next intermediate, and no BROKER_PROXY_CA_POOL names a pool it asks")
+		}
+		parsed, err := time.ParseDuration(margin)
+		if err != nil || parsed < 0 {
+			return fmt.Errorf("BROKER_PROXY_TEST_RENEWAL_MARGIN must be a Go duration of 0 or more, such as 0s or 48h, got %q", margin)
+		}
+		cfg.ProxyTestRenewalMargin = &parsed
+	}
+	return nil
 }
 
 // AirlockSubjects names what of the profiles file's rules (policy.Profiles.FileRules) puts a
@@ -2549,11 +2653,12 @@ func parseAirlockTestAzureAuthority(value string) (string, error) {
 	return host, nil
 }
 
-// testOnlySwitch reads one of the local stack's test-only switches, the airlock's two and
-// the judge's one: unset is off, and anything strconv.ParseBool does not read is refused rather
-// than taken as off, since a misspelled value would otherwise turn a negative control into the
-// ordinary run it is meant to be compared against.
-func testOnlySwitch(setting, value string) (bool, error) {
+// onOffSetting reads an on/off setting: the local stack's test-only switches, the airlock's two
+// and the judge's one, and BROKER_HOLD_REQUIRES_DEADLINE. Unset is off, and anything
+// strconv.ParseBool does not read is refused rather than taken as off, since a misspelled value
+// would otherwise turn a negative control into the ordinary run it is meant to be compared
+// against, or serve an IAP deployment's people on answers that name no deadline.
+func onOffSetting(setting, value string) (bool, error) {
 	text := strings.TrimSpace(value)
 	if text == "" {
 		return false, nil
@@ -2774,6 +2879,10 @@ func Load(getenv func(string) string) (Config, error) {
 		AirlockProxyURL:           strings.TrimSpace(getenv("BROKER_AIRLOCK_PROXY_URL")),
 		AirlockCACertFile:         strings.TrimSpace(getenv("BROKER_AIRLOCK_CA_CERT_FILE")),
 		AirlockCAKeyFile:          strings.TrimSpace(getenv("BROKER_AIRLOCK_CA_KEY_FILE")),
+		ProxyCAPool:               strings.TrimSpace(getenv("BROKER_PROXY_CA_POOL")),
+		ProxyReleaseRootsFile:     strings.TrimSpace(getenv("BROKER_PROXY_RELEASE_ROOTS_FILE")),
+		ProxyTestCAURL:            strings.TrimSpace(getenv("BROKER_PROXY_TEST_CA_URL")),
+		ProxyTestClockOffsetFile:  strings.TrimSpace(getenv("BROKER_PROXY_TEST_CLOCK_OFFSET_FILE")),
 		AirlockTestGitHubAPIBase:  strings.TrimSpace(getenv("BROKER_AIRLOCK_TEST_GITHUB_API_BASE")),
 		AirlockTestGoogleTokenURL: strings.TrimSpace(getenv("BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL")),
 		AirlockTestUpstreamCAFile: strings.TrimSpace(getenv("BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE")),
@@ -2814,16 +2923,16 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.AirlockTestResolve, cfg.ProxyTestDialPorts, testSwitchErr = parseAirlockTestResolve(getenv("BROKER_AIRLOCK_TEST_RESOLVE")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
-	if cfg.AirlockTestKeepValues, testSwitchErr = testOnlySwitch("BROKER_AIRLOCK_TEST_KEEP_VALUES", getenv("BROKER_AIRLOCK_TEST_KEEP_VALUES")); testSwitchErr != nil {
+	if cfg.AirlockTestKeepValues, testSwitchErr = onOffSetting("BROKER_AIRLOCK_TEST_KEEP_VALUES", getenv("BROKER_AIRLOCK_TEST_KEEP_VALUES")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
-	if cfg.AirlockTestNoKind, testSwitchErr = testOnlySwitch("BROKER_AIRLOCK_TEST_NO_KIND", getenv("BROKER_AIRLOCK_TEST_NO_KIND")); testSwitchErr != nil {
+	if cfg.AirlockTestNoKind, testSwitchErr = onOffSetting("BROKER_AIRLOCK_TEST_NO_KIND", getenv("BROKER_AIRLOCK_TEST_NO_KIND")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
 	if cfg.AirlockTestAzureAuthority, testSwitchErr = parseAirlockTestAzureAuthority(getenv("BROKER_AIRLOCK_TEST_AZURE_AUTHORITY")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
-	if cfg.JudgeTestSkipChecks, testSwitchErr = testOnlySwitch("BROKER_JUDGE_TEST_SKIP_CHECKS", getenv("BROKER_JUDGE_TEST_SKIP_CHECKS")); testSwitchErr != nil {
+	if cfg.JudgeTestSkipChecks, testSwitchErr = onOffSetting("BROKER_JUDGE_TEST_SKIP_CHECKS", getenv("BROKER_JUDGE_TEST_SKIP_CHECKS")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
 	if cfg.AzureLoginSecret != "" {
@@ -2901,6 +3010,11 @@ func Load(getenv func(string) string) (Config, error) {
 	// does not read: RequireAirlock is that check, which the boot makes once it has read the file.
 	// The address that says whether the broker runs in a cluster is read here with the rest.
 	cfg.kubernetesServiceHost = getenv("KUBERNETES_SERVICE_HOST")
+	// The proxy chain's settings, held to their forms and the local stack's three refused in a
+	// cluster (loadProxyChain), once the address that says whether this is one has been read.
+	if err := loadProxyChain(&cfg, getenv("BROKER_PROXY_TEST_RENEWAL_MARGIN")); err != nil {
+		return Config{}, err
+	}
 	// The proxy's URL, when a deployment with a profiles file gives one, held to its form, as
 	// BROKER_MACHINE_LOGIN_URL above is: every release of a name behind the airlock carries
 	// this string, and a command's own client reads it as the proxy to dial. A value with no
@@ -2998,6 +3112,15 @@ func Load(getenv func(string) string) (Config, error) {
 		if err := httpURLSetting("BROKER_PROJECT_ACCESS_URL", cfg.ProjectAccessURL); err != nil {
 			return Config{}, err
 		}
+	}
+	if cfg.HoldRequiresDeadline, err = onOffSetting("BROKER_HOLD_REQUIRES_DEADLINE", getenv("BROKER_HOLD_REQUIRES_DEADLINE")); err != nil {
+		return Config{}, err
+	}
+	// The deadline rule rules the hold, which BROKER_PROJECT_ACCESS_URL builds: a broker that asks
+	// no Dispatch holds nobody, so the rule beside no URL is an IAP deployment that meant to hold
+	// its people and holds none, refused as every setting that configures nothing is.
+	if cfg.HoldRequiresDeadline && cfg.ProjectAccessURL == "" {
+		return Config{}, errors.New("BROKER_HOLD_REQUIRES_DEADLINE is true and BROKER_PROJECT_ACCESS_URL is not set: the deadline rules the hold of refused people, which a broker builds only when it has a Dispatch to ask, so with no URL it holds nobody; set BROKER_PROJECT_ACCESS_URL and BROKER_PROJECT_ACCESS_TOKEN_FILE, or unset BROKER_HOLD_REQUIRES_DEADLINE")
 	}
 	switch cfg.SecretsStore {
 	case secrets.StoreAWS:

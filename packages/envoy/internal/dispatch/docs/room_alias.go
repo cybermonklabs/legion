@@ -64,8 +64,9 @@ type roomAliasConn struct {
 	// in renames what the socket sends and out what ygo writes; each runs on its side's one
 	// goroutine (ygo's reader, and gorilla's writer, which takes one write at a time).
 	in, out *frameRenamer
-	// read is what in has renamed and ygo's reader has yet to take; buffer is the read's scratch.
-	read, buffer []byte
+	// read is what in has renamed and ygo's reader has yet to take, the rest of renamed, which a
+	// refill renames into again once read is empty; buffer is the read's scratch.
+	read, renamed, buffer []byte
 	// written is the write's scratch.
 	written []byte
 }
@@ -93,7 +94,8 @@ func (c *roomAliasConn) Read(p []byte) (int, error) {
 			c.buffer = make([]byte, max(len(p), 4096))
 		}
 		n, err := c.src.Read(c.buffer[:len(p)])
-		c.read = c.in.rename(c.read[:0], c.buffer[:n])
+		c.renamed = c.in.rename(c.renamed[:0], c.buffer[:n])
+		c.read = c.renamed
 		if err != nil && len(c.read) == 0 {
 			return 0, err
 		}
@@ -175,10 +177,7 @@ func (f *frameRenamer) rename(out, in []byte) []byte {
 
 // headerBytes reads a frame header off in, passes it to out, and starts the frame's payload.
 func (f *frameRenamer) headerBytes(out, in []byte) ([]byte, []byte) {
-	want := 2
-	if f.have >= 2 {
-		want = frameHeaderLength(f.header[:2])
-	}
+	want := frameHeaderLength(f.header[:f.have])
 	for f.have < want && len(in) > 0 {
 		f.header[f.have] = in[0]
 		f.have++
@@ -198,11 +197,8 @@ func (f *frameRenamer) headerBytes(out, in []byte) ([]byte, []byte) {
 	if f.masked {
 		copy(f.key[:], f.header[want-4:want])
 	}
-	f.named = opcode == gws.BinaryMessage
+	f.named = opcode == gws.BinaryMessage && f.payload > 0
 	f.have = 0
-	if f.payload == 0 {
-		f.named = false
-	}
 	return out, in
 }
 
@@ -215,7 +211,6 @@ func (f *frameRenamer) payloadBytes(out, part []byte) []byte {
 			out = append(out, part...)
 			f.offset += int64(len(part))
 			f.payload -= int64(len(part))
-			part = nil
 			break
 		}
 		take := int(min(nameEnd-f.offset, int64(len(part))))
@@ -227,12 +222,11 @@ func (f *frameRenamer) payloadBytes(out, part []byte) []byte {
 			out = f.releaseName(out)
 		}
 	}
-	if f.payload == 0 && len(f.held) > 0 {
-		// The frame ended inside what a name would take: it names no document this renames.
+	if f.payload == 0 {
+		// A frame that ended inside what a name would take names no document this renames: what
+		// it held of one passes as it came.
 		out = append(out, f.held...)
 		f.held = f.held[:0]
-	}
-	if f.payload == 0 {
 		f.named = false
 	}
 	return out

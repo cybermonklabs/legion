@@ -156,7 +156,10 @@ func reviewed(approval dispatch.Approval) bool {
 	return approval.State != "draft"
 }
 
-// approvalShown is what Dispatch shows of a document's approval, as a refusal names it.
+// approvalShown is what Dispatch shows of a document's approval, as a refusal names it. Dispatch
+// shows an approval of an older version approved where the record that approval covers is still
+// the latest version's and no write carried it there (R14 of the issue-tree spec), so an approval
+// is named the approval of the latest version only where it is one.
 func approvalShown(approval dispatch.Approval) string {
 	version := 0
 	if approval.Version != nil {
@@ -165,7 +168,10 @@ func approvalShown(approval dispatch.Approval) string {
 	by := actorNamed(approval.By)
 	switch approval.State {
 	case "approved":
-		return fmt.Sprintf("an approval of its latest version %d by %s", version, by)
+		if approval.ApprovedLatest() != 0 {
+			return fmt.Sprintf("an approval of its latest version %d by %s", version, by)
+		}
+		return fmt.Sprintf("an approval of version %d by %s, which Dispatch reads as standing at its latest version %d", version, by, approval.LatestVersion)
 	case "stale":
 		return fmt.Sprintf("an approval of version %d by %s, older than its latest version %d, and no open approval request", version, by, approval.LatestVersion)
 	case "changes_requested":

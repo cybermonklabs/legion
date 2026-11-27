@@ -1,11 +1,16 @@
 package refs
 
 import (
-	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
+
+// answeredState is the answer_state value of an answered ask: asks.StateAnswered, which refs does
+// not import. asks reaches pglisten through pmdoc/schemanodes, and pglisten's tests reach refs
+// through delivery, so an import of asks here is a cycle. TestAnsweredStateIsTheAsksAnsweredState
+// holds the two to one value.
+const answeredState = "answered"
 
 // TypeSupertag is the supertag the node of a block of type typ carries (R26 of
 // the issue-tree spec): its type, for a typed block of the block schema the store's
@@ -94,7 +99,7 @@ func AskBlockAnsweredSQL(artifact, block, address string) string {
 // its newest answer_state value is answered, as docs' askAnswers reads it, where a node that holds
 // none reads as open.
 func askAnsweredSQL(ask string) string {
-	return `coalesce((select answer.asserted and answer.to_id = ` + store.QuoteLiteral(asks.StateAnswered) + ` from graph_tuples answer
+	return `coalesce((select answer.asserted and answer.to_id = ` + store.QuoteLiteral(answeredState) + ` from graph_tuples answer
 			where answer.from_kind = '` + graphstore.KindAsk + `' and answer.from_id = ` + ask + `
 			  and answer.kind = '` + graphstore.TupleAnswerState + `' and answer.to_kind = '` + graphstore.KindValue + `'
 			order by answer.seq desc limit 1), false)`

@@ -179,17 +179,10 @@ func parsedStatement(statement string) (node string, body json.RawMessage, ok bo
 	return statements[0].node, statements[0].body, true
 }
 
-// sourceText is a statement's text as a finding quotes it: the comment lines before it left out,
-// and its words one space apart.
+// sourceText is a statement's text as a finding quotes it: the comment lines before it left out
+// (afterHeader), and its words one space apart.
 func sourceText(text string) string {
-	lines := strings.Split(text, "\n")
-	for len(lines) > 0 {
-		if line := strings.TrimSpace(lines[0]); line != "" && !strings.HasPrefix(line, "--") {
-			break
-		}
-		lines = lines[1:]
-	}
-	return strings.Join(strings.Fields(strings.Join(lines, "\n")), " ")
+	return strings.Join(strings.Fields(afterHeader(text)), " ")
 }
 
 // relationOf reads the relation a statement's parse node names, as the parser gives it.
@@ -507,6 +500,7 @@ func readIssueTreeMigrations(migrations []pgmigrate.Migration) issueTreeReading 
 	}
 	named := map[string]bool{}
 	adds := map[string][]string{}
+	addTables := slices.Sorted(maps.Keys(columnAdds))
 	for _, migration := range migrations {
 		reading.touched = append(reading.touched, pgmigrate.TouchedTables(migration.SQL)...)
 		typeMigration, typeFindings := readTypeStatements(migration)
@@ -541,7 +535,7 @@ func readIssueTreeMigrations(migrations []pgmigrate.Migration) issueTreeReading 
 					}
 				}
 			}
-			for _, table := range slices.Sorted(maps.Keys(columnAdds)) {
+			for _, table := range addTables {
 				if !slices.Contains(touched, table) {
 					continue
 				}
@@ -572,7 +566,7 @@ func readIssueTreeMigrations(migrations []pgmigrate.Migration) issueTreeReading 
 			}
 		}
 	}
-	for _, table := range slices.Sorted(maps.Keys(columnAdds)) {
+	for _, table := range addTables {
 		switch held := adds[table]; {
 		case len(held) == 0:
 			finding("no migration of this child adds %s to %s, with no default: that alter table is the one statement %s takes from this child",

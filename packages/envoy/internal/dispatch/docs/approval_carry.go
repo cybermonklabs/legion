@@ -107,20 +107,14 @@ const CarriedReviewReasonPrefix = model.CarriedReviewReasonPrefix
 // restoreReason is the reason a review carried to a version restoring the approved text records,
 // naming the version of the approval it stands for (approvalOrigin), where that version's text is
 // the text restored. Like every carried reason, it is written from CarriedReviewReasonPrefix
-// rather than spelling that opening itself, so the sentence and its reader (CarriedFromVersion)
-// cannot drift apart.
+// rather than spelling that opening itself, so the sentence and its reader
+// (model.CarriedFromVersion) cannot drift apart.
 const restoreReason = CarriedReviewReasonPrefix + "%d: this version's text is that version's, unchanged."
 
 // restoreCarriedReason is restoreReason where the approval restored is itself a carry: it names the
 // version the person approved (approvalOrigin), then the version whose text is restored, the one
 // that approval was carried to (restoredReason).
 const restoreCarriedReason = CarriedReviewReasonPrefix + "%d: this version's text is version %d's, unchanged, which that approval was carried to."
-
-// CarriedFromVersion reads the source version from the legacy carry reason, using the same
-// parser the census uses. Readers use this fallback only when the carry row is absent.
-func CarriedFromVersion(reason string) (int, bool) {
-	return model.CarriedFromVersion(reason)
-}
 
 // carriedReasonPrefix opens the reason of every review a carry case records, naming the version
 // of the approval it stands for (approvalOrigin): CarriedReviewReasonPrefix and the version. The
@@ -193,14 +187,7 @@ func (s *Service) carryApproval(ctx context.Context, tx pgx.Tx, artifactID strin
 	if err != nil || newest == nil || newest.State != "approved" {
 		return err
 	}
-	return s.carryStandingApproval(ctx, tx, artifactID, version.Number, rendered, *newest, steps, record, sink)
-}
-
-// carryStandingApproval is carryApproval once newest, the document's newest review, is known to be
-// an approval (carryNewestApprovalNaming). It hands sink the events it appends, as carryApproval
-// does.
-func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifactID string, number int, rendered renderedTree, newest model.ArtifactReview, steps decisionStepCases, record RecordCarry, sink func(model.Event)) error {
-	return carryNewestApprovalNaming(ctx, tx, s.events, artifactID, number, rendered.markdown, rendered.tree, newest, s.serverURL, steps, "", record, sink)
+	return carryNewestApprovalNaming(ctx, tx, s.events, artifactID, version.Number, rendered.markdown, rendered.tree, *newest, s.serverURL, steps, "", record, sink)
 }
 
 // CarryUploadedApproval is carryApproval for the route that writes a document version itself
@@ -292,7 +279,8 @@ func carryNewestApprovalNaming(ctx context.Context, tx pgx.Tx, broker *events.Br
 			return writeCarriedReview(ctx, tx, broker, artifactID, number, origin, newest, reason, serverURL, sink)
 		})
 	}
-	if len(shown.nodes) > 0 || holdsDecision(tree) {
+	change, carried := "", false
+	if len(shown.nodes) > 0 || holdsBlockType(tree, decisionType) {
 		approved, approvedText, otherRenderer, readable, err := approvedVersion(ctx, tx, artifactID, newest.Version)
 		if err != nil {
 			return err
@@ -303,7 +291,7 @@ func carryNewestApprovalNaming(ctx context.Context, tx pgx.Tx, broker *events.Br
 				return err
 			}
 			input := carryInput{
-				approved: approved, approvedText: approvedText, approvedOtherRenderer: otherRenderer, version: tree, agrees: agrees,
+				approved: approved, approvedText: approvedText, approvedOtherRenderer: otherRenderer, version: tree,
 				approverAnswered: approverAnswers(shown, newest), answered: answered,
 				// kept for one release: decisions-step
 				decided: decidedAskBlocks(shown), steps: steps,
@@ -312,22 +300,21 @@ func carryNewestApprovalNaming(ctx context.Context, tx pgx.Tx, broker *events.Br
 			if steps.restore {
 				input.restored = restoredAskBlocks(approved, tree, steps.restored, steps.restoredShaped)
 			}
-			change, carried, err := carryVerdict(input)
-			if err != nil {
+			if change, carried, err = carryVerdict(input); err != nil {
 				return skipUnreadableVersion(artifactID, number, err)
 			}
-			if carried {
-				origin, err := approvalOrigin(ctx, tx, artifactID, newest)
-				if err != nil {
-					return err
-				}
-				reason := fmt.Sprintf(carriedReasonPrefix, origin) + change
-				if arrived != "" {
-					reason = fmt.Sprintf(carriedReasonPrefix, origin) + arrived + ", and " + change
-				}
-				return writeCarriedReview(ctx, tx, broker, artifactID, number, origin, newest, reason, serverURL, sink)
-			}
 		}
+	}
+	if carried {
+		origin, err := approvalOrigin(ctx, tx, artifactID, newest)
+		if err != nil {
+			return err
+		}
+		reason := fmt.Sprintf(carriedReasonPrefix, origin) + change
+		if arrived != "" {
+			reason = fmt.Sprintf(carriedReasonPrefix, origin) + arrived + ", and " + change
+		}
+		return writeCarriedReview(ctx, tx, broker, artifactID, number, origin, newest, reason, serverURL, sink)
 	}
 	if arrived != "" {
 		return nil
@@ -448,79 +435,54 @@ type versionAsks struct {
 
 // asksAgreeWithTheirNodes is every ask block of a version, tree, by block id (askNodes), and
 // whether each agrees with its node: a block the row of artifactID indexes agrees with that row and
-// with its ask's node as the transaction reads it (askAgreesWithItsNode, askNodeAnswers), and a
-// block no row of this document indexes is a copy of an ask on another document of its owner
-// (readCopiedAskSources, settlement's own classification) that agrees with its source and its
-// source's node (copyAgreesWithItsSource). A version holding no ask
-// block agrees; one holding a block id twice, which settlement reads no block under, or a block
-// neither indexed nor a copy - one forged on the socket, or one whose update the room has not
-// credited yet - does not, and leaves its decisions unknown to every carry rule. The rows and
-// their nodes are read only for a version holding an ask block, and the sources and theirs only
-// for one holding a block no row indexes; the carry opens no ask from what it reads, so it takes
-// no copy lock. What it read of the blocks is answered beside the verdict (versionAsks).
+// with its ask's node as the transaction reads it (askAgreesWithItsNode, askNodeAnswers), or with
+// the row alone where the row names no node, its answer's only record (onItsNode), and a block no
+// row of this document indexes is a copy of an ask on another document of its owner
+// (readBlockAsks, settlement's own classification) that agrees with its source and its source's
+// node, or its source's row where that row names none (copyAgreesWithItsSource). A version
+// holding no ask block agrees; one holding a block id twice, which settlement reads no block under
+// (askNodes), or a block neither indexed nor a copy - one forged on the socket, or one whose
+// update the room has not credited yet - does not, and leaves its decisions unknown to every carry
+// rule. The rows, the sources and their nodes are read only for a version holding an ask block,
+// and the owner only for one holding a block no row indexes; the carry opens no ask from what it
+// reads, so it takes no copy lock. What it read of the blocks is answered beside the verdict
+// (versionAsks).
 func asksAgreeWithTheirNodes(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node) (versionAsks, bool, error) {
 	nodes, readable := askNodes(tree)
 	if !readable || len(nodes) == 0 {
 		return versionAsks{}, readable, nil
 	}
-	rows, err := loadAskBlocks(ctx, tx, documentAsksOf(artifactID))
-	if err != nil {
-		return versionAsks{}, false, err
-	}
-	indexed := make([]string, 0, len(nodes))
-	for id := range nodes {
-		if ask, held := rows[id]; held {
-			indexed = append(indexed, ask.ID)
+	blocks := make([]askBlock, 0, len(nodes))
+	for _, node := range nodes {
+		if block, err := parseAskBlock(node); err == nil {
+			blocks = append(blocks, block)
 		}
 	}
-	// The nodes' answers are what each block is held to beside its row, and what the answer case
-	// reads (approverAnswers).
-	answers, err := askNodeAnswers(ctx, tx, indexed)
+	read, err := readBlockAsks(ctx, tx, documentAsksOf(artifactID), nil, blocks, readCopiedAskSources)
 	if err != nil {
 		return versionAsks{}, false, err
 	}
-	var copies []askBlock
-	var unindexed []string
+	// The nodes' answers are what each block is held to beside its row or its source, and what
+	// the answer case reads (approverAnswers).
+	// kept for one release: stored-ask-state
+	answers, err := askNodeAnswers(ctx, tx, read.askIDs())
+	if err != nil {
+		return versionAsks{}, false, err
+	}
 	for id, node := range nodes {
-		if ask, held := rows[id]; held {
+		if ask, indexed := read.rows[id]; indexed {
 			if !askAgreesWithItsNode(node, ask, onItsNode(ask, answers)) {
 				return versionAsks{}, false, nil
 			}
 			continue
 		}
-		block, err := parseAskBlock(node)
-		if err != nil {
-			return versionAsks{}, false, nil
-		}
-		copies, unindexed = append(copies, block), append(unindexed, id)
-	}
-	if len(copies) == 0 {
-		return versionAsks{nodes: nodes, rows: rows, answers: answers}, true, nil
-	}
-	owner, err := documentOwner(ctx, tx, artifactID)
-	if err != nil {
-		return versionAsks{}, false, err
-	}
-	sources, err := readCopiedAskSources(ctx, tx, artifactID, owner, copies, unindexed)
-	if err != nil {
-		return versionAsks{}, false, err
-	}
-	copied := make([]string, 0, len(sources))
-	for _, source := range sources {
-		copied = append(copied, source.ask.ID)
-	}
-	// kept for one release: stored-ask-state
-	sourceAnswers, err := askNodeAnswers(ctx, tx, copied)
-	if err != nil {
-		return versionAsks{}, false, err
-	}
-	for _, block := range copies {
-		source, held := sources[block.id]
-		if !held || !copyAgreesWithItsSource(block.node, source, onItsNode(source.ask, sourceAnswers)) {
+		// A block that does not parse is no copy (readBlockAsks reads none for it).
+		source, copied := read.sources[id]
+		if !copied || !copyAgreesWithItsSource(node, source, onItsNode(source.ask, answers)) {
 			return versionAsks{}, false, nil
 		}
 	}
-	return versionAsks{nodes: nodes, rows: rows, answers: answers, sources: sources}, true, nil
+	return versionAsks{nodes: nodes, rows: read.rows, answers: answers, sources: read.sources}, true, nil
 }
 
 // approverAnswers is each ask block of a version, read as asksAgreeWithTheirNodes read it (shown),
@@ -548,9 +510,9 @@ func approverAnswers(shown versionAsks, newest model.ArtifactReview) map[string]
 		if !indexed {
 			continue
 		}
-		held := shown.answers[ask.ID].NodeAnswer
-		held.Named = true
-		held.ApplyTo(&ask)
+		// An ask whose row names no node is absent from the answers, and reads as its row holds it
+		// (asks.NodeAnswer.ApplyTo).
+		shown.answers[ask.ID].ApplyTo(&ask)
 		answer := ask.Answer
 		if ask.State != asks.StateAnswered || answer == nil || model.CanonicalLogin(answer.User) != approver ||
 			!answer.At.After(newest.CreatedAt) || !answer.Act.Holds(model.ScopeApprove) {
@@ -608,16 +570,6 @@ func answeredAskBlocks(ctx context.Context, tx pgx.Tx, shown versionAsks, approv
 func closesWithReadings(node *pmdoc.Node) bool {
 	_, admitted := pmdoc.TypedContent(node)
 	return len(admitted) > 0
-}
-
-// holdsDecision reports whether tree holds a decision block anywhere.
-func holdsDecision(tree *pmdoc.Node) bool {
-	held := false
-	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
-		held = held || node.Type == decisionType
-		return !held
-	})
-	return held
 }
 
 // copyAgreesWithItsSource reports whether node, a copy of source's ask on another document,
@@ -678,7 +630,7 @@ func showsItsAsksState(node *pmdoc.Node, ask, onNode model.Ask, copied string) b
 		// kept for one release: roll-window-attributes
 		!rollWindowAskAttributesWithheld(ask, copied)(attributesOf(node)) ||
 		// kept for one release: roll-window-attributes
-		!rollWindowAskAttributes(ask, copied)(attributesOf(node))
+		!rollWindowAskAttributes(true, ask, copied)(attributesOf(node))
 }
 
 // attributesOf is a node of node's type holding a copy of its attributes alone, for a write to an
@@ -936,7 +888,7 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 	var held graphstore.Uncaused
 	change := asks.Answered(answer)
 	change.From, change.Who, change.At, change.Held = asks.StateOpen, actor, answer.At, &held
-	settled, err := planSettle(ctx, tx, ask.ID, change)
+	settled, err := planSettle(ctx, tx, *ask, change)
 	if err != nil {
 		return fmt.Errorf("answer approval ask: %w", err)
 	}

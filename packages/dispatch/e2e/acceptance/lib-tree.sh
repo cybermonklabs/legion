@@ -1,12 +1,14 @@
 # shellcheck shell=bash
 # What the issue-tree acceptance drivers share, so that no driver copies it: the request to a
 # server as the agent or as the person, the person's dev sign-in and the project create that names
-# that person, the tree read, the two CLIs, the census's `census: versions` line R16 reads, and for
-# a driver over rows an earlier release wrote the boot of this head over them, the store backfill's
-# run and the wait for the backfill, the wait for this head's build announcement and the
-# conversion. Sourced, never run, after lib.sh, and for an upgrade driver after lib-baseline.sh
-# too, which this file reads but does not source: a driver against `bun run dispatch:local` boots no
-# server and has no use for it.
+# that person, the tree read (one page or every page), the two CLIs, the census's `census: versions`
+# line R16 reads, and for a driver over rows an earlier release wrote the database it empties, the
+# boot of this head over those rows, the wait for the backfill, the wait for this head's build
+# announcement, the conversion and what it left; the checks of an issue key and a uuid a driver's
+# SQL names; a node's tuples and its move; the person's edit; and the document socket peer.
+# Sourced, never run, after lib.sh, and for an upgrade driver after lib-baseline.sh too, which this
+# file reads but does not source: a driver against `bun run dispatch:local` boots no server and has
+# no use for it.
 #
 # The checks it serves are every driver check of the issue-tree Verification document
 # (verification-md), and seed-corpus.sh, which writes the corpus several of them read:
@@ -15,7 +17,8 @@
 #     c-child-placement and c-child-view;
 #   over rows the earlier release wrote, on infra_1253_upgrade: c-tree-census, c-one-room,
 #     c-room-cutover, c-order, c-conversion-scope, c-shared-id-census, c-redirects, c-tree-page,
-#     c-queries, c-artifacts-in-tree, c-old-versions-render, c-one-dependency and c-view-arms.
+#     c-queries, c-artifacts-in-tree, c-old-versions-render, c-one-dependency, c-view-arms and
+#     c-reparent-and-state's second driver, issue-tree-text.sh.
 #
 # The inputs are the caller's own variables, which each function reads when it runs, not when this
 # file is read. They are named on the lines after this comment, so a reader of this file sees
@@ -31,6 +34,8 @@
 #   session       the agent session every agent write names in its actor, and lib.sh's `cli` too
 #   project       the project key (the check's PROJECT), which the conversion converts
 #   answer        what lib.sh's query read, which the two waits read after each query
+#   driver        the script's name, which the database refusals name (lib.sh names it too)
+#   sections      the caller's count of sections, which tree_section adds one to
 # From lib-baseline.sh, after its baseline_start: baseline_database_url, baseline_boot (with the
 # baseline_boot_pid, baseline_boot_url and baseline_log it leaves), baseline_read_extra_env and
 # baseline_stop_pid.
@@ -39,15 +44,17 @@
 # want_status, expect and body read; tree_last_request, the request the last answer came from;
 # tree_value, the value tree_field read; tree_person, the login tree_sign_in signed in; $work/out,
 # the output of the last CLI run, and tree_envoy_status, the exit status of the last
-# `envoy-dispatch`; tree_census_line, the `census: versions` line tree_census_versions read; and
-# tree_head_pid, tree_head_url, tree_head_log and tree_head_commit after tree_boot_head.
+# `envoy-dispatch`; tree_census_line, the `census: versions` line tree_census_versions read;
+# tree_head_pid, tree_head_url, tree_head_log and tree_head_commit after tree_boot_head; and what
+# each function below names as its answer where it says so (database_server, outcome, first_seq,
+# tree_pages, tree_node_kind, tree_block_node_id, reply, fragments and the like).
 #
 # A refused input or call exits 2 on stderr, as lib.sh's require_env does; a failed check prints
 # lib.sh's `FAIL: <section> <what>: <observed>` and exits 1. Every check is `cmd || fail …`, never
 # part of an `&&` list: under `set -e` a failing command anywhere but last in such a list does not
 # stop the script.
 : "${work:=}" "${status:=}" "${base:=}" "${database_url:=}" "${token:=}" "${session:=}" "${project:=}"
-: "${answer:=}"
+: "${answer:=}" "${driver:=}" "${sections:=}"
 : "${baseline_database_url:=}" "${baseline_boot_pid:=}" "${baseline_boot_url:=}" "${baseline_log:=}"
 
 tree_last_request=""
@@ -66,18 +73,19 @@ tree_census_line=""
 # automatic case of c-conversion-scope (tree_boot_head's `unheld`). Production sets neither.
 readonly tree_hold_env=$'DISPATCH_TEST_HOOKS=1\nDISPATCH_TEST_HOLD_ISSUE_ROOM_STEP=1'
 
-# The line the boot step of plan task T9 logs once its run of graphcensus.Backfill's passes, which
-# it runs at every boot, has ended. tree_wait_backfill reads the server's log for it as written
-# here, so that step and this constant name one line and are changed together. Until T9 lands the
-# store backfill is no boot step but the `envoy-dispatch backfill-graph-store` subcommand
-# (cmd/dispatch/subcommands.go), which prints one `backfill-graph-store: kind=… complete=…` line
-# for each kind: a driver runs it with tree_run_backfill, which waits for every kind's
-# `complete=true`, and no server's log holds this line yet.
+# The line the boot step logs once its run of graphcensus.Backfill's passes, which it runs at every
+# boot, has ended (startBootBackfill in cmd/dispatch/main.go). tree_wait_backfill reads the
+# server's log for it as written here, so that step and this constant name one line and are
+# changed together.
 readonly tree_backfill_end='msg="dispatch: boot backfill done"'
 
 # How long each wait below polls, and how often: the Verification preamble's 300 s and 2 s.
 readonly tree_wait_seconds=300
 readonly tree_poll_seconds=2
+
+# How long the socket peer waits for a socket's answer; tree_peer waits 30 s more for one line of
+# it.
+readonly tree_peer_answer_seconds=60
 
 # tree_refuse WORDS…: a call this file will not take. It exits 2, as lib.sh's refusals do.
 tree_refuse() {
@@ -95,14 +103,6 @@ tree_init() {
   printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 }
 
-# tree_origin: the scheme and host of $base, which a write the person's cookie authenticates must
-# name in Origin (enforceCookieOrigin). It is read at each call, since an upgrade driver moves
-# $base from one server to the next.
-tree_origin() {
-  local host="${base#*://}"
-  printf '%s://%s' "${base%%://*}" "${host%%/*}"
-}
-
 # tree_request AS METHOD PATH [BODY]: sends METHOD PATH to $base as AS: `agent`, with the bearer of
 # $work/auth, or `person`, with the cookie tree_sign_in left in $work/jar and the server's origin.
 # BODY is JSON, or @FILE for JSON held in a file. The answer's body goes to $work/body, its HTTP
@@ -114,7 +114,7 @@ tree_request() {
     agent) auth=(-H "@$work/auth") ;;
     person)
       [[ -n "$tree_person" ]] || tree_refuse "a person's request needs a signed-in person: call tree_sign_in first"
-      auth=(-b "$work/jar" -H "Origin: $(tree_origin)")
+      auth=(-b "$work/jar" -H "Origin: $(base_origin)")
       ;;
     *) tree_refuse "tree_request sends as agent or person, not '$as'" ;;
   esac
@@ -298,32 +298,6 @@ tree_census_member() {
   fi
 }
 
-# tree_run_backfill SECTION: the store backfill, as node-projects.sh runs it, until T9's boot step
-# runs it at every boot (tree_backfill_end): `envoy-dispatch backfill-graph-store` over
-# $database_url, its output in $work/out. It prints each kind's `backfill-graph-store: kind=…`
-# line, and passes when the command exits 0 and every kind it reports reads `complete=true`. It
-# fails naming each kind whose line reads otherwise, with that line; and where every kind reads
-# complete or none was reported, a non-zero exit fails naming its status and the end of its
-# output, which then names the pass that stopped. Inputs: `database_url`, `work`.
-tree_run_backfill() {
-  local section="$1" line kind kinds=0 incomplete=""
-  tree_envoy_dispatch_status backfill-graph-store
-  while IFS= read -r line; do
-    [[ "$line" == "backfill-graph-store: kind="* ]] || continue
-    kinds=$((kinds + 1))
-    printf '%s\n' "$line"
-    kind="${line#backfill-graph-store: kind=}"
-    kind="${kind%% *}"
-    [[ "$line" == *" complete=true" ]] || incomplete+="; kind $kind stayed incomplete: $line"
-  done <"$work/out"
-  [[ -z "$incomplete" ]] ||
-    fail "$section" "backfill-graph-store completes every kind" "${incomplete#; }"
-  [[ "$tree_envoy_status" == 0 && "$kinds" -gt 0 ]] ||
-    fail "$section" "backfill-graph-store completes every kind" \
-      "it exited $tree_envoy_status after $kinds kind lines: $(tail -n 20 "$work/out")"
-  pass "$section" "backfill-graph-store completed all $kinds kinds"
-}
-
 # tree_convert SECTION [--dry-run]: the conversion R6 names, `envoy-dispatch convert-issues
 # --project <project>`, with --dry-run where it is given, its output in $work/out. Inputs:
 # `project`, `database_url`. A driver calls it after tree_wait_backfill and tree_wait_announcement,
@@ -464,4 +438,352 @@ tree_wait_announcement() {
         "after ${tree_wait_seconds} s the newest names $newest"
     sleep "$tree_poll_seconds"
   done
+}
+
+# --- the database an upgrade driver empties ---------------------------------------------------------
+#
+# Each upgrade driver drops the database database_url names and creates it empty, so the earlier
+# release's own Store.Migrate writes its schema and the run's rows are the database's only content,
+# connecting to the `postgres` database of the same server with the same role. The drivers differ
+# only in the database names each takes, as the head comment of each states them.
+
+# tree_database_refuse WORDS…: a database this file will not drop. It exits 2, as tree_refuse
+# does, but names the caller's driver, the script its user ran and whose DATABASE_URL it refuses.
+tree_database_refuse() {
+  printf '%s: %s\n' "${driver:-lib-tree.sh}" "$*" >&2
+  exit 2
+}
+
+# tree_database_parts URL NAMES: URL split into the server it names (database_server, its URL with
+# the `postgres` database in place of its own), its database's name (database_name), and what a
+# database beside it is named from: the URL before its path (database_prefix) and its query
+# (database_query). It refuses (tree_database_refuse), with status 2 and before any psql call, a
+# URL that names no single loopback postgres database with no connection override that libpq would
+# connect by instead (lib.sh's loopback_database_url), and a database whose name is not lowercase
+# letters, digits and _ matching NAMES, a glob pattern: the database the caller's head comment
+# names, never infra_1253, which `bun run dispatch:local` serves. A driver that refuses before it
+# builds anything calls it first; tree_reset_database calls it again.
+# shellcheck disable=SC2034 # database_query and database_prefix are read by the caller
+tree_database_parts() {
+  local url="$1" names="$2"
+  loopback_database_url "$url" ||
+    tree_database_refuse "DATABASE_URL names no single loopback postgres database: this driver drops and creates it"
+  # Read after loopback_database_url, whose own match replaces BASH_REMATCH.
+  [[ "$url" =~ ^(postgres(ql)?://)([^/?]*)/([^/?]+)(\?.*)?$ ]] ||
+    tree_database_refuse "DATABASE_URL is no postgres:// URL naming a database"
+  database_server="${BASH_REMATCH[1]}${BASH_REMATCH[3]}/postgres${BASH_REMATCH[5]}"
+  database_name="${BASH_REMATCH[4]}"
+  database_query="${BASH_REMATCH[5]}"
+  database_prefix="${BASH_REMATCH[1]}${BASH_REMATCH[3]}"
+  # shellcheck disable=SC2053 # NAMES is a glob pattern, matched as one
+  [[ "$database_name" =~ ^[a-z0-9_]+$ && "$database_name" == $names ]] ||
+    tree_database_refuse "DATABASE_URL names the database $database_name: this driver drops and creates only a database whose name, of lowercase letters, digits and _, matches $names"
+}
+
+# tree_reset_database URL NAMES SECTION: drops the database URL names and creates it empty, once
+# tree_database_parts URL NAMES has taken it, whose parts it leaves; SECTION's PASS line says so,
+# and its FAIL line where psql fails.
+tree_reset_database() {
+  tree_database_parts "$1" "$2"
+  baseline_psql "$database_server" -q \
+    -c "drop database if exists \"$database_name\" with (force)" -c "create database \"$database_name\"" >"$work/reset" 2>&1 ||
+    fail "$3" "empty the database $database_name" "psql: $(<"$work/reset")"
+  pass "$3" "dropped the database $database_name and created it empty"
+}
+
+# --- the values a driver's SQL names, and what the conversion left -----------------------------------
+
+# tree_key SECTION WHAT VALUE and tree_uuid SECTION WHAT VALUE: VALUE is an issue key, or a uuid
+# as Dispatch writes one, which the caller's SQL names.
+tree_key() {
+  [[ "$3" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]] || fail "$1" "$2" "'$3' is no issue key"
+}
+tree_uuid() {
+  [[ "$3" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || fail "$1" "$2" "'$3' is no uuid"
+}
+
+# tree_outcome KEY: what the last conversion's output in $work/out printed for the issue KEY, in
+# outcome: `converted`, `passed over`, `deferred` or `none`, read off the line that names the key as
+# a word.
+tree_outcome() {
+  local pattern="(^|[^A-Za-z0-9-])${1}([^0-9]|\$)" line
+  outcome=none
+  while IFS= read -r line; do
+    [[ "$line" =~ $pattern ]] || continue
+    case "$line" in
+      *deferred*) outcome=deferred ;;
+      *"passed over"*) outcome="passed over" ;;
+      *converted*) outcome=converted ;;
+    esac
+  done <"$work/out"
+}
+
+# tree_converted SECTION ISSUE: whether ISSUE converted, the converted member of GET
+# /api/v1/issues/{key}/tree, in converted, and its tree artifact in tree_value.
+# shellcheck disable=SC2034 # converted is this function's answer, read by its caller
+tree_converted() {
+  tree_read agent "$2"
+  tree_want 200 "$1" "read $2's tree"
+  converted="$(jq -r '.converted' "$work/body")"
+  tree_value="$(jq -r '.tree // ""' "$work/body")"
+}
+
+# tree_first_part_of SECTION TREE REF AFTER DOCUMENT NAME: the seq of the first part_of tuple the
+# conversion wrote, after the seq AFTER, for the nodes the room TREE holds of DOCUMENT (its
+# issue_room_blocks rows, each node keyed by the tree's address REF), in first_seq; `none` where it
+# wrote none.
+# shellcheck disable=SC2034 # first_seq is this function's answer, read by its caller
+tree_first_part_of() {
+  query "$1" "read the first part_of the conversion wrote for the nodes of $6" "
+    select coalesce(min(t.seq)::text, 'none') from graph_tuples t
+    join issue_room_blocks r on r.tree_artifact_id = '$2' and r.document_id = '$5'
+      and t.from_kind = 'block' and t.from_id = '$3' || '#' || r.block_id
+    where t.kind = 'part_of' and t.asserted and t.seq > $4"
+  first_seq="$answer"
+}
+
+# tree_store_census SECTION: `envoy-dispatch census --store` over $database_url, its output in
+# $work/out and kept in $work/census.out. It exits 1 where a kind of another child holds no row, so
+# an exit above 1 alone fails, and the caller reads its lines, not that verdict.
+tree_store_census() {
+  tree_envoy_dispatch_status census --store
+  cp "$work/out" "$work/census.out"
+  [[ "$tree_envoy_status" -le 1 ]] ||
+    fail "$1" "run the store census" "envoy-dispatch census --store exited $tree_envoy_status: $(tail -n 20 "$work/census.out")"
+}
+
+# --- whole reads and kept answers ---------------------------------------------------------------------
+
+# tree_read_all SECTION FILE ISSUE [VIEW]: the agent's tree read of ISSUE (tree_read), every page
+# of it followed through its cursor, as one answer in FILE: the first page's members and every
+# page's nodes and tuples. It leaves the count of pages it read in tree_pages.
+tree_read_all() {
+  local section="$1" file="$2" issue="$3" view="${4:-}" cursor=""
+  tree_pages=0
+  : >"$work/pages"
+  while true; do
+    tree_read agent "$issue" "$view" "" "$cursor"
+    tree_want 200 "$section" "read the tree of $issue${view:+ (?view=$view)}"
+    cat "$work/body" >>"$work/pages"
+    tree_pages=$((tree_pages + 1))
+    cursor="$(jq -r '.cursor // ""' "$work/body")"
+    [[ -n "$cursor" ]] || break
+    ((tree_pages < 500)) || fail "$section" "read the tree of $issue" "its cursor did not end after $tree_pages pages"
+  done
+  jq -s '.[0] + {nodes: [.[].nodes[]?], tuples: [.[].tuples[]?]}' "$work/pages" >"$file" ||
+    fail "$section" "read the tree of $issue" "the pages do not join: $(head -c 600 "$work/pages")"
+}
+
+# tree_section NAME: starts the section NAME, which the caller's closing line counts in `sections`.
+tree_section() {
+  sections=$((sections + 1))
+  printf -- '--- section %s\n' "$1"
+}
+
+# tree_keep SECTION PATH FILE: GET PATH as the agent, answered 200, kept in FILE.
+tree_keep() {
+  tree_send GET "$2"
+  tree_want 200 "$1" "read $2"
+  cp "$work/body" "$3"
+}
+
+# tree_kept_expect FILE SECTION WHAT WANT JQ-ARGS…: lib.sh's expect over the answer kept in FILE
+# rather than over the last one, which it puts back as $work/body first.
+tree_kept_expect() {
+  cp "$1" "$work/body"
+  shift
+  expect "$@"
+}
+
+# tree_person_edit SECTION WHAT DOCUMENT OPS: the person applies the edit ops OPS (a JSON list) to
+# DOCUMENT, as seed-corpus.sh's corpus_edit applies them as the agent; an edit that changed nothing
+# fails.
+tree_person_edit() {
+  tree_person_send POST "/api/v1/artifacts/$3/edits" "$(jq -cn --argjson ops "$4" '{ops: $ops}')"
+  tree_want 200 "$1" "$2"
+  jq -e '.changed == true' "$work/body" >/dev/null || fail "$1" "$2" "the edit changed nothing: $(body)"
+}
+
+# --- one node of the store and its move -----------------------------------------------------------
+
+# tree_node_store ADDRESS: the store's kind and id of the node at ADDRESS, in tree_node_kind and
+# tree_node_id: a block's address (a document's block or a lens's finding) holds a `#` and is the
+# block node's id; every other address is `<kind>/<id>`.
+tree_node_store() {
+  if [[ "$1" == *"#"* ]]; then
+    tree_node_kind=block tree_node_id="$1"
+  else
+    tree_node_kind="${1%%/*}" tree_node_id="${1#*/}"
+  fi
+}
+
+# tree_node_far SECTION ADDRESS TUPLE: the far ends of the current TUPLE tuples out of the node at
+# ADDRESS - a block's id, every other node `<kind>/<id>` - joined by commas, in answer.
+tree_node_far() {
+  tree_node_store "$2"
+  with_vars "$1" "read the $3 of $2" \
+    "select coalesce(string_agg(case when h.to_kind = 'block' then h.to_id else h.to_kind || '/' || h.to_id end, ',' order by h.to_kind, h.to_id), '')
+     from (select distinct on (to_kind, to_id) to_kind, to_id, asserted from graph_tuples
+           where from_kind = :'kind' and from_id = :'id' and kind = :'tuple' and to_kind <> 'value'
+           order by to_kind, to_id, seq desc) h where h.asserted" \
+    kind="$tree_node_kind" id="$tree_node_id" tuple="$3"
+}
+
+# tree_node_value SECTION ADDRESS ATTRIBUTE: the current value of ATTRIBUTE of the node at ADDRESS,
+# empty where it holds none, in answer.
+tree_node_value() {
+  tree_node_store "$2"
+  with_vars "$1" "read the $3 of $2" \
+    "select coalesce((select case when asserted then to_id end from graph_tuples
+       where from_kind = :'kind' and from_id = :'id' and kind = :'attribute' and to_kind = 'value'
+       order by seq desc limit 1), '')" \
+    kind="$tree_node_kind" id="$tree_node_id" attribute="$3"
+}
+
+# tree_node_tag SECTION ADDRESS [any]: the placement_seq of the node at ADDRESS, the seq of its
+# current part_of (as the tree read answers it), in answer; with `any`, 0 for a node that holds none
+# (a comment of the issue), which a refusal that comes before the If-Match test is sent with.
+tree_node_tag() {
+  tree_node_store "$2"
+  with_vars "$1" "read the placement_seq of $2" \
+    "select coalesce((select h.seq from (select distinct on (to_kind, to_id) seq, asserted from graph_tuples
+       where from_kind = :'kind' and from_id = :'id' and kind = 'part_of' and to_kind <> 'value'
+       order by to_kind, to_id, seq desc) h where h.asserted order by h.seq desc limit 1)::text, '')" \
+    kind="$tree_node_kind" id="$tree_node_id"
+  if [[ -z "$answer" ]]; then
+    [[ "${3:-}" == any ]] || fail "$1" "read the placement_seq of $2" "it holds no part_of"
+    answer=0
+  fi
+}
+
+# tree_node_send METHOD AS KEY NODE TAG BODY QUERY: METHOD /api/v1/issues/KEY/nodes/NODE as AS
+# (agent or person), NODE percent-encoded as one segment, with the JSON BODY and the query string
+# QUERY (dry_run=true, expected_count=<n>) where each is not empty, and `If-Match: "TAG"` where TAG
+# is not empty. The answer is in $work/body and `status`, as tree_request leaves them.
+tree_node_send() {
+  local method="$1" as="$2" key="$3" node="$4" tag="$5" body="$6" query="$7"
+  local -a auth match=() data=()
+  case "$as" in
+    agent) auth=(-H "@$work/auth") ;;
+    person) auth=(-b "$work/jar" -H "Origin: $(base_origin)") ;;
+    *) tree_refuse "tree_node_send sends as agent or person, not '$as'" ;;
+  esac
+  [[ -z "$tag" ]] || match=(-H "If-Match: \"$tag\"")
+  [[ -z "$body" ]] || data=(-H 'Content-Type: application/json' --data-binary "$body")
+  tree_last_request="$method /api/v1/issues/$key/nodes/$node${query:+?$query}${tag:+ If-Match \"$tag\"}${body:+ $body}"
+  status="$(curl -sS -X "$method" -o "$work/body" -w '%{http_code}' "${auth[@]}" "${match[@]}" "${data[@]}" \
+    "$base/api/v1/issues/$(q "$key")/nodes/$(q "$node")${query:+?$query}" 2>"$work/curl")" ||
+    status="curl failed: $(<"$work/curl")"
+}
+
+# tree_block_node SECTION DOCUMENT BLOCK: the store address of block BLOCK of the document whose
+# artifact id is DOCUMENT, as its document_blocks row names it, read in the room the document is
+# edited in (its document_rooms row's room, else the document itself), in tree_block_node_id; empty
+# where no row holds the block.
+# shellcheck disable=SC2034 # tree_block_node_id is this function's answer, read by its caller
+tree_block_node() {
+  with_vars "$1" "read the node of $3 of $2" \
+    "select coalesce((select b.node_id from document_blocks b
+       where b.artifact_id = coalesce((select r.room from document_rooms r where r.artifact_id = :'doc'::uuid), :'doc'::uuid)
+         and b.block_id = :'block'), '')" \
+    doc="$2" block="$3"
+  tree_block_node_id="$answer"
+}
+
+# --- the document socket peer ---------------------------------------------------------------------
+#
+# What c-one-room and c-room-cutover hold document sockets through: the Bun program
+# e2e/acceptance/issue-room-peer.ts, whose head comment names the commands it answers, run as a
+# coprocess. The functions below leave the caller peer_pid, peer_in and peer_out, the coprocess and
+# the two descriptors the driver holds, each of which the caller sets empty before its cleanup can
+# call tree_peer_stop; reply, the peer's last line; and fragments, what tree_peer_open read.
+
+# This package's directory, packages/dispatch, read once as this file is sourced: the socket peer
+# is its file e2e/acceptance/issue-room-peer.ts, which imports yjs and lib0 from its node_modules.
+tree_dispatch_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+readonly tree_dispatch_dir
+
+# tree_peer_require: refuses, exit 2, a checkout without this package's node_modules, which the
+# socket peer imports yjs and lib0 from. A driver calls it with its other input checks.
+tree_peer_require() {
+  [[ -d "$tree_dispatch_dir/node_modules/yjs" && -d "$tree_dispatch_dir/node_modules/lib0" ]] || {
+    printf 'the socket peer imports yjs and lib0 from %s/node_modules: run bun install first\n' "$tree_dispatch_dir" >&2
+    exit 2
+  }
+}
+
+# tree_peer_cookie: the person's session cookie, out of the jar tree_sign_in wrote, as the Cookie
+# header's value, in $work/cookie, which the socket peer reads.
+tree_peer_cookie() {
+  local domain flag path secure expiry name value
+  : >"$work/cookie"
+  while IFS=$'\t' read -r domain flag path secure expiry name value; do
+    [[ "$name" == dsession ]] || continue
+    printf 'dsession=%s' "$value" >"$work/cookie"
+  done <"$work/jar"
+  [[ -s "$work/cookie" ]] || fail setup "read the person's session cookie" "the jar holds no dsession cookie"
+}
+
+# tree_peer_start SCHEMA: starts the socket peer against $base as the person, on the block schema
+# version SCHEMA, as a coprocess whose stdin and stdout the driver holds. The peer waits
+# tree_peer_answer_seconds for a socket's answer.
+# shellcheck disable=SC2034 # peer_pid is this function's answer, read by its caller
+tree_peer_start() {
+  tree_peer_cookie
+  coproc TREE_PEER {
+    PEER_ANSWER_MS=$((tree_peer_answer_seconds * 1000)) exec bun "$tree_dispatch_dir/e2e/acceptance/issue-room-peer.ts" \
+      "$base" "$work/cookie" "$1" 2>>"$work/peer.err"
+  }
+  peer_pid="$TREE_PEER_PID"
+  exec {peer_in}>&"${TREE_PEER[1]}" {peer_out}<&"${TREE_PEER[0]}"
+}
+
+# tree_peer_stop: stops the socket peer through its `quit`, which closes every socket it holds, and
+# closes the two descriptors; safe when none runs.
+tree_peer_stop() {
+  [[ -n "$peer_pid" ]] || return 0
+  printf 'quit\n' >&"$peer_in" 2>/dev/null || true
+  exec {peer_in}>&- {peer_out}<&-
+  wait "$peer_pid" 2>/dev/null || true
+  peer_pid=""
+  peer_in=""
+  peer_out=""
+}
+
+# tree_peer SECTION WHAT COMMAND…: sends COMMAND to the peer and reads its one line into reply; a
+# peer that answers nothing within its bound, or answers `error`, fails naming WHAT.
+tree_peer() {
+  local section="$1" what="$2"
+  shift 2
+  printf '%s\n' "$*" >&"$peer_in" ||
+    fail "$section" "$what" "the socket peer stopped: $(tail -n 20 "$work/peer.err" 2>/dev/null)"
+  IFS= read -r -t $((tree_peer_answer_seconds + 30)) reply <&"$peer_out" ||
+    fail "$section" "$what" "the socket peer answered nothing to '$1': $(tail -n 20 "$work/peer.err" 2>/dev/null)"
+  [[ "$reply" != error* ]] || fail "$section" "$what" "the socket peer answered: $reply"
+  printf 'peer: %s -> %s\n' "$1 ${2:-}" "$reply"
+}
+
+# tree_peer_open SECTION NAME DOCUMENT: opens the socket NAME on DOCUMENT, which must be admitted
+# writable; its fragments in fragments.
+# shellcheck disable=SC2034 # fragments is this function's answer, read by its caller
+tree_peer_open() {
+  tree_peer "$1" "open a document socket on $3" open "$2" "$3"
+  [[ "$reply" =~ ^opened\ $2\ read-write\ (.*)$ ]] ||
+    fail "$1" "a document socket on $3 is admitted writable" "the peer answered: $reply"
+  fragments="${BASH_REMATCH[1]}"
+}
+
+# tree_peer_append SECTION NAME FRAGMENT JSON: NAME appends the block JSON describes to FRAGMENT,
+# and the room applies it.
+tree_peer_append() {
+  tree_peer "$1" "write a block through the socket $2" append "$2" "$3" "$4"
+  [[ "$reply" == "appended $2 1" ]] ||
+    fail "$1" "the room applies the block the socket $2 writes into the fragment $3" "the peer answered: $reply"
+}
+
+# tree_peer_holds SECTION NAME FRAGMENT ID: whether the socket NAME's document holds the block ID
+# in FRAGMENT.
+tree_peer_holds() {
+  tree_peer "$1" "read the blocks the socket $2 draws" blocks "$2" "$3"
+  jq -e --arg id "$4" 'any(.[]; .id == $id)' <<<"${reply#blocks "$2" }" >/dev/null
 }

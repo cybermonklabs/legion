@@ -112,7 +112,7 @@ import {
 import { Publisher, publishedNames } from "./projection-fixture";
 import { architecture, offPageColours } from "./shared-controls-fixture";
 import { DetailsSlot } from "./slots/details";
-import { commentNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
+import { commentNode, postMarks, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import { outlineQuery } from "./tree-read/tree-read";
 import { firstUsableIn, usableControl } from "./usable-control";
 import { blockedByRefusal } from "./useIssueBlockedBy";
@@ -7057,10 +7057,7 @@ function holdComments(client: QueryClient, comments: readonly CommentWithTrees[]
       ...comments.map((one) => ({
         ...commentNode(one),
         ...(one.body_tree === undefined ? {} : { text_tree: one.body_tree }),
-        ...(one.edited_at === null ? {} : { edited_at: one.edited_at }),
-        ...(one.deleted_at === null
-          ? {}
-          : { deleted_at: one.deleted_at, deleted_by: one.deleted_by }),
+        ...postMarks(one),
       })),
     ])
   );

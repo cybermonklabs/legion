@@ -83,8 +83,7 @@ func readChecks(t *testing.T, database *store.Store, issueKey string) checksStat
 func TestAWriteRefusesABlockPointerToADisallowedType(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
-	// BlockPointerSchema(nil)'s claim: a serves pointer at requirements alone.
-	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
+	seedBlockPointerClaim(t, database)
 	issue, paragraph := pointerSpec(t, handler)
 	spec := "dispatch://" + issue.Key + "/spec"
 	checks := "dispatch://" + issue.Key + "/artifact/checks-md"
@@ -144,8 +143,7 @@ func TestAWriteRefusesABlockPointerToADisallowedType(t *testing.T) {
 func TestANewDocumentIsRefusedAPointerToItsOwnDisallowedBlock(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
-	// BlockPointerSchema(nil)'s claim: a serves pointer at requirements alone.
-	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
+	seedBlockPointerClaim(t, database)
 	issue, _ := pointerSpec(t, handler)
 	checks := "dispatch://" + issue.Key + "/artifact/checks-md"
 
@@ -166,8 +164,7 @@ func TestANewDocumentIsRefusedAPointerToItsOwnDisallowedBlock(t *testing.T) {
 func TestAnUnchangedPointerIsNotRefusedWhenItsTargetIsRetyped(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
-	// BlockPointerSchema(nil)'s claim: a serves pointer at requirements alone.
-	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
+	seedBlockPointerClaim(t, database)
 	issue, _ := pointerSpec(t, handler)
 	r1 := "dispatch://" + issue.Key + "/spec#b-r1"
 	if response := uploadChecks(t, handler, issue.Key, claimMarkdown("c1", r1)); response.Code != http.StatusCreated {
@@ -193,8 +190,7 @@ func TestAnUnchangedPointerIsNotRefusedWhenItsTargetIsRetyped(t *testing.T) {
 func TestARebuildFromMarkdownRefusesABlockPointerToADisallowedType(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database, broken := newBrokenTestServer(t)
-	// BlockPointerSchema(nil)'s claim: a serves pointer at requirements alone.
-	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
+	seedBlockPointerClaim(t, database)
 	issue, _ := pointerSpec(t, handler)
 	if response := uploadChecks(t, handler, issue.Key, "Before.\n"); response.Code != http.StatusCreated {
 		t.Fatalf("upload checks.md: status=%d body=%s, want 201", response.Code, response.Body.String())
@@ -227,8 +223,7 @@ func TestARebuildFromMarkdownRefusesABlockPointerToADisallowedType(t *testing.T)
 func TestAWriteRefusesABlockPointerOutsideItsIssueOrDocument(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
-	// BlockPointerSchema(nil)'s claim: a serves pointer at requirements alone.
-	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
+	seedBlockPointerClaim(t, database)
 	createReferenceAPIProject(t, handler, "CORE")
 	requirement := ":::requirement{#r1}\nA requirement.\n:::\n"
 	root := createSpecIssue(t, handler, "CORE", requirement)
@@ -329,7 +324,7 @@ func TestASeededSpecPointsIntoItsParentsSpec(t *testing.T) {
 	rootR1 := "dispatch://" + root.Key + "/spec#b-r1"
 	// The node the requirement's address names now: the root is born converted, so its spec is a
 	// fragment of its issue room and r1's node is the room's block, at the tree artifact's address
-	// (T12a and T17 of this branch's plan), which the pointer resolves to as it is indexed.
+	// (T12a and T17 of the issue-tree plan), which the pointer resolves to as it is indexed.
 	rootR1Node, err := refs.NamedBlock(context.Background(), database.Pool, root.Key+"/spec#r1")
 	if err != nil {
 		t.Fatal(err)
@@ -365,13 +360,12 @@ func TestASeededSpecPointsIntoItsParentsSpec(t *testing.T) {
 
 // A browser's write is never refused: a settled browser tree whose pointer names a block no
 // document holds writes its version and stores the pointer, which stays an unresolved reference,
-// as any citation of an absent block is. checks.md is a document of its issue's room, whose
-// settlement, and the row that says it is owed, are the room's.
+// as any citation of an absent block is. checks.md plays no role, so it is a room of its own
+// (documentJoinsIssueRoom), whose settlement, and the row that says it is owed, are keyed by it.
 func TestABrowserWritePointingAtAMissingBlockIsSavedAndUnresolved(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	documents, handler, database := browserDocumentService(t)
-	// BlockPointerSchema(nil)'s claim: a serves pointer at requirements alone.
-	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
+	seedBlockPointerClaim(t, database)
 	issue, _ := pointerSpec(t, handler)
 	if response := uploadChecks(t, handler, issue.Key, "Before.\n"); response.Code != http.StatusCreated {
 		t.Fatalf("upload checks.md: status=%d body=%s, want 201", response.Code, response.Body.String())
@@ -386,13 +380,7 @@ func TestABrowserWritePointingAtAMissingBlockIsSavedAndUnresolved(t *testing.T) 
 	// timer before it fires or moves the generation under its settlement, which then writes
 	// nothing. SettleIssueDocuments runs the owed settlement itself, and again when a write
 	// supersedes it. The upload's live write already owes it, so the call cannot find none owed.
-	var owed bool
-	if err := database.Pool.QueryRow(context.Background(), `
-		select exists(select 1 from doc_settlements_pending where artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+`)
-	`, checks.ID).Scan(&owed); err != nil {
-		t.Fatalf("read checks.md's pending settlement: %v", err)
-	}
-	if !owed {
+	if !documentOwesSettlement(t, database, checks.ID) {
 		t.Fatal("checks.md owes no settlement, want the upload's still owed")
 	}
 	if err := documents.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
@@ -442,8 +430,7 @@ func TestALiveRoomWriteRefusesABlockPointerItMayNotHold(t *testing.T) {
 	// dependencies', the very one the handlers write through. Its documents never settle during
 	// the test, as blockIndexHandler's do not.
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
-	// BlockPointerSchema(nil)'s claim: a serves pointer at requirements alone.
-	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
+	seedBlockPointerClaim(t, database)
 	issue, paragraph := pointerSpec(t, handler)
 	spec := "dispatch://" + issue.Key + "/spec"
 	checks := "dispatch://" + issue.Key + "/artifact/checks-md"

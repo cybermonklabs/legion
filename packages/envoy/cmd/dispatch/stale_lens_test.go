@@ -284,12 +284,10 @@ func (r *staleLensRoll) stopEarlierBuilds(t *testing.T) {
 // the hold it answers gives them back: the block-index lease alone before the wait for this
 // build's tick (giveBackIndex), and the drain's once the reads after that tick are done
 // (giveBack). A test that fails while it holds either gives it back as it ends, before its
-// connections close.
+// connections close (holdBlockIndexLease).
 func (r *staleLensRoll) holdTheLease(t *testing.T) *blockIndexHold {
 	t.Helper()
-	hold := holdBlockIndexLease(t, r.pool, "this build", costLeaseWait, r.current.Output.String)
-	t.Cleanup(hold.giveBack)
-	return hold
+	return holdBlockIndexLease(t, r.pool, "this build", costLeaseWait, r.current.Output.String)
 }
 
 // staleLensNode is LO, FO, LP or LB: its address, the kind and the id graph_nodes keys it by, and

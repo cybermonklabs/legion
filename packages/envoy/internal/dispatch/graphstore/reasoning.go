@@ -45,7 +45,7 @@ const (
 // TupleConstrainedBy points from a requirement block to a constraint it is held to, and
 // TuplePreventedBy from a risk to each check block that covers it, a check of any issue of the
 // risk's own project in a document that is not retired. graph_edges answers each of them from
-// the tuples alone, with no projection row behind it (migration 20261117020856), and
+// the tuples alone, with no projection row behind it (migration 20261126050002), and
 // refs.TupleKinds lists them.
 const (
 	TupleChangedByRun  = "changed_by_run"
@@ -113,7 +113,7 @@ func AddressKindSQL(kindExpr, idExpr string) string {
 // node of kind block that names its lens, `lens/<uuid>#<block id>`. It is the one rule of that
 // id: ParseFindingID reads it back, and FindingIDSQL tells it in SQL, so the author-only
 // admission, the census and every read of a finding tell a finding from any other block by the
-// same test. Migration 20261117020856 spells the same test in its own text.
+// same test. Migration 20261126050002 spells the same test in its own text.
 func FindingID(lens, blockID string) string { return KindLens + "/" + lens + "#" + blockID }
 
 // ParseFindingID is the uuid of the lens and the block id that the id of a block node names

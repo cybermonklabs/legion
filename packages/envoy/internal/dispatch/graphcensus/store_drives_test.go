@@ -298,7 +298,7 @@ func runAndCatalogueDrives(t *testing.T) []StoreDrive {
 			{graphstore.KindPerson, graphstore.AttributeState}:           {graphstore.KindPerson},
 		},
 	}, {
-		Name: runFramesDrive, Sites: []string{runFramesDrive},
+		Name: runFramesDrive, Sites: []string{runFramesDrive, "graphstore/write.go#Write"},
 		Database: database,
 		Ready: func(t *testing.T) {
 			framed := olderPodRun(t, database, alice, "", "and this one?", "One ")
@@ -308,7 +308,7 @@ func runAndCatalogueDrives(t *testing.T) []StoreDrive {
 		Drive:  pass(backfillRunFrames),
 		Counts: map[StoredKind][]string{{graphstore.KindInteraction, graphstore.AttributeFrame}: {graphstore.AttributeFrame}},
 	}, {
-		Name: goneRunDrive, Sites: []string{goneRunDrive},
+		Name: goneRunDrive, Sites: []string{goneRunDrive, "graphstore/write.go#WriteState"},
 		Database: database,
 		Ready: func(t *testing.T) {
 			deleted := olderPodRun(t, database, alice, "", "asked and deleted an hour on", "Gone ")
@@ -326,7 +326,7 @@ func runAndCatalogueDrives(t *testing.T) []StoreDrive {
 		Drive:    pass(backfillEndedPreventions),
 		Counts:   map[StoredKind][]string{{graphstore.KindRisk, graphstore.TuplePreventedBy}: {graphstore.KindRisk}},
 	}, {
-		Name: staleLensSweepDrive, Sites: []string{"graphcensus/orphans.go#StateStaleLensesGone", "graphstore/write.go#WriteState"},
+		Name: staleLensSweepDrive, Sites: []string{staleLensSweepDrive},
 		Database: database,
 		Ready: func(t *testing.T) {
 			seedOrphan(t, database, "lensed-md", "00000000-0000-4000-8000-0000000005a1")
@@ -359,7 +359,7 @@ func askBackfillDrives(t *testing.T) []StoreDrive {
 	ctx := context.Background()
 	var ask string
 	return []StoreDrive{{
-		Name: askBatchDrive, Sites: []string{askBatchDrive, "graphstore/write.go#Write"},
+		Name: askBatchDrive, Sites: []string{askBatchDrive},
 		Database: database,
 		Ready: func(t *testing.T) {
 			t.Helper()
@@ -407,7 +407,7 @@ func askBackfillDrives(t *testing.T) []StoreDrive {
 			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
 		},
 	}, {
-		Name: askFollowerBatchDrive, Sites: []string{askFollowerBatchDrive, "graphstore/write.go#Write"},
+		Name: askFollowerBatchDrive, Sites: []string{askFollowerBatchDrive},
 		Database: database,
 		Ready: func(t *testing.T) {
 			t.Helper()
@@ -515,7 +515,7 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 	return []StoreDrive{{
 		Name: seedDocumentsDrive, Database: database,
 		Sites: []string{"cmd/dispatch-seed/write_docs.go#writeDocument", "cmd/dispatch-seed/write_core.go#writeIssues",
-			"refs/blocks.go#Queue", "graphstore/write.go#Caused"},
+			"refs/blocks.go#Queue"},
 		Ready: func(t *testing.T) {
 			t.Helper()
 			binary = cmdtest.BuildCommand(t, cmdtest.Command{Name: "dispatch-seed", Dir: "../../../cmd/dispatch-seed"})
@@ -562,8 +562,7 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 		},
 	}, {
 		Name: seedFollowersDrive, Database: database,
-		Sites: []string{"cmd/dispatch-seed/write_items.go#writeFollowerNodes", "cmd/dispatch-seed/write_items.go#writeItemNodes",
-			"graphstore/write.go#Write"},
+		Sites: []string{"cmd/dispatch-seed/write_items.go#writeFollowerNodes", "cmd/dispatch-seed/write_items.go#writeItemNodes"},
 		Drive: func(t *testing.T) {
 			t.Helper()
 			if err := asks.Rollback(ctx); err != nil {
@@ -582,8 +581,7 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 		},
 	}, {
 		Name: seedCommentsDrive, Database: database,
-		Sites: []string{"cmd/dispatch-seed/write_items.go#writeComments", "cmd/dispatch-seed/write_items.go#writeItemNodes",
-			"graphstore/write.go#Write"},
+		Sites: []string{"cmd/dispatch-seed/write_items.go#writeComments", "cmd/dispatch-seed/write_items.go#writeItemNodes"},
 		Drive: func(t *testing.T) {
 			t.Helper()
 			if err := comments.Rollback(ctx); err != nil {

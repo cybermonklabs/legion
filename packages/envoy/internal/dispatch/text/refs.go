@@ -628,10 +628,6 @@ func CanonicalBlockRef(value string) (Ref, bool) {
 	return located[0].Ref, true
 }
 
-// canonicalItemUUID is an item's id as an item reference writes it: the whole uuid, in lower
-// case, with its four hyphens, which is the spelling every item route returns.
-var canonicalItemUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
-
 // FormatItemBlockRef writes an issue's ask, comment or message, or a block of one, as a
 // placement names it: `dispatch://<ISSUE>/<ask|comment|message>/<uuid>` for the item itself
 // (Kind the item's kind), and that followed by `#b-<id>` for a block of it (Kind "block", Item the
@@ -639,7 +635,8 @@ var canonicalItemUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}
 // pin, because a node placed under an item is placed under the item as it stands and not under
 // one revision of it. It is false for any other reference: a document or a block of one, an item
 // a project document holds (Project set), an item whose id is no whole lower-case uuid (a prefix,
-// an upper-case spelling), a pinned block and a block with no id.
+// an upper-case spelling: storeUUIDPattern, the spelling every item route returns), a pinned block
+// and a block with no id.
 func FormatItemBlockRef(ref Ref) (string, bool) {
 	item := ref.Item
 	if ref.Kind != "block" {
@@ -651,8 +648,7 @@ func FormatItemBlockRef(ref Ref) (string, bool) {
 		return "", false
 	}
 	if ref.Pin != 0 || ref.Project != "" || ref.Session != "" || ref.Document != "" ||
-		!issueKeyPattern.MatchString(ref.IssueKey) || !canonicalItemUUID.MatchString(ref.ID) ||
-		(item != "ask" && item != "comment" && item != "message") {
+		!issueKeyPattern.MatchString(ref.IssueKey) || !storeUUIDPattern.MatchString(ref.ID) || !isItemKind(item) {
 		return "", false
 	}
 	written := "dispatch://" + ref.IssueKey + "/" + item + "/" + ref.ID

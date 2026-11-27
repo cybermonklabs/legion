@@ -672,7 +672,7 @@ func (r *issueRestore) blockPointer(address string) (string, bool) {
 // its `shaped` pointers each as it reads once the pass is written (movedPointers), read back as
 // the document's own markdown pipeline makes it. It holds what a version of the spec on a fleet of
 // one build - the one the phase runs on - stores of it, as the spec's settlement and a version of
-// the spec read the ask of the block once it stands there (askBlockAsks). A copy of an ask another
+// the spec read the ask of the block once it stands there (readBlockAsks). A copy of an ask another
 // document of the issue holds takes the form a version keeps of its source - the state where that
 // is not open, the answerer and time, and copied_from and copied_from_document - as the source's
 // node holds it when the step runs (keptFromItsNode), and holds no answer's words or selection and
@@ -704,12 +704,13 @@ func (r *issueRestore) movedBlockOf(ctx context.Context, restore *restoredBlock)
 	// The strip of a block that is no copy is R10's and stays; the source's form a copy takes goes
 	// with the form a version keeps.
 	// kept for one release: stored-ask-state
-	rows, sources, err := askBlockAsks(ctx, r.tx, r.spec.id, &pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{node}})
+	blocks, _ := readableAskBlocks(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{node}})
+	read, err := readBlockAsks(ctx, r.tx, documentAsksOf(r.spec.id), nil, blocks, readCopiedAskSources)
 	if err != nil {
 		return nil, err
 	}
-	_, indexed := rows[restore.id]
-	source, copied := sources[restore.id]
+	_, indexed := read.rows[restore.id]
+	source, copied := read.sources[restore.id]
 	switch {
 	// kept for one release: stored-ask-state
 	case copied:
