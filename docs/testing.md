@@ -624,12 +624,36 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   TMPDIR="$L" GOTMPDIR="$L" go test ./<package>/... -count=1
   ```
 
+## A test in a package whose tests run beside each other
+
+Every top-level test of these packages, in every build (a file behind `e2e`, `multiprocess` or
+another tag included, since it runs in some lane), calls `t.Parallel()` as its first statement, or
+says on its first line, in a `// Not parallel:` comment, why it cannot:
+
+- in `packages/envoy`: `internal/dispatch/api`, `internal/dispatch/docs`, `cmd/listener`, the
+  broker's `internal/cipher/requests`, `internal/cipher/api` and `cmd/cipherd`, and the 19 smaller
+  packages of "A test in Dispatch's smaller packages runs beside the others" below;
+- in `packages/daemon`: `internal/daemon`, `internal/intake` and `internal/runtime/sandbox`.
+
+The reason names the call or the bound that makes the test serial (`logtest.SetDefault`,
+`t.Setenv`, `` `took >= time.Second` ``, `podStopBound`'s one second), never a line of a file
+(`logtest.go:36`, `:85`, `line 85`), which the next edit above that line makes false. A test that
+says it is not parallel and then calls `t.Parallel()` anywhere in its own code breaks the rule too;
+a subtest of a serial test may still run in parallel. go test starts no parallel test until every
+serial one has run, so a test with neither the call nor the comment runs alone for no reason, as
+46 of `internal/daemon`'s did by 2026-11-25.
+
+Each package checks itself: its `TestEveryTestCallsParallelOrSaysWhyNot`
+(`parallel_rule_test.go`) calls `packages/envoy/testparallel`'s `Require`, which reads every
+`_test.go` file of the package and fails naming each test that breaks the rule, and how. The
+daemon module's packages call the same check, since that module requires this one. A package that
+comes to run its tests beside each other adds itself to the list above and that test.
+
 ## A test in `internal/dispatch/api`, `internal/dispatch/docs` or the daemon's `internal/intake` runs beside the others
 
-Every top-level test of `packages/envoy/internal/dispatch/api`,
-`packages/envoy/internal/dispatch/docs` and `packages/daemon/internal/intake` calls `t.Parallel()`
-as its first statement, and each package's `TestMain` sets how many run at once: 8 in api, 6 in
-docs, 4 in intake. Each test already has a database and a server or document service of its own
+Each of `packages/envoy/internal/dispatch/api`, `packages/envoy/internal/dispatch/docs` and
+`packages/daemon/internal/intake` holds to the rule above, and its `TestMain` sets how many run at
+once: 8 in api, 6 in docs, 4 in intake. Each test already has a database and a server or document service of its own
 (`storetest.Open`; in intake `testpg.Clone` and a NATS server of `testnats`' pool, one per test that
 holds one), so run alone it spends most of its time waiting on Postgres while the machine's other
 cores sit idle.
@@ -639,10 +663,9 @@ process shares: the default logger (`logtest.SetDefault`, `slog.SetDefault`), th
 (`t.Setenv`), a package variable, flags, the GC or `GOMAXPROCS`, heap statistics or goroutine
 counts, or pmdoc's schema manifest, display tree version or block ID generator
 (`pmdoc.UseManifestForTest`, `pmdoc.UseStagedBlockForTest`, `pmdoctest.UseBlockSchema`,
-`pmdoc.SetDisplayTreeVersionForTest`, `pmdoc.SetBlockIDGenerator`). go test runs every serial
-test before it starts the parallel ones, so such a test runs alone. A serial test whose reason is
-not a call in its own body or a helper of the package's says why on its first line: a wall-clock
-bound that missed under parallel load, or a write through another package's test hook.
+`pmdoc.SetDisplayTreeVersionForTest`, `pmdoc.SetBlockIDGenerator`), or holds a wall-clock bound
+that missed under parallel load, or writes through another package's test hook. Its first line
+says which (the rule above).
 
 A test that reads `pg_locks` or `pg_stat_activity` names its own database in the predicate
 (`database = (select oid from pg_database where datname = current_database())`, or
@@ -676,28 +699,24 @@ such a test would take the binary toward the step's limit.
 
 ## A test in `packages/daemon/internal/daemon` runs beside the others
 
-Every top-level test of `packages/daemon/internal/daemon` in the default build calls `t.Parallel()`
-as its first statement, and the package's `TestMain` runs 4 at once (`daemonTestParallelism`).
-The live drivers behind `//go:build e2e`, which no unit run compiles, are not held to this. Each
+`packages/daemon/internal/daemon` holds to the rule above, its live drivers behind `//go:build e2e`
+included, and the package's `TestMain` runs 4 at once (`daemonTestParallelism`). Each
 test already has a database of its own (a clone of the package's template, `testDSN` and
 `isolatedOutboxPool`), its own ports and state directory, and a NATS server of the package's pool
 (`internal/testnats`). go test starts no parallel test until every serial one has run, so a serial
 test runs alone while the runner's other cores wait.
 
-A test that cannot run beside the others says why in a `// Not parallel:` comment on its first
-line: it calls `t.Setenv` or `t.Chdir`; it writes a package variable (`readinessRetry`, through
-`fastReadiness`, or `record.StatusRowKinds`); it changes the process's signal disposition; it is a
-helper process that exits the test binary (`TestIdleRigRoleProcess`); or it holds a wall-clock
-bound that the parallel tests' load could make it miss, which the comment names (`podStopBound`'s
-one second in `TestAPodStartsItsRolesOneLoadAtATime`). A new test with neither the call nor the
-comment runs alone for no reason, as 46 tests did by 2026-11-25.
+A test there stays serial when it calls `t.Setenv` or `t.Chdir`; it writes a package variable
+(`readinessRetry`, through `fastReadiness`, or `record.StatusRowKinds`); it changes the process's
+signal disposition; it is a helper process that exits the test binary (`TestIdleRigRoleProcess`);
+or it holds a wall-clock bound that the parallel tests' load could make it miss, which the comment
+names (`podStopBound`'s one second in `TestAPodStartsItsRolesOneLoadAtATime`).
 
 ## A test in the broker's `requests`, `api` or `cmd/cipherd` package runs beside the others
 
-Every top-level test of `packages/envoy/internal/cipher/requests`,
-`packages/envoy/internal/cipher/api` and `packages/envoy/cmd/cipherd` (the `multiprocess` build's
-included) either calls `t.Parallel()` as its first statement or has a `// Not parallel:` comment
-as its first line, and each package's `TestMain` runs 4 at once (`requestsTestParallelism`,
+Each of `packages/envoy/internal/cipher/requests`, `packages/envoy/internal/cipher/api` and
+`packages/envoy/cmd/cipherd` (the `multiprocess` build's included) holds to the rule above, and its
+`TestMain` runs 4 at once (`requestsTestParallelism`,
 `apiTestParallelism`, `cipherdTestParallelism`), the runner's core count. Each test already has a
 database of its own (`storetest.URL`), so its migration and its brokers' advisory locks wait on no
 other test.
@@ -708,13 +727,6 @@ process shares: the default logger (`logtest.SetDefault`, `logtest.Swap`, `slog.
 stays serial too when it holds code to a bound on a measured time that the parallel tests' load
 could push past, or to a product latency carried by a context's deadline, as the judge's
 `JudgeRowReserve` and the half of what is left that `LogJudged`'s read of a landed approval spends.
-The comment names that call or that bound by what it is (`logtest.SetDefault`, `` `took >=
-time.Second` ``), never by a file and line, which the next edit above it would make false.
-`internal/textcheck`'s `TestEveryBrokerTestSaysWhetherItRunsBesideTheOthers` fails on a top-level
-test of the three packages with neither first line or with both, and on a `// Not parallel:`
-comment that names a line on any of its lines, the comment's whole first group read as one text:
-a file's (`logtest.go:36`), a bare one (`:85` after a space, a line's start or a parenthesis, so
-an address's port is not one), or one in words (`line 85`, `lines 85-90`, across a line break too).
 
 ## A daemon test writes a file it then executes with `internal/execfile`
 
@@ -732,21 +744,18 @@ record) needs neither.
 
 ## A test in `packages/daemon/internal/runtime/sandbox` runs beside the others
 
-Every top-level test of `packages/daemon/internal/runtime/sandbox`, in the default build and the
-e2e build, calls `t.Parallel()` as its first statement or says on its first line, in a
-`// Not parallel:` comment, why it cannot; the package's `TestMain` runs 8 at once
+`packages/daemon/internal/runtime/sandbox` holds to the rule above, and the package's `TestMain`
+runs 8 at once
 (`sandboxTestParallelism`). Each test drives a fake API server, launchers and store of its own
 (`newRig`). A test stays serial when it calls `t.Setenv` (`newSetupRig`), writes
 `gitHubRefreshInterval`, or needs a step to land inside a window of the wall clock, which the
 comment names. A test that asserts which deadline a wait meets sets a `clocktest.Fake` as the
 runtime's clock (`g.r.clock = fc`) and moves it one recheck at a time (`step`), and runs beside the
-others. A new test with neither the call nor the comment runs alone for no reason, as 25 tests did
-by 2026-11-25.
+others.
 
 ## A test in Dispatch's smaller packages runs beside the others
 
-Every top-level test of these 19 packages of `packages/envoy` calls `t.Parallel()` as its first
-statement, or says on its first line, in a `// Not parallel:` comment, why it cannot:
+These 19 packages of `packages/envoy` hold to the rule above:
 
 - `internal/dispatch/architecture`, `internal/dispatch/architecture/notes`,
   `internal/dispatch/duty`, `internal/dispatch/events`, `internal/dispatch/files`,
@@ -771,9 +780,7 @@ variable (`fixJitter`'s `duty.JitterN`, `redeliver.FixJitter`, processes' `Heart
 bound, a quiet window or a step a sleep orders, which the parallel tests' load could make it miss
 on a correct product or pass with the defect present; the comment names the span. A wait for an
 event takes `testwait` (`Receive`, `Until`, `Context`), bounded only by the test binary's deadline,
-and a product bound the test does not mean to race takes `testwait.PastTheRun`. Nothing checks the
-marker in these packages: a new test with neither the call nor the comment runs alone for no
-reason.
+and a product bound the test does not mean to race takes `testwait.PastTheRun`.
 
 ## Go's package deadline
 
