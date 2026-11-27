@@ -176,7 +176,7 @@ func TestARefusalOfAnOwnerNamesWhatPrintAskedFor(t *testing.T) {
 	}{
 		{7, 8, true, "the owner and the group of f, 7:8", "run print as the owner of f"},
 		{7, -1, true, "the owner of f, 7", "run print as the owner of f"},
-		{-1, 8, true, "the group of f, 8", "run print as the owner of f"},
+		{-1, 8, true, "the group of f, 8", "run print as a user in that group"},
 		{-1, 8, false, "the group of f, 8", "run print as root"},
 	} {
 		if asked, wayOut := refusedOwner("f", row.uid, row.gid, row.root); asked != row.asked || wayOut != row.wayOut {

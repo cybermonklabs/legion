@@ -206,17 +206,10 @@ func TestWriteDirChangesAllOrNone(t *testing.T) {
 		}
 		st := info.Sys().(*syscall.Stat_t)
 		of := filepath.Join(dir, "a.yaml")
-		// The way out depends on whether the process is root (refusedOwner): a run as root is told
-		// to run as the owner of the entry, and a run as a user, which asked for a group that it
-		// belongs to, to run as root.
-		wayOut := func(of string) string {
-			if os.Geteuid() == 0 {
-				return "run print as the owner of " + of
-			}
-			return "run print as root"
-		}
+		// The way out of a refusal of the group alone is refusedOwner's, read for this process.
+		_, wayOut := refusedOwner(of, -1, int(st.Gid), os.Geteuid() == 0)
 		want := "print gives the new file a.yaml the group of " + of + ", " + strconv.Itoa(int(st.Gid)) + ", and the system refused it (operation not permitted): " +
-			wayOut(of) + ", then run print again"
+			wayOut + ", then run print again"
 		if _, _, err := writeDir(failing(callFault{"lchown", "", syscall.EPERM}), dir, lock, files, after); err == nil || err.Error() != want {
 			t.Fatalf("writeDir with lchown refused: %v, want %q", err, want)
 		}
@@ -228,8 +221,9 @@ func TestWriteDirChangesAllOrNone(t *testing.T) {
 			t.Fatal(err)
 		}
 		dirStat := held.Sys().(*syscall.Stat_t)
+		_, wayOutDir := refusedOwner(dir, -1, int(dirStat.Gid), os.Geteuid() == 0)
 		wantDir := "print gives the new directory the group of " + dir + ", " + strconv.Itoa(int(dirStat.Gid)) + ", and the system refused it (operation not permitted): " +
-			wayOut(dir) + ", then run print again"
+			wayOutDir + ", then run print again"
 		if _, _, err := writeDir(failing(callFault{"lchown", filepath.Base(stagingPath(dir, inode(held))), syscall.EPERM}), dir, lock, files, after); err == nil || err.Error() != wantDir {
 			t.Fatalf("writeDir with the new directory's lchown refused: %v, want %q", err, wantDir)
 		}
