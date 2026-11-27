@@ -244,9 +244,10 @@ export function RepoControl({
  * a refusal moves whole onto the next line under the badge rather than squeezing it. The badge
  * narrows to the row and ends a name longer than the row in an ellipsis; its title gives back
  * the whole name with what it means (`, inherited or the project's default` where it is not the
- * issue's own), since the trigger's own title says only what it means. A write Dispatch refused
- * is said to Details as well (`useDetailsRefusal`), which says it under the header while it is
- * closed.
+ * issue's own). For an inherited name the trigger's own title says only what it means, so the
+ * badge's title is the one place a cut name can be read back; for the issue's own repository the
+ * trigger's title is the whole name too. A write Dispatch refused is said to Details as well
+ * (`useDetailsRefusal`), which says it under the header while it is closed.
  *
  * The list holds Inherit first, which clears the issue's own repository, then the project's
  * default repository (Settings → Projects), then the issue's own repository where it is another;

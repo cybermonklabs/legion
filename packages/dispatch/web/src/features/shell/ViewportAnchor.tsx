@@ -65,12 +65,20 @@ interface View {
   top: number;
 }
 
+/** Where the control that holds the focus in a row stands against the reader's sight (`View`). */
+interface FocusSight {
+  focused: Element;
+  /** Whether the reader can see a part of it: an edge that only touches the view's edge counts
+   *  as in sight. */
+  meets: boolean;
+  /** Whether the reader can see the whole of it. */
+  whole: boolean;
+}
+
 /** The space `element` takes in its list, in pixels: from its own top to the top of the element
  *  after it, the gap between them included, else to its own bottom. What a row a press of the
- *  reader's takes away frees for the rows after it (`ViewportAnchor`'s `leaving`), and what the
- *  selection bar's hand-off reads to tell where each row will stand once such rows have gone
- *  (`components/SelectionBar.tsx`), so the two agree. */
-export function spaceTaken(element: Element): number {
+ *  reader's takes away frees for the rows after it (`ViewportAnchor`'s `leaving`). */
+function spaceTaken(element: Element): number {
   const box = element.getBoundingClientRect();
   const after = element.nextElementSibling;
   return (after === null ? box.bottom : after.getBoundingClientRect().top) - box.top;
@@ -176,7 +184,10 @@ function focusedControl(): Element | null {
  * its place for another `group` (a section) is not followed: the reader's place is where the row
  * was, not where it went. The pointer moving from a row onto the hover card a reference in that
  * row opened keeps that row the current one while the card is open: the card is the row's own
- * doing and sits outside the list only because it is `fixed`.
+ * doing and sits outside the list only because it is `fixed`. Where this component scrolls to
+ * keep the row's place, a control that holds the focus in that row and stood whole in the
+ * reader's sight just before the scroll is brought whole into sight again at its nearest edge:
+ * the scroll keeps the row's place, not the focus's (`keepPlace`).
  *
  * One shift is not compensated: a row that a press of the reader's takes away from above the
  * current row (`leaving`: for example a Dismiss, or a snooze that moves its rows into another
@@ -191,13 +202,14 @@ function focusedControl(): Element | null {
  * keeps its place once it has gone (`standInFor`) is held the same way: the row after it, which
  * moves up into its place, else the row before it. A current row that holds the focus and is left
  * partly in sight is then brought whole into sight at its nearest edge, and a focus left wholly
- * out of sight is not scrolled to: the selection bar's hand-off has put the focus on a row that
- * will stand in sight once those rows have gone (`useLastMarkedPlace`). The browser's own scroll
- * anchoring is turned off on the box that scrolls the rows in every commit in which a row above
- * the current one is named as leaving, and in every commit in which the current row itself is
- * named: a thread's own Dismiss takes away the row the reader's hand is on, and the browser
- * holds the view against its going as much as against a row's above. The snapshot taken before
- * the commit cannot tell whether that row goes in it, and the browser would hold the view
+ * out of sight is not scrolled to: while such rows are leaving, the selection bar's hand-off parks
+ * the focus, and it lands only once they have gone and the foot's pass has run, by the least
+ * scroll of its own (`useLastMarkedPlace`'s `parkOrLand` and `landAfterFootPass`). The browser's
+ * own scroll anchoring is turned off on the box that scrolls the rows in every commit in which a
+ * row above the current one is named as leaving, and in every commit in which the current row
+ * itself is named: a thread's own Dismiss takes away the row the reader's hand is on, and the
+ * browser holds the view against its going as much as against a row's above. The snapshot taken
+ * before the commit cannot tell whether that row goes in it, and the browser would hold the view
  * against that going. It is turned back on as soon as this component has kept its place. Where
  * the window scrolls the rows and moved in such a commit all the same, it is put back where the
  * press found it (`keepPlace`). A row that goes in the same commit without the reader's press,
@@ -670,20 +682,28 @@ export class ViewportAnchor extends Component<
     return freed;
   }
 
-  /** Brings the control that holds the focus in `row` whole into sight at its nearest edge where
-   *  the reader can see a part of it, which the page's sight rule allows for a landing partly in
-   *  sight (`components/focus-place.ts`): an edge that only touches the view's edge counts as in
-   *  sight. Uses `scrollToNearest` rather than `scrollIntoView` so the root's scroll padding
-   *  cannot scroll the window past the cut. A control wholly in sight, or wholly out of it, is
-   *  left where it is. */
-  private showFocused(row: HTMLElement): void {
+  /** Where the control that holds the focus in `row` stands against the reader's sight; null
+   *  where the focus is not in `row`. */
+  private focusSight(row: HTMLElement): FocusSight | null {
     const focused = document.activeElement;
-    if (focused === null || !row.contains(focused)) return;
+    if (focused === null || !row.contains(focused)) return null;
     const { bottom, top } = this.view();
     const box = focused.getBoundingClientRect();
-    const meets = box.bottom >= top && box.top <= bottom;
-    const whole = box.top >= top && box.bottom <= bottom;
-    if (meets && !whole) scrollToNearest(focused);
+    return {
+      focused,
+      meets: box.bottom >= top && box.top <= bottom,
+      whole: box.top >= top && box.bottom <= bottom,
+    };
+  }
+
+  /** Brings the control that holds the focus in `row` whole into sight at its nearest edge where
+   *  the reader can see a part of it, which the page's sight rule allows for a landing partly in
+   *  sight (`components/focus-place.ts`). Uses `scrollToNearest` rather than `scrollIntoView` so
+   *  the root's scroll padding cannot scroll the window past the cut. A control wholly in sight,
+   *  or wholly out of it, is left where it is. */
+  private showFocused(row: HTMLElement): void {
+    const sight = this.focusSight(row);
+    if (sight?.meets && !sight.whole) scrollToNearest(sight.focused);
   }
 
   getSnapshotBeforeUpdate(
@@ -808,6 +828,10 @@ export class ViewportAnchor extends Component<
     const top = place.top - freed;
     const delta = element.getBoundingClientRect().top - top;
     if (delta === 0 && freed === 0) return;
+    // Whether the control that holds the focus in this row stands whole in the reader's sight just
+    // before this component's own scroll: read once the commit is in, with every landing a child
+    // made in it, so a control it finds whole and leaves cut was cut by that scroll alone.
+    const wholeBefore = delta !== 0 && this.focusSight(element)?.whole === true;
     if (delta !== 0) this.scrollBy(delta);
     this.restampHeld(place.id, place.top, top);
     // The rows the press took away moved every row after them up, as the press asked, and a place
@@ -818,8 +842,13 @@ export class ViewportAnchor extends Component<
     // row the hand-off had just landed on by 134 px (builds Job `infra-3135-i-h5-g6tnd`).
     if (freed > 0 && this.held?.id !== place.id) this.held = null;
     // The rows a press of the reader's took away moved this row up, and a focus in it must end
-    // in the reader's sight.
-    if (freed > 0 && snapshot.via === "focus") this.showFocused(element);
+    // in the reader's sight. So must a focus this component's own scroll took out of it: the
+    // scroll keeps the row's place, not the focus's. Measured in WebKit in the Inbox at 390x664:
+    // after the bar's Dismiss the hand-off landed the focus on a mark at the window's bottom edge,
+    // and the scroll of -1.33 px that kept its row's place left the mark 0.6 px past that edge.
+    // Where this component did not scroll, or its scroll found the focus cut or out of sight, the
+    // second reason adds nothing.
+    if ((freed > 0 && snapshot.via === "focus") || wholeBefore) this.showFocused(element);
   }
 
   /** Puts the control row a press of the reader's was made in (`pressedRow`) back at its top once

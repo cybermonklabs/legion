@@ -228,11 +228,12 @@ func goingTaggedNames(v any, tag string) map[string]bool {
 }
 
 // goingCarries reports whether request carries every item of value where its route reads it: as
-// the value of a placeholder of its path, under a query key the route reads (routeShapes' Params,
-// and session, which every route reads), or in a field of the body its route reads (routeShapes'
-// Request).
+// the value of a placeholder of its path, under a query key the route reads (its declaration's
+// Shape.Params, and session, which every route reads), or in a field of the body its route reads
+// (its declaration's Shape.Request).
 func goingCarries(request goingServedRequest, value any) bool {
-	shape := routeShapes[request.route]
+	declaration, _ := declaredRoute(request.route)
+	shape := declaration.Shape
 	keys := goingTaggedNames(shape.Params, "query")
 	keys["session"] = true
 	fields := goingTaggedNames(shape.Request, "json")
@@ -292,7 +293,7 @@ var goingReadsNoPersonCalls = map[string]string{
 // version; dispatch_handoff_read reads the version it names; dispatch_issues lists the issues with no
 // priority. Then every read tool find_tools offers, called by call_tool with its spec's example,
 // reaches a row of its own with each argument where that row's route reads it: in its path, under
-// a query key the route reads, or in a field of the body it reads (routeShapes).
+// a query key the route reads, or in a field of the body it reads (its declaration's Shape).
 func TestTheAgentReadsWhatItsArgumentsName(t *testing.T) {
 	t.Parallel()
 	writes := newGoingWritesRig(t)

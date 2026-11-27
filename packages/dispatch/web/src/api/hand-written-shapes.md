@@ -128,7 +128,7 @@ Each is in `packages/contracts/src/dispatch-api.ts`:
   entry here that is a wire shape rather than a helper. `writeAmbiguousID` (`id_prefix.go`)
   answers 409 with `{error, code, candidates}` when an id written as a prefix names two items or
   more, and it is written from the **prefix layer that wraps every route taking an id**, not
-  from one route's handler — so no `routeShapes` entry owns it, nothing names it among a route's
+  from one route's handler — so no route's `Shape` owns it, nothing names it among a route's
   `Refusals`, and the emitter has no route to attach it to. The dashboard reads it from this
   hand-written type, and `scripts/gen-go.ts` renders the code into Go. Giving it a Go type and
   attaching it to the `Refusals` of every route that takes an id would generate it; that is a

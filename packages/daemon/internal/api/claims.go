@@ -472,8 +472,8 @@ type ReleaseRecord struct {
 }
 
 // ResumeRecord is one wake of a released pod and what it cost: the release it ended (0 when no
-// release row is recorded for it), the role the wake was for and what woke it, when the wake
-// reached the daemon, when the replacement pod was Ready and when the woken role took its first
+// release row is recorded for it), the role the wake was for and what woke it, when the daemon
+// took the wake, when the replacement pod was Ready and when the woken role took its first
 // turn — each absent until it is observed — and whether the wake went ten minutes with no turn.
 // Pause is the project pause that held the wake (store.PodResume.Pause), absent for a wake no
 // pause held: a held wake pairs with no release, and its wait to the first turn measures the

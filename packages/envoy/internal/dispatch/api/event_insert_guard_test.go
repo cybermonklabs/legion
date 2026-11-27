@@ -22,6 +22,15 @@ const brokerEventInsert = "internal/dispatch/events/broker.go"
 // that an insert moving out of this scan's reach reds rather than passing unseen.
 const brokerEventInserts = 1
 
+// legionTestEventInsert is the one non-_test.go fixture seeder allowed to bulk-insert events into
+// a test database: legiontest is an ordinary package rather than a _test.go file only because Go
+// cannot share test-only code across packages, and its one insert seeds a synthetic Legion history.
+const legionTestEventInsert = "internal/dispatch/legion/legiontest/legiontest.go"
+
+// legionTestEventInserts is how many event inserts legionTestEventInsert holds, checked for the
+// same reason as brokerEventInserts.
+const legionTestEventInserts = 1
+
 // eventInserter is a file besides the broker's that inserts events, how many inserts it holds, and
 // why the invariants below have no reader to break there.
 type eventInserter struct {
@@ -43,9 +52,8 @@ var eventInsertStatement = regexp.MustCompile(`\binsert into events\b`)
 
 // TestOnlyTheBrokerInsertsEvents enforces what every reader of the event log by id rests on: every
 // row a serving process writes is written by events.Broker.Append, which keeps two invariants no
-// other insert would. The one other writer, the eval's seed (otherEventInserters), writes a
-// database before any server opens it, so neither invariant has a reader there; it is named with
-// its reason and its count, and any other file that inserts an event reds.
+// other insert would. The eval's seed (otherEventInserters) writes a database before any server
+// opens it, so neither invariant has a reader there; it is named with its reason and its count.
 //
 // The writer invariant: Append's transaction holds its transaction id before the insert draws the
 // row's id from events_id_seq (lockEventOwner takes it with pg_current_xact_id). The safe horizon's
@@ -68,6 +76,10 @@ var eventInsertStatement = regexp.MustCompile(`\binsert into events\b`)
 // string literals and chains of literals and package-level constants, in every non-test Go file
 // of the module. A test inserts events directly on purpose -- a backlog to page through, a row
 // shape to serve -- so test sources are outside it, as they are outside that scan.
+//
+// Only legionTestEventInsert and otherEventInserters are exempted beside brokerEventInsert, each by
+// its path and its insert count, so no other non-_test.go file (test helper package or otherwise)
+// can insert into events unseen.
 func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
 	t.Parallel()
 	sources := moduleSources(t)
@@ -76,37 +88,46 @@ func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	var offences []string
-	broker := 0
+	broker, legionTest := 0, 0
 	others := map[string]int{}
 	for _, source := range sources {
 		path := filepath.ToSlash(source.path)
+		rel := strings.TrimPrefix(path, moduleRoot+"/")
 		for _, statement := range sqlStatements(source.file, constants) {
 			if !eventInsertStatement.MatchString(statement) {
 				continue
 			}
-			if strings.HasSuffix(path, brokerEventInsert) {
+			switch rel {
+			case brokerEventInsert:
 				broker++
-				continue
+			case legionTestEventInsert:
+				legionTest++
+			default:
+				if name, ok := otherEventInserter(path); ok {
+					others[name]++
+					continue
+				}
+				offences = append(offences, path+": "+statement)
 			}
-			if name, ok := otherEventInserter(path); ok {
-				others[name]++
-				continue
-			}
-			offences = append(offences, path+": "+statement)
 		}
 	}
 	if len(offences) > 0 {
-		t.Fatalf("only %s may insert into events, and these statements also do:\n\t%s\n"+
+		t.Fatalf("only %s (and fixture seeder %s, and the files otherEventInserters names) may insert into events, and these statements also do:\n\t%s\n"+
 			"Append the event through events.Broker.Append instead. It takes its transaction id "+
 			"before the insert draws the event's id, which the safe horizon every reader of the log "+
 			"by id reads through needs (events/horizon.go): a row inserted without it can commit "+
 			"behind a horizon that passed its id and reach no open subscription. It also allocates the "+
-			"owner's seq under the owner's row lock.", brokerEventInsert, strings.Join(offences, "\n\t"))
+			"owner's seq under the owner's row lock.", brokerEventInsert, legionTestEventInsert, strings.Join(offences, "\n\t"))
 	}
 	if broker != brokerEventInserts {
 		t.Fatalf("%s holds %d event inserts the scan can see, want %d: if an insert moved or was "+
 			"written around a value this scan cannot resolve, this guard now passes by seeing "+
 			"nothing", brokerEventInsert, broker, brokerEventInserts)
+	}
+	if legionTest != legionTestEventInserts {
+		t.Fatalf("%s holds %d event inserts the scan can see, want %d: if the fixture seeder's "+
+			"insert moved, grew or was removed, update this guard's exemption to match",
+			legionTestEventInsert, legionTest, legionTestEventInserts)
 	}
 	for name, inserter := range otherEventInserters {
 		if others[name] != inserter.inserts {

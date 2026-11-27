@@ -2,60 +2,25 @@ package api
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
-	"os"
+	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/routefile"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// routeIndexGolden is the committed index of the table: one route per line, sorted by path then
-// method, as `METHOD path auth`. It is what catches a route added or removed by accident, and
-// what a hand-kept count could not do — two branches that each add a route are each wrong about
-// a count, where this file merges into the union of the lines they add. Write it again with
-// `go test ./internal/dispatch/api -run TestRouteIndexLists -update`.
-const routeIndexGolden = "testdata/routes.txt"
-
-// routeIndexLines renders the table as routeIndexGolden holds it: the rows sorted by path, then
-// method, and rendered after that, so two methods of one path with different auth classes are
-// still ordered by their methods. Descriptions are left out: they are prose that changes with
-// every wording pass, and the test below already holds every row to having one.
-func routeIndexLines(routes []apiRoute) string {
-	sorted := slices.Clone(routes)
-	slices.SortFunc(sorted, func(left, right apiRoute) int {
-		return cmp.Or(strings.Compare(left.Pattern, right.Pattern), strings.Compare(left.Method, right.Method))
-	})
-	lines := make([]string, 0, len(sorted))
-	for _, route := range sorted {
-		lines = append(lines, route.Method+" "+route.Pattern+" "+string(route.Auth))
-	}
-	return strings.Join(lines, "\n") + "\n"
-}
-
-// The rendered index's own order, which the committed file can prove only for the pairs the
-// table happens to hold: two methods of one path whose auth classes sort the other way round are
-// ordered by their methods, not by their auth.
-func TestRouteIndexLinesOrderTwoMethodsOfOnePathByMethod(t *testing.T) {
-	t.Parallel()
-	got := routeIndexLines([]apiRoute{
-		{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/things/{id}", Auth: authAny}},
-		{routeRow: routeRow{Method: http.MethodDelete, Pattern: "/api/v1/things/{id}", Auth: authPublic}},
-	})
-	want := "DELETE /api/v1/things/{id} public\nGET /api/v1/things/{id} any\n"
-	if got != want {
-		t.Fatalf("routeIndexLines = %q, want %q", got, want)
-	}
-}
 
 func TestRouteIndexListsEveryRouteSortedByPathThenMethod(t *testing.T) {
 	t.Parallel()
@@ -96,37 +61,6 @@ func TestRouteIndexListsEveryRouteSortedByPathThenMethod(t *testing.T) {
 	}
 	if len(index.Routes) != len((&server{}).routes()) {
 		t.Fatalf("index lists %d routes, table has %d", len(index.Routes), len((&server{}).routes()))
-	}
-
-	// The table against the committed index. A route added, removed, or given another auth class
-	// reds this test until testdata/routes.txt is written again, deliberately, with -update.
-	got := routeIndexLines((&server{}).routes())
-	if *updateFixtures {
-		if err := os.WriteFile(routeIndexGolden, []byte(got), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		t.Logf("wrote %s", routeIndexGolden)
-	}
-	want, err := os.ReadFile(routeIndexGolden)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != string(want) {
-		committed := strings.Split(strings.TrimSuffix(string(want), "\n"), "\n")
-		table := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
-		var added, removed []string
-		for _, line := range table {
-			if !slices.Contains(committed, line) {
-				added = append(added, line)
-			}
-		}
-		for _, line := range committed {
-			if !slices.Contains(table, line) {
-				removed = append(removed, line)
-			}
-		}
-		t.Errorf("the table and %s differ.\nthe table has, and the file does not: %v\nthe file has, and the table does not: %v\nRun the test again with -update when the change is deliberate.",
-			routeIndexGolden, added, removed)
 	}
 }
 
@@ -182,11 +116,9 @@ func TestWriteRouteIndexCarriesEveryRouteTheTableHas(t *testing.T) {
 // that adds a route updates it, and the base that added one first then makes that branch's
 // merge red for a reason that is not the branch's change
 // (docs/solutions/github/a-base-gate-arrives-in-the-merge-and-the-job-your-branch-alone-adds-is-the-line-it-refuses-pr2517.md:63-67
-// records that failure: "routes() has 147 rows, want 146: the base had added a route").
-// What catches a route added or removed by accident is the committed index
-// TestRouteIndexListsEveryRouteSortedByPathThenMethod compares the table against
-// (testdata/routes.txt), which two branches that each add a route merge into the union of their
-// two lines.
+// records that failure: "routes() has 147 rows, want 146: the base had added a route"). A route
+// added or removed is a file added or removed, which a diff shows by its name, and two branches
+// that each add one merge two new files.
 func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 	t.Parallel()
 	routes := (&server{}).routes()
@@ -200,7 +132,7 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 		if route.Description == "" {
 			t.Fatalf("route %q has no description", key)
 		}
-		if route.Handler == nil {
+		if route.routeDecl.Handler == nil {
 			t.Fatalf("route %q has no handler", key)
 		}
 		switch route.Auth {
@@ -214,110 +146,248 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 	}
 }
 
-// The Inbox route's description states the rule the person a question reaches is resolved by —
-// the person it was handed to, then the issue's assignee, then the project's default assignee —
-// and the four descriptions that rule narrowed no longer carry what it replaced. This is a test
-// of its own because the two route tests above read every description and assert no word of
-// one: the index leaves descriptions out (routeIndexLines) and the pin only holds each row to
-// having one, so nothing else fails when a description outlives the code it describes.
-func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
+// declaredRoute is the declaration of one route, by "<method> <pattern>", test hooks included.
+// Only a test reads one route out of the registry by name: the package itself reads the whole
+// registry (routes()).
+func declaredRoute(name string) (routeDecl, bool) {
+	for _, route := range routeRegistry {
+		if route.Method+" "+route.Pattern == name {
+			return route, true
+		}
+	}
+	return routeDecl{}, false
+}
+
+// duplicateRoutes names, sorted, every "<method> <pattern>" that more than one of routes
+// declares. Each route has one file, so a second declaration of one is a file copied and left
+// unchanged, or two changes that each added the route under a name of their own; either way the
+// table would hold two rows of one route, and ServeMux refuses the second. The walk is a test's:
+// the file-name rule is what stops the second declaration from being written
+// (TestEachRouteIsDeclaredInTheFileItsNameNames), and this is what fails where one was.
+func duplicateRoutes(routes []routeDecl) []string {
+	seen := make(map[string]int, len(routes))
+	for _, route := range routes {
+		seen[route.Method+" "+route.Pattern]++
+	}
+	var duplicates []string
+	for name, count := range seen {
+		if count > 1 {
+			duplicates = append(duplicates, fmt.Sprintf("%s is declared %d times", name, count))
+		}
+	}
+	sort.Strings(duplicates)
+	return duplicates
+}
+
+// No route is declared twice: a route file copied and left unchanged, or two branches that each
+// added one route under a file name of their own, would leave two declarations of one method and
+// pattern, which merge with no conflict since they are two files. The walk is over the registry
+// itself, test hooks included, because routes() and the index each hold whatever the registry
+// holds. The sub-test is the negative control: the same walk over the registry with one
+// declaration planted a second time names it, and names nothing else.
+func TestNoRouteIsDeclaredTwice(t *testing.T) {
 	t.Parallel()
-	descriptions := map[string]string{}
-	for _, route := range (&server{}).routes() {
-		descriptions[route.Method+" "+route.Pattern] = route.Description
+	if len(routeRegistry) == 0 {
+		t.Fatal("the registry holds no route, so this walk read nothing")
 	}
-	for _, want := range []struct{ route, says string }{
-		// The three steps, in the order the read resolves them.
-		{"GET /api/v1/inbox", "handed to"},
-		{"GET /api/v1/inbox", "the issue's assignee"},
-		{"GET /api/v1/inbox", "the project's default assignee"},
-		// A create names the person, and says what happens when it names nobody.
-		{"POST /api/v1/projects", "default_assignee"},
-		{"POST /api/v1/projects", "ASSIGNEE_NOT_ALLOWED"},
-		// The settings list holds every project, not only the ones that named somebody.
-		{"GET /api/v1/settings/project-default-assignees", "every project"},
-		// The write moves a default and refuses to clear it.
-		{"PUT /api/v1/projects/{key}/default-assignee", "cannot be cleared"},
-	} {
-		description, mounted := descriptions[want.route]
-		if !mounted {
-			t.Fatalf("the table mounts no %s", want.route)
+	if duplicates := duplicateRoutes(routeRegistry); len(duplicates) > 0 {
+		t.Fatalf("routes declared more than once:\n%s", strings.Join(duplicates, "\n"))
+	}
+
+	t.Run("a route declared a second time fails this walk", func(t *testing.T) {
+		planted, declared := declaredRoute("POST /api/v1/issues/{key}/comments")
+		if !declared {
+			t.Fatal("no route declares POST /api/v1/issues/{key}/comments")
 		}
-		if !strings.Contains(description, want.says) {
-			t.Errorf("%s does not say %q: %s", want.route, want.says, description)
+		planted.Description = "a second declaration, written in another file"
+		duplicates := duplicateRoutes(append(slices.Clone(routeRegistry), planted))
+		want := []string{"POST /api/v1/issues/{key}/comments is declared 2 times"}
+		if !slices.Equal(duplicates, want) {
+			t.Fatalf("the walk answered %q, want %q", duplicates, want)
+		}
+	})
+}
+
+// Each route is declared in the file routefile.Name gives its method and pattern, and that file
+// declares that route alone. The name is what makes two branches that add one route meet as one
+// file added twice, which git refuses to merge, rather than as two files that merge cleanly and
+// leave the route declared twice. The walk reads the package's own source, so a file whose name
+// nobody held to the rule fails here rather than at a merge.
+func TestEachRouteIsDeclaredInTheFileItsNameNames(t *testing.T) {
+	t.Parallel()
+	declaredIn := map[string][]string{}
+	for _, file := range goFilesOfThisPackage(t) {
+		name := filepath.Base(file)
+		if !routefile.Is(name) {
+			continue
+		}
+		for _, route := range routesDeclaredIn(t, file) {
+			declaredIn[name] = append(declaredIn[name], route)
 		}
 	}
-	for _, stale := range []struct{ route, says string }{
-		// A null no longer clears a default, so the write's description cannot offer one.
-		{"PUT /api/v1/projects/{key}/default-assignee", "null to clear"},
-		// Every project names a default, so the list leaves none out.
-		{"GET /api/v1/settings/project-default-assignees", "that names a default assignee"},
-		// The create chain's last step always lands, so it carries no qualification.
-		{"POST /api/v1/issues", "still names a person who has signed in"},
-		// The inbox resolves three steps and stops at none of them.
-		{"GET /api/v1/inbox", "until somebody hands it on"},
-	} {
-		description, mounted := descriptions[stale.route]
-		if !mounted {
-			t.Fatalf("the table mounts no %s", stale.route)
+	if len(declaredIn) != len(routeRegistry) {
+		t.Fatalf("%d route files declare routes and the registry holds %d", len(declaredIn), len(routeRegistry))
+	}
+	for _, route := range routeRegistry {
+		want, err := routefile.Name(route.Method, route.Pattern)
+		if err != nil {
+			t.Errorf("%s %s: %v", route.Method, route.Pattern, err)
+			continue
 		}
-		if strings.Contains(description, stale.says) {
-			t.Errorf("%s still says %q, which the three-step rule made false: %s", stale.route, stale.says, description)
+		declared := declaredIn[want]
+		if len(declared) != 1 || declared[0] != route.Method+" "+route.Pattern {
+			t.Errorf("%s %s is declared in %v, want %s alone", route.Method, route.Pattern, declared, want)
 		}
 	}
 }
 
-// TestEveryIDRouteIsNamed: every route whose pattern carries {id} or {block_id} says what that
-// id names — a kind whose prefix is resolved into it and the 404 that route answers for an id
-// it does not hold, or a reason it resolves none — and every name in the table is a route the
-// server serves. The sub-tests are the negative control, as TestEveryMutatingRouteIsClassed's
-// are: the same walk over a fixture holding a route the table does not name, one that resolves
-// nothing and says why not at once, and one that resolves an id without naming that 404, fails
-// on each.
+// routesDeclaredIn is every "<method> <pattern>" a file of this package declares, read from its
+// source: the Method and Pattern of each declareRoute(routeDecl{...}) it holds.
+func routesDeclaredIn(t *testing.T, file string) []string {
+	t.Helper()
+	var routes []string
+	ast.Inspect(parseAPIFile(t, file), func(node ast.Node) bool {
+		call, isCall := node.(*ast.CallExpr)
+		if !isCall {
+			return true
+		}
+		if fun, named := call.Fun.(*ast.Ident); !named || fun.Name != "declareRoute" || len(call.Args) != 1 {
+			return true
+		}
+		literal, isLiteral := call.Args[0].(*ast.CompositeLit)
+		if !isLiteral {
+			return true
+		}
+		var method, pattern string
+		for _, element := range literal.Elts {
+			pair, keyed := element.(*ast.KeyValueExpr)
+			key, named := pair.Key.(*ast.Ident)
+			if !keyed || !named {
+				continue
+			}
+			switch key.Name {
+			case "Method":
+				selector, isSelector := pair.Value.(*ast.SelectorExpr)
+				if !isSelector {
+					t.Fatalf("%s: its Method is no http.Method constant", file)
+				}
+				method = strings.ToUpper(strings.TrimPrefix(selector.Sel.Name, "Method"))
+			case "Pattern":
+				switch value := pair.Value.(type) {
+				case *ast.BasicLit:
+					unquoted, err := strconv.Unquote(value.Value)
+					if err != nil {
+						t.Fatalf("%s: %v", file, err)
+					}
+					pattern = unquoted
+				case *ast.Ident:
+					// A pattern another file declares a constant for, such as goingCataloguePath.
+					pattern = patternOfConstant(t, value.Name)
+				default:
+					t.Fatalf("%s: its Pattern is neither a string nor a constant", file)
+				}
+			}
+		}
+		if method != "" && pattern != "" {
+			routes = append(routes, method+" "+pattern)
+		}
+		return false
+	})
+	return routes
+}
+
+// patternOfConstant is the value of a package-level string constant a route's Pattern names.
+func patternOfConstant(t *testing.T, name string) string {
+	t.Helper()
+	for _, file := range goFilesOfThisPackage(t) {
+		for _, declared := range parseAPIFile(t, file).Decls {
+			general, isGeneral := declared.(*ast.GenDecl)
+			if !isGeneral || general.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range general.Specs {
+				value := spec.(*ast.ValueSpec)
+				for index, ident := range value.Names {
+					if ident.Name != name || index >= len(value.Values) {
+						continue
+					}
+					literal, isLiteral := value.Values[index].(*ast.BasicLit)
+					if !isLiteral {
+						t.Fatalf("the constant %s is no string literal", name)
+					}
+					unquoted, err := strconv.Unquote(literal.Value)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return unquoted
+				}
+			}
+		}
+	}
+	t.Fatalf("no file of this package declares the constant %s", name)
+	return ""
+}
+
+// POST /api/v1/projects's description names the body's fields as its body clause lists them,
+// {key, name, default_assignee} (createProjectInput's JSON fields but actor, which it names
+// apart), and the code the route refuses a login nobody has signed in with, ASSIGNEE_NOT_ALLOWED.
+// default_assignee stands four times in the description, so it is held in the body clause's
+// form, which only that clause writes. This is a test of its own because the two route tests
+// above read every description and assert no word of one: the index test reads one description
+// alone and the pin only holds each row to having one.
+func TestTheProjectCreateRouteNamesItsDefaultAssigneeFieldAndRefusal(t *testing.T) {
+	t.Parallel()
+	var description string
+	mounted := false
+	for _, route := range (&server{}).routes() {
+		if route.Method == http.MethodPost && route.Pattern == "/api/v1/projects" {
+			description, mounted = route.Description, true
+		}
+	}
+	if !mounted {
+		t.Fatal("the table mounts no POST /api/v1/projects")
+	}
+	for _, name := range []string{"{key, name, default_assignee}", "ASSIGNEE_NOT_ALLOWED"} {
+		if !strings.Contains(description, name) {
+			t.Errorf("POST /api/v1/projects does not name %q: %s", name, description)
+		}
+	}
+}
+
+// TestEveryIDRouteIsNamed: every route whose pattern carries {id} or {block_id} says in its ID
+// what that id names — a kind whose prefix is resolved into it and the 404 that route answers for
+// an id it does not hold, or a reason it resolves none — and no route whose pattern carries no id
+// states one. The sub-tests are the negative control, as TestEveryMutatingRouteIsClassed's are:
+// the same walk over a fixture holding a route that states no ID, one that resolves nothing and
+// says why not at once, one that resolves an id without naming that 404, and one that states an
+// ID with no id to name, fails on each.
 func TestEveryIDRouteIsNamed(t *testing.T) {
-	// Not parallel: it adds a row to idRoutes (withIDRoute), the table every server of the package
-	// reads.
+	t.Parallel()
 	routes := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 	if undecided := undecidedIDRoutes(routes); len(undecided) > 0 {
 		t.Fatalf("%d route(s) whose id the prefix layer cannot decide:\n%s", len(undecided), strings.Join(undecided, "\n"))
 	}
-	served := make(map[string]bool, len(routes))
-	for _, route := range routes {
-		served[route.Method+" "+route.Pattern] = true
-	}
-	for name := range idRoutes {
-		if !served[name] {
-			t.Errorf("idRoutes names %q, which the table does not serve", name)
-		}
-		if !hasIDWildcard(name) {
-			t.Errorf("idRoutes names %q, whose pattern carries no id", name)
-		}
+	withID := func(pattern string, entry *idRoute) apiRoute {
+		return apiRoute{routeDecl: routeDecl{Method: http.MethodGet, Pattern: pattern, Auth: authAny, ID: entry}}
 	}
 
-	t.Run("a route the table does not name fails this walk", func(t *testing.T) {
-		undecided := undecidedIDRoutes([]apiRoute{
-			{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/widgets", Auth: authAny}},
-			{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/widgets/{id}", Auth: authAny}},
-		})
+	t.Run("a route that states no ID fails this walk", func(t *testing.T) {
+		undecided := undecidedIDRoutes([]apiRoute{withID("/api/v1/widgets", nil), withID("/api/v1/widgets/{id}", nil)})
 		if len(undecided) != 1 || !strings.HasPrefix(undecided[0], "GET /api/v1/widgets/{id}:") {
 			t.Fatalf("the walk answered %q, want the unnamed id route named and the other left alone", undecided)
 		}
 	})
 
 	t.Run("a row that resolves nothing and gives no reason fails it too", func(t *testing.T) {
-		withIDRoute(t, "GET /api/v1/widgets/{block_id}", idRoute{})
-		undecided := undecidedIDRoutes([]apiRoute{
-			{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/widgets/{block_id}", Auth: authAny}},
-		})
+		undecided := undecidedIDRoutes([]apiRoute{withID("/api/v1/widgets/{block_id}", &idRoute{})})
 		if len(undecided) != 1 || !strings.Contains(undecided[0], "gives no reason") {
 			t.Fatalf("the walk answered %q, want the reasonless row named", undecided)
 		}
 	})
 
 	t.Run("a row that resolves a kind and gives a reason fails it too", func(t *testing.T) {
-		withIDRoute(t, "GET /api/v1/widgets/{id}", idRoute{Kind: "ask", NotFound: "NOT_FOUND", Reason: "and also not"})
 		undecided := undecidedIDRoutes([]apiRoute{
-			{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/widgets/{id}", Auth: authAny}},
+			withID("/api/v1/widgets/{id}", &idRoute{Kind: "ask", NotFound: "NOT_FOUND", Reason: "and also not"}),
 		})
 		if len(undecided) != 1 || !strings.Contains(undecided[0], "a reason not to") {
 			t.Fatalf("the walk answered %q, want the contradictory row named", undecided)
@@ -325,57 +395,55 @@ func TestEveryIDRouteIsNamed(t *testing.T) {
 	})
 
 	t.Run("a row that resolves an id and names no 404 of its own fails it too", func(t *testing.T) {
-		withIDRoute(t, "GET /api/v1/widgets/{id}", idRoute{Kind: "ask"})
-		undecided := undecidedIDRoutes([]apiRoute{
-			{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/widgets/{id}", Auth: authAny}},
-		})
+		undecided := undecidedIDRoutes([]apiRoute{withID("/api/v1/widgets/{id}", &idRoute{Kind: "ask"})})
 		if len(undecided) != 1 || !strings.Contains(undecided[0], "what 404 the route answers") {
 			t.Fatalf("the walk answered %q, want the row with no not-found answer named", undecided)
 		}
 	})
 
 	t.Run("a row that resolves a block and names no 404 for it fails it too", func(t *testing.T) {
-		withIDRoute(t, "GET /api/v1/widgets/{id}/blocks/{block_id}",
-			idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND", Blocks: true})
 		undecided := undecidedIDRoutes([]apiRoute{
-			{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/widgets/{id}/blocks/{block_id}", Auth: authAny}},
+			withID("/api/v1/widgets/{id}/blocks/{block_id}", &idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND", Blocks: true}),
 		})
 		if len(undecided) != 1 || !strings.Contains(undecided[0], "the document does not hold") {
 			t.Fatalf("the walk answered %q, want the row with no block not-found answer named", undecided)
 		}
 	})
 
+	t.Run("a route with no id that states an ID fails it too", func(t *testing.T) {
+		undecided := undecidedIDRoutes([]apiRoute{withID("/api/v1/widgets", &idRoute{Reason: "a widget id"})})
+		if len(undecided) != 1 || !strings.Contains(undecided[0], "its pattern carries no id") {
+			t.Fatalf("the walk answered %q, want the route with no id to name named", undecided)
+		}
+	})
+
 	t.Run("every row names a kind the prefix resolver reads and a 404 that is one", func(t *testing.T) {
-		for name, entry := range idRoutes {
+		for _, route := range routes {
+			if route.ID == nil {
+				continue
+			}
+			name, entry := route.Method+" "+route.Pattern, *route.ID
 			switch entry.Kind {
 			case "", "ask", "comment", "message", "artifact":
 			default:
-				t.Errorf("idRoutes gives %q the kind %q, which refs.ResolvePrefix does not read", name, entry.Kind)
+				t.Errorf("%s states the kind %q, which refs.ResolvePrefix does not read", name, entry.Kind)
 			}
 			if entry.WithinIssue && !strings.Contains(name, "{key}") {
-				t.Errorf("idRoutes looks within the issue of %q, whose pattern names none", name)
+				t.Errorf("%s looks within the issue its pattern names, and it names none", name)
 			}
 			if entry.Blocks && !strings.Contains(name, "{block_id}") {
-				t.Errorf("idRoutes reads a block of %q, whose pattern carries no {block_id}", name)
+				t.Errorf("%s reads a block, and its pattern carries no {block_id}", name)
 			}
 			if strings.Contains(name, "{block_id}") && !entry.Blocks {
-				t.Errorf("idRoutes leaves the {block_id} of %q unresolved", name)
+				t.Errorf("%s leaves its {block_id} unresolved", name)
 			}
 			for column, code := range map[string]string{"NotFound": entry.NotFound, "BlockNotFound": entry.BlockNotFound} {
 				if code != "" && code != notFoundNone && !strings.HasSuffix(code, "NOT_FOUND") {
-					t.Errorf("idRoutes gives %q the %s code %q, which is no not-found code", name, column, code)
+					t.Errorf("%s states the %s code %q, which is no not-found code", name, column, code)
 				}
 			}
 		}
 	})
-}
-
-// withIDRoute names one route in idRoutes for the length of a test, so a negative control can
-// walk a row the server does not serve without leaving it behind.
-func withIDRoute(t *testing.T, name string, entry idRoute) {
-	t.Helper()
-	idRoutes[name] = entry
-	t.Cleanup(func() { delete(idRoutes, name) })
 }
 
 // routeProbePath fills a mux pattern's wildcards with well-formed placeholders so the request
@@ -570,11 +638,11 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 }
 
 // Every route Dispatch refused a bearer token on before INFRA-1017 names the `person` scope now,
-// and the scope map names no route the table does not mount: the two halves register's panic
-// protects (scopedRoutesNotMounted), proved from the table alone with nothing mounted. The one
-// exception is `PATCH /api/v1/comments/{id}`, which names no scope since INFRA-1523: an agent's
-// comment has an author of kind session, so a person scope would shut every author of one out
-// of its own edit, and the route holds the caller to that author instead (editComment).
+// and no other route declares a scope: the routes that declare one are exactly those, read from
+// the declarations alone with nothing mounted. The one exception is `PATCH /api/v1/comments/{id}`,
+// which declares no scope since INFRA-1523: an agent's comment has an author of kind session, so a
+// person scope would shut every author of one out of its own edit, and the route holds the caller
+// to that author instead (editComment).
 func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 	t.Parallel()
 	browserOnly := []string{
@@ -690,15 +758,18 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"PATCH /api/v1/me/agent-tokens/{id}",
 	}
 	for _, name := range browserOnly {
-		scopes, named := routeScopes[name]
-		if !named || !slices.Contains(scopes, model.ScopePerson) {
-			t.Errorf("%s names %v, want the %s scope among them", name, scopes, model.ScopePerson)
+		route, declared := declaredRoute(name)
+		if !declared || !slices.Contains(route.OAuthScopes, model.ScopePerson) {
+			t.Errorf("%s names %v (declared=%t), want the %s scope among them", name, route.OAuthScopes, declared, model.ScopePerson)
 		}
 	}
-	if len(routeScopes) != len(browserOnly) {
-		t.Errorf("routeScopes names %d routes, want exactly the %d above", len(routeScopes), len(browserOnly))
+	scoped := 0
+	for _, route := range routeRegistry {
+		if len(route.OAuthScopes) > 0 {
+			scoped++
+		}
 	}
-	if unmounted := scopedRoutesNotMounted(); len(unmounted) > 0 {
-		t.Errorf("routeScopes names %s, which the table does not mount", strings.Join(unmounted, ", "))
+	if scoped != len(browserOnly) {
+		t.Errorf("%d routes declare OAuth scopes, want exactly the %d above", scoped, len(browserOnly))
 	}
 }

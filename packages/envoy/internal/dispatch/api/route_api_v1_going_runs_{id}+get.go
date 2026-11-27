@@ -1,0 +1,21 @@
+package api
+
+import (
+	"fmt"
+	"net/http"
+
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+)
+
+var _ = declareRoute(routeDecl{
+	Method:      http.MethodGet,
+	Pattern:     "/api/v1/going/runs/{id}",
+	Auth:        authAny,
+	Description: fmt.Sprintf("The caller's own command-bar run: {id, conversation, continues, words, context, level, mode, line (ask, do or file: the line on top the run was started from; null for a run not started from the line), state (queued, working, waiting, done, stopped or failed), stop_reason, issues, used {calls, working_ms, tokens, model_ms?, pace_ms?, tool_ms?, queued_ms? (the milliseconds its model calls took, of those the milliseconds the agent's pacer held them before they were sent, the milliseconds its tool calls took and those it waited in the queue before its first claim, each left out while 0)}, created_at, finished_at, undoable (true while a call of the run landed a change Undo would still try to take back, decided from the call's record as the undo decides it: its undo has not landed, its tool's undo is not not_undone, the request of it that landed last is its own, not a close's reason sent before it, and its record says what it found and left and that it changed something - not a claim its route answered claim_changed false, a create answered 200 for an issue Dispatch already held, or a call whose record cannot be read; false for a run that changed nothing), undone_at (when the run's Undo landed, its newest undo landing; null for a run never undone), undoable_count (how many of the run's calls Undo can still take back now: those undoable is true for, a call whose undo's request failed among them), undone_count (how many an Undo took back: the calls whose undo landed a change), standing_count (how many Undo tried and could not take back, so their change stands: a call whose undo its record refuses with nothing sent - %s, %s, %s, %s, %s, or a record it cannot use - and one whose undo kept what another writer changed since the run, %s)}. A call Undo takes back nothing of by design - sent, not undone, as a message, a broadcast, a review and every write Dispatch does not undo, and a delete of a comment or an issue message, deleted, not undone - is in none of the three counts, and so is a call that changed nothing and one whose undo's request changed nothing. A withdrawn run - one given the words of a comment or an issue message that is deleted since, by an answer of one of its calls or by the notes of an earlier run of its conversation its claim handed it - reads state stopped with a stop_reason that starts %s, whatever it stored, with its words and its Undo as they stand; one that has not ended is stopped so first, and stores nothing more. A run each of whose posts that no longer stands was deleted by a delete call of its own that landed (dispatch_delete_comment, dispatch_delete_message) is withdrawn by its own deletes alone, and its stop_reason starts %s instead. A run of anyone else's, one the record does not hold, one whose conversation History no longer lists and an id that is no uuid are one answer, 404 %s.", codeGoingUndoAfterUnread, codeGoingUndoBeforeUnread, codeGoingUndoUnknown, codeGoingUndoUnserved, codeGoingUndoNotCallers, codeGoingUndoChanged, contracts.GoingErrorAnswerWithdrawn, contracts.GoingErrorAnswerWithdrawnByRun, codeGoingRunNotFound),
+	Handler:     (*server).getGoingRun,
+	ID:          &idRoute{Reason: "a going run's id, which the route reads for its own author alone and answers for itself"},
+	OAuthScopes: routeScopeSet{model.ScopePerson},
+	Read:        readEntry{Writes: readWritesState, WriteNote: "When the run is withdrawn (a post it read was deleted) and has not finished, the read stops it on the request's context before answering (readCallersGoingRun, stopGoingRun): it updates the run's going_runs row to stopped with its lease freed (stopGoingRunIn), inserts the run's end frame into going_run_events with a notify on GoingRunEventsChannel (appendGoingRunFrames), appends going_plan.updated to events for a run that was waiting (appendGoingPlanEvent), and notifies GoingRunsChannel."},
+	Shape:       routeShape{Status: http.StatusOK, Response: goingRun{}},
+})

@@ -13,9 +13,10 @@
 // removed when that test ends, but a client left on it outlives the test all the same. One that
 // connects with ReconnectForever, as the daemon's workflow does, keeps dialing the server's address
 // once it is gone, and a later server given its port would answer it. Where the Docker daemon is
-// this machine, every server here listens on an address of its own (LoopbackIP), so that stray
-// reaches none of them; where it is another machine (localDaemon), the servers share its default
-// binding, and the check is what makes the client's own test fail for leaving it, either way. A
+// this machine, every server here listens on a loopback address of its own (start, in
+// container.go), so that stray reaches none of them; where it is another machine
+// (dockerDaemon.local), the servers share that machine's interfaces, and the check is what makes
+// the client's own test fail for leaving it, either way. A
 // pooled server's check depends as well on the pool's rule of one test on a server at a time and
 // on this fixture's rule of one test binary at a time on an external server, which the package
 // comment and skills/legion-worker/references/tools.md both state: every connection the server

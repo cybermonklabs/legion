@@ -17,6 +17,7 @@ import { ApiError, api, REQUEST_DEADLINE_MS } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { Agent, CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
+import { pressMadeIn } from "../../components/focus-place";
 import { useTableLayout } from "../../components/table-layout";
 import { readLayout } from "../../components/table-storage";
 import { DOCUMENT_SCROLL_ATTRIBUTE, footPassNow, MARK_ATTRIBUTE } from "../../hooks/useFootInset";
@@ -1925,6 +1926,305 @@ test("Start next over three queued issues from the bar, its steps answered one a
   await waitFor(() => expect(focusedName()).toBe("Select CORE-10"));
   await afterFrameAndTasks();
   expect(focusedName()).toBe("Select CORE-10");
+});
+
+/** What `pressMadeIn` answered of `bar` once the page had answered the next `type` event on
+ *  `target`, else undefined: whether the press the reader made then (`armHandOff`) holds the bar.
+ *  A listener on the document hears the event after React has run the page's own handlers for
+ *  it. A form's submit comes after the click on its submit button, so a submit is read there. */
+function pressAtBarOn(
+  type: "click" | "submit",
+  target: Element,
+  bar: Element
+): { readonly read: boolean | undefined } {
+  const heard: { read: boolean | undefined } = { read: undefined };
+  const listen = (event: Event) => {
+    if (event.target === target) heard.read = pressMadeIn(bar);
+  };
+  document.addEventListener(type, listen);
+  restores.push(() => document.removeEventListener(type, listen));
+  return heard;
+}
+
+/** Draws the List deep in twenty issues in work and the epic CORE-99 "Platform" on the backlog,
+ *  marks two adjacent rows by their checkboxes, the lower first, and presses the bar's Move with
+ *  Platform picked: the rule needs that epic in work first, so the List asks before it writes.
+ *  Answers the question's dialog and what the case reads: the rows as the List listed them, the
+ *  two marked (`last`, the upper one, marked last), the row after them (`next`), the bar, the
+ *  listing's spy and what the writes sent. */
+async function askedToMoveIntoWork(user: UserEvent) {
+  const sent = answerEpicWrites([epicIssue("CORE-99", "Platform", "backlog")]);
+  const issues = [
+    ...Array.from({ length: 20 }, (_, index) =>
+      issue(`CORE-${index + 1}`, { status: "in_progress" })
+    ),
+    issue("CORE-99", { labels: ["epic"], status: "backlog", title: "Platform" }),
+  ];
+  // Drawn in the shell's main content, as the app draws it.
+  const { listing } = table(issues, "", { inMain: true });
+  await screen.findByRole("checkbox", { name: "Select CORE-20" });
+  const order = [...document.querySelectorAll("[data-issue-row]")].map(
+    (row) => row.getAttribute("data-issue-row") ?? ""
+  );
+  const [last = "", marked = "", next = ""] = order.slice(11, 14);
+  expect([last, marked, next].includes("CORE-99")).toBe(false);
+  // Each row's checkbox is drawn where its row stands now, 100 px a row, with the tenth row at
+  // the window's top: happy-dom lays nothing out, and the hand-off reads what the reader sees.
+  restores.push(layRowsOut("[data-issue-row]", 9));
+  await user.click(screen.getByRole("checkbox", { name: `Select ${marked}` }));
+  await user.click(screen.getByRole("checkbox", { name: `Select ${last}` }));
+  await pick(user, "Move to epic", "Platform");
+  await user.click(screen.getByRole("button", { name: "Move" }));
+  const asked = await screen.findByRole("dialog", { name: "Move CORE-99 into work too?" });
+  const bar = screen.getByRole("toolbar", { name: "Selected issues" });
+  return { asked, bar, issues, last, listing, marked, next, sent };
+}
+
+// The bar's Move to epic asks its question in a dialog (`askTarget`), so the reader's yes is a
+// press in that dialog, outside the bar. The question was opened by the bar's own action, so its
+// confirm arms the bar's hand-off at the bar's root (`IssuesTable`), as a pick in a list portalled
+// out of the bar is: read from the confirm itself, its press holds the bar (`pressMadeIn`). The
+// writes land, the list read after them no longer shows the two rows, and the bar goes once that
+// read has settled: the focus goes to the checkbox of the row now at the place of the row marked
+// last, never to the page's body, and stays there.
+test("Move to epic confirmed in its question hands the focus to the row now at the marked rows' place, never to the body", async () => {
+  const user = userEvent.setup();
+  const { asked, bar, issues, last, listing, marked, next, sent } = await askedToMoveIntoWork(user);
+  // The read after the writes, held until the case answers it without the two issues.
+  const reread = Promise.withResolvers<IssueSummary[]>();
+  const reads = listing.mock.calls.length;
+  listing.mockImplementation(() => reread.promise);
+  const confirm = within(asked).getByRole("button", { name: "Move into work too" });
+  const heard = pressAtBarOn("click", confirm, bar);
+  await user.click(confirm);
+  await waitFor(() => expect(sent.filter(([kind]) => kind === "PATCH")).toHaveLength(2));
+  await waitFor(() => expect(listing.mock.calls.length).toBeGreaterThan(reads));
+  await act(async () => reread.resolve(issues.filter(({ key }) => key !== marked && key !== last)));
+  await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
+  await waitFor(() => expect(focusedName()).toBe(`Select ${next}`));
+  // A frame and two tasks on, the focus is still where the bar put it.
+  await afterFrameAndTasks();
+  expect(focusedName()).toBe(`Select ${next}`);
+  // Read from the confirm itself, its press held the bar.
+  expect(heard.read).toBe(true);
+});
+
+// A Cancel or an Escape in the bar's Move to epic question writes nothing and arms nothing at the
+// bar's root: the dialog closes, gives the focus back to the bar's Move it came from, held now
+// that no epic is staged, and the bar stays with both rows marked.
+for (const [how, answer] of [
+  [
+    "Cancel",
+    (user: UserEvent, asked: HTMLElement) =>
+      user.click(within(asked).getByRole("button", { name: "Cancel" })),
+  ],
+  ["Escape", (user: UserEvent) => user.keyboard("{Escape}")],
+] as const) {
+  test(`${how} in the bar's Move to epic question leaves the focus on the bar's Move`, async () => {
+    const user = userEvent.setup();
+    const { asked, bar, sent } = await askedToMoveIntoWork(user);
+    const cancel = within(asked).getByRole("button", { name: "Cancel" });
+    const heard = pressAtBarOn("click", cancel, bar);
+    await answer(user, asked);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(heard.read).toBe(how === "Cancel" ? false : undefined);
+    expect(focusedName()).toBe("Move");
+    await afterFrameAndTasks();
+    expect(focusedName()).toBe("Move");
+    expect(screen.getByRole("toolbar", { name: "Selected issues" }).textContent).toContain(
+      "2 selected"
+    );
+    expect(sent).toEqual([["status-change", "CORE-99", intoWorkDryRun]]);
+  });
+}
+
+// A Finish's question (`askOnFinish`) is opened by the interrupted action's Finish under the
+// toolbar, never by the bar, so its confirm arms nothing at the bar's root though the bar is drawn
+// over a marked row: the press it arms does not hold the bar (`pressMadeIn`).
+test("a Finish's question, which no bar action opened, arms nothing at the bar's root when confirmed", async () => {
+  const user = userEvent.setup();
+  answerEpicWrites([epicIssue("CORE-9", "Platform", "triage")]);
+  interruptedBy(madeEpic);
+  table(
+    [
+      issue("CORE-1", { status: "in_progress" }),
+      issue("CORE-2"),
+      issue("CORE-9", { labels: ["epic"], status: "triage", title: "Platform" }),
+    ],
+    "",
+    { inMain: true }
+  );
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
+  const bar = screen.getByRole("toolbar", { name: "Selected issues" });
+  await pressFinish(user);
+  const asked = await screen.findByRole("dialog", { name: "Move CORE-9 into work too?" });
+  const confirm = within(asked).getByRole("button", { name: "Move into work too" });
+  const heard = pressAtBarOn("click", confirm, bar);
+  await user.click(confirm);
+  await noticeOnceDone("Finished the interrupted action.");
+  expect(heard.read).toBe(false);
+});
+
+// The bar's Start next over a selection larger than the page asks first ("Start these next?"),
+// a question only the bar opens. Its confirm arms the bar's hand-off at the bar's root, so once
+// the rank writes land and the list read after them settles, the bar's going hands the focus to
+// the checkbox of the issue marked last, which the list still holds, never to the page's body.
+test("Start next over a selection larger than the page, confirmed in its question, hands the focus to the issue marked last", async () => {
+  const user = userEvent.setup();
+  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1") as never);
+  restores.push(() => send.mockRestore());
+  const rows = [
+    // Ahead of the queue and out of this view's filter, so the selection has somewhere to move.
+    issue("CORE-0", { labels: ["legion"], priority: 0, rank: "000" }),
+    ...Array.from({ length: 30 }, (_, index) =>
+      issue(`CORE-${index + 1}`, {
+        labels: ["legion"],
+        priority: 1,
+        rank: String(index + 1).padStart(3, "0"),
+      })
+    ),
+  ];
+  table(rows, "?f.priority=1&size=25", { inMain: true });
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-5" }));
+  await user.click(screen.getByRole("button", { name: "Select all 30 matching" }));
+  const bar = screen.getByRole("toolbar", { name: "Selected issues" });
+  await user.click(within(bar).getByRole("button", { name: /^Start next$/ }));
+  const asked = await screen.findByRole("dialog", { name: "Start these next?" });
+  const confirm = within(asked).getByRole("button", { name: /^Start next$/ });
+  const heard = pressAtBarOn("click", confirm, bar);
+  await user.click(confirm);
+  await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
+  await waitFor(() => expect(focusedName()).toBe("Select CORE-5"));
+  // A frame and two tasks on, the focus is still where the bar put it.
+  await afterFrameAndTasks();
+  expect(focusedName()).toBe("Select CORE-5");
+  // Read from the confirm itself, its press held the bar.
+  expect(heard.read).toBe(true);
+});
+
+// The bar's New epic from these names the epic in a dialog, and where an issue it moves is in
+// work it then asks whether the new epic goes into work too: a question the bar's action opened,
+// through the name dialog. Its confirm arms the bar's hand-off at the bar's root, so once the
+// create, the move into work and the issue's move land and the list read after them settles, the
+// bar's going hands the focus to the checkbox of the issue marked last, never to the page's body.
+test("New epic from these, its question confirmed after the name dialog, hands the focus to the issue marked last", async () => {
+  const user = userEvent.setup();
+  answerEpicWrites([epicIssue("CORE-10", "Platform", "triage")]);
+  table([issue("CORE-1", { status: "in_progress" }), issue("CORE-2")], "", { inMain: true });
+  await newEpicOf(user, "CORE-1", "Platform");
+  const asked = await screen.findByRole("dialog", { name: "Move “Platform” into work too?" });
+  const bar = screen.getByRole("toolbar", { name: "Selected issues" });
+  const confirm = within(asked).getByRole("button", { name: "Move into work too" });
+  const heard = pressAtBarOn("click", confirm, bar);
+  await user.click(confirm);
+  await noticeOnceDone("Made the epic “Platform” from CORE-1 “Work CORE-1”.");
+  await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
+  await waitFor(() => expect(focusedName()).toBe("Select CORE-1"));
+  // A frame and two tasks on, the focus is still where the bar put it.
+  await afterFrameAndTasks();
+  expect(focusedName()).toBe("Select CORE-1");
+  // Read from the confirm itself, its press held the bar.
+  expect(heard.read).toBe(true);
+});
+
+// The bar's New epic from these opens its name dialog, and where no issue it moves is in work no
+// question follows the name: the reader's submit in that dialog, by a click on Create epic or by
+// Enter in the name field, is the press that begins the action, a press outside the bar. The
+// dialog was opened by the bar's own action, so its submit arms the bar's hand-off at the bar's
+// root (`IssuesTable`): read from the submit itself, its press holds the bar (`pressMadeIn`). The
+// create and the two moves land, the list read after them no longer shows the two rows, and the
+// bar goes once that read has settled: the focus goes to the checkbox of the row now at the place
+// of the row marked last, never to the page's body.
+for (const [how, submit] of [
+  [
+    "a click on Create epic",
+    (user: UserEvent, naming: HTMLElement) =>
+      user.click(within(naming).getByRole("button", { name: "Create epic" })),
+  ],
+  ["Enter in the name field", (user: UserEvent) => user.keyboard("{Enter}")],
+] as const) {
+  test(`New epic from these, named with no question after and submitted by ${how}, hands the focus to the row now at the marked rows' place, never to the body`, async () => {
+    const user = userEvent.setup();
+    const sent = answerEpicWrites([epicIssue("CORE-10", "Platform", "triage")]);
+    // On the backlog: the rule needs no epic in work, so no question follows the name.
+    const issues = Array.from({ length: 20 }, (_, index) =>
+      issue(`CORE-${index + 21}`, { status: "backlog" })
+    );
+    // Drawn in the shell's main content, as the app draws it.
+    const { listing } = table(issues, "", { inMain: true });
+    await screen.findByRole("checkbox", { name: "Select CORE-40" });
+    const order = [...document.querySelectorAll("[data-issue-row]")].map(
+      (row) => row.getAttribute("data-issue-row") ?? ""
+    );
+    const [last = "", marked = "", next = ""] = order.slice(11, 14);
+    // Each row's checkbox is drawn where its row stands now, 100 px a row, with the tenth row at
+    // the window's top: happy-dom lays nothing out, and the hand-off reads what the reader sees.
+    restores.push(layRowsOut("[data-issue-row]", 9));
+    await user.click(screen.getByRole("checkbox", { name: `Select ${marked}` }));
+    await user.click(screen.getByRole("checkbox", { name: `Select ${last}` }));
+    const bar = screen.getByRole("toolbar", { name: "Selected issues" });
+    await user.click(within(bar).getByRole("button", { name: "New epic from these" }));
+    const naming = await screen.findByRole("dialog", { name: "Name the new epic" });
+    await user.type(within(naming).getByRole("textbox", { name: "Name" }), "Platform");
+    // The read after the writes, held until the case answers it without the two issues.
+    const reread = Promise.withResolvers<IssueSummary[]>();
+    const reads = listing.mock.calls.length;
+    listing.mockImplementation(() => reread.promise);
+    const heard = pressAtBarOn("submit", naming, bar);
+    await submit(user, naming);
+    await waitFor(() => expect(sent.filter(([kind]) => kind === "PATCH")).toHaveLength(2));
+    expect(sent[0]).toEqual([
+      "create",
+      "CORE-10",
+      { labels: ["epic"], project: "CORE", title: "Platform" },
+    ]);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(listing.mock.calls.length).toBeGreaterThan(reads));
+    await act(async () =>
+      reread.resolve(issues.filter(({ key }) => key !== marked && key !== last))
+    );
+    await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
+    await waitFor(() => expect(focusedName()).toBe(`Select ${next}`));
+    // A frame and two tasks on, the focus is still where the bar put it.
+    await afterFrameAndTasks();
+    expect(focusedName()).toBe(`Select ${next}`);
+    // Read from the submit itself, its press held the bar.
+    expect(heard.read).toBe(true);
+  });
+}
+
+// The rename dialog is opened by an epic heading's own menu, never by the bar, so its submit arms
+// nothing at the bar's root though the bar is drawn over a marked row: the press it arms does not
+// hold the bar (`pressMadeIn`).
+test("the rename dialog, which no bar action opens, arms nothing at the bar's root when submitted", async () => {
+  const user = userEvent.setup();
+  const send = spyOn(api, "send").mockImplementation(
+    async (request) => savedIssue(request.path.split("/").at(-1) ?? "") as never
+  );
+  restores.push(() => send.mockRestore());
+  table(
+    [
+      issue("CORE-1", { labels: ["epic"], title: "Platform" }),
+      issue("CORE-2", { parent: "CORE-1" }),
+      issue("CORE-3", { parent: "CORE-1" }),
+    ],
+    "?group=epic",
+    { inMain: true }
+  );
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
+  const bar = screen.getByRole("toolbar", { name: "Selected issues" });
+  const heading = screen.getByRole("link", { name: "CORE-1 · Platform" }).closest("tr");
+  if (!heading) throw new Error("The epic has no heading row");
+  await user.click(within(heading).getByRole("button", { name: "Epic actions ▾" }));
+  await user.click(screen.getByRole("button", { name: "Rename" }));
+  const naming = await screen.findByRole("dialog", { name: "Rename the epic" });
+  const field = within(naming).getByRole("textbox", { name: "Name" });
+  await user.clear(field);
+  await user.type(field, "Payments");
+  const heard = pressAtBarOn("submit", naming, bar);
+  await user.click(within(naming).getByRole("button", { name: "Rename epic" }));
+  await waitFor(() => expect(send).toHaveBeenCalled());
+  expect(heard.read).toBe(false);
 });
 
 test("leaving the table clears what the bar says it will act on", async () => {

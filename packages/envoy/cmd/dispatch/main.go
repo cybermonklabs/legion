@@ -29,6 +29,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -577,12 +578,11 @@ func main() {
 	// session_titles (migration 20261117100008) holds each session's newest stamped title,
 	// 20261117100015's trigger keeps it in step from the deploy on, and this fills it for the
 	// events stored before that, in committed batches, for document_search's reason above
-	// (20261117100016's comment). A failure stops the boot: delivery.ResolveSessionTitles reads
-	// session_titles alone, so a process that served with the table unfilled would name every
-	// session stored before this release by its id. Production runs one replica under a
-	// Kubernetes Deployment's `strategy: Recreate` (README.md, "Database migrations"), so no
-	// process serves while this one migrates and fills: the old process has stopped, and this
-	// one listens only once the fill has ended.
+	// (20261117100016's comment). Production runs two replicas under `strategy: RollingUpdate`.
+	// This pod listens only after the fill, so the old pods serve while it migrates and fills.
+	// The old build reads titles from events, and the trigger stores the titles the old pods write.
+	// A failed fill exits this pod, stops the rollout and leaves the old pods serving: with the
+	// table unfilled, delivery.ResolveSessionTitles would name every earlier session by its id.
 	if filled, err := database.FillSessionTitles(ctx); err != nil {
 		slog.Error("dispatch: fill session_titles for the events stored before this release", "error", err)
 		os.Exit(1)
@@ -704,6 +704,13 @@ func main() {
 		slog.Error("dispatch: build the answerer", "error", err)
 		os.Exit(1)
 	}
+	// The process's one count of its own calls to GitHub, by installation, counter and caller
+	// kind, which the two GitHub clients of the process that call with an installation token
+	// count on, and the rate reading reports (runRateReading): the API's, which the architecture
+	// importer and the delivery intakes and reconcile share, and the CI reconcile's. The webhook
+	// redelivery sweep's client calls with the App's JWT alone, which GitHub charges to no
+	// installation, so it counts on nothing.
+	gitHubCalls := githubrate.NewCounter()
 	// decider is nil where the deployment configured no decision model or named one the
 	// measurement does not hold, which newDecider logs: the server boots and decides nothing.
 	decider := newDecider(boot.Decision)
@@ -735,6 +742,7 @@ func main() {
 		Events:         broker,
 		Renames:        renames,
 		App:            appCfg,
+		GitHubRate:     gitHubCalls,
 		AgentStream:    agentStream,
 		AgentPublisher: agentPublisher,
 		Files:          fileStore,
@@ -857,8 +865,10 @@ func main() {
 	//     listener hub (its connection is this process's membership and every loop above waits on
 	//     a wake of this process's own, so it has to run in every process), the room sync
 	//     registered on it (it serves the rooms resident in this process: it catches them up with
-	//     the other processes' writes and answers their room queries) and the document sockets'
-	//     schema re-check (it closes this process's own sockets).
+	//     the other processes' writes and answers their room queries), the document sockets'
+	//     schema re-check (it closes this process's own sockets) and the GitHub rate reading
+	//     (runRateReading: the own calls it reports are this process's, and its lines name the
+	//     process).
 	//   - a boot one-shot already serialised by an advisory lock or idempotent: the migrations,
 	//     retirePlainRefreshTokens, restoreDecidedWordings, repairIssueAsks and
 	//     renameRepositories above, and the embedding coverage pass (two processes' passes at
@@ -1266,7 +1276,7 @@ func main() {
 	// ciInstance is filled in once this process is registered, below, and each pass records its
 	// counts in ci_reconcile_passes under the id it then holds.
 	ciInstance := &registeredInstance{}
-	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, boot.VerdictAppID, ciReconcileInterval, ciInstance, renames)
+	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, boot.VerdictAppID, ciReconcileInterval, ciInstance, renames, gitHubCalls)
 	if err != nil {
 		slog.Error("dispatch: open the CI reconcile pass", "error", err)
 		os.Exit(1)
@@ -1300,6 +1310,18 @@ func main() {
 
 	appCtx.Architecture().GitHubReads = recordGitHubRead
 	go architecture.Run(ctx, appCtx.Architecture(), architectureImportLeases, boot.ArchitectureImportAtStart)
+
+	// The GitHub rate reading: every 10 minutes, and once in the last minute before each counter
+	// resets, one github_rate_reading line for each installation of the App, through a JSON logger
+	// of its own, so a log store reads the line's fields where the rest of the log is text. It reads
+	// with the API's client, which counts on gitHubCalls with the CI reconcile's, and needs the
+	// App's private key.
+	if gitHub := appCtx.GitHub(); gitHub != nil {
+		slog.Info("dispatch: reading the GitHub rate counters of each installation of the App", "client_id", appCfg.ClientID, "interval", githubrate.Interval)
+		go runRateReading(ctx, gitHub, slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+	} else {
+		slog.Info("dispatch: GitHub rate reading off: it needs the GitHub App private key")
+	}
 
 	// dispatch://INFRA-1077: each project whose legion_settings row names a Legion daemon has its
 	// `GET /legion/v1/state` read once a minute from one replica, under the `legion-state` lease,
@@ -2685,12 +2707,12 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // It serves a read-only token (ciphertoken.Options.ServesReadOnly): one that holds read, which
 // the broker mints from a read entry or narrows when a trade asks for read. Dispatch is the one
 // service that asks for it, because its route table classes the GET rows such a token may call
-// (the read class, readClasses in internal/dispatch/api), and every other route answers it
+// (the read class its declaration states, internal/dispatch/api), and every other route answers it
 // 403 READ_ONLY_TOKEN before anything of the route runs. It serves an approve-only token too
 // (ciphertoken.Options.ServesApproveOnly): the scope approve alone, which the broker mints for a
-// person's approve grant and spends through its proxy, never released. Dispatch's approve list
-// (approveScopeRoutes) names the routes such a token may call, and every other route answers it
-// 403 APPROVE_ONLY_TOKEN before anything of the route runs.
+// person's approve grant and spends through its proxy, never released. The routes whose
+// declaration states ApproveOnly are the routes such a token may call, and every other route
+// answers it 403 APPROVE_ONLY_TOKEN before anything of the route runs.
 //
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
 // presentation is refused as any non-bearer Authorization header has always been

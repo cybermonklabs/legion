@@ -82,10 +82,10 @@ type GoingRoute struct {
 	Undo    GoingUndo `json:"undo"`
 
 	// path and the guard are how a call reaches this row (goingToolRoute), translate what the
-	// row's route takes of the call, and auth and scopes are who the table lets call it
-	// (routeAuth, routeScopes), which decides whether a caller is offered it at all
-	// (GoingRoute.runnableBy); they are the caller's business rather than the reader's, so none is
-	// served.
+	// row's route takes of the call, and auth and scopes are who the row's declaration lets call
+	// it (routeDecl.Auth and routeDecl.OAuthScopes), which decides whether a caller is offered it
+	// at all (GoingRoute.runnableBy); they are the caller's business rather than the reader's, so
+	// none is served.
 	path         map[string]string
 	whenArgument string
 	whenValue    any
@@ -150,7 +150,7 @@ func (c GoingCatalogue) Lookup(name string) (GoingAction, bool) {
 
 // mutatingRoutes is every row of the table that changes something, in the shape
 // TestEveryMutatingRouteIsClassed reads the table in: a row whose method is not GET, each of
-// which writeClasses must class (undecidableWrites). It is the one classification of a write the
+// whose declaration must state a WriteClass (undecidableWrites). It is the one classification of a write the
 // server has, and the catalogue is held to it.
 func mutatingRoutes(routes []apiRoute) map[string]bool {
 	mutating := make(map[string]bool, len(routes))

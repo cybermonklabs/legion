@@ -931,6 +931,155 @@ test("a focused row the named rows leave partly in sight is scrolled by the exac
   }
 });
 
+/** Every scroll of the window from here on, by how far, in order. The window moves as before:
+ *  this only reads the calls, and `afterEach` puts the test's own `scrollBy` back. */
+function watchWindowScrolls(): number[] {
+  const scrolls: number[] = [];
+  const scrollBy = window.scrollBy;
+  window.scrollBy = ((x: number | ScrollToOptions, y?: number) => {
+    scrolls.push((typeof x === "number" ? y : x.top) ?? 0);
+    scrollBy(x as number, y as number);
+  }) as typeof window.scrollBy;
+  return scrolls;
+}
+
+/** Lands the focus on the button of row `id` in the layout effects of the commit that draws it,
+ *  and moves the window by `by` to show it, as the selection bar's hand-off lands ahead of the
+ *  anchor's own pass. */
+function LandsOn({ by, id }: { by: number; id: string }): null {
+  useLayoutEffect(() => {
+    buttonOf(id).focus();
+    setScrollY(window.scrollY + by);
+  }, [by, id]);
+  return null;
+}
+
+/** Shrinks the content above the rows by `by` in the layout effects of the commit that draws it,
+ *  ahead of the anchor's own pass, as a line above the list closing in that commit does. */
+function ShrinksAbove({ by }: { by: number }): null {
+  useLayoutEffect(() => {
+    listTop -= by;
+  }, [by]);
+  return null;
+}
+
+// The hand-off lands the focus on the button of the row under the pointer, 0.6 px past the
+// window's bottom edge, and scrolls the window 1.33 px to show it whole at that edge, ahead of the
+// anchor's own pass. The anchor then puts the row back where the commit found it, a scroll of
+// -1.33 px that takes the button 0.6 px past the edge again, as WebKit left the Inbox's mark at
+// 390x664 after the bar's Dismiss. The button stood whole just before that scroll, so it is
+// brought whole into sight again at its nearest edge, by the least whole pixel.
+test("a focused control the anchor's own scroll of a fraction of a pixel takes past the view's bottom edge is brought whole into sight again", async () => {
+  const user = userEvent.setup();
+  const scrolls = watchWindowScrolls();
+  const view = render(<List rows={ids(12)} />);
+  try {
+    setScrollY(99.4);
+    const row = document.querySelector<HTMLElement>('[data-row="r12"]');
+    if (row === null) throw new Error("r12 missing");
+    // The pointer comes to rest on the row, which keeps its place.
+    await user.hover(row);
+    expect(chosen()).toEqual({ id: "r12", via: "pointer" });
+    expect(buttonOf("r12").getBoundingClientRect().bottom).toBeCloseTo(VIEWPORT_HEIGHT + 0.6);
+
+    view.rerender(
+      <List rows={ids(12)}>
+        <LandsOn by={1.33} id="r12" />
+      </List>
+    );
+    expect(buttonOf("r12")).toHaveFocus();
+    const { bottom, top } = buttonOf("r12").getBoundingClientRect();
+    expect(top).toBeGreaterThanOrEqual(0);
+    expect(bottom).toBeLessThanOrEqual(VIEWPORT_HEIGHT);
+    // The anchor's own scroll, and the least scroll that shows the button whole after it.
+    expect(scrolls).toHaveLength(2);
+    expect(scrolls[0]).toBeCloseTo(-1.33);
+    expect(scrolls[1]).toBe(1);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The hand-off lands the focus on a button 0.6 px past the window's bottom edge and scrolls
+// nothing, in the commit that takes away the rows below it the reader's press named. Their going
+// moves nothing above the button's row, so the anchor does not scroll, and the button is left
+// where the landing left it.
+test("a focused control in a commit in which the anchor does not scroll is left where it stands, partly in sight", async () => {
+  const user = userEvent.setup();
+  const going = (id: string) => id === "r13" || id === "r14";
+  const scrolls = watchWindowScrolls();
+  const view = render(<List leaving={going} rows={ids(14)} />);
+  try {
+    setScrollY(99.4);
+    const row = document.querySelector<HTMLElement>('[data-row="r12"]');
+    if (row === null) throw new Error("r12 missing");
+    // The pointer comes to rest on the row, which keeps its place.
+    await user.hover(row);
+
+    view.rerender(
+      <List leaving={going} rows={ids(12)}>
+        <LandsOn by={0} id="r12" />
+      </List>
+    );
+    expect(buttonOf("r12")).toHaveFocus();
+    expect(buttonOf("r12").getBoundingClientRect().bottom).toBeCloseTo(VIEWPORT_HEIGHT + 0.6);
+    expect(scrolls).toEqual([]);
+    expect(window.scrollY).toBe(99.4);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The focus rests on a button wholly below the window, and the content above the list shrinks by
+// 1.33 px in the commit: the anchor scrolls the window by -1.33 px to keep the button's row in its
+// place, and the button, out of sight before that scroll, is left out of sight after it.
+test("a focused control wholly out of sight before the anchor's own scroll is left out of sight", () => {
+  const scrolls = watchWindowScrolls();
+  const view = render(<List rows={ids(14)} />);
+  try {
+    setScrollY(99.4);
+    buttonOf("r14").focus();
+    const before = buttonOf("r14").getBoundingClientRect().top;
+    expect(before).toBeGreaterThan(VIEWPORT_HEIGHT);
+
+    view.rerender(
+      <List rows={ids(14)}>
+        <ShrinksAbove by={1.33} />
+      </List>
+    );
+    expect(scrolls).toHaveLength(1);
+    expect(scrolls[0]).toBeCloseTo(-1.33);
+    expect(buttonOf("r14").getBoundingClientRect().top).toBeCloseTo(before);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The focus rests on a button 5 px past the window's bottom edge, and the content above the list
+// shrinks by 1.33 px in the commit. The button is still cut just before the anchor's scroll of
+// -1.33 px, which puts its row back where the commit found it: the scroll took nothing out of
+// sight, so the button is left as the reader last saw it.
+test("a focused control partly in sight just before the anchor's own scroll is left where that scroll puts it", () => {
+  const scrolls = watchWindowScrolls();
+  const view = render(<List rows={ids(12)} />);
+  try {
+    setScrollY(95);
+    buttonOf("r12").focus();
+    expect(buttonOf("r12").getBoundingClientRect().bottom).toBe(VIEWPORT_HEIGHT + 5);
+
+    view.rerender(
+      <List rows={ids(12)}>
+        <ShrinksAbove by={1.33} />
+      </List>
+    );
+    expect(scrolls).toHaveLength(1);
+    expect(scrolls[0]).toBeCloseTo(-1.33);
+    expect(buttonOf("r12").getBoundingClientRect().bottom).toBeCloseTo(VIEWPORT_HEIGHT + 5);
+  } finally {
+    view.unmount();
+  }
+});
+
 // In a named box the anchor keeps the place it last saw the hand's row at. Once the rows the
 // press took away have let that row move up, the kept place is where the row stands now, so the
 // next commit keeps it there rather than putting it back where it stood before. The box's own
@@ -967,6 +1116,32 @@ test("in a named box the kept place moves up with the focused row, and the next 
     expect(scroller.scrollTop).toBe(100);
     expect(anchoringSeen.at(-1)).toBe("auto");
     expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("auto");
+  } finally {
+    view.unmount();
+  }
+});
+
+// The press's commit in a named box that carries no `overflow-anchor` of its own: the anchor's
+// hold turns the box's anchoring off for that commit and through the rendering update after it,
+// and its release two frames later leaves the box no inline value, so the box's anchoring is the
+// stylesheet's again.
+test("in a named box with no overflow-anchor of its own, the hold's release two frames after the press's commit leaves it none", async () => {
+  const going = (id: string) => id === "r3" || id === "r4";
+  const view = render(<List leaving={going} rows={ids(12)} scroller={scrollerRef} />);
+  try {
+    const scroller = scrollerRef.current;
+    if (scroller === null) throw new Error("scroller missing");
+    scroller.scrollTop = 100;
+    buttonOf("r6").focus();
+
+    view.rerender(
+      <List leaving={going} rows={ids(12).filter((id) => !going(id))} scroller={scrollerRef} />
+    );
+    expect(anchoringSeen.at(-1)).toBe("none");
+    await nextFrame();
+    expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("none");
+    await nextFrame();
+    expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("");
   } finally {
     view.unmount();
   }

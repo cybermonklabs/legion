@@ -71,12 +71,22 @@ interface Confirmation {
   /** Told of a Cancel, an Escape or a press on the backdrop, beside the dialog closing: what a
    *  Finish that waits on the answer hears. */
   cancel?: () => void;
+  /** Set where a press on the selection bar's own actions opened the question: the bar's Move to
+   *  epic (`askTarget`), its Start next over a selection larger than the page, and its New epic
+   *  from these, through the name dialog. The List's confirm of such a question arms the bar's
+   *  hand-off at the bar's root too (`IssuesTable`), so the bar's going after the action is the
+   *  reader's doing. A Finish's question (`askOnFinish`) and an epic group's merge are no bar
+   *  action's. */
+  fromBar?: true;
 }
 /** What a question says, before the page knows what its yes and its Cancel do. */
-type Question = Omit<Confirmation, "cancel" | "run">;
+type Question = Omit<Confirmation, "cancel" | "fromBar" | "run">;
 /** What an action that moves issues under an epic is, as the question it asks says it: what the
- *  action does (`lead`), said before the question's own sentences, and its name. */
+ *  action does (`lead`), said before the question's own sentences, and its name; and whether a
+ *  press on the selection bar's own actions began it (`fromBar`), which the question it asks
+ *  carries (`Confirmation`'s `fromBar`). */
 interface TargetAction {
+  readonly fromBar?: true;
   readonly lead?: string;
   readonly noun: "merge" | "move";
 }
@@ -526,7 +536,7 @@ export function useIssueTableActions({
       (question) => {
         setBusy(false);
         if (question === undefined) go(false);
-        else setConfirming({ ...question, run: () => go(true) });
+        else setConfirming({ ...question, fromBar: action.fromBar, run: () => go(true) });
       },
       (error: unknown) => {
         setBusy(false);
@@ -624,8 +634,10 @@ export function useIssueTableActions({
         if (intoWork && epic !== null) await moveIntoWork(epic);
         return apply(open.map((key) => ({ key, input: { parent: epic } })));
       });
+    // Only the bar moves issues to an epic (`IssueTableSelection`'s Move and Take out of epic), so
+    // the question this asks is the bar's.
     if (epic === null) move(false);
-    else askTarget(epic, open, { noun: "move" }, move);
+    else askTarget(epic, open, { fromBar: true, noun: "move" }, move);
   };
   /** The rank writes of a start-next action, sent in order, stopping the moment the reader
    *  dismisses it. One loop and one guard serve the first attempt and the resume; `failure`
@@ -694,7 +706,8 @@ export function useIssueTableActions({
     );
   };
   /** A start-next the reader has not seen the whole of: `Select all N matching` picked rows
-   *  off the page, and each one is a write, so the count is put to them first. */
+   *  off the page, and each one is a write, so the count is put to them first. Only the bar asks
+   *  first (`IssueTableSelection`), so that question is the bar's. */
   const startNext = (keys: readonly string[], confirmFirst = false) => {
     if (!canBegin()) return;
     const queued = queuedInOrder(items, keys);
@@ -703,6 +716,7 @@ export function useIssueTableActions({
         title: "Start these next?",
         body: `${queued.length} issues move to the head of Legion's queue, one write each.`,
         confirmLabel: "Start next",
+        fromBar: true,
         run: () => runQueued(queued),
       });
       return;
@@ -710,15 +724,22 @@ export function useIssueTableActions({
     runQueued(queued);
   };
   /** `title` is the name the reader gave, `force` makes the epic past a near copy Dispatch named,
-   *  and `intoWork` is the reader's yes to the new epic's move into work, which the action asks
-   *  for before its create where an issue it moves is in work (D12). */
+   *  `intoWork` is the reader's yes to the new epic's move into work, which the action asks for
+   *  before its create where an issue it moves is in work (D12), and `fromBar` says the name came
+   *  from the dialog the bar's New epic from these opened, so that question is the bar's. */
   const newEpic = async (
     keys: readonly string[],
     {
       force = false,
+      fromBar,
       intoWork,
       title: chosenTitle,
-    }: { readonly force?: boolean; readonly intoWork?: true; readonly title?: string } = {}
+    }: {
+      readonly force?: boolean;
+      readonly fromBar?: true;
+      readonly intoWork?: true;
+      readonly title?: string;
+    } = {}
   ) => {
     if (project === undefined || unansweredEpic || !canBegin()) return;
     const open = openSelected(keys);
@@ -745,6 +766,7 @@ export function useIssueTableActions({
     if (intoWork === undefined && targetMustMove(undefined, rows)) {
       setConfirming({
         ...newEpicQuestion(`“${title}”`, rows),
+        fromBar,
         run: () => void newEpic(keys, { force, intoWork: true, title }),
       });
       return;

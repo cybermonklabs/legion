@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A claim that fails while the process's stop runs exits only once that stop has ended. The
+  daemon's registration deadline retires a claim that has not said ready, and stops its process.
+  In RPC mode that SIGTERM runs pi-envoy's stop from Oh My Pi's exit callbacks and emits no
+  `session_shutdown`, and the daemon then refuses the old process's `claims/ready`. The pane's
+  claim boot and the daemon-launched controller's claim now wait for that stop, with its role
+  release and its DELETE, before they exit. They wait at most 5 seconds, the grace the worker shim
+  gives Oh My Pi. With no stop begun, they exit at once, as before. The wait reads only Oh My Pi's
+  own exit callbacks, so it needs no particular pi-envoy release.
+time: 2026-11-22T06:31:54Z
+custom:
+    Issue: pr4194
