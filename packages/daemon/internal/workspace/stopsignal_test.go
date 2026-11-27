@@ -70,9 +70,10 @@ const commandLives = `ticks=0; while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks
 // lengthens and which no runner spends on its own work. A runner that sleeps or works, and a
 // command it stops or holds blocked on anything but a CPU, waits for no CPU, so that time stays
 // in the span. Of the wait it takes off, the row counts back against the runner as much CPU as
-// this test process used over the call, since the command could have waited behind it: a runner
-// that keeps the CPUs busy while its command starts is slow, not loaded. A kernel that keeps no
-// run-queue wait, as gVisor's, has nothing taken off, and the row is main's.
+// this test process's own threads used over the call (RUSAGE_SELF, which counts no process it
+// started), since the command could have waited behind them: a runner whose own threads keep the
+// CPUs busy while its command starts is slow, not loaded. A kernel that keeps no run-queue wait,
+// as gVisor's, has nothing taken off, and the row is main's.
 func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 	environment := []string{"PATH=" + os.Getenv("PATH")}
 
