@@ -469,7 +469,7 @@ func (r *eventStreamRelay) run(ctx context.Context, g *relayGeneration) {
 			}
 		}
 		gaps.stop()
-		slog.Warn("relay-debug read starts", "checkReset", checkReset)
+		r.debug("relay-debug read starts", "checkReset", checkReset)
 		var ended func()
 		if r.aroundRead != nil {
 			ended = r.aroundRead()
@@ -517,13 +517,13 @@ func (r *eventStreamRelay) read(ctx context.Context, g *relayGeneration, checkRe
 	horizon := r.server.horizon()
 	if checkReset {
 		reset, ok := r.resetCursor(tracked, g)
-		slog.Warn("relay-debug reset check", "reset", reset, "ok", ok)
+		r.debug("relay-debug reset check", "reset", reset, "ok", ok)
 		if reset || !ok {
 			return 0, events.GapNone, ok
 		}
 	}
 	safe, err := horizon.Safe(tracked)
-	slog.Warn("relay-debug safe", "safe", safe, "error", err, "gap", horizon.Gap())
+	r.debug("relay-debug safe", "safe", safe, "error", err, "gap", horizon.Gap())
 	if err != nil {
 		if ctx.Err() == nil {
 			slog.Warn("dispatch: the event stream relay could not observe the event log's safe horizon; retrying", "error", err)
@@ -532,12 +532,12 @@ func (r *eventStreamRelay) read(ctx context.Context, g *relayGeneration, checkRe
 	}
 	for {
 		cursor, at := r.at(g)
-		slog.Warn("relay-debug cursor", "cursor", cursor, "at", at, "safe", safe)
+		r.debug("relay-debug cursor", "cursor", cursor, "at", at, "safe", safe)
 		if cursor >= safe {
 			return safe, horizon.Gap(), true
 		}
 		committed, err := r.page(tracked, cursor, at, safe)
-		slog.Warn("relay-debug page", "rows", len(committed), "error", err)
+		r.debug("relay-debug page", "rows", len(committed), "error", err)
 		if err != nil {
 			if ctx.Err() == nil {
 				slog.Warn("dispatch: the event stream relay could not read the committed events; retrying", "error", err)
@@ -562,9 +562,9 @@ func (r *eventStreamRelay) read(ctx context.Context, g *relayGeneration, checkRe
 			}
 			relayed[index] = relayedEvent{Event: event, Encoded: encoded}
 		}
-		slog.Warn("relay-debug publish", "first", committed[0].ID, "last", committed[len(committed)-1].ID)
+		r.debug("relay-debug publish", "first", committed[0].ID, "last", committed[len(committed)-1].ID)
 		r.publish(g, relayed)
-		slog.Warn("relay-debug published")
+		r.debug("relay-debug published")
 		if len(committed) < maxEventReplay {
 			return safe, horizon.Gap(), true
 		}
@@ -598,6 +598,13 @@ func (r *eventStreamRelay) publish(g *relayGeneration, page []relayedEvent) {
 	}
 	last := page[len(page)-1].Event
 	g.cursor, g.cursorAt = last.ID, last.CreatedAt
+}
+
+// debug logs a trace line of a test's counted relay (aroundPage set) alone.
+func (r *eventStreamRelay) debug(message string, args ...any) {
+	if r.aroundPage != nil {
+		slog.Warn(message, append(args, "relay", fmt.Sprintf("%p", r))...)
+	}
 }
 
 // resetCursor tells an event log that was reset under g's cursor from one that has merely gone

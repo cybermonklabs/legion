@@ -145,9 +145,11 @@ func receiveRelayed(t *testing.T, database *store.Store, subscription <-chan rel
 	case receipt = <-received:
 	case <-time.After(60 * time.Second):
 		var head int64
-		var activity string
-		_ = database.Pool.QueryRow(context.Background(), `select coalesce(max(id), 0) from events`).Scan(&head)
-		_ = database.Pool.QueryRow(context.Background(), `select coalesce(string_agg(concat_ws(' ', pid, state, backend_xid, left(query, 120)), E'\n'), '') from pg_stat_activity where datname = current_database()`).Scan(&activity)
+		var activity, connections string
+		headErr := database.Pool.QueryRow(context.Background(), `select coalesce(max(id), 0) from events`).Scan(&head)
+		activityErr := database.Pool.QueryRow(context.Background(), `select coalesce(string_agg(concat_ws(' ', pid, state, backend_xid, wait_event_type, wait_event, left(query, 160)), E'\n'), '') from pg_stat_activity where datname = current_database()`).Scan(&activity)
+		connectionsErr := database.Pool.QueryRow(context.Background(), `select concat_ws(' ', count(*), (select setting from pg_settings where name = 'max_connections')) from pg_stat_activity`).Scan(&connections)
+		activity = fmt.Sprintf("%s\nhead err %v, activity err %v, connections (in use, max) %s err %v", activity, headErr, activityErr, connections, connectionsErr)
 		buf := make([]byte, 1<<24)
 		buf = buf[:runtime.Stack(buf, true)]
 		var kept []string
