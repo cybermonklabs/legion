@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -226,6 +227,13 @@ type Options struct {
 	// running controller's address record is compared with (environmentAddresses), so a daemon
 	// restarted with another list relaunches it, resuming its session.
 	ControllerSlackChannels []string
+	// ControllerWatchedWorkflows is the project's watched_workflows, which the controller this
+	// runtime launches reads from its registration's answer and never from its environment: no
+	// variable carries it. A running controller's address record holds it in one order beside
+	// its addresses (environmentAddresses, watchedWorkflowsValue), so a daemon restarted with
+	// another list relaunches it, resuming its session, and its new registration answers the new
+	// list.
+	ControllerWatchedWorkflows []config.WatchedWorkflow
 	// Pod is the operator's pod configuration, added to every worker pod and to the probe pod.
 	Pod Pod
 	// RoleConfigFiles is the operator's `role_config_files`: absolute paths of Oh My Pi settings

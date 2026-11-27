@@ -754,6 +754,12 @@ What each part is for:
   `pull_request_review`, `pull_request_review_comment`, `merge_group` and `workflow_call`, and
   `release` and `create` for a tag — hears nothing.
   The key needs no `controller` setting, no runtime and no secrets broker.
+  The daemon gives the list to its controller when the controller registers, under either
+  `controller` setting, and the controller's prompt names each entry with its events.
+  Under the sandbox runtime a daemon restarted with another list relaunches its controller into
+  its session, and the relaunched controller hears the new list.
+  Under the tmux runtime, and under `legion controller start`, the controller takes a changed list
+  at its next launch.
   The loader refuses, naming the key, the entry's place in the list and the entry: an entry of
   another shape; an `@` with no event, or an empty event; a name that is not one of GitHub's
   trigger events, compared with case; an event an entry names twice; and one workflow in two

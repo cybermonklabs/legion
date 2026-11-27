@@ -65,6 +65,10 @@ type specs struct {
 	// slackChannels is the project's slack_channels, which the controller is told after the
 	// design gate steps (SlackChannelsFragment); its LEGION_SLACK_CHANNELS is the runtime's to set.
 	slackChannels []string
+	// watchedWorkflows is the project's watched_workflows, which the controller is told after its
+	// Slack channels (WatchedWorkflowsFragment); its plugin reads the list from its registration's
+	// answer, and no variable carries it.
+	watchedWorkflows []config.WatchedWorkflow
 	// commitIssueTrailerRepos is the project's commit_issue_trailer_repos, the repositories whose
 	// commits a pane stamps with its issue key (runtime.SpawnSpec.IssueTrailer); nil for a
 	// project that names none, whose panes stamp nothing.
@@ -519,13 +523,15 @@ func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *r
 // the headless part; as its addressing the design-gate steps the project gates, then the reach
 // its GitHub App gives it as a sentence of its own (RepositoriesSentence, which also says when
 // its App is installed on no owner, so that it has no GitHub owner) and, when it names any, its
-// Slack channels; then the deployment instructions and the launch secrets. The operator's
-// controller (`legion controller start`) is told the steps and the reach the same way, never
-// channels, since only the daemon's may have channels (config.checkSlackChannels). The channels
-// reach its environment as LEGION_SLACK_CHANNELS from the runtime
-// (sandbox.Options.ControllerSlackChannels), which compares them with the list a running
-// controller was launched under and relaunches it when they change; a spec cannot set that
-// variable.
+// Slack channels and then its watched workflows; then the deployment instructions and the launch
+// secrets. The operator's controller (`legion controller start`) is told the steps, the reach and
+// the watched workflows the same way, never channels, since only the daemon's may have channels
+// (config.checkSlackChannels). The channels reach its environment as LEGION_SLACK_CHANNELS from
+// the runtime (sandbox.Options.ControllerSlackChannels), which compares them with the list a
+// running controller was launched under and relaunches it when they change; a spec cannot set that
+// variable. The watched workflows reach its plugin in its registration's answer alone, and no
+// variable carries them; the sandbox runtime records them beside the channels
+// (sandbox.Options.ControllerWatchedWorkflows) and relaunches the controller when they change.
 // It has no repository and no git identity, nor the table of every role's identity
 // (runtime.RoleIdentitiesVariable): the controller works Dispatch, never a checkout, and commits
 // and pushes nothing, so it stamps no issue key into a commit either (runtime.SpawnSpec.IssueTrailer,
@@ -548,6 +554,9 @@ func (s specs) controllerSpawnSpec() (runtime.SpawnSpec, error) {
 	addressing := DesignGateFragment(s.designSteps) + " " + RepositoriesSentence(s.ownersOf(claim.RoleController))
 	if len(s.slackChannels) > 0 {
 		addressing += " " + SlackChannelsFragment(s.slackChannels)
+	}
+	if len(s.watchedWorkflows) > 0 {
+		addressing += " " + WatchedWorkflowsFragment(api.WatchedWorkflowsOf(s.watchedWorkflows))
 	}
 	env := map[string]string{}
 	passthrough(env, refusalCooldownVariables...)
@@ -825,4 +834,26 @@ func SlackChannelsFragment(channels []string) string {
 	return "Slack channels: " + strings.Join(named, ", ") +
 		": your session hears each one's app mentions while it holds the controller role; answer each in its thread, " +
 		"and nothing from any other channel (skill://legion-controller/references/slack-mentions.md)."
+}
+
+// WatchedWorkflowsFragment names the project's watched workflows, each as `<owner>/<repo>/<file>`
+// with the events whose runs count, in the file's order: the runs the controller acts on. Its
+// plugin subscribes each entry's default-branch topic for each event itself, while the session
+// holds the controller role, so the model subscribes to nothing. It is the controller's system
+// prompt that names them, the one text a turn an Envoy card starts still reads after a compaction.
+// Both launch forms write it with this one function: the daemon's from the project's
+// configuration (controllerSpawnSpec), `legion controller start` from the controller secret's
+// answer. Which runs count, and what the controller does with one, is the skill's.
+func WatchedWorkflowsFragment(entries []api.WatchedWorkflow) string {
+	named := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		events := make([]string, 0, len(entry.Events))
+		for _, event := range entry.Events {
+			events = append(events, "`"+event+"`")
+		}
+		named = append(named, "`"+entry.Owner+"/"+entry.Repo+"/"+entry.Workflow+"` ("+strings.Join(events, ", ")+")")
+	}
+	return "Watched workflows: " + strings.Join(named, ", ") +
+		": your session hears each one's completed runs on its repository's default branch, of the events named, " +
+		"while it holds the controller role (skill://legion-controller/references/watched-workflows.md)."
 }

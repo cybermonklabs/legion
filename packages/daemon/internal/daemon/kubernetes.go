@@ -397,6 +397,10 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project string, cred
 		DaemonURL:  cfg.DaemonURL, EnvoyURL: cfg.EnvoyURL, DispatchURL: cfg.DispatchURL,
 		Dispatch: credential,
 		NATSURLs: cfg.NatsURLs,
+		// The controller this runtime launches reads the project's watched workflows from its
+		// registration's answer, and is relaunched when they change (sandbox's address record), so
+		// its new registration answers the new list.
+		ControllerWatchedWorkflows: cfg.Projects[cfg.Project].WatchedWorkflows,
 		// The controller this runtime launches is told the project's channels, and is relaunched
 		// when they change (sandbox's address record).
 		ControllerSlackChannels: cfg.Projects[cfg.Project].SlackChannels,

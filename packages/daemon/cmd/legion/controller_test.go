@@ -135,12 +135,13 @@ func newControllerDaemonWithTokens(t *testing.T, tokens appauth.Source) *control
 }
 
 // controllerDaemonOptions configures newControllerDaemonWithOptions: the design-gate steps the
-// project gates, the repositories the project's live records name (for the state route), and,
-// for the tests of the controller's GitHub credential route, a Tokens fake, the repositories the
-// daemon serves and the deployment's configured renames, which decide the directories its bundle
-// holds beside the ones of the owners the fake says the App is installed on.
+// project gates, the workflows it watches, the repositories the project's live records name (for
+// the state route), and, for the tests of the controller's GitHub credential route, a Tokens fake,
+// the repositories the daemon serves and the deployment's configured renames, which decide the
+// directories its bundle holds beside the ones of the owners the fake says the App is installed on.
 type controllerDaemonOptions struct {
 	steps        []record.DesignStep
+	watched      []config.WatchedWorkflow
 	tokens       appauth.Source
 	repos        []ghrepo.Repository
 	renames      ghrepo.Renames
@@ -239,7 +240,7 @@ func newControllerDaemonWithOptions(t *testing.T, opts controllerDaemonOptions) 
 	d := &controllerDaemon{t: t, controller: &memoryController{}, dispatch: &statusWrites{}}
 	handler := api.NewServer("127.0.0.1", 0, api.Options{
 		Project: controllerProject, OperatorToken: controllerOperatorToken, Controller: d.controller,
-		Steps: opts.steps, Dispatch: d.dispatch, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Steps: opts.steps, WatchedWorkflows: opts.watched, Dispatch: d.dispatch, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Tokens: opts.tokens, Served: servesOneOf(opts.repos), RepositoryRenames: opts.renames,
 		State: fixedStateSource{repositories: opts.repositories}, StateTransactions: fixedStateTransactions{},
 	}).Handler
@@ -1204,7 +1205,7 @@ func TestControllerSecretWithoutTheConfiguredStepsIsRefused(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(tc.body))
 		}))
-		_, _, err := fetchControllerSecret(context.Background(), server.URL, controllerOperatorToken, api.DaemonAPIVersion())
+		_, err := fetchControllerSecret(context.Background(), server.URL, controllerOperatorToken, api.DaemonAPIVersion())
 		server.Close()
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Fatalf("fetchControllerSecret(%s) error = %v; want it to name %q", tc.body, err, tc.want)
@@ -1213,13 +1214,65 @@ func TestControllerSecretWithoutTheConfiguredStepsIsRefused(t *testing.T) {
 	// The empty list is a deployment that gates no step, which starts the controller.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"secret":"s","designGateSteps":[]}`))
+		_, _ = w.Write([]byte(`{"secret":"s","designGateSteps":[],"watchedWorkflows":[]}`))
 	}))
 	defer server.Close()
-	secret, steps, err := fetchControllerSecret(context.Background(), server.URL, controllerOperatorToken, api.DaemonAPIVersion())
-	if err != nil || secret != "s" || steps == nil || len(steps) != 0 {
-		t.Fatalf("fetchControllerSecret of the empty list = %q, %v, %v; want the secret and a list that gates nothing", secret, steps, err)
+	answer, err := fetchControllerSecret(context.Background(), server.URL, controllerOperatorToken, api.DaemonAPIVersion())
+	if err != nil || answer.Secret != "s" || answer.DesignGateSteps == nil || len(answer.DesignGateSteps) != 0 {
+		t.Fatalf("fetchControllerSecret of the empty list = %+v, %v; want the secret and a list that gates nothing", answer, err)
 	}
+}
+
+// `legion controller start` tells its controller the project's watched workflows in the prompt it
+// composes, after the reach of its App, in the line the daemon tells its own controller: each
+// entry as `<owner>/<repo>/<file>` with its events, from the controller secret's answer. A
+// project that watches none gets no line. A daemon whose secret answers no `watchedWorkflows` at
+// all is one from before the list, and is refused before anything starts, never read as a
+// project that watches none: the controller would then hear nothing the project names.
+func TestControllerStartNamesTheWatchedWorkflows(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
+	const reach = "Design gate steps: none. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."
+	const line = "Watched workflows: `acme/widgets/x.yaml` (`schedule`, `push`), `acme/widgets/y.yml` (`schedule`): " +
+		"your session hears each one's completed runs on its repository's default branch, of the events named, " +
+		"while it holds the controller role (skill://legion-controller/references/watched-workflows.md)."
+	for _, tc := range []struct {
+		name    string
+		watched []config.WatchedWorkflow
+		want    string
+	}{
+		{"two workflows", []config.WatchedWorkflow{
+			{Repository: ghrepo.MustParse("acme/widgets"), File: "x.yaml", Events: []string{"schedule", "push"}},
+			{Repository: ghrepo.MustParse("acme/widgets"), File: "y.yml", Events: []string{"schedule"}},
+		}, "\n\n" + reach + " " + line + "\n\n"},
+		{"no workflow", nil, "\n\n" + reach + "\n\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newControllerDaemonWithOptions(t, controllerDaemonOptions{steps: config.DesignGateOff.Steps(), watched: tc.watched})
+			c := newControllerStart(t, d, controllerOptions{})
+			if code, _, errb := c.run(); code != 0 {
+				t.Fatalf("legion controller start = %d, stderr %q", code, errb)
+			}
+			if prompt := c.systemPrompt(); !strings.Contains(prompt, tc.want) {
+				t.Fatalf("Oh My Pi's system prompt = %q; want it to contain %q", prompt, tc.want)
+			}
+		})
+	}
+	t.Run("an answer without the list", func(t *testing.T) {
+		for _, body := range []string{
+			`{"secret":"s","designGateSteps":[]}`,
+			`{"secret":"s","designGateSteps":[],"watchedWorkflows":null}`,
+		} {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			}))
+			_, err := fetchControllerSecret(context.Background(), server.URL, controllerOperatorToken, api.DaemonAPIVersion())
+			server.Close()
+			if want := "answered no watched workflows (watchedWorkflows); upgrade the daemon"; err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("fetchControllerSecret(%s) error = %v; want it to name %q", body, err, want)
+			}
+		}
+	})
 }
 
 func TestControllerStartOmitsTheOptionalPointersTheFileDoesNotSet(t *testing.T) {

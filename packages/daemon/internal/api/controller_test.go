@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -37,10 +38,17 @@ func newControllerHarness(t *testing.T, launched bool) *harness {
 // tokens, whose daemon launches the project's controller itself when controllerLaunched is true.
 func (h *harness) serve(controllerLaunched bool) {
 	h.t.Helper()
+	h.serveWatched(controllerLaunched, nil)
+}
+
+// serveWatched is serve for a project whose `watched_workflows` names workflows.
+func (h *harness) serveWatched(controllerLaunched bool, workflows []config.WatchedWorkflow) {
+	h.t.Helper()
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), ControllerLaunched: controllerLaunched,
+		WatchedWorkflows: workflows,
 	}).Handler
 }
 
@@ -711,6 +719,133 @@ func TestControllerSecretAnswersTheConfiguredSteps(t *testing.T) {
 			}
 			if _, old := body["designGate"]; old {
 				t.Errorf("the body still carries the design gate policy word: %v", body["designGate"])
+			}
+		})
+	}
+}
+
+// testWatchedWorkflows is a project's `watched_workflows` as the loader reads them, in the file's
+// order, one entry watching two events; wireWatchedWorkflows is what the controller's answers
+// carry of them, as a reader of the wire decodes it.
+var testWatchedWorkflows = []config.WatchedWorkflow{
+	{Repository: ghrepo.MustParse("acme/widgets"), File: "x.yaml", Events: []string{"schedule", "push"}},
+	{Repository: ghrepo.MustParse("Acme/Gadgets"), File: "nightly.yml", Events: []string{"schedule"}},
+}
+
+var wireWatchedWorkflows = []any{
+	map[string]any{"owner": "acme", "repo": "widgets", "workflow": "x.yaml", "events": []any{"schedule", "push"}},
+	map[string]any{"owner": "Acme", "repo": "Gadgets", "workflow": "nightly.yml", "events": []any{"schedule"}},
+}
+
+// controllerRegistration registers session as the project's controller in the launch form
+// launched names: the daemon's own controller with its launch's boot token, or the operator's with
+// the capability `legion controller start` fetched; it answers the body, which must be a 200.
+func (h *harness) controllerRegistration(launched bool, session string) []byte {
+	h.t.Helper()
+	if launched {
+		_, boot := h.launchController()
+		return h.registration(boot, session, 0)
+	}
+	return h.registration(h.mintedSecret(), session, 0)
+}
+
+// Both launch forms read the project's watched workflows from their registration's answer: the
+// controller `legion controller start` launches, registering with the capability its operator's
+// bearer bought, and the one the daemon launches itself, registering with its launch's boot
+// token. Each entry carries its owner, repository, workflow file and events as the configuration
+// spells them, in the file's order, so the plugin builds the topics Envoy publishes on. The route
+// reads no runtime, so the answer is the same under each. A project that watches none answers no
+// `watchedWorkflows` key on either route, as a daemon before the list answers.
+func TestControllerRegisterResponseCarriesTheWatchedWorkflows(t *testing.T) {
+	for _, launched := range []bool{false, true} {
+		form := "the operator's controller"
+		if launched {
+			form = "the daemon's own controller"
+		}
+		for _, tc := range []struct {
+			name    string
+			watched []config.WatchedWorkflow
+			want    []any
+		}{
+			{"a project watching two workflows", testWatchedWorkflows, wireWatchedWorkflows},
+			{"a project watching none", nil, nil},
+		} {
+			t.Run(form+", "+tc.name, func(t *testing.T) {
+				h := newHarness(t)
+				h.serveWatched(launched, tc.watched)
+				keys := answerKeys(t, h.controllerRegistration(launched, "ses_watching"))
+				got, carried := keys["watchedWorkflows"]
+				switch {
+				case tc.want == nil && carried:
+					t.Errorf("the registration answered watchedWorkflows %v, want no key", got)
+				case tc.want != nil && !reflect.DeepEqual(got, tc.want):
+					t.Errorf("the registration answered watchedWorkflows %v (carried: %t), want %v", got, carried, tc.want)
+				}
+			})
+		}
+	}
+}
+
+// A plugin below the watched-workflows entry did not ask for the list, and a strict reader before
+// it refuses a key it does not know, so a caller that states such a contract is served the
+// controller's registration without `watchedWorkflows`, while one at the entry is served it. The
+// harness relaunches no claim for its contract, so the older plugin's registration is answered
+// rather than refused. A registration that carries the list is placed by its caller's pod, as one
+// that carries `replaces` is, so a caller that states no contract is served it as its pod's
+// claims record theirs; one that carries neither is the same body at every contract.
+func TestControllerRegisterResponseWatchedWorkflowsStrippedBelowItsEntry(t *testing.T) {
+	for _, tc := range []struct {
+		contract int
+		carried  bool
+	}{
+		{contract: entryNumber(watchedWorkflowsContract) - 1},
+		{contract: entryNumber(watchedWorkflowsContract), carried: true},
+	} {
+		h := newHarnessUnrelaunchable(t)
+		h.serveWatched(true, testWatchedWorkflows)
+		_, boot := h.launchController()
+		keys := answerKeys(t, h.registration(boot, "ses_watching", tc.contract))
+		if got, carried := keys["watchedWorkflows"]; carried != tc.carried {
+			t.Errorf("a registration stating contract %d answered watchedWorkflows %v (carried: %t), want carried: %t", tc.contract, got, carried, tc.carried)
+		}
+	}
+	for _, tc := range []struct {
+		body   ControllerRegisterResponse
+		placed bool
+	}{
+		{ControllerRegisterResponse{ClaimToken: "legion-legion-controller"}, false},
+		{ControllerRegisterResponse{ClaimToken: "legion-legion-controller", WatchedWorkflows: WatchedWorkflowsOf(testWatchedWorkflows)}, true},
+	} {
+		if got := placedByPod(AnswerRegisterController, tc.body); got != tc.placed {
+			t.Errorf("placedByPod(%+v) = %t, want %t", tc.body, got, tc.placed)
+		}
+	}
+}
+
+// The controller secret route answers the project's watched workflows beside the design-gate
+// steps, so `legion controller start` tells its controller the list in the prompt it composes. A
+// project that watches none answers the empty list on the wire, never a missing key: the CLI
+// reads a missing key as a daemon before the list and refuses to start (cmd/legion's
+// fetchControllerSecret).
+func TestControllerSecretResponseCarriesTheWatchedWorkflows(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		watched []config.WatchedWorkflow
+		want    []any
+	}{
+		{"a project watching two workflows", testWatchedWorkflows, wireWatchedWorkflows},
+		{"a project watching none", nil, []any{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.serveWatched(false, tc.watched)
+			recorder := h.controllerSecret(testOperatorToken)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("controller secret = %d, want 200; body %s", recorder.Code, recorder.Body)
+			}
+			got, named := answerKeys(t, recorder.Body.Bytes())["watchedWorkflows"]
+			if !named || !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("the body's watchedWorkflows = %v (named %t), want %v", got, named, tc.want)
 			}
 		})
 	}

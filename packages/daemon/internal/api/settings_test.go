@@ -777,6 +777,40 @@ func TestSettingsOfLeavesOutTheCommitIssueTrailerRepositories(t *testing.T) {
 	}
 }
 
+// A project's watched_workflows reaches no `settings`, at any depth, as commit_issue_trailer_repos
+// does not: an entry names a deployment's own repository and its workflow, and the route that
+// carries the block authenticates nobody (settingsExcluded). The list reaches the controller in
+// its registration's answer and the controller secret's, which authenticate it.
+func TestSettingsOfLeavesOutTheWatchedWorkflows(t *testing.T) {
+	const repository, file = "acme/watched", "nightly-only.yaml"
+	body := strings.Replace(settingsFixtureFile, "  WIDGETS:\n", "  WIDGETS:\n    watched_workflows:\n      - "+repository+"/"+file+"@schedule,push\n", 1)
+	if body == settingsFixtureFile {
+		t.Fatal("the fixture's WIDGETS project was not given the key")
+	}
+	cfg := apifixture.LoadSettings(t, body)
+	if got := cfg.Projects["WIDGETS"].WatchedWorkflows; len(got) != 1 || got[0].Repository.String() != repository || got[0].File != file {
+		t.Fatalf("the fixture's project carries %v, want %s/%s: the assertions below would prove nothing", got, repository, file)
+	}
+	encoded, err := json.Marshal(SettingsOf(cfg))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var document any
+	if err := json.Unmarshal(encoded, &document); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, key := range everyKey(document, "settings") {
+		if strings.HasSuffix(key, ".watched_workflows") {
+			t.Errorf("settings carry the key %s: %s", key, encoded)
+		}
+	}
+	for _, named := range []string{repository, file} {
+		if bytes.Contains(encoded, []byte(named)) {
+			t.Errorf("settings carry the configured %s: %s", named, encoded)
+		}
+	}
+}
+
 // A project's `experiments` ride the settings as the file writes them: every block in the file's
 // order, under the name it is declared with, with its mode, its unit, the roles its arms reach
 // (absent where it names none), the arm `on` would give and its arms in the file's order, each
