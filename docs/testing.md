@@ -261,6 +261,19 @@ itself, whose tests import its sources by relative path.
   default (`requireStartedAtDefault` in the same file). A skip there would leave `go test` green
   with nothing proved, since CI runs it without `-v`.
 
+- A Go test of `packages/daemon` that asks whether a stop of a command's process group reached a
+  child the command left in that group by the run's return, and where the stop found the
+  command's output pipe, starts the child as a `testkernel.Child` (`ChildCommand` and `Args`) and
+  reads it with `After`, never from the child's `SigPnd` or `ShdPnd` in `/proc/<pid>/status`: the
+  build cluster's gVisor has neither line, and a signal the shell has taken but whose trap has not
+  yet run is pending in neither. The child writes a beat, the time since boot, at each turn of its
+  loop, so a beat past the run's return and one more after it show that no SIGTERM was sent by
+  then; its SIGTERM trap writes one byte to the pipe and records whether the write met EPIPE
+  (`TestRunNeverStopsTheCommandsGroupAfterItsOwnExitWhenAChildInTheGroupHoldsItsOutput` in
+  `packages/daemon/internal/capabilities/image_test.go`, and
+  `TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildInItsGroupHoldingItsPipePastIt` in
+  `packages/daemon/internal/daemon/bootgate_test.go`).
+
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the
   container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`). Remove it with `docker rm -f
