@@ -130,6 +130,9 @@ test("a long reply shows whole in the reading pane and on a card @phone", async 
     await expectWholeReply(inboxPane(page).locator("[data-inbox-thread-body]"));
 
     await page.goto("/agents");
+    // The key waits for the page's heading: pressed as the page loads, before the shell has
+    // registered its keys, `i` opens nothing.
+    await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
     await page.locator("body").focus();
     await page.keyboard.press("i");
     const drawer = page.getByRole("dialog", { name: "Inbox" });

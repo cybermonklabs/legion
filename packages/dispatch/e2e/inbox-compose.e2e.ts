@@ -849,6 +849,9 @@ test("the drawer opens the same dialog with n", async ({ browser }) => {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
     await page.goto("/agents");
+    // The key waits for the page's heading: pressed while the shell still waits on its whoami,
+    // before it has registered its keys, `i` opens nothing.
+    await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
     await blurFocus(page);
     await page.keyboard.press("i");
     const drawer = page.getByTestId("inbox-drawer");
