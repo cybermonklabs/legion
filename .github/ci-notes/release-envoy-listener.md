@@ -39,9 +39,9 @@ release-push.sh restart starts a dispatch when a run loses its version race, and
 the ref alone would let a newer push replace that waiting restart and leave its commit in no release
 — the state .github/scripts/check-release-credentials.sh rule 4 exists to prevent.
 
-release_publish keeps the job-level `release-envoy-listener` group with `queue: max`: this group
-coalesces runs that have started no job, that one serializes the jobs of runs that have already
-built and pushed an image, and none of them is dropped.
+release_publish keeps its job-level `release-envoy-listener` group with `queue: max` as well: the
+workflow-level group coalesces runs that have started no job, the job-level one serializes the jobs
+of runs that have already built and pushed an image, and none of them is dropped.
 
 ## Why the workflow level permissions are empty, and the three kinds of job
 
@@ -75,18 +75,18 @@ and nothing this workflow publishes compiles it in.
 
 The targets job reads the architectures the archives are built for: .github/go-release-targets.json,
 the list the pull request's notices check reads too. A full checkout to read one tracked file is
-more than the targets job needs, but it's what every other job in this workflow (and the wider CI
-config) does regardless of how much of the tree it touches; a sparse or shallow checkout in targets
-alone would be the inconsistency.
+more than the targets job needs, but it's what every other job of this workflow that reads the tree
+(and the wider CI config) does regardless of how much of the tree it touches; a sparse or shallow
+checkout in targets alone would be the inconsistency.
 
 It also derives the image every later job pushes, tags, attests or reads back, from
 $GITHUB_REPOSITORY (.github/scripts/repo-paths.sh), so moving the repository to another owner or
 name moves the image with it instead of leaving a literal in five places. It is derived in targets
 and read everywhere else through its output because each of those jobs holds packages: write,
 contents: write, id-token or attestations: write, and a job holding a credential runs no script of
-this repository (.github/scripts/check-release-credentials.sh). The targets job holds contents: read
-alone, so it may run one - which makes it a build job, hence the tripwire last, as in build, docker
-and release_build.
+this repository but release-push.sh (.github/scripts/check-release-credentials.sh). The targets job
+holds contents: read alone, so it may run one - which makes it a build job, hence the tripwire last,
+as in build, docker and release_build.
 
 ## What the envoy archive holds, and why the binary is stamped
 
@@ -95,9 +95,9 @@ the binary compiles in (scripts/go-third-party-notices.sh, run with the build's 
 GOARCH), which fails the build when one cannot be determined. The binary is stamped with this run's
 commit (internal/buildversion's commit), as the image's binaries are
 (packages/envoy/docker/Dockerfile's LEGION_COMMIT), so every NATS connection of a listener run from
-the archive names its build (legion@<commit>), which legacy-subjects-gate.sh's census of connections
-reads; -buildvcs=false records no other commit. Its Build envoy binary step reads the stamp back
-from the binary and fails without it.
+the archive names its build (`legion@<commit>`), which legacy-subjects-gate.sh's census of
+connections reads; -buildvcs=false records no other commit. Its Build envoy binary step reads the
+stamp back from the binary and fails without it.
 
 ## Why the image is built one leg per platform
 
@@ -122,8 +122,8 @@ The docker job's smoke image build is a step of its own: what TestSmoke asserts 
 behaviour, so a slow build must fail nothing. Inside the test it spent 256.60–289.47 s of
 `go test -timeout 5m` across ten runs while the five assertions measured 0.00 s each
 (docs/solutions/testing/a-container-build-inside-go-test-spends-the-tests-deadline.md). The test
-refuses to run without ENVOY_SMOKE_IMAGE rather than building one, so dropping or renaming that step
-turns the lane red instead of restoring that budget silently. `load: true` is Docker's documented
+refuses to run without ENVOY_SMOKE_IMAGE rather than building one, so dropping that step turns the
+lane red instead of restoring that budget silently. `load: true` is Docker's documented
 test-before-push shape, and the only build form .github/scripts/check-image-trigger-paths.sh can
 read. Same Dockerfile, context, builder and LEGION_COMMIT as the docker job's publish step, so each
 leg smoke-tests the platform it pushes, natively, before it pushes it, and the publish step reuses
@@ -138,9 +138,9 @@ four runs; the bound is deliberate headroom over those plus that pull, not a bui
 
 ## What mode=min provenance attaches, and what the two env settings drop
 
-The publish step's provenance: mode=min attaches a BuildKit SLSA provenance attestation to this
-leg's per-platform push, and image_index's index carries both legs' attestation manifests. The
-deployment's post-apply verification reads it
+The docker job's publish step (`id: build`) sets `provenance: mode=min`, which attaches a BuildKit
+SLSA provenance attestation to each leg's per-platform push, and image_index's index carries both
+legs' attestation manifests. The deployment's post-apply verification reads it
 (buildDefinition.externalParameters.request.root.request.args["vcs:revision"]) to map the pinned
 digest back to the legion commit it was built from; provenance: false attached none. The builder's
 provenance-add-gha=false, not this "min" level by itself, is what keeps this predicate free of the
@@ -206,11 +206,11 @@ certificate names `refs/heads/<branch>`, which the command above refuses.
 release_build builds agent-secrets (packages/envoy/cmd/cipher) and the host helper
 (packages/envoy/cmd/cipher-helper): the same legion-envoy-v* release also ships these for a host to
 install with mise's github backend, in the layout its installer expects — bin/agent-secrets,
-bin/agent-secrets-helper. A linux archive, agent-secrets-<arch>.tar.gz for each architecture the
+bin/agent-secrets-helper. A linux archive, `agent-secrets-<arch>.tar.gz` for each architecture the
 envoy key of .github/go-release-targets.json names, holds both; a darwin archive,
-agent-secrets-darwin-<arch>.tar.gz for each target .github/agent-secrets-client-targets.json names,
-holds bin/agent-secrets alone, since the helper's build constraints admit linux only: a laptop runs
-the CLI, never the helper.
+`agent-secrets-darwin-<arch>.tar.gz` for each target .github/agent-secrets-client-targets.json
+names, holds bin/agent-secrets alone, since the helper's build constraints admit linux only: a
+laptop runs the CLI, never the helper.
 
 release_build decides the release's version first and stamps the tag into each binary: `--version`
 prints it and the helper's startup line carries it, which is how a restart onto a release is
@@ -242,15 +242,16 @@ before it downloads it.
 ## Why the agent-secrets archives are static and wrapped in one directory
 
 CGO_ENABLED=0 matches the existing agent-secrets builds (packages/envoy/docker/Dockerfile,
-packages/daemon/docker/worker.Dockerfile): without it, a same-arch build (amd64 on this runner)
-links dynamically against the runner's glibc instead of producing a static binary. Each archive is
-wrapped in one top-level "agent-secrets" directory (agent-secrets/bin/...) rather than bin/...
-directly: mise's github backend auto-strips exactly one leading directory from an asset shaped like
-that, so the installed tree still ends up bin/agent-secrets (and bin/agent-secrets-helper on linux);
-a bare bin/... top level would itself be the one directory mise strips, flattening the binaries to
-the install root instead. agent-secrets/THIRD_PARTY_NOTICES, beside bin/, is the license of every Go
-module the archive's binaries compile in (scripts/go-third-party-notices.sh, run with the build's
-own environment), and fails the build when one cannot be determined.
+packages/daemon/docker/worker.Dockerfile): without it, a same-arch build (amd64 on release_build's
+ubuntu-24.04 runner) links dynamically against the runner's glibc instead of producing a static
+binary. Each archive is wrapped in one top-level "agent-secrets" directory (agent-secrets/bin/...)
+rather than bin/... directly: mise's github backend auto-strips exactly one leading directory from
+an asset shaped like that, so the installed tree still ends up bin/agent-secrets (and
+bin/agent-secrets-helper on linux); a bare bin/... top level would itself be the one directory mise
+strips, flattening the binaries to the install root instead. agent-secrets/THIRD_PARTY_NOTICES,
+beside bin/, is the license of every Go module the archive's binaries compile in
+(scripts/go-third-party-notices.sh, run with the build's own environment), and fails the build when
+one cannot be determined.
 
 ## What release_names checks
 
@@ -287,11 +288,11 @@ it from targets' output, which `needs` carries only to a job naming targets dire
 release_publish runs one at a time, and every run's turn comes: `queue: max` keeps up to 100 jobs
 pending in the group, first in, first out, where the default keeps one and cancels it for the next
 (docs.github.com, "Control the concurrency of workflows and jobs"). A job joins the queue when the
-jobs it needs end, image_index last, not in commit order, so with the default an older commit's job
-could cancel a newer one's, leaving that commit in no release and its run merely cancelled; "Confirm
-the version" also leaves a commit to a later run, which must then come to its turn. Its "Determine
-latest" step walks forward through already-published commits for `latest`, and release_build bumps
-the version from the last tag to HEAD.
+jobs it needs end, not in commit order, so with the default an older commit's job could cancel a
+newer one's, leaving that commit in no release and its run merely cancelled; "Confirm the version"
+also leaves a commit to a later run, which must then come to its turn. Its "Determine latest" step
+walks forward through already-published commits for `latest`, and release_build bumps the version
+from the last tag to HEAD.
 
 ## What each scope of release_publish is for
 
@@ -358,9 +359,9 @@ gh attestation verify agent-secrets-<asset>.tar.gz --repo cybermonklabs/legion \
   --source-ref refs/heads/main --deny-self-hosted-runners
 ```
 
-and adds `--source-digest <the legion-envoy-v<version> tag's commit>` to pin the commit as well. It
-runs after "Tag release", so a run whose tag step refuses (the tag already names another commit)
-leaves no attestation for archives no release carries.
+and adds `--source-digest <the legion-envoy-v<version> tag's commit>` to pin the commit as well. The
+attest step of release_publish runs after "Tag release", so a run whose tag step refuses (the tag
+already names another commit) leaves no attestation for archives no release carries.
 
 ## How the changelog is written into the release body
 
