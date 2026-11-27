@@ -24,7 +24,7 @@ import {
   type Row as TableRow,
   useReactTable,
 } from "@tanstack/react-table";
-import { useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
+import { useVirtualizer, type VirtualItem, type Virtualizer } from "@tanstack/react-virtual";
 import { Fragment, type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { keyText } from "../features/shell/key-text";
 import { ViewportAnchor } from "../features/shell/ViewportAnchor";
@@ -203,6 +203,41 @@ function sortedByGroup<Row>({ compare, heading }: GroupOrder<Row>) {
 }
 
 /**
+ * Whether the table's virtualizer moves the box's scroll by `delta` as a line takes a new height,
+ * which TanStack asks from `resizeItem` (`shouldAdjustScrollPositionOnItemSizeChange`): its own
+ * rule, as `@tanstack/virtual-core` 3.19.11 has it, and no move past the box's end.
+ *
+ * TanStack's rule keeps the rows the reader is at where they are. A line measured for the first
+ * time - one with no height in `itemSizeCache`, which TanStack fills only once it has asked - moves
+ * the scroll where its top is above the fold (`scrollOffset`), since the whole estimate it replaces
+ * was above it. A line measured again moves it only where the line is wholly above the fold and the
+ * reader is not scrolling back up (`scrollDirection`): a line that grows across the fold, or while
+ * the reader scrolls up, would drag the rows they are at.
+ *
+ * A move that ends past the box's end (`scrollHeight - clientHeight` of `scrollElement`, with the
+ * half pixel TanStack allows) is one the box cannot take. It comes where the box was scrolled to
+ * its end while its rows were still counted at their estimate: as they measure shorter, the end
+ * comes up faster than TanStack's count of the scroll goes down, and the browser already holds
+ * the box at its end. TanStack keeps such a move and makes it again once the end grows - the room
+ * the foot gives the box (`useFootInset`), or rows added below - which moves the rows the reader
+ * is at up into that room. Made nowhere, it is kept nowhere.
+ */
+export function adjustsScrollOnResize(
+  item: VirtualItem,
+  delta: number,
+  instance: Virtualizer<HTMLDivElement, Element>
+): boolean {
+  const offset = instance.scrollOffset ?? 0;
+  const measured = instance.itemSizeCache.get(item.key);
+  const moves =
+    measured === undefined
+      ? item.start < offset
+      : item.start + measured <= offset && instance.scrollDirection !== "backward";
+  const box = instance.scrollElement;
+  return moves && (box === null || offset + delta <= box.scrollHeight - box.clientHeight + 0.5);
+}
+
+/**
  * The one TanStack table of the web app, for rows of any type: its sorting, filtering,
  * grouping, paging and selection, the lines a page draws, the virtual rows that draw them and
  * the keys that walk them. The caller keeps the view and the layout, draws each row and gives
@@ -320,6 +355,8 @@ export function useDataTable<Row>({
     initialRect: { width: 1000, height: 600 },
     overscan: 12,
   });
+  // TanStack reads this rule from the instance: `useVirtualizer` takes no option for it.
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = adjustsScrollOnResize;
 
   const focusRow = useRowKeymap({
     displayRows,

@@ -6,6 +6,7 @@ import type {
   PaginationState,
   SortingState,
 } from "@tanstack/react-table";
+import { elementScroll, Virtualizer } from "@tanstack/react-virtual";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
@@ -18,6 +19,7 @@ import { useKeymapScope } from "../features/shell/keymap";
 import { selectedCardBg } from "../theme/classes";
 import type { ControlSize } from "./control-names";
 import {
+  adjustsScrollOnResize,
   type ColumnFilterRenderer,
   DataTable,
   DataTableCells,
@@ -1526,4 +1528,180 @@ test("a nearest-edge hand-off waits for an undrawn row and places its measured c
   expect(target.getBoundingClientRect().bottom).toBe(600);
   await endWindowScroll();
   expect(box.scrollTop).toBe(1603);
+});
+
+/** A row's new height as TanStack's virtualizer meets it: where it counts the box's scroll and
+ *  which way that last moved, the row, the height it was measured at before where it was, and the
+ *  height it takes now. */
+interface Measure {
+  readonly title: string;
+  readonly offset: number;
+  readonly direction: Virtualizer<HTMLDivElement, Element>["scrollDirection"];
+  readonly index: number;
+  readonly before?: number;
+  readonly size: number;
+  /** False where the box is not drawn yet. */
+  readonly drawn?: false;
+}
+
+/** What follows a row's new height: TanStack's count of the box's scroll (`scrollOffset`) and
+ *  each scroll written on the box. */
+interface Moved {
+  readonly offset: number | null;
+  readonly writes: readonly (number | undefined)[];
+}
+
+/**
+ * What follows `measure` in a box 570 px tall whose end is at 1610 px (`scrollHeight` 2180), over
+ * 40 rows counted at `useDataTable`'s 64 px until they are measured, with the table's rule set as
+ * TanStack's `shouldAdjustScrollPositionOnItemSizeChange`: then the box's end grows by 74 px, the
+ * room the foot gives it, and a row below the fold is measured, which is when TanStack makes again
+ * a move it kept.
+ */
+function afterMeasure(measure: Measure): Moved {
+  const writes: (number | undefined)[] = [];
+  let room = 0;
+  const box = document.createElement("div");
+  Object.defineProperties(box, {
+    clientHeight: { value: 570 },
+    scrollHeight: { get: () => 2180 + room },
+    scrollTo: { value: (options: ScrollToOptions) => writes.push(options.top) },
+  });
+  const virtualizer = new Virtualizer<HTMLDivElement, Element>({
+    count: 40,
+    estimateSize: () => 64,
+    getScrollElement: () => box,
+    observeElementOffset: () => undefined,
+    observeElementRect: () => undefined,
+    scrollToFn: elementScroll,
+  });
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = adjustsScrollOnResize;
+  if (measure.before !== undefined) virtualizer.itemSizeCache.set(measure.index, measure.before);
+  // TanStack places the rows on its first read of the window, and resizes only a placed row.
+  virtualizer.getVirtualItems();
+  virtualizer.scrollElement = measure.drawn === false ? null : box;
+  virtualizer.scrollOffset = measure.offset;
+  virtualizer.scrollDirection = measure.direction;
+  virtualizer.resizeItem(measure.index, measure.size);
+  room = 74;
+  virtualizer.resizeItem(39, 49);
+  return { offset: virtualizer.scrollOffset, writes };
+}
+
+// The issues table scrolled to its end while its rows were still counted at their estimate
+// (dispatch://INFRA-2160, round 23): as the rows measured 15 px short of it, the box's end came up
+// faster than TanStack's moves of its scroll followed, and the browser held the box at its end.
+// TanStack kept each move the box could not take and made it again once the foot gave the box room
+// at its end (`useFootInset`), which moved the rows the reader was at up into that room. The
+// table's rule keeps TanStack's own, case by case, and makes no such move, then or once the end
+// grows. Each row is 64 px until measured: row 10 starts at 640, row 15 at 960, row 16 at 1024.
+test("a row's new height moves the box's scroll as TanStack's own rule says, and never past the box's end, then or once the end grows", () => {
+  const cases: (Measure & { readonly moved: Moved })[] = [
+    {
+      title: "measured first, its top above the fold",
+      offset: 1024,
+      direction: "forward",
+      index: 10,
+      size: 49,
+      moved: { offset: 1009, writes: [1009] },
+    },
+    {
+      title: "measured first, its top at the fold",
+      offset: 1024,
+      direction: "forward",
+      index: 16,
+      size: 49,
+      moved: { offset: 1024, writes: [] },
+    },
+    {
+      title: "measured first, across the fold",
+      offset: 1000,
+      direction: "forward",
+      index: 15,
+      size: 49,
+      moved: { offset: 985, writes: [985] },
+    },
+    {
+      title: "measured first, its top above the fold, as the reader scrolls up",
+      offset: 1024,
+      direction: "backward",
+      index: 10,
+      size: 49,
+      moved: { offset: 1009, writes: [1009] },
+    },
+    {
+      title: "measured again, across the fold",
+      offset: 1000,
+      direction: "forward",
+      index: 15,
+      before: 64,
+      size: 49,
+      moved: { offset: 1000, writes: [] },
+    },
+    {
+      title: "measured again, wholly above the fold",
+      offset: 1024,
+      direction: "forward",
+      index: 15,
+      before: 64,
+      size: 49,
+      moved: { offset: 1009, writes: [1009] },
+    },
+    {
+      title: "measured again, wholly above the fold, with no scroll under way",
+      offset: 1024,
+      direction: null,
+      index: 15,
+      before: 64,
+      size: 49,
+      moved: { offset: 1009, writes: [1009] },
+    },
+    {
+      title: "measured again, wholly above the fold, as the reader scrolls up",
+      offset: 1024,
+      direction: "backward",
+      index: 15,
+      before: 64,
+      size: 49,
+      moved: { offset: 1024, writes: [] },
+    },
+    {
+      title: "measured first, its top above the fold, the move ending past the box's end",
+      offset: 1895,
+      direction: "forward",
+      index: 10,
+      size: 49,
+      moved: { offset: 1895, writes: [] },
+    },
+    {
+      title: "measured again, wholly above the fold, the move ending past the box's end",
+      offset: 1895,
+      direction: "forward",
+      index: 15,
+      before: 64,
+      size: 49,
+      moved: { offset: 1895, writes: [] },
+    },
+    {
+      title:
+        "measured first, its top above the fold, the move ending within half a pixel of the end",
+      offset: 1625.5,
+      direction: "forward",
+      index: 10,
+      size: 49,
+      moved: { offset: 1610.5, writes: [1610.5] },
+    },
+    {
+      title: "measured first, its top above the fold, before the box is drawn",
+      offset: 1024,
+      direction: "forward",
+      index: 10,
+      size: 49,
+      drawn: false,
+      moved: { offset: 1009, writes: [] },
+    },
+  ];
+  expect(cases.map(({ moved: _, ...measure }) => [measure.title, afterMeasure(measure)])).toEqual(
+    cases.map(({ moved, title }) => [title, moved])
+  );
 });
