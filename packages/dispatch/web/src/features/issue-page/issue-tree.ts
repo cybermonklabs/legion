@@ -3,7 +3,6 @@ import type {
   Actor,
   Ask,
   AskWithTrees,
-  Comment,
   DisplayTree,
   IssueCheckResults,
   IssueChild,
@@ -238,6 +237,11 @@ export interface TreeNode {
    *  document's line, which the server writes in place of every missing check, so the requirement
    *  is drawn lacking none and says why. Absent where the read holds none. */
   readonly coverageNotes?: readonly string[];
+  /** Whether a Change of this decision may stand on an older comment page than the read holds,
+   *  where it is drawn waiting for review or kept, with no Change (`tree-drafts.ts`'
+   *  `markChangeUnread`): its state word carries "+", as a count with more to read does (R15),
+   *  so it does not read as unchanged. Absent on every other node. */
+  readonly changeUnread?: true;
   /** When its author deleted this comment or message, as its read stores the time
    *  (`deleted_at`); absent on every other node. A deleted post keeps its place in the tree and
    *  holds no part of its body: its `text` is the deleted line (`tree-drafts.ts`'s
@@ -418,11 +422,6 @@ export interface IssueTreeReads {
   /** The issue's asks, from the conversation; merged with the issue read's open asks by id. */
   readonly asks?: readonly TreeAsk[];
   readonly coverage?: IssueCoverage;
-  /** The issue's comments: what a comment's author did to one - deleted it or last replaced its
-   *  body - which the tree read answers no mark of (`tree-read/tree-nodes.ts`'s `postMarksOf`),
-   *  and so which Changes ask nothing any more (`decision-review.ts`'s `decisionNodeChanges`). The
-   *  tree read answers each comment as a node. */
-  readonly comments?: readonly Comment[];
   /** Whether the Plan view read's answer (`?view=plan`), which holds the plan tasks of the issue
    *  and of every issue under it, holds one that is not gone (`tree-read/tree-nodes.ts`'
    *  `holdsPlanTask`): that says whether a statement no plan task serves is a gap
@@ -721,6 +720,7 @@ export function assemble(
       children,
       chips: draft.chips,
       ...(draft.counts === undefined ? {} : { counts: draft.counts }),
+      ...(draft.changeUnread === undefined ? {} : { changeUnread: draft.changeUnread }),
       ...(draft.coverageNotes === undefined ? {} : { coverageNotes: draft.coverageNotes }),
       ...(draft.deletedAt === undefined ? {} : { deletedAt: draft.deletedAt }),
       ...(draft.deletedBy === undefined ? {} : { deletedBy: draft.deletedBy }),

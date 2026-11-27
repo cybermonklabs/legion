@@ -38,7 +38,6 @@ import { StatusGlyph } from "./StatusGlyph";
 import { coverageStatements } from "./tree-drafts";
 import { treeRead, useTreeRead, viewQuery } from "./tree-read/tree-read";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
-import { issueCommentsQuery } from "./useIssueTree";
 import { type WaitingPress, waitingOnReader } from "./waiting";
 
 /**
@@ -82,9 +81,9 @@ export function IssuePropertiesRow({
   const status = writes.pendingStatus ?? issue.status;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // What the count counts, read from what the outline already reads under the same keys - the
-  // reader's login, the coverage's statements, the decisions the tree read answers as nodes,
-  // with each Change it hangs under one, and the comments, which say which of those Changes
-  // their author deleted - and kept fresh by the outline's own rule
+  // reader's login, the coverage's statements, and the decisions the tree read answers as nodes,
+  // with each Change it hangs under one, whose node says whether its author deleted it - and
+  // kept fresh by the outline's own rule
   // (`reference-target.ts`'s `EVENT_FRESH`), but for the tree read, which keeps its own
   // (`TREE_FRESH`): events refresh them, never their age (decision 180). Staleness is per
   // observer, so each read here takes that rule too, and the count costs no request of its own
@@ -96,7 +95,6 @@ export function IssuePropertiesRow({
   // so the count sends no view read of its own; Conversation's read stands in until then.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
-  const comments = useQuery({ ...issueCommentsQuery(issue.key), ...EVENT_FRESH });
   const tree = useTreeRead(issue).answer;
   const decisions = useQuery(treeRead(viewQuery(issue.key, "decisions"))).data;
   const answer = decisions ?? tree;
@@ -105,8 +103,8 @@ export function IssuePropertiesRow({
     [issue, coverage.data]
   );
   const waiting = useMemo(
-    () => waitingOnReader(issue, viewer, isCoverageStatement, { answer, comments: comments.data }),
-    [issue, viewer, isCoverageStatement, answer, comments.data]
+    () => waitingOnReader(issue, viewer, isCoverageStatement, { answer }),
+    [issue, viewer, isCoverageStatement, answer]
   );
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.

@@ -26,6 +26,7 @@ import {
 } from "../../../api/queries";
 import { type RefreshTarget, refreshQueries } from "../../../api/query-refresh";
 import type {
+  Actor,
   IssueDetails,
   IssueTreeNode,
   IssueTreeRead,
@@ -35,6 +36,7 @@ import { EVENT_FRESH } from "../../refs/reference-target";
 import { parseIssuePath } from "../../refs/routes";
 import { writesOf } from "../../writes/write-store";
 import { presetOf } from "../issue-address";
+import type { TreeNode } from "../issue-tree";
 import type { Preset } from "../page-words";
 import { isFilter } from "../presets";
 import {
@@ -54,7 +56,16 @@ import {
  * below, which are the generated contract's (`IssueTreeRead`, `IssueTreeNode`, `IssueTreeTuple`).
  */
 export type TreeAnswer = IssueTreeRead;
-export type TreeAnswerNode = IssueTreeNode;
+/** A node of the answer, with what the author of a comment or a message did to it: when they
+ *  last edited it, and when and by whom they deleted it. The read answers these marks on a
+ *  post's node, with no text for a deleted post, and a correction event writes them into every
+ *  answer the cache holds (`api/corrected-post.ts`). The page reads a comment's marks from its
+ *  node alone (`decision-review.ts`' `treeComments`). */
+export type TreeAnswerNode = IssueTreeNode & {
+  readonly deleted_at?: string | null;
+  readonly deleted_by?: Actor | null;
+  readonly edited_at?: string | null;
+};
 export type TreeTuple = IssueTreeTuple;
 
 /** Every view of the tree a read asks for (`?view=`), in the order the filters read them: a
@@ -394,6 +405,17 @@ export function treeRead<T extends object>(read: T) {
 export function outlineOf(preset: Preset): Outline | undefined {
   if (preset === "graph") return "graph";
   return preset === "conversation" || isFilter(preset) ? "conversation" : undefined;
+}
+
+/**
+ * Whether the plan's tasks are still to be read under `preset`: Conversation's read, and the read
+ * beside each filter, holds no plan task, so there they are Plan's view read's, which a load of
+ * Conversation or of a filter sends with the page (`ViewReadProvider`'s `sentWithLoad`), and the
+ * issue's node holds it (`TreeNode.views`) once it has answered. Until then a count of the plan's
+ * tasks would read 0 for what the page has not read yet. Graph's read holds them.
+ */
+export function planTasksOut(root: Pick<TreeNode, "views">, preset: Preset): boolean {
+  return outlineOf(preset) === "conversation" && root.views?.plan === undefined;
 }
 
 /**

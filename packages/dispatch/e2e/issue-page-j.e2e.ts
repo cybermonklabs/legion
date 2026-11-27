@@ -638,7 +638,9 @@ test("a Contents entry is cut again in the typeface once its file arrives @phone
 // Focus branch draws that branch alone, then the whole outline again. Below 1024 px choosing an
 // entry in the Outline sheet closes it, and in the sheet opened again Focus branch draws the
 // chosen entry's branch alone, then the outline it stood on again. The reader's message is drawn
-// in the outline but has no entry: no node was placed under it. Spec has a count, but
+// in the outline but has no entry: no node was placed under it. At 1440 px the row reads Graph,
+// which draws the whole tree read with the Contents pane beside it, since Conversation's read
+// holds a message only where a node it holds stands under it. Spec has a count, but
 // Conversation does not.
 // SLOW(>=2s): the whole seeded issue, two loads of the page, and eight moves of the focus and the
 // toggle, each waited on until the outline redraws.
@@ -656,7 +658,7 @@ test("a Contents entry goes to its node, and Focus branch draws that branch alon
     // The outline draws the tree read by read, and the issue read alone puts a child first:
     // the whole outline's first row is read once the page has stopped reading.
     const traffic = watchApiRequests(page);
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, presetPath(seeded.key, "graph"));
     const entry = contentsPane(page).locator(`[data-contents-entry="${question}"]`);
     await expect
       .poll(() => entry.count(), {
@@ -1186,18 +1188,9 @@ test("a spec node shows the decisions that shaped it at every version", async ({
       ops: [{ find: requirementText(7), op: "replace", with: REWRITTEN_SEVENTH }],
     });
     await expect
-      .poll(
-        async () => {
-          const link = await seventhTie();
-          const changed = link?.to.changed_at ?? null;
-          return (
-            link !== undefined &&
-            changed !== null &&
-            Date.parse(changed) > Date.parse(link.created_at)
-          );
-        },
-        { message: "the decisions read does not hold statement 7 as changed after its tie" }
-      )
+      .poll(async () => (await seventhTie())?.changed_since_tie === true, {
+        message: "the decisions read does not hold statement 7 as changed after its tie",
+      })
       .toBe(true);
     await openPreset(page, seeded.key, "spec");
     await expect(
@@ -2008,19 +2001,20 @@ test("the Spec view opened at its address with its statements' reads refused put
 // the first screen.
 //
 // A comment of the issue is an address beside the view that the view draws a row for, after its
-// statements. The statements come from the coverage read (`tree-drafts.ts`'s `addRequirements`),
-// and from the spec's blocks read where it answers first, so both reads are held until the
+// statements. The statements come from the Spec view's read of the tree (`?view=spec`), and the
+// landing waits on the coverage read with the outline's other reads, so both are held until the
 // comment's row is drawn and then let go together: the statements are drawn above a row that
-// already stands, as on a large issue whose coverage answers after its comments. While that row
-// is the only one drawn the stage may put the focus on it; the view lands on it again once its
-// reads have settled, which brings it on screen. A view that lands on the comment's row before
-// the statements are drawn, and does not hold it on screen, leaves it below the screen once they
+// already stands, as on a large issue whose statements answer after its comments. The view lands
+// on that row once its reads have settled, which brings it on screen. A view that lands on the
+// comment's row before the statements are drawn, and does not hold it on screen, leaves it below
+// the screen once they
 // are drawn above it, and fails this case's check of the viewport. A page that draws no Spec view
 // fails its first check.
 //
-// A key during that load: with both reads held the comment's row, drawn alone, holds the focus,
-// and the reader presses End on it, which leaves the focus on that row, the view's last. The
-// landing then does nothing, since the reader has acted, and the row the key left the reader on
+// A key during that load: with both reads held the comment's row is drawn alone, without the
+// focus, which the reader puts on it and presses End, which leaves the focus on that row, the
+// view's last. The landing then does nothing, since the reader has acted, and the row the key
+// left the reader on
 // stays on screen once the statements are drawn above it. A view that holds nothing after a key
 // leaves the row where the statements pushed it, below the screen, since at the page's top the
 // browser's scroll anchoring holds the header still and not the row, and fails this case's check
@@ -2068,14 +2062,13 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
     ).toBeFocused();
     await expectOnScreen(statement, "the last statement's fragment");
 
-    // A comment of the issue, with the coverage read and the spec's blocks read held until the
-    // comment's row is drawn.
+    // A comment of the issue, with the coverage read and the Spec view's read of the tree, which
+    // holds the spec's blocks, held until the comment's row is drawn.
     const comment = body.locator(`[data-node-row][data-node-id="${seeded.commentId}"]`);
-    const heldPaths = new Set([
-      `/api/v1/artifacts/${seeded.specArtifactId}/blocks`,
-      `/api/v1/issues/${seeded.key}/coverage`,
-    ]);
-    const heldRead = (url: URL): boolean => heldPaths.has(url.pathname);
+    const heldRead = (url: URL): boolean =>
+      url.pathname === `/api/v1/issues/${seeded.key}/coverage` ||
+      (url.pathname === `/api/v1/issues/${seeded.key}/tree` &&
+        url.searchParams.get("view") === "spec");
     const held = Promise.withResolvers<void>();
     await page.route(heldRead, async (route) => {
       await held.promise;
@@ -2111,9 +2104,12 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
       comment,
       "the comment's address draws no row of the Spec view for it while the coverage and the spec's blocks are held, before End"
     ).toBeVisible();
+    // The page gives the address's row the focus once every read has settled, so the reader puts
+    // it there during the load, as a reader who presses on the row does.
+    await comment.focus();
     await expect(
       comment,
-      "the comment's row does not hold the focus while the coverage and the spec's blocks are held, before End"
+      "the comment's row does not take the focus while the coverage and the spec's blocks are held, before End"
     ).toBeFocused();
     await page.keyboard.press("End");
     keyHeld.resolve();
@@ -2166,11 +2162,11 @@ test("at 390 px the row a key left the reader on during the Spec view's load sta
     const body = issuePage(page).locator("[data-spec-body]");
     const statements = body.locator("[data-spec-statement]");
     const comment = body.locator(`[data-node-row][data-node-id="${seeded.commentId}"]`);
-    const heldPaths = new Set([
-      `/api/v1/artifacts/${seeded.specArtifactId}/blocks`,
-      `/api/v1/issues/${seeded.key}/coverage`,
-    ]);
-    const heldRead = (url: URL): boolean => heldPaths.has(url.pathname);
+    // The coverage read and the Spec view's read of the tree, which holds the spec's blocks.
+    const heldRead = (url: URL): boolean =>
+      url.pathname === `/api/v1/issues/${seeded.key}/coverage` ||
+      (url.pathname === `/api/v1/issues/${seeded.key}/tree` &&
+        url.searchParams.get("view") === "spec");
     for (const key of ["End", "ArrowDown"] as const) {
       const keyHeld = Promise.withResolvers<void>();
       await page.route(heldRead, async (route) => {
@@ -2187,9 +2183,12 @@ test("at 390 px the row a key left the reader on during the Spec view's load sta
         comment,
         `the comment's address draws no row of the Spec view for it while the coverage and the spec's blocks are held, before ${key}`
       ).toBeVisible();
+      // The page gives the address's row the focus once every read has settled, so the reader
+      // puts it there during the load.
+      await comment.focus();
       await expect(
         comment,
-        `the comment's row does not hold the focus while the coverage and the spec's blocks are held, before ${key}`
+        `the comment's row does not take the focus while the coverage and the spec's blocks are held, before ${key}`
       ).toBeFocused();
       await page.keyboard.press(key);
       keyHeld.resolve();
@@ -2629,7 +2628,10 @@ test("a press on Decisions before the counts arrive opens Decisions, and no cont
       });
       return () => held.resolve();
     };
-    const filters = PRESET_ORDER.filter((preset) => preset !== "conversation");
+    // Conversation and Graph draw no count.
+    const filters = PRESET_ORDER.filter(
+      (preset) => preset !== "conversation" && preset !== "graph"
+    );
     const counts = presetRow(page).locator("[data-preset-count]");
     /** A control's left edge and its width. */
     type ControlBox = { readonly width: number; readonly x: number };

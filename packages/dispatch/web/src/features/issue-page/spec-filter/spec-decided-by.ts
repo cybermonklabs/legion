@@ -1,5 +1,4 @@
-import type { Actor, CheckBlock, DecisionLink, DisplayTree } from "../../../api/types";
-import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
+import type { Actor, CheckBlock, DisplayTree } from "../../../api/types";
 import type { TextSource } from "../../refs/text-references";
 import type { DecisionNode } from "../decision-nodes/decision-nodes";
 import { decidedByPerson } from "../decision-review";
@@ -70,16 +69,16 @@ import { statementStandings } from "../verification-filter/statement-state";
  * and its title, and a reference the page has no name for as its author wrote it.
  *
  * Whether a statement's words changed after the tie that names the decision heading its run is
- * read from the decision's links (`Decision.links`), as the Spec view read answers them on its
- * node, as R5 says until the model holds a tie's own word for it: the tie's far end's
- * `changed_at` is later than the tie's `created_at`, each read as a time (`changedSinceTie`),
- * and a time that cannot be read is no change. A decision that names the statement in more than
- * one of its blocks holds as many ties to it, and the statement changed since that decision only
- * where it changed after each of them. Only the decision the run is headed by decides it, since
- * it is the one the line under the statement names. The answered question a statement hangs
- * under has no tie, and no read of today holds when its statement changed, so a run that
- * question heads never says it (`SpecStatement.changedSince`); nor does a link a person's
- * decision is read with from the answer's `shaped` tuples alone, which carries no time
+ * the tie's own word for it, its `changed_since_tie` (R5), as the Spec view read answers the
+ * decision's links on its node (`Decision.links`): the server reads it from when the tie was
+ * written and when the statement's text last changed. The tie's far end carries no
+ * `changed_at`, so no time of the page's own decides it. A decision that names the statement in
+ * more than one of its blocks holds as many ties to it, and the statement changed since that
+ * decision only where it changed after each of them. Only the decision the run is headed by
+ * decides it, since it is the one the line under the statement names. The answered question a
+ * statement hangs under has no tie, and no read of today holds when its statement changed, so a
+ * run that question heads never says it (`SpecStatement.changedSince`); nor does a link a
+ * person's decision is read with from the answer's `shaped` tuples alone, which says no change
  * (`decision-nodes.ts`' `shapedLinks`).
  *
  * One part of R5 the body does not draw, which it draws nothing in the place of: an agent's
@@ -162,8 +161,9 @@ export interface SpecStatement {
   /** Every other decision that shaped it, beyond the one its run is headed by (R5). */
   readonly alsoShapedBy: readonly SpecDecision[];
   /** Whether its words changed after the tie that names the decision its run is headed by,
-   *  which its line under the words says (R5, `changedSinceTie`): false where that decision is
-   *  the answered question it hangs under, which has no tie, and where no decision is drawn. */
+   *  which its line under the words says (R5, the tie's `changed_since_tie`): false where that
+   *  decision is the answered question it hangs under, which has no tie, and where no decision is
+   *  drawn. */
   readonly changedSince: boolean;
   readonly mark: SpecMark;
   /** The node as the filter's view left it, whose words the row draws. */
@@ -184,10 +184,10 @@ export interface SpecRun {
 
 /** One of a statement's ties as the runs are built: the decision as the column draws it, the
  *  key the runs are split by, and whether the statement changed after the decision named it
- *  (`changedSinceTie`). A person's decision whose answer the asks read has not brought yet keeps
- *  its place by its reference, with no decision drawn for it until the read is in. The answered
- *  question a statement hangs under is a tie here with no `changed`, since it has no tie in the
- *  decision's links to read it from. */
+ *  (the tie's `changed_since_tie`). A person's decision whose answer the asks read has not
+ *  brought yet keeps its place by its reference, with no decision drawn for it until the read is
+ *  in. The answered question a statement hangs under is a tie here with no `changed`, since it
+ *  has no tie in the decision's links to read it from. */
 interface Tie {
   readonly changed?: boolean;
   readonly decision?: SpecDecision;
@@ -378,7 +378,8 @@ function asksById(nodes: ReadonlyMap<string, TreeNode>): ReadonlyMap<string, Tre
  *  the read answers first: the read places an answered ask as context after the decision blocks
  *  of the spec. Each is drawn, but a person's while the asks read holds no answer
  *  (`specDecidedBy`'s `asksHeld`), which keeps its place as a tie with no decision drawn. Each
- *  carries whether the statement changed after the decision named it (`changedSinceTie`). */
+ *  carries whether the statement changed after the decision named it (the tie's
+ *  `changed_since_tie`). */
 function shapedBy({
   asks,
   asksHeld,
@@ -418,7 +419,7 @@ function shapedBy({
       const id = link.to.ref === undefined ? undefined : nodeIdOf(link.to.ref);
       if (id === undefined) continue;
       const held = shaped.get(id) ?? [];
-      const changed = changedSinceTie(link);
+      const changed = link.changed_since_tie;
       const at = held.findIndex((one) => one.key === made.key);
       const same = held[at];
       // A decision that names one statement in two of its blocks is one decision of it, which
@@ -429,21 +430,6 @@ function shapedBy({
     }
   }
   return shaped;
-}
-
-/** Whether the statement `link` names changed after the link was made (R5): its far end's
- *  `changed_at` is later than the link's own `created_at`, both as the decision's links answer
- *  them (`Decision.links`) and compared as the instants they name (`compareTimestamps`), never
- *  as text. A time that cannot be read, or none, is no change, since an order built on it would
- *  be a guess. */
-function changedSinceTie(link: DecisionLink): boolean {
-  const changed = link.to.changed_at;
-  return (
-    changed !== null &&
-    isTimestamp(changed) &&
-    isTimestamp(link.created_at) &&
-    compareTimestamps(changed, link.created_at) > 0
-  );
 }
 
 /** `decision` as a tie, keyed by the node that holds the whole of it. */
