@@ -117,17 +117,21 @@
 #      action's (the with: of the step that uses it, read where it is passed, over its default);
 #      the action's own directory (`$GITHUB_ACTION_PATH`, `${{ github.action_path }}`); each value
 #      a matrix name takes, include rows among them; each of those in turn where it holds
-#      another; a value read by a literal index (`${{ env['X'] }}` as `env.X`); a quoted literal
-#      of an expression or a shell default (`${{ env.X || 'x.sh' }}`, `${X:-x.sh}`). A working-
+#      another; a value read by a literal index (`${{ env['X'] }}` as `env.X`), and a context or a
+#      matrix, inputs or github name in any case, as GitHub reads them (`${{ MATRIX.S }}`; env's
+#      names keep their case, as on a Linux runner); a quoted literal of an expression or a shell
+#      default (`${{ env.X || 'x.sh' }}`, `${X:-x.sh}`); ANSI-C quoted text as bash decodes it
+#      (`$'buil\x64.sh'`), and a locale string (`$"build.sh"`) as a double-quoted one. A working-
 #      directory is resolved the same way. A word then names a script when it is the script's
 #      path from the step's directory or the root; when one of the two paths ends in the other at
 #      a `/`, its `..`s and leading `/` aside (after a cd a relative path can lead from any
 #      directory, an absolute one from any checkout); and after the workspace, when it is the
-#      script's root path. A glob is read as bash reads it with its default options, from the
-#      step's directory or the root, its bracket expressions whole (`[!x]`, `[[:alpha:]]`), and a
-#      file name with a literal before its first dot (`buil?.sh`) also as the end of any path. The
-#      text is not parsed, so a step that names the script only to chmod or lint it is held too:
-#      that errs wide.
+#      script's root path; a path a bracket no bracket expression holds is glued to is read as the
+#      path (`[".github/x.sh"]` in a `python3 -c` list). A glob is read as bash reads it with its
+#      default options, from the step's directory or the root, its bracket expressions whole
+#      (`[!x]`, `[[:alpha:]]`), and a file name with a literal before its first dot (`buil?.sh`)
+#      also as the end of any path. The text is not parsed, so a step that names the script only
+#      to chmod or lint it is held too: that errs wide.
 #
 #      Everything else is refused, by one refusal that names what this check cannot evaluate to
 #      literal text and says to write it as literal text. Every value the repository gives that a
@@ -136,26 +140,31 @@
 #      name written as one, or a matrix value that is a list or a mapping; when a value or a
 #      literal a ${{ }} pastes into its script holds shell syntax bash reads after the paste (a
 #      quote, a backslash, `$`, a backtick, a brace), however it reaches the step - an env:, a
-#      matrix value, a called workflow's or an action's input; when a chain of values runs past 8
-#      (an env: value that reads its own name is one, since this check reads one env: for the
-#      step, not the layer each name comes from); when a word takes more than 4096 forms; and when
-#      its text holds an expansion with an operator (`${S%.sh}`, `${S/a/b}`) of a value the
-#      repository gives, runs `shopt`, which changes how bash expands words, or ends a line with a
-#      backslash a continuation joins to the next line's first word.
+#      matrix value, a called workflow's or an action's input, or an expression function that
+#      reads it (`format('{0}', env.S)`); when a chain of values runs past 8 (an env: value that
+#      reads its own name is one, since this check reads one env: for the step, not the layer
+#      each name comes from); when a word takes more than 4096 forms; when ANSI-C quoted text
+#      decodes to one of those characters; and when its text holds an expansion that holds another
+#      (`${X:-${Y}}`, `${X:-${{ env.S }}}`), or one with an operator (`${S%.sh}`, `${S/a/b}`) of a
+#      value the repository gives, runs `shopt`, which changes how bash expands words, or ends a
+#      line with a backslash a continuation joins to the next line's first word.
 #
 #      What no file of the repository holds cannot be known to a check that reads files: a step's
 #      or a job's output, a secret, a variable the runner sets, what an expression function
-#      (`format`, `join`, `fromJSON`, ...) or a computed index yields, what a command substitution
-#      or a brace expansion yields, a name a script or a command builds as it runs, and the code
-#      of an action of another repository. Each stands for any text, and the same refusal holds
+#      (`join`, `fromJSON`, ...) or a computed index yields, what a command substitution or a
+#      brace expansion yields, a name a script or a command builds as it runs, and the code of an
+#      action of another repository. Each stands for any text, and the same refusal holds
 #      wherever its literal parts could make a declared script's name: a file name of such a value
 #      and a literal ending (`"${{ steps.x.outputs.stem }}.sh"`), a glob with no literal before
 #      its first dot (`*.sh`) where a cd or an unknown working-directory leaves its directory in
-#      doubt, an expression function whose literals or read values could build the name
-#      (`format('buil{0}.sh', x)`), and a word holding a backslash escape that would name a
-#      declared script read with its backslashes dropped (`buil\d.sh`). A word made only of such
-#      values (`"$x"`, a step's output) names no declared script here: refusing it would refuse
-#      every step that writes to a path it is handed (`>> "$GITHUB_OUTPUT"`),
+#      doubt, an expression function whose literals or read values could build the name - a
+#      format() call read whole, its template with each argument put in
+#      (`format('{0}{1}', 'bui', 'ld.sh')`) - and a word holding a backslash escape that would name
+#      a declared script read with its backslashes dropped (`buil\d.sh`). A name the shell
+#      assembles at run time from several words or variables (`a=bui; b=ld.sh; sh "$a$b"`) is not
+#      read, and passes. A word made only of such values (`"$x"`, a step's output) names no
+#      declared script here: refusing it would refuse every step that writes to a path it is
+#      handed (`>> "$GITHUB_OUTPUT"`),
 #   5. a Run whose pinned text its step or script no longer holds, an exact entry whose step the
 #      job no longer has, a step its exact entry pins whose run: script or directory is not the
 #      entry's, or whose env, shell, container or job could move what it compiles (below), or a

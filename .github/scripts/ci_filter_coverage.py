@@ -47,7 +47,7 @@ from pathlib import Path
 
 import yaml
 from go_build_tags import constraint_names, decode_stream, go_files, go_skips_dir, is_tag, platforms
-from script_words import ANY_MATRIX, ROOT_MARK, WILD, Unevaluated, Unreadable, named_scripts, text_forms
+from script_words import ANY_ENV, ANY_MATRIX, ROOT_MARK, WILD, Unevaluated, Unreadable, named_scripts, text_forms
 from workflow_paths import PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
 
 WORKFLOW = ".github/workflows/ci.yaml"
@@ -1597,10 +1597,6 @@ def script_lines(text: str) -> list:
     return [line for line in stripped if line and not line.startswith("#")]
 
 
-# The values rule 4's script half reads a step in (script_words' `values`). An env: written as one
-# expression gives no names: ENV_EXPRESSION holds its text, which check_script_steps refuses.
-ENV_EXPRESSION = ("env-expression", "")
-
 
 def resolved_workdir(given: str, values: dict):
     """A step's working directory with its references put in: the one directory its one form
@@ -1616,12 +1612,13 @@ def resolved_workdir(given: str, values: dict):
 def env_values(*holders) -> dict:
     """The env: of each holder (a workflow, a job, a step), later ones over earlier ones, keyed as
     script_words reads them. An env: written as one expression (`env: ${{ fromJSON(x) }}`) gives no
-    name, and its text under ENV_EXPRESSION, which check_script_steps refuses."""
+    name: ANY_ENV holds an Unevaluated, which every read of an env name reads (lookup_key), so a
+    step that reads one, its `$BASH_ENV` among them, is refused."""
     values = {}
     for holder in holders:
         env = (holder or {}).get("env")
         if env is not None and not isinstance(env, dict):
-            values[ENV_EXPRESSION] = [str(env)]
+            values[ANY_ENV] = [Unevaluated(f"an env: written as one expression, `{env}`")]
             continue
         values.update({("env", str(k)): [str(v)] for k, v in (env or {}).items()})
     return values
@@ -2180,12 +2177,6 @@ def declared(g: Gate) -> str:
                  and r.glob.endswith(".py") and "*" not in r.glob), ".github/scripts/ci_job_reads.py")
 
 
-def env_expression(values: dict) -> str | None:
-    """What rule 4's one refusal names for an env: written as one expression that a step reads
-    (env_values), or None."""
-    return f"an env: written as one expression, `{values[ENV_EXPRESSION][0]}`" if ENV_EXPRESSION in values else None
-
-
 def cannot_evaluate(path: str, where: str, what: str, script: str | None) -> Annotation:
     """Rule 4's one refusal, of what a step holds or reads that this check cannot evaluate to
     literal text. `script` is the declared script a construct standing for text no file gives could
@@ -2227,8 +2218,6 @@ def check_script_steps(documents: dict, data, units: list, caller_jobs: dict, in
             around |= set(gated_filters(resolve_condition(str(job.get("if", "")), passed)))
             context = {**env_values(documents[WORKFLOW], caller), **matrix_values(caller)}
             values = {**caller_input_values(holder, caller, context), **values}
-            if ENV_EXPRESSION in context:
-                values.setdefault(ENV_EXPRESSION, context[ENV_EXPRESSION])
         steps = job.get("steps") or []
         for step in steps:
             own_if = set(gated_filters(resolve_condition(str(step.get("if", "")), passed)))
@@ -2241,12 +2230,11 @@ def check_script_steps(documents: dict, data, units: list, caller_jobs: dict, in
             # `could`, each construct standing for text no file gives whose literal parts could
             # make a declared script's name, with that script.
             named, could = set(), []
-            unreadable = env_expression(step_values)
+            unreadable = None
             try:
                 workdir = resolved_workdir(given_workdir(holder, job, step), step_values)
                 default_shell = str(run_default(job, "shell") or run_default(holder, "shell") or "")
                 for text, text_dir, text_values in step_texts(step, workdir, step_values, shell=default_shell):
-                    unreadable = unreadable or env_expression(text_values)
                     found, refusals = named_scripts(script_lines(text), text_dir, scripts, text_values)
                     named |= found
                     could += [pair for pair in refusals if pair not in could]

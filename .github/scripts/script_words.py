@@ -4,13 +4,17 @@ paragraph in check-ci-filters.sh's header says what is read and that everything 
 
 The reader refuses by default. Every value the repository gives that a step reads (an env:, a
 called workflow's or an action's input, a matrix value, an action's directory) must evaluate to
-literal text, through every value it reads in turn; and the step's own text may hold only the shell
-syntax this reader models. Where either fails, reading raises Unreadable, naming what it could not
-evaluate, and check_script_steps refuses the step with its one refusal. A value no file of the
-repository gives (a step's or a job's output, a secret, a variable the runner sets, the result of
-an expression function) cannot be known to any check that reads files: it stands for any text,
-and named_scripts returns, for the same refusal, each construct of that kind whose literal parts
-could make a declared script's name.
+literal text, through every value it reads in turn; and of the step's own text, the shell syntax
+this reader models is read (words, quotes, ANSI-C quoting, ${...} with a default, command
+substitutions and brace expansions as text it cannot know, globs), and the syntax it finds and
+does not model is refused (`shopt`, a continuation inside a word, an expansion that holds another
+or has an operator of a value the repository gives). Where either fails, reading raises
+Unreadable, naming what it could not evaluate, and check_script_steps refuses the step with its
+one refusal. A value no file of the repository gives (a step's or a job's output, a secret, a
+variable the runner sets, the result of an expression function) cannot be known to any check
+that reads files: it stands for any text, and named_scripts returns, for the same refusal, each
+construct of that kind whose literal parts could make a declared script's name. A name the shell
+assembles at run time from several words or variables is not read.
 
 check-ci-filters.sh imports it through ci_filter_coverage.py, from the repository it checks,
 running `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3` from that repository's root.
@@ -18,7 +22,9 @@ Its functions read strings only: ci_filter_coverage.check_script_steps hands the
 (script_lines) and the values its context gives. Those are `values`, mapping ("env" | "inputs" |
 "matrix" | "github", name) to a list of the texts the name may hold, each a str read in the same
 `values`, a (text, values) pair read in values of its own (an input, read where its caller passes
-it), or an Unevaluated, a value given in a form this reader does not evaluate.
+it), or an Unevaluated, a value given in a form this reader does not evaluate. The name "*"
+(ANY_MATRIX, ANY_ENV) stands for every name of its context, for a matrix or an env: written as
+one expression (lookup_key).
 """
 
 import os
@@ -38,9 +44,12 @@ SHELL_REF = re.compile(r"\$(?:\{([A-Za-z_]\w*)(?::?[-=+?](.*))?\}|([A-Za-z_]\w*)
 # The variable a ${...} expansion reads, whatever operator follows it (`${X%.sh}`) or comes
 # before its name (a length, or an indirection).
 EXPANDED_NAME = re.compile(r"\$\{[#!]?([A-Za-z_]\w*)")
-WORKSPACE_REF = re.compile(r"\$\{\{\s*github\.workspace\s*\}\}|\$\{GITHUB_WORKSPACE\}|\$GITHUB_WORKSPACE")
-# A shell glob's bracket expression, read whole: `[abc]`, `[!x]`, `[^x]`, `[[:alpha:]]`.
-BRACKET = r"\[[!^]?\]?(?:\[:[a-z]+:\]|[^\]\s/'\"])*\]"
+WORKSPACE_REF = re.compile(r"(?i:\$\{\{\s*github\.workspace\s*\}\})|\$\{GITHUB_WORKSPACE\}|\$GITHUB_WORKSPACE")
+# A shell glob's bracket expression, read whole: `[abc]`, `[!x]`, `[^x]`, `[[:alpha:]]`, of at most
+# MAX_BRACKET items, so that matching one costs a bounded number of steps wherever a `[` stands
+# (read_guard refuses a longer one, which the bound would read as literal text).
+MAX_BRACKET = 64
+BRACKET = rf"\[[!^]?\]?(?:\[:[a-z]{{1,16}}:\]|[^\]\s/'\"]){{0,{MAX_BRACKET}}}\]"
 BRACKET_RE = re.compile(BRACKET)
 POSIX_CLASS = re.compile(r"\[:([a-z]+):\]")
 POSIX_CLASSES = {"alpha": "a-zA-Z", "digit": "0-9", "alnum": "a-zA-Z0-9", "upper": "A-Z", "lower": "a-z",
@@ -58,17 +67,24 @@ FORM_PIECE = re.compile(rf"(?:{BRACKET}|[{PATH_CHARS}*?\[\]~{ROOT_MARK}{WILD}])+
 NOT_PATH = re.compile(rf"[^{PATH_CHARS}]+")
 # A context value an expression reads, the same value read by a literal index (`env['X']`, which
 # expression_parts writes as `env.X`), a context read whole or by a computed index, and a quoted
-# literal an expression holds.
-EXPR_NAME = re.compile(r"\b(env|inputs|matrix|github)\.([A-Za-z_][\w-]*)")
-EXPR_INDEX = re.compile(r"\b(env|inputs|matrix|github)\[\s*'([A-Za-z_][\w-]*)'\s*\]")
-EXPR_CONTEXT = re.compile(r"\b(env|inputs|matrix)\b(?!\.)")
+# literal an expression holds. GitHub reads a context's name without regard to case (`MATRIX.x`
+# is `matrix.x`), so these do too; what a name's case means is lookup_key's.
+EXPR_NAME = re.compile(r"\b(env|inputs|matrix|github)\.([A-Za-z_][\w-]*)", re.I)
+EXPR_INDEX = re.compile(r"\b(env|inputs|matrix|github)\[\s*'([A-Za-z_][\w-]*)'\s*\]", re.I)
+EXPR_CONTEXT = re.compile(r"\b(env|inputs|matrix)\b(?!\.)", re.I)
 EXPR_QUOTED = re.compile(r"'((?:[^']|'')*)'")
+# A call of the expression function format(), whose arguments format_texts reads.
+FORMAT_CALL = re.compile(r"\bformat\s*\(", re.I)
 # Two shell constructs this check does not evaluate: a command substitution, which stands in its
 # word as a value this check cannot know and whose own text is read as a line of its own, and a
 # brace expansion, which stands in its word as such a value. A format() placeholder is such a
 # value inside its literal.
-COMMAND_SUBSTITUTION = re.compile(r"\$\((?!\()([^()]*)\)|`([^`]*)`")
-BRACE_EXPANSION = re.compile(r"(?<!\$)\{[^{}\s$]*(?:,|\.\.)[^{}\s$]*\}")
+# A backtick a backslash escapes is a literal backtick, which starts no substitution.
+COMMAND_SUBSTITUTION = re.compile(r"\$\((?!\()([^()]*)\)|(?<!\\)`((?:\\.|[^`\\])*)`")
+# A brace expansion's candidate, `{` to the next `}` with no brace, space or `$` between; one that
+# holds a `,` or a `..` is an expansion (named_scripts). Each regex here that reads a step's text
+# matches in time linear in it: the text is the pull request's own.
+BRACE_CANDIDATE = re.compile(r"(?<!\$)\{[^{}\s$]*\}")
 FORMAT_PLACEHOLDER = re.compile(r"\{\d+\}")
 GLOB_CHARS = re.compile(rf"[*?\[{WILD}]")
 # A file name holding a literal character, outside a bracket expression, before its first dot:
@@ -86,15 +102,21 @@ PASTE_SYNTAX = re.compile(r"""['"\\$`{}]""")
 # line's first word. A backslash inside a word is read in named_scripts.
 SHOPT = re.compile(r"(?:^|[;&|(\s])shopt(?:\s|$)")
 CONTINUED_WORD = re.compile(r"[^\s\\]\\$")
-ESCAPED_WORD = re.compile(rf"[{PATH_CHARS}\\]*\\[{PATH_CHARS}\\]*")
+# A run of the characters a path or an escape can hold; one holding a backslash is an escaped word.
+ESCAPABLE_RUN = re.compile(rf"[{PATH_CHARS}\\]+")
 # How many forms one word may take, and how long a chain of values may be, before reading raises
 # Unreadable: a chain is each value a reference reads, the values those read, and so on, across
 # env:, with: and matrix values alike, so an env: value that reads its own name is one of no end.
 MAX_FORMS = 4096
 MAX_DEPTH = 8
-# The matrix name every matrix read reads when a job's matrix, or its include:, is written as one
-# expression, so that no matrix name of the job can be listed.
+# The name every read of a context reads when its job's matrix, its include: or an include entry,
+# or an env:, is written as one expression, so that no name of that context can be listed
+# (lookup_key).
 ANY_MATRIX = ("matrix", "*")
+ANY_ENV = ("env", "*")
+# What bash's ANSI-C quoting (`$'…'`) reads after a backslash, beside \x, \u, \U, \c and octal.
+ANSI_C_ESCAPES = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n", "r": "\r", "t": "\t",
+                  "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
 
 
 class Unreadable(Exception):
@@ -102,17 +124,10 @@ class Unreadable(Exception):
     argument says what, as the refusal names it."""
 
 
-class TooManyForms(Unreadable):
-    """A word, or a value one reads, whose references take more than MAX_FORMS forms."""
-
-    def __init__(self):
-        super().__init__(f"a word whose references take more than {MAX_FORMS} forms")
-
-
 class Unevaluated:
-    """A value the repository gives in a form this reader does not evaluate: a matrix, an include:
-    or a matrix name written as one expression, or a matrix value that is a list or a mapping.
-    Reading it raises Unreadable, naming `what`."""
+    """A value the repository gives in a form this reader does not evaluate: a matrix, an include:,
+    a matrix name or an env: written as one expression, or a matrix value that is a list or a
+    mapping. Reading it raises Unreadable, naming `what`."""
 
     def __init__(self, what: str):
         self.what = what
@@ -127,21 +142,125 @@ def dequote(line: str) -> str:
     return "".join(out + [re.sub("[\"']", "", line[last:])])
 
 
-def given(values: dict, key) -> bool:
-    """Whether the step's context gives a value for a name (ANY_MATRIX gives every matrix name)."""
-    return key in values or (key[0] == "matrix" and ANY_MATRIX in values)
+def ansi_c(body: str) -> str:
+    """The text bash's ANSI-C quoting (`$'…'`) makes of its body: \\xHH, octal, \\u, \\U, \\cX and
+    the escapes of ANSI_C_ESCAPES decoded, any other backslash left as it stands."""
+    out, i = [], 0
+    while i < len(body):
+        c, n = body[i], body[i + 1:i + 2]
+        if c != "\\" or not n:
+            out.append(c)
+            i += 1
+            continue
+        digits = {"x": "[0-9a-fA-F]{1,2}", "u": "[0-9a-fA-F]{1,4}", "U": "[0-9a-fA-F]{1,8}"}.get(n)
+        number = re.match(digits, body[i + 2:]) if digits else re.match("[0-7]{1,3}", body[i + 1:])
+        if n in ANSI_C_ESCAPES:
+            out.append(ANSI_C_ESCAPES[n])
+            i += 2
+        elif number and digits:
+            code = int(number.group(), 16)
+            if code > 0x10FFFF:
+                raise Unreadable(f"`$'{body}'`, ANSI-C quoted text naming a character no Unicode holds")
+            out.append(chr(code))
+            i += 2 + number.end()
+        elif number:
+            out.append(chr(int(number.group(), 8) & 0xFF))
+            i += 1 + number.end()
+        elif n == "c" and body[i + 2:i + 3]:
+            out.append(chr(ord(body[i + 2]) & 0x1F))
+            i += 3
+        else:
+            out.append(c + n)
+            i += 2
+    return "".join(out)
+
+
+def decode_quoting(line: str) -> str:
+    """A run: line with its ANSI-C quoted text (`$'…'`) put in as the text bash makes of it, and the
+    `$` of a locale string (`$"…"`, which bash reads as a double-quoted string in the C locale)
+    dropped, outside ${{ }} expressions and other quotes: `$'scripts/forced\\x2dorder.sh'` is
+    `scripts/forced-order.sh`, and `IFS=$'\\t'` sets a tab. Decoded text holding a quote, a
+    backslash, `$`, a backtick or a brace raises Unreadable: those are characters this reader
+    reads as shell syntax, which bash does not read in it. GitHub pastes a ${{ }} before bash reads
+    the line, so an expression's own text is passed over whatever quote it stands in."""
+    expressions = {m.start(): m.end() for m in EXPRESSION.finditer(line)}
+    out, i, quote = [], 0, ""
+    while i < len(line):
+        if i in expressions:
+            out.append(line[i:expressions[i]])
+            i = expressions[i]
+            continue
+        c = line[i]
+        if c == "\\" and quote != "'":
+            out.append(line[i:i + 2])
+            i += 2
+            continue
+        if quote:
+            quote = "" if c == quote else quote
+        elif line.startswith("$'", i):
+            end = i + 2
+            while end < len(line) and line[end] != "'":
+                end += 2 if line[end] == "\\" else 1
+            text = ansi_c(line[i + 2:end])
+            if PASTE_SYNTAX.search(text):
+                raise Unreadable(f"`{line[i:end + 1]}`, ANSI-C quoted text that makes `{text}`, which this check "
+                                 f"would read as shell syntax and bash does not")
+            out.append(text)
+            i = end + 1
+            continue
+        elif line.startswith('$"', i):
+            i += 1
+            continue
+        elif c in "'\"":
+            quote = c
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def bracket_pieces(piece: str) -> list:
+    """The parts of a piece between the brackets in it that no bracket expression holds: a path a
+    bracket is glued to (`[".github/x.sh"]` in a python3 -c list, `arr[0]=x.sh`) is read as the
+    path, which the shell does not split there but the command it hands the word to may."""
+    masked = BRACKET_RE.sub(lambda m: "\x00" * len(m.group()), piece)
+    cuts = [-1] + [i for i, c in enumerate(masked) if c in "[]"] + [len(piece)]
+    if len(cuts) == 2:
+        return []
+    return [piece[a + 1:b] for a, b in zip(cuts, cuts[1:]) if piece[a + 1:b]]
+
+
+def lookup_key(values: dict, key):
+    """The key of `values` a name reads, or None when the step's context gives none. A context
+    written as one expression, (its context, "*"), answers for every name of it. GitHub reads the
+    names of matrix, inputs and github without regard to case, and env's with it: the runner's env
+    context is case-sensitive on Linux, as bash's variables are."""
+    context, name = key[0].lower(), key[1]
+    if (context, "*") in values:
+        return (context, "*")
+    if (context, name) in values:
+        return (context, name)
+    if context == "env":
+        return None
+    folded = name.lower()
+    return next((k for k in values if k[0] == context and k[1].lower() == folded), None)
 
 
 def held(values: dict, key) -> list:
-    """The texts a name may hold, each with the values it is read in: a pair's own, else `values`.
-    Raises Unreadable for a value the repository gives in a form this reader does not evaluate."""
-    items = values.get(ANY_MATRIX if key[0] == "matrix" and ANY_MATRIX in values else key, ())
+    """The texts a name may hold, each with the values it is read in: a pair's own, else `values`;
+    none when the step's context does not give it. Raises Unreadable for a value the repository
+    gives in a form this reader does not evaluate."""
     out = []
-    for item in items:
+    for item in values.get(lookup_key(values, key), ()):
         if isinstance(item, Unevaluated):
             raise Unreadable(item.what)
         out.append(item if isinstance(item, tuple) else (item, values))
     return out
+
+
+def expr_keys(unquoted: str) -> list:
+    """The context values an expression body (expression_parts) names, as (context, name) with the
+    context in lower case."""
+    return [(context.lower(), name) for context, name in EXPR_NAME.findall(unquoted)]
 
 
 def expression_parts(expression: str) -> tuple:
@@ -167,26 +286,74 @@ def read_keys(ref: str, values: dict) -> list:
         return []
     if ref.startswith("${{"):
         unquoted, _ = expression_parts(ref)
-        contexts = EXPR_CONTEXT.findall(unquoted)
-        return EXPR_NAME.findall(unquoted) + [key for key in values if key[0] in contexts]
+        contexts = {context.lower() for context in EXPR_CONTEXT.findall(unquoted)}
+        return expr_keys(unquoted) + [key for key in values if key[0] in contexts]
     shell = SHELL_REF.fullmatch(ref)
     expanded = EXPANDED_NAME.match(ref)
     name = (shell.group(1) or shell.group(3)) if shell else expanded.group(1) if expanded else None
     return [("env", name)] if name else []
 
 
-def text_forms(text: str, values: dict, depth: int = 0, pasted: bool = True) -> list:
+def chain_step(depth: int, ref: str) -> None:
+    """Raises Unreadable when reading `ref` would take a chain of values past MAX_DEPTH: the one
+    bound text_forms and reached_texts both walk by, so each reads 8 values and refuses a 9th,
+    naming the reference that reads it."""
+    if depth >= MAX_DEPTH:
+        raise Unreadable(f"a chain of more than {MAX_DEPTH} values, through `{ref}`")
+
+
+def read_guard(text: str) -> None:
+    """Raises Unreadable for text this reader would read in more than a bounded number of steps per
+    character, so that every regex of it matches in time linear in the pull request's own text: a
+    `${{` or a `${` that nothing after it closes (each would be scanned to the end of the text again;
+    GitHub and bash refuse such text anyway), and a bracket expression longer than MAX_BRACKET
+    characters, which BRACKET, bounded, would read as literal text."""
+    if text.rfind("${{") > text.rfind("}}") or text.rfind("${") > text.rfind("}"):
+        raise Unreadable(f"`{text[text.rfind('${'):][:60]}`, an expansion that nothing after it closes")
+    i, first = 0, None
+    while i < len(text):
+        if first is not None and text.startswith("[:", i):
+            end = text.find(":]", i + 2, i + 20)
+            if end != -1:
+                i = end + 2
+                continue
+        c = text[i]
+        if c == "]":
+            if first is not None and i - first - 1 > MAX_BRACKET:
+                raise Unreadable(f"`{text[first:first + 60]}…`, a bracket expression longer than {MAX_BRACKET} "
+                                 f"characters")
+            first = None
+        elif c.isspace() or c in "/'\"":
+            first = None
+        elif c == "[" and first is None:
+            first = i
+        i += 1
+
+
+def check_pasted(text: str, tested: str, origin: str) -> None:
+    """Raises Unreadable when `tested`, the part of `text` bash reads once a ${{ }} pastes it into
+    a script, holds shell syntax bash reads after the paste (PASTE_SYNTAX); `origin` says where
+    `text` comes from."""
+    if PASTE_SYNTAX.search(tested):
+        raise Unreadable(f"`{text}`, {origin}, which a ${{{{ }}}} pastes into its script and which holds shell syntax "
+                         f"bash reads after the paste (a quote, a backslash, `$`, a backtick or a brace)")
+
+
+def text_forms(text: str, values: dict, depth: int = 0, pasted: bool = True, guarded: bool = False) -> list:
     """Every string `text` may be once its references are put in, each reference standing for each
     of its forms (ref_forms) in turn: the product, since one word can join several (`${{ matrix.dir
     }}/${{ matrix.script }}`, `"$stem.sh"`). `pasted` says bash reads the text as script, so that
-    a value `${{ }}` pastes into it must hold no shell syntax (ref_forms). Raises TooManyForms past
-    MAX_FORMS, and Unreadable as ref_forms does."""
+    a value `${{ }}` pastes into it must hold no shell syntax (ref_forms). Raises Unreadable past
+    MAX_FORMS, as read_guard does (unless `guarded`, a word of a line read_guard has passed), and
+    as ref_forms does."""
+    if not guarded:
+        read_guard(text)
     forms, last = [""], 0
     for m in REF.finditer(text):
         literal = text[last:m.start()]
         forms = [f + literal + a for f in forms for a in dict.fromkeys(ref_forms(m.group(), values, depth, pasted))]
         if len(forms) > MAX_FORMS:
-            raise TooManyForms
+            raise Unreadable(f"a word whose references take more than {MAX_FORMS} forms")
         last = m.end()
     return list(dict.fromkeys(f + text[last:] for f in forms))
 
@@ -196,54 +363,56 @@ def key_forms(values: dict, key, depth: int, pasted: bool) -> list:
     workspace, and WILD for a name `values` does not give. When `pasted`, the text is pasted into a
     script, and bash reads it after the paste: text holding PASTE_SYNTAX outside the ${{ }}
     expressions GitHub evaluates first raises Unreadable."""
-    if key == ("github", "workspace"):
+    if key[0] == "github" and key[1].lower() == "workspace":
         return [ROOT_MARK]
-    if not given(values, key):
+    if lookup_key(values, key) is None:
         return [WILD]
     forms = []
     for text, context in held(values, key):
-        if pasted and PASTE_SYNTAX.search(EXPRESSION.sub("", text)):
-            raise Unreadable(f"`{text}`, the value of {key[0]}.{key[1]}, which a ${{{{ }}}} pastes into its script and "
-                             f"which holds shell syntax bash reads after the paste (a quote, a backslash, `$`, a "
-                             f"backtick or a brace)")
+        if pasted:
+            check_pasted(text, EXPRESSION.sub("", text), f"the value of {key[0]}.{key[1]}")
         forms += text_forms(text, context, depth + 1, pasted)
     return forms
 
 
-def ref_forms(ref: str, values: dict, depth: int, pasted: bool = True) -> list:
+def ref_forms(ref: str, values: dict, depth: int, pasted: bool) -> list:
     """What one reference may stand for: ROOT_MARK for the workspace; each form of each value an
     env:, an input, a matrix name or the action's directory holds (key_forms), so a value that names
     another is followed; each quoted literal an expression holds, and a shell reference's default
     (`${X:-x.sh}`); and WILD for a value this check cannot know. `${{ env.X || 'y' }}` stands for
     X's values and `y`, and `env['X']` reads as `env.X`. What a ${{ }} expression yields is pasted
     when its text is (`pasted`), and what $X expands to is not, since bash does not read a
-    variable's value again. An expression this check cannot work out (opaque) stands for WILD too,
-    its arguments read as values it is not pasted with; unevaluable_constructs says when its
-    literals refuse the step. Raises Unreadable for a chain of values longer than MAX_DEPTH, for a
-    pasted value or literal holding PASTE_SYNTAX, and for a ${...} expansion with an operator
-    SHELL_REF does not read (`${X%.sh}`, `${X/a/b}`) of a value the repository gives; of a value
-    no file gives, such an expansion stands for WILD."""
+    variable's value again. An expression this check cannot work out (opaque) stands for WILD too;
+    each value it reads is held to `pasted` as the expression's own are, since a function can paste
+    one whole (`format('{0}', env.S)`), and unevaluable_constructs says when its literals refuse
+    the step. Raises Unreadable for a chain of values longer than MAX_DEPTH, for a pasted value or
+    literal holding PASTE_SYNTAX, for a ${...} expansion that holds another expansion (`${X:-${Y}}`,
+    `${X:-${{ env.S }}}`), whose end this check does not find, and for a ${...} expansion with an
+    operator SHELL_REF does not read (`${X%.sh}`, `${X/a/b}`) of a value the repository gives; of a
+    value no file gives, such an expansion stands for WILD."""
     if WORKSPACE_REF.fullmatch(ref):
         return [ROOT_MARK]
-    if depth >= MAX_DEPTH:
-        raise Unreadable(f"a chain of more than {MAX_DEPTH} values, through `{ref}`")
+    # A reference that reads a value the context gives takes the chain a step further; one that
+    # reads none (a literal, a step's output) ends it, as a literal does.
+    if any(lookup_key(values, key) is not None for key in read_keys(ref, values)):
+        chain_step(depth, ref)
     if ref.startswith("${{"):
         unquoted, literals = expression_parts(ref)
         evaluated = not opaque(unquoted)
-        forms = [form for key in EXPR_NAME.findall(unquoted)
-                 for form in key_forms(values, key, depth, pasted and evaluated)]
+        forms = [form for key in expr_keys(unquoted) for form in key_forms(values, key, depth, pasted)]
         for literal in literals:
-            if pasted and evaluated and PASTE_SYNTAX.search(literal):
-                raise Unreadable(f"`{literal}`, a literal `{ref}` pastes into its script, which holds shell syntax "
-                                 f"bash reads after the paste (a quote, a backslash, `$`, a backtick or a brace)")
+            if pasted and evaluated:
+                check_pasted(literal, literal, f"a literal `{ref}` holds")
         forms += literals
         if not evaluated or not forms:
             forms.append(WILD)
         return forms
+    if ref.startswith("${") and "${" in ref[2:]:
+        raise Unreadable(f"`{ref}`, an expansion that holds another expansion, whose end this check does not find")
     m = SHELL_REF.fullmatch(ref)
     if m is None:
         expanded = EXPANDED_NAME.match(ref)
-        if expanded and given(values, ("env", expanded.group(1))):
+        if expanded and lookup_key(values, ("env", expanded.group(1))) is not None:
             raise Unreadable(f"`{ref}`, an expansion with an operator this check does not evaluate, of a value the "
                              f"repository gives")
         return [WILD]
@@ -257,14 +426,17 @@ def reached_texts(text: str, values: dict, depth: int = 0, seen=None) -> list:
     """Each value text a reference of `text` reads (read_keys), with the values it is read in, and
     each one a reference of those reads in turn: what unevaluable_constructs reads beside the line,
     so an expression moved into an env:, an input or a matrix value is read as it is in the line.
-    Raises Unreadable past MAX_DEPTH, as ref_forms does."""
+    Raises Unreadable past MAX_DEPTH, through the reference that would read the next value, as
+    ref_forms does (chain_step)."""
     seen = set() if seen is None else seen
-    if depth >= MAX_DEPTH:
-        raise Unreadable(f"a chain of more than {MAX_DEPTH} values, through `{text}`")
+    read_guard(text)
     reached = []
     for m in REF.finditer(text):
         for key in read_keys(m.group(), values):
-            for value, context in held(values, key):
+            texts = held(values, key)
+            if texts:
+                chain_step(depth, m.group())
+            for value, context in texts:
                 if (value, id(context)) in seen:
                     continue
                 seen.add((value, id(context)))
@@ -273,14 +445,96 @@ def reached_texts(text: str, values: dict, depth: int = 0, seen=None) -> list:
     return reached
 
 
+# How many format() calls one expression may make before reading raises Unreadable: the
+# expression is the pull request's own text, and each call's arguments are read again for it.
+MAX_CALLS = 64
+
+
+def call_bodies(body: str, call) -> list:
+    """The argument text of each call `call` (a regex ending at the call's `(`) makes in an
+    expression body, outside its quoted literals, up to the `)` that closes it: one pass over the
+    body, a stack of its open parens. Raises Unreadable past MAX_CALLS calls."""
+    opens = {m.end() for m in call.finditer(body)}
+    out, stack, quoted = [], [], False
+    for i, c in enumerate(body):
+        if c == "'":
+            quoted = not quoted
+        elif not quoted and c == "(":
+            stack.append(i + 1 if i + 1 in opens else None)
+        elif not quoted and c == ")" and stack:
+            start = stack.pop()
+            if start is not None:
+                if len(out) == MAX_CALLS:
+                    raise Unreadable(f"an expression of more than {MAX_CALLS} format() calls")
+                out.append(body[start:i])
+    return out
+
+
+def call_args(text: str) -> list:
+    """A call's argument text split at its top-level commas, outside quoted literals and parens."""
+    args, depth, quoted, start = [], 0, False, 0
+    for i, c in enumerate(text):
+        if c == "'":
+            quoted = not quoted
+        elif not quoted and c in "()":
+            depth += 1 if c == "(" else -1
+        elif not quoted and c == "," and not depth:
+            args.append(text[start:i])
+            start = i + 1
+    return args + [text[start:]]
+
+
+QUOTED_ARG = re.compile(r"\s*'((?:[^']|'')*)'\s*")
+
+
+def format_texts(expression: str, values: dict) -> list:
+    """What each format() call of an expression builds: its template, a quoted literal, with each
+    `{N}` put in as argument N - a quoted literal as its text, a context value as each of its forms
+    (key_forms), anything else as WILD - and `{{` and `}}` as one brace. So
+    `format('{0}{1}', 'scripts/forced-', 'order.sh')` builds `scripts/forced-order.sh`, which no
+    one of its literals does. A call whose template is no quoted literal builds nothing read here;
+    its literals are read one by one, as any function's are. Raises Unreadable past MAX_FORMS."""
+    built = []
+    for arguments in call_bodies(EXPR_INDEX.sub(r"\1.\2", expression)[3:-2], FORMAT_CALL):
+        args = call_args(arguments)
+        template = QUOTED_ARG.fullmatch(args[0])
+        if template is None:
+            continue
+        options = []
+        for arg in args[1:]:
+            literal, name = QUOTED_ARG.fullmatch(arg), EXPR_NAME.fullmatch(arg.strip())
+            if literal:
+                options.append([literal.group(1).replace("''", "'")])
+            elif name:
+                options.append(key_forms(values, (name.group(1).lower(), name.group(2)), 0, False))
+            else:
+                options.append([WILD])
+        forms = [""]
+        for piece in re.split(r"(\{\{|\}\}|\{\d+\})", template.group(1).replace("''", "'")):
+            if piece in ("{{", "}}"):
+                each = [piece[0]]
+            elif FORMAT_PLACEHOLDER.fullmatch(piece):
+                n = int(piece[1:-1])
+                each = options[n] if n < len(options) else [WILD]
+            else:
+                each = [piece]
+            forms = [f + e for f in forms for e in each]
+            if len(forms) > MAX_FORMS:
+                raise Unreadable(f"a word whose references take more than {MAX_FORMS} forms")
+        built += forms
+    return built
+
+
 def unevaluable_constructs(text: str, values: dict) -> list:
     """The expressions of a text this check cannot work out (opaque: a function such as format() or
     join(), a computed index, a context it does not read), each with the texts it may build its
-    value from: its literals, a format() placeholder in one read as any text, and the forms of each
+    value from: its literals, a format() placeholder in one read as any text, the forms of each
     value it reads - each context value it names, and every value of a context it reads whole or
-    by a computed index. Raises Unreadable as key_forms does. A shell construct this check does not
-    evaluate is no part of this: a command substitution or a brace expansion stands in its word as
-    a value this check cannot know (named_scripts)."""
+    by a computed index - and the string each format() call of it builds (format_texts). Raises
+    Unreadable as key_forms does. A shell construct this check does not evaluate is no part of
+    this: a command substitution or a brace expansion stands in its word as a value this check
+    cannot know (named_scripts), and a name the shell assembles at run time from several words or
+    variables (`a=scripts/forced-; b=order.sh; "$a$b"`) is not read."""
     found = []
     for m in EXPRESSION.finditer(text):
         unquoted, literals = expression_parts(m.group())
@@ -288,6 +542,7 @@ def unevaluable_constructs(text: str, values: dict) -> list:
             continue
         texts = [FORMAT_PLACEHOLDER.sub(WILD, literal) for literal in literals]
         texts += [form for key in read_keys(m.group(), values) for form in key_forms(values, key, 0, False)]
+        texts += format_texts(m.group(), values)
         found.append((m.group(), texts))
     return found
 
@@ -527,25 +782,31 @@ def named_scripts(lines, workdir, scripts, values=None) -> tuple:
     it, whatever command it is a word of, which errs wide. Raises Unreadable for text or a value
     this check cannot evaluate to literal text: a line that runs `shopt`, a line that a
     continuation joins to the next one inside a word, and every case ref_forms, reached_texts and
-    held raise."""
+    held raise. ANSI-C quoted text is read as the text bash makes of it (decode_quoting), and a path
+    a stray bracket is glued to as the path (bracket_pieces)."""
     values = values or {}
     named, refusals = set(), []
     uncertain = workdir is None or any(CHANGES_DIRECTORY.search(line) for line in lines)
     pending, i = list(lines), 0
     while i < len(pending):
         line = pending[i]
+        read_guard(line)
+        own_line = i < len(lines)
         i += 1
         if SHOPT.search(line):
             raise Unreadable("`shopt`, which changes how bash expands the words this check reads")
-        if CONTINUED_WORD.search(line):
+        # A continuation joins a line of the step's own text to the next; a substitution's text,
+        # read below as a line of its own, has no next line to join.
+        if own_line and CONTINUED_WORD.search(line):
             raise Unreadable(f"`{line.rsplit(None, 1)[-1]}`, a word a backslash continues onto the next line")
+        line = decode_quoting(line)
         for text, context in [(line, values)] + reached_texts(line, values):
             for construct, texts in unevaluable_constructs(text, context):
                 script = overlapping_script(texts, scripts)
                 if script and (construct, script) not in refusals:
                     refusals.append((construct, script))
         shell = dequote(line)
-        for m in ESCAPED_WORD.finditer(shell):
+        for m in (run for run in ESCAPABLE_RUN.finditer(shell) if "\\" in run.group()):
             joined = m.group().replace("\\", "")
             for piece in FORM_PIECE.findall(joined):
                 for script in sorted(piece_names(piece, workdir, scripts, uncertain)[0]):
@@ -554,10 +815,11 @@ def named_scripts(lines, workdir, scripts, values=None) -> tuple:
         while COMMAND_SUBSTITUTION.search(shell):
             pending += [m.group(1) or m.group(2) or "" for m in COMMAND_SUBSTITUTION.finditer(shell)]
             shell = COMMAND_SUBSTITUTION.sub(WILD, shell)
-        shell = BRACE_EXPANSION.sub(WILD, shell)
+        shell = BRACE_CANDIDATE.sub(lambda m: WILD if "," in m.group() or ".." in m.group() else m.group(), shell)
         for m in WORD.finditer(shell):
-            for form in text_forms(m.group(), values):
-                for piece in FORM_PIECE.findall(form):
+            for form in text_forms(m.group(), values, guarded=True):
+                read_guard(form)
+                for piece in (p for whole in FORM_PIECE.findall(form) for p in [whole] + bracket_pieces(whole)):
                     found, unread = piece_names(piece, workdir, scripts, uncertain)
                     named |= found
                     word = m.group().replace(WILD, "…")
