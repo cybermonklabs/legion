@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import type { SpecFormFinding, SpecFormRead } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { keyedLayer } from "../../test/keyed-layer";
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
@@ -263,74 +264,79 @@ let approval:
   | { readonly kind: "recorded"; readonly specForm?: unknown }
   | { readonly kind: "refused"; readonly body: unknown } = { kind: "recorded" };
 
+// Behind Dispatch's keyed layer: each 2xx to a write names the write's key back, and so does the
+// 409 SPEC_FORM, which the approval request's own handler answers behind that layer.
 const server = Bun.serve({
   port: 0,
-  async fetch(request) {
-    const url = new URL(request.url);
-    const { pathname, search } = url;
-    const text = await request.text();
-    const body: unknown = text === "" ? undefined : JSON.parse(text);
-    requests.push({ method: request.method, path: pathname, search, body });
-    if (pathname === "/api/v1/issues" && request.method === "GET") {
-      const parent = url.searchParams.get("parent");
-      return Response.json(ISSUES.filter((issue) => issue.parent === parent).map(summaryBody));
-    }
-    const issue = /^\/api\/v1\/issues\/([^/]+)(\/artifacts)?$/.exec(pathname);
-    if (issue !== null && request.method === "GET") {
-      const held = ISSUES.find((candidate) => candidate.key === issue[1]);
-      if (issue[2] !== undefined) {
-        return Response.json(
-          held === undefined ? [] : held.artifacts.map((artifact) => artifactBody(held, artifact))
-        );
+  fetch: keyedLayer(
+    async (request: Request) => {
+      const url = new URL(request.url);
+      const { pathname, search } = url;
+      const text = await request.text();
+      const body: unknown = text === "" ? undefined : JSON.parse(text);
+      requests.push({ method: request.method, path: pathname, search, body });
+      if (pathname === "/api/v1/issues" && request.method === "GET") {
+        const parent = url.searchParams.get("parent");
+        return Response.json(ISSUES.filter((issue) => issue.parent === parent).map(summaryBody));
       }
-      if (held === undefined) {
-        return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
+      const issue = /^\/api\/v1\/issues\/([^/]+)(\/artifacts)?$/.exec(pathname);
+      if (issue !== null && request.method === "GET") {
+        const held = ISSUES.find((candidate) => candidate.key === issue[1]);
+        if (issue[2] !== undefined) {
+          return Response.json(
+            held === undefined ? [] : held.artifacts.map((artifact) => artifactBody(held, artifact))
+          );
+        }
+        if (held === undefined) {
+          return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
+        }
+        return Response.json(issueBody(held));
       }
-      return Response.json(issueBody(held));
-    }
-    const artifact = /^\/api\/v1\/artifacts\/([^/]+)\/(spec-form|blocks|approval-requests)$/.exec(
-      pathname
-    );
-    if (artifact !== null && artifact[2] === "spec-form" && request.method === "GET") {
-      const read = forms[artifact[1] ?? ""];
-      if (read === undefined) {
-        return Response.json(
-          { code: "NO_VERSION", error: "the document has no settled version to read yet" },
-          { status: 409 }
-        );
-      }
-      return Response.json(read);
-    }
-    if (artifact !== null && artifact[2] === "blocks" && request.method === "GET") {
-      return Response.json([]);
-    }
-    if (artifact !== null && artifact[2] === "approval-requests" && request.method === "POST") {
-      if (approval.kind === "refused") return Response.json(approval.body, { status: 409 });
-      const sent = body as { summary: string };
-      return Response.json(
-        {
-          ask: {
-            id: "ask-9",
-            issue_key: "ACME-2",
-            artifact_id: artifact[1],
-            kind: "approval",
-            question: `Approve spec.md (version 12)? ${sent.summary}`,
-            waiting_on_person: PERSON,
-          },
-          approval: { state: "awaiting", latest_version: 12, version: 12 },
-          artifact_id: artifact[1],
-          coverage: null,
-          version: 12,
-          ...(approval.specForm === undefined ? {} : { spec_form: approval.specForm }),
-        },
-        { status: 201 }
+      const artifact = /^\/api\/v1\/artifacts\/([^/]+)\/(spec-form|blocks|approval-requests)$/.exec(
+        pathname
       );
-    }
-    return Response.json(
-      { error: `unexpected ${request.method} ${pathname}${search}` },
-      { status: 500 }
-    );
-  },
+      if (artifact !== null && artifact[2] === "spec-form" && request.method === "GET") {
+        const read = forms[artifact[1] ?? ""];
+        if (read === undefined) {
+          return Response.json(
+            { code: "NO_VERSION", error: "the document has no settled version to read yet" },
+            { status: 409 }
+          );
+        }
+        return Response.json(read);
+      }
+      if (artifact !== null && artifact[2] === "blocks" && request.method === "GET") {
+        return Response.json([]);
+      }
+      if (artifact !== null && artifact[2] === "approval-requests" && request.method === "POST") {
+        if (approval.kind === "refused") return Response.json(approval.body, { status: 409 });
+        const sent = body as { summary: string };
+        return Response.json(
+          {
+            ask: {
+              id: "ask-9",
+              issue_key: "ACME-2",
+              artifact_id: artifact[1],
+              kind: "approval",
+              question: `Approve spec.md (version 12)? ${sent.summary}`,
+              waiting_on_person: PERSON,
+            },
+            approval: { state: "awaiting", latest_version: 12, version: 12 },
+            artifact_id: artifact[1],
+            coverage: null,
+            version: 12,
+            ...(approval.specForm === undefined ? {} : { spec_form: approval.specForm }),
+          },
+          { status: 201 }
+        );
+      }
+      return Response.json(
+        { error: `unexpected ${request.method} ${pathname}${search}` },
+        { status: 500 }
+      );
+    },
+    { judged: (response) => response.ok || response.status === 409 }
+  ),
 });
 
 afterAll(() => server.stop(true));
