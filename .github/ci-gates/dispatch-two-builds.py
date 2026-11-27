@@ -30,7 +30,7 @@ GATE = gate("dispatch_two_builds", TWO_BUILDS_JOB, runs=[
     # the modules dispatch_ui's tsc programs compile and the dispatch command the Go step runs
     # loads, which the changes job lists, and ci_ts_programs.py's LISTED says why this job
     # loads that union and no other. Its `Build contracts for dispatch e2e` step runs
-    # `build:dispatch`, whose four entries compile nothing outside it, and reads the package's
+    # `build:dispatch`, whose five entries compile nothing outside it, and reads the package's
     # manifest, which bun_job declares.
     (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "`packages/dispatch/e2e/engine-reading.ts#blockSchema`"),
     ("scripts/e2e/lib/held-port.py", "`packages/dispatch/e2e/run-server.sh#held_port` holds the server's port through it"),

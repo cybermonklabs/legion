@@ -41,7 +41,7 @@ async function openIssue(page: Page, scene: LayoutSeed, width: number): Promise<
   await expect(header.getByTestId("issue-claim")).toBeVisible();
   await expect(header.locator('[data-layout-group="labels"] > *').first()).toBeVisible();
   await expect(page.getByRole("tablist", { name: "Issue detail" }).getByRole("tab")).toHaveCount(
-    10
+    11
   );
 }
 
@@ -122,7 +122,7 @@ test("every issue tab lies inside the tab list and the viewport, and opens its p
       expect(list, `the tab list's box at ${width} px`).not.toBeNull();
       const listLeft = list?.x ?? 0;
       const listRight = listLeft + (list?.width ?? 0);
-      // `openIssue` waited for the count of ten, so one read lists every tab.
+      // `openIssue` waited for the count of eleven, so one read lists every tab.
       for (const tab of await tabs.all()) {
         const box = await tab.boundingBox();
         const name = await tab.textContent();
@@ -137,7 +137,7 @@ test("every issue tab lies inside the tab list and the viewport, and opens its p
         expect(left, `${name} at ${width} px starts inside the viewport`).toBeGreaterThanOrEqual(0);
         expect(right, `${name} at ${width} px ends inside the viewport`).toBeLessThanOrEqual(width);
       }
-      // The same ten tabs as above: a press changes the selected tab, never the list.
+      // The same eleven tabs as above: a press changes the selected tab, never the list.
       for (const tab of await tabs.all()) {
         await tab.click();
         await expect(tab).toHaveAttribute("aria-selected", "true");

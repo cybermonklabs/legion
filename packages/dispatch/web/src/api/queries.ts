@@ -22,6 +22,7 @@ import type {
   DeliveryTimelineWithMeasures,
   InboxRow,
   IssueDetails,
+  LegionIssueResponse,
   MyRepliesResponse,
   ReferenceTarget,
 } from "./types";
@@ -144,6 +145,16 @@ export const issueStepsQuery = (key: string) =>
   queryOptions({
     queryKey: ["issue", key, "steps"],
     queryFn: () => api.listSteps(key),
+  });
+
+/** Each version of each phase handoff of one issue, without its body
+ *  (`GET /api/v1/issues/{key}/handoffs`): the Conversation's handoff cards and Dashboard's phase
+ *  track read the one key, which a handoff's event refreshes (`api/event-refresh.ts`). A card
+ *  reads a handoff's body when expanded. */
+export const handoffsQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["handoffs", key],
+    queryFn: () => api.listHandoffs(key),
   });
 
 /** The live blocks of one document (`GET /api/v1/artifacts/{id}/blocks`): the document's own
@@ -498,6 +509,9 @@ interface DeliveryLiveBodies {
   readonly timeline: DeliveryTimelineWithMeasures;
   readonly measures: DeliveryMeasuresResponse;
   readonly pipeline: DeliveryPipelineResponse;
+  /** One issue's Legion state, `GET /api/v1/issues/{key}/legion`'s body: not a delivery view,
+   *  but served by the same hub, so `api/legion-issue.ts` subscribes it through `subscribeLive`. */
+  readonly legion_issue: LegionIssueResponse;
 }
 
 /** The live view's answer, which is the body of the GET route its kind mirrors. Only the views
@@ -513,6 +527,9 @@ function subscribeLive<K extends keyof DeliveryLiveBodies>(
     DeliveryLiveBodies[K]
   >;
 }
+
+/** `api/legion-issue.ts` builds its live query of an issue's Legion state from these two. */
+export { LIVE, subscribeLive };
 
 /** The delivery timeline, live: the window, the search and every facet, applied by Dispatch
  *  (LEGION-567's plan, "API"), keyed by the view so a filter change subscribes its own entry. */

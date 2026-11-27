@@ -720,8 +720,12 @@ the form passes at 200 ms or under.
 Before it sends a read, the fleet must have served a commit carrying `MERGE_SHA` for three hours:
 `/healthz`'s `fleet_commit`, the commit every live server process serves, must carry it by
 GitHub's compare (`identical` or `ahead`).
-A look that has to wait ends on the line `read again at or after <time> with ...`, which names the
-values the next look takes, and exits 3.
+A look that has to wait for the fleet's three hours or for the probe's lines ends on the line
+`read again at or after <time> with ...`, which names the values the next look takes, and exits 3.
+A look that has to wait for the fleet to carry `MERGE_SHA` ends on a line of its own, and exits 3:
+the fleet serves no one commit, it does not carry the merge (or, with `BEFORE_DEPLOY=1`, it does),
+GitHub did not answer, or GitHub's compare says neither way.
+That line names no value: the next look takes the inputs this one took.
 
 Its inputs are `DISPATCH_URL`, the deployed Dispatch; the bearer, in `DISPATCH_TOKEN` or
 `DISPATCH_TOKEN_FILE`; `MERGE_SHA`, the merge commit's 40 hex digits; and `LOGGING_PROJECT`, the
@@ -750,6 +754,65 @@ DISPATCH_URL=https://dispatch.internal.example DISPATCH_TOKEN_FILE=<file holding
 
 `cd packages/dispatch && bun test e2e/__tests__/priority-list-production.test.ts` runs it against
 stand-ins of `curl`, `gh`, `gcloud` and `sleep` that reach nothing past the host.
+
+`e2e/acceptance/priorities-production.sh` is the driver of the check `c-both-forms-production`: it
+measures how long production's server takes to answer the priorities read in each of its two
+forms, as the p90 of the access log's `elapsed_ms` over three hours of production's own reads of
+`GET /api/v1/priorities`.
+It sends no read of the priorities itself: it reads the lines of that route back from the
+deployment's container logs with `gcloud logging read`, and keeps those of `method=GET` and
+`status=200`.
+A line carries no query string, so its `bytes`, the bytes sent after compression, tell the two
+forms apart: a line below 2,048 bytes is the summary (`?summary=true`, two counts and no row), and
+one at or above it is the full read.
+A form's p90 is the value at rank ceil(0.9 n) of its lines' `elapsed_ms` in ascending order, and
+the form passes at 200 ms or under.
+Before it reads the log, `/healthz`'s `fleet_commit`, the commit every live server process serves,
+must carry `MERGE_SHA` by GitHub's compare (`identical` or `ahead`), and the three hours from
+`FLEET_SINCE` must have passed.
+It prints how many lines of the route the log holds in those hours, and how many of them are a
+`GET` answered 200.
+For each form the three hours hold a read of, `the full read` or `the summary`, it then prints
+`<form>: p90 N ms over M reads, at most 200 ms` or `..., over 200 ms`, and
+`<form>: smallest S bytes, largest L bytes`.
+A form the three hours hold fewer than 200 reads of adds `<form>: M reads, fewer than 200`.
+A look that has to wait for the three hours to pass, or for a form's 200 reads, ends on the line
+`read again at or after <time> with FLEET_SINCE=<time>`, which names the value the next look takes,
+and exits 3.
+A look that has to wait for the fleet ends on a line of its own, and exits 3: the fleet serves no
+one commit, it does not carry `MERGE_SHA`, GitHub did not answer, or GitHub's compare says neither
+way.
+That line names no value: the next look takes the inputs this one took.
+
+Its inputs are `DISPATCH_URL`, the deployed Dispatch; `MERGE_SHA`, the merge commit's 40 hex
+digits; and `LOGGING_PROJECT`, the Google Cloud project that holds the deployment's container
+logs.
+This public repository names no such project, so the driver refuses to start without it (exit 2).
+It takes no bearer: `/healthz` is the one request it sends to Dispatch.
+Each time it takes or prints is UTC to the second, `YYYY-MM-DDTHH:MM:SSZ`.
+A later look also takes `FLEET_SINCE`, the start of the three hours, as the line of an earlier
+look names it: the first look names the time it ran, and a look that found fewer than 200 reads
+of a form names the end of the three hours it read, where the next three start.
+`WINDOW_START=<time>` is for the check's negative control alone: the look then reads the three
+hours from that time, skips the test of the fleet's commit, and names `WINDOW_START` in the line
+it ends on when it waits; it refuses `WINDOW_START` beside `FLEET_SINCE`.
+`gh` and `gcloud` run as the accounts they are signed in with.
+It exits 0 when both forms are at most 200 ms over at least 200 reads each; 1 when a form's p90 is
+over 200 ms; 2 when the look cannot measure (an input unset or malformed, no answer from
+`/healthz`, a log read that failed, or a line of the route without its `status`, `elapsed_ms` and
+`bytes`); and 3 for a look that waits (a fleet that does not carry the merge or serves no one
+commit, a compare GitHub does not answer, three hours still to come, or a form with fewer than
+200 reads).
+A look that finds a failure exits 1 even where it would also wait.
+The first look, from the repository root; each later one adds the value the last one named:
+
+```bash
+DISPATCH_URL=https://dispatch.internal.example MERGE_SHA=<merge commit> \
+  LOGGING_PROJECT=<project> bash packages/dispatch/e2e/acceptance/priorities-production.sh
+```
+
+`cd packages/dispatch && bun test e2e/__tests__/priorities-production.test.ts` runs it against
+stand-ins of `curl`, `gh`, `gcloud` and `date` that reach nothing past the host.
 
 `e2e/acceptance/replace-blocks.sh` drives what `doc-edit`'s `replace` does with a `with` that
 names blocks: a list written over a paragraph's whole text, a list written over the text of a
@@ -819,11 +882,17 @@ who has signed in, so the project may name her.
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
 stacks through Playwright's own global setup now, which no shell driver can reach.
 
-All ten drivers source `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
-share: it refuses an unset input or a missing command with exit 2, reads the bearer from
-`DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it, unsetting both so no process the
-script starts inherits it, and holds the `pass`, `fail`, `skip`, `want_status`, `expect` and
-`query` every driver checks with. `with-harness.sh` is no driver and sources none of it.
+Twelve drivers source `e2e/acceptance/lib.sh`: the eleven above, and
+`e2e/acceptance/node-projects.sh`, the driver of the check `c-a-node-projects`.
+It holds the preamble they share: it refuses an unset input or a missing command with exit 2, and
+reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it, unsetting
+both so no process the script starts inherits it.
+It holds the check vocabulary, `pass`, `fail`, `skip`, `want_status`, `expect` and `query`.
+It also holds the steps the two looks at production share: `cannot_measure`, which ends a look
+that cannot measure with exit 2; `stamp` and `epoch`, a time as a look prints one and back again;
+`p90`; `fleet_commit`, the commit `/healthz` says the fleet serves; `carries`, GitHub's compare of
+`MERGE_SHA` with a commit; and `access_log`, the `gcloud logging read` of the access log's lines.
+`with-harness.sh` is no driver and sources none of it.
 
 `e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`: it
 measures which of our listed addresses a machine reaches over the path given to a person from
@@ -1029,7 +1098,10 @@ Each open part of the new issue page adds its words in `page-words-<letter>.ts`,
 beside `web/src/features/issue-page/page-words.ts`. A part's `page-words-<letter>.ts` holds the
 tables that the part adds, each a named export that it lists in `unasked` or `answers`. Under
 `add`, it holds the part's new keys for a table that `page-words.ts` declares. The open parts are
-J, L, M, N, S, T, U, W, X, Y and Z.
+J, L, M, N, S, T, U, W, X, Y and Z. Dashboard keeps its words the same way in
+`page-words-dashboard.ts`, which also takes in the ask body's list
+(`web/src/features/ask-body/ask-body-words.ts`) and the decision card's
+(`web/src/features/decision-card/decision-card-words.ts`).
 
 A new key for a table that a part's file declares goes in that part's `page-words-<letter>.ts`,
 from any pull request. TypeScript reads the keys of a table where the table is declared. The tables

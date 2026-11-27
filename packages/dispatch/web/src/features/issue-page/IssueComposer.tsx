@@ -168,8 +168,8 @@ const EDIT_NAMES: OutlineNames = { ...WRITE_NAMES, description: CONTROL_LABELS.c
 export interface BoxPlace {
   /** A document is open in place of the outline (`IssueAddress.document`). */
   readonly documentOpen: boolean;
-  /** A view is on (`IssueAddress.preset` is not `conversation`, `isFilter`): the stage draws a
-   *  view, any control of the row but Conversation, and no outline. */
+  /** A view is on (`IssueAddress.preset` is not `conversation`, Dashboard included): the stage
+   *  draws a view, any control of the row but Conversation, and no outline. */
   readonly viewOn: boolean;
 }
 

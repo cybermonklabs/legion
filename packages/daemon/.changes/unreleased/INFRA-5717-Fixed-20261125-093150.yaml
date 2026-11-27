@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    A directory a role's tool makes `0700` in its temporary directory is `0700` again in an issue
+    pod. The issue volume's directories carry the set-group-ID bit from the pod's `fsGroup`, and the
+    shared `TMPDIR` passed it on to every directory made in it, so such a directory came out
+    `02700`. The shim now clears the bit on `TMPDIR` before the role starts, both a new one and one
+    found on a retained volume, and changes nothing else of it or of the other scratch directories.
+time: 2026-11-25T09:31:50Z
+custom:
+    Issue: INFRA-5717

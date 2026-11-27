@@ -615,7 +615,7 @@ the same helper, so both filters hold the same patterns.
 dispatch_ui's set, which the SPA and the e2e helpers load, with the bundle of the
 dispatch command its rows spawn through `packages/dispatch/e2e/dispatch-cli.ts#dispatchEntry` and `packages/dispatch/e2e/dispatch-cli.ts#runDispatch`, dispatch_two_builds_go's
 set (ci_ts_programs.py, LISTED, says why). Its jobs' contracts build
-(`build:dispatch`) compiles nothing outside the first: not legion-api.ts.
+(`build:dispatch`) compiles nothing outside the first.
 
 ## dispatch_browser: The workflow that holds every browser step, which this job
 
@@ -2748,10 +2748,12 @@ to one area's code can run that area's legs:
   one step was, so more slots on one runner would add load where more runners add none.
 - envoy-go's other steps, which ran one after another before the unit step and after it, each on a
   runner of its own beside the legs: envoy-go-alone, the rows that measure time; envoy-go-race-impossible,
-  the rest of the plain run the race build cannot make (the bus's allocation count and the documents
-  package's memory bounds and render storms); envoy-go-skips, the skip counter's own test, the
-  store-form count and the two vets; and envoy-go-natslive, the container-backed matrix, the
-  integration suite and the callout check.
+  the rest of the plain run the race build cannot make (the bus's allocation count, the priorities
+  read's four tests over its corpus of production's counts and the documents package's memory
+  bounds and render storms), the four (`PG_STAT_STATEMENTS_TESTS`) on a second Postgres that
+  preloads pg_stat_statements, started by the job on port 5433 for them; envoy-go-skips, the skip
+  counter's own test, the store-form count and the two vets; and envoy-go-natslive, the
+  container-backed matrix, the integration suite and the callout check.
 - envoy-go-race's step in five legs: the listener's tests in two, a group each
   (`.github/go-legs/packages/envoy/cmd/listener.yaml`, written by `.github/scripts/go_legs_groups.py`
   as the daemon's are), the bus with the registry store, the session cache, kvwatch and the NATS
@@ -2815,8 +2817,9 @@ are rebalanced from their own times. Two more are envoy's own:
 What it costs: each job repeats its setup, about 80 s for a unit leg and 65 s for a race leg, so
 the legs use more runner minutes than the two jobs did, and each summary job is one more wait for
 a runner after its kind's last leg. A job sets up only what its tests use: envoy-go-race-impossible
-and envoy-go-skips start no test container and run no Bun, so they pull no test image (their
-Postgres service's image aside), install nothing and set no testcontainers variable.
+and envoy-go-skips run no test that starts a container and run no Bun, so they pull no test image
+(their Postgres service's image aside, which envoy-go-race-impossible also runs as its second
+Postgres), install nothing and set no testcontainers variable.
 Standard runners on this public repository bill no money; the cost is runner concurrency and that
 wait.
 

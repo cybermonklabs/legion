@@ -79,11 +79,34 @@ func declaredGateNames(root string) (map[string]bool, error) {
 		if err != nil {
 			return nil, err
 		}
-		for _, match := range declaration.FindAllStringSubmatch(withoutCommentLines(string(content)), -1) {
+		text := string(content)
+		if !mayNameGate(text) {
+			continue
+		}
+		for _, match := range declaration.FindAllStringSubmatch(withoutCommentLines(text), -1) {
 			declared[match[1]] = true
 		}
 	}
 	return declared, nil
+}
+
+// mayNameGate is a necessary, not sufficient, condition for a declaration or citation: either
+// prefix immediately followed by an ASCII capital. The full expressions still judge candidates.
+// Literal searches leave files with no possible name out of the declaration regexp's scan.
+func mayNameGate(content string) bool {
+	for _, prefix := range []string{"refuse", "within"} {
+		for rest := content; ; {
+			at := strings.Index(rest, prefix)
+			if at < 0 {
+				break
+			}
+			rest = rest[at+len(prefix):]
+			if len(rest) > 0 && rest[0] >= 'A' && rest[0] <= 'Z' {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // withoutCommentLines is content with each whole-line comment blanked, so that a name a comment

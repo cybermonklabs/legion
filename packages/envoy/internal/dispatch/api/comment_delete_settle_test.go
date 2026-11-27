@@ -230,8 +230,8 @@ func BenchmarkDeleteOfAPendingInsertSettle(b *testing.B) {
 			}
 			slices.Sort(settled)
 			slices.Sort(unsettled)
-			with50, with99 := percentileOfDismissedScale(settled, 0.50), percentileOfDismissedScale(settled, 0.99)
-			without50, without99 := percentileOfDismissedScale(unsettled, 0.50), percentileOfDismissedScale(unsettled, 0.99)
+			with50, with99 := nearestRank(settled, 0.50), nearestRank(settled, 0.99)
+			without50, without99 := nearestRank(unsettled, 0.50), nearestRank(unsettled, 0.99)
 			b.Logf("%s: the delete with its settle: p50 %.1f ms, p99 %.1f ms; without it: p50 %.1f ms, p99 %.1f ms; over %d runs each",
 				document.name, msOf(with50), msOf(with99), msOf(without50), msOf(without99), len(settled))
 			b.Logf("%s: the settle adds p50 %.1f ms, p99 %.1f ms", document.name, msOf(with50-without50), msOf(with99-without99))

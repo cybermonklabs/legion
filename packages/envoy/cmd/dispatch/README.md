@@ -2764,6 +2764,18 @@ Through the index the lateral reads the issue's moves backwards from the newest 
 It is built `concurrently` too, after `20261125125703`, and a start applies it before it serves, so its build adds to the time the server is down at the deploy that carries it.
 Its census answers `0`.
 
+Migration `20261125143901_issues_last_event_at` adds two nullable columns to `issues`, `last_event_at` (`timestamptz`) and `last_event_at_seq` (`bigint`), with no default and no check: the time and the seq of the issue's newest event.
+An event append writes both in the `update issues` that advances `last_seq` (`QueueAppendWithLogins` in `internal/dispatch/events/broker.go`), and `GET /api/v1/priorities` takes each member issue's newest event from them where `last_event_at_seq` equals `last_seq` (`priorityReadQuery` in `internal/dispatch/api/priority_queries.go`), reading no event.
+Where the two differ or the pair is null, the read probes the event of `last_seq` through `events_issue_key_seq_key`, so its answer is the same before the fill, in a roll and after a rollback.
+Its `alter table` writes only the catalog: it reads no row and rewrites none, and holds `ACCESS EXCLUSIVE` on `issues` for the catalog write alone, under the runner's `lock_timeout`.
+The release before names its own columns of `issues`, so it serves on this schema; an event it appends leaves the pair behind `last_seq`, and the read probes that row.
+Its census answers `0`.
+
+Migration `20261125144002_issues_last_event_at_backfill` fills that pair once, in one `update`, on each issue whose `last_seq` names an event and whose pair does not name it, from the issue's event of `last_seq`.
+It takes a row lock on each issue it writes, and skips each row another transaction holds (`for no key update skip locked`), so it waits on no request's write and is in no deadlock cycle with one.
+A row it skipped keeps its pair as it was, and the read probes that row until the row's next append fills the pair.
+Its census answers `0`: it writes only the two columns `20261125143901` adds in the same release, so it changes no value any reader had, and it cannot name them, since they do not exist when the census is taken.
+
 Migration `0147_message_deliveries_session_created` created `message_deliveries_session_created` on `message_deliveries (session_id, created_at desc) include (message_id)` where `state` is `sent`, for the same route's read of the session's sent message deliveries created since an hour before its window, and `20261114081436_drop_message_deliveries_session_created` drops it:
 the route reads queued deliveries too now and takes that window through `message_deliveries_session_taken` (`20261114081435`, below) instead.
 `message_deliveries_session` (`0051`) keys `session_id` alone, so through it that read fetched the session's whole delivery history and filtered it by time:
@@ -5224,6 +5236,8 @@ Each item below names a path with its method and identity, then its purpose.
   or `dismissed`, what they dismissed out of it, newest dismissal first, 200 rows at a time from `cursor`, which is the `next_cursor` the page before it answered.
   `limit` or `offset` under `dismissed`, and `cursor` under any other state, are each `400 INVALID_QUERY`.
   A row names the thread, its owner, its issue's priority, its project, its subject, its root's deep link, the newest reply's author, first line and time, the caller's read mark, whether it is unread, how many writes they have not read, and its dismissal mark when it has been dismissed.
+  A row of kind `ask`, `comment` or `message` also carries `root_author`, the actor who wrote the thread's root in the shape of the reply's `author`: the ask's asker, the root comment's author or the root message's author, as it is stored, so a root the Legion daemon wrote reads as its session, `legion-daemon:<PROJECT>`.
+  An `agent` row carries none.
   `issue` or `artifact` narrows to one owner (both is `400 INVALID_QUERY`, and either leaves out every agent row, which has neither).
   An absent `limit` is every row, which is what the Inbox reads; a `limit` the caller names is 1–200.
   The answer carries `as_of`, the database time of the one snapshot every row was read in, which is what Mark all read passes back as its read mark.
@@ -6128,6 +6142,7 @@ Each item below names a path with its method and identity, then its purpose.
   GET lists the Verification document's `check` blocks in document order as `{issue, verification_artifact_id, checks}`.
   Each check carries its attributes (`when`, `surface`, `run`, `negative_control`, `ci_check`, `subject`, `program`).
   It also carries the version its words last changed in, their digest, and every recorded result, newest first.
+  A check whose block's `serves` attribute names statements carries `serves`, those references each as the block writes it, in the block's order; a check whose block names none carries no `serves`.
 
   - A check's results come newest first by `created_at`, the time the recording transaction began, with `id` descending breaking a tie, and a client that reads one result per check reads the first of them;
     `dispatch results` prints every one of them, each with the reading its role recorded.
@@ -7039,6 +7054,8 @@ go vet ./...
 `internal/dispatch/api` alone takes close to `go test`'s default ten-minute package deadline (about 600 s), so it runs first and on its own, with 20 minutes, as CI's `envoy-go` job runs it (`docs/testing.md`, "Go's package deadline").
 
 `./scripts/dev-postgres.sh` prints the database URL to set (Local Postgres, above).
+Its server preloads `pg_stat_statements` (`-c shared_preload_libraries=pg_stat_statements`), which the priorities read's bound test, `TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan`, reads each statement's database time from; that test stops where the server does not preload the module.
+When `dispatch-pg` already exists on the pinned image, the script reads `shared_preload_libraries` from its server; where `pg_stat_statements` is missing (a container created before the script passed that argument), the script refuses it and prints the move-aside commands that dump its databases and restore them into a new container with the module preloaded.
 One test: `go test -run TestName ./internal/dispatch/api`, which needs no deadline of its own.
 
 Three suites build only under a tag, and the commands above run none of them.

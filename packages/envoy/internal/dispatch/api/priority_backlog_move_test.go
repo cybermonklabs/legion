@@ -1,6 +1,6 @@
 // priority_backlog_move_test.go holds the read of each issue's move into `backlog` or `icebox`
 // (backlogMoveLateral) to what it reads and to what it answers, in the two statements that splice
-// it: the full second fault of the priorities read (backlogQuery) and the listing with
+// it: the second fault of the priorities read's statement (priorityReadQuery) and the listing with
 // `?moved=true` (listIssuesQuery with $14 true, issueMovedJoin). The lateral reads the issue's
 // events newest first through the partial index events_backlog_moves
 // (store/migrations/20261125131100_events_backlog_moves.up.sql) and stops at the first event that
@@ -41,7 +41,7 @@ const backlogMoveProject = "BACK"
 // The two priorities of the corpus: one stated on a root whose children stand in backlog or
 // icebox, so that work advances it by inheritance, and one stated on each issue in backlog or
 // icebox of its own. The second fault lists an issue that states a priority no issue above it
-// carries (priorityBacklogQuery), so of the root's children in backlog or icebox it lists only the
+// carries (priorityBacklogTerms), so of the root's children in backlog or icebox it lists only the
 // one that states the second priority as well; the listing reads the move of every one of them.
 const (
 	backlogMoveFleetPriority = "backlog-the-fleet"
@@ -193,12 +193,11 @@ func (h backlogMoveHistory) write(t testing.TB, random *rand.Rand, key, status s
 	return rows, newest
 }
 
-// backlogMoveCorpus is what seedBacklogMoveCorpus wrote: the server that reads it, its store, the
-// live priorities it holds, the status each issue stands in, the newest move into backlog or
-// icebox each issue's events record (no entry for an issue whose events record none), the rows
-// of the second fault, and the issue among them whose events record no move.
+// backlogMoveCorpus is what seedBacklogMoveCorpus wrote: its store, the live priorities it holds,
+// the status each issue stands in, the newest move into backlog or icebox each issue's events
+// record (no entry for an issue whose events record none), the rows of the second fault, and the
+// issue among them whose events record no move.
 type backlogMoveCorpus struct {
-	served     *server
 	database   *store.Store
 	priorities []string
 	statuses   map[string]string
@@ -234,11 +233,11 @@ type backlogMoveCorpus struct {
 // at, so it lists every row it counts.
 func seedBacklogMoveCorpus(t *testing.T) backlogMoveCorpus {
 	t.Helper()
-	_, database, deps := newTestServer(t, testServerOptions{})
+	_, database, _ := newTestServer(t, testServerOptions{})
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	random := rand.New(rand.NewPCG(5, 6))
 	corpus := backlogMoveCorpus{
-		served: directServer(deps), database: database,
+		database:   database,
 		priorities: []string{backlogMoveFleetPriority, backlogMoveOwnPriority},
 		statuses:   map[string]string{}, moves: map[string]backlogMove{},
 	}
@@ -361,11 +360,13 @@ var backlogMoveSchemas = []struct {
 // TestTheBacklogMoveReadsTheNewestMoveThroughItsIndex holds the read of each issue's move into
 // backlog or icebox (backlogMoveLateral) to one walk back through events_backlog_moves for each
 // row it reads the move of, which stops at the first event it reads
-// (requireBacklogMoveThroughItsIndex), in the full second fault and in the listing with
-// `?moved=true`. The fault is read with the arguments readPriorities binds: the relations of the
-// live priorities as readPriorityRelations reads them, and no project.
-// The listing is read with the arguments the route binds for `?project=BACK&moved=true`. Each is
-// read under four plans, each run and measured: the generic plan that a prepared statement
+// (requireBacklogMoveThroughItsIndex), in the list of the second fault of the priorities read's
+// statement (priorityReadQuery), the plan of its CTE priorityBacklogListCTE, and in the listing
+// with `?moved=true`. The statement is read with the arguments readPriorities binds: the live
+// priorities, and no project. Its newest event reads events too, which is no read of a move, so
+// the check takes the list's own plan. The listing is read with the arguments the route binds for
+// `?project=BACK&moved=true`, and the check takes its whole plan. Each is read under four plans,
+// each run and measured: the generic plan that a prepared statement
 // settles on (explaintest.AnalyzedGenericPlan) and a plan made for the values, both with
 // sequential scans off and no other setting, as the package's plan tests read them
 // (explaintest.GenericPlan); a plan made for the values with the planner's default settings; and
@@ -384,7 +385,12 @@ func TestTheBacklogMoveReadsTheNewestMoveThroughItsIndex(t *testing.T) {
 	t.Parallel()
 	corpus := seedBacklogMoveCorpus(t)
 	settleSpeedCorpus(t, corpus.database)
-	seedKeys, seedIDs := priorityCorpusSeed(t, corpus.served, corpus.priorities)
+	checkedPlan := func(t testing.TB, plan json.RawMessage, part, subject string) json.RawMessage {
+		if part == "" {
+			return plan
+		}
+		return planSubplan(t, plan, part, subject)
+	}
 	ctx := context.Background()
 	keys := explaintest.NewIndexKeys(corpus.database.Pool)
 	connection, err := corpus.database.Pool.Acquire(ctx)
@@ -394,12 +400,12 @@ func TestTheBacklogMoveReadsTheNewestMoveThroughItsIndex(t *testing.T) {
 	defer connection.Release()
 
 	statements := []struct {
-		name, sql string
-		arguments []any
-		reads     int
+		name, sql, part string
+		arguments       []any
+		reads           int
 	}{
-		{"the second fault", backlogQuery, []any{seedKeys, seedIDs, []string{}}, len(corpus.backlog)},
-		{"the listing with ?moved=true", listIssuesQuery, projectListingArguments(backlogMoveProject, true), corpus.standingInBacklog()},
+		{"the second fault", priorityReadQuery, priorityBacklogListCTE, []any{corpus.priorities, []string{}}, len(corpus.backlog)},
+		{"the listing with ?moved=true", listIssuesQuery, "", projectListingArguments(backlogMoveProject, true), corpus.standingInBacklog()},
 	}
 	for statementNumber, statement := range statements {
 		parameters, literals := benchtime.PreparedArguments(t, statement.name, statement.arguments...)
@@ -422,13 +428,14 @@ func TestTheBacklogMoveReadsTheNewestMoveThroughItsIndex(t *testing.T) {
 			}
 			for _, plan := range plans {
 				subject := fmt.Sprintf("%s under %s %s", statement.name, plan.name, schema.name)
+				read := checkedPlan(t, plan.plan, statement.part, subject)
 				if !schema.control {
-					requireBacklogMoveThroughItsIndex(t, keys, plan.plan, subject, statement.reads)
+					requireBacklogMoveThroughItsIndex(t, keys, read, subject, statement.reads)
 					continue
 				}
 				explaintest.RequireControlFails(t, subject, "a control",
-					"a read through the partial index from a read of the issue's other events", plan.plan,
-					func(t testing.TB) { requireBacklogMoveThroughItsIndex(t, keys, plan.plan, subject, statement.reads) })
+					"a read through the partial index from a read of the issue's other events", read,
+					func(t testing.TB) { requireBacklogMoveThroughItsIndex(t, keys, read, subject, statement.reads) })
 			}
 		}
 	}
@@ -543,8 +550,9 @@ func requireBacklogMoveThroughItsIndex(t testing.TB, keys *explaintest.IndexKeys
 }
 
 // backlogMoveAnswer is what the two statements answer over the corpus: the second fault's count,
-// its counts by priority and its rows, as scanPriorityFault reads them, and the listing's rows as
-// the route resolves them (issueSummaryRow), each with its two cells of the move.
+// its counts by priority and its rows, as readPriorities resolves them (priorityFault.resolve),
+// and the listing's rows as the route resolves them (issueSummaryRow), each with its two cells of
+// the move.
 type backlogMoveAnswer struct {
 	Count      int                   `json:"count"`
 	ByPriority map[string]int        `json:"by_priority"`
@@ -552,10 +560,10 @@ type backlogMoveAnswer struct {
 	Listing    []model.IssueSummary  `json:"listing"`
 }
 
-// backlogMoveAnswers runs the second fault, with the arguments readPriorities binds, and the
-// listing with `?project=BACK&moved=true`, in one transaction after setup, and rolls the
-// transaction back.
-func backlogMoveAnswers(t *testing.T, database *store.Store, seedKeys, seedIDs, setup []string) backlogMoveAnswer {
+// backlogMoveAnswers runs the priorities read's statement (priorityReadQuery), with the arguments
+// readPriorities binds for priorities and no project, for its second fault, and the listing with
+// `?project=BACK&moved=true`, in one transaction after setup, and rolls the transaction back.
+func backlogMoveAnswers(t *testing.T, database *store.Store, priorities, setup []string) backlogMoveAnswer {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -569,15 +577,11 @@ func backlogMoveAnswers(t *testing.T, database *store.Store, seedKeys, seedIDs, 
 		}
 	}
 	var answer backlogMoveAnswer
-	fault, err := tx.Query(ctx, backlogQuery, seedKeys, seedIDs, []string{})
-	if err != nil {
-		t.Fatalf("run the second fault: %v", err)
+	var read priorityReadAnswer
+	if err := tx.QueryRow(ctx, priorityReadQuery, priorities, []string{}).Scan(read.targets()...); err != nil {
+		t.Fatalf("run the priorities read's statement: %v", err)
 	}
-	answer.Count, answer.ByPriority, answer.Backlog, err = scanPriorityFault(fault, true)
-	fault.Close()
-	if err != nil {
-		t.Fatalf("read the second fault: %v", err)
-	}
+	answer.Count, answer.ByPriority, answer.Backlog = read.parked.resolve(true)
 	listed, err := tx.Query(ctx, listIssuesQuery, projectListingArguments(backlogMoveProject, true)...)
 	if err != nil {
 		t.Fatalf("run the listing: %v", err)
@@ -620,10 +624,11 @@ func requireBacklogMoveCells(t *testing.T, read, key string, want *backlogMove, 
 
 // TestTheBacklogMoveAnswersTheRowsItAnswersWithoutItsIndex holds the two statements that splice
 // backlogMoveLateral to the rows they answer on the schema of main, with events_backlog_moves
-// dropped in a transaction that is rolled back. Over the corpus of seedBacklogMoveCorpus, the full
-// second fault answers the same count, the same counts by priority and the same rows, each with
-// the time and the actor of its move and its `advances` entries, and the listing with
-// `?moved=true` answers the same rows with the same two cells of the move.
+// dropped in a transaction that is rolled back. Over the corpus of seedBacklogMoveCorpus, the
+// second fault of the priorities read's statement answers the same count, the same counts by
+// priority and the same rows, each with the time and the actor of its move and its `advances`
+// entries, and the listing with `?moved=true` answers the same rows with the same two cells of
+// the move.
 //
 // Before the comparison, the answer read through the index is held to the corpus, so the
 // comparison is of answers that hold the moves: each row of the second fault carries the newest
@@ -634,9 +639,8 @@ func TestTheBacklogMoveAnswersTheRowsItAnswersWithoutItsIndex(t *testing.T) {
 	t.Parallel()
 	corpus := seedBacklogMoveCorpus(t)
 	settleSpeedCorpus(t, corpus.database)
-	seedKeys, seedIDs := priorityCorpusSeed(t, corpus.served, corpus.priorities)
-	withIndex := backlogMoveAnswers(t, corpus.database, seedKeys, seedIDs, nil)
-	withoutIndex := backlogMoveAnswers(t, corpus.database, seedKeys, seedIDs, []string{dropBacklogMoveIndex})
+	withIndex := backlogMoveAnswers(t, corpus.database, corpus.priorities, nil)
+	withoutIndex := backlogMoveAnswers(t, corpus.database, corpus.priorities, []string{dropBacklogMoveIndex})
 
 	if withIndex.Count != len(corpus.backlog) || len(withIndex.Backlog) != len(corpus.backlog) {
 		t.Fatalf("the second fault counts %d rows and lists %d, want all %d of its rows of the corpus listed",

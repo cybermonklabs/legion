@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import type { Actor } from "../../api/types";
 import { AgentName } from "../refs/AgentName";
+import { type AgentNames, CachedAuthor } from "./CachedAuthor";
 import type { ReplyTarget } from "./composer-model";
 import { GONE_REPLY_WORDS, KEPT_MESSAGE_WORDS, KEPT_REPLY_WORDS } from "./composer-words";
 import { addressWords } from "./send-request";
@@ -76,12 +77,19 @@ export function KeptReply({
  *  (`words`, the issue page's box) says that one. */
 export function GoneReply({
   actor,
+  agentNames = "live",
   deleted = false,
   parentKind,
   waits = false,
   words,
 }: {
   readonly actor: Actor;
+  /** How the post's author is named: `live`, as everywhere, draws `AgentName`, whose session
+   *  form reads the live agent registry and starts the agents poll; `cache` names the author from
+   *  the registry the cache already holds (`CachedAuthor`) and starts no read, for a host that
+   *  sends no agents read when it draws (dispatch://INFRA-5702/spec#b-r-reads). With `words`, the
+   *  author is always named by `AgentName`, whatever this says. */
+  readonly agentNames?: AgentNames;
   readonly deleted?: boolean;
   readonly parentKind: ReplyTarget["parentKind"];
   readonly waits?: boolean;
@@ -94,6 +102,19 @@ export function GoneReply({
         {words.before[parentKind]}
         <AgentName actor={actor} inline />
         {waits ? after.waits : after.now}
+      </>
+    );
+  }
+  if (agentNames === "cache") {
+    return (
+      <>
+        {GONE_REPLY_WORDS.before[parentKind]}
+        <CachedAuthor actor={actor} />
+        {GONE_REPLY_WORDS.answered}
+        {deleted ? GONE_REPLY_WORDS.became.deleted : GONE_REPLY_WORDS.became.gone}
+        {GONE_REPLY_WORDS.kept}
+        {waits ? GONE_REPLY_WORDS.waits : ""}
+        {GONE_REPLY_WORDS.end}
       </>
     );
   }
