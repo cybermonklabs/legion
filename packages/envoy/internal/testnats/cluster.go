@@ -3,6 +3,7 @@ package testnats
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"strings"
 	"sync/atomic"
@@ -20,9 +21,14 @@ import (
 // route URL.
 type Cluster struct {
 	Servers []*Server
-	// routes are the relays of the members' route ports, member i's at i, which a test in this
-	// package freezes to hold every message between the members.
+	// routes are the relays of the members' route ports, member i's at i, which FreezeRoutes
+	// freezes to hold every message between the members.
 	routes []*relay
+	// readySeed is the seed of the nkey user AwaitReady asks each member's JetStream as, "" for a
+	// cluster whose members admit a client with no credential (StartClusterConfig). A member of a
+	// StartClusterWithCallout cluster reloaded with ReloadMember must keep that user in its
+	// configuration, or AwaitReady waits on it until the test's deadline.
+	readySeed string
 }
 
 // StartCluster runs a cluster of n servers with JetStream, each with a store of its own, shut down
@@ -48,6 +54,16 @@ func StartCluster(t testing.TB, n int) *Cluster {
 // with no credential and asks JetStream for its account info, so a config that declares users names
 // a no_auth_user whose account has JetStream.
 func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
+	t.Helper()
+	cluster := startCluster(t, n, config)
+	cluster.AwaitReady(t)
+	return cluster
+}
+
+// startCluster starts the n members StartClusterConfig describes, each member's relay listening on
+// a loopback address of its own (testport.ListenLoopback), and returns without waiting for
+// JetStream.
+func startCluster(t testing.TB, n int, config string) *Cluster {
 	t.Helper()
 	if n < 2 {
 		t.Fatalf("a cluster needs at least 2 servers, not %d", n)
@@ -81,7 +97,6 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 		members[i].Store(server)
 		cluster.Servers[i] = server
 	}
-	cluster.AwaitReady(t)
 	return cluster
 }
 
@@ -110,6 +125,25 @@ func memberName(i int) string { return fmt.Sprintf("n%d", i+1) }
 // Name is member i's server_name (Server.Name).
 func (c *Cluster) Name(i int) string { return c.Servers[i].Name() }
 
+// FreezeRoutes stops the members' routes moving bytes, in either direction, and returns the func
+// that thaws them, which runs once however often it is called. Every route keeps its connection,
+// as Server.Freeze keeps a client's: no member hears another until the thaw, so a replicated
+// stream's leader takes a publish its own clients send it and cannot store it, since no follower
+// hears the proposal, and a second publish under the same message id meanwhile is refused as
+// still in process (nats-server's JSStreamDuplicateMessageConflict).
+func (c *Cluster) FreezeRoutes(t testing.TB) func() {
+	t.Helper()
+	thaws := make([]func(), len(c.routes))
+	for i, route := range c.routes {
+		thaws[i] = route.freeze()
+	}
+	return func() {
+		for _, thaw := range thaws {
+			thaw()
+		}
+	}
+}
+
 // Member is the index of the member whose server_name is name, or -1 when none has it.
 func (c *Cluster) Member(name string) int {
 	for i := range c.Servers {
@@ -135,10 +169,12 @@ func (c *Cluster) URL() string { return strings.Join(c.URLs(), ",") }
 
 // AwaitReady waits until one running member leads the JetStream meta group, that leader counts
 // every running member, and no stopped one, as an online peer, every running member is current
-// with it, and JetStream answers an account info request on every running member, for as long as
-// the test may run (testDeadline): a cluster's JetStream start on a loaded machine can take longer
-// than any fixed wait allows. A test calls it after it starts a stopped member again, or after it
-// stops one, before it asks JetStream for anything that needs the meta group.
+// with it, JetStream answers an account info request on every running member, and every running
+// member's routes hold the reply wildcard that request made on every other running member
+// (replyRoutesReady), for as long as the test may run (testDeadline): a cluster's JetStream start
+// on a loaded machine can take longer than any fixed wait allows. A test calls it after it starts
+// a stopped member again, or after it stops one, before it asks JetStream for anything that needs
+// the meta group.
 //
 // A member that no other running member's meta group hears from within muteAfter is restarted, at
 // most muteRestarts times in one call. Each restart starts the listening over for every member,
@@ -158,14 +194,128 @@ func (c *Cluster) URL() string { return strings.Join(c.URLs(), ",") }
 // another reason.
 func (c *Cluster) AwaitReady(t testing.TB) {
 	t.Helper()
+	c.awaitMeta(t)
+	for _, server := range c.Servers {
+		if server.running() {
+			connectAs(t, server.URL(), c.readySeed).Close()
+		}
+	}
+	c.awaitReplyRoutes(t)
+}
+
+// awaitReplyRoutes waits, until testDeadline, for replyRoutesReady.
+func (c *Cluster) awaitReplyRoutes(t testing.TB) {
+	t.Helper()
 	bound := boundOf(t)
-	// listening is when AwaitReady began listening for the members: its call, or its last restart.
+	for {
+		err := c.replyRoutesReady()
+		if err == nil {
+			return
+		}
+		if bound.over() {
+			t.Fatalf("the members' reply subjects were not routed by %s, short of the test's deadline: %v", bound, err)
+		}
+		bound.pause()
+	}
+}
+
+// replyRoutesReady reports why a running member could still drop the answer to the first
+// JetStream request a client sends through another running member, or nil when none can.
+//
+// A client's JetStream request crosses its account's import of the system account's $JS.API.>
+// service, and the member it entered through gives it a reply subject under the system account's
+// reply wildcard, _R_.<prefix>.>, and the answer comes back on that subject through the member's
+// routes. nats-server makes the wildcard, and sends it to the member's routes, only at the first
+// such request through the member (newServiceReply, server/accounts.go:2504-2522, the same in
+// v2.15.3; the routes get it from updateRouteSubscriptionMap, server/route.go:2553-2723), while
+// the request goes on at once. A member that hears the request from the entry member hears the
+// wildcard before it on the same route, so its answer comes back: the meta leader's answer to an
+// account info (server/jetstream_api.go:1461-1475) did, for the first request through each member
+// of 1,000 fresh clusters. The answer to a consumer update comes from the consumer's leader once
+// it applies the meta leader's Raft commit (server/jetstream_cluster.go:7840-7856 and 9045-9145
+// for a one-copy consumer, 7891-7928 for a replicated one). When that leader is a third member,
+// the commit reaches it on another route than the wildcard, can arrive first, and the answer is
+// dropped.
+// TestThePrepareOperatorRaisesThresholdsAndWritesTheCohort lost that update so in 6 of 48,000
+// plain runs on two CPUs in the build cluster, and in envoy-go job 140166810178.
+func (c *Cluster) replyRoutesReady() error {
+	for i, server := range c.Servers {
+		srv := server.natsServer()
+		if srv == nil {
+			continue
+		}
+		wildcards, err := replyWildcards(srv)
+		if err != nil {
+			return fmt.Errorf("member %s: %w", c.Name(i), err)
+		}
+		if len(wildcards) == 0 {
+			return fmt.Errorf("member %s has no reply wildcard: no request has entered it yet", c.Name(i))
+		}
+		for j, other := range c.Servers {
+			otherSrv := other.natsServer()
+			if j == i || otherSrv == nil {
+				continue
+			}
+			routed, err := routedSubjects(otherSrv)
+			if err != nil {
+				return fmt.Errorf("member %s: %w", c.Name(j), err)
+			}
+			for _, wildcard := range wildcards {
+				if !routed[wildcard] {
+					return fmt.Errorf("member %s has not heard member %s's reply wildcard %s", c.Name(j), c.Name(i), wildcard)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// replyWildcards are the reply wildcards, _R_.<prefix>.>, of srv's system account: its own
+// subscriptions, which its routes carry to the other members.
+func replyWildcards(srv *natsserver.Server) ([]string, error) {
+	system := srv.SystemAccount()
+	if system == nil {
+		return nil, errors.New("no system account")
+	}
+	subs, err := srv.Subsz(&natsserver.SubszOptions{Subscriptions: true, Account: system.GetName(), Limit: math.MaxInt32})
+	if err != nil {
+		return nil, err
+	}
+	var wildcards []string
+	for _, sub := range subs.Subs {
+		if tokens := strings.Split(sub.Subject, "."); len(tokens) == 3 && tokens[0] == "_R_" && tokens[2] == ">" {
+			wildcards = append(wildcards, sub.Subject)
+		}
+	}
+	return wildcards, nil
+}
+
+// routedSubjects are the subjects of every subscription srv's routes hold for the other members.
+func routedSubjects(srv *natsserver.Server) (map[string]bool, error) {
+	routes, err := srv.Routez(&natsserver.RoutezOptions{Subscriptions: true})
+	if err != nil {
+		return nil, err
+	}
+	routed := map[string]bool{}
+	for _, route := range routes.Routes {
+		for _, subject := range route.Subs {
+			routed[subject] = true
+		}
+	}
+	return routed, nil
+}
+
+// awaitMeta is AwaitReady's wait for the meta group, restarting a mute member as AwaitReady says.
+func (c *Cluster) awaitMeta(t testing.TB) {
+	t.Helper()
+	bound := boundOf(t)
+	// listening is when the wait began listening for the members: its call, or its last restart.
 	listening := time.Now()
 	restarts := 0
 	for {
 		err := c.metaReady()
 		if err == nil {
-			break
+			return
 		}
 		if restarts < muteRestarts {
 			if i := c.mute(time.Since(listening)); i >= 0 {
@@ -181,11 +331,6 @@ func (c *Cluster) AwaitReady(t testing.TB) {
 			t.Fatalf("JetStream was not ready by %s, short of the test's deadline (%d members restarted): %v", bound, restarts, err)
 		}
 		bound.pause()
-	}
-	for _, server := range c.Servers {
-		if server.running() {
-			Connect(t, server.URL()).Close()
-		}
 	}
 }
 

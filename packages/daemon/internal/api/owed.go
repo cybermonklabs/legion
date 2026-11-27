@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -67,18 +68,20 @@ type OwedResponse struct {
 // turn it is for, nor to a caller that cannot prove it holds the claim.
 //
 // A claim the daemon has failed is the one exception, and it is answered that it owes nothing.
-// The failure is the daemon's own word that the session is finished: a retry starts the phase
-// again in a session of its own, and a reminder written into this one reaches nobody who can act
-// on it. A failed claim holds no secret any more (supervise.NormalizeClaim drops the capability
+// The failure is the daemon's own word that the claim's work is its architect's to decide, and a
+// reminder written into its session reaches nobody who can act on it. A failed claim holds no
+// secret any more (supervise.NormalizeClaim drops the capability
 // of every state that holds none), so its session cannot prove it holds the claim, and refusing
 // it would read to the reminder as an answer that did not arrive, which nudges
 // (UNREAD_CHECK in packages/pi-shared/src/phase-reminder.ts). So a claim this daemon
 // holds failed, asked from the session it records, is answered that nothing is owed without the
 // secret: the answer names no work, and that the claim is failed is what the unauthenticated
 // GET /legion/v1/state already serves. That is what ends the reminding of a session whose
-// provider refuses every turn: the daemon fails the claim once the run of refused turns reported
-// over `POST /legion/v1/claims/turn-outcome` reaches `launch_failure_limit`, and the one delayed
-// reminder each refused turn arms asks this route before it goes.
+// provider refuses its turns with a status that cannot clear: the daemon fails the claim on the
+// first such turn, a reminder's own included, which it judges from the turn-outcome report
+// (`POST /legion/v1/claims/turn-outcome`, dispatch://INFRA-4508), and the one delayed reminder
+// each refused turn arms asks this route before it goes. A run of refusals that can clear fails
+// no claim, so its reminders keep their pace.
 //
 // A daemon that reads no issue record, does not know which role works a phase, or holds no rule
 // for a wait or a hold (Options.Pool, Options.RoleFor, Options.WaitStands, Options.Holds), answers
@@ -160,6 +163,7 @@ type owedStanding struct {
 // notices about a phase worker take (workflowRuntime.owningArchitect in
 // internal/daemon/specs.go): the issue's own architect while its claim holds its role, else the
 // nearest one above it that does, else the tree root's. It reads the tree's issues and their
+<<<<<<< 7fa22de66d
 // architect claims, so it grows with the tree and not with the deployment.
 //
 // The wait and the hold are each read by the one rule every reader of it asks, which the daemon
@@ -173,6 +177,13 @@ type owedStanding struct {
 func (s *server) owedStandingOf(ctx context.Context, c supervise.Claim, issue record.Issue) (owedStanding, error) {
 	var standing owedStanding
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+=======
+// architect claims, so it grows with the tree and not with the deployment, in a read-only
+// transaction of its own, which the completion route, sharing handoffPosition, does not pay for.
+func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim.Token, error) {
+	var owner claim.Token
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+>>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 		walk, err := record.ReadOwnerWalk(ctx, s.records, tx, s.project, issue.Tree)
 		if err != nil {
 			return err
@@ -214,7 +225,7 @@ func (s *server) owedStandingOf(ctx context.Context, c supervise.Claim, issue re
 // later still; the record is what the workflow writes in the very transaction that takes a
 // completion or moves a phase. So a role whose phase has finished owes nothing whatever it was
 // handed or remembers: the issue has moved on to another role's phase (RoleFor names another
-// role), to one no role works (awaiting_person, done, held), or its tree lingers, where a
+// role), to one no role works (awaiting_person, awaiting_children, done, held), or its tree lingers, where a
 // completion records nothing; or the phase is merging and its pull request is merged, which is
 // what finishes that phase (workflow.PhaseFinished) while a merged root stands in merging until
 // the rest of its tree leaves.
@@ -233,19 +244,23 @@ func (s *server) owedStandingOf(ctx context.Context, c supervise.Claim, issue re
 // entry's work, so the row is all that says the work stands. A merger in merging whose pull
 // request is not merged owes the merge, since the merger merges.
 //
-// The claim decides one thing only, which kind of work its turn is on, read exactly as the
-// completion route reads it (handoffComplete): a claim serving a look of a production check owes
-// that look and nothing of a phase, and every other claim owes its phase or nothing. A look is
-// owed while the record holds it open — the check open, its look open, the look the claim serves
-// being the check's current one of this check instance, and the check the claim's role's — and a
-// look the check has left owes nothing. A look the record holds open for
-// the claim's role while the claim serves none — its task not yet taken, or a testing turn still
-// running behind a merged close — is not owed yet: a report sent from that turn is refused as no
-// report on production (CHECK_LOOK_NOT_SERVED), and the look's task comes as the next prompt.
+// The claim decides one thing first: whether its turn is on a look of a production check. A claim
+// serving a look the record holds open — the check open, its look open, the look the claim serves
+// being the check's current one of this check instance, and the check the claim's role's — owes
+// that look. Every other claim owes its phase or nothing, by the rule above, and that includes a
+// claim whose served look the check has left: a phase task leaves the served look in place
+// (supervise's ServingCheck), so a tester that once served a look and holds testing work again,
+// a root reopened in its linger, owes its testing phase, and the completion route takes that
+// phase's completion from it, since only a report that names its check (checkOpenedAt) is taken
+// on the check route. A look the record holds open for the claim's role while the claim serves
+// none — its task not yet taken, or a testing turn still running behind a merged close — is not
+// owed yet: a report sent from that turn is refused as no report on production
+// (CHECK_LOOK_NOT_SERVED), and the look's task comes as the next prompt.
 //
 // Neither the claim's prompts nor the daemon's own delivery of a relaunch's record change that
 // reading. A prompt of the task Oh My Pi acknowledged and has not answered (supervise's
 // Machine.outstanding) makes a late turn the task's, so the confirmation it gives is what
+<<<<<<< 7fa22de66d
 // ServingCheck, and the completion route with it, read here. The relaunch's delivery
 // (supervise.HoldsTask) carries no run, no entry and no look, only the sentence of what the last
 // let-go ended, so a claim holding it, confirmed or not, is answered as one holding nothing is:
@@ -256,12 +271,19 @@ func (s *server) owedStandingOf(ctx context.Context, c supervise.Claim, issue re
 // owes its phase, which it waits to go on with: each key tells the reader why the owed work does
 // not move, and the answer carries it as standing read it.
 func owedBy(c supervise.Claim, position completionPosition, standing owedStanding, roleFor func(phase.Phase) claim.Role) OwedResponse {
+=======
+// ServingCheck reads here. The relaunch's delivery (supervise.HoldsTask) carries no run, no entry
+// and no look, only the sentence of what the last let-go ended, so a claim holding it, confirmed
+// or not, is answered as one holding nothing is: by the record, and by what it was left serving.
+func owedBy(c supervise.Claim, position completionPosition, owner claim.Token, roleFor func(phase.Phase) claim.Role) OwedResponse {
+>>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 	issue := position.issue
 	if issue == nil {
 		return OwedResponse{}
 	}
 	answer := OwedResponse{Architect: standing.owner, Wait: standing.wait, Hold: standing.hold}
 	if look := c.ServingCheck(); look.Look > 0 {
+<<<<<<< 7fa22de66d
 		check := position.check
 		if check == nil || !check.Open() || !check.LookOpen || check.Looks != look.Look ||
 			!check.NamedBy(look.OpenedAt) || check.Role != c.Role {
@@ -269,6 +291,12 @@ func owedBy(c supervise.Claim, position completionPosition, standing owedStandin
 		}
 		answer.Owes, answer.Work = true, "the production check of "+issue.Key
 		return answer
+=======
+		if check := position.check; check != nil && check.Open() && check.LookOpen && check.Looks == look.Look &&
+			check.NamedBy(look.OpenedAt) && check.Role == c.Role {
+			return OwedResponse{Owes: true, Work: "the production check of " + issue.Key, Architect: owner}
+		}
+>>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 	}
 	if position.lingers || roleFor(issue.Phase) != c.Role || position.merged() {
 		return answer

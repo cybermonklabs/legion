@@ -4,6 +4,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +20,8 @@ import (
 // TestARevokeRefusalAnswersItsOwnCode: each refusal RevokeByApprover answers, wrapped as it wraps
 // it, gets its own status and code. A grant that moved to another box each time the revoke
 // read it (requests.ErrGrantMoving) is 409 GRANT_MOVING with the sentence that says to run the
-// revoke again, not the 500 INTERNAL every unnamed error gets; that one is the control.
+// revoke again, and a transaction that failed because its caller hung up (context.Canceled) is 503
+// REQUEST_ENDED, not the 500 INTERNAL every unnamed error gets; that one is the control.
 func TestARevokeRefusalAnswersItsOwnCode(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -31,6 +33,7 @@ func TestARevokeRefusalAnswersItsOwnCode(t *testing.T) {
 		{"Dispatch down", fmt.Errorf("ask: %w", requests.ErrProjectAccessUnavailable), http.StatusServiceUnavailable, "PROJECT_ACCESS_UNAVAILABLE"},
 		{"not named", requests.ErrNotApprover, http.StatusForbidden, "NOT_APPROVER"},
 		{"kept moving", fmt.Errorf("revoke grant g: %w: it moved 3 times in a row", requests.ErrGrantMoving), http.StatusConflict, "GRANT_MOVING"},
+		{"the caller hung up", fmt.Errorf("begin: %w", context.Canceled), http.StatusServiceUnavailable, "REQUEST_ENDED"},
 		{"anything else (the control)", errors.New("the database went away"), http.StatusInternalServerError, "INTERNAL"},
 	} {
 		t.Run(c.name, func(t *testing.T) {

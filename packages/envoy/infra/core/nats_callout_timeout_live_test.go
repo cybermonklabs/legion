@@ -66,8 +66,7 @@ func TestACalloutAnswerInsideTheRenderedTimeoutAdmitsTheClient(t *testing.T) {
 		{"at the stated budget", calloutAnswerBudget},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			ctr, _ := rig.startHub(t)
-			uri := rig.restart(t, ctr, text, row.delay)
+			uri := rig.startOn(t, text, row.delay)
 			before := rig.requests.Load()
 			start := time.Now()
 			conn, err := testnats.ConnectSeed(t, uri, "", natsgo.Token(sessionToken), natsgo.Timeout(time.Duration(timeout+5)*time.Second))

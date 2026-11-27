@@ -23,6 +23,7 @@ import (
 // revise a spec the person approved. A changes request made after that approval is still the
 // person's word, and the adoption keeps it for the tree that now owes it.
 func TestAnAdoptedClosedTreesMemberForgetsOnlyTheChangesRequestItsGatesApprovalSuperseded(t *testing.T) {
+	t.Parallel()
 	approvedAt := time.Date(2026, 9, 22, 9, 0, 0, 0, time.UTC)
 	approved := record.EventMark{Seq: 10, At: approvedAt}
 	const closedRoot, member, ref = "LEGION-500", "LEGION-501", "dispatch://LEGION-501/spec"

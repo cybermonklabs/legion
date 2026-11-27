@@ -18,6 +18,7 @@ import (
 // does. The runs are the outbox's own (holdsRole), so deliverNotice, its fence (earlierNoticeFor)
 // and the ready's release (releaseWaiting) all pick this architect.
 func TestAWakeAboutAnArchitectReachesTheArchitectAboveIt(t *testing.T) {
+	t.Parallel()
 	root, parent, child, grandchild, orphan, stray, unrecorded := "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5", "LEGION-6", "LEGION-77"
 	looped, loop := "LEGION-8", "LEGION-9"
 	tree := map[string]record.Issue{
@@ -43,6 +44,12 @@ func TestAWakeAboutAnArchitectReachesTheArchitectAboveIt(t *testing.T) {
 			states: map[string]supervise.ClaimState{parent: working, child: failed}, owner: parent},
 		{name: "a sub-architect's stall under its parent's running architect", issue: child, kind: "worker-stalled", role: claim.RoleArchitect,
 			states: map[string]supervise.ClaimState{parent: working, child: working}, owner: parent},
+		{name: "a sub-architect's run of provider errors under its parent's running architect", issue: child, kind: record.ProviderErrorsNotice, role: claim.RoleArchitect,
+			states: map[string]supervise.ClaimState{parent: working, child: working}, owner: parent},
+		{name: "a sub-architect's run of provider errors whose parent has no running architect", issue: child, kind: record.ProviderErrorsNotice, role: claim.RoleArchitect,
+			states: map[string]supervise.ClaimState{child: working}, owner: root},
+		{name: "an implementer's run of provider errors on the child", issue: child, kind: record.ProviderErrorsNotice, role: claim.RoleImplementer,
+			states: map[string]supervise.ClaimState{parent: working, child: working}, owner: child},
 		{name: "a sub-architect's death whose parent has no running architect", issue: child, kind: "worker-died", role: claim.RoleArchitect,
 			states: map[string]supervise.ClaimState{parent: failed, child: failed}, owner: root},
 		{name: "a sub-architect's stall whose parent has no running architect", issue: child, kind: "worker-stalled", role: claim.RoleArchitect,

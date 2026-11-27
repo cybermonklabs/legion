@@ -1,0 +1,5 @@
+kind: Added
+body: Dispatch reads an agent, a role and a person out of a text as references, and `GET /api/v1/search` takes a repeated `kind` over the five kinds its index holds, ranking, counting and paging those alone. A comment resolves its deliveries from the party references in its body as well as from the `mentions` array a caller sends, so a mention written as text is delivered; a party is read and never stored, the reference graph holding no node for one. An issue's address with a trailing slash (`dispatch://KEY/`) or naming a tab of the issue's page (`dispatch://KEY/plan`, `/issues/KEY/plan`, and the conversation, `log` in an address too) is a reference to the issue, and `/issues/KEY/artifact/<slug>` to that document as `/issues/KEY/artifacts/<slug>` is, as the dashboard reads them, so the reference graph stores those edges.
+time: 2026-11-09T13:10:11.868223632Z
+custom:
+    Issue: pr3125

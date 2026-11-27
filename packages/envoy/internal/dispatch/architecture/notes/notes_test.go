@@ -9,6 +9,7 @@ import (
 // A GitHub tree entry is a note only when it is a blob of mode 100644 or
 // 100755 named *.md directly inside the directory.
 func TestGitKindAndIsNote(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		objectType, mode, path string
 		kind                   Kind
@@ -39,6 +40,7 @@ func TestGitKindAndIsNote(t *testing.T) {
 // A checkout entry is a note only when it is a regular file, whatever its
 // permission bits, named *.md.
 func TestFileKindAndIsNote(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		mode fs.FileMode
 		kind Kind
@@ -63,6 +65,7 @@ func TestFileKindAndIsNote(t *testing.T) {
 }
 
 func TestKindString(t *testing.T) {
+	t.Parallel()
 	for kind, want := range map[Kind]string{
 		KindFile:      "file",
 		KindSymlink:   "symbolic link",
@@ -79,6 +82,7 @@ func TestKindString(t *testing.T) {
 // A note of exactly MaxFileSize bytes passes; one byte more is
 // ErrFileTooLarge naming the path, the size and the limit.
 func TestCheckSize(t *testing.T) {
+	t.Parallel()
 	const path = ".dispatch/architecture/big.md"
 	if err := CheckSize(path, MaxFileSize); err != nil {
 		t.Fatalf("CheckSize at MaxFileSize: %v, want nil", err)

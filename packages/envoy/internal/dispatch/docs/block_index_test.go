@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // blockIndexService is a document service whose settle delay is an hour, so no timer settles a
@@ -37,13 +38,22 @@ func blockIndexService(t *testing.T) (*store.Store, *Service) {
 	`); err != nil {
 		t.Fatalf("seed project CORE: %v", err)
 	}
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
-	t.Cleanup(func() {
+	return database, blockIndexProcess(t, database, "")
+}
+
+// blockIndexProcess is one process's document service on database, serving the build of commit
+// (the empty string: an unstamped build's), whose settle delay is an hour, so no timer settles a
+// document during a test. A test that builds a second one on the same database has a second
+// process of that build start beside the first, or after it.
+func blockIndexProcess(t *testing.T, database *store.Store, commit string) *Service {
+	t.Helper()
+	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, BuildCommit: commit})
+	testcleanup.Add(t, func() {
 		stop, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = service.Shutdown(stop)
 	})
-	return database, service
+	return service
 }
 
 // createOwedDocument creates document slug of issue (CORE-1 or CORE-2), id its uuid (empty: one
@@ -189,6 +199,7 @@ const shipItSpec = ":::callout{#ship_it kind=\"note\" title=\"\"}\nShip it after
 // version, the mention a block holds, dated from the document's own reference to that target on
 // this first indexing, the mention's excerpt, and the version recorded indexed.
 func TestBlockIndexIndexesAnOwedDocument(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	spec := createOwedDocument(t, database, service, "CORE-1", "", "spec", shipItSpec, "")
@@ -258,6 +269,7 @@ func TestBlockIndexIndexesAnOwedDocument(t *testing.T) {
 // indexing the live text at that version would date the later edit's blocks to it. It is skipped,
 // counted, and left owed.
 func TestBlockIndexSkipsADocumentWhoseLiveTextIsAheadOfItsVersion(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	spec := createOwedDocument(t, database, service, "CORE-1", "", "spec", shipItSpec, "Ship it.\n")
 
@@ -284,6 +296,7 @@ func TestBlockIndexSkipsADocumentWhoseLiveTextIsAheadOfItsVersion(t *testing.T) 
 // text its latest version's byte for byte, it is indexed at that version, where the index is
 // exact. The issue's close changes nothing of that.
 func TestBlockIndexIndexesAClosedDocumentWhoseLiveTextEqualsItsVersion(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	spec := createOwedDocument(t, database, service, "CORE-1", "", "spec", shipItSpec, "")
 	var pending bool
@@ -320,6 +333,7 @@ func TestBlockIndexIndexesAClosedDocumentWhoseLiveTextEqualsItsVersion(t *testin
 // (heldVersionBlocks): with it, the first tick indexes the closed document at version 1, and the
 // tick's assertion reads Documents 1 and LiveAhead 1.
 func TestAClosedIssuesDocumentIsLeftOwedLikeAnOpenOneUntilItSettles(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	const stored = "The paragraph version 1 holds.\n"
@@ -401,6 +415,7 @@ func TestAClosedIssuesDocumentIsLeftOwedLikeAnOpenOneUntilItSettles(t *testing.T
 // indexed in the second batch rather than waiting behind them; they stay owed, and the next tick
 // starts over.
 func TestBlockIndexIsNotHeldByDocumentsItSkips(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	skipped := make([]string, 25)
 	for index := range skipped {
@@ -438,6 +453,7 @@ func TestBlockIndexIsNotHeldByDocumentsItSkips(t *testing.T) {
 // tick. A live update, a new version or a resident room has the next tick read it again, and a
 // document indexed elsewhere is forgotten.
 func TestBlockIndexDoesNotRereadALiveAheadDocumentUntilItMoves(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	edited := createOwedDocument(t, database, service, "CORE-1", "", "edited", "Live text one.\n", "Earlier text one.\n")
@@ -515,7 +531,10 @@ func TestBlockIndexDoesNotRereadALiveAheadDocumentUntilItMoves(t *testing.T) {
 	if service.srv.GetDoc(opened) == nil || !settlementMark(opened).Equal(mark) {
 		t.Fatalf("opening the room of %s left none resident or moved its settlement mark", opened)
 	}
-	if _, err := database.Pool.Exec(ctx, `update document_block_versions set version = 1 where artifact_id = $1`, indexedElsewhere); err != nil {
+	// Another process of this build indexes the fourth document, which settles both marks a
+	// debt of this build carries: the version, and this build's own mark, which the tick's
+	// grammar arm set beside it when it owed the document a re-index (oweDocumentIndex).
+	if _, err := database.Pool.Exec(ctx, `update document_block_versions set version = 1, store_owed_at = null where artifact_id = $1`, indexedElsewhere); err != nil {
 		t.Fatalf("index %s elsewhere: %v", indexedElsewhere, err)
 	}
 
@@ -530,8 +549,9 @@ func TestBlockIndexDoesNotRereadALiveAheadDocumentUntilItMoves(t *testing.T) {
 // writeAsAnOlderBuild writes the document's next version as a build without the block index does:
 // the edit (from replaced by to in a text of the live document) reaches the store through the room,
 // and its settlement writes the version, the document's reference to CORE-2 with the old grammar,
-// and the version's artifact.version event, and clears the pending settlement. It indexes no block,
-// and nothing here marks the document owed. It returns the version and its event's id.
+// and the version's artifact.version event, whose seq it takes off the issue's own counter as
+// events.Append does (documentEvent), and clears the pending settlement. It indexes no block, and
+// nothing here marks the document owed. It returns the version and its event's id.
 func writeAsAnOlderBuild(t *testing.T, database *store.Store, service *Service, artifactID, from, to string) (model.Version, int64) {
 	t.Helper()
 	ctx := context.Background()
@@ -570,16 +590,7 @@ func writeAsAnOlderBuild(t *testing.T, database *store.Store, service *Service, 
 	`, artifactID, live).Scan(&version.Number, &version.CreatedAt); err != nil {
 		t.Fatalf("write the version: %v", err)
 	}
-	var eventID int64
-	if err := tx.QueryRow(ctx, `
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', coalesce(max(seq), 0) + 1, 'artifact.version', '{"kind":"user","id":"alice"}',
-		       jsonb_build_object('artifact_id', $1::text, 'name', 'spec.md', 'version', jsonb_build_object('number', $2::int)), false
-		from events where issue_key = 'CORE-1'
-		returning id
-	`, artifactID, version.Number).Scan(&eventID); err != nil {
-		t.Fatalf("append the version's event: %v", err)
-	}
+	eventID := appendDocumentEvent(t, ctx, tx, "artifact.version", versionEventPayload(t, artifactID, "spec.md", version.Number))
 	if _, err := tx.Exec(ctx, `
 		insert into refs (from_kind, from_id, to_kind, to_id, source_seq) values ('artifact', $1, 'issue', 'CORE-2', $2)
 		on conflict do nothing
@@ -613,6 +624,7 @@ func indexedSpec(t *testing.T, database *store.Store, service *Service) string {
 // no command run: the trigger on artifact_versions marked the document owed. The mention the version
 // added is dated by the version and the event that recorded it.
 func TestAnOlderBuildsVersionWriteIsIndexedWithNoCommand(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	spec := indexedSpec(t, database, service)
 	version, eventID := writeAsAnOlderBuild(t, database, service, spec, "Ship it.", "Ship it after dispatch://CORE-2.")
@@ -643,6 +655,7 @@ func TestAnOlderBuildsVersionWriteIsIndexedWithNoCommand(t *testing.T) {
 // The link a tick moves from the document onto its block keeps its place in an incremental read:
 // GET /api/v1/references?since= lists it past the event before its version's, and not past its own.
 func TestAReconciledLinkKeepsItsPlaceInSince(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	spec := indexedSpec(t, database, service)
@@ -653,7 +666,7 @@ func TestAReconciledLinkKeepsItsPlaceInSince(t *testing.T) {
 	holder := holderOf(t, service, spec, "dispatch://CORE-2")
 
 	before := eventID - 1
-	edges, err := refs.Edges(ctx, database.Pool, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &before})
+	edges, err := refs.Edges(ctx, database.Pool, model.Actor{}, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &before})
 	if err != nil {
 		t.Fatalf("read the references to CORE-2 since %d: %v", before, err)
 	}
@@ -661,7 +674,7 @@ func TestAReconciledLinkKeepsItsPlaceInSince(t *testing.T) {
 		edges[0].SourceSeq == nil || *edges[0].SourceSeq != eventID {
 		t.Fatalf("references to CORE-2 since %d = %#v, want the block %s's mention from event %d", before, edges, holder, eventID)
 	}
-	edges, err = refs.Edges(ctx, database.Pool, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &eventID})
+	edges, err = refs.Edges(ctx, database.Pool, model.Actor{}, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &eventID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -676,6 +689,7 @@ func TestAReconciledLinkKeepsItsPlaceInSince(t *testing.T) {
 // dated when the text was written and by no event. Nothing is left owed, and a second tick changes
 // nothing.
 func TestOlderItemTextCitingABlockIsReindexed(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	commentAt := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
@@ -733,6 +747,7 @@ func TestOlderItemTextCitingABlockIsReindexed(t *testing.T) {
 // comment owed; the next tick indexes the edited text and settles it. Neither waits on the
 // other for good.
 func TestADrainedItemKeepsAConcurrentEdit(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -876,13 +891,15 @@ func checkItemBlock(t *testing.T, label string, blocks map[string]itemBlockRow, 
 
 // A comment, an issue message and a direct message a build without item blocks inserted, and a
 // comment it edited after this build indexed it, are owed their blocks by the triggers, which no
-// write of theirs cleared. One tick indexes each, at the time its body was written (a comment's
-// coalesce(edited_at, created_at), a message's created_at): its blocks, the links each holds, and
-// for the comment and the issue message their own references; the direct message holds no link.
+// write of theirs cleared. One tick indexes each, at the time its body was written (each post's
+// coalesce(edited_at, created_at), which for both messages here is their created_at): its
+// blocks, the links each holds, and for the comment and the issue message their own references;
+// the direct message holds no link.
 // The edit is indexed at the comment's next revision under ids aligned with the ones it held: the
 // moved blocks keep theirs and their changed revision, the reworded block keeps its id at the new
 // revision, and the new block takes the next id. Nothing is left owed.
 func TestTheBlockIndexIndexesItemsAnOlderBuildWrote(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	commentAt := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
@@ -1004,6 +1021,7 @@ func TestTheBlockIndexIndexesItemsAnOlderBuildWrote(t *testing.T) {
 // A comment or message rebuild-refs marks owed, already indexed, is re-indexed by the next tick
 // with nothing about its blocks changed: the same ids at the same revision.
 func TestTheBlockIndexReindexesItemsRebuildRefsOwed(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	var comment string
@@ -1114,6 +1132,7 @@ func seedItemsWithBlocks(t *testing.T, database *store.Store) (comment, message,
 // not - every item written before meaning search moved to windows - take their windows from one
 // tick, and a tick after it rewrites none of them.
 func TestAnItemWrittenBeforeThisChangeGetsWindowsFromOnePass(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	document := createOwedDocument(t, database, service, "CORE-1", "", "notes", "# Notes\n\nA paragraph of the document.\n", "")
@@ -1190,6 +1209,7 @@ func TestAnItemWrittenBeforeThisChangeGetsWindowsFromOnePass(t *testing.T) {
 //
 // and the document is left listed by refs.DocumentsOwedWindows for ever.
 func TestWindowArmWindowsTheStoredVersionOfADocumentWhoseLiveTextIsAhead(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	const stored = "# Notes\n\nThe stored paragraph.\n"
@@ -1276,6 +1296,7 @@ func TestWindowArmWindowsTheStoredVersionOfADocumentWhoseLiveTextIsAhead(t *test
 // index of it does, and commits. Read under the lock, the document is owed nothing and the arm
 // indexes nothing; read before it, the arm indexes a version already indexed.
 func TestTheBlockIndexArmsWaitForTheDocumentsOwnerLockHoldingNoTransactionID(t *testing.T) {
+	t.Parallel()
 	for _, arm := range []struct {
 		name string
 		// ready leaves the document owed this arm's work and no other's.
@@ -1392,6 +1413,7 @@ func TestTheBlockIndexArmsWaitForTheDocumentsOwnerLockHoldingNoTransactionID(t *
 // that older build is driven here: the item is re-indexed, and then its marker and the stamp of
 // its windows are put back as that build leaves them.
 func TestABuildThatWritesNoWindowLeavesWindowsTheTickRewrites(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	comment, _, _ := seedItemsWithBlocks(t, database)
@@ -1462,6 +1484,7 @@ func TestABuildThatWritesNoWindowLeavesWindowsTheTickRewrites(t *testing.T) {
 // embedded_hash set, its embedding null) is current and stands for nothing, so it retires no
 // row either. An issue's row is never retired, its trigger and its kind both standing.
 func TestRetirementWaitsForACurrentWindow(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	comment, _, _ := seedItemsWithBlocks(t, database)
@@ -1533,6 +1556,7 @@ const retireVector = "array_fill(0.1::real, array[1536])::vector"
 // one INFRA-988 measured at 25 minutes a pass. Every kind of wholeTextOwners is checked, since
 // each reads an owner key prefix of its own.
 func TestRetirementReachesEachWholeTextRowThroughItsPrimaryKey(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	// Each group is a set of whole-text rows named by what their owner's windows are: the ones
@@ -1720,6 +1744,7 @@ func TestRetirementReachesEachWholeTextRowThroughItsPrimaryKey(t *testing.T) {
 // budget skips comes back with the cursor it was handed, and the cursor a kind that did run
 // leaves is where the next tick reads that kind on from.
 func TestRetirementSpendsOneBudgetAcrossTheKindsAndKeepsEveryKindsCursor(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	documents, comments := wholeTextOwners[0], wholeTextOwners[1]
@@ -1976,6 +2001,7 @@ func requireOwnersReadTheWindowIndex(t *testing.T, database *store.Store, owner 
 // document is listed and windowed (its windows being none), or the version write leaves it
 // unmarked.
 func TestNoDocumentKeepsItsWindowMarkerForEver(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	empty := createOwedDocument(t, database, service, "CORE-1", "", "spec", "", "")

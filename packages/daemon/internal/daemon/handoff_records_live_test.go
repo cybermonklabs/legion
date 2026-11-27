@@ -9,7 +9,7 @@
 // packages/envoy's cmd/dispatch and runs it, as packages/dispatch/e2e/run-server.sh does, on a
 // database of its own on LEGION_TEST_PG_DSN's server, with NATS off and the agent token the daemon
 // and the CLI present; it stops it and starts it again on the same database and port for A10. The
-// daemon is the whole daemon (run, the function `legion start` calls, through startDaemonWithin),
+// daemon is the whole daemon (run, the function `legion start` calls, through startDaemonLogging),
 // booted with dispatch_url at that server, so every Dispatch read and write it makes - the issue
 // list, its status writes and messages, and the read of the record a completion names - goes to
 // the real routes. The worker side is the real `dispatch` CLI
@@ -65,6 +65,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -102,6 +103,7 @@ type handoffRecordsLive struct {
 // TestHandoffRecordsLive drives the proof's steps against one booted daemon and one Dispatch.
 // A10 runs last, since it stops Dispatch under the daemon.
 func TestHandoffRecordsLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newHandoffRecordsLive(t)
 	r.step("a6-a-40kb-handoff-reads-back-byte-identical-two-writes-are-versions-1-and-2", r.a6RoundTrip)
@@ -157,7 +159,7 @@ func startOnDispatch(t *testing.T, script, prefix, name string) *handoffRecordsL
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.dispatch.user(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": name}, http.StatusCreated, nil)
-	r.dispatch.user(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.dispatch.user(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	return r
 }
 
@@ -167,7 +169,7 @@ func (r *handoffRecordsLive) boot() {
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github
-	r.d = startDaemonWithin(r.t, r.cfg, o, r.log(), 2*time.Minute)
+	r.d = startDaemonLogging(r.t, r.cfg, o, r.log())
 	r.note("Dispatch %s (database of its own, NATS off), project %s with default repository %s; daemon at dispatch_url %s",
 		r.dispatch.base, r.cfg.Project, liveRepo, r.cfg.DispatchURL)
 }
@@ -242,7 +244,7 @@ func (r *handoffRecordsLive) seedIssues(issues []dispatchSeed) {
 	t := r.t
 	t.Helper()
 	ctx := context.Background()
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, s := range issues {
 			listed := r.dispatch.issue(s.key)
 			if err := r.records.PutIssue(ctx, tx, record.Issue{
@@ -939,7 +941,7 @@ func (r *handoffRecordsLive) claimant(role claim.Role, issue, session string) *h
 	})
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: session, PluginContract: api.DaemonAPIVersion,
+		AgentID: session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s = %d %s, want 200", token, status, body)
@@ -1102,12 +1104,7 @@ func startHandoffDispatch(t *testing.T, root string) *handoffDispatch {
 	t.Helper()
 	options := scratchDispatchOptions{root: root}
 	if daemonLog := os.Getenv(liveDaemonLogEnv); daemonLog != "" {
-		file, err := os.OpenFile(filepath.Join(filepath.Dir(daemonLog), "dispatch.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if err != nil {
-			t.Fatalf("open Dispatch's log: %v", err)
-		}
-		t.Cleanup(func() { file.Close() })
-		options.log = file
+		options.log = evidenceFile(t, filepath.Join(filepath.Dir(daemonLog), "dispatch.log"))
 	}
 	return &handoffDispatch{scratchDispatch: startScratchDispatchOn(t, options), client: &http.Client{Timeout: 10 * time.Second}}
 }

@@ -52,6 +52,7 @@ func refusingGitHub(t *testing.T) string {
 // detail, and a resolution that is the record's own repository is no change for a correction to
 // read GitHub for.
 func TestARecordedIssuesEventIsPreparedFromItsRecord(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	installs := &installations{}
 	w, client := recordedIssueRuntime(t, refusingGitHub(t), installs)
@@ -103,6 +104,7 @@ func TestARecordedIssuesEventIsPreparedFromItsRecord(t *testing.T) {
 // now: the event carries trunk, never the kept read (dispatch://INFRA-3136's rule that a
 // correction never writes from a kept read). Dispatch is still not read.
 func TestARecordedIssuesEventOnAnotherRepositoryCarriesGitHubsReadOfIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	installs := &installations{}
 	w, client := recordedIssueRuntime(t, newNamedGitHub(t, map[string]string{"zeta/tools": "Zeta/Tools@trunk"}).url, installs)
@@ -135,6 +137,7 @@ func TestARecordedIssuesEventOnAnotherRepositoryCarriesGitHubsReadOfIt(t *testin
 // preparation asks for a follow of the issue (requestFollowOf), which reads it again until GitHub
 // answers. Neither fails the fact: the event is applied.
 func TestARecordedIssuesEventCarriesWhatGitHubAnsweredForItsNewRepository(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name     string

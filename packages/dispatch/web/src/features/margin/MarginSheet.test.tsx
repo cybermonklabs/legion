@@ -1,11 +1,19 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { renderWithQueries } from "../../__tests__/query-provider";
 import type { Artifact, Comment } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { MarginSheet } from "./MarginSheet";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const specArtifact: Artifact = {
   created_at: "2026-09-10T00:00:00Z",
@@ -23,7 +31,7 @@ const specArtifact: Artifact = {
 };
 
 test("an issue margin offers Comments and Pinned, Comments first", () => {
-  const view = render(
+  const view = renderWithQueries(
     <MarginSheet
       model={{
         actions: {

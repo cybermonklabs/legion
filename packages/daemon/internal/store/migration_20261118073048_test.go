@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"maps"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +32,7 @@ const phaseEntryAwaitingVersion = 20261118073048
 // runs this file again, and each entry the way back marked holds the empty wait: the wait itself
 // is what a rollback costs.
 func TestThePhaseEntryAwaitingMigrationKeepsAResumesEntryAndItsWayBackPutsTheMarkBack(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, phaseEntryAwaitingVersion-1)
@@ -57,19 +59,7 @@ func TestThePhaseEntryAwaitingMigrationKeepsAResumesEntryAndItsWayBackPutsTheMar
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the wait: %v", err)
 	}
-	rowOf := func(st *Store, issue string, role claim.Role) record.PhaseRow {
-		t.Helper()
-		var rows []record.PhaseRow
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
-			var err error
-			rows, err = record.NewStore().Phases(ctx, tx, issue)
-			return err
-		}); err != nil {
-			t.Fatalf("read the phases rows of %s: %v", issue, err)
-		}
-		return record.PhaseRowOf(rows, role)
-	}
-	if row := rowOf(store, "LEGION-208", claim.RoleArchitect); row.Entry != 2 || row.EntryTask != resumed ||
+	if row := phaseRowOf(t, store, "LEGION-208", claim.RoleArchitect); row.Entry != 2 || row.EntryTask != resumed ||
 		row.EntryAwaiting == nil || *row.EntryAwaiting != (record.Awaiting{}) {
 		t.Fatalf("the resumed architect's row after the migration = entry %d, task %q, wait %+v; want entry 2 and its task holding the empty wait: "+
 			"the release before kept no wait, and the entry is still the resume's", row.Entry, row.EntryTask, row.EntryAwaiting)
@@ -78,7 +68,7 @@ func TestThePhaseEntryAwaitingMigrationKeepsAResumesEntryAndItsWayBackPutsTheMar
 		issue string
 		role  claim.Role
 	}{{"LEGION-208", claim.RolePlanner}, {"LEGION-209", claim.RoleArchitect}} {
-		if row := rowOf(store, other.issue, other.role); row.Entry != 1 || row.EntryAwaiting != nil {
+		if row := phaseRowOf(t, store, other.issue, other.role); row.Entry != 1 || row.EntryAwaiting != nil {
 			t.Fatalf("the %s's row of %s after the migration = entry %d, wait %+v; want entry 1 holding none: no resume raised it",
 				other.role, other.issue, row.Entry, row.EntryAwaiting)
 		}
@@ -86,7 +76,7 @@ func TestThePhaseEntryAwaitingMigrationKeepsAResumesEntryAndItsWayBackPutsTheMar
 	entries := func(st *Store) map[record.PhaseRole]record.PhaseEntry {
 		t.Helper()
 		var read map[record.PhaseRole]record.PhaseEntry
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		if err := TransactWith(ctx, st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			read, err = record.NewStore().PhaseEntries(ctx, tx, []string{"LEGION-208", "LEGION-209"})
 			return err
@@ -107,17 +97,17 @@ func TestThePhaseEntryAwaitingMigrationKeepsAResumesEntryAndItsWayBackPutsTheMar
 	// The resume of an answered root raises LEGION-209's architect entry 2 on a changes request.
 	answeredAt := time.Date(2026, 11, 18, 7, 0, 0, 0, time.UTC)
 	wait := record.Awaiting{GateVersion: 4, Artifact: "artifact-209", AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByChanges,
-		AnsweredDetail: `version 4: "name the rollback path"`, AnsweredVersion: 4,
+		AnsweredDetail: `version 4: "name the rollback path"`, AnsweredDocument: &record.AnsweredDocument{Version: 4},
 		Since: record.EventMark{Seq: 10, At: answeredAt.Add(-time.Hour)}}
-	want := rowOf(store, "LEGION-209", claim.RoleArchitect)
+	want := phaseRowOf(t, store, "LEGION-209", claim.RoleArchitect)
 	want.Entry, want.EntryTask, want.EntryAwaiting = 2, "A person requested changes to your spec on LEGION-209.", &wait
-	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPhase(ctx, tx, want)
 	}); err != nil {
 		t.Fatalf("put the architect's row of the resume's entry: %v", err)
 	}
 	for _, st := range []*Store{store, reopenStore(t, store)} {
-		got := rowOf(st, "LEGION-209", claim.RoleArchitect)
+		got := phaseRowOf(t, st, "LEGION-209", claim.RoleArchitect)
 		if got.Entry != 2 || got.EntryAwaiting == nil || !sameWait(*got.EntryAwaiting, wait) {
 			t.Fatalf("the architect's row = entry %d, wait %+v; want entry 2 holding %+v, as it was put", got.Entry, got.EntryAwaiting, wait)
 		}
@@ -169,12 +159,12 @@ func TestThePhaseEntryAwaitingMigrationKeepsAResumesEntryAndItsWayBackPutsTheMar
 		t.Fatalf("the roll-forward applied %d migrations, want this one run a second time", applied)
 	}
 	for _, issue := range []string{"LEGION-208", "LEGION-209"} {
-		if row := rowOf(store, issue, claim.RoleArchitect); row.EntryAwaiting == nil || *row.EntryAwaiting != (record.Awaiting{}) {
+		if row := phaseRowOf(t, store, issue, claim.RoleArchitect); row.EntryAwaiting == nil || *row.EntryAwaiting != (record.Awaiting{}) {
 			t.Fatalf("the architect's row of %s after the roll-forward holds the wait %+v, want the empty wait: the way back kept the mark and not the wait",
 				issue, row.EntryAwaiting)
 		}
 	}
-	if row := rowOf(store, "LEGION-208", claim.RolePlanner); row.EntryAwaiting != nil {
+	if row := phaseRowOf(t, store, "LEGION-208", claim.RolePlanner); row.EntryAwaiting != nil {
 		t.Fatalf("the planner's row after the roll-forward holds the wait %+v, want none", row.EntryAwaiting)
 	}
 }
@@ -197,7 +187,7 @@ func sameWait(got, want record.Awaiting) bool {
 		return false
 	}
 	got.AnsweredAt, got.Since.At, want.AnsweredAt, want.Since.At = nil, time.Time{}, nil, time.Time{}
-	return got == want
+	return reflect.DeepEqual(got, want)
 }
 
 // headerWayBack is the one transaction the header of migration version carries for its way back:

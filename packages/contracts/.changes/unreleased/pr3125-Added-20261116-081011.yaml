@@ -1,0 +1,5 @@
+kind: Added
+body: 'A row of `DISPATCH_READING_SURFACES` drawn through the plain-text projection names the test that proves it (`proof`: the test file and its title, or a list of them where its claim takes more than one, as the GitHub card''s does), since the walk drives only the rendered rows. A rendered row whose records come in a kind that carries fewer forms than the rest names that kind as an arm (`arms`: its id, how a test reaches it, and what it cannot carry), and each arm has a browser driver of its own: an Agents row''s message sent to its session on no issue, and the reply to one, carries no question id.'
+time: 2026-11-16T08:10:11.443167057Z
+custom:
+    Issue: pr3125

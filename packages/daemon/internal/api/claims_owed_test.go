@@ -3,8 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -70,7 +69,7 @@ func TestClaimOwedFollowsThePhaseAsTheWorkflowMovesTheIssue(t *testing.T) {
 	ctx := context.Background()
 	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
 	}); err != nil {
@@ -192,31 +191,32 @@ func TestClaimOwedIsTheMergeUntilTheMergersPullRequestIsMerged(t *testing.T) {
 }
 
 // A claim the daemon has failed owes nothing, whatever its phase: the failure is the daemon's own
-// word that the session is finished. This is what ends the reminding of a session whose provider
-// refuses every turn (dispatch://INFRA-264): each refused turn is reported over
-// `POST /legion/v1/claims/turn-outcome`, the run reaching the launch failure limit fails the
-// claim, and the one delayed reminder a refused turn arms asks this route before it goes.
+// word that the claim's work is its architect's to decide. This is what ends the reminding of a
+// session whose provider refuses its turns with a status that cannot clear (dispatch://INFRA-264,
+// dispatch://INFRA-4508): the report of a reminder's own turn, which ran no prompt of the
+// daemon's, is sent over `POST /legion/v1/claims/turn-outcome` marked unprompted with the status
+// the provider refused it with, a 400 fails the claim at once, and the one delayed reminder a
+// refused turn arms asks this route before it goes. A run of refusals fails no claim, so a
+// refusal that cannot clear is the turn-outcome path to a failure.
 func TestClaimOwedIsNothingOnceTheDaemonHasFailedTheClaim(t *testing.T) {
 	h, _, _ := newEntryHarness(t)
 	seedIssueAt(t, h, "LEGION-208", phase.Testing)
 	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
 	tester.owes(t, "the testing phase of LEGION-208")
 
-	generation := h.stored(tester.token).Generation
-	for sequence := uint64(1); h.stored(tester.token).State != supervise.StateFailed; sequence++ {
-		if sequence > 10 {
-			t.Fatalf("ten refused turns left %s %s, want it failed", tester.token, h.stored(tester.token).State)
-		}
-		recorder, _ := h.turnOutcome(claim.TurnOutcomeRequest{
-			ClaimToken: tester.token, SessionID: tester.session, Secret: tester.secret,
-			Generation: generation, Sequence: sequence, Outcome: claim.TurnRefused, Message: "the provider refused the request",
-		})
-		if recorder.Code != http.StatusOK {
-			t.Fatalf("turn outcome %d = %d, want 200; body %s", sequence, recorder.Code, recorder.Body)
-		}
+	recorder, answer := h.turnOutcome(claim.TurnOutcomeRequest{
+		ClaimToken: tester.token, SessionID: tester.session, Secret: tester.secret,
+		Generation: h.stored(tester.token).Generation, Sequence: 1, Outcome: claim.TurnRefused,
+		Message: "400 the provider refused the reminder's turn", HTTPStatus: http.StatusBadRequest, Unprompted: true,
+	})
+	if recorder.Code != http.StatusOK || !answer.Failed {
+		t.Fatalf("the refused reminder's turn = %d %+v, want 200 with the claim failed; body %s", recorder.Code, answer, recorder.Body)
 	}
-	// The answer is the whole of nothing: no work, and no architect named for a session the daemon
-	// has finished.
+	if state := h.stored(tester.token).State; state != supervise.StateFailed {
+		t.Fatalf("the refused reminder's turn left %s %s, want it failed", tester.token, state)
+	}
+	// The answer is the whole of nothing: no work, and no architect named for a claim the daemon
+	// has failed.
 	if got := tester.owed(t); got != (OwedResponse{}) {
 		t.Fatalf("the failed %s is told %+v, want nothing at all", tester.token, got)
 	}
@@ -236,8 +236,9 @@ func TestClaimOwedIsTheProductionCheckLookItsTesterHolds(t *testing.T) {
 	tester.owesNothing(t)
 }
 
-// The three sources disagree here, and the claim's own live assignment is what says which kind of
-// work its turn is on, as it says for the completion route. A merged close spares the tester's
+// The three sources disagree here. The look the claim serves decides only whether its turn is on
+// an open look, and a report reaches the check route only when it names its check
+// (checkOpenedAt). A merged close spares the tester's
 // claim and opens a look behind its running testing turn: the record holds the look open for the
 // tester, while the tester still serves its testing task. A report from that turn is refused as no
 // report on production (CHECK_LOOK_NOT_SERVED), so the turn owes nothing — not the look, and not
@@ -275,6 +276,32 @@ func TestClaimOwedReadsTheRelaunchDeliveryAsNoWork(t *testing.T) {
 		if got, want := owedBy(working, inPhase, owedStanding{}, workflow.RoleFor), (OwedResponse{Owes: true, Work: "the testing phase of LEGION-208"}); got != want {
 			t.Errorf("a tester in its open phase holding %s (confirmed %v) owes %+v, want %+v", relaunch.ID, !confirmed.IsZero(), got, want)
 		}
+	}
+}
+
+// A phase task leaves the look a claim served in place (supervise's ServingCheck), and the
+// completion route takes a phase's completion from such a claim unless its report names its check
+// (checkOpenedAt). So a tester that served a look of a check that has since closed, and holds a
+// confirmed testing task in testing again, a root reopened in its linger, owes the testing phase,
+// not nothing; while the check still holds its served look open, it owes that look.
+func TestClaimOwedIsThePhaseOnceTheCheckHasLeftTheLookItsTesterServed(t *testing.T) {
+	opened := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	closed := opened.Add(2 * time.Hour)
+	testing := &supervise.Delivery{ID: "testing:3", Task: "Test the change.", Generation: 2, Entry: 3, ConfirmedAt: opened.Add(3 * time.Hour)}
+	tester := supervise.Claim{Role: claim.RoleTester, Pending: testing, GivenEntry: 3,
+		ServingCheckLook: supervise.CheckLook{Look: 2, OpenedAt: opened}}
+	if served := tester.ServingCheck(); served.Look != 2 {
+		t.Fatalf("the tester's confirmed testing task serves look %d, want the look it served before, 2, kept in place", served.Look)
+	}
+	check := func(closedAt *time.Time) completionPosition {
+		return completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Testing, Generation: 2}, entry: 3,
+			check: &record.ProductionCheck{Issue: "LEGION-208", OpenedAt: opened, ClosedAt: closedAt, Role: claim.RoleTester, Looks: 2, LookOpen: closedAt == nil}}
+	}
+	if got, want := owedBy(tester, check(&closed), "", workflow.RoleFor), (OwedResponse{Owes: true, Work: "the testing phase of LEGION-208"}); got != want {
+		t.Errorf("a tester whose served look's check closed, holding a confirmed testing task in testing, owes %+v, want %+v", got, want)
+	}
+	if got, want := owedBy(tester, check(nil), "", workflow.RoleFor), (OwedResponse{Owes: true, Work: "the production check of LEGION-208"}); got != want {
+		t.Errorf("a tester whose served look the check still holds open owes %+v, want %+v", got, want)
 	}
 }
 
@@ -335,11 +362,15 @@ func TestClaimOwedIsAFailureWhereTheDaemonCannotReadTheIssueRecord(t *testing.T)
 	h := newHarness(t)
 	seedIssueAt(t, h, "LEGION-208", phase.Testing)
 	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+<<<<<<< 7fa22de66d
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Pool: h.store.Pool(), Record: unreadableIssues{record.NewStore()}, RoleFor: workflow.RoleFor,
 		WaitStands: workflow.WaitStandsNow, Holds: workflow.HoldsNow,
 	}).Handler
+=======
+	serveOwedOver(h, h.store.Pool(), unreadableIssues{record.NewStore()})
+>>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 	recorder := askOwed(h, OwedRequest{ClaimToken: tester.token, SessionID: tester.session, Secret: tester.secret})
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("owed on a daemon whose issue read fails = %d, want 500; body %s", recorder.Code, recorder.Body)
@@ -408,7 +439,7 @@ func TestClaimOwedNamesTheArchitectThatOwnsTheClaim(t *testing.T) {
 	if !ok {
 		t.Fatalf("no machine for %s", childArchitect.token)
 	}
-	if err := machine.Handle(h.ctx, supervise.RequestStop{Claim: childArchitect.token}); err != nil {
+	if err := machine.Handle(h.ctx, supervise.RequestStop{Claim: childArchitect.token, By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("stop %s: %v", childArchitect.token, err)
 	}
 	if state := h.stored(childArchitect.token).State; state != supervise.StateRetired {

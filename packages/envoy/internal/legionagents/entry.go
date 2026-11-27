@@ -34,7 +34,7 @@ type Entry = listenerwire.LegionAgentEntry
 // It is the listener's wire type (listenerwire.LegionAgent).
 type Agent = listenerwire.LegionAgent
 
-// Roles are the six Legion roles, in the order the workflow reaches them (claim.Roles,
+// Roles are the six Legion roles, in the order of the default steps (claim.Roles,
 // LEGION_ROLES in packages/contracts). An issue's agents are listed in this order.
 var Roles = []string{"architect", "planner", "implementer", "tester", "reviewer", "merger"}
 

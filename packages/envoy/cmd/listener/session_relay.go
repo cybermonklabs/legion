@@ -16,11 +16,14 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nuid"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // The headers of a relay frame, the core message the listener publishes on a session's relay
@@ -38,8 +41,17 @@ const (
 	// relayHeaderStoredAt is when the stream stored the message, RFC 3339 with nanoseconds, UTC.
 	relayHeaderStoredAt = "Envoy-Stored-At"
 	// relayHeaderGap is "true" on the first frame after a restart of the consumer that started below
-	// the stream's first sequence: messages the session had not taken are gone.
+	// the stream's first sequence: messages the session had not taken are gone. An edge listener
+	// sets it too on the first frame after GitHub events it withheld while it could read no fresh
+	// repository answer for the session's projects, and names that gap in relayHeaderGapReason.
 	relayHeaderGap = "Envoy-Gap"
+	// relayHeaderGapReason names a gap that is not the stream's own loss, beside relayHeaderGap:
+	// relayGapRepositoryWithheld for the edge's withheld GitHub events (sessionRelays.edgeWithholds).
+	// A gap mark with no reason is the stream's retention gap.
+	relayHeaderGapReason = "Envoy-Gap-Reason"
+	// relayGapRepositoryWithheld is relayHeaderGapReason's value for a gap of GitHub events the
+	// edge withheld because no fresh repository answer could say they were the session's.
+	relayGapRepositoryWithheld = "repository_withheld"
 )
 
 // The replies a session sends on a frame's reply subject, each exactly one ASCII word.
@@ -58,7 +70,8 @@ const (
 const (
 	// relayReceiptWait is how long the oldest frame a session has not answered may wait before the
 	// relay takes the session for unreachable and pauses: it sends nothing more until it probes the
-	// session again after relayPauseFirst, or the session registers.
+	// session again after relayPauseFirst, or until a registration of the session heard after that
+	// frame went out ends the pause (relayRun.waitPause).
 	relayReceiptWait = 3 * time.Second
 	// relayPauseFirst and relayPauseMax bound the wait before a paused relay restarts at the ack
 	// floor and sends the session its unanswered messages again; it doubles from the first to the
@@ -72,7 +85,11 @@ const (
 	// idle wait is the same whatever stopped it, and it is three times under the 90 s heartbeat
 	// whose registration used to be the only resume: a session that comes back has its messages
 	// within 33 s of the probe that found it silent, against 85 s measured before (the waits run
-	// 2, 4, 8, 16, then 30 s, each after a 3 s receipt wait, so the fifth probe is 42 s in).
+	// 2, 4, 8, 16, then 30 s, each after a 3 s receipt wait, so the fifth probe is 42 s in). A
+	// registration of the session does not wait for the backoff: one heard after the frame the
+	// relay paused on went out ends that pause at once, and one heard while a probe waits for its
+	// receipt ends the pause after that probe (relayRun.waitPause), so a session that registers once
+	// its relay subject is open has its messages within a receipt wait of that registration.
 	relayPauseFirst = 2 * time.Second
 	relayPauseMax   = 30 * time.Second
 	// relayNakDelay is how long the server waits to deliver a message a session refused (nak)
@@ -125,10 +142,9 @@ const (
 	// relayRefusedReplyLogEvery is how often the relay writes its line for a reply that names
 	// another session than its frame's (sessionRelays.onReply): the first such reply, then at most
 	// one a minute, each saying how many it held back since the line before. Any publisher on the
-	// listener's reply inbox can send such a reply. While natsgrant.Session publishes every _INBOX.
-	// subject, any session can, naming another session beside a token of its own frame; once it
-	// publishes bus.SessionReplies alone, a session's reply names that session, and is refused only
-	// for a token of another session's frame, which the session cannot read. A holder of the shared
+	// listener's reply inbox can send such a reply. A session on its own grant (natsgrant.Session)
+	// publishes bus.SessionReplies alone, so its reply names that session, and is refused only for
+	// a token of another session's frame, which the session cannot read. A holder of the shared
 	// session user or of a host user can send any. The line names the frame's session and the
 	// session the reply names, never the sender, which the relay cannot see. A sender can send such
 	// replies as fast as it likes, so the line must not grow with them; one a minute still tells an
@@ -143,18 +159,23 @@ type relayEvent uint8
 const (
 	// relayCheck: the session's entry changed; start or stop its relay to match it.
 	relayCheck relayEvent = 0
-	// relayResume: the session registered; a relay that paused starts again.
+	// relayResume: the session registered, or at the edge claimed a role through this listener; a
+	// relay that ended starts again, and one that waits to retry, or paused on a frame sent before
+	// the registration, starts again at once (relayRun.wake).
 	relayResume relayEvent = 1 << iota
 	// relayRestart: the session registered with a new epoch; its relay restarts at the ack floor.
 	relayRestart
 )
 
 // relayNotice is what the relay loop has been told about a session since it last took its events:
-// their flags, and heard, the highest mark (sessionDelivery.mark) of the registrations with a new
-// epoch among them.
+// their flags; heard, the highest mark (sessionDelivery.mark) of the registrations with a new epoch
+// among them, which decides a restart (relayRun.restartedBefore); and woke, the highest mark of
+// every registration and role claim among them, which the wake of a running relay carries
+// (relayRun.wake).
 type relayNotice struct {
 	event relayEvent
 	heard uint64
+	woke  uint64
 }
 
 // relayOutcome is how one pull of a session's consumer ended (sessionRelays.relayNATS).
@@ -162,13 +183,15 @@ type relayOutcome uint8
 
 const (
 	// relayEnded: the relay was stopped, or it may start again only at the session's next
-	// registration.
+	// registration, or, at the edge, a role claim.
 	relayEnded relayOutcome = iota
 	// relayRetry: a consumer call or the pull failed; the relay restarts at the ack floor after a
 	// wait while it is still this listener's.
 	relayRetry
 	// relayPaused: the session answered no frame within relayReceiptWait; the relay restarts at the
-	// ack floor after the pause backoff, or at the session's next registration, whichever is first.
+	// ack floor after the pause backoff, or at a registration of the session, or, at the edge, a
+	// role claim, heard after the frame it paused on went out (relayRun.waitPause), whichever is
+	// first.
 	relayPaused
 )
 
@@ -206,9 +229,10 @@ type sessionRelays struct {
 	sessions  *session.SessionRegistry
 	machineID string
 	logger    *logging.Logger
-	// inbox is the listener's reply inbox, and replyPrefix it and a dot: a frame's reply subject is
-	// replyPrefix<session id>.<token> (bus.SessionReplySubject), and one subscription to the
-	// inbox's wildcard hears every reply.
+	// inbox is the listener's reply inbox, or an edge listener's receipt subject under its
+	// machine's family (natsgrant.EdgeRelayReplyPrefix; startSessionRelays), and replyPrefix it and
+	// a dot: a frame's reply subject is replyPrefix<session id>.<token> (bus.SessionReplySubject),
+	// and one subscription to the inbox's wildcard hears every reply.
 	inbox       string
 	replyPrefix string
 	// pauseFirst and pauseMax are the bounds of a paused relay's backoff, relayPauseFirst and
@@ -219,6 +243,42 @@ type sessionRelays struct {
 	pauseFirst  time.Duration
 	pauseMax    time.Duration
 	receiptWait time.Duration
+	// repositories is the edge listener's repository reader (edge_repositories.go), which holds
+	// each GitHub frame to its session's projects (relayNATS); nil on every listener but an edge
+	// one, which relays every frame as it always has. Set before the first relay starts and
+	// read-only after.
+	repositories *edgeRepositories
+	// repositoryGapsMu guards repositoryGaps: each session owed the gap mark of GitHub events
+	// the edge withheld while no fresh repository answer stood (relayNATS), as this process noted
+	// it, with the mark this process wrote on the session's entry (noteRepositoryGap). It is kept
+	// across the session's relay runs, so a run that restarts before the session's next frame - a
+	// new delivery epoch, a pull or a frame-publish error, a receipt pause - still marks that
+	// frame, and the session's entry carries the same mark for the next listener to relay it
+	// (session.SessionEntry.RepositoryGap). It is cleared once a frame carrying the mark is
+	// published (repositoryGapSent), or once the session is no longer this listener's to relay
+	// (forgetRepositoryGap), which leaves the entry's mark to the next owner.
+	repositoryGapsMu sync.Mutex
+	repositoryGaps   map[string]string
+	// givenBack counts, for each session whose entry could not record the gap mark of a withheld
+	// GitHub event, the events given back since (giveBackWithheld), until a mark write of the
+	// session lands (noteRepositoryGap), a GitHub event of the session is decided by a fresh
+	// repository answer (endGiveBacks), or the session is no longer this listener's to relay
+	// (apply): a run of give-backs is logged when it starts and when it ends, however often the
+	// server delivers an event again meanwhile. repositoryGapsMu guards it too.
+	givenBack map[string]int
+	// reMark re-marks a session whose nak'd frame carried a gap mark, off the receipt callback
+	// (onReply, reMarkWithheldGap). startSessionRelays sets it; onReply runs it in a goroutine so
+	// the KV read and write it makes never stalls the receipts the one callback carries. A test
+	// sets it to hold the write, so it can show onReply does not wait on it.
+	reMark func(sessionID string)
+	// reMarkMu guards reMarking and reMarkAgain, which hold one re-mark in flight per session:
+	// onReply runs each nak'd gap-marked frame's re-mark off its callback (scheduleReMark), and a
+	// re-mark asked while one runs for the session is folded into a single further run after it, so
+	// two naks cannot run noteRepositoryGap's read and write at once and leave the in-memory mark
+	// and the entry's mark diverged, which would send the session one redundant gap notice.
+	reMarkMu    sync.Mutex
+	reMarking   map[string]bool
+	reMarkAgain map[string]bool
 
 	ctx    context.Context
 	cancel context.CancelCauseFunc
@@ -226,7 +286,7 @@ type sessionRelays struct {
 	// stopChange unregisters the session cache's change callback.
 	stopChange func()
 	// runs counts the relay goroutines; loopDone is closed once the loop has returned.
-	runs     sync.WaitGroup
+	runs     inflight
 	loopDone chan struct{}
 
 	// eventsMu guards events and ownershipChanged, which the loop takes each time wake fires.
@@ -253,14 +313,84 @@ type sessionRelays struct {
 	// its frame's, and how many such replies it has held back since (relayRefusedReplyLogEvery).
 	framesMu sync.Mutex
 	// frames maps the token of every frame awaiting done or nak to it: the random last token of
-	// its reply subject. Among sessions on per-session credentials (the NATS auth service's grant,
-	// which subscribes a session's own relay subject alone) only the session the frame was sent to
-	// can read that subject. A holder of the shared session user or of a host user reads every
-	// session's relay subject, frames' reply subjects with them, and may publish to each, so neither
-	// the token nor onReply's check of the session the subject names stops it.
+	// its reply subject, 128 random bits (publishFrame, bus.SessionReplySubject), so a session that
+	// reads its own frames learns nothing of another frame's. Among sessions on per-session
+	// credentials (the NATS auth service's grant, which subscribes a session's own relay subject
+	// alone) only the session the frame was sent to can read that subject. A holder of the shared
+	// session user or of a host user reads every session's relay subject, frames' reply subjects
+	// with them, and may publish to each, so neither the token nor onReply's check of the session
+	// the subject names stops it.
 	frames          map[string]*relayFrame
 	refusedLoggedAt time.Time
 	refusedHeld     int
+
+	// passed is the stored messages each relay acknowledged without a frame because the frame was
+	// too large to relay (passTooLarge), which each get one WARN (relayPassedSet).
+	passed relayPassedSet
+}
+
+// relayPassedSet is the stored messages the relays acknowledged without a frame, because the frame
+// was too large to relay (sessionRelays.passTooLarge), by session, then by stream and sequence.
+// The WARN for such a message is written once per listener process, also when a restart at the
+// ack floor hands it back: the relay acknowledges it out of order, so while an earlier frame is
+// unanswered it is above the floor, and a restart there delivers it again. The session is the
+// first key because one stored message on a followed topic reaches the consumer of each session
+// that follows it, and each such session gets its own WARN.
+//
+// Each start of a session's relay drops the entries its consumer can no longer hand back
+// (prune): those at or below the ack floor the start read, and those of another stream. So the
+// set holds, for each session, only the messages above the floor its relay last started from,
+// and the ones passed since. A session whose relay never starts here again keeps its few
+// entries. Such messages are rare: only a stored message within the frame's few hundred header
+// bytes of the server's max payload is one.
+type relayPassedSet struct {
+	mu        sync.Mutex
+	bySession map[string]map[relayPassed]struct{}
+}
+
+// relayPassed names, within one session's entries of relayPassedSet, a stored message a relay
+// acknowledged without a frame: the stream's identity and the message's stream sequence.
+type relayPassed struct {
+	streamID string
+	seq      uint64
+}
+
+// first records that sessionID's relay passed the message at seq on the stream streamID, and
+// reports whether it was not recorded yet, which is when the caller writes the WARN.
+func (s *relayPassedSet) first(sessionID, streamID string, seq uint64) bool {
+	key := relayPassed{streamID: streamID, seq: seq}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	passed, ok := s.bySession[sessionID]
+	if !ok {
+		if s.bySession == nil {
+			s.bySession = map[string]map[relayPassed]struct{}{}
+		}
+		passed = map[relayPassed]struct{}{}
+		s.bySession[sessionID] = passed
+	}
+	if _, logged := passed[key]; logged {
+		return false
+	}
+	passed[key] = struct{}{}
+	return true
+}
+
+// prune drops sessionID's entries that its consumer, started at start, can no longer hand back:
+// those of another stream than start.StreamID, and those at or below start.AckFloor, which the
+// consumer has every message acknowledged through.
+func (s *relayPassedSet) prune(sessionID string, start bus.SessionConsumerStart) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	passed := s.bySession[sessionID]
+	for key := range passed {
+		if key.streamID != start.StreamID || key.seq <= start.AckFloor {
+			delete(passed, key)
+		}
+	}
+	if len(passed) == 0 {
+		delete(s.bySession, sessionID)
+	}
 }
 
 // relayCancelReason is why the loop cancelled a run. It is the cause the cancellation carries
@@ -290,14 +420,16 @@ const (
 	// nak being a publish the server answers nothing to. A record that lapsed out of the bucket
 	// instead leaves the consumer standing with those messages on it for as long as it stands:
 	// the reaper judges the records the cache holds, and a record whose bucket age is under the
-	// gone horizon - five minutes against an hour where the deployment sets no
-	// ENVOY_SESSION_MAX_AGE (session.BucketMaxAge, session.GoneHorizon) - leaves that cache
-	// before a pass of it judges the session gone. The sweep is what ends such a consumer, one
-	// pass after the record left the bucket (sessionConsumerSweep), and the stream's inactive
-	// threshold (bus.SessionConsumerInactiveThreshold) is the backstop behind the sweep; until
-	// one of them takes it, the session is delivered those messages when it registers again,
-	// which is what a laptop that slept through its heartbeats does. The cache reports a record
-	// deleted and one lapsed the same way, so the hand-over line names both (relayHandOverLines).
+	// gone horizon leaves that cache before a pass of it judges the session gone. A bucket this
+	// listener creates keeps a record for 2 hours (session.BucketMaxAge), past the default
+	// horizon (session.GoneHorizon), but one an older build created keeps a record five minutes
+	// until ENVOY_SESSION_MAX_AGE raises it.
+	// The sweep is what ends such a consumer, one pass after the record left the bucket
+	// (sessionConsumerSweep), and the stream's inactive threshold
+	// (bus.SessionConsumerInactiveThreshold) is the backstop behind the sweep; until one of them
+	// takes it, the session is delivered those messages when it registers again, which is what a
+	// laptop that slept through its heartbeats does. The cache reports a record deleted and one
+	// lapsed the same way, so the hand-over line names both (relayHandOverLines).
 	relayCancelSessionGone
 	// relayCancelNewEpoch: the session registered with a new epoch, so a run starting at the ack
 	// floor replaced this one.
@@ -377,9 +509,16 @@ type relayRun struct {
 	// floor took before it read the session's topics and consumer, 0 before the first one
 	// (relayRun.restartedBefore).
 	restartedAt atomic.Uint64
-	// resume carries, at most one at a time, the registrations heard for the session: a paused run
-	// takes one instead of waiting its backoff out (sessionRelays.apply, relayRun.waitPause).
-	resume chan struct{}
+	// resume carries, at most one at a time, the wakes the loop sent for the session's registrations
+	// and edge role claims, as the highest of their marks (sessionDelivery.mark) not taken yet
+	// (relayRun.wake): a run waiting to retry takes any instead of waiting its backoff out, and a
+	// paused run one above the mark of the frame it paused on (sessionRelays.apply,
+	// relayRun.waitRetry, relayRun.waitPause).
+	resume chan uint64
+	// pausedOn is the mark (relayFrame.sentMark) of the frame the run last paused on: the oldest
+	// one the session had not answered when its receipt wait passed (relayNATS). Only the run's own
+	// goroutine reads or writes it.
+	pausedOn uint64
 	// answered is set whenever the session answers a frame of the run and cleared each time the run
 	// pauses, so the pause reads whether the session answered anything since the last one: the
 	// backoff starts again from the first wait and the pause is logged as a new episode.
@@ -403,34 +542,42 @@ type relayRun struct {
 	exiting bool
 }
 
-// wake has a paused run, or one waiting to retry, restart at once: the session registered. A wake
-// sent while the run relays is dropped by its next pause, which names a registration heard before
-// it. It reports false, sending nothing, once the run is returning: the caller then starts a run in
-// its place.
-func (r *relayRun) wake() bool {
+// wake has a run waiting to retry, or one paused on a frame sent before heard, restart at once: the
+// session registered, or at the edge claimed a role, at heard, that registration's or claim's mark
+// (sessionDelivery.mark). The run holds the highest mark of the wakes it has not taken yet
+// (relayRun.resume), and its pause takes a wake only for a registration heard after the frame it
+// paused on went out (waitPause), so a wake sent while the run relays ends the next pause only
+// when the frame that pause is about went out before it. It reports false, sending nothing, once
+// the run is returning: the caller then starts a run in its place.
+func (r *relayRun) wake(heard uint64) bool {
 	r.exitMu.Lock()
 	defer r.exitMu.Unlock()
 	if r.exiting {
 		return false
 	}
 	select {
-	case r.resume <- struct{}{}:
+	case waiting := <-r.resume:
+		heard = max(heard, waiting)
 	default:
 	}
+	// wake alone sends on resume, and only under exitMu, so once the waiting mark is taken the
+	// buffer has room for the higher of the two.
+	r.resume <- heard
 	return true
 }
 
-// exit marks the run as returning, and reports whether a wake was waiting for it: a registration
-// the loop heard since the run's last pause began, for which no run would start otherwise.
-func (r *relayRun) exit() bool {
+// exit marks the run as returning, and reports the wake waiting for it, by its mark, if one is: a
+// registration, or at the edge a role claim, the loop heard since the run last took a wake, for
+// which no run would start otherwise.
+func (r *relayRun) exit() (uint64, bool) {
 	r.exitMu.Lock()
 	defer r.exitMu.Unlock()
 	r.exiting = true
 	select {
-	case <-r.resume:
-		return true
+	case heard := <-r.resume:
+		return heard, true
 	default:
-		return false
+		return 0, false
 	}
 }
 
@@ -447,27 +594,39 @@ func (r *relayRun) restartedBefore(heard uint64) bool {
 	return at != 0 && at < heard
 }
 
-// waitPause waits out a paused run's backoff, d, the session's next registration, or the end of the
-// run, and reports whether the run goes on.
-func (r *relayRun) waitPause(ctx context.Context, d time.Duration) bool {
-	select {
-	case <-r.resume:
-	default:
-	}
+// waitPause waits out a paused run's backoff, d, a wake whose mark is above from, the mark of the
+// frame the run paused on (relayRun.pausedOn), or the end of the run. It reports whether the run
+// goes on, and whether a wake ended the wait.
+//
+// A wake above from ends the pause at once, whether the loop sent it before the pause began, while
+// the probe that paused waited for its receipt, or during the pause: the registration, or at the
+// edge the role claim, came after that frame went out, which may have been before the session
+// opened the relay subject the registration holds. A wake at or below from is taken and dropped:
+// its registration came before the frame went out, so the frame went to the relay subject that
+// registration holds and the session left it unanswered. That registration has had its probe, and a
+// session that registers and never answers costs no restart of its consumer every receipt wait.
+func (r *relayRun) waitPause(ctx context.Context, d time.Duration, from uint64) (goesOn, woken bool) {
 	timer := time.NewTimer(d)
 	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-r.resume:
-	case <-timer.C:
+	for {
+		select {
+		case <-ctx.Done():
+			return false, false
+		case heard := <-r.resume:
+			if heard > from {
+				return true, true
+			}
+		case <-timer.C:
+			return true, false
+		}
 	}
-	return true
 }
 
 // waitRetry waits out a run's retry backoff after a failed call or pull, d, a wake, or the end of
-// the run, and reports whether the run goes on. Unlike a pause it takes a wake sent before it began:
-// a registration heard while the failed call or pull ran restarts the run at once.
+// the run, and reports whether the run goes on. It takes any wake, one sent before it began
+// included: a registration, or at the edge a role claim, heard while the failed call or pull ran
+// restarts the run at once. A pause takes only a wake heard after the frame it paused on
+// (waitPause).
 func (r *relayRun) waitRetry(ctx context.Context, d time.Duration) bool {
 	timer := time.NewTimer(d)
 	defer timer.Stop()
@@ -481,7 +640,7 @@ func (r *relayRun) waitRetry(ctx context.Context, d time.Duration) bool {
 }
 
 // ended reports whether the run's goroutine has returned: it was stopped, or it may start again
-// only at the session's next registration.
+// only at the session's next registration, or at the edge a role claim it makes through this listener.
 func (r *relayRun) ended() bool {
 	select {
 	case <-r.done:
@@ -496,19 +655,51 @@ type relayFrame struct {
 	run    *relayRun
 	acker  bus.SessionAcker
 	sentAt time.Time
+	// sentMark is the mark (sessionDelivery.mark) the frame took just before it was published
+	// (publishFrame). A registration whose mark is above it may have opened the session's relay
+	// subject only after the frame went out, so a pause on this frame ends at that registration's
+	// wake (relayRun.waitPause).
+	sentMark uint64
 	// delivered is the message's delivery count, 1 the first, as the consumer reported it to the
 	// pull that published the frame (bus.SessionMessage.Delivered, relayHeaderDelivered). The
 	// count is the message's and not the reply's, so the frame carries it from publishFrame to
 	// the nak onReply sends (relayNakDelayFor).
 	delivered uint64
-	// answered is set once the session sent any reply for the frame, under framesMu.
+	// answered is set once the session sent any reply for the frame, or once NATS refused the
+	// frame as too large to relay (publishFrame), under framesMu.
 	answered bool
+	// gapMark is the repository gap mark the frame carried (the owed mark publishFrame was given),
+	// "" for a frame that carried none and for a stream retention gap. The relay clears the mark
+	// when it publishes the frame; a nak means the session did not take it (a slow consumer, or the
+	// socket withholding it on a replica with no fresh answer), so onReply re-marks the session by
+	// this, and the mark is not lost to a frame that never reached the client.
+	gapMark string
 }
+
+// relayEdgeInFlight is how many of a session's frames an edge listener's relay holds in flight,
+// awaiting done or nak: its session consumers' MaxAckPending (bus.SessionConsumers.SetMaxAckPending),
+// in place of bus.SessionConsumerMaxAckPending. A relay socket buffers what a client has not read
+// yet (relaySocketPendingMsgs, relaySocketPendingBytes), so a restart at the ack floor sends a
+// prompt client no more than its socket holds, however large the session's backlog.
+const relayEdgeInFlight = 16
 
 // startSessionRelays starts the relay of delivery's session consumers and makes it delivery's
 // relay (sessionDelivery.relay). It relays nothing until setOwned(true).
+//
+// An edge listener's relay (cfg.edge set) takes its receipts under its own machine's receipt
+// family (natsgrant.EdgeRelayReplyPrefix) and a nuid of its own rather than under a reply inbox:
+// the session of an edge listener answers its frames over its relay socket, whose replica may be
+// another machine's, and the edge's grant publishes every machine's receipts and subscribes only
+// its own machine's, and no reply inbox (natsgrant.Edge). So the replica serving the socket
+// publishes the client's receipt on the owner's subject, which the owner alone reads. Its
+// consumers hold at most relayEdgeInFlight frames in flight; it is started before /v1 opens, so
+// before any consumer is created.
 func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerConfig) (*sessionRelays, error) {
-	inbox := nats.NewInbox()
+	inbox := delivery.consumers.NewInbox()
+	if cfg.edge != nil {
+		inbox = natsgrant.EdgeRelayReplyPrefix(cfg.machineID) + "." + nuid.Next()
+		delivery.consumers.SetMaxAckPending(relayEdgeInFlight)
+	}
 	m := &sessionRelays{
 		delivery:    delivery,
 		cfg:         cfg,
@@ -528,6 +719,7 @@ func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerCo
 		restarts:    make(chan struct{}, relayRestartLimit),
 		frames:      map[string]*relayFrame{},
 	}
+	m.reMark = m.reMarkWithheldGap
 	if err := delivery.consumers.SubscribeReplies(inbox+".>", m.onReply); err != nil {
 		return nil, err
 	}
@@ -552,14 +744,17 @@ func (m *sessionRelays) setOwned(owned bool) {
 	m.signal()
 }
 
-// registered implements sessionRelay: the session registered, so a relay that paused resumes and a
-// new epoch restarts it at the ack floor, unless it restarted after heard (relayRun.restartedBefore).
+// registered implements sessionRelay: the session registered, or at the edge claimed a role through
+// this listener, at heard, that registration's or claim's mark (sessionDelivery.mark). A relay that
+// ended starts again; one that waits to retry, or paused on a frame sent before heard, starts again
+// at once (relayRun.wake); and a new epoch restarts it at the ack floor, unless it restarted after
+// heard (relayRun.restartedBefore).
 func (m *sessionRelays) registered(sessionID string, epochChanged bool, heard uint64) {
+	event := relayResume
 	if epochChanged {
-		m.enqueue(sessionID, relayResume|relayRestart, heard)
-		return
+		event |= relayRestart
 	}
-	m.enqueue(sessionID, relayResume, 0)
+	m.enqueue(sessionID, event, heard)
 }
 
 // onChange hears every change to a session's cached entry.
@@ -569,8 +764,9 @@ func (m *sessionRelays) onChange(sessionID string) {
 	}
 }
 
-// enqueue tells the loop event about sessionID, with heard, the mark of a registration with a new
-// epoch, or 0. The flags merge with those the loop has not taken yet, and the highest mark stays.
+// enqueue tells the loop event about sessionID, with heard, the mark of the registration or role
+// claim it is for, or 0. The flags merge with those the loop has not taken yet, and the highest mark
+// stays: a resume's as woke, a restart's as heard (relayNotice).
 func (m *sessionRelays) enqueue(sessionID string, event relayEvent, heard uint64) {
 	m.eventsMu.Lock()
 	if m.events == nil {
@@ -579,7 +775,12 @@ func (m *sessionRelays) enqueue(sessionID string, event relayEvent, heard uint64
 	}
 	notice := m.events[sessionID]
 	notice.event |= event
-	notice.heard = max(notice.heard, heard)
+	if event&relayResume != 0 {
+		notice.woke = max(notice.woke, heard)
+	}
+	if event&relayRestart != 0 {
+		notice.heard = max(notice.heard, heard)
+	}
 	m.events[sessionID] = notice
 	m.eventsMu.Unlock()
 	m.signal()
@@ -592,8 +793,11 @@ func (m *sessionRelays) signal() {
 	}
 }
 
-// stop stops every relay and waits, within ctx, for their goroutines to return, so no relay acks or
-// publishes after it; the session-consumer connection is drained after it (sessionDelivery.drain).
+// stop stops every relay and waits, within ctx, for the relay loop and every run to return; a run
+// stopped while it pulls returns the messages it holds with a nak before it ends (release). When
+// ctx ends first, stop warns and returns while that work still runs, so a run still going may
+// then publish a frame, have one acked on the session's done reply (onReply) or nak what it
+// holds. The session-consumer connection is drained after it (sessionDelivery.drain).
 func (m *sessionRelays) stop(ctx context.Context) {
 	if m == nil {
 		return
@@ -603,13 +807,11 @@ func (m *sessionRelays) stop(ctx context.Context) {
 	m.events = nil
 	m.eventsMu.Unlock()
 	m.cancel(relayCancelListenerStopping)
-	select {
-	case <-m.loopDone:
-	case <-ctx.Done():
+	if !closedWithin(ctx, m.loopDone) {
 		m.logger.Warn("session relay loop still running at shutdown")
 		return
 	}
-	if !waitWithin(ctx, &m.runs) {
+	if !m.runs.wait(ctx) {
 		m.logger.Warn("session relays still running at shutdown")
 	}
 }
@@ -625,9 +827,10 @@ func (m *sessionRelays) loop() {
 		case <-m.ctx.Done():
 			m.stopAll(relayCancelListenerStopping)
 			return
-		case <-prune.C:
+		case now := <-prune.C:
 			// Each lapse it finds is a change, which onChange hears.
 			m.sessions.PruneLapsed()
+			m.pruneAdmissions(now)
 			continue
 		case <-m.wake:
 		}
@@ -668,10 +871,11 @@ func (m *sessionRelays) loop() {
 }
 
 // apply makes sessionID's relay match its entry and notice: started when the session is this
-// listener's to relay, stopped when it is not, started again when it registered and the run
-// ended or is returning on its own (relayRun.wake), restarted at the ack floor on a new epoch
-// registered after the run's last restart (relayRun.restartedBefore), and, for a run waiting out a
-// pause or a retry, woken by the registration so it restarts at once.
+// listener's to relay, stopped when it is not, started again when it registered or, at the edge, claimed a role
+// here and the run ended or is returning on its own (relayRun.wake), restarted at the ack floor on
+// a new epoch registered after the run's last restart (relayRun.restartedBefore), and otherwise
+// woken with the mark of that registration or claim (relayNotice.woke), which restarts at once a
+// run waiting out a retry, or a pause on a frame sent before that mark (relayRun.waitPause).
 func (m *sessionRelays) apply(sessionID string, notice relayNotice) {
 	event := notice.event
 	run := m.relays[sessionID]
@@ -680,6 +884,11 @@ func (m *sessionRelays) apply(sessionID string, notice relayNotice) {
 			run.cancel(why)
 			delete(m.relays, sessionID)
 		}
+		m.forgetRepositoryGap(sessionID)
+		// A run of give-backs of a session that leaves ends unlogged: no mark write of it lands here.
+		m.repositoryGapsMu.Lock()
+		delete(m.givenBack, sessionID)
+		m.repositoryGapsMu.Unlock()
 		return
 	}
 	switch {
@@ -693,11 +902,22 @@ func (m *sessionRelays) apply(sessionID string, notice relayNotice) {
 		run.cancel(relayCancelNewEpoch)
 		m.start(sessionID, run.done)
 	case event&relayResume != 0:
-		if !run.wake() {
+		if !run.wake(notice.woke) {
 			// The run is returning on its own: a run in its place takes the registration.
 			m.start(sessionID, run.done)
 		}
 	}
+}
+
+// pruneAdmissions forgets, as of now, the admission of each session the cache holds no entry of
+// (session.SessionRegistry.Get) that this replica admitted more than edgeAdmissionGrace ago
+// (edgeAdmissions.prune): a session that deregistered, or whose entry lapsed, keeps no list here.
+// Every listener that is no edge records no admission, and this forgets nothing there.
+func (m *sessionRelays) pruneAdmissions(now time.Time) {
+	m.delivery.admissions.prune(now.Add(-edgeAdmissionGrace), func(sessionID string) bool {
+		_, err := m.sessions.Get(sessionID)
+		return err != nil
+	})
 }
 
 // stopAll stops every relay, each cancelled for reason: the listener is stopping, or the machine's
@@ -758,7 +978,7 @@ func (m *sessionRelays) listConsumers() map[string]*jetstream.ConsumerInfo {
 // started by the burst of gaining the durable binding takes the session's listed consumer.
 func (m *sessionRelays) start(sessionID string, previous <-chan struct{}) {
 	ctx, cancel := context.WithCancelCause(m.ctx)
-	run := &relayRun{sessionID: sessionID, cancel: cancel, done: make(chan struct{}), resume: make(chan struct{}, 1), listed: m.listed[sessionID], listedAt: m.listedAt}
+	run := &relayRun{sessionID: sessionID, cancel: cancel, done: make(chan struct{}), resume: make(chan uint64, 1), listed: m.listed[sessionID], listedAt: m.listedAt}
 	delete(m.listed, sessionID)
 	m.relays[sessionID] = run
 	m.runs.Go(func() {
@@ -769,22 +989,25 @@ func (m *sessionRelays) start(sessionID string, previous <-chan struct{}) {
 			<-previous
 		}
 		m.relay(ctx, run)
-		if run.exit() && ctx.Err() == nil {
+		if heard, woken := run.exit(); woken && ctx.Err() == nil {
 			// The loop heard a registration while the run returned on its own.
-			m.enqueue(sessionID, relayResume, 0)
+			m.enqueue(sessionID, relayResume, heard)
 		}
 	})
 }
 
 // relay runs one session's relay until it is stopped, restarting at the ack floor after a failed
-// call or pull, with a wait that doubles from relayRetryFirst to relayRetryMax, and after a pause
-// (relayPaused), with a wait that doubles from pauseFirst to pauseMax, both cut short by the
-// session's next registration. Both only while the session is still this listener's.
+// call or pull, with a wait that doubles from relayRetryFirst to relayRetryMax and is cut short by
+// the session's next registration, or at the edge a role claim it makes through this listener, and
+// after a pause (relayPaused), with a wait that doubles from pauseFirst to pauseMax and is cut
+// short by such a registration or claim heard after the frame it paused on went out
+// (relayRun.waitPause). Both only while the session is still this listener's.
 //
 // The pause is logged once an episode: the line is written for the first pause since the session
-// last answered a frame, not for each probe that found it silent again.
+// last answered a frame, not for each probe that found it silent again. A pause a registration
+// cut short is logged once an episode too, with the backoff it cut short.
 func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
-	retry, pause, paused := relayRetryFirst, m.pauseFirst, false
+	retry, pause, paused, resumed := relayRetryFirst, m.pauseFirst, false, false
 	for {
 		outcome := m.relayNATS(ctx, run)
 		switch outcome {
@@ -793,17 +1016,24 @@ func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 		case relayPaused:
 			if run.answered.Swap(false) {
 				// The session answered a frame since the last pause: this one is a new episode.
-				pause, paused = m.pauseFirst, false
+				pause, paused, resumed = m.pauseFirst, false, false
 			}
 			if !paused {
 				paused = true
-				m.logger.Info("session relay paused: the session answered no frame within the receipt wait; it sends again after the pause backoff, or at the session's next registration",
+				m.logger.Info("session relay paused: the session answered no frame within the receipt wait; it sends again after the pause backoff, or at once at a registration of the session, or at the edge a role claim, heard after the frame it paused on went out",
 					slog.String("session_id", run.sessionID),
 					slog.String("receipt_wait", m.receiptWait.String()),
 					slog.String("backoff", pause.String()))
 			}
-			if !run.waitPause(ctx, pause) {
+			goesOn, woken := run.waitPause(ctx, pause, run.pausedOn)
+			if !goesOn {
 				return
+			}
+			if woken && !resumed {
+				resumed = true
+				m.logger.Info("session relay resumed: the session registered, or at the edge claimed a role, after the frame the relay paused on went out, so it sends again at once rather than after the pause backoff",
+					slog.String("session_id", run.sessionID),
+					slog.String("backoff", pause.String()))
 			}
 			pause = min(pause*2, m.pauseMax)
 		default:
@@ -926,7 +1156,12 @@ func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]s
 	if m.delivery.afterStoredRowRead != nil {
 		m.delivery.afterStoredRowRead()
 	}
-	return m.delivery.storedRowFilter(m.registry, sessionID, topics), revision, true
+	filtered, err := m.delivery.storedRowFilter(ctx, m.registry, sessionID, topics)
+	if err != nil {
+		m.logger.Warn("session relay could not filter the session's stored interests; retrying", slog.String("session_id", sessionID), slog.String("error", err.Error()))
+		return nil, 0, false
+	}
+	return filtered, revision, true
 }
 
 // settleFilter holds a restart's filter write to the interest row it was built from: wrote is the
@@ -952,7 +1187,9 @@ func (m *sessionRelays) settleFilter(ctx context.Context, sessionID string, wrot
 			restart = false
 			return wrote, filterWriteLanded
 		}
-		return m.delivery.storedFilterStep(ctx, m.registry, sessionID, filterAfterRestart)
+		// Each failure is logged where it is met; a relay restart has no client to answer.
+		revision, outcome, _ := m.delivery.storedFilterStep(ctx, m.registry, sessionID, filterAfterRestart)
+		return revision, outcome
 	})
 }
 
@@ -977,12 +1214,36 @@ func (m *sessionRelays) restartFailed(ctx context.Context, sessionID string, err
 // relayNATS restarts a NATS session's consumer at its ack floor and publishes each message it pulls
 // as a frame on the session's relay subject, in stream order, with up to the consumer's
 // MaxAckPending in flight. It pauses, sending nothing more, once the oldest frame the session has
-// not answered has waited the receipt wait (receiptWait): the frames in flight are left to their
-// ack wait, and the relay starts again at the ack floor after its pause backoff or at the
-// session's next registration, whichever comes first (sessionRelays.relay), so the messages it
-// was sending reach a session that was only slow without waiting for a registration.
+// not answered has waited the receipt wait (receiptWait), and records that frame's mark as the one
+// the run paused on (relayRun.pausedOn): the frames in flight are left to their ack wait, and the
+// relay starts again at the ack floor after its pause backoff, or at a registration of the session
+// heard after that frame went out, whichever comes first (sessionRelays.relay, relayRun.waitPause),
+// so the messages it was sending reach a session that was only slow without waiting for a
+// registration.
+//
+// A frame NATS refuses as past the server's max payload (bus.ErrTooLarge) is refused again at
+// every send: the frame adds its headers to a stored message that fits the limit alone. The
+// relay acknowledges that message, logs one WARN and goes on to the next message, which carries
+// the Envoy-Gap header, and the Envoy-Gap-Reason header, the refused frame carried, if any
+// (passTooLarge). A restart at the ack floor would only meet the same refusal and hold back every
+// later message of the session. Any other failed publish restarts at the ack floor.
 func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutcome {
 	sessionID := run.sessionID
+	// An edge listener relays a session only on the projects of the token it admitted the
+	// session's registration or role claim on, which it holds in memory (edgeAdmissions) and never
+	// reads back from the session's record. A session no registration or claim of reached this
+	// listener since it started - one this replica's restart forgot, one whose record names this
+	// machine and was written by neither here, or one whose admission was forgotten after its entry
+	// left the cache (pruneAdmissions) - is relayed nothing, and its messages wait in its consumer
+	// until it registers or claims a role through this listener, which records the admission and
+	// starts the relay again (apply).
+	if m.repositories != nil {
+		if _, admitted := m.delivery.admissions.of(sessionID); !admitted {
+			m.logger.Info("edge relay holds the session's messages in its consumer until the session registers or claims a role through this listener",
+				slog.String("session_id", sessionID))
+			return relayEnded
+		}
+	}
 	start, pull, outcome := m.restart(ctx, run)
 	if pull == nil {
 		return outcome
@@ -1050,12 +1311,27 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		m.logger.Warn("session relay could not read the stream's identity; retrying", slog.String("session_id", sessionID), slog.String("error", bus.ErrNoStreamID.Error()))
 		return relayRetry
 	}
-	streamID, gap := start.StreamID, start.Gap
+	// gapReason names the gap the next frame marks, "" for the stream's retention gap
+	// (relayHeaderGapReason). owed is the mark the next frame carries for GitHub events withheld
+	// with no frame sent after them, which the frame clears once it is published
+	// (repositoryGapSent), "" for none: the events are acknowledged, so the stream's start says
+	// nothing of them. It is the mark this run noted for an event it withheld, and before each
+	// frame that owes none, the mark this listener's copy of the session's entry carries
+	// (owedRepositoryGap): one an earlier run of the session wrote and sent no frame after, or one
+	// another relay of the session wrote while this run is live, as two relays of one session run
+	// while it moves, which rides the first frame after the copy shows it. carried is the last
+	// mark a frame of this run carried, which the run does not take from the copy again: the copy
+	// can trail the clear, and the session would be sent the same gap notice twice.
+	streamID, gap, gapReason, owed, carried := start.StreamID, start.Gap, "", "", ""
+	// The start read the consumer's ack floor, so the passed messages the consumer cannot hand
+	// back any more leave the set here (relayPassedSet.prune).
+	m.passed.prune(sessionID, start)
 	for {
 		next := ctx
 		cancelNext := context.CancelFunc(func() {})
-		if deadline, waiting := m.receiptDeadline(run); waiting {
+		if deadline, sent, waiting := m.receiptDeadline(run); waiting {
 			if !time.Now().Before(deadline) {
+				run.pausedOn = sent
 				return relayPaused
 			}
 			next, cancelNext = context.WithDeadline(ctx, deadline)
@@ -1072,29 +1348,282 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			m.logger.Warn("session relay pull ended; restarting at the ack floor", slog.String("session_id", sessionID), slog.String("error", err.Error()))
 			return relayRetry
 		}
+		// At the edge a GitHub event reaches the session only while a fresh answer of its
+		// token's projects names the repository the event itself names (relayVerdict). One that
+		// does not is acknowledged undelivered and counted, and while no such answer can be read
+		// the session's next frame carries the gap mark, since the events withheld then are ones
+		// the session may have been owed, with the reason repository_withheld; a retention gap
+		// the same frame already marks keeps no reason, since it lost more. Such an event is
+		// acknowledged only once the session's entry carries the mark (noteRepositoryGap): an
+		// entry that could not be marked has the event given back to the server, as takeOverFrame
+		// gives back a frame whose copy did not store, so a redelivery marks the entry and a move
+		// or a restart before the session's next frame still sends the mark.
+		verdict := m.edgeWithholds(sessionID, msg)
+		switch verdict.action {
+		case frameHold:
+			// A frame of a session this replica admitted no registration of is left
+			// unacknowledged, for the consumer to deliver it again once the session registers
+			// here; never acknowledged away.
+			continue
+		case frameAnswerUnknown:
+			mark, err := m.noteRepositoryGap(ctx, sessionID)
+			if err != nil {
+				m.giveBackWithheld(sessionID, msg, err)
+				continue
+			}
+			if !gap {
+				gapReason = relayGapRepositoryWithheld
+			}
+			gap, owed = true, mark
+			m.acknowledgeWithheld(sessionID, msg, verdict.reason)
+			continue
+		case frameDrop:
+			m.endGiveBacks(sessionID, verdict)
+			m.acknowledgeWithheld(sessionID, msg, verdict.reason)
+			continue
+		}
 		// A role message whose role another session holds, or none does, is copied to the role's
 		// kept lane rather than sent (takeOverFrame); a gap the restart named stays on the next
 		// frame this run sends.
 		if m.takeOverFrame(ctx, sessionID, msg) {
 			continue
 		}
-		if err := m.publishFrame(ctx, run, msg, streamID, gap); err != nil {
+		if owed == "" {
+			if mark := m.owedRepositoryGap(sessionID); mark != "" && mark != carried {
+				owed = mark
+				if !gap {
+					gap, gapReason = true, relayGapRepositoryWithheld
+				}
+			}
+		}
+		m.endGiveBacks(sessionID, verdict)
+		if err := m.publishFrame(ctx, run, msg, streamID, gap, gapReason, owed); err != nil {
+			// A frame too large to relay is passed even when the run is ending, so its message is
+			// acknowledged and not left unsettled.
+			if errors.Is(err, bus.ErrTooLarge) {
+				if !m.passTooLarge(run, msg, streamID, err) {
+					return relayRetry
+				}
+				// No frame went out, so the gap, if any, goes on the next one, with its reason
+				// and the repository gap mark it owes.
+				continue
+			}
 			if ctx.Err() != nil {
 				return relayEnded
 			}
 			m.logger.Warn("session relay could not publish a frame; restarting at the ack floor", slog.String("session_id", sessionID), slog.String("error", err.Error()))
 			return relayRetry
 		}
-		gap = false
+		if owed != "" {
+			// owed is set only together with gap (the frameAnswerUnknown case and the
+			// owedRepositoryGap adoption above), so a frame carrying a gap mark clears that mark as
+			// sent and becomes the one carried onto the next frame that owes none.
+			m.repositoryGapSent(ctx, sessionID, owed)
+			carried = owed
+		}
+		gap, gapReason, owed = false, "", ""
 	}
 }
 
-// publishFrame publishes msg as a frame on the session's relay subject, its reply subject one of
-// its own under the listener's reply inbox that names the session (bus.SessionReplySubject).
-func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap bool) error {
+// noteRepositoryGap records that sessionID is owed the gap mark of a GitHub event the edge
+// withholds while no fresh repository answer stands, until a frame carrying a gap mark is
+// published (repositoryGapSent), and answers the mark: on the session's entry first, which the
+// next listener to relay the session reads after a move or a restart
+// (session.SessionEntry.RepositoryGap), then in this process. The mark is a new id for
+// every withheld event, so the clear after a frame removes the mark that frame carried alone: a
+// mark written since, by this relay or by another relay of the session, as two relays of one
+// session run while it moves, stays on the entry for a later frame. A relay that adopted the
+// entry's mark (owedRepositoryGap) and clears it after its frame therefore never clears the mark
+// of an event another relay withheld later. The entry is read from the bucket for the write, within
+// repositoryGapWriteTimeout of ctx (session.SessionRegistry.SetRepositoryGap), not judged from
+// this listener's copy, which can trail a clear another listener made. A write that
+// failed or did not answer in time, and an entry the bucket does not hold, are the error, and
+// nothing is noted: the caller gives the event back (giveBackWithheld), since a mark this process
+// alone kept would be lost with a move.
+func (m *sessionRelays) noteRepositoryGap(ctx context.Context, sessionID string) (string, error) {
+	mark := id.New()
+	writeCtx, cancel := context.WithTimeout(ctx, repositoryGapWriteTimeout)
+	defer cancel()
+	if err := m.sessions.SetRepositoryGap(writeCtx, sessionID, mark); err != nil {
+		return "", err
+	}
+	m.repositoryGapsMu.Lock()
+	given := m.givenBack[sessionID]
+	delete(m.givenBack, sessionID)
+	if m.repositoryGaps == nil {
+		m.repositoryGaps = map[string]string{}
+	}
+	m.repositoryGaps[sessionID] = mark
+	m.repositoryGapsMu.Unlock()
+	if given > 0 {
+		m.logger.Info("edge listener recorded a gap mark on the session's entry again, after giving back the GitHub events it withheld while the entry could not record one",
+			slog.String("session_id", sessionID), slog.Int("given_back", given))
+	}
+	return mark, nil
+}
+
+// repositoryGapWriteTimeout bounds each write a relay makes of its session's gap mark, the mark
+// (noteRepositoryGap) and the clear after a frame (repositoryGapSent): a read and a write of the
+// session's entry, each of which answers in milliseconds on a bus that answers at all. The relay
+// run's own context has no deadline, and the session's frames wait behind the write, so a bucket
+// that stops answering holds them this long at most: the event is then given back, or the clear
+// logged and the mark sent again by the session's next run.
+const repositoryGapWriteTimeout = 2 * time.Second
+
+// owedRepositoryGap is the mark sessionID is owed, "" for none: the one this process noted, else
+// the one the session's entry carries (noteRepositoryGap).
+func (m *sessionRelays) owedRepositoryGap(sessionID string) string {
+	m.repositoryGapsMu.Lock()
+	mark, noted := m.repositoryGaps[sessionID]
+	m.repositoryGapsMu.Unlock()
+	if noted {
+		return mark
+	}
+	entry, _ := m.sessions.Lookup(sessionID)
+	return entry.RepositoryGap
+}
+
+// repositoryGapSent clears mark, the one sessionID was owed, a frame carrying a gap mark having
+// been published: in this process, and on the session's entry while the entry carries that mark
+// (session.SessionRegistry.ClearRepositoryGap), within repositoryGapWriteTimeout of ctx. A mark
+// written since, for an event withheld later, is a later frame's to clear. A write of the entry
+// that fails or does not answer in time is logged; the entry then keeps the mark, and the
+// session's next relay run sends it once more.
+// mark is never empty: relayNATS calls this only for a frame that owed a mark (owed != "").
+func (m *sessionRelays) repositoryGapSent(ctx context.Context, sessionID, mark string) {
+	m.repositoryGapsMu.Lock()
+	if m.repositoryGaps[sessionID] == mark {
+		delete(m.repositoryGaps, sessionID)
+	}
+	m.repositoryGapsMu.Unlock()
+	if entry, _ := m.sessions.Lookup(sessionID); entry.RepositoryGap == "" {
+		return
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, repositoryGapWriteTimeout)
+	defer cancel()
+	if err := m.sessions.ClearRepositoryGap(writeCtx, sessionID, mark); err != nil {
+		m.logger.Warn("edge listener could not clear the session's repository gap on its entry; its next relay run sends the mark again",
+			slog.String("session_id", sessionID), slog.String("error", err.Error()))
+	}
+}
+
+// forgetRepositoryGap clears what this process noted for sessionID and leaves the session's entry
+// as it is: the session is no longer this listener's to relay, and the next listener that relays
+// it reads the mark there.
+func (m *sessionRelays) forgetRepositoryGap(sessionID string) {
+	m.repositoryGapsMu.Lock()
+	defer m.repositoryGapsMu.Unlock()
+	delete(m.repositoryGaps, sessionID)
+}
+
+// edgeWithholds reports whether an edge listener withholds msg from sessionID, and why: a frame
+// reaches the session only for a project of the token it was admitted on, as its own message, or
+// as a GitHub event whose own repository a fresh answer of its token's projects names
+// (edgeFrameVerdict). The projects are the token's this replica admitted the session's
+// registration on (edgeAdmissions), never the session's stored record, so no record the bus can
+// forge widens them; a session this replica admitted no registration of withholds every frame
+// unacknowledged (withheldNotAdmitted). Every other listener withholds nothing. A withheld message
+// is acknowledged (acknowledgeWithheld) or given back (giveBackWithheld) by the relay loop, which
+// decides which.
+func (m *sessionRelays) edgeWithholds(sessionID string, msg bus.SessionMessage) frameVerdict {
+	if m.repositories == nil {
+		return framePasses()
+	}
+	projects, admitted := m.delivery.admissions.of(sessionID)
+	if !admitted {
+		return frameHolds()
+	}
+	return edgeFrameVerdict(m.repositories, sessionID, projects, msg.Subject, msg.Data)
+}
+
+// acknowledgeWithheld acknowledges msg, a frame the edge withholds from sessionID for
+// reason, undelivered, counts it and logs it: the consumer holds it no longer, and nothing else is
+// ever sent for it.
+func (m *sessionRelays) acknowledgeWithheld(sessionID string, msg bus.SessionMessage, reason string) {
+	m.repositories.withheld.Inc([2]string{"reason", reason})
+	if err := msg.Ack(); err != nil {
+		m.logger.Warn("edge listener could not acknowledge a frame it withholds; the consumer delivers it again",
+			slog.String("session_id", sessionID), slog.String("subject", msg.Subject), slog.String("error", err.Error()))
+		return
+	}
+	m.logger.Info("edge listener withheld a frame from a session",
+		slog.String("session_id", sessionID), slog.String("subject", msg.Subject), slog.String("reason", reason))
+}
+
+// giveBackWithheld hands msg, a GitHub event the edge withholds from sessionID while no fresh
+// repository answer stands, back to the server with the delay its deliveries earn
+// (relayNakDelayFor), neither acknowledged nor counted: the session's entry could not be given
+// the gap mark the event owes (err, noteRepositoryGap), so the event stays the consumer's until a
+// redelivery marks the entry. Only the first give-back of a run logs err (givenBack): the server
+// delivers the event again within seconds, and each delivery is given back while the entry takes
+// no mark, so a line at each would fill the log for as long as the bucket refuses the write. A nak
+// that fails is logged at every give-back: the server then holds the event for the consumer's ack
+// wait rather than the nak's delay, which is no repeat of the mark's failure.
+func (m *sessionRelays) giveBackWithheld(sessionID string, msg bus.SessionMessage, err error) {
+	nakErr := msg.NakWithDelay(relayNakDelayFor(msg.Delivered))
+	m.repositoryGapsMu.Lock()
+	if m.givenBack == nil {
+		m.givenBack = map[string]int{}
+	}
+	m.givenBack[sessionID]++
+	first := m.givenBack[sessionID] == 1
+	m.repositoryGapsMu.Unlock()
+	if first {
+		m.logger.Warn("edge listener gave a withheld GitHub event back to the server: the session's entry could not record its gap mark; the server delivers it again, and each withheld event of the session is given back unlogged until a mark write of the session lands or a fresh repository answer decides its GitHub events, which is logged",
+			slog.String("session_id", sessionID),
+			slog.String("subject", msg.Subject),
+			slog.Uint64("stream_seq", msg.StreamSeq),
+			slog.String("error", err.Error()))
+	}
+	if nakErr != nil {
+		m.logger.Warn("edge listener could not give a withheld GitHub event back to the server: its nak failed, so the consumer delivers it again once its ack wait has passed",
+			slog.String("session_id", sessionID),
+			slog.String("subject", msg.Subject),
+			slog.Uint64("stream_seq", msg.StreamSeq),
+			slog.String("error", nakErr.Error()))
+	}
+}
+
+// endGiveBacks ends sessionID's run of give-backs (givenBack) once a fresh repository answer decides
+// a GitHub event of the session, verdict being the edge's decision on the event: an answer that
+// relays it or drops it (frameVerdict.answered) means the session's GitHub events are no longer
+// withheld for want of an answer, and a give-back in a later outage starts a run of its own and logs
+// it. Any other verdict says nothing of the answer and ends no run: a frame that is no GitHub event,
+// and a drop of an event that names no repository or whose envelope is no GitHub event's. A
+// listener that is no edge gives nothing back and decides nothing so.
+func (m *sessionRelays) endGiveBacks(sessionID string, verdict frameVerdict) {
+	if !verdict.answered {
+		return
+	}
+	m.repositoryGapsMu.Lock()
+	given := m.givenBack[sessionID]
+	delete(m.givenBack, sessionID)
+	m.repositoryGapsMu.Unlock()
+	if given > 0 {
+		m.logger.Info("edge listener decides the session's GitHub events by a fresh repository answer again, after giving back the events it withheld while the session's entry could not record a gap mark",
+			slog.String("session_id", sessionID), slog.Int("given_back", given))
+	}
+}
+
+// publishFrame publishes msg as a frame on the session's relay subject. Its reply subject is one
+// of its own under the listener's reply inbox, or an edge listener's receipt family
+// (startSessionRelays), that names the session and ends in a token of 128 random bits from
+// crypto/rand (bus.SessionReplySubject: crypto/rand.Text, 26 base32 characters, one NATS subject
+// token). A token tells nothing of any other frame's token, so a session that reads only its own
+// frames cannot name the reply subject of another session's frame (onReply). gap marks the frame
+// as the first after a gap, and gapReason names that gap when it is not the stream's retention
+// gap. owed is the repository gap mark the frame carries (relayFrame.gapMark), "" for none. The
+// frame takes its mark (relayFrame.sentMark) before it is published, so a registration heard after
+// the publish always holds a higher one.
+//
+// A frame NATS refuses as past the server's max payload (bus.ErrTooLarge) never went out, so no
+// reply can name it: it is dropped from the frames the relay awaits and marked answered, so the
+// receipt wait passes over it (receiptDeadline), and the error is returned for the caller to
+// acknowledge the message (passTooLarge).
+func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap bool, gapReason, owed string) error {
 	reply := bus.SessionReplySubject(m.inbox, run.sessionID)
 	token := reply[strings.LastIndexByte(reply, '.')+1:]
-	frame := &relayFrame{run: run, acker: msg.SessionAcker, sentAt: time.Now(), delivered: msg.Delivered}
+	frame := &relayFrame{run: run, acker: msg.SessionAcker, sentAt: time.Now(), sentMark: m.delivery.mark(), delivered: msg.Delivered, gapMark: owed}
 	m.framesMu.Lock()
 	if run.outstanding == nil {
 		run.outstanding = map[string]*relayFrame{}
@@ -1111,18 +1640,66 @@ func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus
 	header.Set(relayHeaderStoredAt, msg.StoredAt.UTC().Format(time.RFC3339Nano))
 	if gap {
 		header.Set(relayHeaderGap, "true")
+		if gapReason != "" {
+			header.Set(relayHeaderGapReason, gapReason)
+		}
 	}
-	return m.delivery.consumers.Publish(ctx, &nats.Msg{
+	err := m.delivery.consumers.Publish(ctx, &nats.Msg{
 		Subject: bus.DeliverSubject(run.sessionID),
 		Reply:   reply,
 		Header:  header,
 		Data:    msg.Data,
 	})
+	if errors.Is(err, bus.ErrTooLarge) {
+		m.framesMu.Lock()
+		frame.answered = true
+		delete(m.frames, token)
+		delete(run.outstanding, token)
+		m.framesMu.Unlock()
+	}
+	return err
+}
+
+// passTooLarge acknowledges msg, whose frame NATS refused as past the server's max payload
+// (refusal, bus.ErrTooLarge), so the relay goes on to the session's next message. It writes one
+// WARN for the message and the session in this listener process (sessionRelays.passed). The
+// session does not receive the message, and nothing tells it: no delivery_failed notice is
+// published. The WARN names the event by the stored message's event_id field alone, and by an
+// empty event_id when that field does not decode.
+//
+// It reports false when the acknowledgement could not be sent, which it logs: the caller then
+// restarts at the ack floor, which hands the message back, and the next pass writes the WARN.
+func (m *sessionRelays) passTooLarge(run *relayRun, msg bus.SessionMessage, streamID string, refusal error) bool {
+	if err := msg.Ack(); err != nil {
+		m.logger.Warn("session relay could not acknowledge a message too large to relay; restarting at the ack floor",
+			slog.String("session_id", run.sessionID),
+			slog.Uint64("stream_seq", msg.StreamSeq),
+			slog.String("error", err.Error()))
+		return false
+	}
+	if !m.passed.first(run.sessionID, streamID, msg.StreamSeq) {
+		return true
+	}
+	var stored struct {
+		EventID string `json:"event_id"`
+	}
+	if json.Unmarshal(msg.Data, &stored) != nil {
+		stored.EventID = ""
+	}
+	m.logger.Warn("session relay acknowledged a message too large to relay; the session does not receive it",
+		slog.String("session_id", run.sessionID),
+		slog.String("event_id", stored.EventID),
+		slog.String("subject", msg.Subject),
+		slog.Uint64("stream_seq", msg.StreamSeq),
+		slog.Int("size", len(msg.Data)),
+		slog.String("error", refusal.Error()))
+	return true
 }
 
 // receiptDeadline is when the oldest frame of run the session has not answered reaches the
-// receipt wait (receiptWait), and whether there is one.
-func (m *sessionRelays) receiptDeadline(run *relayRun) (time.Time, bool) {
+// receipt wait (receiptWait), the mark that frame took before it was sent (relayFrame.sentMark),
+// and whether there is one.
+func (m *sessionRelays) receiptDeadline(run *relayRun) (time.Time, uint64, bool) {
 	m.framesMu.Lock()
 	defer m.framesMu.Unlock()
 	for len(run.unanswered) > 0 && run.unanswered[0].answered {
@@ -1130,9 +1707,10 @@ func (m *sessionRelays) receiptDeadline(run *relayRun) (time.Time, bool) {
 		run.unanswered = run.unanswered[1:]
 	}
 	if len(run.unanswered) == 0 {
-		return time.Time{}, false
+		return time.Time{}, 0, false
 	}
-	return run.unanswered[0].sentAt.Add(m.receiptWait), true
+	oldest := run.unanswered[0]
+	return oldest.sentAt.Add(m.receiptWait), oldest.sentMark, true
 }
 
 // forget drops every frame of run still awaiting an answer and returns them by their tokens: a
@@ -1205,11 +1783,15 @@ func relayNakDelayFor(delivered uint64) time.Duration {
 // answering, which puts the run's pause backoff back to its first wait. A reply to a token no
 // frame awaits, or with any other body, is ignored.
 //
+// A reply names its frame only by the token of its subject, looked up exactly: NATS gives the
+// handler no sender to check, so the token is the proof that the reply comes from a reader of
+// that frame. That is why each token is random (publishFrame).
+//
 // A reply moves only the frame of the session its subject names, the session the frame was sent
 // to: one whose subject names another session moves nothing, so a session that learned another's
 // token cannot acknowledge that session's message away under its own reply prefix, the one its
-// grant lets it publish to once natsgrant.Session publishes bus.SessionReplies in place of every
-// _INBOX. subject. The first such reply is logged at WARN, then at most one every
+// grant lets it publish to (natsgrant.Session publishes bus.SessionReplies in place of every
+// _INBOX. subject). The first such reply is logged at WARN, then at most one every
 // relayRefusedReplyLogEvery, each line counting the replies held back before it.
 func (m *sessionRelays) onReply(msg *nats.Msg) {
 	rest, ok := strings.CutPrefix(msg.Subject, m.replyPrefix)
@@ -1266,10 +1848,89 @@ func (m *sessionRelays) onReply(msg *nats.Msg) {
 		err = frame.acker.Ack()
 	case relayReplyNak:
 		err = frame.acker.NakWithDelay(relayNakDelayFor(frame.delivered))
+		if frame.gapMark != "" {
+			// onReply is the one callback for every session's receipts on this connection's core
+			// subscription, run one at a time (nats.go), so the re-mark's KV read and write
+			// (noteRepositoryGap, up to sendRequestBudget) runs off the callback: a slow write
+			// stalls no other session's receipt. It runs with one re-mark in flight per session
+			// (scheduleReMark), so two naks of one session cannot interleave that read and write.
+			// The owed mark is on the frame already (gapMark), so the relay loop needs nothing back
+			// from the write; a write that fails is logged, and the session's next relay run sends
+			// the mark (owedRepositoryGap).
+			m.scheduleReMark(frame.run.sessionID)
+		}
 	}
 	if err != nil {
 		m.logger.Warn("session relay could not answer the consumer for a frame", slog.String("session_id", frame.run.sessionID), slog.String("reply", reply), slog.String("error", err.Error()))
 	}
+}
+
+// reMarkWithheldGap re-marks sessionID's entry with a fresh repository gap mark, a frame that carried
+// a mark having been answered nak (onReply): the frame did not reach the client, so the mark is not
+// lost to it. It writes a fresh id, never the frame's own mark, since noteRepositoryGap mints a new
+// id for every mark, so the relay loop's clear of that mark as sent (repositoryGapSent) can never
+// take the re-mark's. The worst case is then one redundant notice at a later run, never a lost one.
+// While its write is in flight the mark this process noted, if any, stands, and the relay loop's
+// owedRepositoryGap reads it rather than this listener's copy of the entry, which can trail the
+// write: a mark noteRepositoryGap noted is on the entry too, since it writes the entry before it
+// notes the mark, while one a failed re-mark noted (below) is in this process alone. It runs off
+// onReply's callback, in its own goroutine, within sendRequestBudget, since the write is a KV read
+// and write that must not stall the other sessions' receipts that one callback carries. A write
+// that fails notes a fresh id in this process alone (the loop may have cleared the frame's own mark
+// as sent, and noteRepositoryGap notes nothing when its write fails), so this listener's next relay
+// run still sends it (owedRepositoryGap); a move to another listener before that run loses it,
+// since the entry carries no mark.
+func (m *sessionRelays) reMarkWithheldGap(sessionID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), sendRequestBudget)
+	defer cancel()
+	if _, err := m.noteRepositoryGap(ctx, sessionID); err != nil {
+		// noteRepositoryGap notes nothing when its write fails, so this notes the fresh id itself,
+		// as noteRepositoryGap's own tail does: the lazy-map create and the store.
+		m.repositoryGapsMu.Lock()
+		if m.repositoryGaps == nil {
+			m.repositoryGaps = map[string]string{}
+		}
+		m.repositoryGaps[sessionID] = id.New()
+		m.repositoryGapsMu.Unlock()
+		m.logger.Warn("session relay could not re-mark a withheld gap frame's session; its next run sends a fresh mark it noted",
+			slog.String("session_id", sessionID), slog.String("error", err.Error()))
+	}
+}
+
+// scheduleReMark runs sessionID's withheld-gap re-mark off onReply's callback (reMarkWithheldGap)
+// with one in flight per session: a re-mark asked while one runs for the session is folded into a
+// single further run after it. onReply's own goroutine let two naks of one session re-mark at once,
+// so noteRepositoryGap's read and write could interleave and leave the in-memory mark and the
+// entry's mark different, sending the session one redundant gap notice; holding one in flight keeps
+// the re-marks of one session serialized against each other. Against the relay loop's own
+// noteRepositoryGap they are not serialized, but a re-mark writes a fresh id (reMarkWithheldGap), so
+// the worst their overlap can do is leave one redundant gap notice for a later run, never lose one.
+func (m *sessionRelays) scheduleReMark(sessionID string) {
+	m.reMarkMu.Lock()
+	if m.reMarking == nil {
+		m.reMarking, m.reMarkAgain = map[string]bool{}, map[string]bool{}
+	}
+	if m.reMarking[sessionID] {
+		m.reMarkAgain[sessionID] = true
+		m.reMarkMu.Unlock()
+		return
+	}
+	m.reMarking[sessionID] = true
+	m.reMarkMu.Unlock()
+	go func() {
+		for {
+			m.reMark(sessionID)
+			m.reMarkMu.Lock()
+			if m.reMarkAgain[sessionID] {
+				delete(m.reMarkAgain, sessionID)
+				m.reMarkMu.Unlock()
+				continue
+			}
+			delete(m.reMarking, sessionID)
+			m.reMarkMu.Unlock()
+			return
+		}
+	}()
 }
 
 // decodeStoredEnvelope decodes a stored message into item under the durable path's rules

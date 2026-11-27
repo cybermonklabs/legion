@@ -17,6 +17,13 @@
 #     payloads/<type>-<n>.expected.json, the version that event starts as the first event of its
 #     item, which jq reads from the redacted event alone (expected below). A line whose first_id
 #     is not a number, such as the header, is skipped. The directory payloads/ is replaced whole.
+#     The log answers an event of a post deleted since without its body (the API's
+#     attachPostMarks, which writes the post's deleted_at into it), so a fixture of it would hold
+#     no body to test: where a shape's first event is a comment's or a message's other than its
+#     delete, and carries a deleted_at, the first later event of the same type and key set whose
+#     post stands is captured in its place (first_standing), and a shape with none is left out,
+#     each with a line saying so. A comment.deleted or message.deleted is captured as it is: its
+#     version holds no body.
 #
 # DISPATCH_URL names the deployment and DISPATCH_TOKEN_FILE a file holding a bearer token it
 # accepts. The token reaches curl on its standard input (-H @-), never in its arguments, which
@@ -44,8 +51,8 @@
 # So no text, title, name, path, host, repository or session title of the deployment survives.
 set -euo pipefail
 
-# The event types that can start a version of an item's searchable text (rules version 1).
-fill_types="issue.created issue.updated issue.closed artifact.version comment.created comment.answered comment.edited message.created message.answered ask.opened ask.edited ask.answered"
+# The event types that can start a version of an item's searchable text (rules version 2).
+fill_types="issue.created issue.updated issue.closed artifact.version comment.created comment.answered comment.edited comment.deleted message.created message.answered message.edited message.deleted ask.opened ask.edited ask.answered"
 
 read -r -d '' redact <<'JQ' || true
 def uuid: test("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
@@ -96,10 +103,11 @@ JQ
 # primary_artifact_id, which the API writes for an issue with no primary document, names none, as
 # an absent one does. An issue.created's version holds version 1 of the issue's primary document,
 # which the create writes and which gets no event of its own; an artifact.version's is the
-# version it names, of the issue its envelope names. Read in Go, a body_truncated of null is
-# false. It is null for an event that starts no version: an artifact.version of no issue (a
-# project's document, never an issue's primary one) and a message of no issue, which the keyword
-# table leaves out.
+# version it names, of the issue its envelope names. A comment.deleted's or a message.deleted's
+# holds the empty body whatever the payload carries, which Go reads as null too. Read in Go, a
+# body_truncated of null is false. It is null for an event that starts no version: an
+# artifact.version of no issue (a project's document, never an issue's primary one) and a message
+# of no issue, which the keyword table leaves out.
 read -r -d '' expected <<'JQ' || true
 .type as $type | .payload as $p
 | if $type == "issue.created" or $type == "issue.updated" or $type == "issue.closed" then
@@ -113,6 +121,10 @@ read -r -d '' expected <<'JQ' || true
   elif $type == "artifact.version" then
     {kind: "issue", id: .issue_key, issue_key: .issue_key, title_or_body: null, options: null,
      answer: null, spec_artifact_id: $p.artifact_id, spec_version: $p.version.number,
+     body_truncated: null}
+  elif $type == "comment.deleted" or $type == "message.deleted" then
+    {kind: ($type | split(".")[0]), id: $p.id, issue_key: $p.issue_key, title_or_body: null,
+     options: null, answer: null, spec_artifact_id: null, spec_version: null,
      body_truncated: null}
   elif ($type | startswith("comment.")) or ($type | startswith("message.")) then
     {kind: ($type | split(".")[0]), id: $p.id, issue_key: $p.issue_key, title_or_body: $p.body,
@@ -179,6 +191,34 @@ capture_types() {
   echo "capture.sh: wrote production_event_types.txt, $seen events through event $after" >&2
 }
 
+# withdrawn is whether the one event of a page is a comment's or a message's event other than its
+# delete whose post is deleted since: the log answers it with its post's deleted_at and no body.
+read -r -d '' withdrawn <<'JQ' || true
+.[0] | (.type | test("^(comment|message)\\.") and (test("\\.deleted$") | not)) and .payload.deleted_at != null
+JQ
+
+# first_standing TYPE FIRST_ID KEYS OUT writes to OUT, as a page of one event, the first event
+# after event FIRST_ID of TYPE whose payload's keys, but edited_at, which the log adds to an edited
+# post's events, are KEYS's, and whose post stands; it fails where the log holds none. It reads the
+# log 1,000 events a request from FIRST_ID on.
+first_standing() {
+  local type=$1 after=$2 keys=$3 out=$4 found
+  while :; do
+    fetch "$after" 1000 "$work/page.json"
+    jq -e 'length > 0' "$work/page.json" >/dev/null || return 1
+    found=$(jq -c --arg type "$type" --arg keys "$keys" '
+      ($keys | split(",") - ["edited_at"]) as $want
+      | [.[] | select(.type == $type and .payload.deleted_at == null
+                      and (.payload | del(.edited_at) | keys) == $want)]
+      | first // empty' "$work/page.json")
+    if [[ -n $found ]]; then
+      printf '[%s]\n' "$found" >"$out"
+      return 0
+    fi
+    after=$(jq '.[-1].id' "$work/page.json")
+  done
+}
+
 capture_shapes() {
   local inventory=$1 out=$work/payloads shapes=$work/shapes.tsv type first_id keys n=0 previous="" name
   [[ -r $inventory ]] || {
@@ -195,18 +235,25 @@ capture_shapes() {
   }
   mkdir -- "$out"
   while IFS=$'\t' read -r type first_id keys <&3; do
-    if [[ $type != "$previous" ]]; then
-      n=0
-      previous=$type
-    fi
-    n=$((n + 1))
-    name=$type-$n
     fetch "$((first_id - 1))" 1 "$work/event.json"
     jq -e --arg type "$type" --argjson id "$first_id" \
       'length == 1 and .[0].id == $id and .[0].type == $type' "$work/event.json" >/dev/null || {
       echo "capture.sh: the log holds no $type event $first_id" >&2
       exit 1
     }
+    if jq -e "$withdrawn" "$work/event.json" >/dev/null; then
+      if ! first_standing "$type" "$first_id" "$keys" "$work/event.json"; then
+        echo "capture.sh: the $type shape of event $first_id has no event whose post stands, so it is left out: the log answers a deleted post's events without its body" >&2
+        continue
+      fi
+      echo "capture.sh: $type event $first_id is of a post deleted since; event $(jq '.[0].id' "$work/event.json"), of a post that stands, is captured for its shape" >&2
+    fi
+    if [[ $type != "$previous" ]]; then
+      n=0
+      previous=$type
+    fi
+    n=$((n + 1))
+    name=$type-$n
     jq --arg keys "$keys" -r '.[0].payload | keys | join(",") | select(. != $keys)' "$work/event.json" |
       while read -r answered; do
         echo "capture.sh: $name: the inventory names the keys $keys, the event carries $answered" >&2

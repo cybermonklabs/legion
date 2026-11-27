@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   DISPATCH_TOOL_DEADLINE_MS,
   DispatchClient,
+  DispatchWriteLandedError,
 } from "../../packages/envoy-client/src/dispatch-http";
 import {
   type Category,
@@ -55,7 +56,7 @@ const ASSERTIONS = 3;
  *  reason name INFRA-3096 so a person who meets the issue knows what made it, and each inserted
  *  sentence is plain prose: a typed block would settle into a second version of its own and move
  *  the request again under the step's feet. */
-const WRITTEN = {
+export const WRITTEN = {
   title: "Scratch issue of the INFRA-3096 production check of the moved approval request report",
   spec: "# Design\n\nThe design, as it stands.\n",
   verification: "# Verification\n\nOne check.\n",
@@ -119,8 +120,33 @@ const EditAnswer = z.looseObject({
   advice: z.looseObject({ moved_approval_request: MovedReport.optional() }).optional(),
 });
 
-/** `PATCH /api/v1/issues/{key}`: the status the close left. */
-const ClosedIssue = z.looseObject({ status: z.string() });
+/** `PATCH /api/v1/issues/{key}`: the status the write left, the status write's or the close's;
+ *  `GET /api/v1/issues/{key}` reads the same field. */
+const IssueStatus = z.looseObject({ status: z.string() });
+
+/** One row of `GET /api/v1/issues?project=`, by the fields the check finds its scratch issue by. */
+const ListedIssue = z.looseObject({
+  key: z.string(),
+  title: z.string(),
+  status: z.string(),
+  created_at: z.string(),
+  primary_artifact_id: z.string(),
+});
+
+/** One row of `GET /api/v1/issues/{key}/artifacts`: a document's name and its versions. */
+const ListedArtifact = z.looseObject({
+  id: z.string(),
+  name: z.string(),
+  versions: z.array(z.looseObject({ number: z.int().min(1) })).nullable(),
+});
+
+/** One row of `GET /api/v1/issues/{key}/asks?state=open`: an ask, and the request an approval
+ *  ask stands for. */
+const ListedAsk = z.looseObject({
+  id: z.string(),
+  kind: z.string(),
+  approval: z.looseObject({ artifact_id: z.string(), requested_version: z.int().min(1) }).nullish(),
+});
 
 interface Options {
   readonly project: string;
@@ -159,6 +185,16 @@ export interface DispatchWrites {
   edit(artifactID: string, sentence: string): Promise<unknown>;
   /** The closing reason as a message, then the close itself, whatever that message did. */
   close(key: string): Promise<unknown>;
+  /** `GET /api/v1/issues?project=`: the project's issues, where a create that landed with no
+   *  answer to give finds the scratch issue it made. */
+  listIssues(project: string): Promise<unknown>;
+  /** `GET /api/v1/issues/{key}`: the issue as it stands, after a status write that landed. */
+  readIssue(key: string): Promise<unknown>;
+  /** `GET /api/v1/issues/{key}/artifacts`: the issue's documents, after an upload that landed. */
+  listArtifacts(key: string): Promise<unknown>;
+  /** `GET /api/v1/issues/{key}/asks?state=open`: the issue's open asks, after an approval request
+   *  that landed. */
+  openAsks(key: string): Promise<unknown>;
   /** The same edit run through the pod's own `dispatch doc-edit`. */
   docEditCommand(key: string, artifactID: string, sentence: string): Promise<CommandRun>;
 }
@@ -264,9 +300,86 @@ export function judgeControl(answer: unknown, name: string): Judgement {
 }
 
 /**
+ * A write's answer, or, when the write landed with no answer to give (`DispatchWriteLandedError`:
+ * a `409 KEY_COMMITTED`, or a replayed 2xx reading `ANSWER_NOT_KEPT`), the answer `readBack`
+ * makes of what the write made, printed as `<step> landed: read back`, so the run goes on from
+ * what Dispatch holds. A read back that finds nothing answers undefined, and the landing is then
+ * thrown on, for the step to report as `landed`.
+ */
+async function written(
+  step: string,
+  write: () => Promise<unknown>,
+  readBack: () => Promise<unknown>,
+  out: Out
+): Promise<unknown> {
+  try {
+    return await write();
+  } catch (error) {
+    if (!(error instanceof DispatchWriteLandedError)) throw error;
+    const made = await readBack();
+    if (made === undefined) throw error;
+    out(`${step} landed: read back`);
+    return made;
+  }
+}
+
+/**
+ * The scratch issue a create that landed made, as `POST /api/v1/issues` answers it: the newest
+ * open issue of the project holding the scratch title. The check closes every scratch issue it
+ * makes, so an open one is this run's, or one an earlier run made and could not close, which is
+ * the check's own to close too.
+ */
+function madeIssue(listed: unknown): unknown {
+  const newest = z
+    .array(ListedIssue)
+    .parse(listed)
+    .filter((issue) => issue.title === WRITTEN.title && issue.status !== "done")
+    .reduce<z.infer<typeof ListedIssue> | undefined>(
+      (found, issue) =>
+        found === undefined || Date.parse(issue.created_at) > Date.parse(found.created_at)
+          ? issue
+          : found,
+      undefined
+    );
+  return (
+    newest && { key: newest.key, primary_artifact_id: newest.primary_artifact_id, created: true }
+  );
+}
+
+/** The document an upload that landed made, as the upload answers it: the issue's document of
+ *  that name, at its newest version. */
+function madeUpload(listed: unknown, name: string): unknown {
+  const document = z
+    .array(ListedArtifact)
+    .parse(listed)
+    .find((artifact) => artifact.name === name);
+  const number = Math.max(0, ...(document?.versions ?? []).map((version) => version.number));
+  return document && number > 0
+    ? { artifact: { id: document.id }, version: { number } }
+    : undefined;
+}
+
+/** The approval request a request that landed opened, as the request answers it: the issue's
+ *  open approval ask on the spec. */
+function madeRequest(listed: unknown, spec: string): unknown {
+  const ask = z
+    .array(ListedAsk)
+    .parse(listed)
+    .find((open) => open.kind === "approval" && open.approval?.artifact_id === spec);
+  return ask?.approval
+    ? { ask: { id: ask.id }, version: ask.approval.requested_version }
+    : undefined;
+}
+
+/**
  * The scratch issue, its spec and the two documents beside it. An answer that is not the 201 of
  * an issue of the named project is refused without closing anything: the check closes the issues
- * it made and no other.
+ * it made and no other. A write that landed with no answer to give made what it was sent to make,
+ * and each step goes on from what a read of the issue finds it made (`written`). The status write
+ * must leave the issue `in_progress`, by its answer or by that read. Any other status prints
+ * `status ... fail`, which is no assertion, and answers the issue with no documents, so it ends
+ * the run as a step that was unavailable does: the steps after it do not run, the close does, and
+ * the result is unavailable, exit 2 (`runCheck`).
  */
 async function makeScratch(
   project: string,
@@ -276,7 +389,14 @@ async function makeScratch(
   let key: string;
   let spec: string;
   try {
-    const created = CreatedIssue.parse(await writes.createIssue(project));
+    const created = CreatedIssue.parse(
+      await written(
+        "scratch",
+        () => writes.createIssue(project),
+        async () => madeIssue(await writes.listIssues(project)),
+        out
+      )
+    );
     if (
       !created.created ||
       !ISSUE_KEY.test(created.key) ||
@@ -291,13 +411,31 @@ async function makeScratch(
     out(`scratch unavailable: ${errorCategory(error)}`);
     return undefined;
   }
+  const upload = async (name: string, content: string) =>
+    Uploaded.parse(
+      await written(
+        "upload",
+        () => writes.upload(key, name, content),
+        async () => madeUpload(await writes.listArtifacts(key), name),
+        out
+      )
+    );
   try {
     // An issue Dispatch still shows in triage is out of the workflow an approval request stands in.
-    await writes.setStatus(key, "in_progress");
-    const verification = Uploaded.parse(
-      await writes.upload(key, VERIFICATION, WRITTEN.verification)
-    );
-    const notes = Uploaded.parse(await writes.upload(key, NOTES, WRITTEN.notes));
+    const status = IssueStatus.parse(
+      await written(
+        "status",
+        () => writes.setStatus(key, "in_progress"),
+        () => writes.readIssue(key),
+        out
+      )
+    ).status;
+    if (status !== "in_progress") {
+      out(`status issue=${key} status=${OTHER} fail`);
+      return { key };
+    }
+    const verification = await upload(VERIFICATION, WRITTEN.verification);
+    const notes = await upload(NOTES, WRITTEN.notes);
     out(`scratch issue=${key} documents=${SPEC},${VERIFICATION},${NOTES} pass`);
     return {
       key,
@@ -317,12 +455,20 @@ async function makeScratch(
 /** The approval request over the spec and the Verification document, and the id of the ask it
  *  handed the person. */
 async function openRequest(
-  documents: ScratchDocuments,
+  scratch: Scratch & { documents: ScratchDocuments },
   writes: DispatchWrites,
   out: Out
 ): Promise<string | undefined> {
+  const { spec } = scratch.documents;
   try {
-    const opened = OpenedRequest.parse(await writes.requestApproval(documents.spec));
+    const opened = OpenedRequest.parse(
+      await written(
+        "request",
+        () => writes.requestApproval(spec),
+        async () => madeRequest(await writes.openAsks(scratch.key), spec),
+        out
+      )
+    );
     const ask = opened.ask;
     if (ask === null || !UUID.test(ask.id)) {
       out("request unavailable: refused");
@@ -401,7 +547,14 @@ async function checkControl(
  *  leaves no open request in production. */
 async function closeScratch(key: string, writes: DispatchWrites, out: Out): Promise<Verdict> {
   try {
-    const closed = ClosedIssue.parse(await writes.close(key));
+    const closed = IssueStatus.parse(
+      await written(
+        "close",
+        () => writes.close(key),
+        () => writes.readIssue(key),
+        out
+      )
+    );
     const done = closed.status === "done";
     out(`close issue=${key} status=${done ? "done" : OTHER} ${done ? "pass" : "fail"}`);
     return done ? "pass" : "fail";
@@ -427,11 +580,11 @@ export async function runCheck(
     if (scratch === undefined || documents === undefined) {
       blocked = true;
     } else {
-      const askID = await openRequest(documents, writes, out);
+      const opened = { ...scratch, documents };
+      const askID = await openRequest(opened, writes, out);
       if (askID === undefined) {
         blocked = true;
       } else {
-        const opened = { ...scratch, documents };
         assertions.push(await checkMoved(opened, askID, writes, out));
         await observeCommand(opened, writes, out);
         assertions.push(await checkControl(documents, writes, out));
@@ -552,12 +705,16 @@ export function liveDispatch(config: DispatchConfig): DispatchWrites {
         .catch(() => undefined);
       return client().updateIssue(key, { actor, status: "done" });
     },
+    listIssues: (project) => client().listAllIssues({ project }),
+    readIssue: (key) => client().getIssue(key),
+    listArtifacts: (key) => client().listIssueArtifacts(key),
+    openAsks: (key) => client().listIssueAsks(key, "open"),
     docEditCommand: runDocEditCommand,
   };
 }
 
 async function main(argv: readonly string[]): Promise<number> {
-  const prelude = readCommandLine(argv, parseArguments, "config" satisfies Category);
+  const prelude = await readCommandLine(argv, parseArguments, "config" satisfies Category);
   if (!prelude.ready) return prelude.code;
   return runCheck(prelude.options, liveDispatch(prelude.config), (line) => {
     console.log(line);

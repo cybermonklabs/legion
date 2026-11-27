@@ -2,10 +2,19 @@ import { afterEach, expect, onTestFinished, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { release } from "node:os";
 import { join } from "node:path";
-import { hostTool } from "@legion/test-fixtures/host-tools";
+import { hostGate, hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup, untilRunning } from "./own-group";
+import { libRowBoundMs, rowWaits } from "./row-waits";
 import { scriptFunctions } from "./script-functions";
+
+// Each wait of a row, its shell's (until_true) and the TypeScript side's (untilRunning), ends on the
+// event it waits for, and is bounded only by the row's bound, 20 s before it (lib/row-waits.ts),
+// never by the wait's own seconds: on a loaded host the kernel's end of a signalled process can
+// take longer than a proof's bound. The file sets its rows' bound itself (rowWaits), first, so
+// every row and every runner reads it, whatever its command line; Bun ends a row at its bound and
+// kills what the row's shell left running, so a wait must give up first to name what it waited for.
+const waits = rowWaits(libRowBoundMs);
 
 // Every walk of the rig helpers that cannot read the processes it walks must say why and fail, so
 // no caller reads a walk that saw nothing as one that found nothing: a proc root that lists no
@@ -15,6 +24,12 @@ import { scriptFunctions } from "./script-functions";
 const e2e = join(import.meta.dir, "..");
 const root = join(e2e, "..", "..");
 const dir = temporaryDirectory("unread-proc-test");
+// perl: three rows start a process in a group of its own through ownGroup (lib/own-group.ts); a
+// host without perl skips them by name outside CI and fails them by name under GITHUB_ACTIONS
+// (hostGate). The first of them also runs stop_agent_daemons over a broker.pid, which it reads with
+// jq, so that row is gated on jq as well.
+const perl = hostGate({ programs: ["perl"] });
+const perlAndJq = hostGate({ programs: ["perl", "jq"] });
 
 const killed: number[] = [];
 afterEach(() => {
@@ -81,60 +96,65 @@ function heldPort(): number {
   return listener.port;
 }
 
-test("over a proc root that lists no process, every walk fails with 2 and says it read nothing", () => {
-  const scratch = mkdtempSync(join(dir, "empty-root-"));
-  const empty = mkdtempSync(join(dir, "proc-"));
-  const ran = Bun.spawnSync(ownGroup(["bash", "-c", probe]), {
-    env: {
-      PATH: process.env.PATH ?? "",
-      HOME: process.env.HOME ?? "",
-      SCRATCH: scratch,
-      PORT: String(heldPort()),
-      proc_root: empty,
-    },
-  });
-  expect(ran.stderr.toString()).toBe("");
-  const got = walks(ran.stdout.toString());
-  expect(got.map(({ name }) => name)).toEqual([
-    "procs_naming",
-    "marked_processes",
-    "stop_marked_processes",
-    "run_processes",
-    "listening_holders",
-    "held_only_by",
-    "run_env_pids",
-    "refuse_leftovers",
-    "stop_agent_daemons",
-  ]);
-  for (const { name, status, said } of got) {
-    expect({ name, status, said: said !== "" }).toEqual({ name, status: 2, said: true });
+perlAndJq.test(
+  "over a proc root that lists no process, every walk fails with 2 and says it read nothing",
+  () => {
+    const scratch = mkdtempSync(join(dir, "empty-root-"));
+    const empty = mkdtempSync(join(dir, "proc-"));
+    const ran = Bun.spawnSync(ownGroup(["bash", "-c", probe]), {
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: process.env.HOME ?? "",
+        SCRATCH: scratch,
+        PORT: String(heldPort()),
+        proc_root: empty,
+      },
+    });
+    expect(ran.stderr.toString()).toBe("");
+    const got = walks(ran.stdout.toString());
+    expect(got.map(({ name }) => name)).toEqual([
+      "procs_naming",
+      "marked_processes",
+      "stop_marked_processes",
+      "run_processes",
+      "listening_holders",
+      "held_only_by",
+      "run_env_pids",
+      "refuse_leftovers",
+      "stop_agent_daemons",
+    ]);
+    for (const { name, status, said } of got) {
+      expect({ name, status, said: said !== "" }).toEqual({ name, status: 2, said: true });
+    }
+    for (const name of ["procs_naming", "marked_processes", "run_processes", "run_env_pids"]) {
+      expect(got.find((walk) => walk.name === name)?.said).toMatch(/lists no process's environ/);
+    }
+    expect(got.find((walk) => walk.name === "refuse_leftovers")?.said).toMatch(/lists no process/);
+    for (const name of ["listening_holders", "held_only_by"]) {
+      expect(got.find((walk) => walk.name === name)?.said).toMatch(
+        /lists no process's fd directory/
+      );
+    }
+    expect(got.find((walk) => walk.name === "stop_agent_daemons")?.said).toMatch(
+      /could not be read \(run_processes\)/
+    );
   }
-  for (const name of ["procs_naming", "marked_processes", "run_processes", "run_env_pids"]) {
-    expect(got.find((walk) => walk.name === name)?.said).toMatch(/lists no process's environ/);
-  }
-  expect(got.find((walk) => walk.name === "refuse_leftovers")?.said).toMatch(/lists no process/);
-  for (const name of ["listening_holders", "held_only_by"]) {
-    expect(got.find((walk) => walk.name === name)?.said).toMatch(/lists no process's fd directory/);
-  }
-  expect(got.find((walk) => walk.name === "stop_agent_daemons")?.said).toMatch(
-    /could not be read \(run_processes\)/
-  );
-});
+);
 
 // Root is used only to make the mount namespace and mount an empty tmpfs on its /proc; the probe
-// runs as this user (setpriv). Where root cannot be had without a password the row is skipped, by
-// name, rather than failed or passed.
+// runs as this user (setpriv). The rows that need it are gated (hostGate): a host without sudo,
+// unshare or setpriv, or whose sudo asks for a password, skips them outside CI naming what it
+// lacks, and fails them by name under GITHUB_ACTIONS, whose runner gives all three and a sudo that
+// asks for none.
 const sudo = hostTool("sudo");
-const privileged =
-  sudo !== null &&
-  hostTool("unshare") !== null &&
-  hostTool("setpriv") !== null &&
-  Bun.spawnSync([sudo, "-n", "true"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
-if (!privileged) {
-  console.warn(
-    `Skipped the empty-/proc and pid-namespace rows of ${import.meta.path}: they need sudo -n, unshare and setpriv to make a namespace of their own.`
-  );
-}
+const sudoSaid =
+  sudo === null ? null : Bun.spawnSync([sudo, "-n", "true"], { stdout: "ignore", stderr: "pipe" });
+const sudoRefused =
+  sudoSaid === null || sudoSaid.exitCode === 0
+    ? ""
+    : `\`sudo -n true\` exited ${sudoSaid.exitCode} (${sudoSaid.stderr.toString().trim() || "no message"}): these rows need root without a password to make a namespace of their own.`;
+const privilegedNeeds = { programs: ["sudo", "unshare", "setpriv"], reason: sudoRefused };
+const privileged = hostGate(privilegedNeeds);
 function asUserIn(namespace: string[], setup: string, script: string, env: Record<string, string>) {
   const uid = String(process.getuid?.() ?? 0);
   const gid = String(process.getgid?.() ?? 0);
@@ -160,7 +180,7 @@ function asUserIn(namespace: string[], setup: string, script: string, env: Recor
   );
 }
 
-test.skipIf(!privileged)(
+privileged.test(
   "under an empty /proc every walk and every read of a process's tree fails and says why",
   () => {
     const scratch = mkdtempSync(join(dir, "empty-proc-"));
@@ -196,42 +216,51 @@ walk stop_tree stop_tree 4242`,
 // A pid recorded with its start (record_start) is signalled only while the start reads the same: a
 // recorded start that is not the process's own stands in for a daemon that ended and whose pid
 // another process took since. stop_pid and signal_group send that process nothing. The shell sources
-// lib/rig.sh as a proof does, so the row reads the stop_pid a proof calls.
-const rigPrelude = `root=${JSON.stringify(root)} work=$(mktemp -d) timeout_hook=
+// lib/rig.sh as a proof does, so the row reads the stop_pid a proof calls, and its waits end with
+// the row's (rowWaits), read as the shell starts.
+const rigPrelude = () => `root=${JSON.stringify(root)} work=$(mktemp -d) timeout_hook=
 evidence=$work
 note() { :; }
 fail() { echo "fail: $*" >&2; exit 1; }
-. "$root/scripts/e2e/lib/rig.sh"`;
-test("stop_pid and signal_group leave alone a process whose start is not the one recorded for its pid", async () => {
-  const stranger = Bun.spawn(ownGroup(["sleep", "60"]), { stdout: "ignore", stderr: "ignore" });
-  killed.push(stranger.pid);
-  await untilRunning(stranger.pid, "sleep");
-  const start = readFileSync(`/proc/${stranger.pid}/stat`, "utf8")
-    .replace(/^[\s\S]*\) /, "")
-    .split(" ")[19];
-  const ran = Bun.spawnSync(
-    [
-      "bash",
-      "-c",
-      `set -u
-${rigPrelude}
+. "$root/scripts/e2e/lib/rig.sh"
+until_true_deadline=$((SECONDS + ${waits.secondsLeft()}))`;
+perl.test(
+  "stop_pid and signal_group leave alone a process whose start is not the one recorded for its pid",
+  async () => {
+    const stranger = Bun.spawn(ownGroup(["sleep", "60"]), { stdout: "ignore", stderr: "ignore" });
+    killed.push(stranger.pid);
+    await untilRunning(stranger.pid, "sleep", waits.end());
+    const start = readFileSync(`/proc/${stranger.pid}/stat`, "utf8")
+      .replace(/^[\s\S]*\) /, "")
+      .split(" ")[19];
+    const ran = Bun.spawnSync(
+      [
+        "bash",
+        "-c",
+        `set -u
+${rigPrelude()}
 started_at[${stranger.pid}]=$((${start} + 1))
 stop_pid ${stranger.pid}; echo "stop_pid $?"
 signal_group ${stranger.pid} KILL; echo "signal_group $?"
 read -r s </proc/${stranger.pid}/stat; s=\${s##*) }; echo "state \${s%% *}"`,
-    ],
-    { env: { PATH: process.env.PATH ?? "", TMPDIR: dir } }
-  );
-  expect(ran.stderr.toString()).toBe("");
-  expect(ran.stdout.toString()).toBe("stop_pid 0\nsignal_group 0\nstate S\n");
-  // The control: given its own start, stop_pid ends it.
-  const own = Bun.spawnSync(
-    ["bash", "-c", `${rigPrelude}\nstarted_at[${stranger.pid}]=${start}\nstop_pid ${stranger.pid}`],
-    { env: { PATH: process.env.PATH ?? "", TMPDIR: dir } }
-  );
-  expect(own.exitCode).toBe(0);
-  expect(await stranger.exited).not.toBe(0);
-});
+      ],
+      { env: { PATH: process.env.PATH ?? "", TMPDIR: dir } }
+    );
+    expect(ran.stderr.toString()).toBe("");
+    expect(ran.stdout.toString()).toBe("stop_pid 0\nsignal_group 0\nstate S\n");
+    // The control: given its own start, stop_pid ends it.
+    const own = Bun.spawnSync(
+      [
+        "bash",
+        "-c",
+        `${rigPrelude()}\nstarted_at[${stranger.pid}]=${start}\nstop_pid ${stranger.pid}`,
+      ],
+      { env: { PATH: process.env.PATH ?? "", TMPDIR: dir } }
+    );
+    expect(own.exitCode).toBe(0);
+    expect(await stranger.exited).not.toBe(0);
+  }
+);
 
 // pidMaxPerNamespace says whether a kernel of release KERNEL (`uname -r`) keeps pid_max per pid
 // namespace, as Linux does from 6.14: there /proc/sys/kernel/pid_max inside a pid namespace of its
@@ -244,11 +273,17 @@ function pidMaxPerNamespace(kernel: string): boolean {
   return major > 6 || (major === 6 && minor >= 14);
 }
 const namespacePidMax = pidMaxPerNamespace(release());
-if (privileged && !namespacePidMax) {
-  console.warn(
-    `Skipped the pid-namespace row of ${import.meta.path}: kernel ${release()} is older than 6.14, where pid_max is one value for the whole host, so the row's write to its namespace's pid_max would set the host's.`
-  );
-}
+const pidNamespace = hostGate({
+  ...privilegedNeeds,
+  reason: [
+    sudoRefused,
+    namespacePidMax
+      ? ""
+      : `Kernel ${release()} is older than 6.14, where pid_max is one value for the whole host, so the row's write to its namespace's pid_max would set the host's.`,
+  ]
+    .filter((said) => said !== "")
+    .join(" "),
+});
 
 test("pidMaxPerNamespace takes a kernel from 6.14 on for one with a per-namespace pid_max, and any older or unreadable release for one without", () => {
   const verdicts = Object.fromEntries(
@@ -342,7 +377,7 @@ test("hostPidMaxMoved answers null while the host's pid_max holds, and once it m
 // of 2400 is the namespace's own only from Linux 6.14 (pidMaxPerNamespace), so the row runs only
 // there; and the host's pid_max is read before and after it, and the row fails if it ever moved
 // (hostPidMaxMoved), naming the restore's result and the value read after it.
-test.skipIf(!privileged || !namespacePidMax)(
+pidNamespace.test(
   "in a pid namespace whose pids wrap, stop_pid of a daemon that ended leaves the stranger that took its pid running",
   () => {
     const scratch = mkdtempSync(join(dir, "reuse-"));
@@ -392,13 +427,13 @@ unspawn "$daemon_pid"`;
     expect(stderr).toBe("");
     expect(stdout).toBe("stranger alive\n");
   },
-  120_000
+  libRowBoundMs
 );
 
 // run runs BODY in a bash with lib/rig.sh sourced as a proof sources it (rigPrelude), its $work
 // holding the logs directory start_process writes to, and answers its status and both streams.
 function run(body: string) {
-  const ran = Bun.spawnSync(["bash", "-c", `${rigPrelude}\nmkdir -p "$work/logs"\n${body}`], {
+  const ran = Bun.spawnSync(["bash", "-c", `${rigPrelude()}\nmkdir -p "$work/logs"\n${body}`], {
     env: { PATH: process.env.PATH ?? "", TMPDIR: dir },
   });
   return { code: ran.exitCode, out: ran.stdout.toString(), err: ran.stderr.toString() };
@@ -413,7 +448,9 @@ state() { if gone "$1"; then echo gone; else echo running; fi; }`;
 // leads its group: the recorded pid is a setsid that exits at once, and the stop reaches neither the
 // service nor its child. Whether that setsid has exited when start_process reads its start is the
 // machine's (on a loaded gVisor pod it often has): start_process records its start or `gone`, and
-// either way the stop reaches neither and says nothing. The next row forces the second.
+// either way the stop reaches neither and says nothing. Each row also waits for the recorded setsid
+// to end and says so, so a pid the stop leaves alone is a process that is gone, never one still
+// running unsignalled. The next row forces the second.
 test("start_process starts a service that leads its own group, and signal_group then stop_pid end it with its child; with setsid in front they reach neither", async () => {
   const r = run(`${goneOrRunning}
 start_process svc bash -c 'sleep 300 & echo $! >"$0"; wait' "$work/child"
@@ -432,18 +469,19 @@ echo "setsid's pids $leader2 $child2"
 [ "$svc2_pid" != "$leader2" ] && echo "with setsid the recorded pid is not the service's"
 signal_group "$svc2_pid" TERM
 stop_pid "$svc2_pid"
-echo "with setsid: service $(state "$leader2"), child $(state "$child2")"`);
+until_true 10 "the recorded setsid to end" gone "$svc2_pid"
+echo "with setsid: recorded $(state "$svc2_pid"), service $(state "$leader2"), child $(state "$child2")"`);
   killed.push(...pidsIn(/^setsid's pids (.*)$/m.exec(r.out)?.[1] ?? ""));
   expect(r.err).toBe("");
   expect(r.out.replace(/^setsid's pids .*\n/m, "")).toBe(
-    "start 0\nleads its group\nservice gone, child gone\nwith setsid the recorded pid is not the service's\nwith setsid: service running, child running\n"
+    "start 0\nleads its group\nservice gone, child gone\nwith setsid the recorded pid is not the service's\nwith setsid: recorded gone, service running, child running\n"
   );
 });
 
 // The same setsid start, forced to the shape a loaded machine gives at random: the setsid has exited
 // before start_process reads its start (proc_start answers nothing for that one read). It is
 // recorded `gone`, and signal_group and stop_pid of it send nothing and say nothing, while the
-// service and its child run on.
+// service and its child run on; the setsid recorded `gone` has in fact ended.
 test("with setsid in front and the setsid gone when start_process reads its start, signal_group then stop_pid reach neither and say nothing", async () => {
   const r = run(`${goneOrRunning}
 eval "real_$(declare -f proc_start)"
@@ -456,12 +494,13 @@ echo "setsid's pids $leader3 $child3"
 echo "recorded: \${started_at[$svc3_pid]-none}"
 signal_group "$svc3_pid" TERM
 stop_pid "$svc3_pid"
-echo "with setsid gone at the read: service $(state "$leader3"), child $(state "$child3")"`);
+until_true 10 "the setsid recorded gone to have ended" gone "$svc3_pid"
+echo "with setsid gone at the read: recorded $(state "$svc3_pid"), service $(state "$leader3"), child $(state "$child3")"`);
   killed.push(...pidsIn(/^setsid's pids (.*)$/m.exec(r.out)?.[1] ?? ""));
-  expect(r.out.replace(/^setsid's pids .*\n/m, "")).toBe(
-    "recorded: gone\nwith setsid gone at the read: service running, child running\n"
-  );
   expect(r.err).toBe("");
+  expect(r.out.replace(/^setsid's pids .*\n/m, "")).toBe(
+    "recorded: gone\nwith setsid gone at the read: recorded gone, service running, child running\n"
+  );
 });
 
 // A service that has exited before start_process reads its start is recorded `gone`. start_process
@@ -495,14 +534,16 @@ test("the broker walkthrough rig starts no service through setsid", () => {
 // held to the helper's start, so the stranger is left running; the helper's own start lets the
 // cleanup end it.
 const broker = scriptFunctions(join(root, "docs/site/media/broker/rig.sh"));
-test("the broker rig holds a helper pid it reads late to the start the helper wrote, so a stranger given that pid is left running", async () => {
-  const stranger = Bun.spawn(ownGroup(["sleep", "60"]), { stdout: "ignore", stderr: "ignore" });
-  killed.push(stranger.pid);
-  await untilRunning(stranger.pid, "sleep");
-  const start = readFileSync(`/proc/${stranger.pid}/stat`, "utf8")
-    .replace(/^[\s\S]*\) /, "")
-    .split(" ")[19];
-  const r = run(`${goneOrRunning}
+perl.test(
+  "the broker rig holds a helper pid it reads late to the start the helper wrote, so a stranger given that pid is left running",
+  async () => {
+    const stranger = Bun.spawn(ownGroup(["sleep", "60"]), { stdout: "ignore", stderr: "ignore" });
+    killed.push(stranger.pid);
+    await untilRunning(stranger.pid, "sleep", waits.end());
+    const start = readFileSync(`/proc/${stranger.pid}/stat`, "utf8")
+      .replace(/^[\s\S]*\) /, "")
+      .split(" ")[19];
+    const r = run(`${goneOrRunning}
 ${broker("cleanup")}
 mkdir -p "$work/agent"
 helper_pid='' dispatch_pid='' fake_github_pid='' fake_envoy_pid='' broker_pid='' issuer_pid=''
@@ -514,16 +555,18 @@ printf '%s %s\\n' ${stranger.pid} ${start} >"$work/agent/helper.pid"
 (cleanup)
 until_true 10 "the helper to end" gone ${stranger.pid}
 echo "cleanup, the helper itself: $(state ${stranger.pid})"`);
-  expect(r.out).toBe(
-    "cleanup, a stranger given the helper's pid: running\ncleanup, the helper itself: gone\n"
-  );
-  expect(r.err).toBe("");
-  const rig = readFileSync(join(root, "docs/site/media/broker/rig.sh"), "utf8");
-  expect(rig).toMatch(/"\$record_pid_sh" "\$work\/agent\/helper\.pid"/);
-  expect(rig).toMatch(
-    /^until_true 30 "the helper's pid" record_pid_file "\$work\/agent\/helper\.pid" helper_pid$/m
-  );
-});
+    // stderr first: a wait that gave up names what it waited for there.
+    expect(r.err).toBe("");
+    expect(r.out).toBe(
+      "cleanup, a stranger given the helper's pid: running\ncleanup, the helper itself: gone\n"
+    );
+    const rig = readFileSync(join(root, "docs/site/media/broker/rig.sh"), "utf8");
+    expect(rig).toMatch(/"\$record_pid_sh" "\$work\/agent\/helper\.pid"/);
+    expect(rig).toMatch(
+      /^until_true 30 "the helper's pid" record_pid_file "\$work\/agent\/helper\.pid" helper_pid$/m
+    );
+  }
+);
 
 // stop_agent (envoy-session-states.sh and clean-session-stop-tmux.sh) ends an agent by its group's
 // TERM and its own stop_pid; a member of the group that outlives the TERM cannot be reached
@@ -565,8 +608,8 @@ echo "after stop_agent: member $(state "$member")"`
     )
   );
   killed.push(...pidsIn(/^pids (.*)$/m.exec(r.out)?.[1] ?? ""));
-  expect(r.out.replace(/^pids .*\n/m, "")).toBe("after stop_agent: member gone\n");
   expect(r.err).toBe("");
+  expect(r.out.replace(/^pids .*\n/m, "")).toBe("after stop_agent: member gone\n");
 });
 test("the clean-session-stop stop_agent leaves an agent's member that outlives its TERM to the cleanup sweep, and both agents' cleanups run the sweep", () => {
   const r = run(
@@ -580,10 +623,10 @@ echo "after the sweep: member $(state "$member")"`
     )
   );
   killed.push(...pidsIn(/^pids (.*)$/m.exec(r.out)?.[1] ?? ""));
+  expect(r.err).toBe("");
   expect(r.out.replace(/^pids .*\n/m, "")).toBe(
     "after stop_agent: member running\nsweep 0\nafter the sweep: member gone\n"
   );
-  expect(r.err).toBe("");
   for (const cleanup of [states("cleanup"), cleanStop("cleanup")]) {
     expect(cleanup).toMatch(/^\s+stop_marked_processes "\$work"/m);
   }

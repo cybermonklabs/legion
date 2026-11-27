@@ -38,6 +38,8 @@ import (
 // freeze on the same rig: each answers 200, or the 404 the bucket's word that the key is absent
 // earns.
 func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.T) {
+	// Not parallel: it requires GET /v1/interests/<id> on a silent bus to answer inside 4 s, and
+	// that read waits out sendRequestBudget (3.5 s).
 	const (
 		missed = "ses_interest_routes_subscribed_to_nothing"
 		cached = "ses_interest_routes_cached_interest"
@@ -61,12 +63,8 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
-	// Before the Puts, not after them: a Put that lands after the watch fixed its initial
-	// snapshot and before the read that turns its marks on is unmarked, and the sweep that
-	// completes that read drops it, so the listing below would be short of a session the test
-	// wrote. Waiting here is also what the listing needs to answer at all, since it answers the
-	// refilling 503 until the session copy has completed a read of its bucket, which is no
-	// answer about the reads this test freezes.
+	// Before the Puts: the listing answers the refilling 503 until the session copy has completed a
+	// read of its bucket, which is no answer about the reads this test freezes.
 	waitForSessions(t, sessions)
 	for _, id := range []string{missed, cached} {
 		if err := sessions.Put(id, session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/" + id, Title: id}); err != nil {
@@ -104,13 +102,13 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 		return recorder, time.Since(started)
 	}
 	list := func() (*httptest.ResponseRecorder, time.Duration) {
-		return get(sessionsHandler(registry, sessions), "/v1/sessions")
+		return get(sessionsHandler(registry, sessions, nil), "/v1/sessions")
 	}
 	entry := func(id string) (*httptest.ResponseRecorder, time.Duration) {
 		return get(sessionEntryHandler(state), "/v1/registry/"+id)
 	}
 	interests := func(id string) (*httptest.ResponseRecorder, time.Duration) {
-		return get(adminInterestsHandler(registry, sessions, nil, logging.New("test")), "/v1/interests/"+id)
+		return get(adminInterestsHandler(registry, sessions, nil, nil, logging.New("test")), "/v1/interests/"+id)
 	}
 	wantTopics := func(t *testing.T, info listenerwire.SessionInfo, want []string) {
 		t.Helper()

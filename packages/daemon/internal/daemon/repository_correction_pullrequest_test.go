@@ -98,7 +98,7 @@ func newLeftPullRequestRig(t *testing.T) *leftPullRequestRig {
 func (r *leftPullRequestRig) opens(repo string, number int, state record.PullRequestState) {
 	r.t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutPullRequest(ctx, tx, record.PullRequest{Issue: leftPullRequestKey, Repo: repo, Number: number,
 			Branch: "legion/" + leftPullRequestKey, HeadSHA: "c4a7f0b", State: state})
 	}); err != nil {
@@ -130,6 +130,7 @@ func (r *leftPullRequestRig) task() string {
 // more. Nothing else is sent — no notice of its own — and the sentences are rendered at every
 // launch from then on, as the correction's own are.
 func TestRepositoryCorrectionNamesThePullRequestLeftOnTheRepositoryTheIssueLeft(t *testing.T) {
+	t.Parallel()
 	r := newLeftPullRequestRig(t)
 	r.opens(leftRepo, leftPullRequestNumber, record.PullRequestOpen)
 	r.corrects(workedRepo, "release/v7.1")
@@ -157,6 +158,7 @@ func TestRepositoryCorrectionNamesThePullRequestLeftOnTheRepositoryTheIssueLeft(
 // issue works now — a pull request opened after the correction, which nothing left behind. The
 // correction's own sentences are told in every one of them.
 func TestRepositoryCorrectionNamesNoPullRequestWhereNoneIsOpenOnARepositoryTheIssueLeft(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		opens func(r *leftPullRequestRig)
@@ -193,6 +195,7 @@ func TestRepositoryCorrectionNamesNoPullRequestWhereNoneIsOpenOnARepositoryTheIs
 // there is no repository it left, so its pull request is on the repository it works and there is
 // nothing to say.
 func TestRepositoryCorrectionNamesNoPullRequestForAnIssueNoCorrectionHasReached(t *testing.T) {
+	t.Parallel()
 	r := newLeftPullRequestRig(t)
 	r.opens(leftRepo, leftPullRequestNumber, record.PullRequestOpen)
 	task := r.task()

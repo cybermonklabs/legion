@@ -14,12 +14,12 @@ import (
 // with charged false), is a second way out of the same end that asks nothing: the site then
 // decides by a test of its own whether this end charges, and the end it waives never reaches the
 // policy, so it has no row there to read or change. launchAfter is not such a call: it carries
-// whether a charge preceded it, and launchNow calls it to try the same launch again after a write
-// the store did not take. The compiler cannot hold this, since launch is a method the package
-// calls from many sites, and a site that may call a charge function may call it too. So this test
-// reads the package's source: in each function that calls a charge function, its closures
-// included, it names every direct call of launch. Delete it when a relaunch after a failure can be
-// had only from a charge function.
+// whether a charge preceded it, and the retries of one launch call it to try that launch again
+// from the top (launchFromTop, startWaitsForStore). The compiler cannot hold this, since launch
+// is a method the package calls from many sites, and a site that may call a charge function may
+// call it too. So this test reads the package's source: in each function that calls a charge
+// function, its closures included, it names every direct call of launch. Delete it when a
+// relaunch after a failure can be had only from a charge function.
 //
 // The check c-one-charge-policy of dispatch://INFRA-3136's verification.md asks for a test that
 // "reads the package's own source and fails when a charge site decides for itself".

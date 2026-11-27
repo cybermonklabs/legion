@@ -18,6 +18,8 @@ import (
 // its claim records with no file, from which process that was (endOutcome). An outcome is never
 // stored: what ended a failed claim is a FailureCause, a different type whose doc says how the
 // two differ, and failureCause is the one place a cause is derived from an outcome.
+// The provider classifier reads the refusal code separately to identify a policy hold
+// (classifyProviderError). That does not change the turn's outcome or its budget charge.
 
 // Charges is the one policy that decides whether an outcome charges the budget its site counts:
 // the prompt budget (chargePrompt), the death budget (chargeDeath) or the launch budget
@@ -80,13 +82,14 @@ func Charges(o runtime.Outcome) bool {
 }
 
 // failureCause is the word a claim fails under when the launch or the death budget runs out on
-// o, or when o ends the claim by itself (a provider error that cannot clear, and a run of turns
-// the provider refused that reached the launch failure limit, turnOutcome): the one place an
-// outcome becomes the cause that is stored, served and shown (FailureCause). The prompt budget
-// fails a claim under its own word whatever event spent it (CausePromptRetiresExhausted,
-// chargePrompt), since what ran out there is the retirements and not the event. An outcome with
-// no cause of its own is CauseUnrecorded, which no live path reaches: every caller names one of
-// the members below, and relaunchAfterFailure asks it of no outcome the policy charges nothing.
+// o, or when o ends the claim by itself (a provider error that cannot clear, whether it ended a
+// prompt's turn or a turn that ran no prompt of the daemon's, providerErrorTurnEnded; a run of
+// turns the provider refused fails no claim, turnOutcome): the one place an outcome becomes the
+// cause that is stored, served and shown (FailureCause). The prompt budget fails a claim under its
+// own word whatever event spent it (CausePromptRetiresExhausted, chargePrompt), since what ran out
+// there is the retirements and not the event. An outcome with no cause of its own is
+// CauseUnrecorded, which no live path reaches: every caller names one of the members below, and
+// relaunchAfterFailure asks it of no outcome the policy charges nothing.
 func failureCause(o runtime.Outcome) FailureCause {
 	switch o {
 	case runtime.OutcomeProcessDied:

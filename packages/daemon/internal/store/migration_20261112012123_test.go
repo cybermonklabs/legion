@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
 
 // repositoryCorrectionVersion is the version of the migration this file tests, so the test can
@@ -20,6 +22,7 @@ const repositoryCorrectionVersion = 20261112012123
 // that reads them is refused. The record itself stands across the migration with its repository
 // unmoved, since a column added with a default changes no recorded fact.
 func TestAnIssuePredating20261112012123WasNeverCorrected(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, repositoryCorrectionVersion-1)
@@ -57,51 +60,55 @@ func TestAnIssuePredating20261112012123WasNeverCorrected(t *testing.T) {
 	t.Logf("after the migration the record reads repo_before=%q and repo_corrected_at=%v, which is never corrected", before, correctedAt)
 }
 
-// The migration widens the restore attempt's own constraint to take the third outcome the
-// repository refusal writes (workspace_bundles_attempt_outcome,
-// store.TakeWorkspaceBundleForRestore). A row standing before the migration cannot carry the
-// word — the constraint of 20261103214558 knows `sent` and `refused_older` alone — and after it
-// the word is taken. The constraint is still a constraint: a word neither release wrote is
-// refused, so a bundle can never be left in an outcome nothing reads.
-func TestTheRestoreAttemptOf20261112012123TakesTheRepositoryRefusal(t *testing.T) {
+// The migration stands below versions a deployed database has already recorded, among them the
+// release that keeps no saved workspace (20261123050533), and the store applies a missing lower
+// version late, so on such a database it runs after every higher version; on a fresh database it
+// runs before them. It alters issues and claims alone, so it applies in either order, and the
+// record it finds reads as never corrected in both. The fresh order is
+// TestAnIssuePredating20261112012123WasNeverCorrected's, and this is the other: every embedded
+// migration but this one first, then the upgrade.
+func TestTheRepositoryCorrectionAppliesAfterEveryHigherVersion(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
-	migrateThrough(t, store, repositoryCorrectionVersion-1)
-	if _, err := store.Pool().Exec(ctx, `insert into workspace_bundles
-		(issue, bundle, size_bytes, at, head, release_id, source_pod_uid)
-		values ('LEGION-208', '\x5041434b'::bytea, 4, now(), 'f2f134541b30dfa5160a5d1ce5e17b76c967c661', 11, 'pod-being-released')`); err != nil {
-		t.Fatalf("save the bundle standing before the migration: %v", err)
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
 	}
-
-	spend := func(outcome string) error {
-		_, err := store.Pool().Exec(ctx, `update workspace_bundles
-			set attempt_pod_uid = 'pod-of-the-new-repository', attempt_at = now(), attempt_outcome = $1
-			where issue = 'LEGION-208'`, outcome)
-		return err
+	for _, migration := range all {
+		if migration.Version == repositoryCorrectionVersion {
+			continue
+		}
+		if _, err := store.apply(ctx, migration); err != nil {
+			t.Fatalf("apply %s before the repository correction: %v", migration.Name, err)
+		}
 	}
-	if err := spend("refused_repository"); err == nil {
-		t.Fatal("the attempt was recorded as refused_repository before the migration, want it refused: the constraint knows two outcomes there")
-	} else {
-		t.Logf("before the migration the row cannot carry the repository refusal: %v", err)
+	if _, err := store.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, repo, default_branch, github_repo)
+		values ('LEGION-208', 'LEGION-208', 'LEGION', 'root', 'planning', 1, 'in_progress', 'A', 1, 'acme/widgets', 'main', 'Acme/Widgets')`); err != nil {
+		t.Fatalf("record the issue standing before the migration: %v", err)
 	}
 
 	if _, err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate through the repository correction: %v", err)
+		t.Fatalf("apply the repository correction after every higher version: %v", err)
 	}
 
-	if err := spend("refused_repository"); err != nil {
-		t.Fatalf("record the attempt as refused_repository after the migration: %v", err)
+	var repo, before string
+	var correctedAt *string
+	if err := store.Pool().QueryRow(ctx, `select repo, repo_before, repo_corrected_at from issues where key = 'LEGION-208'`).
+		Scan(&repo, &before, &correctedAt); err != nil {
+		t.Fatalf("read the record the late migration found standing: %v", err)
 	}
-	var outcome string
-	if err := store.Pool().QueryRow(ctx, `select attempt_outcome from workspace_bundles where issue = 'LEGION-208'`).Scan(&outcome); err != nil {
-		t.Fatalf("read the attempt the migration let the row carry: %v", err)
+	if repo != "acme/widgets" || before != "" || correctedAt != nil {
+		t.Fatalf("the record reads repo=%q repo_before=%q repo_corrected_at=%v, want acme/widgets, never corrected", repo, before, correctedAt)
 	}
-	if outcome != "refused_repository" {
-		t.Fatalf("the row records the attempt as %q, want refused_repository", outcome)
+	var columns int
+	if err := store.Pool().QueryRow(ctx, `select count(*) from information_schema.columns
+		where table_schema = 'public' and table_name = 'claims'
+		and column_name in ('update_repository', 'update_repository_round', 'working_repository', 'working_repository_incarnation')`).
+		Scan(&columns); err != nil {
+		t.Fatalf("read the claims columns the late migration added: %v", err)
 	}
-	if err := spend("refused_for_some_other_reason"); err == nil {
-		t.Fatal("the attempt was recorded as a word no release writes, want it refused: the widened constraint is still a constraint")
-	} else {
-		t.Logf("after the migration a word neither release writes is still refused: %v", err)
+	if columns != 4 {
+		t.Fatalf("claims holds %d of the four columns the migration adds, want all four", columns)
 	}
 }

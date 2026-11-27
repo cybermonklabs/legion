@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # `legion gh` reads every command from the real gh's own help, and its tests hold its tables to the
 # help of the gh the worker image ships, saved under `packages/daemon/cmd/legion/testdata/gh-help`
-# with that gh's version in its `VERSION` file. The image's gh is `worker.Dockerfile`'s `ARG
-# GH_TOOL=gh@X.Y.Z` default (nothing passes `--build-arg`, so the default is what every build
+# with that gh's version in its `VERSION` file. The image's gh is the default of
+# `packages/daemon/docker/worker.Dockerfile#ARG GH_TOOL`, gh@X.Y.Z (nothing passes `--build-arg`, so the default is what every build
 # resolves). If the pin moves and the saved help does not, the tests keep passing on the old help,
 # and a command the new gh's help spells otherwise is first refused in a pane. So this check fails
 # until the two name one gh: raising gh is the pin's edit and `testdata/regenerate-gh-help.sh`, run

@@ -10,8 +10,8 @@ import (
 )
 
 // renameFixture records issue key of project on repo, with a pull request on prRepo and branch,
-// a production check on repo, a repository note resolved to repo and a saved workspace bundle of
-// repo's work: one row in each table whose columns hold a repository name.
+// a production check on repo and a repository note resolved to repo: one row in each table whose
+// columns hold a repository name.
 func renameFixture(t *testing.T, ctx context.Context, tx pgx.Tx, key, project, repo, prRepo, branch string) {
 	t.Helper()
 	records := NewStore()
@@ -24,12 +24,6 @@ func renameFixture(t *testing.T, ctx context.Context, tx pgx.Tx, key, project, r
 	must(t, records.PutProductionCheck(ctx, tx, ProductionCheck{Issue: key, Project: project, Tree: key, Repo: repo, Number: 7,
 		OpenedAt: opened, BoundAt: opened.Add(time.Hour)}))
 	must(t, records.PutRepoNote(ctx, tx, RepoNote{Issue: key, ResolvedRepo: repo, Note: "kept", PostedAt: opened}))
-	// The bundle is written as store.PutWorkspaceBundle writes its row, by its own statement: the
-	// table is the store's, which this package does not import.
-	if _, err := tx.Exec(ctx, `insert into workspace_bundles (issue, release_id, source_pod_uid, bundle, size_bytes, at, head, repo)
-		values ($1, 1, 'pod-'||$1, '\x00', 1, $2, 'head', $3)`, key, opened, repo); err != nil {
-		t.Fatalf("save a bundle of %s on %s: %v", key, repo, err)
-	}
 }
 
 // storedNames is each column of key's rows that holds a repository name, by table and column.
@@ -42,7 +36,7 @@ func storedNames(t *testing.T, ctx context.Context, tx pgx.Tx, key string) map[s
 		{"pull_requests.repo", "select repo from pull_requests where issue = $1"},
 		{"production_checks.repo", "select repo from production_checks where issue = $1"},
 		{"repo_notes.resolved_repo", "select resolved_repo from repo_notes where issue = $1"},
-		{"workspace_bundles.repo", "select repo from workspace_bundles where issue = $1"},
+		{"cleared_pull_requests.repo", "select repo from cleared_pull_requests where issue = $1"},
 	} {
 		var name string
 		switch err := tx.QueryRow(ctx, read.sql, key).Scan(&name); err {
@@ -77,9 +71,9 @@ func renameLeft(t *testing.T, ctx context.Context, tx pgx.Tx, project, from stri
 
 // The writer writes a pair's new name, as its caller hands it, on every stored column of an
 // issue that holds the old name in any spelling — the record's repository and GitHub's spelling,
-// the pull request, the production check, the repository note and the saved bundle — and on
-// nothing else: an issue on another repository and an issue of another project on the old name
-// are left as they are.
+// the pull request, the production check, the repository note and the pull request a new
+// generation cleared — and on nothing else: an issue on another repository and an issue of another
+// project on the old name are left as they are.
 // The candidates are the issues of the project whose rows name the old name, the note of an issue
 // the project never recorded among them, and a write of rows already on the new name writes
 // nothing, so the pass that runs it twice writes once. Control: compared exactly in place of
@@ -94,14 +88,20 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 		renameFixture(t, ctx, tx, "OTHER-1", "OTHER", from, from, "legion/OTHER-1")
 		must(t, NewStore().PutRepoNote(ctx, tx, RepoNote{Issue: "LEGION-9", ResolvedRepo: from, Note: "not admitted", PostedAt: time.Now()}))
 		must(t, NewStore().PutRepoNote(ctx, tx, RepoNote{Issue: "OTHER-9", ResolvedRepo: from, Note: "not admitted", PostedAt: time.Now()}))
+		for _, cleared := range []struct{ issue, repo string }{{"LEGION-1", "Sjawhar/legion"}, {"LEGION-2", "acme/widgets"}, {"OTHER-1", from}} {
+			_, err := tx.Exec(ctx, `insert into cleared_pull_requests (repo, number, issue, head_updated_at, cleared_at) values ($1, 6, $2, now(), now())`,
+				cleared.repo, cleared.issue)
+			must(t, err)
+		}
 	})
 
 	inTx(t, st, func(tx pgx.Tx) {
 		candidates, err := RenameCandidates(ctx, tx, "LEGION", from, nil)
 		must(t, err)
 		want := []RenameCandidate{
-			{Issue: "LEGION-1", Rows: map[RenameTable]int{RenameTableIssues: 1, RenameTablePullRequests: 1, RenameTableProductionChecks: 1, RenameTableRepoNotes: 1,
-				RenameTableWorkspaceBundles: 1}, Spellings: []string{"SJAWHAR/Legion", "Sjawhar/legion"}},
+			{Issue: "LEGION-1", Rows: map[RenameTable]int{RenameTableIssues: 1, RenameTablePullRequests: 1, RenameTableClearedPullRequests: 1,
+				RenameTableProductionChecks: 1, RenameTableRepoNotes: 1},
+				Spellings: []string{"SJAWHAR/Legion", "Sjawhar/legion"}},
 			{Issue: "LEGION-9", Rows: map[RenameTable]int{RenameTableRepoNotes: 1}, Spellings: []string{from}},
 		}
 		if !reflect.DeepEqual(candidates, want) {
@@ -111,8 +111,8 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 			t.Fatalf("candidates of LEGION-9 and LEGION-2 = %+v, %v; want LEGION-9 alone", only, err)
 		}
 		left := renameLeft(t, ctx, tx, "LEGION", from)
-		if want := map[RenameTable]int{RenameTableIssues: 1, RenameTablePullRequests: 1, RenameTableProductionChecks: 1, RenameTableRepoNotes: 2,
-			RenameTableWorkspaceBundles: 1}; !reflect.DeepEqual(left, want) {
+		if want := map[RenameTable]int{RenameTableIssues: 1, RenameTablePullRequests: 1, RenameTableClearedPullRequests: 1, RenameTableProductionChecks: 1,
+			RenameTableRepoNotes: 2}; !reflect.DeepEqual(left, want) {
 			t.Fatalf("rows on %s before the write = %v, want %v", from, left, want)
 		}
 	})
@@ -128,7 +128,7 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		if got, want := storedNames(t, ctx, tx, "LEGION-1"), map[string]string{"issues.repo": to, "issues.github_repo": to,
-			"pull_requests.repo": to, "production_checks.repo": to, "repo_notes.resolved_repo": to, "workspace_bundles.repo": to}; !reflect.DeepEqual(got, want) {
+			"pull_requests.repo": to, "production_checks.repo": to, "repo_notes.resolved_repo": to, "cleared_pull_requests.repo": to}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("LEGION-1's names = %v, want %s on every one", got, to)
 		}
 		if got := storedNames(t, ctx, tx, "LEGION-9"); got["repo_notes.resolved_repo"] != to {
@@ -144,15 +144,14 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 		if got := storedNames(t, ctx, tx, "OTHER-9"); got["repo_notes.resolved_repo"] != from {
 			t.Fatalf("OTHER-9's note = %v, want another project's note left on %s", got, from)
 		}
-		left := renameLeft(t, ctx, tx, "LEGION", from)
-		if want := map[RenameTable]int{RenameTableIssues: 0, RenameTablePullRequests: 0, RenameTableProductionChecks: 0, RenameTableRepoNotes: 0,
-			RenameTableWorkspaceBundles: 0}; !reflect.DeepEqual(left, want) {
+		none := map[RenameTable]int{RenameTableIssues: 0, RenameTablePullRequests: 0, RenameTableClearedPullRequests: 0, RenameTableProductionChecks: 0,
+			RenameTableRepoNotes: 0}
+		if left := renameLeft(t, ctx, tx, "LEGION", from); !reflect.DeepEqual(left, none) {
 			t.Fatalf("rows on %s after the write = %v, want none", from, left)
 		}
 		again, err := RenameIssueRepository(ctx, tx, "LEGION-1", from, to)
 		must(t, err)
-		if want := map[RenameTable]int{RenameTableIssues: 0, RenameTablePullRequests: 0, RenameTableProductionChecks: 0, RenameTableRepoNotes: 0,
-			RenameTableWorkspaceBundles: 0}; !reflect.DeepEqual(again.Rows, want) || again.Deleted != nil {
+		if !reflect.DeepEqual(again.Rows, none) || again.Deleted != nil {
 			t.Fatalf("a second write of LEGION-1 = %+v, want nothing written", again)
 		}
 	})
@@ -181,17 +180,115 @@ func TestRenameIssueRepositoryDeletesAPullRequestTheNewNameWouldHoldTwice(t *tes
 	if !reflect.DeepEqual(written.Deleted, want) {
 		t.Fatalf("deleted = %+v, want %+v", written.Deleted, want)
 	}
-	if rows := written.Rows; rows[RenameTableIssues] != 1 || rows[RenameTablePullRequests] != 0 || rows[RenameTableProductionChecks] != 1 || rows[RenameTableRepoNotes] != 1 ||
-		rows[RenameTableWorkspaceBundles] != 1 {
-		t.Fatalf("rows written = %v, want the record, the check, the note and the bundle, and no pull request", rows)
+	if rows := written.Rows; rows[RenameTableIssues] != 1 || rows[RenameTablePullRequests] != 0 || rows[RenameTableProductionChecks] != 1 || rows[RenameTableRepoNotes] != 1 {
+		t.Fatalf("rows written = %v, want the record, the check and the note, and no pull request", rows)
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		if got, want := storedNames(t, ctx, tx, "LEGION-1"), map[string]string{"issues.repo": to, "issues.github_repo": to,
-			"production_checks.repo": to, "repo_notes.resolved_repo": to, "workspace_bundles.repo": to}; !reflect.DeepEqual(got, want) {
+			"production_checks.repo": to, "repo_notes.resolved_repo": to}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("LEGION-1's names = %v, want %v and no pull request", got, want)
 		}
 		if got := storedNames(t, ctx, tx, "LEGION-2")["pull_requests.repo"]; got != to {
 			t.Fatalf("LEGION-2's pull request = %q, want it kept on %s", got, to)
+		}
+	})
+}
+
+// A new generation's clear keeps the issue whose pull request row it deleted beside its clock
+// (clearGeneration), so the pass reads and writes a cleared pull request by its issue, as it does
+// every other row. cleared_pull_requests is keyed on the repository and the number, so where the
+// new name already holds a row of the same number, the issue's row under the old name is merged
+// into it: the merged row keeps the later clock and the later clear of the two, and names the
+// issue whose row moved. So the clock under the new name is the later of the two
+// (ClearedPullRequestClock), none is left under the old name, and a second write writes nothing.
+// Control: with the row's repository written in place rather than merged, the write fails on the
+// table's key, and the issue's whole write with it.
+func TestRenameIssueRepositoryMergesAClearedPullRequestIntoTheRowTheNewNameHolds(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	const from, to = "sjawhar/legion", "cybermonklabs/legion"
+	applied := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	records := NewStore()
+	// LEGION-1's #42 is cleared under the old name with the later clock and the earlier clear, and
+	// LEGION-2's under the new name with the earlier clock and the later clear.
+	for _, seed := range []struct {
+		key, repo        string
+		clock, clearedAt time.Time
+	}{
+		{"LEGION-1", from, applied.Add(time.Hour), applied.Add(2 * time.Hour)},
+		{"LEGION-2", to, applied, applied.Add(3 * time.Hour)},
+	} {
+		inTx(t, st, func(tx pgx.Tx) {
+			issue := issueFixture(seed.key)
+			issue.Tree, issue.Parent, issue.Repo, issue.GitHubRepo = seed.key, nil, seed.repo, seed.repo
+			must(t, records.PutIssue(ctx, tx, issue))
+			must(t, records.PutPullRequest(ctx, tx, PullRequest{Issue: seed.key, Repo: seed.repo, Number: 42, Branch: "legion/" + seed.key,
+				HeadSHA: "head", HeadUpdatedAt: seed.clock, State: PullRequestClosed}))
+			_, err := records.ClearGeneration(ctx, tx, issue, forgetNothing)
+			must(t, err)
+			// The clear stamps its row with its transaction's moment; the seed places each clear
+			// at its own moment, the later of the two being LEGION-2's.
+			_, err = tx.Exec(ctx, `update cleared_pull_requests set cleared_at = $3 where repo = $1 and number = $2`, seed.repo, 42, seed.clearedAt)
+			must(t, err)
+		})
+	}
+	type clearedRow struct {
+		repo, issue      string
+		number           int
+		clock, clearedAt time.Time
+	}
+	clearedRows := func(tx pgx.Tx) []clearedRow {
+		rows, err := tx.Query(ctx, "select repo, number, issue, head_updated_at, cleared_at from cleared_pull_requests order by repo, number")
+		must(t, err)
+		defer rows.Close()
+		var got []clearedRow
+		for rows.Next() {
+			var row clearedRow
+			must(t, rows.Scan(&row.repo, &row.number, &row.issue, &row.clock, &row.clearedAt))
+			got = append(got, row)
+		}
+		must(t, rows.Err())
+		return got
+	}
+	merged := clearedRow{repo: to, number: 42, issue: "LEGION-1", clock: applied.Add(time.Hour), clearedAt: applied.Add(3 * time.Hour)}
+	same := func(got []clearedRow) bool {
+		return len(got) == 1 && got[0].repo == merged.repo && got[0].number == merged.number && got[0].issue == merged.issue &&
+			got[0].clock.Equal(merged.clock) && got[0].clearedAt.Equal(merged.clearedAt)
+	}
+
+	inTx(t, st, func(tx pgx.Tx) {
+		candidates, err := RenameCandidates(ctx, tx, "LEGION", from, nil)
+		must(t, err)
+		want := []RenameCandidate{{Issue: "LEGION-1", Rows: map[RenameTable]int{RenameTableIssues: 1, RenameTableClearedPullRequests: 1}, Spellings: []string{from}}}
+		if !reflect.DeepEqual(candidates, want) {
+			t.Fatalf("candidates = %+v, want %+v: the clear keeps its issue", candidates, want)
+		}
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		written, err := RenameIssueRepository(ctx, tx, "LEGION-1", from, to)
+		must(t, err)
+		if written.Rows[RenameTableIssues] != 1 || written.Rows[RenameTableClearedPullRequests] != 1 || written.Deleted != nil {
+			t.Fatalf("the write of LEGION-1 = %+v, want its record and its cleared pull request written", written)
+		}
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		if got := clearedRows(tx); !same(got) {
+			t.Fatalf("cleared pull requests after the write = %+v, want the one row %+v", got, merged)
+		}
+		for repo, want := range map[string]time.Time{to: merged.clock, from: {}} {
+			clock, err := records.ClearedPullRequestClock(ctx, tx, repo, 42)
+			must(t, err)
+			if !clock.Equal(want) {
+				t.Fatalf("the clock of %s#42 = %s, want %s", repo, clock, want)
+			}
+		}
+		again, err := RenameIssueRepository(ctx, tx, "LEGION-1", from, to)
+		must(t, err)
+		if again.Rows[RenameTableClearedPullRequests] != 0 {
+			t.Fatalf("a second write of LEGION-1 = %+v, want no cleared pull request written", again)
+		}
+		if got := clearedRows(tx); !same(got) {
+			t.Fatalf("cleared pull requests after a second write = %+v, want the one row %+v", got, merged)
 		}
 	})
 }

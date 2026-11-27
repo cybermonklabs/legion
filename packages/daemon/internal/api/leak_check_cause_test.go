@@ -101,9 +101,9 @@ func TestTheLeakCheckCauseContractIsTheContractThatAddedTheKey(t *testing.T) {
 		t.Fatalf("leakCheckCauseContract = %d, want %d, the contract whose entry in version.go adds the claim views' `leakCheckCause`",
 			leakCheckCauseContract, addedLeakCheckCause)
 	}
-	if leakCheckCauseContract > DaemonAPIVersion {
+	if leakCheckCauseContract > DaemonAPIVersion() {
 		t.Fatalf("leakCheckCauseContract = %d, above DaemonAPIVersion %d: no caller could be served the key",
-			leakCheckCauseContract, DaemonAPIVersion)
+			leakCheckCauseContract, DaemonAPIVersion())
 	}
 }
 

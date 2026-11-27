@@ -16,12 +16,15 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/approval"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
@@ -49,9 +52,9 @@ type Deps struct {
 	// such a caller — its name, its powers and every refusal — is the Kubernetes caller's.
 	GoogleAPIAccounts map[string]Account
 	// AccountTokens verifies those callers' projected ServiceAccount tokens, against the same
-	// Kubernetes issuer and audience a pod enrolls with (cmd/cipherd passes the one verifier it
-	// builds). Nil is a broker that trusts no Kubernetes issuer, where no Kubernetes caller
-	// authenticates.
+	// Kubernetes issuer and audiences a pod enrolls with, any audience BROKER_K8S_OIDC_AUDIENCE
+	// lists (cmd/cipherd passes the one verifier it builds). Nil is a broker that trusts no
+	// Kubernetes issuer, where no Kubernetes caller authenticates.
 	AccountTokens enroll.PodVerifier
 	// GoogleAccountTokens verifies a Google caller's identity token, against the issuer and
 	// audience BROKER_GOOGLE_OIDC_ISSUER and BROKER_GOOGLE_OIDC_AUDIENCE name — the audience
@@ -71,10 +74,10 @@ type Deps struct {
 	PodRegistrars PodRegistrars
 	// PodRegistrationTokens verifies a registration's pod token at
 	// BROKER_POD_REGISTRATION_AUDIENCE, against the cluster issuer and key set Enroll.Pod verifies
-	// the broker's own audience with (cmd/cipherd builds both on one oidc.Keys). Only POST
-	// /v1/oauth/exchange/pod-sessions reads it, beside Enroll.Pod, so no other route accepts a
-	// token of that audience. Nil is a broker with no such audience, whose registration route
-	// accepts the broker's own audience alone.
+	// the audiences BROKER_K8S_OIDC_AUDIENCE lists with (cmd/cipherd builds both on one
+	// oidc.Keys). Only POST /v1/oauth/exchange/pod-sessions reads it, beside Enroll.Pod, so no
+	// other route accepts a token of that audience. Nil is a broker with no such audience, whose
+	// registration route accepts the listed audiences alone.
 	PodRegistrationTokens enroll.PodVerifier
 	// Policy is the live agent-secret policy, which POST /v1/secrets/{name}/reread rereads one
 	// name of (policy.Current.RefreshOne).
@@ -84,12 +87,14 @@ type Deps struct {
 	// which is a single-pod broker and every test that wires none. POST
 	// /v1/secrets/{name}/reread is its one route (notifyPeers, from rereadSecret and from the
 	// reread it runs after answering, rereadAfterAnswer), which explains both when it is called
-	// and why it is called from the route rather than from RefreshOne.
+	// and why it is called from the route rather than from RefreshOne. moved is the names whose
+	// value this pod's own reread of name may have moved (policy.Lookup.Moved, RefreshOne's), whose
+	// held values cmd/cipherd drops from its airlock proxy.
 	//
 	// It reports nothing, because the handler has nothing to do with a failure: the local reread
 	// has already succeeded and its answer stands, so whether a failed fan-out is logged, and at
 	// what level, belongs to the function cmd/cipherd supplies.
-	NotifyReread func(ctx context.Context, name string)
+	NotifyReread func(ctx context.Context, name string, moved []string)
 	// Detached counts the work a route starts that outlives its answer, the reread run after a
 	// 202, for the stop sequence to wait on (Detached.Wait); nil counts nothing, for a mux nothing
 	// stops.
@@ -158,6 +163,11 @@ type Deps struct {
 	// Its routes, every one under /approve and /signin/, are mounted only when it is set, so a
 	// broker that signs nobody in, and a test rig that wires no page, answer each of them 404.
 	Approval *approval.Page
+	// Hold is the check of whether Dispatch holds a person's credentials until they sign in
+	// again (hold.Gate.Decide), which cmd/cipherd builds where BROKER_PROJECT_ACCESS_URL is set, on
+	// the Dispatch client the token exchange asks. Nil is a broker with no Dispatch to ask, which
+	// holds nobody.
+	Hold *hold.Gate
 	// Draining reports whether this process has begun stopping, which GET /healthz answers 503
 	// SHUTTING_DOWN for while every other route goes on being served; nil means it never does.
 	//
@@ -170,6 +180,21 @@ type Deps struct {
 	// never stops in the first place - ciphertest and the in-process rigs - for which the broker
 	// is never draining.
 	Draining func() bool
+	// ProxyReady reports whether the proxy's certificate authority can sign a bound host's leaf
+	// (proxy.Authority.Ready): nil while it holds a certificate whose life is not over. While it
+	// errs GET /healthz answers 503 NO_INTERMEDIATE with its reason, so a readiness probe keeps
+	// traffic away from a pod whose every bound handshake would fail, and a rolling update keeps
+	// the old pods until a new one has its intermediate. This process goes on serving every other
+	// route, but that holds only inside it: Kubernetes takes a pod that fails its readiness probe
+	// out of every Service that selects it, and the edge's GET /healthz answers from these same
+	// Deps, so an unready pod serves no route to anyone. Nil is a broker with no proxy, and every
+	// rig that wires none.
+	ProxyReady func() error
+	// NATSHold is the NATS writer hold's routes, /v1/nats-hold and the three under it, which
+	// the operator alone calls (NATSHold). Every Deps mounts them; the zero NATSHold refuses
+	// every caller 403 not_operator, as a broker whose BROKER_NATS_SERVICES lists no operator
+	// does.
+	NATSHold NATSHold
 	// DatabasePing is the Postgres ping GET /healthz answers from; nil means Enroll.Store.Pool.Ping.
 	// RegisterEdge sets the edge's to a one-second cache over it (cachedPing).
 	DatabasePing func(context.Context) error
@@ -208,6 +233,21 @@ type server struct {
 	// route of the approval page share.
 	tokenLimiter   *ratelimit.Keyed
 	accountLimiter *ratelimit.Keyed
+	// holdFloors is this process's floor of each NATS writer hold record (recordFloors), kept
+	// for as long as the routes Register mounted serve. holdRowFloor is its floor of the hold row
+	// (NATSHold.RowFloor, which the auth service's hold view shares): the highest verified row
+	// either has served, read or written, with that row's digest. A database writer other than the
+	// operator cannot write a row that verifies, but can put back an older one the operator signed
+	// (a prepare row put back mid-hold would lead the operator to sign a release from it), or one
+	// of two rows signed at one gen. So GET serves no verified row the floor reads as a replay or a
+	// fork (409 below_floor, which the operator's client reads as unknown), a move from a replayed
+	// row is 409 gen_mismatch and from a forked one 409 below_floor, and a restore at or below the
+	// floor is 409 below_floor. The residual, the records floor's too: each replica keeps its own,
+	// for as long as its process lives, so a replica that starts again, or one that has not served,
+	// read or written the row since its newer gen, serves an older row put back as it would the
+	// genuine one.
+	holdFloors   *recordFloors
+	holdRowFloor *signedrecord.Floor
 	// address is the source address every per-address bucket of this listener keys on:
 	// clientAddress under BROKER_TRUSTED_PROXY_HEADER on the broker's own address, and
 	// edgeClientAddress at its edge, where a request it reads no address from is refused before
@@ -231,11 +271,17 @@ type server struct {
 	// repositoryCalls counts each edge listener's calls of GET /v1/project-repositories still
 	// waiting on Dispatch, at most maxRepositoryCallsInFlight each.
 	repositoryCalls *callsInFlight
+	// ownOnlyLogged lets MachineLoginsOwnOnlyMessage be written once per person per
+	// ownOnlyLogEvery (machineLoginsOwnOnly).
+	ownOnlyLogged *ratelimit.Keyed
 }
 
 func Register(mux *http.ServeMux, deps Deps) {
 	if deps.OAuth != nil && (deps.MachineLogin == nil || deps.DeviceLogin == nil || deps.TokenHooks.Before == nil || deps.TokenHooks.After == nil) {
 		panic("api: Deps.OAuth needs MachineLogin, DeviceLogin and both TokenHooks")
+	}
+	if deps.NATSHold.OperatorToken != nil && (deps.NATSHold.Pool == nil || deps.NATSHold.Schema == "") {
+		panic("api: Deps.NATSHold.OperatorToken needs the Pool and the Schema of the hold's tables")
 	}
 	limits := DefaultLauncherLimits
 	if deps.LauncherLimits != nil {
@@ -279,8 +325,14 @@ func Register(mux *http.ServeMux, deps Deps) {
 		rereadOverall:   rereadBucket,
 		tokenLimiter:    ratelimit.NewKeyed(token),
 		accountLimiter:  ratelimit.NewKeyed(account),
+		holdFloors:      newRecordFloors(),
+		holdRowFloor:    deps.NATSHold.RowFloor,
 		address:         address,
 		repositoryCalls: newCallsInFlight(maxRepositoryCallsInFlight),
+		ownOnlyLogged:   ratelimit.NewKeyed(ratelimit.Limit{Every: ownOnlyLogEvery, Burst: 1}),
+	}
+	if s.holdRowFloor == nil {
+		s.holdRowFloor = &signedrecord.Floor{}
 	}
 	if deps.OAuth != nil {
 		s.verificationURI = deps.OAuth.VerificationURL()
@@ -305,19 +357,24 @@ func Register(mux *http.ServeMux, deps Deps) {
 }
 
 // handle is route as a handler of s's listener: the caller authenticated as the row's class
-// requires, the answer's record told who it is, and the row's handler run. Register mounts every
-// row through it, and RegisterEdge the edge's three behind its gates, so a row runs one way on
-// either listener.
+// requires, the answer's record told who it is, the row's hold step run (routeHandler.hold), and
+// the row's handler run. Register mounts every row through it, and RegisterEdge the edge's three
+// behind its gates, so a row runs one way on either listener.
 func (s *server) handle(route apiRoute) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		recorder := answer.FromContext(r.Context())
 		who, ok := s.authenticate(w, r, route)
 		if !ok {
-			// A refusal raised in authentication, before any caller was established.
+			// A refusal raised in authentication names no caller, none having been established.
 			recorder.NoteCaller(answer.CallerUnauthenticated, "")
 			return
 		}
+		// The caller is named before the hold step, so its refusal, and the reads it makes, name
+		// the caller the credential proved.
 		recorder.NoteCaller(who.answerCaller(route.Handler))
+		if route.Handler.hold != nil && route.Handler.hold(s, w, r, who) {
+			return
+		}
 		route.Handler.serve(s, w, r, who)
 	}
 }
@@ -343,8 +400,11 @@ const (
 // listed caller must then hold the power its row declares, a service's token must name an
 // account BROKER_SERVICE_LOGINS lists and BROKER_POD_OPERATORS does not map (serviceCaller), and
 // an edge listener's must name an account an edge-listener entry of BROKER_NATS_SERVICES names
-// (edgeListenerCaller). The approval page's routes spend that same bucket, for the same reason:
-// see the authSignIn case.
+// (edgeListenerCaller). The NATS writer hold's routes (operatorAuth) spend that bucket before the
+// operator's token is verified, for the same reason, and the approval page's routes spend it
+// too: see the authSignIn case.
+// A session route and a launcher route ask the hold gate after authenticate, as their own step in
+// handle (routeHandler.hold).
 func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiRoute) (caller, bool) {
 	auth := route.Handler.auth
 	switch auth {
@@ -373,6 +433,11 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 			return caller{}, false
 		}
 		return s.serviceCaller(w, r)
+	case authOperator:
+		if s.refuseAccountAddress(w, r) {
+			return caller{}, false
+		}
+		return s.operatorCaller(w, r)
 	case authEdgeListener:
 		if s.refuseAccountAddress(w, r) {
 			return caller{}, false
@@ -397,39 +462,7 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 		session, ok := s.deps.Approval.Authenticate(w, r)
 		return caller{signIn: session}, ok
 	case authLauncher:
-		subject, err := s.proofSubject(r)
-		switch {
-		case errors.Is(err, proof.ErrInvalid), errors.Is(err, proof.ErrNotLive):
-			writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "the launcher credential is not valid")
-			return caller{}, false
-		case err != nil:
-			writeUnavailable(w, "DATABASE_UNAVAILABLE", "verify launcher proof", err)
-			return caller{}, false
-		}
-		if subject.LauncherID == "" {
-			writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "this route needs a launcher proof, not a session proof")
-			return caller{}, false
-		}
-		// By the key the proof proved and not by the launcher id alone: a login writes its
-		// own key and pod uid onto the credential row (enroll.Service.IssueTokenLoginTx),
-		// so a login landing between the proof's own lookup and this read moves the row out
-		// from under the proof, and a read by id alone would hand the handler whatever
-		// identity the row then holds. A login bound to no pod takes one row per subject on
-		// either schema, and a pod's own re-login moves its own row under the same id, so
-		// the pair is right on either (enroll.Service.CredentialForKey).
-		cred, err := s.deps.Enroll.CredentialForKey(r.Context(), subject.LauncherID, subject.Thumbprint)
-		switch {
-		case errors.Is(err, enroll.ErrNoCredential):
-			// The key that proved this request holds the row no longer, so it authenticates
-			// nothing — the same answer this call site gives every credential that is not
-			// valid, rather than the 503 of a store that cannot answer.
-			writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "the launcher credential is not valid")
-			return caller{}, false
-		case err != nil:
-			writeUnavailable(w, "DATABASE_UNAVAILABLE", "read launcher credential", err)
-			return caller{}, false
-		}
-		return caller{launcher: cred}, true
+		return s.launcherCaller(w, r)
 	case authProof:
 		return s.sessionCaller(w, r, "PROOF_INVALID", "proof invalid: not live")
 	case authRenewProof:
@@ -441,11 +474,11 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 
 // answerCaller is the caller class and identity the answer's record names for a request
 // authenticate let through on route (answer.Recorder.NoteCaller): the launcher credential, the
-// enrollment, the listed account, the service and the account it presented, the edge listener's
-// account, or the signed-in person. A route that takes no credential is public, and a route of
-// the approval page reached with no live sign-in unauthenticated; a handler that authenticates
-// its own caller notes its class over this one (tokenLogin, and rereadSecret for a session's
-// proof).
+// enrollment, the listed account, the service and the account it presented, the writer hold's
+// operator, as the service operator@<its account>, the edge listener's account, or the signed-in
+// person. A route that takes no credential is public, and a route of the approval page reached
+// with no live sign-in unauthenticated; a handler that authenticates its own caller notes its
+// class over this one (tokenLogin, and rereadSecret for a session's proof).
 func (c caller) answerCaller(route routeHandler) (class, id string) {
 	switch route.auth {
 	case authLauncher:
@@ -456,6 +489,8 @@ func (c caller) answerCaller(route routeHandler) (class, id string) {
 		return answer.CallerAccount, c.account.Name
 	case authService:
 		return answer.CallerService, serviceIdentity(c.service)
+	case authOperator:
+		return answer.CallerService, "operator@" + c.operator
 	case authEdgeListener:
 		return answer.CallerEdgeListener, c.edge.Account
 	case authSignIn:
@@ -485,6 +520,43 @@ func refuseWithoutPower(w http.ResponseWriter, who Account, needs power, route s
 	return true
 }
 
+// launcherCaller authenticates a launcher proof for authenticate, answering the machine login's
+// credential the proof's key holds: what launcherAuth's and launcherEndAuth's routes take.
+func (s *server) launcherCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
+	subject, err := s.proofSubject(r)
+	switch {
+	case errors.Is(err, proof.ErrInvalid), errors.Is(err, proof.ErrNotLive):
+		writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "the launcher credential is not valid")
+		return caller{}, false
+	case err != nil:
+		writeUnavailable(w, "DATABASE_UNAVAILABLE", "verify launcher proof", err)
+		return caller{}, false
+	}
+	if subject.LauncherID == "" {
+		writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "this route needs a launcher proof, not a session proof")
+		return caller{}, false
+	}
+	// By the key the proof proved and not by the launcher id alone: a login writes its own key
+	// and pod uid onto the credential row (enroll.Service.IssueTokenLoginTx), so a login landing
+	// between the proof's own lookup and this read moves the row out from under the proof, and a
+	// read by id alone would hand the handler whatever identity the row then holds. A login bound
+	// to no pod takes one row per subject on either schema, and a pod's own re-login moves its own
+	// row under the same id, so the pair is right on either (enroll.Service.CredentialForKey).
+	cred, err := s.deps.Enroll.CredentialForKey(r.Context(), subject.LauncherID, subject.Thumbprint)
+	switch {
+	case errors.Is(err, enroll.ErrNoCredential):
+		// The key that proved this request holds the row no longer, so it authenticates nothing —
+		// the same answer this call site gives every credential that is not valid, rather than the
+		// 503 of a store that cannot answer.
+		writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "the launcher credential is not valid")
+		return caller{}, false
+	case err != nil:
+		writeUnavailable(w, "DATABASE_UNAVAILABLE", "read launcher credential", err)
+		return caller{}, false
+	}
+	return caller{launcher: cred}, true
+}
+
 // sessionCaller authenticates a session proof, for authenticate on every session route and for
 // the reread route's handler on a call that carries a Proof header (rereadSecret), answering a
 // proof whose enrollment is no longer live with notLiveCode and notLiveMessage: PROOF_INVALID on
@@ -508,6 +580,65 @@ func (s *server) sessionCaller(w http.ResponseWriter, r *http.Request, notLiveCo
 		return caller{}, false
 	}
 	return caller{enrollment: subject.EnrollmentID}, true
+}
+
+// refuseHeldLauncher is launcherAuth's hold step: refuseHeld of the person the machine login's
+// credential names as its operator, none for a service's login.
+func (s *server) refuseHeldLauncher(w http.ResponseWriter, r *http.Request, who caller) bool {
+	return s.refuseHeld(w, r, derefOr(who.launcher.Operator, ""))
+}
+
+// refuseHeldProof is sessionAuth's hold step: refuseHeldSession of the session's enrollment.
+func (s *server) refuseHeldProof(w http.ResponseWriter, r *http.Request, who caller) bool {
+	return s.refuseHeldSession(w, r, who.enrollment)
+}
+
+// refuseHeldSession is refuseHeld for a session proof, whose proof row names no operator: it reads
+// the enrollment's own (enroll.Service.EnrollmentOperator), and only when the broker has a gate to
+// ask. An enrollment gone since its proof verified is refused as a proof that is not live. A pod's
+// enrollment names the person BROKER_POD_OPERATORS mapped its account to when its login was made,
+// and is asked about that person, as a person's session is; any other pod's names none, and is
+// asked nothing. sessionAuth's hold step calls it on every session route but those that only end
+// access or renew, and rereadSecret on a reread a session signs.
+func (s *server) refuseHeldSession(w http.ResponseWriter, r *http.Request, enrollmentID string) bool {
+	if s.deps.Hold == nil {
+		return false
+	}
+	operator, err := s.deps.Enroll.EnrollmentOperator(r.Context(), enrollmentID)
+	switch {
+	case errors.Is(err, enroll.ErrNoEnrollment):
+		writeError(w, http.StatusUnauthorized, "PROOF_INVALID", "proof invalid: not live")
+		return true
+	case err != nil:
+		writeUnavailable(w, "DATABASE_UNAVAILABLE", "read the enrollment's operator", err)
+		return true
+	}
+	return s.refuseHeld(w, r, operator)
+}
+
+// refuseHeld asks the hold gate (Deps.Hold) whether Dispatch holds person, the operator a
+// session's enrollment or a machine login's credential names, and writes the refusal when it does
+// or cannot tell, reporting whether it refused, by the gate's Verdict: 403 MEMBERSHIP_HELD naming
+// the person in the gate's words for hold.Held, and 503 HOLD_UNCHECKABLE, saying why in fixed
+// words, for every kind that decides nothing, a held answer the gate could not keep among them
+// (hold.Verdict.Words). The gate's own error goes to the log alone. No person (an unmapped pod's
+// enrollment, a service's login) is asked nothing, and neither is anyone on a broker with no
+// gate. The codes are written here, not taken from hold.Verdict.Refusal, because broker-refgen
+// reads each refusal's code from writeError's own argument.
+func (s *server) refuseHeld(w http.ResponseWriter, r *http.Request, person string) bool {
+	if person == "" {
+		return false
+	}
+	switch v := s.deps.Hold.Decide(r.Context(), person); v.Kind {
+	case hold.Served:
+		return false
+	case hold.Held:
+		writeError(w, http.StatusForbidden, "MEMBERSHIP_HELD", v.Words())
+	default:
+		slog.Error("broker: whether Dispatch holds a person cannot be read, so their credential is refused", "person", person, "error", v.Err)
+		writeError(w, http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", v.Words())
+	}
+	return true
 }
 
 // GoogleVerifier verifies a caller's own Google identity token and reads the identity claims of
@@ -823,6 +954,32 @@ func answerUnavailable(w http.ResponseWriter, code, op string) {
 	writeError(w, http.StatusServiceUnavailable, code, op+" failed: a dependency the broker needs is unavailable")
 }
 
+// writeMemberKindUncheckable answers a refusal the broker made because it could not learn whether
+// Dispatch calls a person a restricted member (*projectaccess.MemberKindUncheckable), and reports
+// whether err was one: 503 MEMBER_KIND_UNCHECKABLE naming the person and why in fixed words, with
+// the failure itself, which can name Dispatch's address, in the log alone. what is the thing
+// refused, as the log line names it. The line is ERROR when Dispatch could not be asked. A read
+// that failed because its caller gave up (MemberKindUncheckable.CallerEnded), which says nothing
+// of Dispatch, writes no line and is counted as an answer the caller cancelled
+// (answer.Recorder.NoteCallerEnded), as every route counts a caller that hung up. The code is
+// projectaccess.UncheckableCode, spelled out here because the broker's generated HTTP reference
+// (cmd/cipher-refgen) reads each refusal's code from a literal;
+// TestAnUncheckableMemberKindIsAnsweredUnderItsOneCode holds the two to one spelling.
+func writeMemberKindUncheckable(w http.ResponseWriter, what string, err error) bool {
+	var uncheckable *projectaccess.MemberKindUncheckable
+	if !errors.As(err, &uncheckable) {
+		return false
+	}
+	if uncheckable.CallerEnded() {
+		answer.FromWriter(w).NoteCallerEnded()
+	} else {
+		slog.Error("broker: whether Dispatch calls a person a restricted member cannot be read, so "+what+" is refused",
+			"person", uncheckable.Person, "error", uncheckable.Err)
+	}
+	writeError(w, http.StatusServiceUnavailable, "MEMBER_KIND_UNCHECKABLE", uncheckable.Error())
+	return true
+}
+
 // writeJSON answers status with v, which is one of this package's named response types: the
 // broker's generated HTTP reference (cmd/cipher-refgen) documents each route's answer
 // from that type's fields and refuses a value it cannot name.
@@ -838,9 +995,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // (handlers_introspect.go).
 type stateResponse = wire.StateResponse
 
-// healthResponse is GET /healthz's answer while the broker is not draining and can reach
-// Postgres. Neither refusal has a type of its own: both are the ordinary broker error object
-// writeError writes, so this stays the route's one named response type.
+// healthResponse is GET /healthz's answer while the broker is not draining, its proxy holds an
+// intermediate and it can reach Postgres. No refusal has a type of its own: each is the ordinary
+// broker error object writeError writes, so this stays the route's one named response type.
 type healthResponse struct {
 	// "ok".
 	Status string `json:"status"`
@@ -856,6 +1013,14 @@ func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
 	if s.deps.Draining != nil && s.deps.Draining() {
 		writeError(w, http.StatusServiceUnavailable, "SHUTTING_DOWN", "the broker is shutting down and is no longer taking new traffic")
 		return
+	}
+	// Then a proxy with nothing to sign a bound host's leaf with (Deps.ProxyReady), before the
+	// ping: such a pod would fail every bound handshake whatever its database says.
+	if s.deps.ProxyReady != nil {
+		if err := s.deps.ProxyReady(); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "NO_INTERMEDIATE", err.Error())
+			return
+		}
 	}
 	if err := s.deps.pingDatabase(r.Context()); err != nil {
 		if s.pingLogsItself {
@@ -962,7 +1127,8 @@ func (c *cachedPing) run(ctx context.Context, done chan struct{}) error {
 type signInStatusResponse struct {
 	// What the last check of the broker's client at its sign-in provider found: "ready" (the
 	// provider accepted the client), "client_rejected" (it refused it, so nobody can sign in)
-	// or "issuer_unreachable" (it could not be asked, which says nothing about the client).
+	// or "issuer_unreachable" (it could not be asked or gave no verdict, which says nothing about
+	// the client).
 	ClientCheck *string `json:"client_check"`
 	// When that check was taken (RFC 3339).
 	ClientCheckedAt *time.Time `json:"client_checked_at"`

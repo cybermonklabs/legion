@@ -27,6 +27,7 @@ import (
 // `git -C <clone> config`, past the plant; measured with git 2.47.3, those two write the value
 // and no ref.
 func TestFixtureCommandsIgnoreAPlantedRepository(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (and newSetupRig).
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatal(err)

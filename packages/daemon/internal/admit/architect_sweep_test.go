@@ -578,8 +578,9 @@ func TestTheArchitectSweepSendsTheEntryAResumeRaisedWhenItsStartWasLost(t *testi
 // architect's entry with the task that asks for the revision (workflow.Engine.ResumeAwaitedRoot).
 // The resume's start is lost, and alice then approves version 4, which Dispatch records after her
 // review. The sweep's start at the resume's entry, rendered as its send renders it (startText,
-// as the daemon's rootTask renders it, through workflow.ResumeTask), says the approval followed
-// the review and names no revision, and says the gate is open: what the resume would say now.
+// as the daemon's rootTask renders it, through workflow.ResumeAwaitedRootTask), says the approval
+// followed the review and names no revision, and says the gate is open: what the resume would say
+// now.
 //
 // The control is the task the row keeps, which the release before this one sent again as written:
 // it asks for the revision alice's approval answered. A sweep that sent that text again fails this

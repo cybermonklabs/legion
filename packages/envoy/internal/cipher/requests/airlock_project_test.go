@@ -7,8 +7,6 @@ import (
 	"errors"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
 
 // TestTheAirlockRefusesAConnectionOfALostProject: a proxy connection with the placeholder of a
@@ -16,9 +14,9 @@ import (
 // enrollment does not name it, the next connection is refused ErrGrantNotLive and the grant is
 // ended for good.
 func TestTheAirlockRefusesAConnectionOfALostProject(t *testing.T) {
-	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("TEAM_TOKEN", "")}}, publicTeam)
+	m, enr, key, _ := newProjectFixture(t, bound(rule("TEAM_TOKEN", "example")), publicTeam)
 	_, grantID := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
-	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 	placeholder := placeholderRows(t, m, grantID)["TEAM_TOKEN/"+SlotValue]
@@ -42,10 +40,10 @@ func TestTheAirlockRefusesAConnectionOfALostProject(t *testing.T) {
 // time plus airlockProjectRecheck, so a pod holding it runs the release checks again within that
 // bound; once the session's person leaves TEAM's list, the next AirlockValues ends the grant.
 func TestTheAirlockStopsServingAPrivateSecretAfterAccessIsLost(t *testing.T) {
-	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("TEAM_TOKEN", "")}}, privateTeam(fixtureOperator))
+	m, enr, key, _ := newProjectFixture(t, bound(rule("TEAM_TOKEN", "example")), privateTeam(fixtureOperator))
 	nameProjects(t, m, enr, teamProject)
 	_, grantID := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
-	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 	read := time.Now()
@@ -70,12 +68,13 @@ func TestTheAirlockStopsServingAPrivateSecretAfterAccessIsLost(t *testing.T) {
 }
 
 // TestTheAirlockOfAnUntaggedGrantKeepsItsValues: the same steps for an untagged secret keep
-// serving, leave a stored value's Expires zero, and ask Dispatch nothing.
+// serving, leave a stored value's Expires zero, and ask Dispatch nothing of a project; what they
+// ask is the session's person's member kind (restrictedOperator).
 func TestTheAirlockOfAnUntaggedGrantKeepsItsValues(t *testing.T) {
-	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}}, publicTeam)
+	m, enr, key, _ := newProjectFixture(t, bound(rule("AUTO_TOKEN", "example")), publicTeam)
 	dispatch := answerFrom(t, m, dispatchRows(publicTeam))
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
-	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 	placeholder := placeholderRows(t, m, grantID)["AUTO_TOKEN/"+SlotValue]
@@ -89,7 +88,7 @@ func TestTheAirlockOfAnUntaggedGrantKeepsItsValues(t *testing.T) {
 		}
 		answerFrom(t, m, dispatchRows(privateTeam()))
 	}
-	if calls := dispatch.Calls(); calls != 0 {
-		t.Fatalf("the airlock of untagged grant %s asked Dispatch %d times; want none", grantID, calls)
+	if calls := dispatch.ProjectCalls(); calls != 0 {
+		t.Fatalf("the airlock of untagged grant %s asked Dispatch's project route %d times; want none", grantID, calls)
 	}
 }

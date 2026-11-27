@@ -1,6 +1,6 @@
 import { flexRender, type Row } from "@tanstack/react-table";
 import type { ReactNode } from "react";
-import type { LineProps } from "../../components/DataTable";
+import { drawsPinnedDivider, type LineProps } from "../../components/DataTable";
 import { borderDefault, focusVisibleRing, selectedCardBg, surfaceBg } from "../../theme/classes";
 
 /**
@@ -33,10 +33,15 @@ export function TableBodyRow<Row_>({
       data-issue-group={row.getParentRow()?.id ?? "ungrouped"}
       data-issue-row={row.id}
       onDragOver={(event) => {
-        if (dragging !== undefined) event.preventDefault();
+        if (dragging === undefined) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
       }}
-      onDrop={() => {
-        if (dragging !== undefined && dragging !== row.id) onDrop(row.id);
+      onDrop={(event) => {
+        if (dragging === undefined) return;
+        // The drag carries the id as text, which a browser would otherwise open as a search.
+        event.preventDefault();
+        if (dragging !== row.id) onDrop(row.id);
       }}
       ref={measure}
       tabIndex={-1}
@@ -45,7 +50,7 @@ export function TableBodyRow<Row_>({
         const pinned = cell.column.getIsPinned() === "left";
         return (
           <td
-            className={`overflow-hidden border-b px-2 py-2 ${borderDefault} ${pinned ? `sticky z-10 ${surfaceBg}` : ""} ${pinned && cell.column.getIsLastColumn("left") ? "border-r" : ""}`}
+            className={`overflow-hidden border-b px-2 py-2 ${borderDefault} ${pinned ? `sticky z-10 ${surfaceBg}` : ""} ${drawsPinnedDivider(cell.column, false) ? "border-r" : ""}`}
             key={cell.id}
             style={{
               width: cell.column.getSize(),

@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +19,69 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
+// A client that half-closes its connection ends its own request's context, and can still read the
+// answer. A token signed by a key the issuer has withdrawn, sent that way to a listener whose key set
+// is past Lifetime + MinRefresh, is refused 401 as on an open connection: the cached set answers no
+// caller that has gone. The route behind apiAuth reads no context, as /v1/sessions does, so only
+// apiAuth stands between the token and the data.
+func TestAHalfClosedRequestGetsNoAnswerFromAnOldKeySet(t *testing.T) {
+	t.Parallel()
+	issuer := oidctest.New(t)
+	signing := issuer.PublishKey(t, "key-a")
+	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys.Lifetime, keys.MinRefresh = 100*time.Millisecond, 200*time.Millisecond
+	verifier := oidc.DiscoveredVerifier(oidc.NewWithKeys(issuer.URL(), listenerTestAudience, keys))
+	token := issuer.Mint(t, signing, issuer.Claims(listenerTestSubject, listenerTestAudience))
+	sessions := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "the session list") })
+	server := httptest.NewServer(apiAuth(listenerAPIAuth{verifier: verifier, logger: logging.NewWithWriter("half-close", &bytes.Buffer{})}, sessions))
+	t.Cleanup(server.Close)
+	addr := server.Listener.Addr().String()
+	if status := rawSessionsStatus(t, addr, token, false); status != http.StatusOK {
+		t.Fatalf("a token signed by the published key-a: status %d, want 200", status)
+	}
+	issuer.Withdraw("key-a")
+	issuer.PublishKey(t, "key-b")
+	issuer.DelayKeys(200 * time.Millisecond)
+	time.Sleep(time.Second)
+	if status := rawSessionsStatus(t, addr, token, true); status != http.StatusUnauthorized {
+		t.Fatalf("a half-closed request with a token signed by the withdrawn key-a, the key set past Lifetime + MinRefresh: status %d, want 401", status)
+	}
+}
+
+// rawSessionsStatus sends GET /v1/sessions with bearer over a raw connection to addr, half-closing
+// it after the request when halfClose is set, and answers the status of the answer it reads.
+func rawSessionsStatus(t *testing.T, addr, bearer string, halfClose bool) int {
+	t.Helper()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := fmt.Fprintf(conn, "GET /v1/sessions HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\nConnection: close\r\n\r\n", addr, bearer); err != nil {
+		t.Fatal(err)
+	}
+	if halfClose {
+		if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(8 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatalf("reading the answer: %v", err)
+	}
+	var status int
+	if _, err := fmt.Sscanf(strings.SplitN(string(raw), "\r\n", 2)[0], "HTTP/1.1 %d", &status); err != nil {
+		t.Fatalf("the answer's status line %q: %v", strings.SplitN(string(raw), "\r\n", 2)[0], err)
+	}
+	return status
+}
+
 // An issuer that accepts the connection and never answers holds a discovery attempt for its own
 // 10 s bound, as long as the 10 s the listener's server gives a route to write its answer. A token
 // of that issuer sent through that real server (newHTTPServer) must still be answered 503 with
@@ -24,6 +90,8 @@ import (
 // discovery only until identityBudget after its check began (identityCheck). A listener that takes
 // only Google identity tokens sends every JWT-shaped bearer to that branch.
 func TestAnIdentityTokenOfASilentIssuerIsAnswered503(t *testing.T) {
+	// Not parallel: it requires each 503 within identityBudget (4 s) plus 2 s, and the budget is
+	// what ends each request.
 	for _, branch := range []string{"a projected token", "a Google identity token"} {
 		for _, joins := range []bool{false, true} {
 			name := branch + ", the request starts the attempt"
@@ -45,8 +113,8 @@ func TestAnIdentityTokenOfASilentIssuerIsAnswered503(t *testing.T) {
 					go verifier.Run(t.Context())
 					select {
 					case <-accepted:
-					case <-time.After(5 * time.Second):
-						t.Fatal("the background discovery never dialed the silent issuer within 5 s")
+					case <-time.After(listenerWaitBound(t)):
+						t.Fatal("the background discovery never dialed the silent issuer within the time this package gives a wait")
 					}
 				}
 				status, retryAfter, elapsed, err := sendThroughTheServer(t, auth, unsignedToken(issuer, ""))
@@ -71,6 +139,8 @@ func TestAnIdentityTokenOfASilentIssuerIsAnswered503(t *testing.T) {
 // so the token is answered 503 with Retry-After: 1 within the deadline, never with a closed
 // connection.
 func TestAProjectedTokenOfASilentKeySetIsAnswered503(t *testing.T) {
+	// Not parallel: it requires the 503 within identityBudget (4 s) plus 2 s, and the budget is
+	// what ends the request.
 	keySet, _ := silentIssuer(t)
 	var issuer string
 	discovery := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -104,6 +174,8 @@ func TestAProjectedTokenOfASilentKeySetIsAnswered503(t *testing.T) {
 // the set it reads is kept, so once a request is admitted the next one is answered at once with no
 // read of its own.
 func TestAProjectedTokenOfASlowIssuerIsAnsweredWithinTheWriteDeadline(t *testing.T) {
+	// Not parallel: it requires the 503 within identityBudget (4 s) plus 2 s, which the budget
+	// ends, and the answer from the kept key set within 1 s.
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "slow-issuer-key")
 	issuer.DelayDiscovery(3 * time.Second)
@@ -124,14 +196,14 @@ func TestAProjectedTokenOfASlowIssuerIsAnsweredWithinTheWriteDeadline(t *testing
 	// The key read the first request started is still under way. A request until it lands joins it
 	// (cut at its own budget, or admitted when the read lands inside that budget), and none starts
 	// a read of its own.
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		status, _, elapsed, err = sendThroughTheServer(t, auth, token)
 		if err == nil && status == http.StatusNoContent {
 			break
 		}
 		if err != nil || status != http.StatusServiceUnavailable || time.Now().After(deadline) {
-			t.Fatalf("a projected token once the slow key set was read: status %d after %s, err %v; want 204 within 15 s", status, elapsed.Round(time.Millisecond), err)
+			t.Fatalf("a projected token once the slow key set was read: status %d after %s, err %v; want 204 within the time this package gives a wait", status, elapsed.Round(time.Millisecond), err)
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
@@ -140,7 +212,7 @@ func TestAProjectedTokenOfASlowIssuerIsAnsweredWithinTheWriteDeadline(t *testing
 	}
 	status, _, elapsed, err = sendThroughTheServer(t, auth, token)
 	if err != nil || status != http.StatusNoContent || elapsed > time.Second {
-		t.Fatalf("a projected token after the read landed: status %d after %s, err %v; want 204 within 1 s from the kept set", status, elapsed.Round(time.Millisecond), err)
+		t.Fatalf("a projected token after the read landed: status %d after %s, err %v; want 204 from the kept set", status, elapsed.Round(time.Millisecond), err)
 	}
 	if fetches := issuer.JWKSFetches(); fetches != 1 {
 		t.Fatalf("the key set was read %d times, want 1: the read's set was kept", fetches)
@@ -154,6 +226,7 @@ func TestAProjectedTokenOfASlowIssuerIsAnsweredWithinTheWriteDeadline(t *testing
 // 503 at its own budget too, never the 401 of a signature no published key makes: no read has said
 // whether B is published. Once the read lands, a B token is admitted.
 func TestANewKeyIDDuringASlowReadIsAnswered503(t *testing.T) {
+	t.Parallel()
 	issuer := oidctest.New(t)
 	keyA := issuer.PublishKey(t, "rotation-key-a")
 	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience)
@@ -173,14 +246,14 @@ func TestANewKeyIDDuringASlowReadIsAnswered503(t *testing.T) {
 				which, status, retryAfter, elapsed.Round(time.Millisecond), err)
 		}
 	}
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		status, _, elapsed, err := sendThroughTheServer(t, auth, tokenB)
 		if err == nil && status == http.StatusNoContent {
 			break
 		}
 		if err != nil || status != http.StatusServiceUnavailable || time.Now().After(deadline) {
-			t.Fatalf("a token signed by B once the read has landed: status %d after %s, err %v; want 204 within 15 s", status, elapsed.Round(time.Millisecond), err)
+			t.Fatalf("a token signed by B once the read has landed: status %d after %s, err %v; want 204 within the time this package gives a wait", status, elapsed.Round(time.Millisecond), err)
 		}
 		time.Sleep(250 * time.Millisecond)
 	}

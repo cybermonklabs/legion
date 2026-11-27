@@ -13,6 +13,7 @@ import (
 // mirrored asks and its gate's review marks — so no event the daemon applied before this release,
 // and none of the same work redelivered after it, declares a hand-back.
 func TestTheMigrationBackfillDeclaresNothingOld(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 56)

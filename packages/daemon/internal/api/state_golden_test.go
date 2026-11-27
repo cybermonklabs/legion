@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/contracts/fixtures/daemon-api/* golden and stateGolden (testgolden.Check, path from apifixture.Path)
+
 import (
 	"bytes"
 	"context"
@@ -8,47 +10,46 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/apifixture"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testgolden"
 )
 
 var updateGolden = flag.Bool("update", false, "rewrite the golden fixtures this package pins")
 
-// goldenPath is the cross-language pin: Go writes the wire shape, and
-// `packages/contracts/src/legion-api.test.ts` parses it through the zod schema the plugin reads
-// with and holds the parse equal to the file, so a Go field with no zod line is named there. Go
-// is the source of truth; the fixture is how the schema is held to it.
-func goldenPath(name string) string {
-	return filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", name)
-}
-
-// settingsFixtureFile is the maximal kubernetes legion.yaml the state golden and the settings tests
-// share: every key the loader models is set, and every value a credential, its source or its file
-// could be is a planted fixture a test can look for in the wire bytes (a PEM that is no key, a DSN
-// password that opens nothing, `*_file` paths, the kubeconfig, the session DSN secret's key, each
-// provider key's store key, the pod's env values, volume, Secret and ServiceAccount names, userinfo
-// on `envoy_url` and the first `nats_urls` entry, which the settings mask, and userinfo and a query
-// on `plugins.pi_envoy`'s tarball URL, which the settings mask and drop while `pi_legion` pins the
-// version form). Every path the settings emit (`state_dir`, `instructions`, the hook's
-// `prompt_file`) is a fixed absolute literal, so the golden does not churn with the temporary
-// directory the file is written under.
+// settingsFixtureFile is the maximal kubernetes legion.yaml the settings tests share with the state
+// fixtures composed over it, so a key added here moves them: internal/daemon's
+// TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds reads it from this file's source
+// (apiSettings) for state.json and the other fixtures whose seeds load it, and
+// state-narrowed-repositories.json (TestStateNarrowedRepositoriesGolden) is written from
+// populatedState, which reads state.json back. Every key the loader models is set, and every value
+// a credential, its source or its file could be is a planted fixture a test can look for in the
+// wire bytes (a PEM that is no key, a DSN password that opens nothing, `*_file` paths, the
+// kubeconfig, the session DSN secret's key, each provider key's store key, the pod's env values,
+// volume, Secret and ServiceAccount names, userinfo on `envoy_url` and the first `nats_urls` entry,
+// which the settings mask, and userinfo and a query on `plugins.pi_envoy`'s tarball URL, which the
+// settings mask and drop while `pi_legion` pins the version form). Every path the settings emit
+// (`state_dir`, `instructions`, `private_name_rules_file`, the hook's `prompt_file`) is a fixed
+// absolute literal, so the fixtures do not churn with the temporary directory the file is written
+// under.
 // Hosts are placeholders.
 const settingsFixtureFile = `project: LEGION
 port: 13370
@@ -56,11 +57,13 @@ bind: 0.0.0.0
 advertise_host: legion-daemon.internal.example
 postgres_dsn: postgres://legion:fixture-dsn-password@postgres.internal.example:5432/legion
 state_dir: /var/lib/legion
-admission_cap: 4
+admission_cap: 6
+admission_p0_bound: 4
 daemon_url: http://legion-daemon.internal.example:13370
 worker_stream_port: 13371
 provider_keys: {ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_FIXTURE, GEMINI_API_KEY: GEMINI_API_KEY_FIXTURE}
 instructions: /etc/legion/deployment-instructions.md
+private_name_rules_file: /etc/legion/private-names.toml
 worker_boot_timeout_seconds: 180
 worker_boot_registration_deadline_intervals: 2
 worker_rpc_timeout_seconds: 8
@@ -76,7 +79,7 @@ worker_wakes_per_minute: 12
 worker_wake_burst: 2
 operator_token_file: /var/run/legion/OPERATOR_TOKEN
 envoy_url: http://legion:fixture-envoy-password@envoy-listener.internal.example:9020
-nats_urls: [nats://legion:fixture-nats-password@nats.internal.example:4222, nats://nats-2.internal.example:4222]
+nats_urls: ["nats://fixture-nats-user@nats.internal.example:4222", nats://nats-2.internal.example:4222]
 envoy_token_file: /var/run/legion/ENVOY_TOKEN
 nats_nkey_seed_file: /var/run/legion/NATS_NKEY_SEED
 nats_daemon_nkey_seed_file: /var/run/legion/NATS_DAEMON_NKEY_SEED
@@ -89,6 +92,7 @@ projects:
       - {repo: sjawhar/legion, workflow: .github/workflows/release.yaml, step: Apply}
   WIDGETS:
     production_check: off
+    default_steps: [implementer, reviewer]
 gates:
   design: root-issues
 github_apps:
@@ -117,6 +121,7 @@ controller: daemon
 worker_backends: {tester: omp}
 repository_renames:
   - {from: acme/widgets-legacy, to: acme/widgets}
+  - {from: sjawhar/legion, to: cybermonklabs/legion}
 capabilities:
   decided:
     pool-capacity: "the pool is sized by hand for the admission cap"
@@ -185,43 +190,33 @@ runtime:
 `
 
 // minimalSettingsFile is the smallest tmux legion.yaml that loads: every other setting is a
-// default, which is what the Stage 3 and operator-claim goldens and the defaults test show.
-const minimalSettingsFile = `project: DEMO
+// default, which is what the Stage 3 and operator-claim fixtures and the defaults test show.
+const minimalSettingsFile = `project: LEGION
 postgres_dsn: postgres://legion:fixture-dsn-password@127.0.0.1:5432/legion
 state_dir: /var/lib/legion
 `
 
-// loadSettingsFile writes body as a legion.yaml under t.TempDir() and loads it as the daemon does,
-// reading no environment, so the resolved values are the file's and the defaults alone.
-func loadSettingsFile(t *testing.T, body string) config.Config {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "legion.yaml")
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatalf("write legion.yaml: %v", err)
-	}
-	cfg, err := config.Load(path, func(string) string { return "" })
-	if err != nil {
-		t.Fatalf("config.Load: %v", err)
-	}
-	return cfg
-}
-
 // settingsFixtureConfig is settingsFixtureFile loaded.
 func settingsFixtureConfig(t *testing.T) config.Config {
 	t.Helper()
-	return loadSettingsFile(t, settingsFixtureFile)
+	return apifixture.LoadSettings(t, settingsFixtureFile)
 }
 
 // minimalSettingsConfig is minimalSettingsFile loaded.
 func minimalSettingsConfig(t *testing.T) config.Config {
 	t.Helper()
-	return loadSettingsFile(t, minimalSettingsFile)
+	return apifixture.LoadSettings(t, minimalSettingsFile)
 }
 
-// populatedState carries every optional the state shape has, so the fixture pins the full shape
-// rather than Stage 1's empty record.
+// populatedState is the populated state as internal/daemon's state source composes it over its
+// seed (TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds), read back from state.json byte
+// for byte, so no field of it is lost or changed on the way into this package's tests. The file
+// carries no `contract` mark: the mark is the route's own (shaping's stateFor), and both of its
+// numbers name this daemon's own contract, which an entry moves, so the composition takes it out
+// before it writes, and every route this package's tests serve the state through writes it again.
 func populatedState(t *testing.T) State {
 	t.Helper()
+<<<<<<< 7fa22de66d
 	approvedVersion, mergedApproval, lineApproval := 6, 4, 3
 	reviewApproval, stuckApproval := 5, 2
 	waitedSince := time.Date(2026, 9, 22, 8, 5, 0, 0, time.UTC)
@@ -283,16 +278,40 @@ func populatedState(t *testing.T) State {
 		ArgsHash:      "3f7c1a9d62b40e58",
 		StartedAt:     time.Date(2026, 9, 22, 9, 16, 55, 0, time.UTC),
 		EndedAt:       time.Date(2026, 9, 22, 9, 16, 58, 0, time.UTC),
+=======
+	return composedFixture(t, apifixture.Path("state.json"))
+}
+
+// pausedState is the state of the populated record ten seconds into a pause, as internal/daemon's
+// state source composes it, read back from its fixture byte for byte, which the tests of the
+// pause's keys read.
+func pausedState(t *testing.T) State {
+	t.Helper()
+	return composedFixture(t, apifixture.Path("state-paused.json"))
+}
+
+// operatorClaimState is the state of an operator's spawn on an issue the workflow keeps
+// no record of, read back from its fixture: its architect is the one claim of the fixtures in a
+// tmux pane.
+func operatorClaimState(t *testing.T) State {
+	t.Helper()
+	return composedFixture(t, apifixture.Path("state-operator-claim.json"))
+}
+
+// composedFixture is the state internal/daemon's state source composed at path, held to read back
+// byte for byte.
+func composedFixture(t *testing.T, path string) State {
+	t.Helper()
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s (run %s): %v", path, apifixture.StateFixturesRewrite, err)
+>>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 	}
-	implementerStep := supervise.StepRecord{
-		At:            time.Date(2026, 9, 22, 9, 17, 12, 0, time.UTC),
-		TurnStartedAt: time.Date(2026, 9, 22, 9, 16, 30, 0, time.UTC),
-		Tool:          "bash",
-		CallID:        "toolu_impl_11",
-		ArgsBytes:     128,
-		ArgsHash:      "9b2e45c0d1f8a673",
-		StartedAt:     time.Date(2026, 9, 22, 9, 17, 12, 0, time.UTC),
+	var state State
+	if err := json.Unmarshal(written, &state); err != nil {
+		t.Fatalf("decode %s (run %s): %v", path, apifixture.StateFixturesRewrite, err)
 	}
+<<<<<<< 7fa22de66d
 	// What the daemon last saw of the architect's turns and of its launches (contract 86): the
 	// turn it began and ended, the ready that dates the two causes beside them, the cause its
 	// process was last found gone under, and the failure its last start reported. One claim view
@@ -1177,58 +1196,104 @@ func populatedState(t *testing.T) State {
 		hours := quietReadAt.Sub(movedAt).Hours()
 		issue.TreeMovedAt, issue.QuietHours = &movedAt, &hours
 		state.Issues[key] = issue
+=======
+	keepNullPriorities(t, path, written, state)
+	if again := testgolden.Encode(t, path, state); !bytes.Equal(again, written) {
+		line, held, read := testgolden.FirstDifference(written, again)
+		t.Fatalf("%s does not read back as it was written (run %s): line %d holds %q, and the state read from it writes %q",
+			path, apifixture.StateFixturesRewrite, line, held, read)
+>>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 	}
 	return state
 }
 
-// newest is the latest of times, which is how the quiet time takes a tree's movement from the
-// several facts that can move it (record.QuietTrees).
-func newest(times ...time.Time) time.Time {
-	var latest time.Time
-	for _, at := range times {
-		if at.After(latest) {
-			latest = at
-		}
+// keepNullPriorities puts back each `priority` the file at path writes as null, on an issue and on
+// its waitingLine, and each issue's `resolvedPriority` it writes as null. Those are the three keys
+// of the state the daemon writes as null rather than leaving out: an issue the workflow records
+// with no Dispatch priority, a line member neither it nor its tree root has one for, and an issue
+// Dispatch resolves to a known none (PriorityView's MarshalJSON). encoding/json reads a null into
+// a pointer as no pointer at all, so a decode alone drops the key, and the read-back would fail on
+// a value the daemon serves. Only a key the file holds is put back; an absent one stays absent.
+func keepNullPriorities(t *testing.T, path string, written []byte, state State) {
+	t.Helper()
+	var held struct {
+		Issues map[string]struct {
+			Priority         json.RawMessage `json:"priority"`
+			ResolvedPriority json.RawMessage `json:"resolvedPriority"`
+			WaitingLine      *struct {
+				Priority json.RawMessage `json:"priority"`
+			} `json:"waitingLine"`
+		} `json:"issues"`
 	}
-	return latest
-}
-
-// The state golden is the body the route serves a caller at this daemon's own contract: the
-// source answers no mark and the route writes one (shaping's stateFor), so the fixture carries
-// the two numbers of `contract` and the plugin's schema is held to them. A caller below the
-// contract that added it is served no such key, which TestANarrowedBodySaysSo holds.
-func TestStateGolden(t *testing.T) {
-	state := populatedState(t)
-	state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: DaemonAPIVersion}
-	golden(t, "state.json", state)
+	if err := json.Unmarshal(written, &held); err != nil {
+		t.Fatalf("decode the priorities of %s: %v", path, err)
+	}
+	null := []byte("null")
+	for key, keys := range held.Issues {
+		issue := state.Issues[key]
+		if bytes.Equal(keys.Priority, null) {
+			issue.Priority = new(PriorityView(record.NoPriority))
+		}
+		if bytes.Equal(keys.ResolvedPriority, null) {
+			issue.ResolvedPriority = new(PriorityView(record.NoPriority))
+		}
+		if keys.WaitingLine != nil && issue.WaitingLine != nil && bytes.Equal(keys.WaitingLine.Priority, null) {
+			issue.WaitingLine.Priority = new(PriorityView(record.NoPriority))
+		}
+		state.Issues[key] = issue
+	}
 }
 
 // The state route's body for a caller whose plugin is at the contract before
-// repositoriesLiveContract, 201, asking from a pod whose claims record it and stating it in
+// repositoriesLiveContract, asking from a pod whose claims record it and stating it in
 // `Legion-Plugin-Contract`, as every plugin from shapedAnswersContract on does: the state golden's
-// own state, asked through the route itself. 201 is no contract SupportedContracts records, so the
-// caller is served at 199, the recorded contract below it (recordedContractAtOrBelow), which the
-// mark names: its `repositories` block in the shape contract 152 gave it, written from the same
-// entries (withoutRepositoriesLive), and every other key as a caller at 199 is served it, but for
-// what the row of repositoryCorrectionContract, above 199, takes off every issue served below it
-// (withoutRepositoryCorrection); no other row of stateNarrowings stands above 199. 199 moved no
-// answer's shape, so those are the keys a caller at 193 is served too. shapedAnswersContract's
-// row and pauseContract's stand below it, which is why the golden carries
-// `lowestPluginContract`, each claim view's `updateState` and `paused`.
+// own state, asked through the route itself. The caller is served at the recorded contract at or
+// below the one it states (recordedContractAtOrBelow), which the mark's `caller` names: its
+// `repositories` block in the shape contract 152 gave it, written from the same entries
+// (withoutRepositoriesLive), each assignment without its `plan` (withoutAssignmentPlans,
+// assignmentPlanContract's row), no `intakeGiveUps` (withoutIntakeGiveUps,
+// intakeGiveUpsContract's row), no issue's `podHold` (withoutPodHold, podHoldContract's row), no
+// root's `treeRuns` and no gated steps of a root a step of which stands on an ancestor's basis
+// (withoutGateBasis, gateBasisContract's row), no issue's `repoBefore`, `repoCorrectedAt`,
+// `repoChangePending` or `repoChangeReason` (withoutRepositoryCorrection,
+// repositoryCorrectionContract's row), the three other rows of stateNarrowings above the contract
+// it is served at, no issue's `priority` (withoutPriority, priorityContract's row), no claim
+// view's `lastDeathAt` or `lastStartFailureAt` (withoutCauseTimes, causeTimesContract's row) and
+// no `dispatchCredential` (withoutDispatchCredential, dispatchCredentialContract's row), and every
+// other key as a caller at shapedAnswersContract is served it, since no other row of
+// stateNarrowings stands between shapedAnswersContract and repositoriesLiveContract.
+// shapedAnswersContract's row stands at or below the contract it is served at, which is why the
+// golden carries `lowestPluginContract` and each claim view's `updateState`; the populated state
+// holds no pause, so it carries no `paused`. The mark's `daemon` names this daemon's own contract,
+// which an entry moves, so it is taken out before the golden is compared or written
+// (apifixture.WithoutContractMarks) and held to that number here, as internal/daemon's
+// TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds takes out state.json's marks with the
+// same strip; the `caller` is 199, which no entry moves, and stays.
 // `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's schema of
 // the block, so the narrowing is held to the reader it is written for, and its drift gate holds
 // every key of the file to that copy.
 func TestStateNarrowedRepositoriesGolden(t *testing.T) {
 	server := stateServer(t, populatedState(t), podClaims(repositoriesLiveContract-1))
-	body := stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1)
-	golden(t, "state-narrowed-repositories.json", json.RawMessage(body))
+	body, taken := apifixture.WithoutContractMarks(t, stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1), "daemon")
+	if want := map[string]int{"daemon": DaemonAPIVersion()}; !maps.Equal(taken, want) {
+		t.Errorf("the state served below repositoriesLiveContract has the daemon mark %v, want %v, this daemon's own contract", taken, want)
+	}
+	stateGolden(t, "state-narrowed-repositories.json", body)
 }
 
 // One issue's record, what `GET /legion/v1/issues/{key}/record` answers: the very `api.Issue`
 // the whole-project body holds under `issues.LEGION-208`, which a test of the route holds the
 // two to, field for field.
 func TestIssueRecordGolden(t *testing.T) {
-	golden(t, "issue-record.json", populatedState(t).Issues[recordGoldenIssue])
+	stateGolden(t, "issue-record.json", populatedState(t).Issues[recordGoldenIssue])
+}
+
+// The observed view's golden (observed-state.json): what `GET /legion/v1/state?view=observed`
+// answers over the state state.json holds (observedOf), the same daemon block, settings and
+// admission block, and each issue with the members Dispatch observes (ObservedIssue), so
+// `legion-api.test.ts` holds the observed schema to the body a deployment with this state serves.
+func TestObservedStateGolden(t *testing.T) {
+	stateGolden(t, "observed-state.json", observedOf(populatedState(t)))
 }
 
 // What `GET /healthz` answers: that the daemon is serving, and the project it serves.
@@ -1242,8 +1307,9 @@ func TestHealthGolden(t *testing.T) {
 // to a session-facing body refuses the whole of it at every plugin whose answer side predates
 // INFRA-1048, and is dropped at every plugin after it, which loses the field rather than the
 // state. `suspendedBy` is the key this change was tempted to add, and it belongs to the
-// operator claim routes alone; the guard beside `legion-api.test.ts`'s schema tests holds the
-// same property on the schema side.
+// operator claim routes and to four of the six agent actions alone
+// (AgentActionResponse), which no plugin below the contract that added them calls; the guard
+// beside `legion-api.test.ts`'s schema tests holds the same property on the schema side.
 func TestNoSessionFacingBodyCarriesSuspendedBy(t *testing.T) {
 	// The body where the key does live, so a guard over nothing cannot pass for a clean one.
 	operator, err := json.Marshal(OperatorClaims{Claims: []OperatorClaim{
@@ -1262,121 +1328,6 @@ func TestNoSessionFacingBodyCarriesSuspendedBy(t *testing.T) {
 	if bytes.Contains(encoded, []byte("suspendedBy")) {
 		t.Fatalf("the state body carries suspendedBy: %s", encoded)
 	}
-}
-
-func TestStateStage3Golden(t *testing.T) {
-	golden(t, "state-stage3.json", State{
-		Daemon: DaemonInfo{
-			Project:       "LEGION",
-			SchemaVersion: 3,
-			Boots:         5,
-			FirstBootAt:   time.Date(2026, 9, 18, 14, 3, 27, 0, time.UTC),
-			StartedAt:     time.Date(2026, 9, 22, 17, 30, 0, 0, time.UTC),
-		},
-		Admission: Admission{
-			Cap: 2, Active: []string{"LEGION-208"}, Waiting: []string{"LEGION-209"},
-			Trees: []string{"LEGION-208"},
-		},
-		Issues: map[string]Issue{
-			"LEGION-208": {
-				Key:           "LEGION-208",
-				Generation:    4,
-				Phase:         phase.Reviewing,
-				Status:        "needs_review",
-				Tree:          "LEGION-208",
-				Repo:          "sjawhar/legion-smoke",
-				DefaultBranch: "main",
-				Workers:       map[claim.Role]PhaseView{},
-			},
-		},
-		PendingStatusWrites: []PendingStatusWrite{{
-			Issue:     "LEGION-208",
-			Payload:   json.RawMessage(`{"status":"needs_review"}`),
-			Attempts:  2,
-			NextAt:    time.Date(2026, 9, 22, 17, 32, 0, 0, time.UTC),
-			LastError: "Dispatch unavailable",
-		}},
-		Settings: SettingsOf(minimalSettingsConfig(t)),
-	})
-}
-
-// An operator's claim on an issue the workflow does not record is listed for the claim's sake,
-// and says so rather than leaving its phase and status empty: an empty phase is no value of the
-// phase enum, so it refuses the whole document, over a row that is a legitimate state.
-// internal/projection's own test holds the producer to these values.
-func TestStateOperatorClaimGolden(t *testing.T) {
-	golden(t, "state-operator-claim.json", State{
-		Daemon: DaemonInfo{
-			Project:       "AC91849371",
-			SchemaVersion: 3,
-			Boots:         1,
-			FirstBootAt:   time.Date(2026, 9, 25, 5, 50, 0, 0, time.UTC),
-			StartedAt:     time.Date(2026, 9, 25, 5, 50, 0, 0, time.UTC),
-		},
-		Admission: Admission{Cap: 2, Active: []string{}, Waiting: []string{}},
-		Issues: map[string]Issue{
-			"AC91849371-900": {
-				Key:     "AC91849371-900",
-				Phase:   Unrecorded,
-				Status:  string(Unrecorded),
-				Workers: map[claim.Role]PhaseView{},
-				Architect: &ClaimView{
-					Session: "01a0d71d-aace-7448-a0d4-e401d736438f",
-					State:   "idle",
-					Locator: &runtime.Locator{
-						Runtime:     "tmux",
-						Claim:       "legion-ac91849371-ac91849371-900-architect",
-						Incarnation: "1618075:268131172",
-						Tmux:        &runtime.TmuxLocator{Window: "@1", Pane: "%1"},
-					},
-					// No round is open over an operator's spawn either: every claim view names
-					// one of the four states, and the projection writes this one for a claim no
-					// round has reached.
-					UpdateState: UpdateStateNone,
-				},
-			},
-		},
-		PendingStatusWrites: []PendingStatusWrite{},
-		Settings:            SettingsOf(minimalSettingsConfig(t)),
-	})
-}
-
-// goldenPauseSince is when the goldens' pause began, and goldenPauseEnded when its resume ended it.
-var (
-	goldenPauseSince = time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
-	goldenPauseEnded = time.Date(2026, 11, 15, 9, 41, 30, 0, time.UTC)
-)
-
-// goldenPause is the goldens' pause: the operator paused LEGION for a provider's outage, and, once
-// ended, the controller resumed it from its session.
-func goldenPause(ended bool) store.Pause {
-	p := store.Pause{ID: 7, Project: "LEGION", Since: goldenPauseSince, By: store.PauseActor{Kind: store.PauseByOperator},
-		Reason: "the model provider is refusing every turn"}
-	if ended {
-		p.EndedAt, p.EndedBy = goldenPauseEnded, store.PauseActor{Kind: store.PauseByController, Session: "ses_controller"}
-	}
-	return p
-}
-
-// While the project runs after a pause has ended, the state names that pause and who ended it
-// (`lastPause`, decision 25 of dispatch://INFRA-3759) and carries no `paused`; populatedState
-// carries the other key, the pause that stands. A state carries one of the two at most, so each has
-// a state of its own, built as the state's read builds it (pauseViewOf).
-func TestStateLastPauseGolden(t *testing.T) {
-	last := pauseViewOf(goldenPause(true))
-	golden(t, "state-last-pause.json", State{
-		Daemon: DaemonInfo{
-			Project:       "LEGION",
-			SchemaVersion: 3,
-			Boots:         5,
-			FirstBootAt:   time.Date(2026, 11, 2, 14, 3, 27, 0, time.UTC),
-			StartedAt:     time.Date(2026, 11, 15, 8, 30, 0, 0, time.UTC),
-		},
-		Admission:           Admission{Cap: 2, Active: []string{}, Waiting: []string{}},
-		PendingStatusWrites: []PendingStatusWrite{},
-		LastPause:           &last,
-		Settings:            SettingsOf(minimalSettingsConfig(t)),
-	})
 }
 
 // stubPauses is a pause service that answers what a golden asks of it: the pause routes are held
@@ -1443,14 +1394,14 @@ func pauseRouteAnswer(t *testing.T, svc PauseService, target string, body any, w
 // project is paused (PROJECT_PAUSED, here the operator's spawn), naming the pause that stands.
 func TestPauseRouteGoldens(t *testing.T) {
 	const pauseRoute, resumeRoute = "/legion/v1/operator/project/pause", "/legion/v1/operator/project/resume"
-	reason := OperatorPauseRequest{Reason: goldenPause(false).Reason}
+	reason := OperatorPauseRequest{Reason: apifixture.Pause(false).Reason}
 
 	var paused ProjectPauseResponse
-	pauseRouteAnswer(t, stubPauses{pause: goldenPause(false)}, pauseRoute, reason, http.StatusOK, &paused)
+	pauseRouteAnswer(t, stubPauses{pause: apifixture.Pause(false)}, pauseRoute, reason, http.StatusOK, &paused)
 	golden(t, "project-pause.json", paused)
 
 	var resumed ProjectResumeResponse
-	pauseRouteAnswer(t, stubPauses{resumed: goldenPause(true), released: 3}, resumeRoute, nil, http.StatusOK, &resumed)
+	pauseRouteAnswer(t, stubPauses{resumed: apifixture.Pause(true), released: 3}, resumeRoute, nil, http.StatusOK, &resumed)
 	golden(t, "project-resume.json", resumed)
 
 	var blank Failure
@@ -1465,10 +1416,10 @@ func TestPauseRouteGoldens(t *testing.T) {
 		"project-pause-unavailable.json": {stubPauses{pauseErr: &pause.UnavailableError{Setting: pause.SettingTmux}}, pauseRoute, reason},
 		"project-pause-no-workflow.json": {nil, pauseRoute, reason},
 		"project-pause-refused.json": {stubPauses{pauseErr: fmt.Errorf("pause LEGION: %w",
-			&store.AlreadyPausedError{Standing: goldenPause(false)})}, pauseRoute, reason},
+			&store.AlreadyPausedError{Standing: apifixture.Pause(false)})}, pauseRoute, reason},
 		"project-resume-refused.json": {stubPauses{resumeErr: &store.NotPausedError{Project: "LEGION"},
-			last: goldenPause(true), lastFound: true}, resumeRoute, nil},
-		"project-paused.json": {stubPauses{paused: 7, open: goldenPause(false), openFound: true}, "/legion/v1/operator/claims",
+			last: apifixture.Pause(true), lastFound: true}, resumeRoute, nil},
+		"project-paused.json": {stubPauses{paused: 7, open: apifixture.Pause(false), openFound: true}, "/legion/v1/operator/claims",
 			SpawnRequest{Tree: "LEGION-208", Issue: "LEGION-209", Role: claim.RoleImplementer}},
 	} {
 		var refused PauseFailure
@@ -1479,32 +1430,37 @@ func TestPauseRouteGoldens(t *testing.T) {
 
 // golden pins one response's wire shape: Go writes it (`-update`), and
 // `packages/contracts/src/legion-api.test.ts` parses it through the schema of the response it is
-// and holds the parse equal to the file. A fixture that differs from what Go now writes is stale.
+// and holds the parse equal to the file. A fixture that differs from what Go now writes is stale
+// (testgolden.Check).
 func golden(t *testing.T, name string, value any) {
+	t.Helper()
+	testgolden.Check(t, apifixture.Path(name), value, *updateGolden, "go test ./internal/api/ -run Golden -update")
+}
+
+// stateGolden is golden for a fixture written from the populated state, whose failure names the
+// two commands that write the state and the fixture, in order (apifixture.StateFixturesRewrite).
+func stateGolden(t *testing.T, name string, value any) {
+	t.Helper()
+	testgolden.Check(t, apifixture.Path(name), value, *updateGolden, apifixture.StateFixturesRewrite)
+}
+
+// frozenGolden holds the frozen fixture name, the records of the numbered entries, to value in
+// golden's form, and writes it under no flag: `-update` writes an entry's fixture, never a frozen
+// record (TestEntryFixtures). A frozen record changes only as a correction of a record that was
+// wrong, which is a hand edit the contract check refuses without a `Correction:` paragraph in the
+// entry's text.
+func frozenGolden(t *testing.T, name string, value any) {
 	t.Helper()
 	encoded, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		t.Fatalf("marshal %s: %v", name, err)
 	}
-	encoded = append(encoded, '\n')
-
-	path := goldenPath(name)
-	if *updateGolden {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("create fixture directory: %v", err)
-		}
-		if err := os.WriteFile(path, encoded, 0o644); err != nil {
-			t.Fatalf("write golden: %v", err)
-		}
-		return
-	}
-
-	want, err := os.ReadFile(path)
+	want, err := os.ReadFile(apifixture.Path(name))
 	if err != nil {
-		t.Fatalf("read golden (run `go test ./internal/api/ -update`): %v", err)
+		t.Fatalf("read %s: %v", name, err)
 	}
-	if !bytes.Equal(encoded, want) {
-		t.Fatalf("%s is stale\n got: %s\nwant: %s", name, encoded, want)
+	if !bytes.Equal(append(encoded, '\n'), want) {
+		t.Fatalf("%s is not in the order and form its records are written in (by contract, then by its answer or route, indented by two spaces); no flag writes it, so put it back in that form by hand", name)
 	}
 }
 
@@ -1566,7 +1522,7 @@ func TestReadyForUpdateRequestGolden(t *testing.T) {
 //
 // Two rows of each list, because one row of each pins less than the shape, and a third resume:
 //   - the releases are a release that suspended two roles and saved a bundle, and one whose
-//     stops suspended no claim and whose workspace held nothing unpushed (recordPodRelease
+//     stops suspended no claim and whose workspace the check read clean (recordPodRelease
 //     counts only the claims this release's own stops suspended, and the store reads an empty
 //     `roles` column back as none): `roles` is `[]` and never `null`, and `bundleBytes` is 0
 //     rather than absent;
@@ -1578,7 +1534,7 @@ func TestReadyForUpdateRequestGolden(t *testing.T) {
 //     `pause`, the key every other resume leaves out;
 //   - the holds are a background-work streak over eleven passes with the kinds its session
 //     reported in `detail`, and a teardown's overtaken hold, which reads a hold and not the view
-//     behind it and so carries no detail at all (outbox.recordPodHold).
+//     behind it and so carries no detail at all (outbox.cancelRelease).
 func TestReleaseRecordsResponseGolden(t *testing.T) {
 	released := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	golden(t, "release-records.json", releaseRecordsBody(store.PodReleaseRecords{
@@ -1746,7 +1702,8 @@ func operatorClaim() OperatorClaim {
 			Interrupted: true,
 			// The record of the sends that failed, carried here beside the confirmation the way
 			// this fixture carries every other optional at once. A live delivery shows one or
-			// the other: the send that confirms a task clears all three (supervise's confirm).
+			// the other: the send that confirms a task clears all three (supervise's
+			// confirmCarrying).
 			SendFailures:      2,
 			LastSendFailureAt: &lastSendFailure,
 			LastSendError:     "prompt the agent: context deadline exceeded",
@@ -1857,8 +1814,19 @@ func TestTask310RouteGoldens(t *testing.T) {
 	})
 	golden(t, "handoff-complete.json", HandoffCompleteResponse{})
 	golden(t, "issue-status.json", IssueStatusResponse{})
+	golden(t, "issue-pod-update.json", PodUpdateResponse{
+		Round:   "pod:9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22",
+		Reasons: "the project's controller asked for the replacement of this pod",
+		Opened:  true,
+	})
 	golden(t, "fresh-session.json", FreshSessionResponse{})
-	golden(t, "compact.json", CompactResponse{Reason: "Nothing to compact (session too small)"})
+	golden(t, "compact.json", CompactResponse{Reason: "Nothing to hand off (already compacted)"})
+	golden(t, "agent-stop.json", AgentActionResponse{State: string(supervise.StateRetired)})
+	golden(t, "agent-retry.json", AgentActionResponse{State: string(supervise.StateLaunching)})
+	golden(t, "agent-suspend.json", AgentActionResponse{
+		State: string(supervise.StateSuspended), SuspendedBy: string(supervise.SuspendedByController),
+	})
+	golden(t, "agent-resume.json", AgentActionResponse{State: string(supervise.StateLaunching)})
 	golden(t, "gate-register.json", GateRegisterResponse{})
 	golden(t, "wave-release.json", WaveReleaseResponse{Released: []string{"LEGION-209"}})
 	golden(t, "phase-backward.json", PhaseBackwardResponse{})
@@ -1868,28 +1836,50 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "child-rerun.json", EmptyResponse{})
 }
 
+// The two routes of the owner's plan (contract 219) each have a fixture, named for its route as
+// the routes above are. register_plan answers the plan it took, each task with the steps its block
+// names as the plan writes them (registeredPlan), and stop_task answers the empty object of a
+// fact route. `@legion/contracts` parses both, so a field the daemon adds to either is caught
+// there.
+func TestOwnerPlanRouteGoldens(t *testing.T) {
+	golden(t, "plan-register.json", PlanRegisterResponse{Plan: registeredPlan(plan.Plan{
+		ArtifactID: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
+		Version:    4,
+		Tasks: []plan.Task{{
+			ID:    "a",
+			Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}},
+		}},
+	})})
+	golden(t, "task-stop.json", EmptyResponse{})
+}
+
 // The table of answers a plugin parses (answers.go): one row per response schema, the routes
 // that answer it, and the contract that answer arrived at. No route answers this fixture. It is
-// written out so that the plugin's own side reads the same rows the daemon shapes by.
+// written out so that the plugin's own side reads the same rows the daemon shapes by. It holds the
+// numbered entries' rows alone (frozenAnswers): the rows an entry adds are in that entry's fixture
+// (entryFixture's answerRows), so two entries edit no line of it, and TestEntryFixtures holds
+// this file and those rows to the build's Answers().
 func TestAnswersGolden(t *testing.T) {
-	golden(t, "answers.json", Answers)
+	golden(t, "answers.json", frozenAnswers)
 }
 
 // The table of enumerated fields a plugin parses strictly (answers.go): one row per field, with
 // each value and the contract it arrived at. No route answers this fixture either. It is
 // written out beside answers.json so that the plugin's own side holds its enumerations to the
-// daemon's: `packages/contracts/src/legion-api.test.ts` reads this file, holds each row's values
-// equal to the members of the `z.enum` it reads at that row's key path, and fails a `z.enum` it
-// reads at a path no row declares. A value added on one side and not the other is red rather
-// than silent.
+// daemon's: `packages/contracts/src/legion-api.test.ts` reads this file with the rows of the entry
+// fixtures added (`daemon-api-records.ts`), holds each row's values equal to the members of the
+// `z.enum` it reads at that row's key path, and fails a `z.enum` it reads at a path no row
+// declares. A value added on one side and not the other is red rather than silent. It holds the
+// numbered entries' rows alone (enumeratedFields()), as answers.json does, and TestEntryFixtures
+// holds it and the entries' rows to the build's EnumeratedFields().
 func TestEnumeratedFieldsGolden(t *testing.T) {
-	golden(t, "enumerated-fields.json", EnumeratedFields)
+	golden(t, "enumerated-fields.json", enumeratedFields())
 }
 
 // The turn outcome's answer is what a producer's report of one turn comes back as: the run of
-// refused turns the claim's reports now end with, and whether this report took that run to the
-// launch failure limit and failed the claim. It is a golden because `@legion/contracts` reads it
-// (LegionTurnOutcomeResponse), and every answer schema that module exports is held to one.
+// refused turns the claim's reports now end with, and `failed` (claim.TurnOutcomeResponse says
+// what it holds). It is a golden because `@legion/contracts` reads it (LegionTurnOutcomeResponse),
+// and every answer schema that module exports is held to one.
 func TestTurnOutcomeResponseGolden(t *testing.T) {
-	golden(t, "turn-outcome.json", claim.TurnOutcomeResponse{RefusedRun: 3, Failed: true})
+	golden(t, "turn-outcome.json", claim.TurnOutcomeResponse{RefusedRun: 3})
 }

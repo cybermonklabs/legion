@@ -141,7 +141,7 @@ func TestTheDeathBudgetChargesWhatTheOutcomePolicySays(t *testing.T) {
 }
 
 // The launch budget asks the policy: a launch failure counts exactly where Charges says the
-// outcome charges, for both sites that count it (relaunchAfterFailure and launchNow, through
+// outcome charges, for both sites that count it (relaunchAfterFailure and launchTries, through
 // chargeLaunch).
 func TestTheLaunchBudgetChargesWhatTheOutcomePolicySays(t *testing.T) {
 	h := newHarness(t)

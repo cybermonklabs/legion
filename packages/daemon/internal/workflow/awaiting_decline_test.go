@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // declineWords is what Dispatch writes beside a person's note when they decline to answer (its
@@ -59,10 +60,11 @@ func resumeAnsweredRoot(t *testing.T, pool *pgxpool.Pool, root record.Issue) {
 	if root.Awaiting == nil {
 		t.Fatalf("%s holds no wait to resume from", root.Key)
 	}
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		ctx, _ := intake.WithCommitHooks(context.Background())
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return testEngine(config.DesignGateRootIssues, nil).ResumeAwaitedRoot(ctx, tx, root, *root.Awaiting)
-	})
+	}); err != nil {
+		t.Fatalf("resume the answered root %s: %v", root.Key, err)
+	}
 }
 
 // architectSession is the session the architect's claim on key holds, so a resume can be held to
@@ -96,13 +98,13 @@ func resumeTaskOf(t *testing.T, pool *pgxpool.Pool, key string) string {
 }
 
 // renderedResume is the resume task of key's architect for waiting as the record stands now,
-// under the design-gate policy the tests' engine runs (ResumeTask).
+// under the design-gate policy the tests' engine runs (ResumeAwaitedRootTask).
 func renderedResume(t *testing.T, pool *pgxpool.Pool, key string, waiting record.Awaiting) string {
 	t.Helper()
 	var task string
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		var err error
-		task, err = ResumeTask(context.Background(), tx, record.NewStore(), key, waiting, config.DesignGateRootIssues.Steps())
+		task, err = ResumeAwaitedRootTask(context.Background(), tx, record.NewStore(), key, waiting, config.DesignGateRootIssues.Steps())
 		return err
 	})
 	return task
@@ -170,6 +172,7 @@ func seedDeclaredRoot(t *testing.T, pool *pgxpool.Pool) {
 // answers the next wait as the reply it is, by either path. Each root below runs on a record of
 // its own.
 func TestAPersonsDeclineStartsTheWaitingRootAndNamesTheDecline(t *testing.T) {
+	t.Parallel()
 	const note = "The vendor owns that date; I do not."
 
 	// The first root waits on the question a person then declines: the live path answers its wait

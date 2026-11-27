@@ -90,12 +90,17 @@ function reminderRig(owed: LegionOwed = OWES) {
     },
     saveEntry: () => {},
     claim: () => implementer,
+<<<<<<< 7fa22de66d
     readOwed: async () => owed,
     reportNews: async (input) => {
       reported.push(input);
       throw new Error("this case reports no news");
     },
     publisher: () => undefined,
+=======
+    readOwed: async () => ({ owes: true, work: "the implementing phase of LEGION-208" }),
+    publisher: async () => undefined,
+>>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
     project: "legion",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: () => {}, warn: () => {} },

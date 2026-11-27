@@ -47,7 +47,7 @@ func registeredLaunch(t *testing.T, d *daemon, record *built, launch runtime.Spa
 	})
 	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: session, PluginContract: api.DaemonAPIVersion,
+		AgentID: session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register the controller's launch as %s = %d; body %s", session, status, body)
@@ -67,6 +67,7 @@ func registeredLaunch(t *testing.T, d *daemon, record *built, launch runtime.Spa
 // the daemon hands it the start message, so every launch runs the skill's start procedure. The
 // operator's secret route refuses meanwhile: one controller runs per project.
 func TestTheDaemonLaunchesItsControllerAndHandsItTheStartMessage(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	rt := fake.NewRuntime()
@@ -82,7 +83,7 @@ func TestTheDaemonLaunchesItsControllerAndHandsItTheStartMessage(t *testing.T) {
 		t.Fatalf("the controller was launched as %+v, want the controller role on no issue, no repository, with a boot token", launch)
 	}
 
-	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true)
+	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true)
 	if status != http.StatusConflict || !strings.Contains(string(body), "controller: daemon") {
 		t.Fatalf("the operator's controller secret = %d %s, want 409 naming controller: daemon", status, body)
 	}
@@ -93,7 +94,7 @@ func TestTheDaemonLaunchesItsControllerAndHandsItTheStartMessage(t *testing.T) {
 	})
 	status, body = d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: "ses_controller", OmpSessionFile: "/sessions/controller.jsonl",
-		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register the controller with its boot token = %d; body %s", status, body)
@@ -145,10 +146,11 @@ func TestTheDaemonLaunchesItsControllerAndHandsItTheStartMessage(t *testing.T) {
 // A daemon whose operator launches the controller (the default) launches none, and its secret
 // route still mints the operator's capability.
 func TestTheOperatorsDaemonLaunchesNoController(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	d := startDaemon(t, cfg, fakeRuntime(rt, &built{}))
-	if status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true); status != http.StatusOK {
+	if status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true); status != http.StatusOK {
 		t.Fatalf("the operator's controller secret = %d %s, want 200", status, body)
 	}
 	for _, call := range rt.CallsOf("Spawn") {
@@ -180,6 +182,7 @@ func (reviewAppInstalledNowhere) InstalledOwners(_ context.Context, role appauth
 // RepositoriesSentence), or with its owners replaced by a non-empty list (RepositoriesSentence
 // given acme), the launch is not told.
 func TestADaemonLaunchedControllerWhoseReviewAppIsInstalledOnNoAccountIsToldItHasNoGitHubOwner(t *testing.T) {
+	t.Parallel()
 	const told = "Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."
 	for _, tc := range []struct {
 		name string
@@ -227,6 +230,7 @@ func controllerSpawns(rt *fake.Runtime, token claim.Token) int {
 // volume. An operator can clear that stopped claim's recorded session; the keeper's next retry then
 // starts a fresh controller instead of resuming the abandoned session.
 func TestForgetSessionLetsTheControllerKeeperSpawnFresh(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	rt := fake.NewRuntime()
@@ -318,6 +322,7 @@ func (h keeperSawFailure) WithGroup(name string) slog.Handler {
 // machine relaunches a failed claim. The keeper does: after its wait it retries the claim with fresh
 // budgets, so the project is never left without a controller for good.
 func TestTheKeeperRetriesAControllerWhoseLaunchesRanOut(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	rt := fake.NewRuntime()
@@ -353,6 +358,7 @@ func TestTheKeeperRetriesAControllerWhoseLaunchesRanOut(t *testing.T) {
 // A daemon that restarts finds its controller's claim in the store with the process it launched and
 // re-adopts it: the keeper launches no second controller over the one still running.
 func TestARestartedDaemonReadoptsItsControllerAndLaunchesNoSecond(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	rt := fake.NewRuntime()
@@ -388,6 +394,7 @@ func TestARestartedDaemonReadoptsItsControllerAndLaunchesNoSecond(t *testing.T) 
 // process is released and the claim retires, so no pod of the daemon's contends with the operator's
 // `legion controller start` for the one controller record, and the operator's secret route mints.
 func TestADaemonSwitchedBackToTheOperatorStopsItsControllersClaim(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	rt := fake.NewRuntime()
@@ -421,11 +428,11 @@ func TestADaemonSwitchedBackToTheOperatorStopsItsControllersClaim(t *testing.T) 
 	}
 	if status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: "ses_pod", OmpSessionFile: "/sessions/pod.jsonl",
-		AgentID: "ses_pod", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_pod", PluginContract: api.DaemonAPIVersion(),
 	}, false); status == http.StatusOK {
 		t.Fatalf("the stopped controller's launch registered = %d; body %s", status, body)
 	}
-	if status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true); status != http.StatusOK {
+	if status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true); status != http.StatusOK {
 		t.Fatalf("the operator's controller secret = %d %s, want 200", status, body)
 	}
 }
@@ -437,6 +444,7 @@ func TestADaemonSwitchedBackToTheOperatorStopsItsControllersClaim(t *testing.T) 
 // launch registered under nor the one the stop mints in its place is a token anyone holds, and the
 // stop ends the record's registration, so the state names no dead pod's session.
 func TestASwitchedBackDaemonRegistersNoEarlierLaunchOfItsController(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	rt := fake.NewRuntime()
@@ -456,7 +464,7 @@ func TestASwitchedBackDaemonRegistersNoEarlierLaunchOfItsController(t *testing.T
 	})
 	if status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: first.BootToken, SessionID: "ses_first", OmpSessionFile: "/sessions/controller.jsonl",
-		AgentID: "ses_first", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_first", PluginContract: api.DaemonAPIVersion(),
 	}, false); status != http.StatusOK {
 		t.Fatalf("register the controller's first launch = %d; body %s", status, body)
 	}
@@ -480,7 +488,7 @@ func TestASwitchedBackDaemonRegistersNoEarlierLaunchOfItsController(t *testing.T
 	}
 	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: first.BootToken, SessionID: "ses_stale", OmpSessionFile: "/sessions/stale.jsonl",
-		AgentID: "ses_stale", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_stale", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != claim.InvalidBootToken.Status || !strings.Contains(string(body), claim.InvalidBootToken.Message) {
 		t.Fatalf("the first launch's boot token registered on the operator's daemon = %d %s, want %d %q",
@@ -495,6 +503,7 @@ func TestASwitchedBackDaemonRegistersNoEarlierLaunchOfItsController(t *testing.T
 // would leave that pod running, re-adopted with its registration gone: every grant refused and
 // every wake dropped, with nothing to heal it until the pod died.
 func TestASwitchedBackDaemonWhoseStopFailsLeavesItsControllerRegistered(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	rt := fake.NewRuntime()
@@ -556,6 +565,7 @@ func TestASwitchedBackDaemonWhoseStopFailsLeavesItsControllerRegistered(t *testi
 // though it stops nothing; once the operator's controller has registered, a later boot leaves the
 // operator's registration alone.
 func TestASwitchedBackDaemonEndsOnlyItsStoppedControllersRegistration(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	rt := fake.NewRuntime()
@@ -584,7 +594,7 @@ func TestASwitchedBackDaemonEndsOnlyItsStoppedControllersRegistration(t *testing
 		api.GrantRequest{SessionID: "ses_pod", Secret: registration.Secret}, false); status != http.StatusForbidden {
 		t.Errorf("the stopped controller's grant = %d %s, want 403", status, body)
 	}
-	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true)
+	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true)
 	if status != http.StatusOK {
 		t.Fatalf("the operator's controller secret = %d %s, want 200", status, body)
 	}
@@ -594,7 +604,7 @@ func TestASwitchedBackDaemonEndsOnlyItsStoppedControllersRegistration(t *testing
 	}
 	if status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: secret.Secret, SessionID: "ses_operator", OmpSessionFile: "/sessions/operator.jsonl",
-		AgentID: "ses_operator", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_operator", PluginContract: api.DaemonAPIVersion(),
 	}, false); status != http.StatusOK {
 		t.Fatalf("register the operator's controller = %d; body %s", status, body)
 	}
@@ -614,6 +624,7 @@ func TestASwitchedBackDaemonEndsOnlyItsStoppedControllersRegistration(t *testing
 // not match, or a restart between the mint and the registration would replace the operator's
 // capability and refuse its controller.
 func TestASwitchedBackDaemonLeavesAnOperatorsUnregisteredCapability(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	rt := fake.NewRuntime()
@@ -634,7 +645,7 @@ func TestASwitchedBackDaemonLeavesAnOperatorsUnregisteredCapability(t *testing.T
 	if c := d.claim(token); c.State != string(supervise.StateRetired) || c.Session != "" {
 		t.Fatalf("the never-registered controller's claim is %s with session %q, want retired with none", c.State, c.Session)
 	}
-	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true)
+	status, body := d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true)
 	if status != http.StatusOK {
 		t.Fatalf("the operator's controller secret = %d %s, want 200", status, body)
 	}
@@ -648,7 +659,7 @@ func TestASwitchedBackDaemonLeavesAnOperatorsUnregisteredCapability(t *testing.T
 	d = startDaemon(t, cfg, o)
 	if status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: secret.Secret, SessionID: "ses_operator", OmpSessionFile: "/sessions/operator.jsonl",
-		AgentID: "ses_operator", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_operator", PluginContract: api.DaemonAPIVersion(),
 	}, false); status != http.StatusOK {
 		t.Fatalf("the operator's controller registering with the capability minted before the restart = %d %s, want 200", status, body)
 	}
@@ -658,6 +669,7 @@ func TestASwitchedBackDaemonLeavesAnOperatorsUnregisteredCapability(t *testing.T
 // recorded, is one of boot's unrecorded launches. A daemon that leaves the controller to its
 // operator stops that claim and never launches it again.
 func TestASwitchedBackDaemonNeverLaunchesAControllerLaunchACrashCutShort(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {

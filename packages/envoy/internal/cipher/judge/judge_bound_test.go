@@ -6,7 +6,6 @@
 package judge
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -17,7 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // boundTransport records, for each HTTP request the judge's Dispatch client sends, whether its
@@ -45,7 +46,10 @@ func (b *boundTransport) calls() []bool {
 // policy check (JudgePolicy, which reads what Dispatch holds of a tagged name), the project check
 // (JudgeProject) and both of the issue read's GETs run under requests.JudgeDispatch, the one bound
 // the run's arithmetic gives its Dispatch phase. A run that made none of them, or no GET, is a
-// failure too: a list without them cannot say whether they are bounded.
+// failure too: a list without them cannot say whether they are bounded. It runs on the broker's
+// own phase (New's requests.JudgeDispatch), so it also holds that phase's length: the deadline the
+// phase's first read saw falls dispatchBound after a moment inside the run, as JudgeDispatch gives
+// it, and a judge that cut the phase short before that read fails here.
 func TestEveryDispatchReadOfARunIsUnderTheOneBound(t *testing.T) {
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 	opts := testOptions(t, dispatch, model, machine)
@@ -53,7 +57,15 @@ func TestEveryDispatchReadOfARunIsUnderTheOneBound(t *testing.T) {
 	client := *opts.Dispatch.HTTP
 	client.Transport = transport
 	opts.Dispatch.HTTP = &client
+	before := time.Now()
 	New(t.Context(), opts).consider(t.Context(), pending())
+	after := time.Now()
+	switch seen := machine.phaseTimes().seen; {
+	case seen.IsZero():
+		t.Error("no read came under the run's Dispatch phase with a deadline on its context")
+	case seen.Before(before.Add(dispatchBound)) || seen.After(after.Add(dispatchBound)):
+		t.Errorf("the phase's first read saw a deadline %s after the run began (the run took %s); want dispatchBound, %s, after a moment inside the run", seen.Sub(before), after.Sub(before), dispatchBound)
+	}
 
 	if applied, _ := machine.rows(); len(applied) != 1 {
 		t.Fatalf("the run applied %d approvals; want 1, so every read was made", len(applied))
@@ -107,28 +119,49 @@ func TestTheJudgedRowIsWrittenOnAContextOfItsOwn(t *testing.T) {
 }
 
 // TestADispatchFailureAtTheApprovalIsNoRefusal is round 4's m6: an approval that fails because
-// Dispatch could not be asked whether the request is still the judge's is logged as that, at warn,
-// and not as a refusal the judge should never have reached, which is an error.
+// Dispatch could not be asked whether the request is still the judge's, or because the broker
+// could not learn whether Dispatch calls the session's person a restricted member
+// (*projectaccess.MemberKindUncheckable, requests.Machine.restrictedOperator), is logged as that,
+// at WARN, and never as the ERROR saying the judge's grant was refused, which is for a refusal the
+// judge should never have reached. A member-kind read that failed because the run itself gave up
+// (context.Canceled) says nothing of Dispatch: it is logged at INFO, on notApplied's line for the
+// broker stopping under the approval. The request waits for its person in each case.
 func TestADispatchFailureAtTheApprovalIsNoRefusal(t *testing.T) {
-	var logs bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	defer slog.SetDefault(previous)
-
-	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
-	machine.applyErr = fmt.Errorf("%w: dispatch answered 503", requests.ErrProjectAccessUnavailable)
-	New(t.Context(), testOptions(t, dispatch, model, machine)).write(t.Context(), pending(), verdictRow{asked: true, verdict: Verdict{Word: Grant, Reason: "yes"}})
-
-	if _, logged := machine.rows(); len(logged) != 1 {
-		t.Fatalf("the run logged %d rows; want the failed approval's row", len(logged))
-	}
-	var line string
-	for _, l := range strings.Split(logs.String(), "\n") {
-		if strings.Contains(l, "record=record-1") && strings.Contains(l, "approval") {
-			line = l
-		}
-	}
-	if !strings.Contains(line, "level=WARN") || strings.Contains(line, "refused") || !errors.Is(machine.applyErr, requests.ErrProjectAccessUnavailable) {
-		t.Errorf("the approval's log line is %q; want a WARN that says Dispatch could not be asked, not that the approval was refused", line)
+	for _, c := range []struct {
+		name    string
+		failure error
+		level   slog.Level
+	}{
+		{"Dispatch could not say whether the request is the judge's", fmt.Errorf("%w: dispatch answered 503", requests.ErrProjectAccessUnavailable), slog.LevelWarn},
+		{"Dispatch could not say the person's member kind", &projectaccess.MemberKindUncheckable{Person: "sami@example.com", Err: errors.New("projectaccess: dispatch answered /api/v1/access/person 503")}, slog.LevelWarn},
+		{"the run gave up on the member-kind read", &projectaccess.MemberKindUncheckable{Person: "sami@example.com", Err: fmt.Errorf("projectaccess: ask dispatch: %w", context.Canceled)}, slog.LevelInfo},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var records logtest.Recorder
+			logtest.SetDefault(t, &records)
+			dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
+			machine.applyErr = c.failure
+			New(t.Context(), testOptions(t, dispatch, model, machine)).write(t.Context(), pending(), verdictRow{asked: true, verdict: Verdict{Word: Grant, Reason: "yes"}})
+			if _, logged := machine.rows(); len(logged) != 1 {
+				t.Fatalf("the run logged %d rows; want the failed approval's row", len(logged))
+			}
+			var found bool
+			for _, r := range records.Records() {
+				if r.Level >= slog.LevelError {
+					t.Errorf("the run wrote the ERROR line %q; want none: the approval was not refused", r.Message)
+				}
+				var namesRecord bool
+				r.Attrs(func(a slog.Attr) bool {
+					namesRecord = namesRecord || (a.Key == "record" && a.Value.String() == pending().RecordID)
+					return true
+				})
+				if namesRecord && strings.Contains(r.Message, "approval") && r.Level == c.level && !strings.Contains(r.Message, "refused") {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("the run wrote no %v line naming the record's approval without calling it refused; want one", c.level)
+			}
+		})
 	}
 }

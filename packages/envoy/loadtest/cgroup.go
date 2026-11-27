@@ -639,8 +639,7 @@ func fillReplayCPU(dir string, w *roleSeries, role cgroupRole, ws, we, drainEnd 
 	if err != nil {
 		return "", err
 	}
-	out := make([]byte, 0, len(doc)-(end-start)+len(value))
-	out = append(append(append(out, doc[:start]...), value...), doc[end:]...)
+	out := slices.Concat(doc[:start], value, doc[end:])
 	if err := os.WriteFile(path, out, 0o644); err != nil {
 		return "", err
 	}

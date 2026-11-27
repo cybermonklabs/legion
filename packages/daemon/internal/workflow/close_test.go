@@ -31,6 +31,7 @@ import (
 // role's claim and the pod stay for the production check's first look, and the suspension comes
 // with the check's pause or close (merge_close_test.go, which asserts zero here).
 func TestAChildLeavingTheWorkflowNeverClosesItsTree(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		fact   intake.Fact
@@ -118,6 +119,7 @@ func TestAChildLeavingTheWorkflowNeverClosesItsTree(t *testing.T) {
 // Admission frees the slot of a root a human moves to triage, so the engine lingers its tree as it
 // does for backlog, icebox, and done: a tree without a slot must not keep running.
 func TestARootMovedToTriageLingersItsTree(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	now := time.Date(2026, 9, 23, 4, 0, 0, 0, time.UTC)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
@@ -197,6 +199,7 @@ func issueSuspensions(t *testing.T, pool *pgxpool.Pool, issue string) []record.I
 // never dropped. It names no linger, so no root is read for it; a tree close acts on its linger
 // alone.
 func TestStopActsFencesAnIssueCloseLikeASuspend(t *testing.T) {
+	t.Parallel()
 	until := time.Date(2026, 9, 23, 5, 0, 0, 0, time.UTC)
 	lingering := &record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Generation: 7, LingerUntil: &until}
 	for _, tc := range []struct {
@@ -212,6 +215,10 @@ func TestStopActsFencesAnIssueCloseLikeASuspend(t *testing.T) {
 		{name: "an issue close with no id", id: 0, stop: record.SuperviseRequest{Op: "issue_close"}, lastStart: 11, want: true},
 		{name: "an issue close of a lingering tree reads no root", id: 10, stop: record.SuperviseRequest{Op: "issue_close"}, lastStart: 11, root: lingering, want: false},
 		{name: "a suspend a newer start superseded", id: 10, stop: record.SuperviseRequest{Op: "suspend"}, lastStart: 11, want: false},
+		// A stopped task's step stop is fenced as a suspend is (stopTask): a later version of the
+		// plan that starts the task again writes a start the stop must not undo.
+		{name: "a step stop no start followed", id: 10, stop: record.SuperviseRequest{Op: "step_stop"}, lastStart: 4, want: true},
+		{name: "a step stop a newer start superseded", id: 10, stop: record.SuperviseRequest{Op: "step_stop"}, lastStart: 11, want: false},
 		{name: "a tree close of its linger", id: 10, stop: record.SuperviseRequest{Op: "tree_close", Linger: 7}, lastStart: 11, root: lingering, want: true},
 		{name: "a tree close with no root", id: 10, stop: record.SuperviseRequest{Op: "tree_close", Linger: 7}, lastStart: 4, want: false},
 		{name: "a start is not a stop", id: 10, stop: record.SuperviseRequest{Op: "start"}, lastStart: 4, want: false},
@@ -227,6 +234,7 @@ func TestStopActsFencesAnIssueCloseLikeASuspend(t *testing.T) {
 // The record keeps whether its pull request merged or closed, whatever phase the issue is in, so a
 // re-admitted generation drops a finished pull request and keeps an open one.
 func TestTheRecordKeepsWhetherItsPullRequestMergedOrClosed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		at    phase.Phase
@@ -267,6 +275,7 @@ func TestTheRecordKeepsWhetherItsPullRequestMergedOrClosed(t *testing.T) {
 // named, and a child with nothing to name gets the first sentence alone, which every earlier reader
 // of the notice reads.
 func TestTheNoticeOfAChildsMoveNamesItsOpenPullRequestAndEachIssueUnderItNotDone(t *testing.T) {
+	t.Parallel()
 	member := func(key, parent string, at phase.Phase, status string) record.Issue {
 		return record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION",
 			Title: key, Parent: &parent, Phase: at, Generation: 7, Status: status, Rank: "V", LastDispatchSeq: 1}
@@ -345,6 +354,7 @@ func TestTheNoticeOfAChildsMoveNamesItsOpenPullRequestAndEachIssueUnderItNotDone
 // stopped or started, and no production check opens (dispatch://INFRA-3178/spec R4). The record
 // is the same whoever wrote the done, so a person's done stands in for the owner's here.
 func TestAMergeOfTheOpenPullRequestOfAClosedChildClosesNothing(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
 	seedMergingChild(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})

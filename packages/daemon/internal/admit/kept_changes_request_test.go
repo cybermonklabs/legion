@@ -15,7 +15,8 @@ import (
 
 // INFRA-3136 R2: whether a person's recorded decision is still that person's word is decided at
 // the moment a task about it is sent, and a changes request a later approval followed is not.
-// Here a person requested changes to a parked root's spec while nobody in its tree could hear it,
+// Here a person requested changes to the spec of a root in the backlog while nobody in its tree
+// could hear it,
 // so the daemon kept that decision for the root's next architect (the outbox's parkDecision, or
 // the relay: record.Store.AddParkedDecision). The same person then approved the latest version,
 // which is their hand-over (sjawhar/legion#2619): the daemon queues the root's todo, keeps
@@ -23,7 +24,7 @@ import (
 // tell the new architect that the person requested changes: the person's word is the approval
 // that came after, and a task naming the changes request sends the architect to revise a spec
 // the person has just approved, which is dispatch://INFRA-3111's defect on the kept-decision path.
-func TestAChangesRequestKeptOnAParkedRootIsNotNamedOnceThePersonsApprovalHandsItOver(t *testing.T) {
+func TestAChangesRequestKeptOnARootInTheBacklogIsNotNamedOnceThePersonsApprovalHandsItOver(t *testing.T) {
 	ctx := context.Background()
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)

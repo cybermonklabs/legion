@@ -7,7 +7,7 @@ tags:
   - test-rounds
   - verification
 date: 2026-10-31
-status: active
+status: superseded in part — Retro commits nothing and pushes nothing, and no role writes to docs/solutions/.
 module: skills/legion-worker
 related_issues:
   - "INFRA-336"

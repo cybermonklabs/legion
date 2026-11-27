@@ -17,6 +17,7 @@ import (
 // wording, which every settlement of a document holding one runs over its decided asks, reaching
 // them through their primary key, and which the boot runs over every decided ask (a null $1).
 func TestCopiedAskQueriesAvoidSequentialScans(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	ctx := context.Background()
 	tx, err := service.store.Pool.Begin(ctx)

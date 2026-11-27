@@ -21,11 +21,11 @@ import (
 // adopted member and a re-entered child, or a whole tree's, for a re-admitted root. The record
 // owns the statements, and each takes the one forget as an input it requires (forgetSuperseded),
 // which it runs over every decision kept on a cleared issue and every changes request the outbox
-// holds on one while the issue's gates still stand, so each one a later approval superseded is
-// deleted before the clear deletes the gate that records that approval. Asked after the clear, a
-// gate that is gone or new would make the decision read as the person's word again: a person who
-// requested changes and then approved the latest version as their hand-over would send the new
-// architect, or the controller, to revise the spec they approved. That holds as much for a
+// holds on one while the issue's gates still stand, so each one that is no longer the person's
+// word is deleted before the clear deletes the gate that records what took its place. Asked after
+// the clear, a gate that is gone or new would make the decision read as the person's word again: a
+// person who requested changes and then approved the latest version as their hand-over would send
+// the new architect, or the controller, to revise the spec they approved. That holds as much for a
 // request still queued, for the tree's architect while its pod is released or relaunching or for
 // the controller while no session holds its claim, as for a kept one: its delivery asks the gates
 // as they stand when it runs (the daemon's readNoticeTree and controllerNotice).
@@ -92,16 +92,16 @@ func (e *Engine) dropSupersededChanges(ctx context.Context, tx pgx.Tx, tree stri
 	}
 	var spent []int64
 	for _, request := range queued {
-		approval := NoticeSuperseded(gates[request.Issue], e.cfg.Steps, request.Issue, request.Notice,
+		superseded := NoticeSuperseded(gates[request.Issue], e.cfg.Steps, request.Issue, request.Notice,
 			record.DecisionDesignChangesRequested)
-		if approval == nil {
+		if superseded == nil {
 			continue
 		}
 		spent = append(spent, request.Row)
 		e.logOnCommit(ctx, "workflow: a queued changes request finished unpublished at its generation's clear: "+
 			"the person's approval followed it", "row", request.Row, "kind", request.Kind,
 			"issue", request.Issue, "root", tree, "ref", request.Notice.Ref,
-			"version", request.Notice.Version, "approved", approval.Version)
+			"version", request.Notice.Version, "approved", superseded.By.Version)
 	}
 	if len(spent) == 0 {
 		return nil
@@ -114,10 +114,12 @@ func (e *Engine) dropSupersededChanges(ctx context.Context, tx pgx.Tx, tree stri
 // them): those gates recorded a document until the clear, and Dispatch holds the set they
 // recorded until something tells it otherwise. It is queued through the engine's own store,
 // which in the daemon wakes the issue's board lane once the clear commits (projectRecords), so
-// the publication is sent then rather than at the lane's next sweep.
+// the publication is sent then rather than at the lane's next sweep. The empty set carries no
+// entry, so nothing in it says whether a row holds a tree (record.DesignGateDocument.Holds), and
+// it needs none of the deployment's steps to build it.
 func (e *Engine) publishEmptied(ctx context.Context, tx pgx.Tx, emptied []string, now time.Time) error {
 	for _, issue := range emptied {
-		if err := e.store.EnqueueDesignGates(ctx, tx, record.DesignGatesPublish{Issue: issue, Gates: record.GateDocuments(nil)}, now); err != nil {
+		if err := e.store.EnqueueDesignGates(ctx, tx, record.DesignGatesPublish{Issue: issue, Gates: record.GateDocuments(nil, nil)}, now); err != nil {
 			return err
 		}
 	}

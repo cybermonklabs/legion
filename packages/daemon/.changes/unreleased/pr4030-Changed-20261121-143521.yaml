@@ -11,7 +11,7 @@ body: |-
   gate gives every merger of the tree one delivery: the role message to a live session, the gate's
   own start to a merger that is away. The state, `read_record`, `legion state` and the owed answer
   show the hold. A held merger's declaration of a wait is refused with `WAIT_HELD_BY_DESIGN_GATE`.
-  Migration `20261121160200_pending_delivery_gate_message`.
+  Migration `20261127165200_pending_delivery_gate_message`.
 time: 2026-11-21T14:35:21Z
 custom:
     Issue: pr4030

@@ -13,19 +13,20 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // startTaskNow is the text an architect start of key delivers: a resume carries the wait it
 // answers and no text (record.SuperviseRequest.Awaiting), and its send writes it from the record
-// (the daemon's rootTask, workflow.ResumeTask), so it is written here from the record as tx reads
-// it, under steps; any other start carries its own text.
+// (the daemon's rootTask, workflow.ResumeAwaitedRootTask), so it is written here from the record
+// as tx reads it, under steps; any other start carries its own text.
 func startTaskNow(ctx context.Context, tx pgx.Tx, records record.Store, key string, steps []record.DesignStep, start record.SuperviseRequest) (string, error) {
 	if start.Awaiting == nil {
 		return start.Task, nil
 	}
-	return workflow.ResumeTask(ctx, tx, records, key, *start.Awaiting, steps)
+	return workflow.ResumeAwaitedRootTask(ctx, tx, records, key, *start.Awaiting, steps)
 }
 
 // resumeDocument is the primary document of mainPathRoot these tests register its gate on.
@@ -35,7 +36,7 @@ const resumeDocument = "artifact-451"
 func (r *mainPathRig) putSpecGate(gate record.DesignGate) {
 	r.t.Helper()
 	gate.Issue, gate.Step, gate.ArtifactID = r.key, record.DesignStepSpec, resumeDocument
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error { return r.records.PutGate(r.ctx, tx, gate) }); err != nil {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error { return r.records.PutGate(ctx, tx, gate) }); err != nil {
 		r.t.Fatalf("register the spec gate: %v", err)
 	}
 }
@@ -89,7 +90,9 @@ func (r *mainPathRig) runStart(id int64) {
 	if err := r.runner.execute(r.ctx, row); err != nil {
 		r.t.Fatalf("run start row %d: %v", row.ID, err)
 	}
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error { return r.records.FinishOutbox(r.ctx, tx, row.ID, row.LeaseToken) }); err != nil {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return r.records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken)
+	}); err != nil {
 		r.t.Fatalf("finish start row %d: %v", row.ID, err)
 	}
 	r.waitMachine()
@@ -144,6 +147,7 @@ func answeredByChanges(r *mainPathRig) int64 {
 // changes request the approval followed is not named (classify.ReviewSuperseded): it names the
 // approval, and asks for no revision and no registration of version 13.
 func TestAResumeAnsweredByAChangesRequestAnApprovalSupersededNamesTheApproval(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	id := answeredByChanges(r)
 	r.review(intake.DispatchArtifactVersion, 19, "")
@@ -161,6 +165,7 @@ func TestAResumeAnsweredByAChangesRequestAnApprovalSupersededNamesTheApproval(t 
 // The control of the replay: with no approval after it, the changes request is the person's
 // newest review, and the resume task written at its send names it and asks for the revision.
 func TestAResumeAnsweredByAChangesRequestStillStandingNamesIt(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	id := answeredByChanges(r)
 	r.runStart(id)
@@ -174,6 +179,7 @@ func TestAResumeAnsweredByAChangesRequestStillStandingNamesIt(t *testing.T) {
 // a person's answer of another question queued while the gate was closed is written at its send,
 // and names neither the request the approval answered nor an unapproved version.
 func TestAResumeAfterTheSecondOfTwoRequestsOfOneVersionIsApprovedNamesNeitherStaleRequestNorUnapprovedVersion(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.waitOn(record.Awaiting{Ask: mainPathAsk, Since: record.EventMark{Seq: 10}})
 	r.putSpecGate(record.DesignGate{LatestVersion: 13})
@@ -201,6 +207,7 @@ func TestAResumeAfterTheSecondOfTwoRequestsOfOneVersionIsApprovedNamesNeitherSta
 // 13 and both delivered after the person wrote version 19 and approved it, state the same version:
 // each is composed where it is delivered.
 func TestAResumeAndTheCatchUpOfItsLaunchStateOneGateVersion(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	id := answeredByChanges(r)
 	now := time.Now()
@@ -249,13 +256,14 @@ func TestAResumeAndTheCatchUpOfItsLaunchStateOneGateVersion(t *testing.T) {
 // person's other decision and without it. With the gate as the re-admission left it, the sentence
 // is sent.
 func TestAKeptApprovalALaterApprovalSupersededIsDroppedFromTheHeldTask(t *testing.T) {
-	const sentence = "request approval of version 3"
+	t.Parallel()
+	const sentence = "A person approved version 2 of the primary document"
 	for _, approved := range []bool{true, false} {
 		t.Run(fmt.Sprintf("approved since %t", approved), func(t *testing.T) {
 			r := newMainPathRig(t, true)
 			r.put(r.waitingRoot())
-			if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-				return r.records.KeepReadmittedApproval(r.ctx, tx, r.key, record.KeptApproval{Step: record.DesignStepSpec, Approved: 2, Latest: 3})
+			if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+				return r.records.KeepReadmittedApproval(ctx, tx, r.key, record.KeptApproval{Step: record.DesignStepSpec, Approved: 2, Latest: 3})
 			}); err != nil {
 				t.Fatalf("keep the re-admission's approval: %v", err)
 			}
@@ -283,6 +291,7 @@ func TestAKeptApprovalALaterApprovalSupersededIsDroppedFromTheHeldTask(t *testin
 // A held task a daemon of an earlier release queued carries no resume mark
 // (supervise.Delivery.Resume): it is sent as the text it holds, whatever the gate says now.
 func TestAHeldTaskWithNoResumeMarkIsSentAsItsText(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	root := r.waitingRoot()
 	root.Status = "in_progress"

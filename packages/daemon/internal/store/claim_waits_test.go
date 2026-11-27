@@ -20,6 +20,7 @@ import (
 // included. Whether a wait under a new session still stands is the wait's rule's to say
 // (workflow.WaitStands), not the store's, so the claim read gives the new session beside the wait.
 func TestALaunchOfTheClaimLeavesItsWaitAsItWas(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	records := record.NewStore()
@@ -35,7 +36,7 @@ func TestALaunchOfTheClaimLeavesItsWaitAsItWas(t *testing.T) {
 	declared := record.ClaimWait{ID: "wait-1", Project: held.Project, Token: held.Token, Issue: held.Issue, Role: held.Role,
 		Generation: 3, Phase: phase.Implementing, PhaseEntry: 4, TakenEntry: 4, Session: held.Session,
 		WaitingOn: "the review of the root's pull request", WakeAt: at(40), DeclaredAt: at(10)}
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		_, err := records.DeclareWait(ctx, tx, declared)
 		return err
 	}); err != nil {
@@ -52,7 +53,7 @@ func TestALaunchOfTheClaimLeavesItsWaitAsItWas(t *testing.T) {
 
 	var read *record.RoleClaim
 	var rows int
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		claims, err := records.RoleClaims(ctx, tx, []claim.Token{held.Token})
 		if err != nil {
 			return err

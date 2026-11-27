@@ -77,6 +77,7 @@ func seedThreeDestinationEvent(t *testing.T, database *store.Store, broker *even
 // the event is released with no attempt counted, to be sent again when a wake comes (a reconnect),
 // rather than sent again and again while NATS stays unreachable.
 func TestAnUnreachableNATSReleasesTheBatchAndSendsNothingAfterIt(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	event := seedThreeDestinationEvent(t, database, broker)
@@ -86,14 +87,18 @@ func TestAnUnreachableNATSReleasesTheBatchAndSendsNothingAfterIt(t *testing.T) {
 	})
 	unreachable := fmt.Errorf("bus: %w: waiting for NATS to reconnect: context deadline exceeded", bus.ErrUnavailable)
 	publisher := &countingPublisher{fail: unreachable}
-	stop := run(t, database, publisher, broker)
-	defer stop()
+	outbox := outboxOn(database, publisher, broker)
+	atRest := restReading(t, outbox)
+	defer runTheOutbox(t, outbox)()
 
-	waitFor(t, 5*time.Second, "the first event's three destinations tried", func() bool { return len(publisher.attempted()) >= 3 })
+	waitFor(t, "the first event's three destinations tried", func() bool { return len(publisher.attempted()) >= 3 })
 	// The hold's first scan and the LISTEN connection's catch-up each wake one scan; after them
-	// nothing does.
-	time.Sleep(500 * time.Millisecond)
+	// nothing does. The window below starts once both are over, as the outbox reports it
+	// (restReading), not after a span of time a slow LISTEN dial can outlast.
+	atRest("the outbox resting after the hold's first scan and the LISTEN connection's catch-up")
 	settled := len(publisher.attempted())
+	// A lower bound on quiet, not an upper bound on work: nothing is due and no wake comes, so a
+	// send in this second is one made with no wake, and load can only make the window see less.
 	time.Sleep(time.Second)
 	topics := publisher.attempted()
 	if len(topics) != settled {
@@ -118,6 +123,7 @@ func TestAnUnreachableNATSReleasesTheBatchAndSendsNothingAfterIt(t *testing.T) {
 // attempt is counted, and once the store records again the event is published with every
 // destination it reached.
 func TestABatchWhoseRecordWriteFailsIsLeftAsItWasRead(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	event := seedThreeDestinationEvent(t, database, broker)
@@ -133,7 +139,7 @@ func TestABatchWhoseRecordWriteFailsIsLeftAsItWasRead(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, 5*time.Second, "the event's three destinations sent", func() bool { return len(publisher.attempted()) >= 3 })
+	waitFor(t, "the event's three destinations sent", func() bool { return len(publisher.attempted()) >= 3 })
 	destinations, attempts := publishedDestinations(t, database, event.ID)
 	if len(destinations) != 0 || attempts != 0 || publishedAt(t, database, event.ID) != nil {
 		t.Fatalf("published_destinations = %v, attempt_count = %d, published = %v, though the record write failed",
@@ -152,7 +158,7 @@ func TestABatchWhoseRecordWriteFailsIsLeftAsItWasRead(t *testing.T) {
 		t.Fatalf("let the record write succeed: %v", err)
 	}
 	broker.Publish(model.Event{})
-	waitFor(t, 5*time.Second, "the event published once the store records again", func() bool {
+	waitFor(t, "the event published once the store records again", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	if destinations, attempts := publishedDestinations(t, database, event.ID); len(destinations) != 3 || attempts != 0 {
@@ -183,6 +189,7 @@ func denial(subject string) error {
 // An attempt that goes on past a denial and then ends at a connection failure returns both: the
 // denial is not lost behind the error that ended the attempt.
 func TestAnAttemptEndedAfterADenialReturnsBoth(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	event := seedThreeDestinationEvent(t, database, broker)
@@ -204,6 +211,7 @@ func TestAnAttemptEndedAfterADenialReturnsBoth(t *testing.T) {
 // ask's thread reaches the ask's followers, and a claim reaches the previous claimant, each besides
 // the issue's route.
 func TestEveryDenialNamesItsDestination(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	reply := seedThreeDestinationEvent(t, database, broker)

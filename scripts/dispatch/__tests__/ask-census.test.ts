@@ -1,5 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { join } from "node:path";
+import type { DispatchEvent } from "../../../packages/contracts/src/dispatch-api";
 import { bearerCredential } from "../../../packages/envoy-client/src/bearer.ts";
 import {
   DISPATCH_TOOL_DEADLINE_MS,
@@ -29,7 +30,9 @@ import {
   edited,
   followed,
   handedBack,
+  ISSUE,
   opened,
+  recorded,
   recordedAt,
   recordedRounds,
   reply,
@@ -61,6 +64,43 @@ function stage4bRequests(events: readonly unknown[], artifactId: string): number
 const from = "2026-10-01T00:00:00.000Z";
 const to = "2026-10-02T00:00:00.000Z";
 const human = { kind: "user", id: "alice" } as const;
+
+/** The four events of an author's correction of a post. */
+type PostCorrection = Extract<
+  DispatchEvent,
+  { readonly type: "comment.edited" | "comment.deleted" | "message.edited" | "message.deleted" }
+>;
+
+/** The human's reply numbered `seq` in the request's thread, as it was written. */
+function humanReply(seq: number) {
+  const written = reply(seq, "human");
+  if (written.type !== "comment.created") throw new Error(`reply ${seq} is a ${written.type}`);
+  return written;
+}
+
+/** The human's reply numbered `seq` once its author deleted it at `at`, as a read of the log
+ * gives each of its events (`attachPostMarks` in `api/events.go`): the routing fields its
+ * comment.created carried, the ask it replied to among them, with the delete's marks where the
+ * body was. */
+function withdrawnReply(seq: number, at: number) {
+  const { body: _withdrawn, ...routing } = humanReply(seq).payload;
+  return { ...routing, deleted_at: recordedAt(at), deleted_by: human };
+}
+
+/** A message the human posted on the issue, which no ask names, edited at 8 and deleted at 9: a
+ * read of each of its events gives the delete's marks where the body was. */
+const withdrawnMessage = {
+  id: "message-1",
+  issue_key: ISSUE,
+  author: human,
+  target: null,
+  in_reply_to: null,
+  deliveries: [],
+  created_at: recordedAt(1),
+  edited_at: recordedAt(8),
+  deleted_at: recordedAt(9),
+  deleted_by: human,
+};
 
 const asks = [
   {
@@ -346,6 +386,51 @@ describe("ask census", () => {
         exceedsHumanTurnBudget: true,
       },
     ]);
+  });
+
+  // A reply its author deleted since is read back with no body, and a read of an edited one gives
+  // the time of its edit: each is still the turn the human took. An edit or a delete of a reply,
+  // and of a message on the issue, is no turn of its own, so a round that the corrections leave
+  // within budget is not flagged.
+  test("a reply its author deleted is still a turn, and no edit or delete is one", () => {
+    const asWritten = [
+      opened(1, 1),
+      reply(2, "human"),
+      handedBack(3, 1),
+      reply(4, "human"),
+      handedBack(5, 1),
+    ];
+    const edited = humanReply(4);
+    const corrections: PostCorrection[] = [
+      {
+        ...recorded(6, human),
+        type: "comment.edited",
+        payload: { ...edited.payload, body: "Why not hourly?", edited_at: recordedAt(6) },
+      },
+      { ...recorded(7, human), type: "comment.deleted", payload: withdrawnReply(2, 7) },
+      { ...recorded(8, human), type: "message.edited", payload: withdrawnMessage },
+      { ...recorded(9, human), type: "message.deleted", payload: withdrawnMessage },
+    ];
+    const asRead = [
+      opened(1, 1),
+      { ...humanReply(2), payload: withdrawnReply(2, 7) },
+      handedBack(3, 1),
+      { ...edited, payload: { ...edited.payload, edited_at: recordedAt(6) } },
+      handedBack(5, 1),
+      ...corrections,
+    ];
+    expect(asRead[1]?.payload).not.toHaveProperty("body");
+
+    const round = {
+      artifactId: ARTIFACT,
+      inboxRows: 1,
+      arrivals: 3,
+      humanTurns: 2,
+      exceedsHumanTurnBudget: false,
+    };
+    expect(summarizeApprovalRounds(asRead, [])).toEqual([round]);
+    // The same round as it was written, with no correction: the count a reader made before them.
+    expect(summarizeApprovalRounds(asWritten, [])).toEqual([round]);
   });
 
   test("reads every issue when the whole run outlasts one client's deadline", async () => {

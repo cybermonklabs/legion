@@ -1,6 +1,6 @@
 name: CI job proof-sdk-offline
 
-# The steps of ci.yaml's `proof-sdk-offline` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#proof-sdk-offline` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
@@ -11,7 +11,7 @@ name: CI job proof-sdk-offline
 # over the network. packages/proof-editor/package.json installs proof-sdk-upstream from the
 # tarball committed beside it, so a frozen install reads those bytes out of the checkout and asks
 # no host for them. This job runs that install behind a proxy that answers HTTP 504 for the hosts
-# of the old `github:sjawhar/proof-sdk#<sha>` route - api.github.com, where Bun asks for a
+# of the old `github:sjawhar/proof-sdk` route, pinned to a commit - api.github.com, where Bun asks for a
 # `github:` dependency's tarball, and codeload.github.com and objects.githubusercontent.com,
 # which that request redirects to, and every subdomain of the three - and fails when the proxy's
 # log holds a single refusal, on a cold install and on a warm one. It refuses the behaviour
@@ -34,13 +34,13 @@ name: CI job proof-sdk-offline
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -53,6 +53,7 @@ jobs:
     # below quotes them. The proxy faults each of them and every subdomain of one, and refuses
     # nothing else, so the verdict counts its refusals rather than matching this list again.
     env:
+      JOB_TIMEOUT_MINUTES: 15 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       FAULT_HOSTS: api.github.com,codeload.github.com,objects.githubusercontent.com
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

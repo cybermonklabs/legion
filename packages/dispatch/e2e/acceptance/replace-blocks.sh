@@ -107,6 +107,10 @@ readonly repo_root="$script_dir/../../../.."
 # reads every process on the host for that answer; elsewhere it asks ps.
 # shellcheck source-path=SCRIPTDIR source=../../../../scripts/e2e/lib/process-tree.sh
 . "$repo_root/scripts/e2e/lib/process-tree.sh"
+# A postgres:// URL reaches psql without its password, which goes in PGPASSWORD for that psql
+# alone (pg_url_run), as e2e/psql.ts gives it.
+# shellcheck source-path=SCRIPTDIR source=../../../envoy/scripts/lib/pg-url.sh
+. "$repo_root/packages/envoy/scripts/lib/pg-url.sh"
 readonly cli_entry="$script_dir/../../../envoy-client/bin/dispatch.ts"
 
 # How long the instance this run starts may take to print its signed-in line. It builds the
@@ -120,16 +124,28 @@ readonly instance_seconds=900
 # server_answer CONNECTION: psql's answer through CONNECTION to `select current_database(),
 # inet_server_port()`, one line holding the database's name and the port with a `|` between them.
 # It asks the server CONNECTION names: PGHOSTADDR is dropped, since libpq connects to the address
-# it holds in place of the string's host, as e2e/psql.ts and the psql reads of
-# e2e/acceptance/ci-check.sh and e2e/run-broker.sh drop it. Every other PG* variable of the
-# environment it is called in stays, but PGCONNECT_TIMEOUT, which it sets to ten seconds: libpq
-# takes that where CONNECTION names no connect_timeout of its own, so a server that does not take
-# the connection within it is a refusal (unread_dsn) and not a hang. -X reads no psqlrc, -w never
-# prompts for a password and stdin is empty, so nothing waits on a person. CONNECTION is the value
-# of --dbname, which psql reads as a connection string or a database name and never as an option,
-# whatever it opens with. psql's stderr goes nowhere: its errors name the user and the host of the
-# string, and a refusal prints no part of it.
+# it holds in place of the string's host. A postgres:// or postgresql:// CONNECTION reaches psql
+# without its password, which goes in PGPASSWORD for that psql alone (pg_url_run), as e2e/psql.ts
+# and the psql reads of e2e/acceptance/ci-check.sh and e2e/run-broker.sh hand theirs, each of
+# which drops PGHOSTADDR too; pg_url_run's refusal of a URL it cannot split names its fault and
+# none of the URL, and the read then fails. A key=value CONNECTION reaches psql as it is, which
+# is why refuse_keyword_password, below, refuses one that holds a password before it is read.
+# Every other PG* variable of the environment it is called in stays, but PGCONNECT_TIMEOUT,
+# which it sets to ten seconds: libpq takes that where CONNECTION names no connect_timeout of its
+# own, so a server that does not take the connection within it is a refusal (unread_dsn) and not
+# a hang. -X reads no psqlrc, -w never prompts for a password and stdin is empty, so nothing
+# waits on a person. CONNECTION is the value of --dbname, which psql reads as a connection string
+# or a database name and never as an option, whatever it opens with. psql's stderr goes nowhere:
+# its errors name the user and the host of the string, and a refusal prints no part of it.
 server_answer() {
+  case "$1" in
+    postgres://* | postgresql://*) pg_url_run "$1" psql_server_answer ;;
+    *) psql_server_answer "$1" ;;
+  esac
+}
+
+# psql_server_answer CONNECTION: server_answer's psql, CONNECTION as it is given.
+psql_server_answer() {
   env -u PGHOSTADDR PGCONNECT_TIMEOUT=10 \
     psql -XAtqw --dbname="$1" -c 'select current_database(), inet_server_port()' \
     </dev/null 2>/dev/null
@@ -188,6 +204,31 @@ shared_database() {
   exit 2
 }
 
+# refuse_keyword_password NAME VARIABLE: refuses the connection string of the environment variable
+# NAME, held in the shell variable VARIABLE, when it is a key=value string that holds a password
+# key. psql would carry such a string, password and all, in its arguments, where every user of
+# the machine reads it, and pg_url_run takes a password out of a postgres:// URL alone. The test
+# is conservative: `password` and then `=`, in any case and anywhere in the string, refuses, a
+# quoted value that merely holds those words included. The value is read by its variable's name,
+# with tracing off (set -x would print it), and the refusal names NAME and prints none of it.
+refuse_keyword_password() {
+  local xtrace="" held=false value
+  [[ $- != *x* ]] || { xtrace=1 && { set +x; } 2>/dev/null; }
+  value="${!2}"
+  case "$value" in
+    postgres://* | postgresql://*) ;;
+    *) [[ "${value,,}" =~ password[[:space:]]*= ]] && held=true ;;
+  esac
+  value=""
+  [ -z "$xtrace" ] || set -x
+  if [ "$held" = true ]; then
+    printf '%s holds a password key, which psql would carry in its arguments, where every user of this machine can read it. Give the password in PGPASSWORD and leave it out of %s, or give %s as a postgres:// URL, whose password this run hands psql in PGPASSWORD.\n' \
+      "$1" "$1" "$1" >&2
+    usage
+    exit 2
+  fi
+}
+
 # The person the project this run makes names as the one its unowned work lands on, read here
 # because the scrub the DATABASE_URL branch runs unsets this variable with every other DISPATCH_
 # one. Each branch below says what it does with it; nothing reads it where PROJECT names a
@@ -208,6 +249,9 @@ if [[ -n "$database_url" ]]; then
   shared_dsn="${LEGION_TEST_PG_DSN-}"
   shared_dsn="${shared_dsn#[\"\']}"
   shared_dsn="${shared_dsn%[\"\']}"
+  # A key=value string with a password key is refused before either is read (refuse_keyword_password).
+  refuse_keyword_password DATABASE_URL database_url
+  [[ -z "$shared_dsn" ]] || refuse_keyword_password LEGION_TEST_PG_DSN shared_dsn
   # Each string is read by asking its server, before anything starts, through server_answer,
   # which drops PGHOSTADDR and bounds the connection with a PGCONNECT_TIMEOUT of ten seconds.
   # DATABASE_URL is read with no other PG* variable set, as the instance reads it after the scrub
@@ -335,17 +379,18 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # instance_log_tail: the last ten lines the instance logged before its hand-over message, which a
-# failed start prints. That message is the one place the instance writes DATABASE_URL whole (the
-# hand-over console.log in `main` of packages/dispatch/e2e/local-instance.ts, which opens with
-# "Dispatch local instance is up.": its `Database` line, and the `DATABASE_URL=` prefix
-# `harnessEnvironment` builds, which that same call prints), and it writes the signed-in line in
-# the same call, so a start that fails after it is a race this run can lose: the line read missed
-# it, then the process stopped. Nothing from that message's first line on is printed, so no
-# failure puts the string on stderr however the race goes.
+# failed start prints. That message is the one place the instance writes DATABASE_URL (the
+# hand-over e2e/local-instance.ts prints in `main`, which `handOverMessage` of
+# packages/dispatch/e2e/local-instance-support.ts builds and opens with "Dispatch local instance
+# is up.": its `Database` line, and the `DATABASE_URL=` prefix of the command it hands over, both
+# without the password a run gave, which it prints nowhere), and it writes the signed-in line in
+# the same message, so a start that fails after it is a race this run can lose: the line read
+# missed it, then the process stopped. Nothing from that message's first line on is printed, so
+# no failure puts any of the URL on stderr however the race goes.
 #
 # This is safe exactly as long as nothing logs DATABASE_URL before that message. Today that holds by
-# the code of local-instance.ts: the URL is printed in that console.log, once itself and once
-# through `harnessEnvironment`, and nowhere else, and its one earlier refusal (databaseUrlRefusal,
+# the code of local-instance.ts: the URL is printed in that message, in its Database line and its
+# command, and nowhere else, and its one earlier refusal (databaseUrlRefusal,
 # local-instance-support.ts) names hosts and never the string. A line added to the instance that
 # logs the URL before "Dispatch local instance is up." is on the wrong side of this cut, and this
 # run prints it.

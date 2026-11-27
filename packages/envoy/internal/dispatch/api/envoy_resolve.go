@@ -10,8 +10,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // Dispatch's Envoy listener client is a cross-service HTTP call bounded only by its five
@@ -190,8 +192,8 @@ func hasCapability(capabilities []string, value string) bool {
 const listenerNotConfiguredText = "envoy listener: ENVOY_URL is not configured"
 
 // listenerUnreachablePrefix begins the failure deliveryErrorText records for a listener nothing
-// answered (dispatchenvoy.ErrUnreachable): a connection refused, reset or timed out, a 502, 503 or
-// 504.
+// answered (dispatchenvoy.ErrUnreachable): a connection refused, reset or timed out, or an outage
+// status (a 408, a 429, a 502, 503 or 504, any other 5xx but the listener's own 500).
 const listenerUnreachablePrefix = "envoy listener: "
 
 // noLiveSessionPrefix begins the failure a delivery records when the listener holds no live
@@ -251,18 +253,19 @@ const (
 )
 
 // retryableDeliveryFailure reports whether a failure a try recorded is one a later try can
-// outlast: a listener take-over's - the listener unreachable (listenerUnreachablePrefix - a
-// connection refused, reset or timed out, a 502, 503 or 504 - but never
-// listenerNotConfiguredText), a receipt timeout, a send whose store the listener could not confirm
-// (storeUnconfirmedText), or the listener holding no record of the session yet - "no live session",
-// as the registry read is recorded and as the send's own 404 words it - and an account token
-// Dispatch could not present (listenerAccountTokenPrefix), which the next try reads again. A
-// receipt timeout and an unconfirmed store are safe to repeat because the retry carries the same
-// idempotency key, which the listener recognises as a repeat (DELIVERY_DUPLICATE_WINDOW_MS in
-// packages/contracts). Anything else is the listener's answer - a session that does not take this
-// mode, a send it refused, a status it chose such as a 401 for a token it refuses
-// (listenerAnsweredPrefix) - which no successor answers differently, and the attempt settles with
-// it at once.
+// outlast: a listener take-over's or outage's - the listener unreachable
+// (listenerUnreachablePrefix: a connection refused, reset or timed out, or an outage status, a
+// 408, a 429 or a 5xx but 500, but never listenerNotConfiguredText), a receipt timeout, a send
+// whose store the listener could not confirm (storeUnconfirmedText), or the listener holding no
+// record of the session yet - "no live session", as the registry read is recorded and as the
+// send's own 404 words it - and an account token Dispatch could not present
+// (listenerAccountTokenPrefix), which the next try reads again. A receipt timeout and an
+// unconfirmed store are safe to repeat because the retry carries the same idempotency key, which
+// the listener recognises as a repeat (DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts).
+// Anything else is the listener's answer - a session that does not take this mode, a send it
+// refused, a status it chose such as a 401 for a token it refuses or a 500 for a record it cannot
+// decode (listenerAnsweredPrefix) - which no successor answers differently, and the attempt
+// settles with it at once.
 //
 // It reads the recorded text rather than the error behind it because a resumed mention's first
 // try sends with the resolve error its row already holds (mentionResolutionFor), which survives
@@ -287,6 +290,10 @@ func retryableDeliveryFailure(failure string) bool {
 // commit together, unless the send waits on a held lane first, which starts a window of its own at
 // its delivery (mentionSend.takeover).
 type takeoverRetry struct {
+	// clock is the server's: the moment the first try was made, the span since it and the wait
+	// between two tries are all read from it, so a test that drives a fake decides when the
+	// window runs out rather than racing the wall clock (again).
+	clock   clock.Clock
 	first   time.Time
 	backoff time.Duration
 	// window is how long after first a try may still start: listenerTakeoverWindow, or the
@@ -295,10 +302,11 @@ type takeoverRetry struct {
 }
 
 // newTakeoverRetry starts the pacing of a sender about to make its first try, in this server's
-// take-over window.
+// take-over window and on this server's clock.
 func (s *server) newTakeoverRetry() takeoverRetry {
 	return takeoverRetry{
-		first:   time.Now(),
+		clock:   s.clock(),
+		first:   s.clock().Now(),
 		backoff: takeoverFirstBackoff,
 		window:  cmp.Or(s.deps.ListenerTakeoverWindow, listenerTakeoverWindow),
 	}
@@ -349,7 +357,7 @@ func (s *server) resolveThroughTakeover(
 	takeover := s.newTakeoverRetry()
 	var resolved ResolvedMention
 	resolve := func() string {
-		resolved = s.resolveMentionTarget(ctx, target, delivery, mentionLookupTimeout)
+		resolved = s.resolveMentionTarget(ctx, target, delivery, s.commentLookupBound(target))
 		return resolved.ResolveError
 	}
 	if !wait {
@@ -359,6 +367,16 @@ func (s *server) resolveThroughTakeover(
 	// A try that holds nothing has nothing to renew, so retry answers no error.
 	_ = takeover.retry(ctx, resolve, nil)
 	return resolved, takeover
+}
+
+// commentLookupBound is the bound on one try of a comment's listener lookup of target, read as
+// that try starts: mentionLookupTimeout on every server the deployment builds, which sets no
+// mentionLookupBound, and whatever a test set for that target otherwise.
+func (s *server) commentLookupBound(target string) time.Duration {
+	if s.mentionLookupBound != nil {
+		return s.mentionLookupBound(target)
+	}
+	return mentionLookupTimeout
 }
 
 // again reports whether the sender tries once more after a try that recorded failure, having
@@ -371,15 +389,11 @@ func (s *server) resolveThroughTakeover(
 // is still trying: the delivery sweep finds nothing to take, and a person's Retry finds the
 // attempt held.
 func (r *takeoverRetry) again(ctx context.Context, failure string) bool {
-	if !retryableDeliveryFailure(failure) || time.Since(r.first)+r.backoff > r.window {
+	if !retryableDeliveryFailure(failure) || r.clock.Now().Sub(r.first)+r.backoff > r.window {
 		return false
 	}
-	wait := time.NewTimer(r.backoff)
-	defer wait.Stop()
-	select {
-	case <-ctx.Done():
+	if r.clock.Sleep(ctx, r.backoff) != nil {
 		return false
-	case <-wait.C:
 	}
 	r.backoff = min(2*r.backoff, takeoverMaxBackoff)
 	return true
@@ -391,12 +405,12 @@ func (r *takeoverRetry) again(ctx context.Context, failure string) bool {
 // A claim transaction takes a pending attempt only while no sender holds it
 // (model.DeliveryClaimFreeSQL, selected beside the row it locks): nobody claimed it, or whoever
 // did never came back within model.DeliveryClaimLapse. A sender renews its claim before every
-// try (takeoverRetry), and a try is bounded by the listener client's own window (five seconds by
-// default, DepsInput.EnvoyTimeout in a test) and the short transaction that records its outcome,
-// so a claim older than the lease was left by a process that died before its settle. Postgres
-// judges it, against the claimed_at Postgres itself wrote: a Dispatch task whose clock ran ahead
-// of the database would otherwise read every live claim as lapsed, and one that ran behind could
-// never resume a stranded attempt.
+// try (takeoverRetry), and a try is bounded by the listener client's own window (five seconds on
+// the server's clock, DepsInput.EnvoyTimeout in a test) and the short transaction that records
+// its outcome, so a claim older than the lease was left by a process that died before its settle.
+// Postgres judges it, against the claimed_at Postgres itself wrote: a Dispatch task whose clock ran
+// ahead of the database would otherwise read every live claim as lapsed, and one that ran behind
+// could never resume a stranded attempt.
 //
 // A retry beside a live claim takes an attempt of its own rather than two senders driving one. A
 // retry beside a lapsed claim resumes that attempt under its original number, and so its
@@ -461,6 +475,15 @@ func receiptError(failure *string) string {
 // the row whose claim it still holds carries a reply_id, and answeredReceipt builds that
 // receipt from the row, stating what the reply recorded rather than what this send reported -
 // so every attempt carries exactly one receipt and that receipt agrees with its row.
+//
+// stated queues what the attempt states in the node and tuple store in the batch that appends the
+// receipt, right after the receipt: the node of the session a sent attempt reached
+// (graphstore.QueueReached), caused by the receipt as the id sequence left it
+// (graphstore.LatestEvent), as a comment's node is caused by the event that stored it. The
+// receipt and the facts are one statement batch, so the store costs the settle no statement of
+// its own. It runs only where settle itself wrote the row; an owed receipt the answered branch
+// appends states nothing, the reply that answered the attempt having written its own facts. A
+// settle that states nothing passes nil.
 func settleDeliveryAttempt[T any](
 	ctx context.Context,
 	s *server,
@@ -468,6 +491,7 @@ func settleDeliveryAttempt[T any](
 	settle func(context.Context, pgx.Tx) (T, error),
 	answered func(context.Context, pgx.Tx) (row T, mine bool, replyID *string, err error),
 	answeredReceipt func(T) model.Event,
+	stated func(b *store.WriteBatch, attempt T) error,
 ) (T, error) {
 	var zero T
 	tx, err := s.begin(ctx)
@@ -479,6 +503,7 @@ func settleDeliveryAttempt[T any](
 		return zero, err
 	}
 	attempt, err := settle(ctx, tx)
+	wrote := err == nil
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		settled, mine, replyID, err := answered(ctx, tx)
@@ -497,8 +522,16 @@ func settleDeliveryAttempt[T any](
 	case err != nil:
 		return zero, err
 	}
-	event, err := s.appendEvent(ctx, tx, receipt)
-	if err != nil {
+	var event model.Event
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		if err := s.deps.Events.QueueAppend(b, receipt, func(written model.Event) { event = written }); err != nil {
+			return err
+		}
+		if stated == nil || !wrote {
+			return nil
+		}
+		return stated(b, attempt)
+	}); err != nil {
 		return zero, err
 	}
 	if err := tx.Commit(ctx); err != nil {

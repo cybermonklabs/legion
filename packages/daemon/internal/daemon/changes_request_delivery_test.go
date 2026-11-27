@@ -38,6 +38,7 @@ import (
 // for another, which the person approved at the version reviewed: each is published, since only
 // an approval of the document reviewed can answer the review.
 func TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished(t *testing.T) {
+	t.Parallel()
 	reviewed := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
 	changes := intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "artifact-1", Kind: intake.DispatchArtifactChangesRequested, Version: 3,
 		Reason: "name the rollback path", Actor: alice, Mark: record.EventMark{Seq: 8, At: reviewed}}
@@ -74,7 +75,7 @@ func TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-1", Step: record.DesignStepSpec, ArtifactID: "artifact-1", LatestVersion: 3})
 			}); err != nil {
 				t.Fatalf("register the spec gate at version 3: %v", err)
@@ -235,8 +236,12 @@ func soleNoticeRow(t *testing.T, pool *store.Pool, kind record.NoticeKind) queue
 // The controls are a request no approval followed, one Dispatch recorded after the person's
 // approval of the same version, and one on a document the step's gate has since left for another,
 // which the person approved at the version reviewed: each is told, since the review's mark and
-// its document, not the version alone, decide whether the approval answered it.
+// its document, not the version alone, decide whether the approval answered it. Where the request
+// came after the approval, the approval's own relay is not told: the request cleared it from the
+// gate before the relay asked, so it is no longer the person's word, and the one predicate answers
+// a relayed approval as it answers every approval.
 func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T) {
+	t.Parallel()
 	reviewed := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
 	changes := intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "artifact-1", Kind: intake.DispatchArtifactChangesRequested, Version: 3,
 		Reason: "name the rollback path", Actor: alice, Mark: record.EventMark{Seq: 8, At: reviewed}}
@@ -254,11 +259,13 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 		// queued are the facts applied before the relay's first attempt, and waited those
 		// applied while its row waits for the controller. told is every decision the controller
 		// is then told, in order. keptFirst has the approval's own notice relayed, and kept in
-		// the request's place, before the request's row runs again.
+		// the request's place, before the request's row runs again. cleared is an approval whose
+		// relay finds the request has cleared it from the gate.
 		queued, waited []intake.Fact
 		told           []record.DecisionKind
 		superseded     bool
 		keptFirst      bool
+		cleared        bool
 	}{
 		{name: "the person approved the reviewed version after the request",
 			queued: []intake.Fact{changes}, waited: []intake.Fact{approved},
@@ -271,7 +278,7 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 			told:   []record.DecisionKind{changesKind}},
 		{name: "the request came after the person's approval",
 			queued: []intake.Fact{earlier, changes},
-			told:   []record.DecisionKind{approvalKind, changesKind}},
+			told:   []record.DecisionKind{changesKind}, cleared: true},
 		{name: "the gate moved to another document the person approved at the version reviewed",
 			queued: []intake.Fact{changes}, waited: []intake.Fact{moved},
 			told: []record.DecisionKind{changesKind, approvalKind}},
@@ -281,7 +288,7 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-1", Step: record.DesignStepSpec, ArtifactID: "artifact-1", LatestVersion: 3})
 			}); err != nil {
 				t.Fatalf("register the spec gate at version 3: %v", err)
@@ -352,7 +359,14 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 			if told := controllerDecisions(publisher); !slices.Equal(told, tc.told) {
 				t.Fatalf("told the controller %v, want %v; log %s", told, tc.told, logged.String())
 			}
-			dropped := textLines(logged.String(), `msg="outbox parked changes request finished without publishing`)
+			// An approval's relay that finds the gate holds no approval names no version that
+			// replaced it: the line says the gate no longer holds it, and names no approved version.
+			unheld := textLines(logged.String(), `msg="outbox parked decision not relayed: the gate no longer holds the approval it reports"`)
+			if tc.cleared != (len(unheld) == 1) || tc.cleared && (!strings.Contains(unheld[0], "version=3") || strings.Contains(unheld[0], "approved=")) {
+				t.Fatalf("logged %q, want one line that the gate no longer holds the approval (%t), naming version 3 and no approved version",
+					unheld, tc.cleared)
+			}
+			dropped := textLines(logged.String(), `msg="outbox relayed changes request finished without publishing`)
 			if !tc.superseded {
 				if len(dropped) != 0 {
 					t.Fatalf("logged %q, want no relayed changes request finished without publishing", dropped)
@@ -383,6 +397,7 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 // it asks the gates in. The controls are requests no approval followed, which the clear leaves
 // and their holder is told.
 func TestAQueuedChangesRequestAClearFindsApprovedIsToldToNobody(t *testing.T) {
+	t.Parallel()
 	reviewed := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
 	changes := intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "artifact-1",
 		Kind: intake.DispatchArtifactChangesRequested, Version: 3, Reason: "name the rollback path",
@@ -424,7 +439,7 @@ func TestAQueuedChangesRequestAClearFindsApprovedIsToldToNobody(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-1",
 					Step: record.DesignStepSpec, ArtifactID: "artifact-1", LatestVersion: 3})
 			}); err != nil {
@@ -482,13 +497,11 @@ func TestAQueuedChangesRequestAClearFindsApprovedIsToldToNobody(t *testing.T) {
 				}
 				held.LeaseToken = leaseOutboxRow(t, pool, request.id)
 			}
-			scoped, committed := intake.WithCommitHooks(ctx)
-			if err := pgx.BeginFunc(scoped, pool, func(tx pgx.Tx) error {
-				return tc.clear(scoped, tx, engine, clock)
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+				return tc.clear(ctx, tx, engine, clock)
 			}); err != nil {
 				t.Fatalf("clear the generation: %v", err)
 			}
-			committed()
 			if tc.leased {
 				if err := runner.run(ctx, held); err != nil {
 					t.Fatalf("the leased run of the relay's row %d: %v", held.ID, err)
@@ -496,7 +509,7 @@ func TestAQueuedChangesRequestAClearFindsApprovedIsToldToNobody(t *testing.T) {
 				if told := controllerDecisions(publisher); len(told) != 0 {
 					t.Fatalf("the leased run told the controller %v, want nothing", told)
 				}
-				gone := textLines(logged.String(), `msg="outbox parked changes request finished `+
+				gone := textLines(logged.String(), `msg="outbox relayed changes request finished `+
 					`without publishing: its row was deleted under its lease"`)
 				if want := fmt.Sprintf("row=%d issue=LEGION-1", held.ID); len(gone) != 1 ||
 					!strings.Contains(gone[0], want) {
@@ -575,6 +588,7 @@ func TestAQueuedChangesRequestAClearFindsApprovedIsToldToNobody(t *testing.T) {
 // step alone, which the approval of artifact-2 answers: the clear forgets it while the relay
 // stands.
 func TestAKeptAndARelayedChangesRequestStandAlikeOnceTheGateLeavesTheirDocument(t *testing.T) {
+	t.Parallel()
 	reviewed := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
 	changes := intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "artifact-1",
 		Kind: intake.DispatchArtifactChangesRequested, Version: 3, Reason: "name the rollback path",
@@ -599,7 +613,7 @@ func TestAKeptAndARelayedChangesRequestStandAlikeOnceTheGateLeavesTheirDocument(
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-1",
 					Step: record.DesignStepSpec, ArtifactID: "artifact-1", LatestVersion: 3})
 			}); err != nil {
@@ -646,13 +660,11 @@ func TestAKeptAndARelayedChangesRequestStandAlikeOnceTheGateLeavesTheirDocument(
 
 			clock = clock.Add(time.Minute)
 			applyFacts(t, pool, engine, []intake.Fact{movedGate(reviewed.Add(5 * time.Minute))})
-			scoped, committed := intake.WithCommitHooks(ctx)
-			if err := pgx.BeginFunc(scoped, pool, func(tx pgx.Tx) error {
-				return tc.clear(scoped, tx, engine, clock)
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+				return tc.clear(ctx, tx, engine, clock)
 			}); err != nil {
 				t.Fatalf("clear the generation: %v", err)
 			}
-			committed()
 			kept = keptDecisions(t, pool, records, "LEGION-1")
 			keptStands := len(kept) == 1 && kept[0].Decision == record.DecisionDesignChangesRequested
 			if relayStands := relays() == 1; !keptStands || !relayStands {

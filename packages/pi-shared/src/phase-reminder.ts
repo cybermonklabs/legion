@@ -4,6 +4,7 @@ import type { LegionOwed, LegionWaitNews } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
   EnvoyApiError,
+  type KeyTakenResult,
   type PublishInput,
   type PublishResult,
 } from "@legion/envoy-client/transport";
@@ -62,11 +63,12 @@ import type { StallLimits } from "./stall-limits";
  * again: a listener that names it answers a repeat with the copy it still holds, or keeps a new
  * copy once that copy has been forwarded or its hour has ended. A listener of an earlier release
  * names none, and answers a repeat inside its stream's 72-hour duplicate window as the first copy,
- * which it may already have dropped.
+ * which it may already have dropped. A key another sender's message already holds is answered as
+ * taken ({@link KeyTakenResult}): nothing was delivered, and the next attempt mints a new key.
  */
 export type EnvoyPublish = (
   input: PublishInput
-) => Promise<Pick<PublishResult, "kept" | "keptUntil">>;
+) => Promise<Pick<PublishResult, "kept" | "keptUntil"> | KeyTakenResult>;
 
 export interface PhaseReminderLog {
   readonly debug: (message: string, context?: Record<string, unknown>) => void;
@@ -104,7 +106,7 @@ export interface PhaseReminderDeps {
   readonly reportNews: (input: WaitNewsInput, signal: AbortSignal) => Promise<LegionWaitNews>;
   /** The Envoy listener the architect notice goes to, or undefined when Envoy is off for this
    * session. Built lazily and once by the caller. */
-  readonly publisher: () => EnvoyPublish | undefined;
+  readonly publisher: () => Promise<EnvoyPublish | undefined>;
   /** `LEGION_PROJECT`: the project token every role topic carries. */
   readonly project: string | undefined;
   readonly limits: StallLimits;
@@ -493,6 +495,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * daemon failed runs no further turn in this process — its retry relaunches this session in a
    * new process, or starts a new session once the daemon's `forgetSession` (its supervise package)
    * has dropped this one — and a reminder written now reaches nobody who can act on it. That is
+<<<<<<< 7fa22de66d
    * what ends the reminding of a session whose provider refuses every turn, on either host. An
    * answer that could not be read is `UNREAD_CHECK`, logged at debug: it reminds, and the reminder
    * it sends names no work.
@@ -500,6 +503,12 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * The answer's wait and hold are read whether or not the claim owes, as its architect is. The
    * wait it gives is the one news is reported against from then on (`standing`), unless a
    * declaration came in while the read was out, since that answer was asked before it.
+=======
+   * what ends the reminding of a session whose provider refuses a turn with a status that cannot
+   * clear (dispatch://INFRA-4508); a refusal that can clear fails no claim, so its reminders keep
+   * their pace. An answer that could not be read is `UNREAD_CHECK`, logged at debug: it reminds,
+   * and the reminder it sends names no work.
+>>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
    */
   const owedCheck = async (): Promise<OwedCheck> => {
     await sendNews();
@@ -548,6 +557,9 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
     };
   };
 
+  /** Whether the run has reached the threshold and its architect has not been told yet. */
+  const architectDue = (): boolean => !reported && stall.count >= deps.limits.architectAfter;
+
   /**
    * D6: one Envoy message to the architect that owns this worker, when a delivered reminder
    * brought the count to the threshold. It names the work the daemon answered was owed, or says
@@ -560,10 +572,20 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * clears it early, so the next attempt mints a new one (below). The key also names the run an
    * acceptance belongs to: one that lands after the run ended acknowledges nothing.
    */
+<<<<<<< 7fa22de66d
   const tellArchitect = async (due: Due): Promise<void> => {
+=======
+  const tellArchitect = async (work: string | undefined): Promise<void> => {
+    // A run whose claim has ended builds no publisher: its first build can run Envoy's token
+    // command, which would trade a broker token for a notice that is not sent.
+    if (deps.claim() === undefined) return;
+    // The worker's own turn may end the run, or its claim may end, while the publisher is built.
+    // What is read after it is the run as it stands, which may need no notice any more.
+    const publish = await deps.publisher();
+    if (!architectDue()) return;
+>>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
     const claim = deps.claim();
     if (claim === undefined) return;
-    const publish = deps.publisher();
     if (publish === undefined) {
       deps.log.debug("legion: Envoy is off for this session; the architect is not told", {
         issue: claim.issue,
@@ -610,6 +632,21 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       // while it was in flight, and a later run may have begun. That run has a key of its own, or
       // none yet: this acceptance is not its notice.
       if (reportKey !== key) return;
+      // Another sender's message already holds the key, so the listener stored nothing and told
+      // no architect: the key is cleared, so the next attempt mints a new one.
+      if ("keyTaken" in answer) {
+        reportKey = undefined;
+        writeEntry();
+        deps.log.warn(
+          "legion: another sender's message holds the architect notice's key; telling it again later",
+          {
+            issue: claim.issue,
+            reminders,
+            event_id: answer.keyTaken.eventId,
+          }
+        );
+        return;
+      }
       // A kept answer (202, `PublishResult.kept`) means that no live session holds the architect
       // role: the listener kept the notice on the role's kept lane for the next session that holds
       // the role live, and its wake report can bring a released architect back. That has told no
@@ -680,8 +717,13 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       if (generation === sentAt) armReminder(lastText, deps.limits.reminderMs);
       return;
     }
+<<<<<<< 7fa22de66d
     if (reported || stall.count < deps.limits.architectAfter) return;
     await tellArchitect(due);
+=======
+    if (!architectDue()) return;
+    await tellArchitect(work);
+>>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
   };
 
   /**
@@ -769,14 +811,21 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         // The provider refused this turn, so the worker read nothing and said nothing: the state
         // stands, and this settle returns no continuation, because the host would turn it into
         // one more turn at once and the provider would refuse that one too. One timer is armed
-        // all the same: the task the refused turn carried ended with it, the daemon counts the
-        // turn rather than failing the claim while the run is short of `launch_failure_limit`,
-        // and nothing else would wake this worker, so a single transient refusal would leave its
-        // issue idle. By the time the timer fires the daemon has had every refusal of the run
-        // reported (`POST /legion/v1/claims/turn-outcome`): at the limit it has failed the claim,
-        // and the owed check the timer runs reads that the claim owes nothing and drops the
-        // reminder, which is what stops the reminding of a session the provider refuses for
-        // ever — the whole of dispatch://INFRA-264.
+        // all the same: the task the refused turn carried ended with it, and nothing else would
+        // wake this worker, so a single transient refusal would leave its issue idle. What ends
+        // the reminders is the daemon failing the claim, after which the owed check the timer
+        // runs reads that the claim owes nothing and drops the reminder: the daemon judges a
+        // reminder's own turn, which no prompt of its ran, from its turn-outcome report, as it
+        // judges a prompt's turn from that prompt's result (dispatch://INFRA-4508), so a refusal
+        // whose status cannot clear (a 4xx other than 401, 403, 408 and 429), or whose report
+        // carries `code: "cyber_policy"` (Oh My Pi's own class for OpenAI's cyber-policy refusal,
+        // whatever the status), fails the claim at once and holds the issue for its architect,
+        // and the next reminder is dropped. Any other refusal, or one whose report carries no
+        // status and no code, fails nothing, so the reminders keep this pace for as long as the
+        // provider refuses — the whole of dispatch://INFRA-264 — and the daemon sends the
+        // `provider-errors` notice once when the worker's turns that ended in a provider error,
+        // reminders' and prompts' alike, reach six in a row (`providerErrorRunReached` in the
+        // daemon says to whom).
         advance(turn);
         continued = false;
         armReminder("", deps.limits.reminderMs);

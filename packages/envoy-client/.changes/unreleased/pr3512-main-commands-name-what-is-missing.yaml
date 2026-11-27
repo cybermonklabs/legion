@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  dispatch read of a comment, a message or an ask reference, and dispatch resolve-comment, now
+  say which of the two Dispatch does not hold, the owner or the item, where each answered "not
+  found" alone. A reference naming a project document reads that document the same way: a
+  document Dispatch does not hold is refused in its own words, which name the project's
+  documents, and one that stands is named as holding no item of that id. Where the read of the
+  owner itself fails, the refusal names that failed read and its failure, and says nothing of
+  whether the owner holds the item. dispatch resolve-comment with a bare id of no comment names
+  that comment, as the post corrections do.

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { daemonContract } from "@legion/contracts/daemon-contract"
 import {
   EnvoyApiError,
   type PublishInput,
@@ -14,9 +15,13 @@ import {
 } from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { owedReminder, UNREAD_REMINDER } from "@legion/pi-shared/phase-stall"
+<<<<<<< 7fa22de66d
 import { UPDATE_ASK_KEY, type WaitStandIn, waitStandIn } from "@legion/pi-shared/test/wait-stand-in"
 import { legion } from "../package.json" with { type: "json" }
 import { startChannelSession } from "../src/envoy-channel-server"
+=======
+import pkg from "../package.json" with { type: "json" }
+>>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 import {
   createPhaseHookEndpoint,
   PHASE_HOOK_REFUSAL,
@@ -44,6 +49,9 @@ isolatePaneEnvironment()
 const scratchState = useScratchState()
 
 const SESSION = "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
+/** The contract this build speaks, as `legion-claim.ts` reads it (`daemonContract`): this
+ * checkout's. */
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir)
 
 /** The pane's claim: the implementer of LEGION-208. */
 const implementer: ClaimCapability = {
@@ -167,7 +175,7 @@ async function harness(
     return Response.json({ error: "no stand-in route" }, { status: 404 })
   }) as typeof fetch
   const daemon = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: legion.daemonApiVersion,
+    pluginContract: PLUGIN_CONTRACT,
     fetch: fetchStub,
   })
   const lines: string[] = []
@@ -228,11 +236,18 @@ async function harness(
   }
 }
 
-test("the tool names itself Claude Code's hook endpoint and tells the model not to call it", () => {
+test("the tool is declared under its own name, describes itself with the refusal a model's call gets, and takes the hook events", () => {
   const definition = phaseHookToolDefinition()
   expect(definition.name).toBe(PHASE_HOOK_TOOL_NAME)
-  expect(definition.description).toContain("hook endpoint")
-  expect(definition.description).toContain("Do not call it")
+  expect(definition.description).toBe(PHASE_HOOK_REFUSAL)
+  expect(definition.inputSchema).toMatchObject({
+    properties: {
+      event: {
+        enum: ["Stop", "StopFailure", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit"],
+      },
+    },
+    required: ["event"],
+  })
 })
 
 test("a turn settling while the daemon says the claim owes work is blocked once, with the reminder naming that work, and the count is recorded before the answer", async () => {
@@ -475,9 +490,11 @@ test("a turn that ends with a WAITING line gets the same reminder as a turn with
 // provider would refuse that one the same way, as it did for dispatch://INFRA-264's implementer.
 // One timer is armed all the same, because the task that refused turn carried ended with it and
 // nothing else would wake this worker: a single transient refusal would otherwise leave the issue
-// idle. What stops the reminding of a session the provider refuses for ever is the daemon failing
-// the claim at `launch_failure_limit` and answering then that it owes nothing, which the test
-// below this one holds.
+// idle. A refusal that can clear fails no claim (dispatch://INFRA-4508), so the reminders keep
+// their pace; the daemon fails the claim at once for a refusal whose status cannot clear, a
+// reminder's own turn included, which it judges from the bridge's turn-outcome report, and
+// answers then that it owes nothing, and the test below this one holds that a failed claim's
+// session is reminded of nothing.
 test("a turn that ended on an API error carries no continuation, and is woken once by its timer", async () => {
   const { endpoint, record, inbox, close } = await harness({
     record: recorded("active", 0, { lastMessage: "I pushed the branch." }),
@@ -518,8 +535,8 @@ test("a turn that ended on an API error carries no continuation, and is woken on
   }
 })
 
-// The daemon failing this role's claim is its word that this session is finished: the retry it
-// starts runs in a session of its own, and the daemon answers that the failed claim owes nothing.
+// The daemon failing this role's claim is its word that this session is finished, and the daemon
+// answers that the failed claim owes nothing.
 // It is what ends the reminding here, since this host sees a refused turn only as the
 // `StopFailure` of the turn it refused: the timer that turn arms asks the daemon, and reminds
 // nothing.
@@ -911,7 +928,7 @@ test("a worker whose workspace was recreated is told once, as a turn of its own"
   try {
     boot()
     await waitFor(async () => inbox.length > 0, "the recreated-workspace notice")
-    expect(inbox[0]).toContain("it holds what was pushed to legion/LEGION-208")
+    expect(inbox[0]).toContain("from what was pushed to legion/LEGION-208")
     // Recorded in the record the rhythm and count live in, so a server Claude Code restarts
     // inside the same process does not repeat it.
     expect(await record()).toEqual({

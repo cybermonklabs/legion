@@ -2,6 +2,7 @@ package admit
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -138,7 +139,7 @@ func sameWait(got *record.Awaiting, want record.Awaiting) bool {
 	}
 	g, w := *got, want
 	g.AnsweredAt, g.Since.At, w.AnsweredAt, w.Since.At = nil, time.Time{}, nil, time.Time{}
-	return g == w
+	return reflect.DeepEqual(g, w)
 }
 
 // A first admission hands a tree's architect its first work, so it raises that architect's phase
@@ -277,7 +278,8 @@ func TestAnAnsweredRootsResumeAwaitedRootRaisesItsArchitectEntry(t *testing.T) {
 	row := raisedArchitectRow(t, pool, root.Key, 3)
 	answeredAt := fixedNow
 	answered := record.Awaiting{GateVersion: 3, Artifact: "artifact-root", AnsweredAt: &answeredAt,
-		AnsweredBy: record.AnsweredByApproval, AnsweredDetail: "version 3"}
+		AnsweredBy: record.AnsweredByApproval, AnsweredDetail: "version 3",
+		AnsweredDocument: &record.AnsweredDocument{Version: 3, Artifact: "artifact-root", Step: record.DesignStepSpec}}
 	if !sameWait(row.EntryAwaiting, answered) {
 		t.Fatalf("%s's architect row after the resume keeps the wait %+v, want %+v: its task names the answer, which the root's record no "+
 			"longer holds, so a lost start is built again from it", root.Key, row.EntryAwaiting, answered)

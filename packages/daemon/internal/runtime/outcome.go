@@ -52,12 +52,15 @@ const (
 	// OutcomeNoTurnRun is a prompt result that ran no turn and whose code names no turn of the
 	// agent's own, which internal/stream mints from the result's frame (stream.PromptResult).
 	OutcomeNoTurnRun Outcome = "no_turn_run"
-	// OutcomeProviderError is a turn that ran and ended in the provider's error (supervise's
-	// providerErrored), read from the result's AgentInvoked and its error object.
+	// OutcomeProviderError is a turn that ran and ended in the provider's error: a prompt's turn,
+	// read from the result's AgentInvoked and its error object (supervise's providerErrored), and a
+	// turn that ran no prompt of the daemon's, read from its producer's turn-outcome report, which
+	// is that turn's one record (supervise's unpromptedTurnEnded). Both are one kind of end, which
+	// the claim counts in one run of its own (dispatch://INFRA-4508).
 	OutcomeProviderError Outcome = "provider_error"
 	// OutcomeProcessDied is the claim's process found gone while it was live (supervise's died).
 	OutcomeProcessDied Outcome = "process_died"
-	// OutcomeLaunchFailed is a launch the runtime refused (supervise's launchNow).
+	// OutcomeLaunchFailed is a launch the runtime refused (supervise's launchTries).
 	OutcomeLaunchFailed Outcome = "launch_failed"
 	// OutcomeNeverRegistered is a process whose agent did not register before its deadline, or
 	// registered and never said it was ready (supervise's registrationDeadline). It is a member of

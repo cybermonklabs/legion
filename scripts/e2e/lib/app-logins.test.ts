@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   constants,
   copyFileSync,
@@ -15,7 +15,9 @@ import {
   type AppRole,
   appCredentialSources,
   appLogin,
+  DEFAULT_DRAIN_LIMIT_MS,
   firstInstallationToken,
+  MAX_DRAIN_LIMIT_MS,
 } from "./app-logins";
 import {
   appPrivateKey,
@@ -36,10 +38,22 @@ const script = join(import.meta.dir, "app-logins.ts");
 // The home every child of this file runs under, so none of them reads the caller's.
 const home = join(dir, "home");
 
-// A GitHub that never answers: the port of a server stopped before any run.
-const closed = Bun.serve({ port: 0, fetch: () => new Response() });
+// A GitHub that never answers: a listener of this file's own, held until the file ends, that closes
+// every connection it accepts before a byte of an answer (fetch reads ECONNRESET). The port of a
+// server stopped before any run, which this was, is free for any process to take, and under
+// `bun test --parallel` another file's stand-in GitHub, which accepts these tokens, can take it.
+const closed = Bun.listen({
+  hostname: "127.0.0.1",
+  port: 0,
+  socket: {
+    open(socket) {
+      socket.end();
+    },
+    data() {},
+  },
+});
 const unreachable = `http://127.0.0.1:${closed.port}/`;
-await closed.stop(true);
+afterAll(() => closed.stop(true));
 
 const releaseIDs = [101, 202, 303, 404];
 // The stand-in Apps whose own key a row puts behind a private_key_command.
@@ -352,6 +366,37 @@ describe("app-logins.ts", () => {
     expectFailureLine(printed);
   }, 30_000);
 
+  // The drain rows run the helper at a drain bound of two seconds (APP_LOGINS_DRAIN_MS) in place
+  // of its five. A span a row's verdict hangs on is measured against the bound and moves with it;
+  // a span that is only a margin keeps its length (the reader's stall stays three seconds past the
+  // bound, the descendant's late newline half a second after the exit). The row just below holds
+  // the five-second default, which the rows after it no longer run at.
+  const drainMs = 2000;
+  const drainEnv = { APP_LOGINS_DRAIN_MS: String(drainMs) };
+
+  // A pin of the production default: before the override, every drain row ran at it and failed
+  // when it changed, and a change to it is a change of the bound a token command gets.
+  test("the drain bound's default is five seconds", () => {
+    expect(DEFAULT_DRAIN_LIMIT_MS).toBe(5000);
+  });
+
+  test("with no APP_LOGINS_DRAIN_MS the drain bound in effect is five seconds", async () => {
+    // The silent escaped descendant of the row below, run with no override: the run ends once five
+    // seconds have run and before seven and a half, written as numbers rather than read from the
+    // constant, so a run whose bound in effect is not five seconds (1.5 s or 15 s, say) fails here
+    // whatever the constant says.
+    await withEscapedDescendant("escaped-default.pid", async (pidFile) => {
+      const escaped = `setsid sh -c 'echo $$ >${pidFile}; exec sleep 60' >&2 & exit 0`;
+      const started = Date.now();
+      const { code, stderr } = await run(config(app("101", escaped), app("202")));
+      const elapsed = Date.now() - started;
+      expect(code).toBe(1);
+      expect(stderr).toContain("still held its output open");
+      expect(elapsed, `${elapsed} ms`).toBeGreaterThanOrEqual(5_000);
+      expect(elapsed, `${elapsed} ms`).toBeLessThan(7_500);
+    });
+  }, 30_000);
+
   test("a token command whose escaped descendant holds its output open fails within the drain bound", async () => {
     // The pid the descendant records is the one it ends up with: `sh` prints its own, then
     // becomes the `sleep` through `exec`, so what the row ends is what held the output open for
@@ -359,7 +404,7 @@ describe("app-logins.ts", () => {
     await withEscapedDescendant("escaped.pid", async (pidFile) => {
       const escaped = `setsid sh -c 'echo $$ >${pidFile}; exec sleep 60' >&2 & exit 0`;
       const started = Date.now();
-      const { code, stderr } = await run(config(app("101", escaped), app("202")));
+      const { code, stderr } = await run(config(app("101", escaped), app("202")), drainEnv);
       expect(code).toBe(1);
       expect(stderr).toContain("still held its output open");
       expect(Date.now() - started).toBeLessThan(30_000);
@@ -373,8 +418,8 @@ describe("app-logins.ts", () => {
     // The descendant is a loop, so it cannot become its payload through `exec` as the silent
     // row's does: the `sh` that prints `$$` is the `sh` that then runs the loop, and the pid
     // therefore names the writer itself. Killing it ends the writing and leaves the `sleep` of
-    // the iteration it stood in, which holds the inherited stderr for the rest of its second and
-    // then exits. `setsid` puts the loop in a session of its own, so no process group the helper
+    // the iteration it stood in, which holds the inherited stderr for the rest of its half second
+    // and then exits. `setsid` puts the loop in a session of its own, so no process group the helper
     // kills reaches it. Its fd 1 and fd 2 are the one socket whose only reader is the helper,
     // and this row waits for the helper's exit, so that reader has always gone before the
     // cleanup kills the loop. That is why the loop ignores `SIGPIPE`: on a stock Linux kernel
@@ -383,16 +428,17 @@ describe("app-logins.ts", () => {
     // ubuntu-24.04 runners; under this repository's gVisor sandboxes that write fails with
     // `EPIPE` but raises no `SIGPIPE`, so the loop survives. `trap "" PIPE` makes the two
     // kernels agree (measured both ways: the same loop against a closed reader is ended with
-    // exit status 141, 128 + `SIGPIPE`, without it and runs to its end with it). It counts its
+    // exit status 141, 128 + `SIGPIPE`, without it and runs to its end with it). It writes four
+    // times in each drain bound, as it wrote five times in the five-second one, and counts its
     // writes rather than looping for ever, so a run that never reaches the cleanup still ends
-    // it, as the silent row's `sleep 60` ends itself; thirty seconds is six times the bound it
-    // must not push out.
+    // it, as the silent row's `sleep 60` ends itself; thirty seconds is fifteen times the bound
+    // it must not push out.
     await withEscapedDescendant("escaped-writing.pid", async (pidFile) => {
       const escaped =
-        `setsid sh -c 'trap "" PIPE; echo $$ >${pidFile}; i=0; while [ $i -lt 30 ]; do` +
-        " printf x >&2; sleep 1; i=$((i + 1)); done' >&2 & exit 3";
+        `setsid sh -c 'trap "" PIPE; echo $$ >${pidFile}; i=0; while [ $i -lt 60 ]; do` +
+        " printf x >&2; sleep 0.5; i=$((i + 1)); done' >&2 & exit 3";
       const started = Date.now();
-      const { code, stderr } = await run(config(app("101", escaped), app("202")));
+      const { code, stderr } = await run(config(app("101", escaped), app("202")), drainEnv);
       expect(code).toBe(1);
       expect(stderr).toContain("still held its output open");
       expect(Date.now() - started).toBeLessThan(20_000);
@@ -401,23 +447,23 @@ describe("app-logins.ts", () => {
 
   // The drain bound must not count this process's own blocked writes, which the relay's
   // synchronous writer holds for as long as a caller stays behind. Each shape here is one group
-  // whose stdout and stderr meet a reader that sleeps eight seconds, three past the bound, and
+  // whose stdout and stderr meet a reader that sleeps five seconds, three past the bound, and
   // whose token command writes one 300,008-byte line, its newline left to a descendant half a
   // second later: the relay issues that line in a single write, far larger than the 64 KiB pipe,
   // and it blocks until the reader wakes. The row checks that each shape still ends on the token
   // command's own verdict: the failing one on its exit 3 and the stderr quoted in it, the
   // succeeding one on the release it printed and its exit 0.
   test("a reader that falls behind still gets the token command's own verdict", async () => {
-    // A bound of its own: the row holds a reader for eight seconds on purpose.
+    // A bound of its own: the row holds a reader for five seconds on purpose.
     const held = "printf 'denied-%0300000d' 0 >&2; (sleep 0.5; printf '\\n' >&2) &";
     const succeeding = join(dir, "behind-succeeding.json");
     // Both shapes at once, so the row costs one stall rather than two.
     const stalled = (command: string, out: string) => {
       const path = config(app("101", command), app("202"));
       return behindReader(
-        `  bun "${script}" --roles implement "${path}" "${standIn}" >"${out}"
+        `  APP_LOGINS_DRAIN_MS=${drainMs} bun "${script}" --roles implement "${path}" "${standIn}" >"${out}"
   echo "exit=$?"`,
-        8
+        5
       );
     };
     const [bad, good] = await Promise.all([
@@ -431,14 +477,14 @@ describe("app-logins.ts", () => {
     expect(JSON.parse(readFileSync(succeeding, "utf8")).implement).toBe("example-implement[bot]");
   }, 30_000);
 
-  // The same eight-second stall, with a whole 300,002-byte line written before the command
+  // The same five-second stall, with a whole 300,002-byte line written before the command
   // exits rather than after it: the relay blocks on that line, the exit is read only once the
   // reader wakes, and the stall has therefore already pushed the exit out. The bound counts the
   // blocked time after the exit alone, so a bound that counted this block too would hand the
   // escaped descendant a second stall to hold the pipes in, and hide its diagnosis for it.
   test("a reader that falls behind before the exit does not buy an escaped descendant a second stall", async () => {
-    // A bound of its own: the row holds a reader for eight seconds on purpose and then waits out
-    // the five the drain gives the descendant, with room for the twenty-one this row refuses.
+    // A bound of its own: the row holds a reader for five seconds on purpose and then waits out
+    // the two the drain gives the descendant.
     // The pid the descendant records is the one it ends up with: `sh` prints its own, then
     // becomes the `sleep` through `exec`.
     await withEscapedDescendant("escaped-before-exit.pid", async (pidFile) => {
@@ -446,22 +492,51 @@ describe("app-logins.ts", () => {
         `printf 'a%0300000d\\n' 0 >&2; sleep 3; setsid sh -c 'echo $$ >${pidFile}; exec sleep 40'` +
         " >&2 & exit 3";
       const path = config(app("101", escaped), app("202"));
+      const stallMs = 5000;
       const started = Date.now();
       const printed = await behindReader(
-        `  bun "${script}" --roles implement "${path}" "${standIn}" >/dev/null
+        `  APP_LOGINS_DRAIN_MS=${drainMs} bun "${script}" --roles implement "${path}" "${standIn}" >/dev/null
   echo "exit=$?"`,
-        8
+        stallMs / 1000
       );
       const elapsed = Date.now() - started;
       expect(printed).toContain("still held its output open");
       expect(printed.split("\n")).toContain("exit=1");
-      // Thirteen seconds is the stall the exit waits out plus the five the drain bound gives;
-      // twenty-one is that stall counted a second time, as a bound that gave back every block
-      // since the spawn counts it. The window takes the first and refuses the second.
-      expect(elapsed, `${elapsed} ms`).toBeGreaterThan(11_000);
-      expect(elapsed, `${elapsed} ms`).toBeLessThan(17_000);
+      // The stall the exit waits out plus one bound, 7 s, is the only end the window takes: it
+      // refuses an end at the stall itself (5 s, the bound never run), a drain that ran twice its
+      // bound (9 s), and the stall counted a second time (12 s), as a bound that gave back every
+      // block since the spawn counts it. Half a bound of room on each side.
+      expect(elapsed, `${elapsed} ms`).toBeGreaterThan(stallMs + drainMs / 2);
+      expect(elapsed, `${elapsed} ms`).toBeLessThan(stallMs + drainMs * 1.5);
     });
   }, 30_000);
+
+  test("a drain bound that is no whole number of milliseconds from 1 to the timer's longest is refused before any App is read", async () => {
+    const tooLong = String(MAX_DRAIN_LIMIT_MS + 1);
+    // Twenty-five digits: Number() reads it as 1e24, past every whole number a double holds.
+    const overLong = "1".repeat(25);
+    // The implement App's token command leaves a file when it runs, so the row reads that no
+    // credential command ran, as well as that GitHub was asked nothing.
+    const ran = join(dir, "drain-refusal-ran");
+    const command = `touch ${ran}; cat ${join(dir, "release-101.json")}`;
+    for (const value of ["0", "1.5", "-1", "two", "", tooLong, overLong]) {
+      seen.length = 0;
+      const { code, stdout, stderr } = await run(config(app("101", command), app("202")), {
+        APP_LOGINS_DRAIN_MS: value,
+      });
+      expect(code, value).toBe(2);
+      expect(stdout, value).toBe("");
+      expect(stderr, value).toBe(
+        `app-logins: APP_LOGINS_DRAIN_MS is '${value}', not a whole number of milliseconds from 1 to ${MAX_DRAIN_LIMIT_MS}`
+      );
+      expect(seen, value).toEqual([]);
+      expect(existsSync(ran), value).toBe(false);
+    }
+    // The same command with a bound it takes does run, so the file above is one the command writes.
+    const { code } = await run(config(app("101", command), app("202")), drainEnv);
+    expect(code).toBe(0);
+    expect(existsSync(ran)).toBe(true);
+  });
 
   test("output that is no release, an expired token, or no installation is refused without quoting it", async () => {
     const cases: [string, string][] = [
@@ -540,11 +615,34 @@ describe("app-logins.ts", () => {
     expect(stderr).toContain("acts as a-person, not an App's bot");
   });
 
-  test("a GitHub that never answers is named by the App's role and app id", async () => {
+  test("a GitHub that never answers is named by the App's role and app id, as one that did not answer", async () => {
     const { code, stdout, stderr } = await run(config(app("101"), app("202")), {}, unreachable);
     expect(code).toBe(1);
     expect(stdout).toBe("");
     expect(stderr).toMatch(namesApp("implement", "101"));
+    expect(stderr).toContain(": GitHub did not answer (");
+  });
+
+  // The control of the row above: a GitHub that answers, but with nothing the run can read (a 200
+  // whose body is `{}`), also fails the run naming the App, so only the text above tells the two
+  // apart. A run that named an answer as no answer, or no answer as a wrong answer, fails one of
+  // these two rows.
+  test("a GitHub that answers with nothing readable is named by the App, and not as one that did not answer", async () => {
+    const answering = Bun.serve({ port: 0, fetch: () => Response.json({}) });
+    try {
+      const { code, stdout, stderr } = await run(
+        config(app("101"), app("202")),
+        {},
+        `http://127.0.0.1:${answering.port}/`
+      );
+      expect(code).toBe(1);
+      expect(stdout).toBe("");
+      expect(stderr).toMatch(namesApp("implement", "101"));
+      expect(stderr).toContain("answered no login: {}");
+      expect(stderr).not.toContain("GitHub did not answer");
+    } finally {
+      await answering.stop(true);
+    }
   });
 
   test("two roles on one App are refused, as the daemon refuses them at boot", async () => {
@@ -791,7 +889,7 @@ describe("read_app_logins", () => {
     ]);
   });
 
-  test("a GitHub that never answers fails the run, naming the App it could not read", async () => {
+  test("a GitHub that never answers fails the run, naming the App it could not read and that GitHub did not answer", async () => {
     const { code, stdout, stderr } = await readAppLogins(
       config(app("101"), app("202")),
       "echo after-read",
@@ -800,6 +898,7 @@ describe("read_app_logins", () => {
     expect(code).toBe(1);
     expect(stdout).not.toContain("after-read");
     expect(stderr).toMatch(namesApp("implement", "101"));
+    expect(stderr).toContain(": GitHub did not answer (");
     expect(stderr).toMatch(/^FAIL boot: /m);
   });
 });

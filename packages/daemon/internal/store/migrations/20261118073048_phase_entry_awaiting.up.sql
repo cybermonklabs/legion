@@ -8,11 +8,11 @@
 -- re-admission resets it with the task (record.Store.ClearGeneration). It has two readers. The
 -- sweep's send of such an entry again, for a claim the resume's own start never reached
 -- (workflow.Engine.SendArchitectStart), builds the start the resume queued from it: the wait and
--- no text, which the send renders from the record as it stands then (workflow.ResumeTask, through
--- the daemon's rootTask), asking whether the person's review the wait names is still their word
--- (workflow.SupersedingApproval). And the admission pass reads whether it is set (record's
--- PhaseEntries) for the sweep's reach over a root the answer's own pass promoted past admitted
--- (workflow.ArchitectAtWork).
+-- no text, which the send renders from the record as it stands then
+-- (workflow.ResumeAwaitedRootTask, through the daemon's rootTask), asking whether the person's
+-- review the wait names is still their word (workflow.SupersedingApproval). And the admission pass
+-- reads whether it is set (record's PhaseEntries) for the sweep's reach over a root the answer's
+-- own pass promoted past admitted (workflow.ArchitectAtWork).
 --
 -- It replaces phases.entry_verbatim (20261114061900_phase_entry_verbatim), the mark that the sweep
 -- sends such an entry's stored task as written. That task was rendered at the raise, so a send of
@@ -34,7 +34,7 @@
 -- pass fails with them. Before its image is pinned, stop this release's daemon and run the one
 -- transaction below. docs/kubernetes.md carries it under "An issue's repository follows the one
 -- Dispatch resolves it to, and the reminder asks the daemon what a claim owes (daemon API
--- contract 206)".
+-- contract entry 20261125181104)".
 --
 --   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;

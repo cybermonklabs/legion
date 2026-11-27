@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -230,12 +231,33 @@ func (e *Engine) dispatchAskRestored(ctx context.Context, tx pgx.Tx, fact intake
 	return intake.Result{}, e.itemLeft(ctx, tx, *root, before, after, record.AnsweredByClosed, "Dispatch's settlement, which restored its earlier answer")
 }
 
-// dispatchAskClosed applies the close to the ask's mirror row and the root's wait (closeAsk), and
-// relays a person's answer or resolution of a question on a tree Legion is not running to the
-// controller (relayParkedDecision): nobody inside such a tree hears it. An approval ask's answer
-// arrives again as the document's review, which the gate relays, so it is not relayed as an ask.
+// dispatchAskClosed queues the pending-basis seed of every step of a root that waits, closed, on
+// the ask as an ancestor's approval request, where the close is a cue for it (readBasisOnCue), so
+// the seed's read of Dispatch opens or ends that wait, whatever issue the ask is on and whether or
+// not the daemon records it; applies the close to the ask's mirror row
+// and the root's wait (closeAsk); and relays a person's answer or resolution of a question on a
+// tree Legion is not running to the controller (relayParkedDecision): nobody inside such a tree
+// hears it. An approval ask's answer arrives again as the document's review, which the gate
+// relays, so it is not relayed as an ask.
+//
+// A question can close more than once — Dispatch's settlement restores a retracted one — and every
+// close is kept under the one ref of its question, so the relay is the newest close's alone: a
+// root's close is relayed only when the mirror row holds it as the question's newest
+// (record.RootAsk.ClosedSeq), and the decision is kept at Dispatch's time of the close (decidedAt).
+// An earlier close of a root's question reaching the daemon after a later one — late, or replayed
+// from a message the intake gave up on, however late — then neither tells the controller of a
+// decision the person has since replaced nor takes the newer decision's place, and its claim,
+// among those kept. A child's question has no such row, so its late close is still relayed, and
+// decidedAt keeps the newer decision in its place.
 func (e *Engine) dispatchAskClosed(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskClosed) (intake.Result, error) {
+	if err := e.readBasisOnCue(ctx, tx, fact); err != nil {
+		return intake.Result{}, err
+	}
 	if err := e.closeAsk(ctx, tx, fact); err != nil || fact.Kind != record.AskQuestion {
+		return intake.Result{}, err
+	}
+	row, err := e.store.RootAsk(ctx, tx, fact.Key, fact.Ask)
+	if err != nil || row != nil && row.ClosedSeq != fact.Mark.Seq {
 		return intake.Result{}, err
 	}
 	decision := record.DecisionAskResolved
@@ -243,7 +265,18 @@ func (e *Engine) dispatchAskClosed(ctx context.Context, tx pgx.Tx, fact intake.D
 		decision = record.DecisionAskAnswered
 	}
 	return intake.Result{}, e.relayParkedDecision(ctx, tx, fact.Key, fact.Ask, record.ParkedDecision{Ref: itemRef(fact.Key, "ask", fact.Ask),
-		Decision: decision, Actor: fact.Actor.Name(), At: e.now()})
+		Decision: decision, Actor: fact.Actor.Name(), At: e.decidedAt(fact.Mark)})
+}
+
+// decidedAt is the time a person's decision at mark is kept at among the decisions of its ref
+// (record.Store.AddParkedDecision keeps the latest): Dispatch's time of the event, so a decision
+// the daemon applies after a newer one on the same ref stays the older, and the engine's now for
+// an event that carries no time.
+func (e *Engine) decidedAt(mark record.EventMark) time.Time {
+	if mark.At.IsZero() {
+		return e.now()
+	}
+	return mark.At
 }
 
 // closeAsk closes the ask's mirror row, keeping the turn it last had, records who closed it
@@ -309,7 +342,9 @@ func (e *Engine) closer(ctx context.Context, tx pgx.Tx, root record.Issue, actor
 // on a tree Legion is not running, relays a person's reply that leaves the turn with the agent, or
 // one under a closed ask, to the controller (relayParkedDecision): nobody inside such a tree hears
 // it. A reply that leaves the turn with the human asks the person again, so it is no decision of
-// theirs.
+// theirs. A reply that names no comment is kept under its ask's ref, beside the ask's close, so
+// it is kept at Dispatch's time of the reply (decidedAt): one the daemon applies after a newer
+// decision on that ref takes nothing from it.
 func (e *Engine) dispatchAskReply(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskReply) (intake.Result, error) {
 	if err := e.replyToAsk(ctx, tx, fact); err != nil || fact.WaitingOn == "human" {
 		return intake.Result{}, err
@@ -319,7 +354,7 @@ func (e *Engine) dispatchAskReply(ctx context.Context, tx pgx.Tx, fact intake.Di
 		ref = itemRef(fact.Key, "comment", fact.Comment)
 	}
 	return intake.Result{}, e.relayParkedDecision(ctx, tx, fact.Key, fact.Ask, record.ParkedDecision{Ref: ref, Decision: record.DecisionAskReply,
-		Actor: fact.Actor.Name(), At: e.now()})
+		Actor: fact.Actor.Name(), At: e.decidedAt(fact.Mark)})
 }
 
 // replyToAsk applies a reply on an ask of the root, or Dispatch's hand-back of an approval

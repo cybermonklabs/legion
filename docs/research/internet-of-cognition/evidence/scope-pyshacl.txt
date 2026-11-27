@@ -1,0 +1,324 @@
+# Recorded by test-scope.md, requirement r7, claims ts-strict-1 and ts-conforms-1.
+# Clone: ioc-project/scope at 6f3e758623da6b4a3ae462813001c545bb15a9e6; $IOC_CLONES=/legion/scratch/tmp/ioc-clones.
+#
+# The shapes graph is built the way scope's own ontology/src/scope_ontology/verification.py
+# _shapes_graph() builds it: the five ontology files, the generated mas-shapes.ttl
+# (gitignored, so it must be generated), and the committed mas-shapes-custom.ttl.
+#
+#   cd $IOC_CLONES/scope/ontology
+#   uv run --no-project --with rdflib python scripts/generate_shacl_shapes.py $TMPDIR/mas-shapes.ttl
+#   cat src/scope_ontology/mas-ontology.ttl src/scope_ontology/metrics-ontology.ttl \
+#       src/scope_ontology/semantic-ontology.ttl src/scope_ontology/analysis-ontology.ttl \
+#       src/scope_ontology/insight-ontology.ttl $TMPDIR/mas-shapes.ttl \
+#       src/scope_ontology/mas-shapes-custom.ttl > $TMPDIR/scope-shapes.ttl
+
+=== $ uvx pyshacl --version ===
+PySHACL Version: 0.40.2
+exit status: 0
+
+=== $ uv run --no-project --with rdflib python scripts/generate_shacl_shapes.py $TMPDIR/mas-shapes.ttl ===
+Generated /legion/scratch/tmp/mas-shapes.ttl
+  34 classes, 123 sh:property references
+exit status: 0
+
+=== run 1, every severity counted ===
+$ uvx pyshacl -s $TMPDIR/scope-shapes.ttl -sf turtle -df turtle -f human dispatch-issue.ttl
+Validation Report
+Conforms: False
+Results (24):
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-architect-1
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-architect-1->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-architect-1
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-architect-1->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-architect-2
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-architect-2->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-architect-2
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-architect-2->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-controller
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-controller->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-controller
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-controller->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-daemon
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-daemon->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-daemon
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-daemon->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-human
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-human->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-human
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-human->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-planner
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-planner->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-planner
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-planner->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-architect-1
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-architect-1->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-architect-1
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-architect-1->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-architect-2
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-architect-2->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-architect-2
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-architect-2->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-controller
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-controller->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-controller
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-controller->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-daemon
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-daemon->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-daemon
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-daemon->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-human
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-human->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-human
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-human->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-planner
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-planner->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-planner
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-planner->mas:hasToolCall
+exit status: 1
+
+=== run 2, warnings allowed, which is the severity scope's own verification.py treats as mandatory ===
+$ uvx pyshacl -s $TMPDIR/scope-shapes.ttl -sf turtle -df turtle -f human --allow-warnings dispatch-issue.ttl
+Validation Report
+Conforms: True
+Results (24):
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-architect-1
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-architect-1->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-architect-1
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-architect-1->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-architect-2
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-architect-2->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-architect-2
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-architect-2->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-controller
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-controller->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-controller
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-controller->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-daemon
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-daemon->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-daemon
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-daemon->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-human
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-human->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-human
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-human->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-planner
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-planner->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasLLMCall
+	Focus Node: d:ac-planner
+	Result Path: mas:hasLLMCall
+	Message: Less than 1 values on d:ac-planner->mas:hasLLMCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-architect-1
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-architect-1->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-architect-1
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-architect-1->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-architect-2
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-architect-2->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-architect-2
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-architect-2->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-controller
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-controller->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-controller
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-controller->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-daemon
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-daemon->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-daemon
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-daemon->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-human
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-human->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-human
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-human->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-planner
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-planner->mas:hasToolCall
+Validation Result in MinCountConstraintComponent (http://www.w3.org/ns/shacl#MinCountConstraintComponent):
+	Severity: sh:Warning
+	Source Shape: mas:hasToolCall
+	Focus Node: d:ac-planner
+	Result Path: mas:hasToolCall
+	Message: Less than 1 values on d:ac-planner->mas:hasToolCall
+exit status: 0

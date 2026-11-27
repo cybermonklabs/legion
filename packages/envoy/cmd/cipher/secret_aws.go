@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
 	"slices"
@@ -18,6 +19,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -554,6 +557,39 @@ func (b *awsBackend) valueReadPermission() string {
 // set` before anything is written.
 func (b *awsBackend) tagReadPermission() string {
 	return "secretsmanager:DescribeSecret on the secret"
+}
+
+// awsTagValueMax is the most characters AWS takes in one tag value, and awsTagValuePunctuation the
+// characters it takes beside Unicode letters, numbers and space separators: the Resource Groups
+// Tagging API's own pattern for a tag value, `^([\p{L}\p{Z}\p{N}_.:\/=+\-@]*)$` of length 0 to 256
+// (https://docs.aws.amazon.com/resourcegroupstagging/latest/APIReference/API_Tag.html). The
+// Secrets Manager user guide's list leaves ':' out, but this client already writes it on AWS
+// (owner=group:EMAIL, policy.RequestersRollbackGuard), and CloudFormation tags each secret it
+// makes with ARNs, so ':' is in.
+const (
+	awsTagValueMax         = 256
+	awsTagValuePunctuation = "_.:/=+-@"
+)
+
+// checkTagValues refuses, before any write, a tag value AWS would refuse: one longer than
+// awsTagValueMax characters, or holding a character that is no Unicode letter, number or space
+// separator (a tab or a newline is none) and none of awsTagValuePunctuation. The refusal names the
+// tag, the store's limit and, for a character, the first that fails and where, as a flag's
+// refusal does, and prints no other part of the value. tags is every tag the write sends.
+func (*awsBackend) checkTagValues(tags map[string]string) error {
+	for _, key := range slices.Sorted(maps.Keys(tags)) {
+		value := tags[key]
+		if n := utf8.RuneCountInString(value); n > awsTagValueMax {
+			return usageErr{fmt.Errorf("the %s tag is %d characters, and AWS Secrets Manager holds at most %d in a tag value: shorten it", key, n, awsTagValueMax)}
+		}
+		for i, r := range value {
+			if unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.Is(unicode.Z, r) || strings.ContainsRune(awsTagValuePunctuation, r) {
+				continue
+			}
+			return usageErr{fmt.Errorf("the %s tag holds %q at character %d, and AWS Secrets Manager takes in a tag value only Unicode letters, digits, spaces and %s: write it without that character", key, string(r), utf8.RuneCountInString(value[:i])+1, strings.Join(strings.Split(awsTagValuePunctuation, ""), " "))}
+		}
+	}
+	return nil
 }
 
 // setTags writes tags in one TagResource, which keeps every tag it does not name. TagResource takes

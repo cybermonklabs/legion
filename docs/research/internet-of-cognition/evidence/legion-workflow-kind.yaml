@@ -1,0 +1,183 @@
+# The same Legion phase workflow in MAS Lab's other format: kind: Workflow, apiVersion
+# workflow/v1, the manifest kind whose name is "workflow"
+# (docs/schemas/runtime/workflow.schema.yaml at 477441d).
+#
+# A node of that schema is an agent ("Node ID — must match the agent metadata.name declared in the
+# MAS manifest"), so writing a phase as a node already uses the field for something it does not
+# mean. An edge holds from, to, condition and label, and nothing else: additionalProperties is
+# false, so there is no field for Row.Trigger and none for Row.Effects. The trigger is written
+# into condition here because there is nowhere else to put it.
+#
+# No Python class reads this kind at this commit: `grep -rn "class WorkflowSpec"` over the clone
+# is empty, and no runtime code evaluates edge.condition. See test-maslab.md.
+apiVersion: workflow/v1
+kind: Workflow
+metadata:
+  name: legion-phase-workflow
+  description: The Legion daemon's phase transition table as a workflow/v1 topology.
+spec:
+  entry: admitted
+  nodes:
+    - id: admitted
+    - id: planning
+    - id: implementing
+    - id: testing
+    - id: reviewing
+    - id: accepting
+    - id: retro
+    - id: merging
+    - id: awaiting_merge
+    - id: done
+  edges:
+    - from: admitted
+      to: planning
+      condition: "trigger == 'gate_opened'"
+      label: start, notice
+    - from: planning
+      to: implementing
+      condition: "trigger == 'planner_completed'"
+      label: start, notice
+    - from: implementing
+      to: testing
+      condition: "trigger == 'implementation_ready' and has_open_or_merged_pr"
+      label: start, notice
+    - from: testing
+      to: reviewing
+      condition: "trigger == 'tester_passed'"
+      label: start, notice
+    - from: testing
+      to: implementing
+      condition: "trigger == 'tester_failed'"
+      label: start, notice
+    - from: reviewing
+      to: accepting
+      condition: "trigger == 'review_approved'"
+      label: notice
+    - from: accepting
+      to: retro
+      condition: "trigger == 'sign_off'"
+      label: start, notice
+    - from: reviewing
+      to: implementing
+      condition: "trigger == 'review_rejected'"
+      label: start, notice
+    - from: testing
+      to: implementing
+      condition: "trigger == 'checks_red'"
+      label: start, notice
+    - from: reviewing
+      to: implementing
+      condition: "trigger == 'checks_red'"
+      label: start, notice
+    - from: accepting
+      to: implementing
+      condition: "trigger == 'checks_red'"
+      label: start, notice
+    - from: retro
+      to: implementing
+      condition: "trigger == 'checks_red'"
+      label: start, notice
+    - from: merging
+      to: implementing
+      condition: "trigger == 'checks_red'"
+      label: start, notice
+    - from: retro
+      to: merging
+      condition: "trigger == 'retro_completed'"
+      label: start, notice
+    - from: merging
+      to: awaiting_merge
+      condition: "trigger == 'ready'"
+      label: notice
+    - from: awaiting_merge
+      to: implementing
+      condition: "trigger == 'checks_red'"
+      label: start, notice
+    - from: awaiting_merge
+      to: done
+      condition: "trigger == 'pull_request_merged'"
+      label: suspend, notice, linger
+    - from: implementing
+      to: planning
+      condition: "trigger == 'backward'"
+      label: start, notice
+    - from: testing
+      to: planning
+      condition: "trigger == 'backward'"
+      label: start, notice
+    - from: testing
+      to: implementing
+      condition: "trigger == 'backward'"
+      label: start, notice
+    - from: reviewing
+      to: planning
+      condition: "trigger == 'backward'"
+      label: start, notice
+    - from: reviewing
+      to: implementing
+      condition: "trigger == 'backward'"
+      label: start, notice
+    - from: reviewing
+      to: testing
+      condition: "trigger == 'backward'"
+      label: start, notice
+    - from: accepting
+      to: planning
+      condition: "trigger == 'backward'"
+      label: start, notice
+    - from: accepting
+      to: implementing
+      condition: "trigger == 'backward'"
+      label: start, notice
+    - from: accepting
+      to: testing
+      condition: "trigger == 'backward'"
+      label: start, notice
+    - from: accepting
+      to: reviewing
+      condition: "trigger == 'backward'"
+      label: start, notice
+    - from: retro
+      to: planning
+      condition: "trigger == 'backward'"
+      label: start, notice
+    - from: retro
+      to: implementing
+      condition: "trigger == 'backward'"
+      label: start, notice
+    - from: retro
+      to: testing
+      condition: "trigger == 'backward'"
+      label: start, notice
+    - from: retro
+      to: reviewing
+      condition: "trigger == 'backward'"
+      label: start, notice
+    - from: retro
+      to: accepting
+      condition: "trigger == 'backward'"
+      label: start, notice
+    - from: merging
+      to: planning
+      condition: "trigger == 'backward'"
+      label: start, notice
+    - from: merging
+      to: implementing
+      condition: "trigger == 'backward'"
+      label: start, notice
+    - from: merging
+      to: testing
+      condition: "trigger == 'backward'"
+      label: start, notice
+    - from: merging
+      to: reviewing
+      condition: "trigger == 'backward'"
+      label: start, notice
+    - from: merging
+      to: accepting
+      condition: "trigger == 'backward'"
+      label: start, notice
+    - from: merging
+      to: retro
+      condition: "trigger == 'backward'"
+      label: start, notice

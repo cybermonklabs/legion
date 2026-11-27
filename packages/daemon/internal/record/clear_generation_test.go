@@ -15,8 +15,8 @@ import (
 )
 
 // A clear of a generation is handed the forget it runs over the decisions kept on the issues it
-// clears (KeptForget), because it deletes the gates that forget's rule reads: a decision a later
-// approval superseded, asked after its gate is gone, would read as the person's word again. So the
+// clears (KeptForget), because it deletes the gates that forget's rule reads: a decision that is no
+// longer the person's word, asked after its gate is gone, would read as their word again. So the
 // forget is required, and a clear handed none is refused before it writes anything, whichever of
 // the two clears it is. It answers no emptied issue, so its caller queues no publication of the
 // empty set of gates, and a caller that commits its transaction after the refusal finds the issue

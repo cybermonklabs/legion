@@ -8,11 +8,10 @@
  * before it answers. A page draws what needs no read at once, and what a read brings a commit
  * later. A row that awaits the first and then reads the second without waiting for it passes
  * under `test:web` whenever the read's answer lands in the same commit, which is how
- * `settings.test.tsx` passed in a pod and failed on a loaded CI runner: it awaited the
- * "Repositories → Projects" heading, which the settings page draws at once, and then read the
- * sidebar's Settings link, which the sidebar draws only once the inbox, the pinned issues and the
- * projects have answered (`Sidebar.tsx`). Until that row waited for the link, it failed here
- * under every seed.
+ * `settings.test.tsx` passed in a pod and failed on a loaded CI runner: it awaited a heading the
+ * settings page draws at once, and then read the sidebar's Settings link, which the sidebar draws
+ * only once the inbox, the pinned issues and the projects have answered (`Sidebar.tsx`). Until
+ * that row waited for the link, it failed here under every seed.
  *
  * The wait is the real `setImmediate`, which a fake clock a row installs does not hold (Bun
  * 1.4.4): a row on a fake clock gets its answers as it would without this file, one turn later.

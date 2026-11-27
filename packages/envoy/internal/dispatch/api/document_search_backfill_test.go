@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The two migrations the fill runs behind, read from the store's own directory rather than
@@ -95,6 +96,7 @@ func countRows(t *testing.T, database *store.Store, statement string, args ...an
 // the same rows, which is what says the filled table holds each document's latest version and
 // no older one.
 func TestTheBackfillLeavesSearchAnsweringWhatMainsStatementDoes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	handler, database := newTestHandlerWithStore(t)
 	// The issue is created first: creating one runs the related-item check, which reads the
@@ -164,6 +166,7 @@ func TestTheBackfillLeavesSearchAnsweringWhatMainsStatementDoes(t *testing.T) {
 // finished. The statements are counted on the pool the fill runs on, so the batches are read
 // rather than assumed.
 func TestTheFillCoversEveryDocumentOverMoreThanOneBatch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "BATCH", "Range survey", "The herd crosses the plateau in spring.")
@@ -247,6 +250,7 @@ func TestTheFillCoversEveryDocumentOverMoreThanOneBatch(t *testing.T) {
 // behind its uncommitted row, which is the order of that race: the batch read artifact_versions
 // before the write committed, so the row it carries is the older version.
 func TestAVersionCommittedWhileTheFillRunsIsNotReplacedByTheOlderOneItRead(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// The version write below is this document's only writer. An upload schedules the document
 	// service's settlement of what it uploaded (artifacts.go, Docs.ScheduleSettlement), 20 ms
@@ -290,46 +294,38 @@ func TestAVersionCommittedWhileTheFillRunsIsNotReplacedByTheOlderOneItRead(t *te
 		t.Fatalf("commit the version write: %v", err)
 	}
 
-	select {
-	case answer := <-done:
-		if answer.err != nil {
-			t.Fatalf("fill document_search beside a committing version write: %v", answer.err)
-		}
-		if answer.written != documents-1 {
-			t.Fatalf("the fill wrote %d rows over %d documents, want one for every document but the raced one, whose row names a higher version than the fill read",
-				answer.written, documents)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the fill did not finish once the version write committed")
+	answer := testwait.Receive(t, "the fill's answer once the version write committed", done)
+	if answer.err != nil {
+		t.Fatalf("fill document_search beside a committing version write: %v", answer.err)
+	}
+	if answer.written != documents-1 {
+		t.Fatalf("the fill wrote %d rows over %d documents, want one for every document but the raced one, whose row names a higher version than the fill read",
+			answer.written, documents)
 	}
 	requireDocumentSearchRow(t, database, notes.ID, 2, "zebra", "quagga")
 }
 
 // awaitFillQueued waits for the fill's batch statement to queue behind a lock, which is what
 // says the batch has read artifact_versions and reached its own insert. The statement's text
-// names it, so no other session queued on the same lock is taken for it.
+// names it, so no other session queued on the same lock is taken for it. Its one bound is the
+// test binary's deadline (testwait.UntilPolling): a batch a loaded machine starts late still ends
+// the wait.
 func awaitFillQueued(t *testing.T, database *store.Store) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	testwait.UntilPolling(t, 10*time.Millisecond, "the fill's batch to queue behind the open version write (the sessions its statement has waiting on a lock)", func() (int, bool) {
 		waiting, err := storetest.CountLockWaits(context.Background(), database, "%document_search_backfill for update%")
 		if err != nil {
 			t.Fatalf("read the sessions waiting on a lock: %v", err)
 		}
-		if waiting > 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the fill's batch never queued behind the open version write")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return waiting, waiting > 0
+	})
 }
 
 // The cheap boot: once the pass is finished, a run reads the progress row and nothing else. The
 // statements are read off the pool the second run is given, so "reads no large table" is counted
 // rather than reasoned about.
 func TestAFillAfterThePassIsFinishedReadsOneRowAndWritesNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	handler, database := newTestHandlerWithStore(t)
 	createInteractionIssue(t, handler, "BOOT", "Range survey", "The herd crosses the plateau in spring.")

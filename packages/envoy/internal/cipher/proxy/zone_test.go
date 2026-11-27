@@ -93,16 +93,16 @@ func TestTheTransportRefusesANameThatRebindsToAZonedClusterAddress(t *testing.T)
 }
 
 // TestAZonedLiteralOfABoundAddressIsThatBoundHost: the bound-host check compares the CONNECT host
-// with the hosts an entry binds, as text. A zoned literal of a bound IPv6 address is that address,
+// with the hosts a kind binds, as text. A zoned literal of a bound IPv6 address is that address,
 // so it is read without its zone before the comparison, and the proxy opens the connection with
 // its own certificate for the address, as it does for the unzoned literal, rather than tunnelling
 // it unread to whatever answers there.
 func TestAZonedLiteralOfABoundAddressIsThatBoundHost(t *testing.T) {
 	const bound = "2001:db8:7::1"
-	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: workerName, Hosts: []string{bound}, Headers: []string{"authorization"}}}}
+	rules := proxyrules.Rules{Kinds: []proxyrules.Kind{swapKind(workerKind, []string{bound}, "authorization")}, Names: []proxyrules.Binding{swapBinding(workerName, workerKind)}}
 	for _, target := range []string{"[" + bound + "]:443", "[" + bound + "%25eth0]:443"} {
 		t.Run(target, func(t *testing.T) {
-			r := newRig(t, Options{Rules: rules})
+			r := newRuledRig(t, rules, Options{})
 			tunnel := r.dialTo[net.JoinHostPort(tunnelHost, "443")]
 			r.dialTo["["+bound+"]:443"] = tunnel
 			r.dialTo["["+bound+"%eth0]:443"] = tunnel
@@ -129,16 +129,16 @@ func TestAZonedLiteralOfABoundAddressIsThatBoundHost(t *testing.T) {
 
 // TestAPlainHTTPRequestToAZonedLiteralOfABoundAddressIsRefusedAsPlainHTTP: servePlain refuses
 // plain HTTP to a bound host, since a value would cross in the clear, and it compares the host
-// with the hosts an entry binds as text. A zoned literal of a bound IPv6 address is that address,
+// with the hosts a kind binds as text. A zoned literal of a bound IPv6 address is that address,
 // so it is refused in the same words as the unzoned literal, and nothing is dialled for it. The
 // request is written on a socket of the row's own (plainRaw), because net/http's client drops the
 // zone before the proxy could read it.
 func TestAPlainHTTPRequestToAZonedLiteralOfABoundAddressIsRefusedAsPlainHTTP(t *testing.T) {
 	const bound = "2001:db8:7::1"
-	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: workerName, Hosts: []string{bound}, Headers: []string{"authorization"}}}}
+	rules := proxyrules.Rules{Kinds: []proxyrules.Kind{swapKind(workerKind, []string{bound}, "authorization")}, Names: []proxyrules.Binding{swapBinding(workerName, workerKind)}}
 	for _, authority := range []string{"[" + bound + "]", "[" + bound + "%25eth0]"} {
 		t.Run(authority, func(t *testing.T) {
-			r := newRig(t, Options{Rules: rules})
+			r := newRuledRig(t, rules, Options{})
 			// A plain service wired to the address in either spelling, so a proxy that forwarded
 			// the request answers 200 in its words.
 			var served atomic.Int64

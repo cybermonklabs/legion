@@ -182,8 +182,9 @@ func architectResumes(t *testing.T, pool *pgxpool.Pool, policy config.DesignGate
 
 // startText is the text an architect start of key delivers: a resume carries the wait it answers
 // and no text (record.SuperviseRequest.Awaiting), and is written from the record at its send, as
-// the daemon's rootTask writes it (workflow.ResumeTask), so it is written here from the record as
-// it stands when the test reads it, under policy's steps; any other start carries its own text.
+// the daemon's rootTask writes it (workflow.ResumeAwaitedRootTask), so it is written here from the
+// record as it stands when the test reads it, under policy's steps; any other start carries its
+// own text.
 func startText(t *testing.T, pool *pgxpool.Pool, key string, policy config.DesignGate, request record.SuperviseRequest) string {
 	t.Helper()
 	if request.Awaiting == nil {
@@ -193,7 +194,7 @@ func startText(t *testing.T, pool *pgxpool.Pool, key string, policy config.Desig
 	ctx := context.Background()
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		var err error
-		task, err = workflow.ResumeTask(ctx, tx, record.NewStore(), key, *request.Awaiting, policy.Steps())
+		task, err = workflow.ResumeAwaitedRootTask(ctx, tx, record.NewStore(), key, *request.Awaiting, policy.Steps())
 		return err
 	}); err != nil {
 		t.Fatalf("write the resume of %s from the record: %v", key, err)
@@ -371,7 +372,7 @@ func TestAnAnsweredRootIsNotReportedAsBlocked(t *testing.T) {
 	seedMirror(t, pool, "LEGION-208", "in_progress", "LEGION-777")
 	seedMirror(t, pool, "LEGION-777", "in_progress")
 	inTx(t, pool, func(tx pgx.Tx) {
-		_, blocked, _, err := admission.tickRows(context.Background(), tx)
+		_, blocked, _, err := admission.tickRows(context.Background(), tx, func() (*passJudgement, error) { return admission.finalJudgement(context.Background(), tx) })
 		if err != nil {
 			t.Fatalf("read what is blocked: %v", err)
 		}

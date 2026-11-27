@@ -5,6 +5,8 @@
 // own package's. CheckPackage then type-checks a package's own directory against whichever types
 // the test's importer opens: the daemon's decision-senders test and supervise's outcome source
 // test, ProcessEnds guard and sealed all ask it, so they choose the files they read by one rule.
+// CheckFiles is the check CheckPackage makes, for a test that parsed its source itself: the
+// decision-senders test's planted rows go through it, so they are read as the packages are.
 //
 // It is an ordinary package rather than a _test.go file so every test package can import it; Go
 // cannot share test-only code across packages.
@@ -94,7 +96,7 @@ func listExports(pattern string) (importer.Lookup, error) {
 }
 
 // Package is one package's non-test source as this build compiles it, type-checked
-// (CheckPackage).
+// (CheckPackage), or the files a test parsed, type-checked (CheckFiles).
 type Package struct {
 	// Types is the package the source declares.
 	Types *types.Package
@@ -104,38 +106,49 @@ type Package struct {
 	Info *types.Info
 	// Files is each file the build compiles, parsed, in the order go/build lists them, which is
 	// the order of their names: a test that walks them reads them, and reports what it finds, in
-	// the same order on every run. A test reads a file's name from its position, through the
-	// FileSet the check was given.
+	// the same order on every run. CheckFiles keeps the files in the order it was given them. A
+	// test reads a file's name from its position, through the FileSet the check was given.
 	Files []*ast.File
 }
 
 // CheckPackage parses the non-test Go files in dir that this build compiles, chosen by their
 // build constraints as the go command chooses them (go/build's ImportDir), and type-checks them
-// as the package path against imports, which for a test that reads the compiler's types of the
-// package's imports is importer.ForCompiler over CompiledDependencies. The files are parsed into
-// fset, so a test reads their positions through it. Every test that type-checks a package from
-// its directory asks this one function, so no two of them read a different set of files as the
-// same package; admit's held-reason test parses the record package's files itself, because it
-// type-checks them with a word planted in their text as well. Like CompiledDependencies, it takes
-// no *testing.T, so the caller decides how to fail.
+// (CheckFiles) as the package path against imports, which for a test that reads the compiler's
+// types of the package's imports is importer.ForCompiler over CompiledDependencies. The files
+// are parsed into fset, so a test reads their positions through it. Every test that type-checks
+// a package from its directory asks this one function, so no two of them read a different set of
+// files as the same package; admit's held-reason test parses the record package's files itself,
+// because it type-checks them with a word planted in their text as well. Like
+// CompiledDependencies, it takes no *testing.T, so the caller decides how to fail.
 func CheckPackage(fset *token.FileSet, imports types.Importer, path, dir string) (*Package, error) {
 	listed, err := build.ImportDir(dir, 0)
 	if err != nil {
 		return nil, fmt.Errorf("list the source of %s in %s: %w", path, dir, err)
 	}
-	checked := &Package{Files: make([]*ast.File, 0, len(listed.GoFiles)), Info: &types.Info{
-		Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{},
-		Selections: map[*ast.SelectorExpr]*types.Selection{},
-	}}
+	files := make([]*ast.File, 0, len(listed.GoFiles))
 	for _, name := range listed.GoFiles {
 		file, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution)
 		if err != nil {
 			return nil, fmt.Errorf("parse %s of %s: %w", name, path, err)
 		}
-		checked.Files = append(checked.Files, file)
+		files = append(files, file)
 	}
+	return CheckFiles(fset, imports, path, files)
+}
+
+// CheckFiles type-checks files, parsed into fset, as the package path against imports, and
+// records in its Info every expression's type and value, every definition, every use and every
+// selection. It is the one check CheckPackage makes of the files it chooses, for a test that
+// parses its source itself, so a test that reads both its own source and a package's reads one
+// record of each. Like CheckPackage, it takes no *testing.T, so the caller decides how to fail.
+func CheckFiles(fset *token.FileSet, imports types.Importer, path string, files []*ast.File) (*Package, error) {
+	checked := &Package{Files: files, Info: &types.Info{
+		Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{},
+		Selections: map[*ast.SelectorExpr]*types.Selection{},
+	}}
 	config := types.Config{Importer: imports}
-	if checked.Types, err = config.Check(path, fset, checked.Files, checked.Info); err != nil {
+	var err error
+	if checked.Types, err = config.Check(path, fset, files, checked.Info); err != nil {
 		return nil, fmt.Errorf("type-check %s: %w", path, err)
 	}
 	return checked, nil

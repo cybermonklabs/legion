@@ -1,0 +1,41 @@
+kind: Changed
+body: |-
+  A Dispatch outage no longer stops every person's secrets. Where `BROKER_PROJECT_ACCESS_URL` is
+  set, the broker keeps the member kind of each person answer Dispatch gives it in
+  `person_member_kind` (migration `0050_person_member_kind`), whichever check asked and whether or
+  not the answer says if the person is held, and while Dispatch does not answer it serves a person
+  Dispatch last answered a full member as one, for at most an hour after Dispatch gave the answer
+  (`projectaccess.KeptAnswerTTL`): at every enrollment under their machine login or pod
+  login, every secret request, release and airlock call of their sessions, and every approver
+  route, with one WARN line a minute per person (`serving them as the full member Dispatch last
+  answered`) and `broker_member_kind_unchecked_total{kept="full"}`. A person Dispatch last answered
+  a restricted member, one of whom no kind is kept, one whose kept kind cannot be read, and one
+  whose kept full kind is older than that hour are refused `503 MEMBER_KIND_UNCHECKABLE`, counted
+  `restricted`, `none`, `unreadable` or `stale`.
+  Nobody has a kind kept until Dispatch first answers for them under this release. The process
+  that fetched an answer writes its kind to `person_member_kind` and the hold it names to
+  `person_standing` in one transaction, so a write that fails keeps neither. The broker also keeps
+  each answer of whether a person may see a project, by person and project, in `project_standing`
+  (migration `0051_project_standing`), so while Dispatch does not answer, a request whose projects
+  Dispatch last answered visible to the reader is listed and decided as before, and so is one whose
+  projects it last answered public, until the broker keeps an answer for anyone that the project is
+  private; a key Dispatch last answered is no project, such as the `SHA` of `SHA-256` or the `GPT`
+  of `GPT-5` in a reason, hides nothing, as Dispatch's own answer does, until the broker keeps an
+  answer for anyone that the project exists; each is logged once a minute per person and project
+  and counted in `broker_project_visibility_unchecked_total`. A project last answered hidden from
+  the reader, one never answered for them since it was made or made private, one whose kept answer
+  cannot be read, and one whose kept public or visible answer is older than an hour
+  (`projectaccess.KeptAnswerTTL`) are refused, the last counted `stale`. A kept answer is served
+  for at most that hour after Dispatch gave it, not however old: an answer Dispatch gives always
+  wins and is kept, the later one winning, so a demotion, or a change of a project's list, that the
+  broker has not read takes effect when Dispatch answers again, whether it was made during the
+  outage or before it. A kept no-project answer is served for at most that hour too, and refused
+  `stale` past it. Past
+  10,000 keys answered no project, each write of such an answer ends the oldest asked past that
+  number, except one that still hides an earlier answer of its project, so a reason's words cannot
+  grow `project_standing` without bound. Only such a write ends one, so none ends during an outage,
+  and while Dispatch does not answer, an ended key is refused as one never answered. An answer that
+  a project does not exist also deletes every answer of that project kept from before it.
+time: 2026-11-22T06:24:46Z
+custom:
+    Issue: broker-kept-member-kind

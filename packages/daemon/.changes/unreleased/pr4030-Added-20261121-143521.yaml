@@ -14,7 +14,7 @@ body: |-
   (`POST /legion/v1/claims/owed`) show each wait that stands. The prompts tell a worker that waits
   to declare the wait with `declare_wait`, where they told it to end its reply with a WAITING line.
   Daemon API contract 212. A caller below it gets no `wait` or `hold` key. Migrations
-  `20261121160000_claim_waits` and `20261121160100_outbox_kinds_with_the_wait_due`.
+  `20261127165000_claim_waits` and `20261127165100_outbox_kinds_with_the_wait_due`.
 time: 2026-11-21T14:35:21Z
 custom:
     Issue: pr4030

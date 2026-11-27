@@ -69,6 +69,7 @@ func assertTrailersAdded(t *testing.T, alone, wrapped string, lines []string) {
 // the caller's own trailers and git's trailer configuration, and the cases where the wrapper adds
 // nothing although git commits.
 func TestGitWrapperTrailerAgreesWithGitOnEveryMessageForm(t *testing.T) {
+	t.Parallel()
 	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	bash, err := exec.LookPath("bash")
@@ -292,6 +293,7 @@ func TestGitWrapperTrailerAgreesWithGitOnEveryMessageForm(t *testing.T) {
 // stand-in must read the file the wrapper kept, not the caller's: git gets /dev/stdin as written,
 // and descriptor 0 holds the kept file at offset 0, which is another file than the caller's.
 func TestGitWrapperTrailerHandsGitTheMessageFromItsStart(t *testing.T) {
+	t.Parallel()
 	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	standIn := goGitProgram(t, descriptorGitSource)
@@ -432,6 +434,7 @@ func main() {
 // /dev/fd/0 or /proc/self/fd/0. No other path names one, a link loop and a path that is not there
 // included.
 func TestGitWrapperTrailerKnowsAPathThatNamesADescriptor(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	regular := filepath.Join(dir, "regular")
 	if err := os.WriteFile(regular, []byte("msg\n"), 0o600); err != nil {
@@ -490,6 +493,7 @@ func TestGitWrapperTrailerKnowsAPathThatNamesADescriptor(t *testing.T) {
 // acts as and the role decide: the role line only for a Legion role, and the session line only
 // for the id of the host's variable, and only where it is a valid id.
 func TestGitWrapperTrailerTakesTheSessionDispatchActsAs(t *testing.T) {
+	t.Parallel()
 	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	role := "Legion-Role: implementer"
@@ -530,6 +534,7 @@ func TestGitWrapperTrailerTakesTheSessionDispatchActsAs(t *testing.T) {
 // and role add nothing, another role's pair goes after every line of the message, and a message
 // with other sessions' lines keeps them all.
 func TestGitWrapperTrailerAmendAddsOnlyTheLinesTheMessageLacks(t *testing.T) {
+	t.Parallel()
 	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	repo := trailerRepo(t, git)
@@ -568,6 +573,7 @@ func TestGitWrapperTrailerAmendAddsOnlyTheLinesTheMessageLacks(t *testing.T) {
 // A helper git that answers `git version 2.31.0`, below the first git with `commit --trailer`,
 // gets no read but its version, and the commit's arguments as they were written.
 func TestGitWrapperTrailerNeedsGit232(t *testing.T) {
+	t.Parallel()
 	legion := trailerLegion(t)
 	dir := t.TempDir()
 	log := filepath.Join(dir, "calls")
@@ -588,6 +594,7 @@ func TestGitWrapperTrailerNeedsGit232(t *testing.T) {
 // and `--`. It refuses what git refuses: an unknown or ambiguous option, a missing value, a value
 // a switch does not take, and a long name written with one dash.
 func TestGitWrapperTrailerReadsCommitOptionsAsGitDoes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		args  []string
 		ok    bool

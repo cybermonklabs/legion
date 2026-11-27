@@ -26,22 +26,16 @@ import (
 //
 // The columns are every one the migrations give the repository an issue or its work is on now:
 // issues.repo and issues.github_repo (0047, 0048), pull_requests.repo (0004),
-// production_checks.repo (0049), repo_notes.resolved_repo (0047) and workspace_bundles.repo
-// (20261112012123_issue_repository_correction), the repository a saved bundle's work is of.
-// That last one is written because the take compares it with the record's repository through
-// the pair (ghrepo.Renames.Left): left on the old name, a bundle saved before the pass would read
-// as work of a repository the issue left once the pair is removed from `repository_renames`, and
-// the next pod's restore would refuse it; and it is counted, so the rows the pass logs as left
-// hold the operator's removal of the pair back while a bundle names the old name. No other
-// column holds one the pass writes. The claims' and claim capabilities' locators name a tmux pane
-// or a Sandbox, the outbox's payloads carry no repository, and processed_events.event_id only
-// embeds one in a dedupe key. Three more columns hold a name the pass leaves as it is:
-// issues.repo_before, the repository a correction moved the issue off, which is that
-// correction's history and decides nothing that compares it with a pair;
-// issues.repo_change_pending, Dispatch's own name for a change still to be made, which the
-// issue's next event writes again from Dispatch; and workspace_bundles_refused.repo, work the
-// restore refused, which nothing in the daemon reads again and an operator carries out by hand.
-// Every
+// cleared_pull_requests.repo (20261120144241), production_checks.repo (0049) and
+// repo_notes.resolved_repo (0047). No other column holds one the pass writes. The claims' and
+// claim capabilities' locators name a tmux pane or a Sandbox, the outbox's payloads carry no
+// repository, and processed_events.event_id only embeds one in a dedupe key. Four more columns hold
+// a name the pass leaves as it is: issues.repo_before, the repository a correction moved the issue
+// off, which is that correction's history and decides nothing that compares it with a pair;
+// issues.repo_change_pending, Dispatch's own name for a change still to be made, which the issue's
+// next event writes again from Dispatch; and claims.update_repository and
+// claims.working_repository, the repository an update round's pod and a claim's running process
+// were built from, each read only for the round or incarnation it was recorded with. Every
 // comparison is made without case (`lower(col) = lower(from)`), as every read of a repository
 // name in the record is, so a row in any spelling of the old name is written; the new name is
 // written as the caller hands it, on every column alike, which the pass hands in GitHub's spelling
@@ -55,17 +49,17 @@ type RenameTable string
 
 // The tables whose columns hold a repository name, one constant each.
 const (
-	RenameTableIssues           RenameTable = "issues"
-	RenameTablePullRequests     RenameTable = "pull_requests"
-	RenameTableProductionChecks RenameTable = "production_checks"
-	RenameTableRepoNotes        RenameTable = "repo_notes"
-	RenameTableWorkspaceBundles RenameTable = "workspace_bundles"
+	RenameTableIssues              RenameTable = "issues"
+	RenameTablePullRequests        RenameTable = "pull_requests"
+	RenameTableClearedPullRequests RenameTable = "cleared_pull_requests"
+	RenameTableProductionChecks    RenameTable = "production_checks"
+	RenameTableRepoNotes           RenameTable = "repo_notes"
 )
 
 // RenameTables are the tables whose columns hold a repository name, in the order the rename pass
 // writes and logs them.
-var RenameTables = []RenameTable{RenameTableIssues, RenameTablePullRequests, RenameTableProductionChecks, RenameTableRepoNotes,
-	RenameTableWorkspaceBundles}
+var RenameTables = []RenameTable{RenameTableIssues, RenameTablePullRequests, RenameTableClearedPullRequests, RenameTableProductionChecks,
+	RenameTableRepoNotes}
 
 // RenameCandidate is one issue whose stored rows name a rename's old name: Rows is how many rows
 // of each table (RenameTables) do, which is what its write changes, and Spellings each spelling
@@ -95,13 +89,13 @@ func RenameCandidates(ctx context.Context, tx pgx.Tx, project, from string, keys
 			and ($3::text[] is null or key = any($3))`},
 		{RenameTablePullRequests, `select p.issue, p.repo, ''::text from pull_requests p join issues i on i.key = p.issue
 			where i.project = $1 and lower(p.repo) = lower($2) and ($3::text[] is null or p.issue = any($3))`},
+		{RenameTableClearedPullRequests, `select c.issue, c.repo, ''::text from cleared_pull_requests c join issues i on i.key = c.issue
+			where i.project = $1 and lower(c.repo) = lower($2) and ($3::text[] is null or c.issue = any($3))`},
 		{RenameTableProductionChecks, `select c.issue, c.repo, ''::text from production_checks c join issues i on i.key = c.issue
 			where i.project = $1 and lower(c.repo) = lower($2) and ($3::text[] is null or c.issue = any($3))`},
 		{RenameTableRepoNotes, `select n.issue, n.resolved_repo, ''::text from repo_notes n
 			where lower(n.resolved_repo) = lower($2) and ($3::text[] is null or n.issue = any($3))
 			and (starts_with(n.issue, $1 || '-') or n.issue in (select key from issues where project = $1))`},
-		{RenameTableWorkspaceBundles, `select b.issue, b.repo, ''::text from workspace_bundles b join issues i on i.key = b.issue
-			where i.project = $1 and lower(b.repo) = lower($2) and ($3::text[] is null or b.issue = any($3))`},
 	} {
 		rows, err := tx.Query(ctx, read.sql, project, from, keys)
 		if err != nil {
@@ -163,9 +157,9 @@ type RenameCollision struct {
 
 // RenameIssueRepository writes to over from, compared without case, on each column of issue's
 // rows that holds a repository name: its record's repository and GitHub's spelling of it, its pull
-// request, its production check, its repository note and its saved bundle. It runs in the
-// caller's transaction, so the rows of one issue are written together or not at all, and a write
-// of rows that name to already changes nothing.
+// request, the pull requests a new generation of it cleared, its production check and its
+// repository note. It runs in the caller's transaction, so the rows of one issue are written
+// together or not at all, and a write of rows that name to already changes nothing.
 //
 // Its pull request row is deleted instead where the new name would make it a second row of one
 // repository and branch: pull_requests_repo_branch (0004) is unique on (repo, branch), and the
@@ -173,6 +167,12 @@ type RenameCollision struct {
 // so another issue's row on the new name in any spelling and on the same branch already holds that
 // key. The row under the new name stays, and the deletion is returned for the pass to log, naming
 // both issues.
+//
+// A cleared pull request's row is merged into the row to already holds for the same number, where
+// there is one, since cleared_pull_requests is keyed on (repo, number): the merged row keeps the
+// later clock and the later clear of the two and names issue. A row of to in another spelling is
+// another key and stays beside it; the clock's read takes the latest of every spelling
+// (ClearedPullRequestClock).
 func RenameIssueRepository(ctx context.Context, tx pgx.Tx, issue, from, to string) (RenameWrite, error) {
 	written := RenameWrite{Rows: map[RenameTable]int{}}
 	tag, err := tx.Exec(ctx, `update issues set
@@ -208,13 +208,27 @@ func RenameIssueRepository(ctx context.Context, tx pgx.Tx, issue, from, to strin
 		written.Deleted = &collision
 	}
 
+	var cleared int
+	if err := tx.QueryRow(ctx, `with moved as (
+			delete from cleared_pull_requests where issue = $1 and lower(repo) = lower($2)
+			returning number, head_updated_at, cleared_at),
+		merged as (
+			insert into cleared_pull_requests (repo, number, issue, head_updated_at, cleared_at)
+			select $3, number, $1, max(head_updated_at), max(cleared_at) from moved group by number
+			on conflict (repo, number) do update set issue = excluded.issue,
+				head_updated_at = greatest(cleared_pull_requests.head_updated_at, excluded.head_updated_at),
+				cleared_at = greatest(cleared_pull_requests.cleared_at, excluded.cleared_at))
+		select count(*) from moved`, issue, from, to).Scan(&cleared); err != nil {
+		return RenameWrite{}, fmt.Errorf("write %s over %s on the cleared pull requests of %s: %w", to, from, issue, err)
+	}
+	written.Rows[RenameTableClearedPullRequests] = cleared
+
 	for _, write := range []struct {
 		table RenameTable
 		sql   string
 	}{
 		{RenameTableProductionChecks, "update production_checks set repo = $3 where issue = $1 and lower(repo) = lower($2)"},
 		{RenameTableRepoNotes, "update repo_notes set resolved_repo = $3 where issue = $1 and lower(resolved_repo) = lower($2)"},
-		{RenameTableWorkspaceBundles, "update workspace_bundles set repo = $3 where issue = $1 and lower(repo) = lower($2)"},
 	} {
 		tag, err := tx.Exec(ctx, write.sql, issue, from, to)
 		if err != nil {

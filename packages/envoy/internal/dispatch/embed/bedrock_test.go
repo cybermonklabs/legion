@@ -9,24 +9,17 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/sjawhar/envoy/internal/dispatch/embed/embedtest"
 )
 
-// testBedrockClient builds a BedrockClient against server, with static fake credentials and a
-// fake region: the AWS SDK still signs every request (SigV4), but nothing on server's side
-// verifies the signature, so a test server only needs to receive a well-formed InvokeModel call
-// and answer Bedrock's documented response shape. The SDK's own retries are off, so a test that
-// answers an error sees it on the first call rather than after the SDK's backoff.
+// testBedrockClient builds a BedrockClient against server from a test's fake AWS configuration
+// (embedtest.BedrockConfig), so a test server only needs to receive a well-formed InvokeModel call
+// and answer Bedrock's documented response shape.
 func testBedrockClient(server *httptest.Server, opts ...BedrockOption) *BedrockClient {
-	cfg := aws.Config{
-		Region:      "us-west-2",
-		Credentials: credentials.NewStaticCredentialsProvider("test-access-key", "test-secret-key", ""),
-		Retryer:     func() aws.Retryer { return aws.NopRetryer{} },
-	}
-	return NewBedrockWithConfig(cfg, append([]BedrockOption{WithBaseEndpoint(server.URL)}, opts...)...)
+	return NewBedrockWithConfig(embedtest.BedrockConfig(), append([]BedrockOption{WithBaseEndpoint(server.URL)}, opts...)...)
 }
 
 func TestBedrockEmbedSendsInvokeModelRequestShapeAndParsesTheResponse(t *testing.T) {
@@ -89,7 +82,7 @@ func TestBedrockEmbedOfZeroTextsAnswersNilWithoutACall(t *testing.T) {
 }
 
 func TestBedrockEmbedRefusesMoreThanTheBatchLimit(t *testing.T) {
-	client := NewBedrockWithConfig(aws.Config{Region: "us-west-2", Credentials: credentials.NewStaticCredentialsProvider("k", "s", "")})
+	client := NewBedrockWithConfig(embedtest.BedrockConfig())
 	texts := make([]string, client.Limits().MaxBatchTexts+1)
 	for i := range texts {
 		texts[i] = "x"
@@ -113,18 +106,22 @@ func TestBedrockEmbedReturnsBedrockErrorBody(t *testing.T) {
 }
 
 // TestBedrockEmbedMarksItsOwnThrottles drives a coded Bedrock error through the real SDK path:
-// Embed classifies it with Bedrock's code set and marks a throttle for IsThrottled, while a bad
-// request comes back unmarked.
+// Embed classifies it with Bedrock's code sets and marks a throttle for IsThrottled and an outage
+// (ModelTimeoutException, InternalServerException) for IsOutage, while a bad request comes back
+// unmarked.
 func TestBedrockEmbedMarksItsOwnThrottles(t *testing.T) {
 	for _, tc := range []struct {
 		code      string
 		status    int
 		throttled bool
+		outage    bool
 	}{
-		{"ThrottlingException", http.StatusTooManyRequests, true},
-		{"ServiceUnavailableException", http.StatusServiceUnavailable, true},
-		{"ModelNotReadyException", http.StatusTooManyRequests, true},
-		{"ValidationException", http.StatusBadRequest, false},
+		{"ThrottlingException", http.StatusTooManyRequests, true, false},
+		{"ServiceUnavailableException", http.StatusServiceUnavailable, true, false},
+		{"ModelNotReadyException", http.StatusTooManyRequests, true, false},
+		{"ModelTimeoutException", http.StatusRequestTimeout, false, true},
+		{"InternalServerException", http.StatusInternalServerError, false, true},
+		{"ValidationException", http.StatusBadRequest, false, false},
 	} {
 		t.Run(tc.code, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -141,11 +138,27 @@ func TestBedrockEmbedMarksItsOwnThrottles(t *testing.T) {
 			if got := IsThrottled(err); got != tc.throttled {
 				t.Errorf("IsThrottled(%v) = %v, want %v", err, got, tc.throttled)
 			}
+			if got := IsOutage(err); got != tc.outage {
+				t.Errorf("IsOutage(%v) = %v, want %v", err, got, tc.outage)
+			}
 			var coded interface{ ErrorCode() string }
 			if !errors.As(err, &coded) || coded.ErrorCode() != tc.code {
 				t.Errorf("Embed error = %v, want it to unwrap to Bedrock's %s", err, tc.code)
 			}
 		})
+	}
+}
+
+// A Bedrock call that runs out of time while its caller still waits - here the AWS SDK's HTTP
+// client's own timeout - is an outage (IsOutage) and no throttle, as Azure's is.
+func TestBedrockEmbedMarksACallThatRanOutOfTimeAnOutage(t *testing.T) {
+	server := hangingServer(t)
+	cfg := embedtest.BedrockConfig()
+	cfg.HTTPClient = &http.Client{Timeout: 100 * time.Millisecond}
+	client := NewBedrockWithConfig(cfg, WithBaseEndpoint(server.URL))
+	_, err := client.Embed(context.Background(), []string{"x"}, InputDocument)
+	if err == nil || !IsOutage(err) || IsThrottled(err) {
+		t.Fatalf("Embed error = %v (outage %v, throttled %v), want an outage and no throttle", err, IsOutage(err), IsThrottled(err))
 	}
 }
 
@@ -220,7 +233,7 @@ func TestNewBedrockRefusesAnEmptyRegion(t *testing.T) {
 // TestBedrockIdentityFollowsWithModel proves a vector records the model that actually embedded
 // it: BedrockModel by default, and WithModel's override when one is set.
 func TestBedrockIdentityFollowsWithModel(t *testing.T) {
-	cfg := aws.Config{Region: "us-west-2", Credentials: credentials.NewStaticCredentialsProvider("k", "s", "")}
+	cfg := embedtest.BedrockConfig()
 	if got := NewBedrockWithConfig(cfg).Identity(); got != BedrockModel {
 		t.Errorf("default Identity() = %q, want %q", got, BedrockModel)
 	}
@@ -230,8 +243,8 @@ func TestBedrockIdentityFollowsWithModel(t *testing.T) {
 }
 
 func TestBedrockLimitsAreBedrocksOwn(t *testing.T) {
-	got := NewBedrockWithConfig(aws.Config{Region: "us-west-2"}).Limits()
-	if want := (Limits{MaxBatchTexts: 96, MaxBatchBytes: 0, BackgroundTokensPerMinute: 200_000}); got != want {
+	got := NewBedrockWithConfig(embedtest.BedrockConfig()).Limits()
+	if want := (Limits{MaxBatchTexts: 96, MaxBatchBytes: 320_000, BackgroundTokensPerMinute: 200_000}); got != want {
 		t.Errorf("Limits() = %+v, want %+v", got, want)
 	}
 }

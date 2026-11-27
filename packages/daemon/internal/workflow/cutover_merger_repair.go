@@ -76,7 +76,7 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 // merger's phases row and builds the start with the builder of booted's resume by rule
 // (startSuspendedOwner), from the entry that row names: a merger behind that entry (OwedEntry) is
 // sent the work of that entry at that entry (sendOwedEntry), and a merger level with it is sent
-// the merging resume task (ResumePhaseTask) at entry 0. It builds the start that way, and not as
+// the merging resume task (ResumeTask) at entry 0. It builds the start that way, and not as
 // one fixed request, for the reason booted gives: the resume task tells a claim to carry on work
 // it already holds, so a merger behind its entry would spend its first turn on the wrong prompt,
 // and the completion it answered with would be refused as behind that entry. Neither start raises
@@ -93,7 +93,7 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 // covered by a queued start of its phase (queuedRowCovers). The silence repair reads no
 // suspended claim and no claim a queued start covers (unpromptedPhaseWorker). A later start
 // through StartOrOwe that carries the same slot mark, which a start of merging or of another
-// phase past the review does, takes the owed start out while it is still queued and unleased
+// phase that holds no slot (accepting, retro) does, takes the owed start out while it is still queued and unleased
 // (held by a closed design gate, or not yet run) and writes its own in its place
 // (Store.EnqueueStart). A later start of a phase that holds a slot, such as implementing after the
 // merger's own move back, leaves it queued, and the outbox's phase fence ends it, since it serves
@@ -138,7 +138,7 @@ func (e *Engine) cutoverStoppedMerger(ctx context.Context, tx pgx.Tx, owner susp
 	if issue.Phase != phase.Merging || owner.run.Claim.SuspendedBy != supervise.SuspendedByReleased {
 		return false, nil
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil || pr == nil || pr.State != record.PullRequestOpen {
 		return false, err
 	}
@@ -180,9 +180,10 @@ func (e *Engine) oweCutoverMerger(ctx context.Context, tx pgx.Tx, owner suspende
 	if err != nil {
 		return err
 	}
+	// The merger's own merging start, not a start queued for news alone beside it (startsWork).
 	var queued *record.SuperviseRequest
 	for i := range run.Queued {
-		if request := &run.Queued[i].Request; request.Op == "start" && request.Phase == phase.Merging {
+		if request := &run.Queued[i].Request; startsWork(*request) && request.Phase == phase.Merging {
 			queued = request
 		}
 	}

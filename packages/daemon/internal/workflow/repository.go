@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // Repositories is what the daemon holds in memory of the repositories of its project, which the
@@ -81,11 +82,13 @@ func (e *Engine) ResolveIssueRepository(fact intake.DispatchIssue) (Resolution, 
 // admission reads). A correction writes a repository Dispatch moved an issue onto, often long
 // after any read the daemon kept of it was made, so a kept read would move the record onto a
 // repository an App was uninstalled from since, or at a default branch renamed since. A fact whose
-// preparation made no such read — a boot listing's, which reads GitHub for no repository, or an
-// event's or a hand-over's whose preparation's reads GitHub did not answer — is Unread: nothing is
+// preparation made no such read — a boot listing's, which reads GitHub for no repository, an
+// event's or a hand-over's whose preparation's reads GitHub did not answer, or an event prepared
+// while its issue had no record or while its record held no repository — is Unread: nothing is
 // written and nothing is said, and the daemon's follow reads GitHub again (its followRecorded):
-// once a boot is over for the first, and for the others at once and again on its backoff until
-// GitHub answers.
+// once a boot is over for the first, at the commit of the apply for the last
+// (ApplyRepositoryChange asks it), and for the others until GitHub answers, at the times its
+// requestFollowOf gives.
 func (e *Engine) correctionResolution(fact intake.DispatchIssue) (Resolution, error) {
 	if fact.RepositoryRefusal != "" || fact.ResolvedRepo == "" {
 		return e.ResolveIssueRepository(fact)
@@ -165,11 +168,10 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 // inside the transaction that pass applies in: a live Dispatch event (Engine.dispatchIssue), the
 // listing admission reconciles at boot (its applySummary; the recovery listing takes no recorded
 // issue), admission's outbox hand-over (its consumeHandover), and the daemon's follow over
-// Dispatch's listing (its followRecorded), which it makes once a boot is over for the recorded
-// issues that boot's listing found resolved to another repository, for each issue whose event's
-// or hand-over's reads GitHub did not answer, until GitHub answers, and for each issue whose fact
-// this skipped because its record moved (below). The correction is one statement in that
-// transaction (record.Store.CorrectIssueRepository, whose one caller this is): no park, no rerun
+// Dispatch's listing (its followRecorded), which reads an issue again wherever a pass can leave
+// its record on another repository than Dispatch resolves (its requestFollow and requestFollowOf
+// say who asks for one; this asks for one below). The correction is one statement in that
+// transaction (record.Store.CorrectIssueRepository, whose one caller this is): no move to the backlog, no rerun
 // and no new generation, so an issue keeps its phase, its generation and whatever is running for
 // it while its repository moves.
 //
@@ -186,8 +188,20 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 // (Config.FollowIssue): it is asked from this transaction's commit hook, so a skip that commits is
 // never lost and one rolled back asks nothing, and Config.FollowIssue says what covers a process
 // that stops in between. A follow pass's own rows are checked here alike, each prepared against
-// the record the pass read before its write. A fact no preparation stamped is applied whatever
-// repository the record holds.
+// the record the pass read before its write.
+//
+// A fact no preparation stamped against a record's repository (PreparedAgainst empty) was
+// prepared while the issue had no record — an event whose issue a listing recorded between the
+// event's preparation and this apply — or while its record held no repository
+// (record.Issue.Unfilled) — an event whose record the refresher's backfill filled between the
+// event's preparation and this apply (the daemon's backfillLater) — or by no preparation at all,
+// the decode's own. None of them reads GitHub for a correction
+// (intake.DispatchIssue.RepositoryRead) or asks a follow, so where its resolution moves the record
+// this writes nothing (Resolution.Unread) and owes the issue a follow from this transaction's
+// commit hook, as above: without it the record would keep the repository that listing or that
+// backfill wrote until the issue's next event or the next boot. A stamped fact that made no read
+// asks no follow here, since the preparation that stamped it asked one already where one is owed
+// (the daemon's prepareRecorded and prepareHandover).
 //
 // The repository is resolved from the fact alone (correctionResolution): the refusal the fact's
 // preparation read from GitHub — a role App not installed on it, a repository GitHub does not
@@ -214,15 +228,27 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 // answered the reads of (Resolution.Unread) is nothing Dispatch has said that the daemon can act
 // on, so this writes and says nothing at all, and the daemon's follow reads the repository again
 // until GitHub answers.
+//
+// A record that holds no repository (record.Issue.Unfilled) is the backfill's to fill, and this
+// writes nothing on it and says nothing: a correction would fill it without the checks the
+// backfill makes, and the stamp of the record a fact was prepared against could fence nothing,
+// since a preparation against such a record stamps it empty (PreparedAgainst). The preparations
+// read GitHub for no such record (the daemon's correctionMoves). A change this leaves unwritten
+// is not lost: an event applied to such a record cannot commit, since the observation it writes
+// refuses a record with no repository (record.Store.PutIssue), and it is prepared again; and a
+// fact prepared against such a record and applied once the backfill has filled it is a fact no
+// preparation stamped, which this follows as the paragraph on such facts says (the daemon's
+// backfillLater).
 func (e *Engine) ApplyRepositoryChange(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
+	if issue.Unfilled() {
+		return nil
+	}
 	resolved := fact.ResolvedRepo
 	// The record moved after the fact was prepared: it takes nothing from the fact, and a follow
 	// reads the issue fresh once this transaction commits (the doc above says why).
 	if fact.PreparedAgainst != "" && !e.sameRepository(fact.PreparedAgainst, issue.Repo) {
 		key := issue.Key
-		if follow := e.cfg.FollowIssue; follow != nil {
-			intake.OnCommit(ctx, func() { follow(key) })
-		}
+		e.followOnCommit(ctx, key)
 		e.logOnCommit(ctx, "workflow: a repository correction prepared before the record moved writes nothing; the issue is followed again",
 			"issue", key, "prepared", fact.PreparedAgainst, "record", issue.Repo, "resolved", resolved)
 		return nil
@@ -242,6 +268,14 @@ func (e *Engine) ApplyRepositoryChange(ctx context.Context, tx pgx.Tx, issue rec
 		return err
 	}
 	if resolution.Unread {
+		// A fact no preparation stamped against a record's repository made no read for this
+		// correction, and no preparation asked a follow for it: a follow reads the issue fresh once
+		// this transaction commits (the doc above says why).
+		if fact.PreparedAgainst == "" {
+			e.followOnCommit(ctx, issue.Key)
+			e.logOnCommit(ctx, "workflow: a repository change prepared while the issue had no record, or a record with no repository, carries no read of GitHub; the issue is followed",
+				"issue", issue.Key, "record", issue.Repo, "resolved", resolved)
+		}
 		return nil
 	}
 	if resolution.Refusal != "" {
@@ -272,6 +306,15 @@ func (e *Engine) ApplyRepositoryChange(ctx context.Context, tx pgx.Tx, issue rec
 	e.logOnCommit(ctx, "workflow: an issue's repository follows the one Dispatch resolves it to", "issue", issue.Key,
 		"from", issue.Repo, "to", resolution.Repo, "at", at)
 	return nil
+}
+
+// followOnCommit asks for a follow of the recorded issue key (Config.FollowIssue) from the commit
+// hook of the transaction ApplyRepositoryChange writes in, so a skip that commits is never lost and
+// one rolled back asks nothing.
+func (e *Engine) followOnCommit(ctx context.Context, key string) {
+	if follow := e.cfg.FollowIssue; follow != nil {
+		store.OnCommit(ctx, func() { follow(key) })
+	}
 }
 
 // noteRepositoryChangeWaits says on a recorded issue that the repository Dispatch now resolves it

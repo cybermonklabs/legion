@@ -67,7 +67,7 @@ func (r *handOverCorrectionRig) seed() {
 	ctx := context.Background()
 	until := handOverCorrectionMoment.Add(time.Hour)
 	parent := handOverCorrectionRoot
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, put := range []error{
 			r.records.PutIssue(ctx, tx, record.Issue{Key: handOverCorrectionRoot, Repo: "acme/widgets", DefaultBranch: "main",
 				GitHubRepo: "acme/widgets", Tree: handOverCorrectionRoot, Project: "LEGION", Title: handOverCorrectionRoot,
@@ -113,15 +113,7 @@ func (r *handOverCorrectionRig) complete(shown dispatch.Issue) *outboxDispatch {
 // child is the handed-over child's record as it stands.
 func (r *handOverCorrectionRig) child() record.Issue {
 	r.t.Helper()
-	ctx := context.Background()
-	var got *record.Issue
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		var err error
-		got, err = r.records.Issue(ctx, tx, handOverCorrectionChild)
-		return err
-	}); err != nil {
-		r.t.Fatalf("read the handed-over child: %v", err)
-	}
+	got := readIssue(r.t, r.pool, handOverCorrectionChild)
 	if got == nil {
 		r.t.Fatalf("%s is not recorded", handOverCorrectionChild)
 	}
@@ -149,6 +141,7 @@ func (r *handOverCorrectionRig) readmitted(got record.Issue) {
 // it left. Both ways the executor reaches the fact carry it: the read that already shows the todo
 // and the label, where no write is made at all, and the read behind the hand-over's own PATCH.
 func TestRepositoryCorrectionFollowsAHandOverTheOutboxCompletes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		shown     dispatch.Issue
@@ -188,6 +181,7 @@ func TestRepositoryCorrectionFollowsAHandOverTheOutboxCompletes(t *testing.T) {
 // repository its own record holds: an absent resolution is no statement by Dispatch that the issue
 // is on no repository, so nothing is corrected and nothing is said to the issue.
 func TestRepositoryCorrectionIsNotWrittenWhenAHandOversDispatchReadAnswersNoRepository(t *testing.T) {
+	t.Parallel()
 	r := newHandOverCorrectionRig(t)
 
 	r.complete(dispatch.Issue{Key: handOverCorrectionChild, Status: "todo", HandedOver: true, Labels: []string{"legion"}})

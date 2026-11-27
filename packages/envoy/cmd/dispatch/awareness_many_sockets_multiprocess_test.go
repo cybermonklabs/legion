@@ -23,6 +23,8 @@ import (
 // on B. The room's bound is derived from those two caps instead
 // (MaxAwarenessClientsPerRoomForTest), and the entries the rooms track stay under it.
 func TestAReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "MNY")
 	pair.a.createProject(t, project, "Many sockets")

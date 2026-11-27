@@ -22,6 +22,7 @@ const loweredStartLine = "session consumer created at its resume record's floor,
 // from it then takes and acks three more, and holds a fourth unacked, so a restart at its floor
 // deletes it and leaves the fourth's sequence pending when its create faults.
 func TestAPendingStartIsNotLoweredToAnOlderResumeRecord(t *testing.T) {
+	t.Parallel()
 	owner, consumers, logs := sessionConsumersLogging(t)
 	ctx := context.Background()
 	const session = "ses_pending_above_record"
@@ -88,6 +89,7 @@ func TestAPendingStartIsNotLoweredToAnOlderResumeRecord(t *testing.T) {
 // identity; the session is then handed every message after the floor, the ones its start said it
 // already held included.
 func TestTheRecordRuleLogsEachStartItLoweredAndNoOther(t *testing.T) {
+	t.Parallel()
 	owner, consumers, logs := sessionConsumersLogging(t)
 	ctx := context.Background()
 	const session = "ses_record_rule_lines"
