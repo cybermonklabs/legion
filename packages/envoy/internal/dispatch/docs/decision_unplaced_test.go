@@ -334,9 +334,7 @@ func TestAConvertedDecisionWaitsForReviewWhereAPersonWroteItsSectionLast(t *test
 		}
 		var deciders []string
 		for _, tuple := range tuples {
-			if tuple.Asserted {
-				deciders = append(deciders, tuple.ToKind+"/"+tuple.ToID)
-			}
+			deciders = append(deciders, tuple.ToKind+"/"+tuple.ToID)
 		}
 		if want.decider == "" && len(deciders) != 0 || want.decider != "" && !slices.Equal(deciders, []string{want.decider}) {
 			t.Errorf("%s (%s): the node states the decided_by %v, want %q", want.what, address, deciders, want.decider)
@@ -399,6 +397,29 @@ func TestTheConversionMovesTheAskBlockASectionStillHoldsAndConvertsTheRest(t *te
 	issue.requireUnplacedDecision(decisions, heading, unplacedBody, []string{"r1"}, nil,
 		[]string{"We lean towards the top shelf"})
 	issue.requireNoSectionCitation(heading)
+	issue.requireRetiredAndOwedNothing(decisions)
+}
+
+// A section whose whole body is its ask block - an answered ask whose block the decisions
+// document holds, the second shape of the restore - converts with nothing written under the ask:
+// the block moves into the spec, the section holds no words beside it, so it is dropped
+// (planRestating) and the restored block holds no reading. The document retires and the step
+// owes nothing.
+func TestTheConversionWritesNoReadingUnderAnAskBlockThatWasItsSectionsWholeBody(t *testing.T) {
+	issue := newRestoreIssue(t, "# Spec\n\n:::requirement{#r1}\nThe corpus is written once.\n:::\n")
+	decisions := issue.document("decisions-md", "decisions.md", false, "decisions",
+		"# Decisions\n\n## Which line names a moved block\n\n:::ask{#q-doc urgency=\"low\" multiple=\"false\"}\nWhich line names a block that moved?\n:::\n")
+	moved := issue.answer(decisions, "q-doc", "The census names each move.")
+
+	result := issue.run(true)
+	from, to := issue.refKey(decisions)+"#q-doc", issue.refKey(issue.spec)+"#q-doc"
+	if len(result.Restored) != 1 || result.Restored[0].Ask != moved || result.Restored[0].From != from || result.Restored[0].To != to ||
+		result.Readings != 0 || result.Dropped != 1 || result.Decisions != 0 || result.Left != 0 || !result.Retired {
+		t.Fatalf("the conversion did %+v, want ask %s moved from %s to %s, its section dropped with no reading, the document retired", result, moved, from, to)
+	}
+	if spec := issue.latest(issue.spec); !strings.Contains(spec, "#q-doc urgency=") || strings.Contains(spec, ":::reading") {
+		t.Errorf("the spec's newest version holds no block of the ask, or a reading under it:\n%s", spec)
+	}
 	issue.requireRetiredAndOwedNothing(decisions)
 }
 

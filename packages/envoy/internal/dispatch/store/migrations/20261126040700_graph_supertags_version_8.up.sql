@@ -116,7 +116,7 @@ values
 
 -- `check`'s `subject` and `program`: each attribute node is set to its whole attributes, what
 -- 20261125163555 left on it with `creatable_since` moved from 8 to 9. No migration after
--- 20261125125701 writes either node, so that is what each holds, and this rewrites nothing but
+-- 20261125163555 writes either node, so that is what each holds, and this rewrites nothing but
 -- that number. The two take different values, so each is a statement of its own.
 update graph_nodes
 set attributes = '{"kind": "enum", "choices": ["code", "production", "graph"], "since": 6, "creatable_since": 9, "name": "subject", "store_name": "subject", "position": 6}'::jsonb
@@ -127,7 +127,7 @@ set attributes = '{"kind": "string", "since": 6, "creatable_since": 9, "name": "
 where (kind, id) in (('attribute', 'check/program'));
 
 -- The move, as the tuple it is: each attribute's newest `creatable_since` tuple is the 9 its row
--- now carries, and the 7 before it stays in its history.
+-- now carries, and the 8 that 20261125163555 stamped, and the 7 before it, stay in its history.
 insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
 values
   ('attribute', 'check/program', 'creatable_since', 'value', '9', now(), '{"kind": "system", "id": "block-schema-version-8"}', 0, null, true),

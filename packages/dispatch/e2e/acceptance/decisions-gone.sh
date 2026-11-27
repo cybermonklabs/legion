@@ -83,8 +83,9 @@
 # deploy/kubernetes/daemon/legion.yaml.example is missing from it under either, and when a line
 # says `yes`.
 #
-# It then reads the route descriptions of the Decisions read and its Keep in
-# packages/envoy/internal/dispatch/api/routes_table.go and the published page
+# It then reads the route descriptions of the Decisions read and its Keep, each in its route file
+# under packages/envoy/internal/dispatch/api (route_api_v1_issues_{key}_decisions+get.go,
+# route_api_v1_artifacts_{id}_blocks_{block_id}_keep+post.go), and the published page
 # docs/site/src/content/docs/dispatch/issues-and-projects.md, sentence by sentence, and fails on a
 # sentence that still calls the view a reading of the decisions document. The same matcher is run
 # first over the three sentences the release before wrote there, and must flag each, so a matcher
@@ -777,15 +778,20 @@ for sentence in "${planted[@]}"; do
 done
 pass words "the matcher flags each of the ${#planted[@]} planted sentences"
 
-routes="$root/packages/envoy/internal/dispatch/api/routes_table.go"
+# Each route is declared in a file of its own, route_<path>+<method>.go
+# (packages/envoy/internal/dispatch/routefile says how a pattern is written into the name), whose
+# routeDecl states the route's description on one line: `Description: "...",`.
+readonly api_dir="$root/packages/envoy/internal/dispatch/api"
 readonly page_path=docs/site/src/content/docs/dispatch/issues-and-projects.md
-for route in '"/api/v1/issues/{key}/decisions"' '"/api/v1/artifacts/{id}/blocks/{block_id}/keep"'; do
-  line="$(grep -F "http.Method" "$routes" | grep -F ", $route, " || true)"
-  [[ -n "$line" ]] || fail words "read the route description of $route" "$routes holds no route $route"
-  description="${line#*authAny, \"}"
-  description="${description%\", s.*}"
-  [[ "$description" != "$line" && -n "$description" ]] ||
-    fail words "read the route description of $route" "no description read from: $line"
+for named in \
+  '"/api/v1/issues/{key}/decisions" route_api_v1_issues_{key}_decisions+get.go' \
+  '"/api/v1/artifacts/{id}/blocks/{block_id}/keep" route_api_v1_artifacts_{id}_blocks_{block_id}_keep+post.go'; do
+  route="${named% *}"
+  route_file="$api_dir/${named##* }"
+  [[ -r "$route_file" ]] || fail words "read the route description of $route" "$route_file cannot be read"
+  description="$(sed -nE 's/^[[:space:]]*Description:[[:space:]]*"(.*)",$/\1/p' "$route_file")"
+  [[ -n "$description" ]] ||
+    fail words "read the route description of $route" "no description read from $route_file"
   printf '%s\n' "$description" >"$work/description"
   while IFS= read -r sentence; do
     ! reads_the_document "$sentence" ||

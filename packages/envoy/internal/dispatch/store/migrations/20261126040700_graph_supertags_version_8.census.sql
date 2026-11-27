@@ -5,9 +5,9 @@
 -- 20261125163555_graph_supertags_decision_reading left on them, `creatable_since` moved from 8 to 9,
 -- and appends the `version` and `creatable_since` tuples that state each. Those rows are type
 -- nodes, and nothing but a migration writes a type node: no route and no command writes one
--- (cmd/dispatch's requireNoRouteOrCommandWritesAType), no migration between 20261125163555 and
--- this one writes a supertag node, and none after 20261125125701 writes either attribute node.
--- So the nine nodes hold what those two left, and the updates rewrite only the version and the
+-- (cmd/dispatch's requireNoRouteOrCommandWritesAType), and no migration between 20261125163555
+-- and this one writes a supertag node or either attribute node. So the nine nodes hold what
+-- 20261125163555 left, and the updates rewrite only the version and the
 -- `creatable_since`. It reads no row of another table. The number of existing rows this migration
 -- would refuse or rewrite is therefore 0.
 select 0;

@@ -297,7 +297,7 @@ func manifestAsOf(t *testing.T, version int) []byte {
 // elements versions 4, 5 and 6 add each have a row of their own
 // (TestTheAttributeVersionFourAddsIsUnknownToABuildAtVersionThree,
 // TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour,
-// TestTheCheckMarksAreReadAtNAndWrittenFromNPlusTwo).
+// TestTheCheckMarksAreReadFromNAndCreatedOnlyFromTheirCreatableVersion).
 func TestTheTypedBlocksThisVersionAddsAreUnknownToABuildAtTheVersionBefore(t *testing.T) {
 	const adds = 3
 	added := []string{"requirement", "plan_task", "check"}
@@ -443,7 +443,7 @@ func TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour(t *testing.T)
 // neither mark, so it creates none and reads a stored check carrying one as an element it does not
 // know (ErrUnknownElement, answered 409 DOC_NEWER_CONTENT). Each build is the embedded manifest as
 // of its version (manifestAsOf), so each assertion holds whatever this build's version is.
-func TestTheCheckMarksAreReadAtNAndWrittenFromNPlusOne(t *testing.T) {
+func TestTheCheckMarksAreReadFromNAndCreatedOnlyFromTheirCreatableVersion(t *testing.T) {
 	const n, creatable = 6, 9
 	const withoutIt = ":::check{#b-c1}\nBody.\n:::\n"
 	for _, mark := range []struct{ name, markdown string }{
@@ -457,7 +457,7 @@ func TestTheCheckMarksAreReadAtNAndWrittenFromNPlusOne(t *testing.T) {
 			}
 
 			var stored *Node
-			for _, version := range []int{n, n + 1} {
+			for version := n; version < creatable; version++ {
 				restoreVersion, err := UseManifestForTest(manifestAsOf(t, version))
 				if err != nil {
 					t.Fatalf("install the manifest as of version %d: %v", version, err)
