@@ -180,7 +180,10 @@ func TestANewGenerationClearsTheStepOfAPhaseRow(t *testing.T) {
 		if got := PhaseRowOf(rows, claim.RoleReviewer); got.StepTask != "a" || got.StepPlace != 2 {
 			t.Fatalf("the reviewer's row before the new generation runs step %d of task %q, want step 2 of task a as it was written", got.StepPlace, got.StepTask)
 		}
-		must(t, NewStore().ClearGeneration(ctx, tx, planIssue, planGivenAt))
+		// The clear is required to be handed a forget (KeptForget), which runs here over no
+		// decision and no queued request: the issue keeps and queues none.
+		_, err = NewStore().ClearGeneration(ctx, tx, issue, forgetNothing)
+		must(t, err)
 	})
 	inTx(t, st, func(tx pgx.Tx) {
 		rows, err := NewStore().Phases(ctx, tx, planIssue)

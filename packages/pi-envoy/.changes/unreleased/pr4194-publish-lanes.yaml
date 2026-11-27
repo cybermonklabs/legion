@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+    The `envoy_publish` tool's description no longer says that every notification topic is
+    stored. It names each topic the listener refuses a publish to, and why: an agent topic, a
+    topic under `notifications.dispatch.` or `notifications.github.`,
+    `notifications.legion.wake`, and a topic under `notifications.envoy.kept.`,
+    `notifications.envoy.resume.` or `notifications.envoy.takeover.`. It says that every other
+    topic the stream captures is stored.
+time: 2026-11-20T13:00:00Z
+custom:
+    Issue: pr4194

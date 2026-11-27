@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // eventTypes are the event types the filler events carry, in the proportions a type that is not
@@ -16,14 +18,22 @@ import (
 // that the column holds the types a reader knows rather than one made-up value. No `ask.*` type
 // is among them: a read of an event of one of those decodes its payload as an ask and fails the
 // whole request when it names none (api.attachAskEventFields), so the only ask events the seed
-// writes are the opening events writeAsks writes with their asks, each carrying its own ask.
+// writes are the opening events writeAsks writes with their asks and the answers and declines
+// writeDeliveries writes, each carrying its own ask.
 var eventTypes = []string{
 	"issue.created", "issue.updated", "comment.created", "message.created",
 	"artifact.version.created",
 }
 
-// eventColumns are the columns of `events` the seed writes, shared by the two writers of that
-// table: the filler events here and the opening event each ask is written with.
+// fillerEventType is the type of the filler event at position in the event plan. The types take
+// turns, so the events of each owner hold every type in about equal numbers.
+func fillerEventType(position int) string {
+	return eventTypes[position%len(eventTypes)]
+}
+
+// eventColumns are the columns of `events` the seed writes, shared by the three writers of that
+// table: the filler events here, the opening event each ask is written with, and the deliveries
+// (writeDeliveries), which write published_destinations beside them.
 var eventColumns = []string{
 	"id", "issue_key", "artifact_id", "project_key", "seq", "type", "actor",
 	"payload", "notify", "published_at", "created_at",
@@ -132,6 +142,12 @@ func (r *seedRun) askEventIDBase() int64 {
 	return int64(r.sizes.Events)
 }
 
+// askEventIDEnd is the id of the last ask's opening event, the highest id the seed writes before
+// the deliveries, which number their own events past it (writeDeliveries).
+func (r *seedRun) askEventIDEnd() int64 {
+	return r.askEventIDBase() + int64(len(r.plan.asks))
+}
+
 // askOpenedPayload is the payload of an ask's opening event, built by model.NewAskEventPayload,
 // which is how a producer builds an ask payload (api/asks.go's create route builds the same
 // value through events.AskEventPayload), so a reader finds on a seeded event the fields it finds
@@ -148,9 +164,184 @@ func askOpenedPayload(ask model.Ask) (string, error) {
 	return string(encoded), nil
 }
 
+// statusMoveOneIn is how many filler `issue.updated` events there are for each one that records
+// a status move. The status is one of the fields an issue update can move (api's
+// issueChangedFields names fourteen: the title, the rank, the priority, the assignee, the labels,
+// the parent, the blockers and the rest). Legion's workflow moves an issue's status at each step
+// of its life: out of triage, into the queue or into backlog or icebox, and through each phase to
+// retro. So the status is a common field of an update, but the other fields together are moved
+// more often. One in three is the seed's own estimate of that share, not a count from
+// production. Each issue holds about ten filler `issue.updated` events at every scale (fifty
+// filler events, one type in five), so one in three gives an issue about three moves, which is
+// the walk from triage of an issue in the middle of its lifecycle.
+const statusMoveOneIn = 3
+
+// statusMoveEvent is the SQL predicate, on the event aliased e, that holds for a status move: an
+// `issue.updated` event whose payload names `status` in `changed`, which are the conditions the
+// backlog move read sets on the event beside its status (api's backlogMoveLateral). The report
+// counts the moves by it, and the seed's test reads them by it.
+const statusMoveEvent = `e.type = 'issue.updated' and e.payload->'changed' @> '"status"'::jsonb`
+
+// planStatusMoves chooses the filler `issue.updated` events that record a status move, and the
+// status each one moves its issue into, by the position of the event in events. Each such event
+// is a move with odds of one in statusMoveOneIn, drawn from a random source of its own, so the
+// draws of the other steps do not move. The moves of an issue walk the lifecycle
+// (model.IssueStatuses) from triage, where every issue is created (model.IssueStatusTriage).
+// Each move goes to a status the issue does not stand in, as a status write must for its event
+// to name `status` in `changed` (api's issueChangedFields). The newest move, by seq, goes into
+// the status that the issue's row holds now. So the newest move of an issue in `backlog` or
+// `icebox` is into that status, which is the event the backlog move read finds (api's
+// backlogMoveLateral), and the moves before it go into and out of the other statuses, backlog
+// and icebox among them.
+//
+// An issue that stands outside triage was moved there, so it takes at least one move: where the
+// odds chose none, one of its `issue.updated` events is drawn to be the move. An issue that
+// stands in triage takes no move or at least two, since one move takes it out of triage. No move
+// goes into `done`: a move into `done` is an `issue.closed` event (api's patch route), which the
+// filler log does not carry. So an issue that stands in `done` takes no move.
+func (r *seedRun) planStatusMoves(events []eventRow) map[int]string {
+	random := rand.New(rand.NewPCG(randomSeed+5, randomSeed^0xbf58476d1ce4e5b9))
+	moves := map[int]string{}
+	var updates, chosen []int
+	candidates := make([]string, 0, len(model.IssueStatuses))
+	// planEvents lays out the events of the issues first, each issue's events together.
+	for position := 0; position < len(events) && events[position].owner == "issue"; {
+		issue := events[position].index
+		updates = updates[:0]
+		for ; position < len(events) && events[position].owner == "issue" && events[position].index == issue; position++ {
+			if fillerEventType(position) == "issue.updated" {
+				updates = append(updates, position)
+			}
+		}
+		status := r.plan.issues[issue].Status
+		if status == "done" {
+			continue
+		}
+		chosen = chosen[:0]
+		for _, update := range updates {
+			if random.IntN(statusMoveOneIn) == 0 {
+				chosen = append(chosen, update)
+			}
+		}
+		switch {
+		case len(chosen) == 0 && len(updates) > 0 && status != model.IssueStatusTriage:
+			chosen = append(chosen, updates[random.IntN(len(updates))])
+		case len(chosen) == 1 && status == model.IssueStatusTriage:
+			chosen = chosen[:0]
+		}
+		from := model.IssueStatusTriage
+		for at, update := range chosen {
+			into := status
+			if at < len(chosen)-1 {
+				// The move before the newest one does not go into the issue's status, so the
+				// newest one moves it.
+				candidates = candidates[:0]
+				for _, candidate := range model.IssueStatuses {
+					if candidate != "done" && candidate != from && (at < len(chosen)-2 || candidate != status) {
+						candidates = append(candidates, candidate)
+					}
+				}
+				into = candidates[random.IntN(len(candidates))]
+			}
+			moves[update] = into
+			from = into
+		}
+	}
+	return moves
+}
+
+// movedIssueQuery reads each issue as the payload of a status move carries it: the columns of
+// its row that api's issueRowStatement reads, its blockers, its primary document, and the
+// repository it resolves to by the server's own rule (refs.IssueRepoTerms).
+var movedIssueQuery = `with recursive subjects as (select key from issues), ` + refs.IssueRepoTerms + `
+	select i.key, i.project_key, i.number, i.title, i.priority, i.rank, i.labels, i.parent_key,
+	       coalesce((select array_agg(l.target_key order by l.target_key) from issue_links l
+	                 where l.issue_key = i.key and l.kind = 'blocked_by'), '{}'),
+	       i.assignee, i.route, i.created_by, i.created_at, i.closed_at,
+	       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and a.is_primary), ''),
+	       ` + refs.IssueRepoColumns + `
+	from issues i
+	` + refs.IssueRepoJoin
+
+// statusMovePayloads is the payload of a status move of each issue, by key, built as the patch
+// route builds it (api's newIssueEventPayload, over model.NewIssueEventPayload): the issue as its
+// row holds it (movedIssueQuery); no reference changes, as on every write that indexes no text;
+// `changed` naming the status alone; the issue's parent chain, parent first up to the root, as
+// `ancestors`; and an empty `thread_logins`, as on every status move that moves no assignee and
+// closes or reopens nothing. statusMovePayload fills in the status, the time and the seq of each
+// move.
+//
+// The issue's advances and its components are left empty. The server resolves both up the
+// parent chain on each read of the issue (api's issueAdvancesTerms and issueComponentsTerms,
+// which no other package can call), and no reader of an `issue.updated` event reads either: the
+// delivery hub reads its key, status and priority, the outbox and the graph census its route,
+// the keyword fill its title and primary document, the browser's refresh rules its `changed`,
+// `ancestors` and `thread_logins`, and the activity list and the backlog move read its status and
+// `changed`. The seed writes no claim, no external link and no document of a role, so the issue
+// holds none of them.
+func (r *seedRun) statusMovePayloads(ctx context.Context) (map[string]model.IssueEventPayload, error) {
+	rows, err := r.database.Pool.Query(ctx, movedIssueQuery)
+	if err != nil {
+		return nil, fmt.Errorf("read the issues the status moves carry: %w", err)
+	}
+	defer rows.Close()
+	payloads := make(map[string]model.IssueEventPayload, len(r.plan.issues))
+	for rows.Next() {
+		var issue model.Issue
+		var createdBy []byte
+		var tooDeep bool
+		if err := rows.Scan(&issue.Key, &issue.Project, &issue.Number, &issue.Title, &issue.Priority,
+			&issue.Rank, &issue.Labels, &issue.Parent, &issue.BlockedBy, &issue.Assignee, &issue.Route,
+			&createdBy, &issue.CreatedAt, &issue.ClosedAt, &issue.PrimaryArtifactID,
+			&issue.Repo, &issue.ResolvedRepo, &tooDeep); err != nil {
+			return nil, fmt.Errorf("read the issues the status moves carry: %w", err)
+		}
+		if tooDeep {
+			return nil, fmt.Errorf("issue %s has a parent chain deeper than the repository walk reads", issue.Key)
+		}
+		if err := json.Unmarshal(createdBy, &issue.CreatedBy); err != nil {
+			return nil, fmt.Errorf("decode the author of issue %s: %w", issue.Key, err)
+		}
+		issue.ExternalLinks = []model.ExternalLink{}
+		payload := model.NewIssueEventPayload(issue, model.ReferenceChanges{})
+		payload.Changed = []string{"status"}
+		payload.ThreadLogins = []string{}
+		payloads[issue.Key] = payload
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the issues the status moves carry: %w", err)
+	}
+	for key, payload := range payloads {
+		ancestors := []string{}
+		for parent := payload.Parent; parent != nil; parent = payloads[*parent].Parent {
+			ancestors = append(ancestors, *parent)
+		}
+		payload.Ancestors = ancestors
+		payloads[key] = payload
+	}
+	return payloads, nil
+}
+
+// statusMovePayload is the payload of event, a move of its issue into status: the issue's payload
+// (statusMovePayloads) with that status, the event's time as the time the row was last written,
+// and the event's seq as the issue's last_seq, as the append fills it in
+// (model.IssueEventPayload.WithOwnerLastSeq).
+func statusMovePayload(payload model.IssueEventPayload, status string, event eventRow) (string, error) {
+	payload.Status = status
+	payload.UpdatedAt = event.createdAt
+	encoded, err := json.Marshal(payload.WithOwnerLastSeq(event.seq))
+	if err != nil {
+		return "", fmt.Errorf("encode the status move of issue %s at seq %d: %w", payload.Key, event.seq, err)
+	}
+	return string(encoded), nil
+}
+
 // writeEvents writes the filler events, the log beside the opening events the asks were written
 // with. Every event is published (`notify` false and `published_at` set), so a server with NATS
-// publishes no backlog of a million events on the first boot after the seed.
+// publishes no backlog of a million events on the first boot after the seed. Some of the
+// `issue.updated` events record a status move of their issue (planStatusMoves) and carry the
+// payload the patch route gives one (statusMovePayloads); every other event carries a payload
+// that only says it is seeded.
 func (r *seedRun) writeEvents(ctx context.Context) error {
 	events := r.planEvents()
 	// The opening events are numbered past the filler events (askEventIDBase), which holds only
@@ -160,6 +351,11 @@ func (r *seedRun) writeEvents(ctx context.Context) error {
 			len(events), r.sizes.Events)
 	}
 	sessions := r.plan.sessions
+	moves := r.planStatusMoves(events)
+	movePayloads, err := r.statusMovePayloads(ctx)
+	if err != nil {
+		return err
+	}
 	if err := r.inBatches(ctx, "events", len(events), 10*batchRows,
 		func(ctx context.Context, tx pgx.Tx, from, to int) error {
 			rows := make([][]any, 0, to-from)
@@ -184,9 +380,16 @@ func (r *seedRun) writeEvents(ctx context.Context) error {
 					before := index/5*3 + min(index%5, 3)
 					actor = sessionActor(sessions[before%len(sessions)])
 				}
+				payload := `{"seeded":true}`
+				if status, move := moves[index]; move {
+					var err error
+					if payload, err = statusMovePayload(movePayloads[r.plan.issues[event.index].Key], status, event); err != nil {
+						return err
+					}
+				}
 				rows = append(rows, []any{
 					int64(index + 1), issueKey, artifactID, projectKey, event.seq,
-					eventTypes[index%len(eventTypes)], actor, `{"seeded":true}`,
+					fillerEventType(index), actor, payload,
 					false, event.createdAt, event.createdAt,
 				})
 			}
@@ -197,8 +400,7 @@ func (r *seedRun) writeEvents(ctx context.Context) error {
 	}
 	// The sequence is set past every id the seed wrote, the asks' opening events included, so a
 	// server appending its first event after the seed does not collide with one of them.
-	_, err := r.database.Pool.Exec(ctx, `select setval('events_id_seq', $1, true)`,
-		r.askEventIDBase()+int64(len(r.plan.asks)))
+	_, err = r.database.Pool.Exec(ctx, `select setval('events_id_seq', $1, true)`, r.askEventIDEnd())
 	if err != nil {
 		return fmt.Errorf("set the events sequence past the seeded ids: %w", err)
 	}
@@ -209,11 +411,17 @@ func (r *seedRun) writeEvents(ctx context.Context) error {
 // project's `next_number` past its highest issue number. events/broker.go's Append reads
 // `last_seq` off the owner row (lockEventOwner) and inserts seq = last_seq + 1, so a seeded issue
 // left at 0 fails the unique (issue_key, seq) on the first comment, ask, message, upload or title
-// edit written to it.
+// edit written to it. An issue's statement also writes the time and the seq of the event at its
+// new `last_seq` as `last_event_at` and `last_event_at_seq`, as the append writes them beside
+// `last_seq` (QueueAppendWithLogins), so a seeded database stands as a deployment does once its
+// fill has run (20261125144002) and the priorities read takes each newest event from the row
+// rather than probing it (api's priorityReadQuery).
 func (r *seedRun) settleEventCounters(ctx context.Context) error {
 	for _, statement := range []string{
-		`update issues i set last_seq = coalesce(e.top, 0)
-		   from (select issue_key, max(seq) as top from events where issue_key is not null group by issue_key) e
+		`update issues i set last_seq = e.seq, last_event_at = e.created_at, last_event_at_seq = e.seq
+		   from (select distinct on (issue_key) issue_key, seq, created_at
+		           from events where issue_key is not null
+		          order by issue_key, seq desc) e
 		  where e.issue_key = i.key`,
 		`update artifacts a set last_seq = coalesce(e.top, 0)
 		   from (select artifact_id, max(seq) as top from events where artifact_id is not null group by artifact_id) e

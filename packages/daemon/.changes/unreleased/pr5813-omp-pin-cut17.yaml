@@ -1,0 +1,16 @@
+kind: Changed
+body: |-
+    The worker image carries Oh My Pi `18.18.6-sami.20261127-055727` of cybermonklabs/oh-my-pi,
+    which `.omp-pin` names, in place of `18.18.6-sami.20261127-010836`. Under gVisor, its bash
+    tool's shell no longer waits for ever on a redirection that reads a FIFO when the writer opened,
+    wrote and closed while the open waited; elsewhere nothing changes. A gateway prefix that
+    redirects a built-in provider keeps the bundled model row and offers no doubled
+    `<provider>/<provider>/` selector. The prompt-cache cut rule leaves the build: automatic context
+    cuts no longer wait for the cache reads they save to pay for the cache write they cause, and the
+    session writes no `compaction-wait`, `compaction-wait-end` or `snapcompact-refusal` record,
+    which no part of Legion reads. Its SQL session store makes and checks the same tables, indexes
+    and grants as `18.18.6-sami.20261127-010836`, so a deployment already on that pin needs no owner
+    run before this one.
+time: 2026-11-27T07:33:56Z
+custom:
+    Issue: pr5813

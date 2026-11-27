@@ -21,8 +21,13 @@ import (
 // and GitHub's spelling of the repository, reading GitHub and Dispatch outside every fact
 // transaction: fillRepositories fills the records written before the record carried its
 // repository, and nameRepositories the records written before it carried GitHub's spelling. The
-// boot runs it before it subscribes to any repository's events, and the refresher runs it again
-// while a record is left (backfillLater).
+// boot runs it (openWorkflow) before it opens the consumers (connect), and the refresher runs it
+// again while a record is left, with intake live (backfillLater). Neither run asks for a follow of
+// a record it fills. The boot's needs none: no fact is prepared or applied before the consumers
+// open, so no change Dispatch makes meanwhile is read against a record that holds no repository
+// yet, and the boot's listing (reconcile) reads Dispatch after the fill has committed and follows
+// each recorded issue it finds resolved to another repository (prepareRecorded). The refresher's
+// is covered where a change made during it is applied (backfillLater says how).
 //
 // A record whose repository the backfill cannot settle — Dispatch resolving none for it, a read of
 // GitHub that fails, a shared clone or a pull request that names another repository — is left as
@@ -222,9 +227,23 @@ func fillOf(ctx context.Context, issue record.Issue, repo ghrepo.Repository, pul
 // without its repository columns (backfillPending, rereadBadAnswers): backfillRepositories as the
 // boot runs it, whose writes take the lock every fact applies under, so no fact applies with a
 // copy of a record read before the fill, and which writes through backfillRecords, so each record
-// it writes is heard and read into the live set at its write's commit. A failure of the store or
-// of Dispatch's listing is logged and tried again on the job's backoff; a record written before
-// the failure is heard all the same.
+// it writes is heard and read into the live set at its write's commit.
+//
+// What the fill writes is not final. Intake is live while this runs, and the fill writes what
+// Dispatch's listing resolved before the fill read GitHub and took the lock. An event that moves
+// the issue in between is prepared against a record that holds no repository, so its
+// preparation reads nothing, stamps no repository and owes no follow (correctionMoves). Applied
+// before the fill commits, the event cannot commit: the observation it writes refuses a record
+// with no repository (record.Store.PutIssue), so the event is delivered again and prepared again.
+// Applied after the fill commits, it carries no read of GitHub to correct the record from, so its
+// correction writes nothing, and, as for every fact no preparation stamped against a record's
+// repository, the engine asks for a follow of the issue at that apply's commit
+// (workflow.Engine.ApplyRepositoryChange, requestFollowOf), which reads Dispatch's listing after
+// that commit and corrects the record off the listing's repository as every follow does. A
+// process that stops between the commit and the ask loses only the ask: the next boot's listing
+// follows each recorded issue it finds resolved to another repository (prepareRecorded). A
+// failure of the store or of Dispatch's listing is logged and tried again on the job's backoff; a
+// record written before the failure is heard all the same.
 func (w *workflowRuntime) backfillLater(ctx context.Context) {
 	left, err := backfillRepositories(ctx, w.pool, backfillRecords{Store: w.records, w: w}, w.dispatch, w.dispatchProject, w.stateDir, w.defaultBranches, w.repositories.renames, w.reads(), w.log)
 	if err != nil {
@@ -245,7 +264,9 @@ func (w *workflowRuntime) backfillLater(ctx context.Context) {
 // the refresher to read the live records again (refreshLive), so a live record it wrote joins the
 // live set and the cache set. Both are hooks of the write's commit (store.OnCommit): a write whose
 // reply is lost and that the store says committed is heard, and its retry, which finds no record
-// left to write, hears nothing twice. The boot's backfill writes through the bare records, since
+// left to write, hears nothing twice. Neither asks for a follow of the record it wrote: a name
+// moves no record, and a change Dispatch made while a fill ran is followed by the engine where it
+// is applied (backfillLater says how). The boot's backfill writes through the bare records, since
 // it runs before GitHub intake hears anything and the boot's own read covers what it writes
 // (heardAtBoot).
 type backfillRecords struct {
