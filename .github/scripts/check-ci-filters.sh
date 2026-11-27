@@ -68,7 +68,12 @@
 #      as one read through an output does,
 #   3. a job or step gated on a filter the table neither lists in GATES nor EXCLUDES, in ci.yaml
 #      or in a workflow it calls, where the filter is the one the resolved condition names, or
-#      the one it reads out of the list,
+#      the one it reads out of the list. A term that tests an output for not being 'true'
+#      (`needs.changes.outputs.<x> != 'true'`) gates on no filter: it holds the job back where
+#      <x> selected its own job, as dispatch-references' holds the preview off a run whose full
+#      lane runs (.github/ci-notes/ci.md#the-reference-rows-preview-job), and reads none of <x>'s
+#      paths; the same rule refuses one whose <x> the table neither lists nor EXCLUDES, an output
+#      empty on every run, so the term always holds,
 #   4. a run: line of a job of ci.yaml, or of a job of a workflow ci.yaml calls - which is where
 #      such a job's steps are - that starts a go command (test, vet, build, run, list, install,
 #      generate) no Run of a gate on that job claims and no exact entry's step holds, or a

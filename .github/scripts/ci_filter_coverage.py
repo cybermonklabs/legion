@@ -1214,6 +1214,14 @@ def check_output_steps(document: dict, filters: dict, problems: list[Annotation]
 
 
 GATE_REF = re.compile(r"needs\.changes\.outputs\.([A-Za-z0-9_-]+)")
+# A test that an output of the changes job is not 'true': the job or step runs where that filter
+# did NOT select its own job, so the term holds it back beside another job and reads none of that
+# filter's paths. ci.yaml's dispatch-references carries one for dispatch_browser, so the preview
+# stays off a run whose full lane runs the same rows
+# (.github/ci-notes/ci.md#the-reference-rows-preview-job). gated_filters leaves such a name out,
+# and check_table refuses one that names no filter, whose output is empty on every run, so the
+# term would always hold.
+NOT_TRUE_REF = re.compile(r"needs\.changes\.outputs\.([A-Za-z0-9_-]+)\s*!=\s*'(?i:true)'")
 
 # The one output of the changes job that carries a list rather than one filter's verdict:
 # dorny/paths-filter's own `changes` output, the JSON array of every filter that matched
@@ -1262,10 +1270,12 @@ LIST_SHAPE = re.compile(
 def gated_filters(condition: str) -> list:
     """The filters a condition, resolved to ci.yaml's expressions, gates on: each output of the
     changes job it tests, which carries the one filter of its name, and each filter a `contains`
-    reads out of LIST_OUTPUT. LIST_OUTPUT itself is no filter, and is not one of them. The one
-    reader of a gate's filter for every rule here: a rule that reads a step's or a job's gate
-    reads it through this, so the two shapes a gate takes are read the same everywhere."""
-    return [name for name in GATE_REF.findall(condition) if name != LIST_OUTPUT] + LIST_GATE.findall(condition)
+    reads out of LIST_OUTPUT. LIST_OUTPUT itself is no filter, and is not one of them, nor is an
+    output the condition tests only for not being 'true' (NOT_TRUE_REF). The one reader of a
+    gate's filter for every rule here: a rule that reads a step's or a job's gate reads it through
+    this, so the two shapes a gate takes are read the same everywhere."""
+    tested = NOT_TRUE_REF.sub("", condition)
+    return [name for name in GATE_REF.findall(tested) if name != LIST_OUTPUT] + LIST_GATE.findall(condition)
 
 
 def list_refusals(condition: str, path: str, job_id: str, step) -> list:
@@ -2067,6 +2077,15 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
                     problems.append(error(path, f"{where} is gated on filter {name}, which no file of "
                                                 f"{GATES_DIR} declares as a gate or as EXCLUDED; add the gate "
                                                 f"with its reads"))
+            # A not-true test gates on no filter, but the output it reads must still carry one: an
+            # output the changes job does not hand on is empty, so the test always holds.
+            for name in NOT_TRUE_REF.findall(resolved):
+                where = where_if(job_id, step)
+                if name not in gates and name not in excluded and (path, where, name) not in refused:
+                    refused.add((path, where, name))
+                    problems.append(error(path, f"{where} tests needs.changes.outputs.{name} for not being "
+                                                f"'true', and no file of {GATES_DIR} declares a filter {name}, "
+                                                f"so that output is empty on every run and the test always holds"))
     # Rule 23's spelling half over the values ci.yaml's jobs hand the workflows they call, which
     # are what a called file's conditions are resolved through.
     for job_id, job in caller_jobs.items():

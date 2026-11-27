@@ -3243,6 +3243,47 @@ check "naming the gated caller" \
   "$(contains "$out" 'job rows of .github/workflows/suite.yaml, which job suite calls step "Build the app" runs `go build ./cmd/app ./other`')"
 check "and not the EXCLUDED one" "$(is "$(contains "$out" 'which job preview calls')" false)"
 
+# ci.yaml's dispatch-references runs only where the run's full lane does not
+# (.github/ci-notes/ci.md#the-reference-rows-preview-job): its if: also tests the gated caller's
+# output for not being 'true'. That term holds the job back where the other filter selected its
+# own job; it reads none of that filter's paths, so it gates the job on no filter of its own and
+# the EXCLUDED caller still hands its skip to the jobs it runs. Read as a gate, the term would make
+# the check ask the preview for a Run of every go command of the called file.
+echo "case: an EXCLUDED caller's if: that tests the gated caller's output for not being 'true' is still read under the gated caller alone"
+root=$(fixture called-workflow-excluded-caller-not-true)
+calls_workflow "$root"
+replace "$root/.github/workflows/suite.yaml" "        if: always()" "        if: always() && inputs.ci-ok-changes != ''"
+replace "$root/.github/workflows/ci.yaml" "CI_OK_EXEMPT: '[\"ci-ok\", \"pr-title\"]'" \
+  "CI_OK_EXEMPT: '[\"ci-ok\", \"pr-title\", \"preview\"]'"
+cat >> "$root/.github/workflows/ci.yaml" <<'YAML'
+  preview:
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.image == 'true' && needs.changes.outputs.suite != 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    uses: ./.github/workflows/suite.yaml
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "asks the EXCLUDED caller for no Run" "$(is "$(contains "$out" 'which job preview calls')" false)"
+
+echo "case: a test that names no output of the changes job for not being 'true' is refused"
+# An output the changes job does not hand on is empty on every run, so `!= 'true'` always holds
+# and the term holds nothing back; a misspelt name would read as a term that works.
+root=$(fixture called-workflow-excluded-caller-not-true-misspelt)
+calls_workflow "$root"
+replace "$root/.github/workflows/suite.yaml" "        if: always()" "        if: always() && inputs.ci-ok-changes != ''"
+replace "$root/.github/workflows/ci.yaml" "CI_OK_EXEMPT: '[\"ci-ok\", \"pr-title\"]'" \
+  "CI_OK_EXEMPT: '[\"ci-ok\", \"pr-title\", \"preview\"]'"
+cat >> "$root/.github/workflows/ci.yaml" <<'YAML'
+  preview:
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.image == 'true' && needs.changes.outputs.suitx != 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    uses: ./.github/workflows/suite.yaml
+YAML
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the output and why the term holds nothing back" \
+  "$(contains "$out" "job preview tests needs.changes.outputs.suitx for not being 'true', and no file of .github/ci-gates declares a filter suitx, so that output is empty on every run and the test always holds")"
+
 # The rule of .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
 # for a step's `env:` rests on this: the called file's env: and shell: reach the gate's go commands,
 # so one the check cannot read drops them to everything a go command can read.
