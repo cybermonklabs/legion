@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -52,16 +53,23 @@ func TestAnchorRefreshEventsDoNotWakeAgents(t *testing.T) {
 // Quiet and Notify answer different questions, and the difference is the whole point of Quiet:
 // an agent's comment, document or ask wakes nobody (Notify false) but is the activity a session
 // following `notifications.dispatch.issue.<KEY>.>` subscribed for, so it is not quiet.
+//
+// An issue.updated whose changed names resolved_priority or priority_from alone is the event a
+// write to another issue appends on each issue whose resolved priority, or the issue it comes
+// from, it moved (dispatch://INFRA-5793/spec#b-j-events): quiet whoever wrote it, in the typed
+// payload the append holds and in the map the outbox decodes. A changed that also names another
+// field, or names none, is an ordinary edit.
 func TestQuietSeparatesAnAgentsActivityFromBookkeeping(t *testing.T) {
 	t.Parallel()
 	broker := NewBroker()
 	agent := model.Actor{Kind: "session", ID: "5a660655-04ad-4ce0-8a9b-93dd03c412b7"}
 	person := model.Actor{Kind: "user", ID: "alice"}
-	for _, tc := range []struct {
+	type quietCase struct {
 		name  string
 		event model.Event
 		quiet bool
-	}{
+	}
+	cases := []quietCase{
 		{name: "an agent's comment", event: model.Event{Type: "comment.created", Actor: agent}, quiet: false},
 		{name: "an agent's document", event: model.Event{Type: "artifact.created", Actor: agent}, quiet: false},
 		{name: "an agent's ask", event: model.Event{Type: "ask.opened", Actor: agent}, quiet: false},
@@ -128,7 +136,35 @@ func TestQuietSeparatesAnAgentsActivityFromBookkeeping(t *testing.T) {
 			event: model.Event{Type: "artifact.version", Actor: agent, Payload: map[string]any{"version": map[string]any{"named": true}}},
 			quiet: false,
 		},
+	}
+	for _, resolved := range []struct {
+		changed []string
+		quiet   bool
+	}{
+		{[]string{"resolved_priority"}, true},
+		{[]string{"priority_from"}, true},
+		{[]string{"resolved_priority", "priority_from"}, true},
+		{[]string{"priority", "resolved_priority"}, false},
+		{[]string{}, false},
+		{nil, false},
 	} {
+		what := "an issue update with no changed"
+		mapped := map[string]any{"key": "T-2", "resolved_priority": 0, "priority_from": "T-1"}
+		if resolved.changed != nil {
+			what = fmt.Sprintf("an issue update whose changed is %q", resolved.changed)
+			names := make([]any, len(resolved.changed))
+			for i, field := range resolved.changed {
+				names[i] = field
+			}
+			mapped["changed"] = names
+		}
+		typed := model.IssueEventPayload{Issue: model.Issue{Key: "T-2", ResolvedPriority: new(0), PriorityFrom: new("T-1")}, Changed: resolved.changed}
+		cases = append(cases,
+			quietCase{name: what, event: model.Event{Type: "issue.updated", Actor: person, Payload: typed}, quiet: resolved.quiet},
+			quietCase{name: what + ", as the outbox scanned it", event: model.Event{Type: "issue.updated", Actor: person, Payload: mapped}, quiet: resolved.quiet},
+		)
+	}
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Quiet(tc.event); got != tc.quiet {
 				t.Fatalf("Quiet(%s by %s) = %t, want %t", tc.event.Type, tc.event.Actor.Kind, got, tc.quiet)

@@ -1522,6 +1522,35 @@ func unownedP0Fields(t *testing.T, body json.RawMessage, kind string) map[string
 	return map[string]any{"unowned_p0": decoded["unowned_p0"], "status": decoded["status"]}
 }
 
+// unownedP0Keys is the keys of the unowned P0 list a body of kind shows (unownedP0Fields).
+func unownedP0Keys(t *testing.T, body json.RawMessage, kind string) map[string]bool {
+	t.Helper()
+	keys := map[string]bool{}
+	listed, _ := unownedP0Fields(t, body, kind)["unowned_p0"].([]any)
+	for _, issue := range listed {
+		if fields, ok := issue.(map[string]any); ok {
+			if key, ok := fields["key"].(string); ok {
+				keys[key] = true
+			}
+		}
+	}
+	return keys
+}
+
+// freshUnownedP0 is the keys of the unowned P0 list GET /api/v1/delivery/measures answers now for
+// the window a timeline or measures body names: a fresh read, which no hub state stands in.
+func freshUnownedP0(t *testing.T, handler http.Handler, body json.RawMessage) map[string]bool {
+	t.Helper()
+	return unownedP0Keys(t, getBody(t, handler, windowTarget(t, deliveryLiveMeasures, body, "")), deliveryLiveMeasures)
+}
+
+// TestAnUnownedP0ChangeReachesEveryTimelineAndMeasuresView: each write that moves the unowned P0
+// list reaches every timeline and measures view as one delta each, landing on GET /measures. The
+// list holds an issue with no priority of its own whose parent is P0
+// (dispatch://INFRA-5793/spec#b-j-inherit), so a child filed under the P0 joins it, the parent's
+// lowering to P1 takes the child off, and its raising to P0 again brings the child back. Each of
+// those steps reads a fresh GET first, so a build that reads the child's own priority alone fails
+// there by name rather than wait for a delta it never sends.
 func TestAnUnownedP0ChangeReachesEveryTimelineAndMeasuresView(t *testing.T) {
 	t.Parallel()
 	rig := newHubRig(t, nil)
@@ -1536,7 +1565,13 @@ func TestAnUnownedP0ChangeReachesEveryTimelineAndMeasuresView(t *testing.T) {
 	for sub, snapshot := range conn.firstSnapshots(t, "t", "m") {
 		held[sub] = snapshot.Body
 	}
-	var created string
+	var created, child string
+	unownedNow := func(after string, want bool) {
+		t.Helper()
+		if got := freshUnownedP0(t, rig.handler, held["m"])[child]; got != want {
+			t.Fatalf("after %s, GET /api/v1/delivery/measures lists %s, which has no priority of its own under %s, on unowned_p0: %t, want %t", after, child, seed, got, want)
+		}
+	}
 	for _, step := range []struct {
 		name string
 		act  func()
@@ -1558,7 +1593,18 @@ func TestAnUnownedP0ChangeReachesEveryTimelineAndMeasuresView(t *testing.T) {
 		{"a P1 raised to P0", func() { patchHubIssue(t, rig.handler, seed, map[string]any{"priority": 0}) }},
 		{"a P0 routed", func() { patchHubIssue(t, rig.handler, seed, map[string]any{"route": "role:reviewer"}) }},
 		{"a routed P0 unrouted", func() { patchHubIssue(t, rig.handler, seed, map[string]any{"route": ""}) }},
-		{"a P0 lowered to P1", func() { patchHubIssue(t, rig.handler, seed, map[string]any{"priority": 1}) }},
+		{"a child with no priority filed under the P0", func() {
+			child = createHubIssue(t, rig.handler, map[string]any{"title": "Restore the failing service", "parent": seed})
+			unownedNow("a child with no priority filed under the P0", true)
+		}},
+		{"a P0 lowered to P1", func() {
+			patchHubIssue(t, rig.handler, seed, map[string]any{"priority": 1})
+			unownedNow("its parent lowered to P1", false)
+		}},
+		{"the P1 parent raised to P0 again", func() {
+			patchHubIssue(t, rig.handler, seed, map[string]any{"priority": 0})
+			unownedNow("its parent raised to P0 again", true)
+		}},
 	} {
 		step.act()
 		for range 2 {

@@ -409,7 +409,9 @@ func TestGetDeliveryTimelineCreditsAMergeQueueMergeToTheDeployCreatedAfterIt(t *
 // seedDeliveryIssueFacts seeds what the timeline joins a pull request's issue against: project
 // ACME, its component tree from two sources (platform > api from acme/arch, and docs from
 // acme/docs), ACME-1 (P0, attached to api), its child ACME-2 (P2, attaching nothing of its own,
-// so it inherits api), and ACME-3 (no priority, attached to none with a reason).
+// so it inherits api), ACME-3 (no priority, attached to none with a reason), and ACME-4, another
+// child of ACME-1 with no priority and no attachment of its own, so it takes P0 from ACME-1 as it
+// inherits api from it.
 func seedDeliveryIssueFacts(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := t.Context()
@@ -427,7 +429,8 @@ func seedDeliveryIssueFacts(t *testing.T, database *store.Store) {
 			('ACME-1', 'ACME', 1, 'Ship widgets', 'todo', 0, '{"kind":"system","id":"test"}', 'U'),
 			('ACME-3', 'ACME', 3, 'Tidy docs', 'todo', null, '{"kind":"system","id":"test"}', 'W')`,
 		`insert into issues (key, project_key, number, title, status, priority, parent_key, created_by, rank) values
-			('ACME-2', 'ACME', 2, 'Widget child', 'todo', 2, 'ACME-1', '{"kind":"system","id":"test"}', 'V')`,
+			('ACME-2', 'ACME', 2, 'Widget child', 'todo', 2, 'ACME-1', '{"kind":"system","id":"test"}', 'V'),
+			('ACME-4', 'ACME', 4, 'Follow-up fix', 'todo', null, 'ACME-1', '{"kind":"system","id":"test"}', 'X')`,
 		`insert into issue_components (issue_key, mode, reason) values ('ACME-1', 'explicit', null), ('ACME-3', 'none', 'chore')`,
 		`insert into issue_component_members (issue_key, project_key, component_id) values ('ACME-1', 'ACME', 'api')`,
 	} {
@@ -461,8 +464,10 @@ func deliveryPRIDs(prs []delivery.DeliveryPRView) []string {
 
 // TestGetDeliveryTimelineJoinsIssueFactsAndCountsFacets proves each PR carries its issue's title,
 // P0-P3 priority and effective components (inherited from the nearest ancestor that chose, as the
-// issue read resolves them), that the component facet's parent selection includes its children,
-// and that facet_counts count each facet with every other facet and the search applied and its own
+// issue read resolves them), that the priority is the one the issue resolves to (ACME-4, with none
+// of its own, takes P0 from ACME-1, which its row names in priority_from, and is selected and
+// counted under P0), that the component facet's parent selection includes its children, and that
+// facet_counts count each facet with every other facet and the search applied and its own
 // selection ignored, while color_counts ignore every facet.
 func TestGetDeliveryTimelineJoinsIssueFactsAndCountsFacets(t *testing.T) {
 	t.Parallel()
@@ -482,6 +487,7 @@ func TestGetDeliveryTimelineJoinsIssueFactsAndCountsFacets(t *testing.T) {
 	for _, pr := range []delivery.DeliveryPullRequest{
 		{Repo: "acme/widgets", Number: 1, Title: "feat: ship the api", Author: "octocat", IssueKey: key("ACME-1")},
 		{Repo: "acme/widgets", Number: 2, Title: "fix: child widget", Author: "hubot", IssueKey: key("ACME-2"), Rework: true},
+		{Repo: "acme/widgets", Number: 5, Title: "fix: follow up the launch", Author: "octocat", IssueKey: key("ACME-4")},
 		{Repo: "acme/other", Number: 3, Title: "docs: tidy", Author: "octocat", IssueKey: key("ACME-3")},
 		{Repo: "acme/other", Number: 4, Title: "chore: no issue", Author: "hubot"},
 	} {
@@ -500,18 +506,21 @@ func TestGetDeliveryTimelineJoinsIssueFactsAndCountsFacets(t *testing.T) {
 		byID[pr.ID] = pr
 	}
 	for id, want := range map[string]struct {
-		title, priority *string
-		components      []string
+		title, priority, from *string
+		components            []string
 	}{
-		"acme/widgets#1": {key("Ship widgets"), key("P0"), []string{"ACME/api"}},
-		"acme/widgets#2": {key("Widget child"), key("P2"), []string{"ACME/api"}},
-		"acme/other#3":   {key("Tidy docs"), nil, []string{}},
-		"acme/other#4":   {nil, nil, []string{}},
+		"acme/widgets#1": {key("Ship widgets"), key("P0"), nil, []string{"ACME/api"}},
+		"acme/widgets#2": {key("Widget child"), key("P2"), nil, []string{"ACME/api"}},
+		"acme/widgets#5": {key("Follow-up fix"), key("P0"), key("ACME-1"), []string{"ACME/api"}},
+		"acme/other#3":   {key("Tidy docs"), nil, nil, []string{}},
+		"acme/other#4":   {nil, nil, nil, []string{}},
 	} {
 		got := byID[id]
-		if !reflect.DeepEqual(got.IssueTitle, want.title) || !reflect.DeepEqual(got.Priority, want.priority) || !reflect.DeepEqual(got.Components, want.components) {
-			t.Errorf("%s: issue_title=%v priority=%v components=%v, want %v %v %v", id,
-				deref(got.IssueTitle), deref(got.Priority), got.Components, deref(want.title), deref(want.priority), want.components)
+		if !reflect.DeepEqual(got.IssueTitle, want.title) || !reflect.DeepEqual(got.Priority, want.priority) ||
+			!reflect.DeepEqual(got.PriorityFrom, want.from) || !reflect.DeepEqual(got.Components, want.components) {
+			t.Errorf("%s: issue_title=%v priority=%v priority_from=%v components=%v, want %v %v %v %v", id,
+				deref(got.IssueTitle), deref(got.Priority), deref(got.PriorityFrom), got.Components,
+				deref(want.title), deref(want.priority), deref(want.from), want.components)
 		}
 	}
 	wantComponents := map[string]delivery.DeliveryComponentView{
@@ -522,16 +531,17 @@ func TestGetDeliveryTimelineJoinsIssueFactsAndCountsFacets(t *testing.T) {
 	if !reflect.DeepEqual(body.Components, wantComponents) {
 		t.Errorf("components = %+v, want %+v", body.Components, wantComponents)
 	}
-	if want := map[string]string{"ACME-1": "Ship widgets", "ACME-2": "Widget child", "ACME-3": "Tidy docs"}; !reflect.DeepEqual(body.IssueTitles, want) {
+	if want := map[string]string{"ACME-1": "Ship widgets", "ACME-2": "Widget child", "ACME-3": "Tidy docs", "ACME-4": "Follow-up fix"}; !reflect.DeepEqual(body.IssueTitles, want) {
 		t.Errorf("issue_titles = %v, want %v", body.IssueTitles, want)
 	}
 
 	// A parent component's selection includes its children; the placeholders select by cause.
 	for query, want := range map[string][]string{
-		"component=ACME/platform":                  {"acme/widgets#1", "acme/widgets#2"},
+		"component=ACME/platform":                  {"acme/widgets#1", "acme/widgets#2", "acme/widgets#5"},
 		"component=__no_component__":               {"acme/other#3"},
 		"component=__no_issue__":                   {"acme/other#4"},
 		"priority=__no_priority__":                 {"acme/other#3"},
+		"priority=P0":                              {"acme/widgets#1", "acme/widgets#5"},
 		"priority=p2&priority=__no_issue__":        {"acme/other#4", "acme/widgets#2"},
 		"parent_agent=__no_session__&author=hubot": {"acme/other#4", "acme/widgets#2"},
 		"q=CHILD":       {"acme/widgets#2"},
@@ -548,15 +558,15 @@ func TestGetDeliveryTimelineJoinsIssueFactsAndCountsFacets(t *testing.T) {
 	// acme/widgets' PRs; the search applies to every count.
 	counted := getDeliveryTimeline(t, handler, window+"&repo=acme/widgets")
 	wantCounts := map[string]map[string]int{
-		"repo":         {"acme/widgets": 2, "acme/other": 2},
-		"parent_agent": {"__no_session__": 2},
+		"repo":         {"acme/widgets": 3, "acme/other": 2},
+		"parent_agent": {"__no_session__": 3},
 		"session":      {},
-		"issue":        {"ACME-1": 1, "ACME-2": 1},
-		"priority":     {"P0": 1, "P2": 1},
-		"component":    {"ACME/api": 2},
-		"author":       {"octocat": 1, "hubot": 1},
-		"rework":       {"value": 1, "rework": 1},
-		"deployed":     {"waiting": 2},
+		"issue":        {"ACME-1": 1, "ACME-2": 1, "ACME-4": 1},
+		"priority":     {"P0": 2, "P2": 1},
+		"component":    {"ACME/api": 3},
+		"author":       {"octocat": 2, "hubot": 1},
+		"rework":       {"value": 2, "rework": 1},
+		"deployed":     {"waiting": 3},
 	}
 	if !reflect.DeepEqual(counted.FacetCounts, wantCounts) {
 		t.Errorf("facet_counts under repo=acme/widgets = %v, want %v", counted.FacetCounts, wantCounts)
@@ -566,11 +576,11 @@ func TestGetDeliveryTimelineJoinsIssueFactsAndCountsFacets(t *testing.T) {
 		t.Errorf("facet_counts.repo under q=api = %v, want only acme/widgets#1's repository", got)
 	}
 	wantColors := map[string]map[string]int{
-		"repo":         {"acme/widgets": 2, "acme/other": 2},
-		"author":       {"octocat": 2, "hubot": 2},
-		"priority":     {"P0": 1, "P2": 1, "__no_priority__": 1, "__no_issue__": 1},
-		"component":    {"ACME/api": 2, "__no_component__": 1, "__no_issue__": 1},
-		"parent_agent": {"__no_session__": 4},
+		"repo":         {"acme/widgets": 3, "acme/other": 2},
+		"author":       {"octocat": 3, "hubot": 2},
+		"priority":     {"P0": 2, "P2": 1, "__no_priority__": 1, "__no_issue__": 1},
+		"component":    {"ACME/api": 3, "__no_component__": 1, "__no_issue__": 1},
+		"parent_agent": {"__no_session__": 5},
 	}
 	if !reflect.DeepEqual(counted.ColorCounts, wantColors) {
 		t.Errorf("color_counts = %v, want %v (no facet applied)", counted.ColorCounts, wantColors)

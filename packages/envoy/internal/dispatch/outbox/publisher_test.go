@@ -1607,10 +1607,14 @@ func TestRunPublishesEveryEventButRoutesOnlyNotifyingEvents(t *testing.T) {
 
 // What a reader following an owner topic is given to decide on. `notify` is false for every
 // event an agent wrote, so a reader that skipped on it never saw an agent's comment on an issue
-// it had subscribed to; `quiet` says whether the event carries anything at all.
+// it had subscribed to; `quiet` says whether the event carries anything at all. An issue.updated
+// of the resolved fields alone, which a person's write to another issue appends on each issue
+// whose resolved priority it moved (dispatch://INFRA-5793/spec#b-j-events), carries nothing to
+// act on, and its stored notify is false although a person wrote it.
 func TestEnvelopePayloadStatesWhetherTheEventIsQuiet(t *testing.T) {
 	t.Parallel()
 	agent := model.Actor{Kind: "session", ID: "5a660655-04ad-4ce0-8a9b-93dd03c412b7"}
+	person := model.Actor{Kind: "user", ID: "alice"}
 	for _, tc := range []struct {
 		name  string
 		event model.Event
@@ -1629,6 +1633,17 @@ func TestEnvelopePayloadStatesWhetherTheEventIsQuiet(t *testing.T) {
 			event: model.Event{
 				ID: 2, IssueKey: new("T-1"), Type: "comment.delivery", Actor: agent,
 				Payload: map[string]any{"id": "comment-9", "state": "delivered"},
+			},
+			quiet: true,
+		},
+		{
+			name: "a person's write to T-1 moving the resolved priority of T-2, as the outbox scanned it",
+			event: model.Event{
+				ID: 3, IssueKey: new("T-2"), Type: "issue.updated", Actor: person,
+				Payload: map[string]any{
+					"key": "T-2", "priority": nil, "resolved_priority": 0, "priority_from": "T-1",
+					"changed": []any{"resolved_priority", "priority_from"},
+				},
 			},
 			quiet: true,
 		},
@@ -1654,7 +1669,7 @@ func TestEnvelopePayloadStatesWhetherTheEventIsQuiet(t *testing.T) {
 				t.Fatalf("payload quiet = %t, want %t", payload.Quiet, tc.quiet)
 			}
 			if payload.Notify {
-				t.Fatalf("payload notify = true, want false: an agent's event wakes no route")
+				t.Fatalf("payload notify = true, want false: neither an agent's event nor a quiet one wakes a route")
 			}
 		})
 	}
