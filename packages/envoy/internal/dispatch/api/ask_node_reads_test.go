@@ -46,7 +46,8 @@ func describedAnswer(answer *model.AskAnswer) string {
 // /api/v1/asks/{id}, the same columns), the spec's open questions on the Decisions read
 // (specOpenQuestions) and a search hit's ask (attachAskStates). So does every read that picks asks
 // by their answer state: the issue's asks by state (listIssueAsksQueryOpen and
-// listIssueAsksQueryAnswered), the open asks of the issue's detail (the first of them) and the
+// listIssueAsksQueryAnswered), the issue's ask page by state (askThreadPageQueryOpen and
+// askThreadPageQueryAnswered), the open asks of the issue's detail (the first of them) and the
 // Inbox (listInbox, askNodeStateOf). The node and the row differ only while a process of the
 // release before has written the row and the decisions step's catch-up has not yet stated that
 // write on the node: here the catch-up stated alice's answer on both (asks.Settle with
@@ -146,6 +147,30 @@ func TestEveryReadOfAnAnswerReadsTheAsksNodeNotItsRow(t *testing.T) {
 		}
 		if held != list.holds {
 			t.Errorf("%s hold ask %s: %t, want %t: its node holds it answered, though its row reads open", list.reader, askID, held, list.holds)
+		}
+	}
+	for _, page := range []struct {
+		reader, state string
+		holds         bool
+	}{
+		{"the issue's open ask page (GET /api/v1/issues/{key}/asks?order=activity&state=open, askThreadPageQueryOpen)", "open", false},
+		{"the issue's answered ask page (GET /api/v1/issues/{key}/asks?order=activity&state=answered, askThreadPageQueryAnswered)", "answered", true},
+	} {
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/asks?order=activity&state="+page.state, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s: status=%d body=%s", page.reader, response.Code, response.Body.String())
+		}
+		held := false
+		for _, ask := range decodeBody[struct {
+			Threads []model.Ask `json:"threads"`
+		}](t, response).Threads {
+			if ask.ID == askID {
+				held = true
+				nodes(page.reader, ask.State, ask.Answer)
+			}
+		}
+		if held != page.holds {
+			t.Errorf("%s hold ask %s: %t, want %t: its node holds it answered, though its row reads open", page.reader, askID, held, page.holds)
 		}
 	}
 
