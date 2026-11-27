@@ -65,7 +65,17 @@ func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Durati
 	killed := procgroup.Configure(cmd)
 	// A start that failed leaves cmd.Process nil (procgroup.Run), so a budget already spent before
 	// the start still reads as a timeout below.
-	err := procgroup.Run(cmd, start)
+	var err error
+	if procgroup.ControlLateWait() { // CONTROL ONLY (r63 latewait): 1.5 s between the start and the Wait
+		var done func()
+		if done, err = start(cmd); err == nil {
+			time.Sleep(1500 * time.Millisecond)
+			err = cmd.Wait()
+			done()
+		}
+	} else {
+		err = procgroup.Run(cmd, start)
+	}
 	command := strings.Join(args, " ")
 	// The budget ended the command only when that stop is what ended it (procgroup.Configure,
 	// never the deadline having passed by the time the wait returned) and the budget is what ended
