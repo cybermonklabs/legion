@@ -67,9 +67,10 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 //
 // Two rules say whether an issue of the tree is held by something the daemon knows of, and each
 // is written once: lineHolds.waitsByDesign, the ladder of the daemon's own waits, which holds a
-// tree back only while the project's line can still move, save its second clause (an issue in
-// verifying), and lineHolds.waitsOnWorkOutsideItsTree. That clause and that wait are the two
-// that hold a tree back whether or not the line can move. everyIssueWaitsByDesign asks all of
+// tree back only while the project's line can still move, save its second clause,
+// waitsForItsChecks, and lineHolds.waitsOnWorkOutsideItsTree. That clause and that wait are the
+// two that hold a tree back whether or not the line can move, and each is one function both
+// readers call: everyIssueWaitsByDesign asks all of
 // them of every member of a quiet tree, and lineCanMove asks the ladder of every slot holder. A
 // member in implementing under a root that waits on a person is the case the ladder's last
 // clause decides: the root's wait is the root's alone, and the tree is told.
@@ -642,7 +643,7 @@ func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 	if issue.AwaitingPerson() {
 		return true
 	}
-	if issue.Phase == phase.Verifying {
+	if waitsForItsChecks(issue) {
 		return true
 	}
 	if entry, waits := h.line[issue.Key]; waits {
@@ -653,6 +654,20 @@ func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 		return false
 	}
 	return silences(h.words[issue.Key])
+}
+
+// waitsForItsChecks says whether issue is a merged issue whose close waits for the checks of its
+// goal: an issue in `verifying`, which the merge put there and which no role works. It is a wait
+// by design that holds its tree back whether or not the project's line can move, as
+// waitsOnWorkOutsideItsTree is: nothing the line does moves it, and only a check's result or the
+// next change it starts ends it. It is written here, in one function, because both readers ask
+// it — waitsByDesign, as the one clause of its ladder that stands outside the line's liveness,
+// and everyIssueWaitsByDesign, which asks it of every member before it asks the ladder at all
+// (dispatch://INFRA-2560 R5, cybermonklabs/legion#5558). Two copies of this one rule is how the
+// first fix for a root waiting in verifying came to reach only the case where the line could
+// move.
+func waitsForItsChecks(issue record.Issue) bool {
+	return issue.Phase == phase.Verifying
 }
 
 // waitsOnWorkOutsideItsTree says whether issue is a started issue that gave its slot back and
@@ -870,7 +885,7 @@ func (a *Admission) lineCanMove(issues []record.Issue, holds lineHolds, working 
 // (record.TreeQuiet.AtWork, which the caller asks before this walk).
 func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds lineHolds, canMove bool) bool {
 	for _, issue := range members {
-		if issue.Phase == phase.Verifying || holds.waitsOnWorkOutsideItsTree(issue) || canMove && holds.waitsByDesign(issue) {
+		if waitsForItsChecks(issue) || holds.waitsOnWorkOutsideItsTree(issue) || canMove && holds.waitsByDesign(issue) {
 			continue
 		}
 		// Nothing of the daemon's holds this issue: it has stopped, and so has its tree.

@@ -467,20 +467,22 @@ func TestTheWayBackRunsForEachProjectInAnyOrder(t *testing.T) {
 	})
 }
 
-// mainsNewestMigration is the newest migration main carries: `20261126163320_state_events`, the
-// state events' kind list, which cybermonklabs/legion#4432 landed on main and the merge of main
-// `dc18a1fe` brought here. It names that migration and the change that wrote it, not whichever
-// merge of main was this branch's last: a later merge that brings no migration leaves this line
-// true, and the line goes stale only when main lands a migration above this one, which is the
-// one event that asks the reader to act.
-const mainsNewestMigration = 20261126163320
+// doneByChecksStandsAbove is the newest migration main carries: `20261126163320_state_events`,
+// the state events' kind list, which cybermonklabs/legion#4432 landed on main and the merge of
+// main `dc18a1fe` brought here. It names that migration and the change that wrote it, not
+// whichever merge of main was this branch's last: a later merge that brings no migration leaves
+// this line true, and the line goes stale only when main lands a migration above this one, which
+// is the one event that asks the reader to act. The name is this file's own, since
+// migration_upgrade_from_main_test.go, which is main's, declares `mainsNewestMigration` in the
+// same package for main's newest at another merge.
+const doneByChecksStandsAbove = 20261126163320
 
 // This migration stands above every migration main carries. Migrate applies every
 // unrecorded migration in version order, so on a database main migrated, a migration of main
 // above this one is already recorded when this one runs; this one would then write
 // outbox_kind_check, issues_phase_check and its four functions over main's, and a list that leaves
 // out the kind of a waiting row fails its ADD CONSTRAINT (SQLSTATE 23514). This test holds the
-// stamp against mainsNewestMigration, a constant, so a merge of main that brings no migration
+// stamp against doneByChecksStandsAbove, a constant, so a merge of main that brings no migration
 // does not turn it red. What does is
 // TestADatabaseMainMigratedEndsAtTheSchemaOfAFreshDatabase, where that migration rewrites a list or
 // a function this one writes (its control, this branch at the old stamp below main's
@@ -493,12 +495,12 @@ func TestTheDoneByChecksMigrationStandsAboveEveryMigrationMainCarries(t *testing
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	if !slices.ContainsFunc(all, func(migration migrations.Migration) bool { return migration.Version == mainsNewestMigration }) {
-		t.Fatalf("no embedded migration is %d: mainsNewestMigration names the newest migration main carries", mainsNewestMigration)
+	if !slices.ContainsFunc(all, func(migration migrations.Migration) bool { return migration.Version == doneByChecksStandsAbove }) {
+		t.Fatalf("no embedded migration is %d: doneByChecksStandsAbove names the newest migration main carries", doneByChecksStandsAbove)
 	}
-	if doneByChecksVersion <= mainsNewestMigration {
+	if doneByChecksVersion <= doneByChecksStandsAbove {
 		t.Fatalf("the done-by-checks migration is %d, which stands below main's newest, %d: rename the file and this one above it, and move every reference with it",
-			doneByChecksVersion, mainsNewestMigration)
+			doneByChecksVersion, doneByChecksStandsAbove)
 	}
 }
 

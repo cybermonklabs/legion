@@ -104,7 +104,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 They override this skill, except: no deferrals;
 the base merged forward only as `skill://legion-worker/references/conflicts-and-rewrites.md#reintegrating-the-base` allows;
 the implementer's own result for every `before_merge` check with no `ci_check` (`skill://legion-worker/references/results.md#what-a-result-is`);
-and the production check after the close.
+and the production check after the merge.
 
 ## References
 
