@@ -12,7 +12,7 @@ import type { KnownReferences } from "../../refs/reference-names";
 import type { DispatchReferenceRoute, PartyRoute } from "../../refs/routes";
 import { firstWordedBlock, wordsOf } from "../../refs/tree-fragment";
 import { drawnLine, firstLineOf } from "../issue-tree";
-import { NODE_REFERENCES_WORDS } from "../page-words";
+import { NODE_REFERENCES_WORDS, NODE_TYPES } from "../page-words";
 import { knownIssueKeys, rowReferences, rowReferenceWords } from "../row-references";
 
 /**
@@ -75,10 +75,12 @@ export interface ReferenceRow {
   readonly source: string | undefined;
   /** What the row draws of the citing node's words. A comment, a message or a question of the
    *  focused node's own issue whose words the page holds (`issueItemWords`) is named by every one
-   *  of them, with no cut; every other node whose excerpt the read sent a reading of that holds a
-   *  word, by the first line of those words, cut as the outline cuts a row's one line
-   *  (`excerptLine`); each reference in either named (`namedWords`). `""` for a node with no
-   *  words, which the component names by its word. Never the read's own text.
+   *  of them, with no cut; a block - a task, a statement, a check - and an item of another issue
+   *  whose excerpt the read sent a reading of that holds a word, by the first line of those words,
+   *  cut as the outline cuts a row's one line (`excerptLine`); each reference in either named
+   *  (`namedWords`). `""` for an issue, a document and a component, whose excerpt is the issue's
+   *  title, the document's name or the component's title, and for a node with no words: the
+   *  component names each by its word. Never the read's own text.
    *  The component draws the whole string as text the page did not author. Three parts of it can
    *  be the page's own words all the same: the word for the kind of a reference the read has
    *  not named (`unnamedWords`, from `NODE_REFERENCES_WORDS.kinds`), ` · edited` after the
@@ -156,9 +158,11 @@ function blockItem(node: GraphEdge["node"]): NonNullable<GraphEdge["node"]["pare
  * no cut (`namedWords`), its references named from `known.names`, the page's one batched read of
  * what its references point at, by reference (`reference-names.tsx`), and marked where their post
  * was edited from `known.edited` (`KnownReferences.edited`), as the outline's row marks them;
- * every other node carries the first line of its excerpt's reading, named the same way
- * (`excerptLine`), and a node with neither carries none. `issue` is the focused node's own
- * issue, which those items are of, or `undefined` where the focused node belongs to none.
+ * a block and an item of another issue carry the first line of their excerpt's reading, named
+ * the same way (`excerptLine`); and an issue, a document and a component, whose excerpt is the
+ * issue's title, the document's name or the component's title, carry none, as a node with no
+ * words does. `issue` is the focused node's own issue, which those items are of, or `undefined`
+ * where the focused node belongs to none.
  */
 export function referenceRows(
   itemWords: ReadonlyMap<string, string>,
@@ -199,14 +203,15 @@ export function referenceRows(
  * read's excerpt of them (`text_tree`): the head of a block's text, a task's, a statement's or a
  * check's, and of an item's, as the graph cuts each (`refs.BlockExcerpt`, `itemExcerpt`). It is
  * the line the outline draws for a node (`lineReading`, `useNodeLine`): the first block of the
- * reading that holds any words (`firstWordedBlock`), cut by R1's first-line rule (`firstLineOf`)
- * with its ellipsis (`drawnLine`), each reference in it named first (`namedWords`), as the
- * outline's line names its references before it cuts, by the citing node's own issue. `""` for a
- * node whose excerpt is no words of its own - an issue's title, a document's name, which is its
- * file's, and a component's title, whose reading the server sends and no page reads
- * (`api/display_trees.go`'s `graphExcerptRead`) - for an excerpt the read sent no reading of, and
- * for a reading none of whose blocks holds a word: such a node is named by its word. Never the
- * excerpt's own text, which is the markdown its author typed.
+ * reading that holds any words, and of a typed block's own content where that block is one
+ * (`lineBlock`), cut by R1's first-line rule (`firstLineOf`) with its ellipsis (`drawnLine`),
+ * each reference in it named first (`namedWords`), as the outline's line names its references
+ * before it cuts, by the citing node's own issue. `""` for a node whose excerpt is no words of
+ * its own - an issue's title, a document's name, which is its file's, and a component's title,
+ * whose reading the server sends and no page reads (`api/display_trees.go`'s
+ * `graphExcerptRead`) - for an excerpt the read sent no reading of, and for a reading none of
+ * whose blocks holds a word: such a node is named by its word. Never the excerpt's own text,
+ * which is the markdown its author typed.
  */
 function excerptLine(
   edge: ReadEdge,
@@ -215,9 +220,33 @@ function excerptLine(
 ): string {
   if (edge.node.kind !== "block" && !isBlockItemKind(edge.node.kind)) return "";
   const reading = edge.excerpt?.text_tree;
-  const block = reading === undefined ? undefined : firstWordedBlock(reading);
+  const block = reading === undefined ? undefined : lineBlock(reading);
   if (block === undefined) return "";
   return drawnLine(firstLineOf(namedWords(wordsOf(block), known, issues, edge.node.issue_key)));
+}
+
+/** The kinds of node the outline draws (`NODE_TYPES`), as a reading names a node's type: a block
+ *  of a reading of one of them is a typed block - a task, a statement, a check, a question or a
+ *  note - as the outline tells a document's typed blocks from its own text (`tree-drafts.ts`'s
+ *  `addDocumentBlocks`). */
+const NODE_KINDS: readonly string[] = NODE_TYPES;
+
+/**
+ * The block of an excerpt's reading that a citing node's line is read from: the first of its
+ * blocks that holds a word (`firstWordedBlock`), as the outline reads a node's line
+ * (`lineReading`). A typed block's excerpt is the block whole, so its reading is one node, the
+ * typed block, whose content is the block's own paragraphs and headings
+ * (`api/display_trees.go`'s `graphExcerptRead`); the outline reads a typed block from that
+ * content (`tree-drafts.ts`'s `TreeContext.treeOf`), so its line is read from the first block of
+ * that content that holds a word. Read from the typed block whole, the line ran a task's heading
+ * into the paragraph under it.
+ */
+function lineBlock(reading: DisplayTree): DisplayTree | undefined {
+  const first = firstWordedBlock(reading);
+  if (first === undefined) return undefined;
+  // `firstWordedBlock` answers the reading holding that one block and nothing else.
+  const [block] = first.content as readonly [DisplayTree];
+  return NODE_KINDS.includes(block.type) ? firstWordedBlock(block) : first;
 }
 
 /**

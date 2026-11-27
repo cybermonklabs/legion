@@ -7,13 +7,14 @@ import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { graphNode } from "../../../__tests__/graph-fixture";
 import { api } from "../../../api/client";
-import type { CommentWithTrees, DisplayTree, GraphEdge, GraphReferences } from "../../../api/types";
+import type { CommentWithTrees, GraphEdge, GraphReferences } from "../../../api/types";
 import { emulateChromiumFocusFixup } from "../chromium-focus-fixup";
 import { MarginSlotProvider } from "../margin-slot";
 import { ANSWER_LINES, CONTROL_LABELS, NODE_REFERENCES_WORDS } from "../page-words";
 import { failRefreshOverHeld } from "../refresh-over-held-fixture";
 import { SHOW_MORE, showMoreName } from "../show-more-fixture";
 import { NodeReferences } from "./NodeReferences";
+import { servingTask } from "./serving-task-fixture";
 
 const STATEMENT = "dispatch://LAY-2/spec#b-r1";
 
@@ -610,41 +611,6 @@ test("a node the read gives no words for is drawn by its word alone, with no add
   expect(text.split(NODE_REFERENCES_WORDS.edges.serves)).toHaveLength(2);
 });
 
-/** A task of the plan document `plan-md` that serves the statement, as the read answers it: its
- *  excerpt is the task's stored text, the directive its author typed with the statement's
- *  address, and the server's reading of it (`text_tree`), the task holding `content`, one
- *  paragraph of `words` where the caller names no other. */
-function servingTask(
-  block: string,
-  words: string,
-  content: readonly DisplayTree[] = [
-    { content: [{ text: words, type: "text" }], type: "paragraph" },
-  ]
-): NonNullable<GraphReferences["edges"]>[number] {
-  return {
-    created_at: november(15, 9),
-    direction: "in",
-    excerpt: {
-      block_id: block,
-      text: `:::plan_task{#${block} serves="${STATEMENT}"}\n${words}\n:::`,
-      text_tree: {
-        content: [{ attrs: { blockId: block, serves: [STATEMENT] }, content, type: "plan_task" }],
-        type: "doc",
-      },
-    },
-    kind: "serves",
-    node: graphNode({
-      block_id: block,
-      document: "dispatch://LAY-2/artifact/plan-md",
-      id: `plan-md#${block}`,
-      issue_key: "LAY-2",
-      kind: "block",
-      ref: `dispatch://LAY-2/artifact/plan-md#b-${block}`,
-    }),
-    source_seq: null,
-  };
-}
-
 // Decision 560: each row names the node that references the focused one by the first line of its
 // own words, as the outline names a row, beside its tie's word and its day. Two tasks of one plan
 // that serve the statement drew two rows that each read "served by" and a day alone, which a
@@ -672,7 +638,6 @@ test("two tasks of one plan that serve the row are each named by the first line 
   const items = screen.getAllByRole("listitem");
   const names = items.map((item) => within(item).getByRole("link").textContent);
   expect(names, "each task's row is not named by its own first line").toEqual([first, second]);
-  expect(new Set(names).size, "the two tasks' rows read the same").toBe(2);
   expect(
     within(items[0] as HTMLElement)
       .getByRole("link")

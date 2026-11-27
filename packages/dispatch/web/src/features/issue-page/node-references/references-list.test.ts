@@ -5,6 +5,7 @@ import type { DisplayTree, GraphEdge, GraphReferences } from "../../../api/types
 import { buildDispatchReference } from "../../refs/routes";
 import { NODE_REFERENCES_WORDS } from "../page-words";
 import { issueItemWords, referenceRows } from "./references-list";
+import { servingTask } from "./serving-task-fixture";
 
 const AT = "2026-11-15T10:00:00Z";
 
@@ -82,30 +83,6 @@ function edge(fields: {
     }),
     source_seq: null,
   };
-}
-
-/** A task of the plan document `plan-md` of `LAY-2` that serves the focused statement, as the
- *  read answers it: its excerpt is the task's stored text, the directive its author typed with
- *  the statement's address, and its reading the task holding `content`, one paragraph of `words`
- *  where the caller names no other. */
-function servingTask(
-  block: string,
-  words: string,
-  content: readonly DisplayTree[] = [{ content: [run(words)], type: "paragraph" }]
-): ReadEdge {
-  const statement = "dispatch://LAY-2/spec#b-r1";
-  return edge({
-    excerpt: `:::plan_task{#${block} serves="${statement}"}\n${words}\n:::`,
-    id: `plan-md#${block}`,
-    issueKey: "LAY-2",
-    kind: "serves",
-    nodeKind: "block",
-    reading: {
-      content: [{ attrs: { blockId: block, serves: [statement] }, content, type: "plan_task" }],
-      type: "doc",
-    },
-    ref: `dispatch://LAY-2/artifact/plan-md#b-${block}`,
-  });
 }
 
 test("one row per citing node, in the order the read answers them", () => {
@@ -571,6 +548,28 @@ test("a citing block's line is cut as the outline cuts a row's one line", () => 
   );
   expect(rows[0]?.words).toBe(
     "Read every row of the outline at each width the page draws at, from the phone up to the widest…"
+  );
+});
+
+// A task's excerpt reads as the task whole (`api/display_trees.go`'s `graphExcerptRead`): a doc
+// holding the typed block, whose own content is the task's heading and the paragraph under it.
+// The outline reads a typed block from that content and draws its line from the first block of
+// it that holds a word (`lineReading`), so the row names the task by its heading's words alone.
+// It ran the heading into the paragraph: "Draw the history Each entry keeps its day.".
+test("a task whose words open on a heading is named by the heading's words alone, as the outline names it", () => {
+  const rows = referenceRows(
+    NO_WORDS,
+    [
+      servingTask("t1", "## Draw the history\n\nEach entry keeps its day.", [
+        { attrs: { level: 2 }, content: [run("Draw the history")], type: "heading" },
+        { content: [run("Each entry keeps its day.")], type: "paragraph" },
+      ]),
+    ],
+    NO_KNOWN,
+    "LAY-2"
+  );
+  expect(rows[0]?.words, "the task's line runs its heading into the paragraph under it").toBe(
+    "Draw the history"
   );
 });
 

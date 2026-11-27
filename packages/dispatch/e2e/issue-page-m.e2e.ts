@@ -5430,10 +5430,6 @@ test("what references the focused row names each task that serves it by the task
       }
       // The rows are drawn and settled: each link was found by its line above, so one read of
       // their text is the state the row means to check.
-      const names = (await rows.getByRole("link").allTextContents()).map((name) => name.trim());
-      expect(new Set(names).size, `the two tasks' rows read the same: ${names.join(" | ")}`).toBe(
-        2
-      );
       for (const text of await rows.allTextContents()) {
         expect(text, "a task's row does not say what the task does for the statement").toContain(
           NODE_REFERENCES_WORDS.edges.serves
@@ -6648,18 +6644,16 @@ test("Steps in Details names the experiment and the variant of the newest run on
 });
 
 /**
- * Two issues whose steps ran from a plan, written as Legion's daemon writes them: the plan of the
+ * An issue whose steps ran from a plan, written as Legion's daemon writes them: the plan of the
  * first run (`putPlan`), then each run (`putStep`). `planned`'s plan gives four tasks: `docs`, an
  * implementation, and `default`, an implementation and a review, each needing no task; `release`,
  * a test, which needs both; and `cleanup`, a review, written with no needs, so its needs are not
  * recorded. `docs`' implementation and `default`'s passed and `default`'s review runs; no step of
  * `release` or `cleanup` ran; and a run of `earlier`, a task the plan does not hold, passed.
- * `unrun`'s plan gives `default` and `docs`, and none of their steps ran.
  */
-async function seedPlannedSteps(): Promise<{ planned: string; unrun: string }> {
+async function seedPlannedSteps(): Promise<{ planned: string }> {
   await createProject({ key: "CORE", name: "Core" });
   const planned = await createIssue({ project: "CORE", title: "Runs of a plan" });
-  const unrun = await createIssue({ project: "CORE", title: "A plan none of whose steps ran" });
   await putPlan(planned.key, [
     { id: "docs", needs: [], steps: ["implementer"] },
     { id: "default", needs: [], steps: ["implementer", "reviewer"] },
@@ -6689,11 +6683,19 @@ async function seedPlannedSteps(): Promise<{ planned: string; unrun: string }> {
   await run("docs", 1, "implementer", "08:00", "08:30");
   await run("default", 1, "implementer", "09:00", "09:40");
   await run("default", 2, "reviewer", "10:00");
+  return { planned: planned.key };
+}
+
+/** The issue of `seedPlannedSteps`, and `unrun`, whose plan gives `default` and `docs`, which
+ *  needs `default`, and none of whose steps ran. */
+async function seedPlannedAndUnrunSteps(): Promise<{ planned: string; unrun: string }> {
+  const seeded = await seedPlannedSteps();
+  const unrun = await createIssue({ project: "CORE", title: "A plan none of whose steps ran" });
   await putPlan(unrun.key, [
     { id: "default", needs: [], steps: ["implementer", "reviewer"] },
     { id: "docs", needs: ["default"], steps: ["implementer"] },
   ]);
-  return { planned: planned.key, unrun: unrun.key };
+  return { ...seeded, unrun: unrun.key };
 }
 
 // Each task of the plan draws the tasks of the plan it needs on a line of its own, directly under
@@ -6782,7 +6784,7 @@ test("Steps in Details lists the steps the plan gives each task, each with its p
 test("Steps in Details says a task of the plan has no run yet in place of its runs, and draws a plan none of whose steps ran rather than None", async ({
   browser,
 }) => {
-  await phase(browser, seedPlannedSteps, async (page, seeded) => {
+  await phase(browser, seedPlannedAndUnrunSteps, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.planned}`);
     await openDetails(page);
     for (const task of ["release", "cleanup"]) {

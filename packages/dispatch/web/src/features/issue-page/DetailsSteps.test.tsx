@@ -450,7 +450,6 @@ function drawnAfter(earlier: Node, later: Node): boolean {
 
 /** `value`, failing the case with `what` where it is null. */
 function found<T>(value: T | null, what: string): T {
-  expect(value, what).not.toBeNull();
   if (value === null) throw new Error(what);
   return value;
 }

@@ -74,7 +74,7 @@ function useIssueItemWords(
  * spine and what needs it is a chip - and nothing on the page points back from a node to what
  * mentions it, so this is where a reader reads that.
  *
- * Each row names the citing node by words the page already holds for it: a comment, a message
+ * Each row names the citing node by words the page holds for it: a comment, a message
  * or a question of this issue by all of its words, drawn whole with no cut and no clamp; any
  * other node by the first line of its own words, from the server's reading of the read's excerpt,
  * cut as the outline cuts a row's one line (decision 560), so two tasks of one plan that serve
