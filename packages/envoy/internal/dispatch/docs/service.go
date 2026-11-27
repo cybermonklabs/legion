@@ -3388,20 +3388,15 @@ func (s *Service) failRoom(room string, cause error) {
 	s.failRoomLocked(room, state, cause)
 }
 
-// failRoomLocked fails room: its settlement is dropped and its eviction closes the room's sockets,
-// so its browsers reconnect onto a reload. The failure is logged with its cause as it happens,
-// since nothing else says so until a later write meets the failed room: a test peer, which does
-// not reconnect, otherwise lost its socket with no trace (TestStoredOrderSoak, job 140239891619).
-// A failure while the service stops is the stop's own refusal, and is logged at INFO.
+// failRoomLocked fails room: it drops the room's settlement and starts the room's eviction
+// (evictFailed below), which closes the room's sockets. It logs the failure and its cause once,
+// whichever of its callers made it; some of them log a cause of their own first, as livewrite.go
+// and the settlement retry above do.
 func (s *Service) failRoomLocked(room string, state *roomState, cause error) {
 	if state.failed != nil {
 		return
 	}
-	if s.stopping.Load() {
-		slog.Info("dispatch: a document room failed while the service stops", "room", room, "error", cause)
-	} else {
-		slog.Warn("dispatch: a document room failed; its sockets close and its next reader reloads it", "room", room, "error", cause)
-	}
+	slog.Warn("dispatch: a document room failed", "room", room, "error", cause)
 	state.failed = cause
 	s.hooks.countRoomFailure(room)
 	state.failedDone = make(chan struct{})
@@ -3429,7 +3424,9 @@ func (s *Service) failRoomLocked(room string, state *roomState, cause error) {
 		if s.beforeFailedEviction != nil {
 			s.beforeFailedEviction(room)
 		}
-		_ = s.evictFailed(room, state)
+		if err := s.evictFailed(room, state); err != nil {
+			slog.Warn("dispatch: a failed document room's eviction failed", "room", room, "error", err)
+		}
 		close(done)
 	}()
 }

@@ -547,6 +547,7 @@
   - TestARoomChangeAfterAWritesReadCostsItsVersionNoRender  # 0.7 s
   - TestARoomCloseCompactionFoldsOnlyTheRowsOlderThanTheTail  # 0.5 s
   - TestARoomFailingDuringAJoinedWriteFailsTheWrite  # 0.6 s
+  - TestARoomFailureIsLoggedWithItsCause  # 0.1 s
   - TestARoomIsReloadedOnceAKeystrokeLandsOnAHistoryACompactionFolded  # 1.4 s
   - TestARoomLoadedOntoAKeptRecordTakesTheStoredEditSource  # 0.8 s
   - TestARoomOnlyTheAPITouchesLeavesWithinTheIdleTimeout  # 3.0 s

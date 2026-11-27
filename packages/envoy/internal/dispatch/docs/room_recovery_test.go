@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -343,24 +344,33 @@ func TestAFailedRoomsReplacementSettlesWithoutAnotherEdit(t *testing.T) {
 	}
 }
 
-// A room's failure closes its sockets and drops its settlement, and nothing else said so until a
-// later write met the failed room, so a peer that lost its socket to one left no trace in the log
-// (TestStoredOrderSoak, job 140239891619). The failure is logged with its cause when it happens.
+// A room's failure is logged once, as it happens, with the room and the cause, whichever path
+// failed it: a failure no later write met otherwise left no line naming it (failRoomLocked).
 func TestARoomFailureIsLoggedWithItsCause(t *testing.T) {
-	// Not parallel: it reads the process's default logger (captureWarnings).
+	// Not parallel: it swaps the process's default logger (captureWarnings).
 	logs := captureWarnings(t)
 	service, artifactID := newTestService(t)
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load live document: %v", err)
 	}
+	before := logs.Len()
 	service.failRoom(artifactID, errors.New("a cause the log must name"))
-	awaitRecovered(t, service, artifactID)
-	logged := logs.String()
-	for _, want := range []string{"level=WARN", "a document room failed", "room=" + artifactID, "a cause the log must name"} {
-		if !strings.Contains(logged, want) {
-			t.Fatalf("the room's failure logged no %q; logged:\n%s", want, logged)
+	written := logs.String()[before:]
+	want := fmt.Sprintf(`level=WARN msg="dispatch: a document room failed" room=%s error="a cause the log must name"`, artifactID)
+	var failures []string
+	for line := range strings.Lines(written) {
+		if strings.Contains(line, "a document room failed") {
+			failures = append(failures, line)
 		}
 	}
+	if len(failures) != 1 {
+		t.Fatalf("the room's failure wrote %d lines naming a room failure, want 1; written:\n%s", len(failures), written)
+	}
+	_, line, timed := strings.Cut(strings.TrimSuffix(failures[0], "\n"), " ")
+	if !timed || !strings.HasPrefix(failures[0], "time=") || line != want {
+		t.Fatalf("the room's failure logged\n%s\nwant, after its time,\n%s", failures[0], want)
+	}
+	awaitRecovered(t, service, artifactID)
 }
 
 func indexedAsks(t *testing.T, service *Service, artifactID string) int {
