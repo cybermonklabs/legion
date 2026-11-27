@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import type { StepRecord } from "../../api/types";
 import { defaultRuns, stepRecord as record } from "./step-record-fixture";
-import { stepTasks, stepVariant } from "./steps-model";
+import { type AnsweredState, stepTasks, stepVariant } from "./steps-model";
 
 // What the tab draws, without a DOM: the server's tasks in the server's order, each task's runs
 // in the order the read listed them, a retro and a merge named by their kind, and a run that has
@@ -12,6 +12,7 @@ test("stepTasks keeps the server's order and names each run's step, state and ti
     issue: "CORE-1",
     tasks: [
       {
+        needs: null,
         steps: [
           defaultRuns.implement1,
           defaultRuns.review1,
@@ -21,7 +22,7 @@ test("stepTasks keeps the server's order and names each run's step, state and ti
         ],
         task: "default",
       },
-      { steps: [record({ id: "other-task-1", task: "docs" })], task: "docs" },
+      { needs: null, steps: [record({ id: "other-task-1", task: "docs" })], task: "docs" },
     ],
   });
 
@@ -61,12 +62,13 @@ test("stepTasks keeps the server's order of tasks, not the order of their names"
   const tasks = stepTasks({
     issue: "CORE-1",
     tasks: [
-      { steps: [record({ id: "review-1", task: "review" })], task: "review" },
+      { needs: null, steps: [record({ id: "review-1", task: "review" })], task: "review" },
       {
+        needs: null,
         steps: [record({ id: "default-1" }), record({ attempt: 2, id: "default-2" })],
         task: "default",
       },
-      { steps: [record({ id: "docs-1", task: "docs" })], task: "docs" },
+      { needs: null, steps: [record({ id: "docs-1", task: "docs" })], task: "docs" },
     ],
   });
 
@@ -77,13 +79,120 @@ test("stepTasks keeps the server's order of tasks, not the order of their names"
   ]);
 });
 
-// The generated shape lets both lists be null, and an issue Legion never ran has no task at all.
-test("stepTasks reads a null list as empty", () => {
+// The generated shape lets both lists be null, and an issue with no plan and no run has no task at
+// all. A task whose needs are null - its plan node recorded none, or the plan does not hold it -
+// keeps them null, which is not [], a task that needs none.
+test("stepTasks reads a null list as empty, and null needs as not recorded", () => {
   expect(stepTasks({ issue: "CORE-1", tasks: null })).toEqual([]);
   expect(stepTasks({ issue: "CORE-1", tasks: [] })).toEqual([]);
-  expect(stepTasks({ issue: "CORE-1", tasks: [{ steps: null, task: "default" }] })).toEqual([
-    { rows: [], task: "default" },
+  expect(
+    stepTasks({ issue: "CORE-1", tasks: [{ needs: null, steps: null, task: "default" }] })
+  ).toEqual([{ needs: null, planned: [], rows: [], task: "default" }]);
+  expect(
+    stepTasks({ issue: "CORE-1", tasks: [{ needs: [], steps: null, task: "default" }] })[0]?.needs
+  ).toEqual([]);
+});
+
+// The tasks of the plan come with what the plan says of them: the tasks each needs, and each step
+// the plan gives it, in its place, at the state the server answers for it. The fault is a planned
+// step that a person cannot see; the control is the model that keeps the runs alone, under which b
+// has no step and a no second one.
+test("stepTasks gives each task of the plan its needs and its planned steps", () => {
+  const tasks = stepTasks({
+    issue: "CORE-1",
+    tasks: [
+      {
+        needs: [],
+        planned: [
+          { name: "implementer", state: "running", step: 1 },
+          { name: "reviewer", state: "not started", step: 2 },
+        ],
+        steps: [record({ ended_at: null, id: "a-1", result: "", step: 1, task: "a" })],
+        task: "a",
+      },
+      {
+        needs: ["a"],
+        planned: [{ name: "tester", state: "not started", step: 1 }],
+        steps: [],
+        task: "b",
+      },
+    ],
+  });
+  expect(
+    tasks.map((task) => ({
+      needs: task.needs,
+      planned: task.planned.map((step) => [step.step, step.name, step.state]),
+      task: task.task,
+    }))
+  ).toEqual([
+    {
+      needs: [],
+      planned: [
+        [1, "implementer", "running"],
+        [2, "reviewer", "not started"],
+      ],
+      task: "a",
+    },
+    { needs: ["a"], planned: [[1, "tester", "not started"]], task: "b" },
   ]);
+});
+
+// The server reads where a planned step stands from the runs of the plan's own run of the issue;
+// the model takes that state as answered and works out none from the runs it lists, which hold the
+// runs of every run of the issue. A state this build has no word for keeps the server's word. The
+// fault is a step of a new run that shows the result of an older one; the control is the model that
+// takes the newest run at the step's place, under which the reviewer reads passed.
+test("stepTasks draws each planned step at the state the server answers", () => {
+  const [task] = stepTasks({
+    issue: "CORE-1",
+    tasks: [
+      {
+        needs: [],
+        planned: [
+          { name: "implementer", state: "running", step: 1 },
+          { name: "reviewer", state: "not started", step: 2 },
+          { name: "acceptance:owner", state: "skipped" as AnsweredState, step: 3 },
+        ],
+        steps: [
+          record({
+            agent: "legion-core-core-1-reviewer",
+            id: "review-1",
+            role: "reviewer",
+            step: 2,
+            type: "review",
+          }),
+          record({ ended_at: null, generation: 2, id: "implement-2", result: "", step: 1 }),
+        ],
+        task: "default",
+      },
+    ],
+  });
+  expect(task?.planned).toEqual([
+    { name: "implementer", state: "running", step: 1 },
+    { name: "reviewer", state: "not started", step: 2 },
+    { name: "acceptance:owner", result: "skipped", state: "other", step: 3 },
+  ]);
+});
+
+// Each state of the contract's enum (PLANNED_STEP_STATES, the generated union) is drawn as itself,
+// never as `other`. The list below is held to the union by `satisfies`, which refuses a key the
+// union lacks and a list that lacks one of its states, so a state renamed in the contract fails
+// the web client's typecheck here and in the model's switch (plannedStep), until both name it.
+test("stepTasks draws each planned state the contract names as itself", () => {
+  const states = {
+    failed: true,
+    "not started": true,
+    passed: true,
+    running: true,
+    stopped: true,
+  } satisfies Record<AnsweredState, true>;
+  for (const state of Object.keys(states) as AnsweredState[]) {
+    const [task] = stepTasks({
+      issue: "CORE-1",
+      tasks: [{ needs: [], planned: [{ name: "tester", state, step: 1 }], steps: [], task: "a" }],
+    });
+    expect(task?.planned, state).toEqual([{ name: "tester", state, step: 1 }]);
+  }
 });
 
 // A move back names where it sent the task. Place 0 is the retro's, which a merger's move back
@@ -94,6 +203,7 @@ test("stepTasks names where a run returned its task, the retro for place 0", () 
     issue: "CORE-1",
     tasks: [
       {
+        needs: null,
         steps: [
           record({
             id: "review-1",
@@ -133,6 +243,7 @@ test("stepTasks keeps a run whose result or kind it does not know, in the server
     issue: "CORE-1",
     tasks: [
       {
+        needs: null,
         steps: [
           record({ id: "skipped", result: "skipped" as StepRecord["result"] }),
           record({ id: "pause", kind: "pause" as StepRecord["kind"], step: 0 }),
@@ -161,6 +272,7 @@ test("stepVariant names the experiment and the variant the newest run's records 
       issue: "CORE-1",
       tasks: [
         {
+          needs: null,
           steps: [
             record({ experiment: "planning", id: "older", variant: "a" }),
             record({ generation: 2, id: "newest-unnamed" }),
@@ -175,7 +287,9 @@ test("stepVariant names the experiment and the variant the newest run's records 
   delete older.experiment;
   delete older.variant;
   for (const steps of [[record({ id: "none" })], [older as StepRecord]]) {
-    expect(stepVariant({ issue: "CORE-1", tasks: [{ steps, task: "default" }] })).toBeNull();
+    expect(
+      stepVariant({ issue: "CORE-1", tasks: [{ needs: null, steps, task: "default" }] })
+    ).toBeNull();
   }
   expect(stepVariant({ issue: "CORE-1", tasks: [] })).toBeNull();
 });

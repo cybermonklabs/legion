@@ -146,6 +146,7 @@ on:
       - 'packages/envoy/dispatchblocks/**'
       - 'packages/envoy/dispatchbody/**'
       - 'packages/envoy/fileerr/**'
+      - 'packages/envoy/githubrate/**'
       - 'packages/envoy/going/*'
       - 'packages/envoy/httpoutage/**'
       - 'packages/envoy/internal/buildversion/**'
