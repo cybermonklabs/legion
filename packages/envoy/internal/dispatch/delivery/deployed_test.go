@@ -300,7 +300,7 @@ func TestIntakeWritesTheDeployedEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode the envelope: %v", err)
 	}
-	handled, err := intake.route(ctx, settings, string(envelope))
+	handled, err := intake.route(ctx, &settings, string(envelope))
 	if err != nil || !handled {
 		t.Fatalf("route the deploy run's envelope = (%v, %v), want handled without error", handled, err)
 	}

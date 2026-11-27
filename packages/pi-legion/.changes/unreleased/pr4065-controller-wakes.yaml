@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  The controller's skill lists only the wakes the daemon still sends it. The `awaiting-person` and
+  `unslotted` rows are gone, and `held`, `worker-died` and `worker-stalled` say which of them still
+  come: an escalated hold, a failed architect whose root is not `done`, and a stall that failed the
+  architect's claim over a stop the runtime did not confirm. On `slot-free` and `todo` the
+  controller starts the prioritization pass and the intake that its deployment instructions give.
+  `session-store-fault` has a row of its own: the controller opens one finding ask for the
+  operator for each fault. The controller no longer sends `provider-errors` to the issue's
+  architect: the daemon sends it there now. A run of a child's own architect's claim goes to the
+  architect above that child, and a run of the tree root's architect's own claim goes to the
+  controller alone. The architect's skill gets a `provider-errors` row: the controller compacts or
+  refreshes the agent, and the architect narrows the work the provider keeps refusing without the
+  controller's word. It no longer says that the controller hears of every hold and of every stall
+  of a tree's architect.

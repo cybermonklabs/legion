@@ -65,6 +65,7 @@ func earlierEventAndComment(t *testing.T, database *store.Store, broker *events.
 // last event, as owing nothing, or owing another session's subject only, which hold no copy of
 // s1's; and the words that do hold it.
 func TestAnEarlierEventTheOutboxHasNotRecordedHoldsAMentionCopy(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	earlier, comment, _ := earlierEventAndComment(t, database, events.NewBroker())
@@ -126,6 +127,7 @@ func TestAnEarlierEventTheOutboxHasNotRecordedHoldsAMentionCopy(t *testing.T) {
 // owner's newest event, holds nothing. A rule that read no newest event for either owner would
 // hold nothing in either row.
 func TestTheCopyRuleReadsTheNewestEventOfADocumentOrAProject(t *testing.T) {
+	t.Parallel()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	for _, owner := range []struct {
 		name string
@@ -192,6 +194,7 @@ func seedProject(t *testing.T, database *store.Store) {
 // it. The control is the same event appended not pending, a write the record did not see, which
 // holds the copy behind the earlier event.
 func TestAPendingSubscriptionCommandLeavesAnEarlierEventsRecordCurrent(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		pending bool
@@ -201,6 +204,7 @@ func TestAPendingSubscriptionCommandLeavesAnEarlierEventsRecordCurrent(t *testin
 		{name: "control: the same event, not pending", holds: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := context.Background()
 			database := storetest.Open(t)
 			broker := events.NewBroker()
@@ -364,6 +368,7 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 // and does not check which pool a call is given. A pass whose only reads of the rule moved to
 // another connection fails the floor of one read when it holds rows.
 func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
+	t.Parallel()
 	const rows = 50
 	const readEvery = 2 * time.Second
 	ctx := store.WithTransactionTracking(context.Background())

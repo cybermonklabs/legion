@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/puddle/v2"
+
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // TxPool is what TransactWith opens its transaction on, and the outcome read of a lost commit
@@ -22,6 +24,16 @@ import (
 // pgx pool of their own.
 type TxPool interface {
 	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
+}
+
+// logOf is where TransactWith and its watcher write their lines about a commit over pool: a
+// guarded pool's own log (Pool.log) when pool is a *Pool, and the process's default logger for any
+// other TxPool, a test's wrapper of a *Pool included.
+func logOf(pool TxPool) *slog.Logger {
+	if guarded, ok := pool.(*Pool); ok {
+		return guarded.logger()
+	}
+	return slog.Default()
 }
 
 // ErrCommitOutcomeUnknown is TransactWith's answer for a commit whose reply was lost while the
@@ -163,6 +175,33 @@ func (b *afterAcquire) notBegun(ctx, acquiring context.Context, err error) error
 // in the pool's queue and was handed no connection.
 var errAcquireBound = errors.New("store: the pool handed out no connection within the wait for one")
 
+// writeBegun is err, an error of a transaction whose BEGIN the database answered, marked as one
+// (supervise.BegunWriteError): the database was handed the write, so the write may have been
+// applied however its answer ended. Every error TransactWith answers once its transaction has
+// begun carries the mark, and no error before it does: a dial, a wait in the pool's queue or a
+// BEGIN that a bound cut never reached the write. What a caller does with the mark is the
+// caller's rule (supervise's cutByBound), not the store's. nil stays nil.
+func writeBegun(err error) error {
+	if err == nil {
+		return nil
+	}
+	return begunError{err}
+}
+
+// begunError is writeBegun's mark around the error it carries, which errors.Is and errors.As still
+// read through it.
+type begunError struct{ err error }
+
+// begunError implements the one contract supervise reads, so renaming either side fails the build.
+var _ supervise.BegunWriteError = begunError{}
+
+func (e begunError) Error() string { return e.err.Error() }
+
+func (e begunError) Unwrap() error { return e.err }
+
+// WriteBegun reports that the transaction the error ended had begun.
+func (begunError) WriteBegun() bool { return true }
+
 // commitHooksKey is the context key a TransactWith scope lives under. It is named only where a
 // scope is stored or read: TransactWith stores the one scope that holds hooks, scopeOf reads it,
 // and readOutcome and ForConcurrentWorker store none (TestOnlyTransactOpensACommitScope). Its type
@@ -206,8 +245,9 @@ func scopeOf(ctx context.Context) *commitScope {
 // orders it against every other write; a store write the watcher runs late has no such order and
 // can change what a newer write wrote. So a hook's effects are log lines, wakes and in-process
 // state, and in-process state only behind a fence a late run cannot cross: admission's held
-// release clears only the holds it applied, and a controller mint's hook revokes only the grants
-// of generations below the one it confirms.
+// release clears only the holds it applied, admission's memory of its held-retro reads takes a
+// hook's write only while no later pass has begun, and a controller mint's hook revokes only the
+// grants of generations below the one it confirms.
 //
 // The hook list is not goroutine-safe: OnCommit is called only on the goroutine that runs
 // TransactWith's write. It panics on a context no TransactWith scopes, since a write made outside
@@ -240,9 +280,11 @@ func Transact(ctx context.Context, pool TxPool, write func(ctx context.Context, 
 }
 
 // ReadOnly runs read in one read-only TransactWith on pool and answers the value it read: the one
-// form of a standalone read. An error read returns is answered as it is, since read names what it
-// read; an error of the transaction itself (its begin, a cancel, its commit) is answered wrapped as
-// "<what>: <error>". On any error the value is T's zero value.
+// form of a standalone read. An error read returns is answered with read's own text, since read
+// names what it read, under the mark TransactWith gives every error once its BEGIN was answered
+// (writeBegun), so errors.Is and errors.As still reach read's error through it; an error of the
+// transaction itself (its begin, a cancel, its commit) is answered wrapped as "<what>: <error>".
+// On any error the value is T's zero value.
 func ReadOnly[T any](ctx context.Context, pool TxPool, what string, read func(ctx context.Context, tx pgx.Tx) (T, error)) (T, error) {
 	var value, zero T
 	var readErr error
@@ -310,17 +352,21 @@ func ReadOnly[T any](ctx context.Context, pool TxPool, what string, read func(ct
 //     transaction committed (watchOutcome).
 //
 // So a caller whose context ends waits at most CommitSettleBound more for its commit's outcome.
-func TransactWith(ctx context.Context, pool TxPool, options pgx.TxOptions, write func(ctx context.Context, tx pgx.Tx) error) error {
+//
+// Every error it answers once the transaction has begun, a join's included, carries writeBegun's
+// mark; an error of the BEGIN itself, or of the wait and the dial before it, does not.
+func TransactWith(ctx context.Context, pool TxPool, options pgx.TxOptions, write func(ctx context.Context, tx pgx.Tx) error) (err error) {
 	bound := afterAcquireOf(ctx)
 	if open := scopeOf(ctx); open != nil && open.writing.Load() {
 		joining, stop := bound.writing(ctx)
 		defer stop()
-		return open.join(joining, pool, options, write)
+		return writeBegun(open.join(joining, pool, options, write))
 	}
 	tx, err := pool.BeginTx(ctx, options)
 	if err != nil {
 		return err
 	}
+	defer func() { err = writeBegun(err) }()
 	ctx, stopBound := bound.running(ctx, tx)
 	defer stopBound()
 	committing, stop := commitContext(ctx)
@@ -450,14 +496,14 @@ func settleLostReply(ctx context.Context, pool TxPool, xid string, hooks []func(
 	result, statusErr := readOutcome(reading, pool, xid)
 	switch result {
 	case outcomeCommitted:
-		slog.Warn("store: a commit's reply was lost; the store says the transaction committed",
+		logOf(pool).Warn("store: a commit's reply was lost; the store says the transaction committed",
 			"transaction", xid, "error", lost)
 		runHooks(hooks)
 		return nil
 	case outcomeAborted:
 		return &notCommittedError{xid: xid, lost: lost}
 	default:
-		slog.Warn("store: a commit's reply was lost and the store cannot say whether it landed; its commit hooks wait until it can",
+		logOf(pool).Warn("store: a commit's reply was lost and the store cannot say whether it landed; its commit hooks wait until it can",
 			"transaction", xid, "hooks", len(hooks), "error", lost, "status_error", statusErr)
 		go watchOutcome(ForConcurrentWorker(context.WithoutCancel(ctx)), pool, xid, hooks)
 		return &outcomeUnknownError{xid: xid, lost: lost, status: statusErr}
@@ -626,16 +672,17 @@ func readOutcome(ctx context.Context, pool TxPool, xid string) (outcome, error) 
 // other time limit and is not joined at stop: a status the server does not keep leaves it reading
 // every outcomeRetryMax until the pool closes.
 func watchOutcome(ctx context.Context, pool TxPool, xid string, hooks []func()) {
+	log := logOf(pool)
 	switch result, _ := pollOutcome(ctx, pool, xid, outcomeRetryFirst); result {
 	case outcomeCommitted:
-		slog.Warn("store: a transaction whose outcome was unknown committed; its commit hooks run now",
+		log.Warn("store: a transaction whose outcome was unknown committed; its commit hooks run now",
 			"transaction", xid, "hooks", len(hooks))
-		runWatchedHooks(xid, hooks)
+		runWatchedHooks(log, xid, hooks)
 	case outcomeAborted:
-		slog.Info("store: a transaction whose outcome was unknown did not commit; its commit hooks are dropped",
+		log.Info("store: a transaction whose outcome was unknown did not commit; its commit hooks are dropped",
 			"transaction", xid, "hooks", len(hooks))
 	default:
-		slog.Error("store: the pool closed before the store said whether a transaction committed; its commit hooks did not run",
+		log.Error("store: the pool closed before the store said whether a transaction committed; its commit hooks did not run",
 			"transaction", xid, "hooks", len(hooks))
 	}
 }
@@ -671,13 +718,13 @@ func pollOutcome(ctx context.Context, pool TxPool, xid string, first time.Durati
 
 // runWatchedHooks runs hooks in order on the watcher's goroutine, each under a recover. Nothing
 // above the watcher recovers a panic, as net/http does for a route's goroutine, so a hook that
-// panics there is logged with its transaction and its stack, and the next hook still runs.
-func runWatchedHooks(xid string, hooks []func()) {
+// panics there is logged to log with its transaction and its stack, and the next hook still runs.
+func runWatchedHooks(log *slog.Logger, xid string, hooks []func()) {
 	for _, hook := range hooks {
 		func() {
 			defer func() {
 				if recovered := recover(); recovered != nil {
-					slog.Error("store: a commit hook the watcher ran panicked",
+					log.Error("store: a commit hook the watcher ran panicked",
 						"transaction", xid, "panic", fmt.Sprint(recovered), "stack", string(debug.Stack()))
 				}
 			}()

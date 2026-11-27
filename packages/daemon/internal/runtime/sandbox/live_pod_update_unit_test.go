@@ -22,6 +22,7 @@ import (
 // push cache-b's. The key is a claim token's issue, the same key every time the run asks for it,
 // and of the shape a later run's sweep takes a killed run's leftover by.
 func TestEachRunsPodUpdateIssueNamesABranchOfItsOwn(t *testing.T) {
+	t.Parallel()
 	runs := []string{"s4a-20261019144300-4108", "s4a-20261019144300-4109", "s4a-20261019145627-1308"}
 	branches := map[string]string{}
 	for _, project := range runs {
@@ -60,6 +61,7 @@ func TestEachRunsPodUpdateIssueNamesABranchOfItsOwn(t *testing.T) {
 // disk's, in the words the check compares. A disk spelled otherwise moves the same way, since the
 // amount, not the spelling, is what drift compares.
 func TestTheMovedShapeDriftsByItsDiskAlone(t *testing.T) {
+	t.Parallel()
 	image := "example.test/legion/worker@sha256:" + strings.Repeat("a", 64)
 	for name, disk := range map[string]string{"the run's own disk": "20Gi", "the same amount spelled otherwise": "20480Mi"} {
 		t.Run(name, func(t *testing.T) {
@@ -106,6 +108,7 @@ func TestTheMovedShapeDriftsByItsDiskAlone(t *testing.T) {
 // A shape no launch of this release wrote is not something the check moves on: it says so instead
 // of patching a Sandbox with a shape of its own invention.
 func TestAnUnreadableShapeIsNotMoved(t *testing.T) {
+	t.Parallel()
 	for name, held := range map[string]string{
 		"no shape at all":    "",
 		"not a shape":        "{",
@@ -125,6 +128,7 @@ func TestAnUnreadableShapeIsNotMoved(t *testing.T) {
 // keys must therefore be two, neither of them cache-b's, and each of the shape a later run's sweep
 // takes a killed run's leftover by.
 func TestTheFleetRoundsTwoIssuesNameBranchesOfTheirOwn(t *testing.T) {
+	t.Parallel()
 	runs := []string{"s4a-20261030101500-4108", "s4a-20261030101500-4109", "s4a-20261030112233-1308"}
 	branches := map[string]string{}
 	for _, project := range runs {
@@ -168,6 +172,7 @@ func TestTheFleetRoundsTwoIssuesNameBranchesOfTheirOwn(t *testing.T) {
 // configuration is another fleet, and the check says so rather than patching a shape of its own
 // invention over it.
 func TestOneMovedShapeDriftsEveryPodBuiltFromTheHeldOne(t *testing.T) {
+	t.Parallel()
 	image := "example.test/legion/worker@sha256:" + strings.Repeat("b", 64)
 	record := podShapeRecord{
 		Image: image,

@@ -9,11 +9,12 @@ import { parseDispatchRef } from "../dispatch-owner";
 // SPA's `features/refs/dispatch-href.test.ts` walks the same table for the browser parser.
 const server = "http://dispatch.test";
 
-test.each(
-  DISPATCH_HREF_REFERENCES.map((row) => [row.href, row.ref] as const)
-)("%s resolves to %s", (href, ref) => {
-  expect(dispatchRefFromUrl(`${server}${href}`, server)).toBe(ref);
-});
+test.each(DISPATCH_HREF_REFERENCES.map((row) => [row.href, row.ref] as const))(
+  "%s resolves to %s",
+  (href, ref) => {
+    expect(dispatchRefFromUrl(`${server}${href}`, server)).toBe(ref);
+  }
+);
 
 test("a dashboard URL from another server is not a reference", () => {
   expect(dispatchRefFromUrl("http://elsewhere.test/issues/CORE-1", server)).toBeUndefined();

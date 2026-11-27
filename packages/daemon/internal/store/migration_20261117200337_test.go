@@ -22,6 +22,7 @@ const updateAskMarksAtDeliveryVersion = 20261117200337
 // another round than the one the claim records; and the planner's, whose queued row is for another
 // issue. The negative control is the implementer's mark itself, read before the migration.
 func TestAQueuedUpdateAskOfTheEarlierReleaseLosesItsMarkWith20261117200337(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, updateAskMarksAtDeliveryVersion-1)

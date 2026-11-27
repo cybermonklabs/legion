@@ -5,7 +5,7 @@ description: >-
 
   The `uv` row of .github/ci-tools.yaml pins the version and the sha256 of the uv binary itself,
   and .github/scripts/check-ci-tools.sh holds that row's version and primary digest to the image's
-  own `ARG UV_VERSION` and `ARG UV_SHA256` in packages/daemon/docker/worker.Dockerfile, which is
+  own `packages/daemon/docker/worker.Dockerfile#ARG UV_VERSION` and `packages/daemon/docker/worker.Dockerfile#ARG UV_SHA256`, which is
   what keeps this install and the image on one uv. The row's second source is the uv wheel PyPI
   serves, which holds that same binary, so an outage of GitHub's release assets does not stop the
   job.

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -98,6 +99,8 @@ func commentingIssue(t *testing.T, handler http.Handler, project, body string) s
 // test alone and made unshown (unshownText), and the write that stored its tree read it through
 // pmdoc.DisplayTreeToStore, which fills no cache.
 func TestACommentListAfterARestartMakesNoDisplayTree(t *testing.T) {
+	// Not parallel: it counts pmdoc.DisplayTreeBuilds, the whole process's count of display trees
+	// built, across its reads, and a parallel test's read moves that count too.
 	handler, database := newTestHandlerWithStore(t)
 	commentBody := unshownText("The **restart** read's own body: stored once, read back as bytes.")
 	key := commentingIssue(t, handler, "RSTRT", commentBody)
@@ -118,6 +121,8 @@ func TestACommentListAfterARestartMakesNoDisplayTree(t *testing.T) {
 // dropped after the write to stand for a text written before there was a table, which is what
 // every text on the server is until the backfill reaches it.
 func TestAReadOfAnUnstoredTextBuildsItsTreeAndStoresIt(t *testing.T) {
+	// Not parallel: it counts pmdoc.DisplayTreeBuilds, the whole process's count of display trees
+	// built, across its reads, and a parallel test's read moves that count too.
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	commentBody := unshownText("A body *no* row holds a tree of yet, read the long way.")
 	key := commentingIssue(t, handler, "UNSTR", commentBody)
@@ -154,6 +159,8 @@ func TestAReadOfAnUnstoredTextBuildsItsTreeAndStoresIt(t *testing.T) {
 // hold is not the reading this build makes, so the read builds its own and stores it beside the
 // row it would not take (texttrees.Read keys by pmdoc.DisplayTreeVersionNow).
 func TestAReadOfATreeStoredAtAnotherVersionBuildsItsOwn(t *testing.T) {
+	// Not parallel: it moves the process's display parser version (pmdoc.SetDisplayTreeVersionForTest)
+	// and counts pmdoc.DisplayTreeBuilds, the whole process's count of display trees built.
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	commentBody := unshownText("A body whose stored tree another **parser** version read.")
 	key := commentingIssue(t, handler, "OLDVR", commentBody)
@@ -288,6 +295,8 @@ func TestAReadInsideAReadOnlyTransactionStoresNoTree(t *testing.T) {
 // first read leaves its body's tree in this process's display cache, which stands in front of
 // the table for every later read of that text.
 func TestABroadcastReadTakesItsStoredTreeAndStoresAMiss(t *testing.T) {
+	// Not parallel: it counts pmdoc.DisplayTreeBuilds, the whole process's count of display trees
+	// built, across its reads, and a parallel test's read moves that count too.
 	storedBody := unshownText("The **deploy** is held: send status, please.")
 	unstoredBody := unshownText("The *rollback* is rehearsed: carry on, all of you.")
 	listener, _ := newBroadcastListener(t, broadcastSessions)
@@ -360,5 +369,73 @@ func TestAVersionsDisplayTreeIsStoredOnItsFirstRead(t *testing.T) {
 	}
 	if _, latest := storedTreeIn(t, database, pmdoc.DisplayLatest, version.Markdown); !latest {
 		t.Errorf("the version write stored no latest-mode tree of %q, which the document's own reads answer", version.Markdown)
+	}
+}
+
+// A cut a read answers carries its tree and stores none: a backlink's excerpt - here the head of
+// the ask an outgoing edge reaches, cut at 240 runes - and an Inbox row's subject - the thread
+// root's first line, cut at 160 - are read where they stand (graphEdgeReads, listMyReplies), so
+// the reads answer both trees under the header and write no text_trees row, where the request's
+// reader would have asked the table for each and stored one row for every distinct cut.
+func TestACutAReadAnswersCarriesItsTreeAndStoresNone(t *testing.T) {
+	t.Parallel()
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	issue := createInteractionIssue(t, handler, "CUTS", "A cut stores no tree", "A spec")
+	question := strings.Repeat("Should the *cut* be stored? ", 12)
+	asked := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
+		"question": question, "options": []map[string]string{{"label": "Yes"}, {"label": "No"}},
+	}, "alice")
+	if asked.Code != http.StatusCreated {
+		t.Fatalf("create the ask: status=%d body=%s", asked.Code, asked.Body.String())
+	}
+	askRef := "dispatch://" + issue.Key + "/ask/" + decodeBody[model.Ask](t, asked).ID
+	cited := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages",
+		map[string]any{"body": "Decided in " + askRef}, "alice")
+	if cited.Code != http.StatusCreated {
+		t.Fatalf("create the message: status=%d body=%s", cited.Code, cited.Body.String())
+	}
+	messageRef := "dispatch://" + issue.Key + "/message/" + decodeBody[model.Message](t, cited).ID
+	root := strings.Repeat("A **long** first line of the thread. ", 6)
+	rooted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments",
+		map[string]any{"body": root}, "alice")
+	if rooted.Code != http.StatusCreated {
+		t.Fatalf("create the thread's root: status=%d body=%s", rooted.Code, rooted.Body.String())
+	}
+	sessionComment(t, handler, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+		"body": "A reply, so alice's Inbox has the thread.", "reply_to": decodeBody[model.Comment](t, rooted).ID,
+	})
+	awaitBackgroundWrites(t, served)
+	rowsOf := func() int {
+		t.Helper()
+		var count int
+		if err := database.Pool.QueryRow(context.Background(), `select count(*) from text_trees`).Scan(&count); err != nil {
+			t.Fatalf("count the stored trees: %v", err)
+		}
+		return count
+	}
+	before := rowsOf()
+
+	references := treesRequest(t, handler, "/api/v1/references?from="+url.QueryEscape(messageRef), true)
+	replies := treesRequest(t, handler, "/api/v1/me/replies", true)
+	awaitBackgroundWrites(t, served)
+	if after := rowsOf(); after != before {
+		t.Errorf("the two reads left %d text_trees rows, want the %d before them", after, before)
+	}
+	for _, read := range []struct {
+		name, textPath, treePath, whole string
+		response                        *httptest.ResponseRecorder
+	}{
+		{"a backlink's excerpt", "edges.0.excerpt.text", "edges.0.excerpt.text_tree", question, references},
+		{"an Inbox row's subject", "rows.0.subject", "rows.0.subject_tree", strings.TrimSpace(root), replies},
+	} {
+		raw, held := valueAt(t, read.response, read.textPath)
+		var text string
+		if !held || json.Unmarshal(raw, &text) != nil || text == "" || text == read.whole {
+			t.Fatalf("%s is %s, want a cut of a longer text:\n\t%s", read.name, raw, read.response.Body.String())
+		}
+		if _, stored := storedTreeOf(t, database, text); stored {
+			t.Errorf("%s %q has a text_trees row; a cut is read where it stands", read.name, text)
+		}
+		requireAnsweredTree(t, read.response, read.treePath, text)
 	}
 }

@@ -31,6 +31,17 @@ const (
 	// bedrockBackgroundTokensPerMinute is two thirds of the account's Cohere Embed v4 quota of
 	// 300,000 tokens a minute, left to background work; the other third is live search's.
 	bedrockBackgroundTokensPerMinute = 200_000
+	// bedrockMaxBatchBytes is Limits().MaxBatchBytes: Azure's byte budget for the same model
+	// (azureMaxBatchBytes), because Bedrock's own rate is not measured. It keeps a group inside
+	// embedqueue's callBound, the only bound a Bedrock call has, only while Bedrock embeds at least
+	// bedrockMaxBatchBytes ÷ callBound tokens a second: at one token a byte, the most a group can
+	// cost, 320,000 in 60 s, about 5,300, a third of Azure's slowest measured rate (16,152). If
+	// Bedrock is slower, the largest group runs out at the bound, which is an outage (Bounded),
+	// and is bisected until each half fits (embedqueue's bisectSplit): a budget set too large
+	// costs wasted calls and their token reservations, not rows. What embedqueue's rows prove is the
+	// grouping: a text that would cross the edge starts the next group whole, never cut to fit, and
+	// no group past the budget reaches the call.
+	bedrockMaxBatchBytes = azureMaxBatchBytes
 )
 
 // BedrockClient calls Cohere Embed v4 on AWS Bedrock (InvokeModel).
@@ -96,10 +107,14 @@ func NewBedrockWithConfig(cfg aws.Config, opts ...BedrockOption) *BedrockClient 
 // Identity is the Bedrock model id this client calls: BedrockModel unless WithModel overrode it.
 func (c *BedrockClient) Identity() string { return c.model }
 
-// Limits reports Bedrock's batch limit and the background share of the account's quota, and no
-// byte budget (MaxBatchBytes 0): a Bedrock batch is bounded by its text count and token ceiling.
+// Limits reports Bedrock's batch limit, the background share of the account's quota and the byte
+// budget each background call keeps to (bedrockMaxBatchBytes).
 func (c *BedrockClient) Limits() Limits {
-	return Limits{MaxBatchTexts: BedrockMaxBatchTexts, BackgroundTokensPerMinute: bedrockBackgroundTokensPerMinute}
+	return Limits{
+		MaxBatchTexts:             BedrockMaxBatchTexts,
+		MaxBatchBytes:             bedrockMaxBatchBytes,
+		BackgroundTokensPerMinute: bedrockBackgroundTokensPerMinute,
+	}
 }
 
 type bedrockEmbedRequest struct {
@@ -120,7 +135,11 @@ type bedrockEmbedResponse struct {
 }
 
 // Embed calls Bedrock once for up to BedrockMaxBatchTexts texts; a caller with more batches it
-// itself (embedqueue does, one batch at a time). A throttle comes back marked for IsThrottled.
+// itself (embedqueue does, one batch at a time). A throttle comes back marked for IsThrottled, and
+// an outage code (bedrockOutageErrorCodes) or a call that ran out of time while ctx was live
+// (timedOut: the AWS SDK's HTTP client's own timeout) for IsOutage. It sets no time bound of its
+// own: its caller bounds the call through ctx (embedqueue's callBound, search's
+// searchEmbedTimeout).
 func (c *BedrockClient) Embed(ctx context.Context, texts []string, inputType InputType) ([][]float32, error) {
 	bounded, err := boundBatch(texts, BedrockMaxBatchTexts)
 	if err != nil || bounded == nil {
@@ -144,8 +163,11 @@ func (c *BedrockClient) Embed(ctx context.Context, texts []string, inputType Inp
 	})
 	if err != nil {
 		err = fmt.Errorf("embed: bedrock invoke model: %w", err)
-		if bedrockThrottled(err) {
+		switch {
+		case bedrockThrottled(err):
 			return nil, &throttleError{err: err}
+		case bedrockOutage(err), timedOut(ctx, err):
+			return nil, &outageError{err: err}
 		}
 		return nil, err
 	}
@@ -187,4 +209,24 @@ var bedrockThrottles = retry.IsErrorThrottles{retry.ThrottleErrorCode{Codes: bed
 // is still recognized correctly. Embed marks what it finds for IsThrottled.
 func bedrockThrottled(err error) bool {
 	return bedrockThrottles.IsErrorThrottle(err) == aws.TrueTernary
+}
+
+// bedrockOutageErrorCodes are Bedrock's codes for an answer it could not give now that is no
+// throttle, as Azure's 408 and 5xx are (azureStatusError): ModelTimeoutException (408, the model
+// did not answer in time) and InternalServerException (500, the service failed). Like those, one
+// may be a text Bedrock fails on every time, so embedqueue bisects the batch and confirms the row
+// with its canary, and only a failing canary backs the pace off (IsOutage).
+var bedrockOutageErrorCodes = map[string]struct{}{"ModelTimeoutException": {}, "InternalServerException": {}}
+
+// bedrockOutage reports whether err carries one of bedrockOutageErrorCodes as its error code (the
+// smithy API error the SDK answers a coded failure with). Embed marks what it finds for IsOutage.
+// The code is read here rather than through the SDK's throttle classifier bedrockThrottled uses:
+// an outage is no throttle.
+func bedrockOutage(err error) bool {
+	var coded interface{ ErrorCode() string }
+	if !errors.As(err, &coded) {
+		return false
+	}
+	_, ok := bedrockOutageErrorCodes[coded.ErrorCode()]
+	return ok
 }

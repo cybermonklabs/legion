@@ -144,18 +144,18 @@ func ForConcurrentWorker(ctx context.Context) context.Context {
 	return context.WithValue(context.WithValue(ctx, holdingKey{}, &holding{}), commitHooksKey{}, (*commitScope)(nil))
 }
 
-// loggedSites is the calling stacks that have already logged a refusal: one line per distinct
-// stack that reaches the guard. A site reached by N different paths logs at most N lines, one per
-// path, and a call repeated in a loop has the same stack every time, so it logs once instead of
-// flooding the log. The error itself is returned to every caller, every time. The key is the
-// stack's program counters themselves (refusalDepth), a comparable array, so a stack already seen
-// is found with no allocation and no walk of its frames. A function the compiler copies into each
-// of its callers stands at a different counter in each copy, but each copy is on a path of its
+// refusalSites is the calling stacks that have already logged a refusal on one pool: one line per
+// distinct stack that reaches the guard. A site reached by N different paths logs at most N lines,
+// one per path, and a call repeated in a loop has the same stack every time, so it logs once
+// instead of flooding the log. The error itself is returned to every caller, every time. The key
+// is the stack's program counters themselves (refusalDepth), a comparable array, so a stack already
+// seen is found with no allocation and no walk of its frames. A function the compiler copies into
+// each of its callers stands at a different counter in each copy, but each copy is on a path of its
 // own, so it adds no line that path would not log anyway.
-var loggedSites = struct {
+type refusalSites struct {
 	sync.Mutex
 	seen map[[refusalDepth]uintptr]struct{}
-}{seen: map[[refusalDepth]uintptr]struct{}{}}
+}
 
 // refusalDepth is how many frames of a refused call's stack, from the guard outwards, make up its
 // key. The frames nearest the guard — the guarded method, pgx's wrapper, a forwarder the compiler
@@ -165,25 +165,25 @@ var loggedSites = struct {
 const refusalDepth = 32
 
 // logRefusal logs a refusal once per distinct calling stack, with that stack, which is what names
-// the path to repair. The stack, read into a fixed array, is itself the key (loggedSites): a
+// the path to repair. The stack, read into a fixed array, is itself the key (refusalSites): a
 // function that only passes a call on to the pool — TransactWith, a Store method, intake's
 // ApplyFact or any function of the daemon's own — stands in the stacks of all its callers without
 // making them one, so no caller's refusal silences another's. The stack is formatted only on a
 // stack's first refusal; a refusal of a stack already seen costs the read of its program counters
 // and a map lookup.
-func logRefusal() {
+func (p *Pool) logRefusal() {
 	var stack [refusalDepth]uintptr
 	runtime.Callers(2, stack[:])
-	loggedSites.Lock()
-	_, seen := loggedSites.seen[stack]
+	p.refused.Lock()
+	_, seen := p.refused.seen[stack]
 	if !seen {
-		loggedSites.seen[stack] = struct{}{}
+		p.refused.seen[stack] = struct{}{}
 	}
-	loggedSites.Unlock()
+	p.refused.Unlock()
 	if seen {
 		return
 	}
-	slog.Error("legion: second pooled connection requested while one is held",
+	p.logger().Error("legion: second pooled connection requested while one is held",
 		"error", ErrNestedAcquire, "stack", string(debug.Stack()))
 }
 
@@ -196,6 +196,13 @@ type Pool struct {
 	maxConns int
 	// factTurn holds the one turn this pool gives at a time to a fact (FactTurn).
 	factTurn chan struct{}
+	// log is where the pool's refusals (logRefusal) and Transact's lines about a commit over the
+	// pool (logOf) are written, and nil writes them to the process's default logger, as the
+	// daemon's are. A test that reads those lines gives its own pool a logger of its own, so it
+	// reads its own lines beside tests running in parallel.
+	log *slog.Logger
+	// refused is the calling stacks that logged a refusal on this pool (logRefusal).
+	refused refusalSites
 }
 
 // NewPool wraps an open pgx pool. The daemon's own pool is opened by Open; a test that builds a
@@ -206,7 +213,16 @@ type Pool struct {
 // an invalid byte or a \u0000 escape to the server as pgx's own codecs write it, and the server
 // refuses the write.
 func NewPool(pool *pgxpool.Pool) *Pool {
-	return &Pool{pool: pool, maxConns: int(pool.Config().MaxConns), factTurn: make(chan struct{}, 1)}
+	return &Pool{pool: pool, maxConns: int(pool.Config().MaxConns), factTurn: make(chan struct{}, 1),
+		refused: refusalSites{seen: map[[refusalDepth]uintptr]struct{}{}}}
+}
+
+// logger is the pool's log (Pool.log), the process's default logger where it has none.
+func (p *Pool) logger() *slog.Logger {
+	if p.log != nil {
+		return p.log
+	}
+	return slog.Default()
 }
 
 // FactTurn waits for this pool's turn to apply a fact, which it gives to one caller at a time and
@@ -265,7 +281,7 @@ func (p *Pool) guard(ctx context.Context) error {
 	if !holdsConnection(ctx) {
 		return nil
 	}
-	logRefusal()
+	p.logRefusal()
 	return ErrNestedAcquire
 }
 

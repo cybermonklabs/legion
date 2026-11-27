@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -21,13 +22,14 @@ const (
 	askedText  = "The daemon must replace the pod that runs this issue's roles. The reasons are: image a, now b."
 )
 
-// The four lines the executor writes, one for each way a row ends without an error. The first
+// The five lines the executor writes, one for each way a row ends without an error. The first
 // is the line the production check reads (requirement R8).
 const (
 	askPublishedLine = "outbox update ask published to the role topic"
 	askNoHolderLine  = "outbox update ask finished undelivered: no live session holds the role"
 	askLeftLine      = "outbox update ask finished without a publish: the claim no longer records its round"
 	askSuspendedLine = "outbox update ask finished without a publish: the daemon suspended the claim"
+	askAnsweredLine  = "outbox update ask finished without a publish: the role has answered its round"
 )
 
 // askRunner is an outbox runner as hook_prompt_test.go's unit case builds one — a project, a
@@ -179,8 +181,8 @@ func TestPodUpdateAskKeepsItsRetryOnEveryOtherFailure(t *testing.T) {
 	}
 }
 
-// wakeCountingTrees is the runner's tree store with every pod wake counted: TakePodWake is the
-// step that brings a released pod back for a delivery (wakeForDelivery), and every other call
+// wakeCountingTrees is the runner's tree store with every pod wake counted: TakeDeliveryWake is
+// the step that brings a released pod back for a delivery (wakeForDelivery), and every other call
 // goes to the store it wraps.
 type wakeCountingTrees struct {
 	outboxTrees
@@ -188,11 +190,11 @@ type wakeCountingTrees struct {
 	takes int
 }
 
-func (w *wakeCountingTrees) TakePodWake(ctx context.Context, project, issue string, token claim.Token, kind string, at time.Time, mark int64) (bool, error) {
+func (w *wakeCountingTrees) TakeDeliveryWake(ctx context.Context, project, issue string, token claim.Token, generation uint64, at time.Time, mark int64) (store.DeliveryWake, error) {
 	w.mu.Lock()
 	w.takes++
 	w.mu.Unlock()
-	return w.outboxTrees.TakePodWake(ctx, project, issue, token, kind, at, mark)
+	return w.outboxTrees.TakeDeliveryWake(ctx, project, issue, token, generation, at, mark)
 }
 
 func (w *wakeCountingTrees) taken() int {

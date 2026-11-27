@@ -64,7 +64,7 @@ const (
 	// no row, so its word that the workspace was not recreated was not checked.
 	recreatedWords = "may have been recreated since the session last ran"
 	// sessionForgottenKind is the notice kind of a forget through a launcher without the lookup,
-	// to the architect and to the controller alike.
+	// to the architect alone: the controller is told no forget of a session (#4065).
 	sessionForgottenKind = "session-forgotten"
 )
 
@@ -181,7 +181,7 @@ func newOlderLauncherRig(t *testing.T, failures int) *olderLauncherRig {
 		Generation: 1, Status: "in_progress", HandedOver: true, Rank: "U",
 	}, supervise.Claim{
 		Token: token, Project: olderLauncherProject, Tree: olderLauncherIssue, Issue: olderLauncherIssue, Role: claim.RoleImplementer,
-		Generation: 1, State: supervise.StateQueued, PluginContract: api.DaemonAPIVersion, Session: olderLauncherSession,
+		Generation: 1, State: supervise.StateQueued, PluginContract: api.DaemonAPIVersion(), Session: olderLauncherSession,
 		Budgets:          supervise.Budgets{LaunchFailures: failures},
 		TurnOutcomes:     []supervise.TurnOutcome{{Generation: 1, Sequence: 1, Refused: true, Message: "overloaded"}},
 		ProviderErrorRun: 2,
@@ -217,7 +217,7 @@ func newOlderLauncherRig(t *testing.T, failures int) *olderLauncherRig {
 		ClaimActivity:      st.ClaimActivity,
 		Limits:             supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:           supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract:     api.DaemonAPIVersion,
+		PluginContract:     api.DaemonAPIVersion(),
 		PluginRelaunchable: true,
 		RefreshGate:        supervise.NewRefreshGate(0),
 		Worker:             store.ForConcurrentWorker,
@@ -498,17 +498,18 @@ func (r *olderLauncherRig) awaitForgetTold() {
 	}
 }
 
-// wantToldOnce holds that the workflow told the forget once: one message on the issue, and one
-// session-forgotten notice each to the architect and the controller.
+// wantToldOnce holds that the workflow told the forget once: one message on the issue, one
+// session-forgotten notice to the architect, and no notice to the controller (#4065).
 func (r *olderLauncherRig) wantToldOnce() {
 	r.t.Helper()
 	if posted := r.rows(record.OutboxKindDispatchMessage); len(posted) != 1 {
 		r.t.Errorf("the outbox holds %d messages for the issue; want one", len(posted))
 	}
-	for _, kind := range []record.OutboxKind{record.OutboxKindNotice, record.OutboxKindControllerNotice} {
-		if kinds := r.noticeKinds(kind); len(kinds) != 1 || kinds[0] != sessionForgottenKind {
-			r.t.Errorf("the outbox holds the %s rows %q; want one %s", kind, kinds, sessionForgottenKind)
-		}
+	if kinds := r.noticeKinds(record.OutboxKindNotice); len(kinds) != 1 || kinds[0] != sessionForgottenKind {
+		r.t.Errorf("the outbox holds the %s rows %q; want one %s", record.OutboxKindNotice, kinds, sessionForgottenKind)
+	}
+	if kinds := r.noticeKinds(record.OutboxKindControllerNotice); len(kinds) != 0 {
+		r.t.Errorf("the outbox holds the %s rows %q; want none: the forget is the architect's", record.OutboxKindControllerNotice, kinds)
 	}
 }
 
@@ -538,8 +539,8 @@ func (r *olderLauncherRig) wantNothingForgotten() {
 // session in the same try, with the cause not-resumed-by-id: one Spawn of a fresh agent, built for
 // that cause and resuming nothing, and no second Resume with ResumeByAgent. The claim abandons the
 // session, and the outcomes of its session's turns and its run of provider errors start again, as
-// at every forget. The issue is told in one message, and the architect and the controller in one
-// session-forgotten notice each. The fresh agent's registration is accepted.
+// at every forget. The issue is told in one message, the architect in one session-forgotten
+// notice, and the controller nothing. The fresh agent's registration is accepted.
 func (r *olderLauncherRig) wantForgotAtTheNextTry(from, failures int) {
 	r.t.Helper()
 	c := r.claim()
@@ -570,7 +571,7 @@ func (r *olderLauncherRig) wantForgotAtTheNextTry(from, failures int) {
 	r.awaitForgetTold()
 	r.wantToldOnce()
 
-	if err := r.registerAs(olderLauncherFresh, olderLauncherFreshFile, api.DaemonAPIVersion); err != nil {
+	if err := r.registerAs(olderLauncherFresh, olderLauncherFreshFile, api.DaemonAPIVersion()); err != nil {
 		r.t.Fatalf("the fresh agent's registration as %s = %v; want it accepted", olderLauncherFresh, err)
 	}
 	if c := r.claim(); c.Session != olderLauncherFresh || c.SessionFile != olderLauncherFreshFile {
@@ -629,7 +630,7 @@ func TestAnOlderLauncherResumesTheSessionByItsIDWithTheRecreatedSentence(t *test
 		t.Errorf("the prompt of the Resume with ResumeByAgent addresses the agent %q; want it to name %s and say the workspace %s",
 			addressing, olderLauncherSession, recreatedWords)
 	}
-	if err := r.registerAs(olderLauncherSession, olderLauncherSessionFile, api.DaemonAPIVersion); err != nil {
+	if err := r.registerAs(olderLauncherSession, olderLauncherSessionFile, api.DaemonAPIVersion()); err != nil {
 		t.Fatalf("the registration as %s on %s = %v; want it accepted", olderLauncherSession, olderLauncherSessionFile, err)
 	}
 	if stored := r.stored(); stored.Session != olderLauncherSession || stored.SessionFile != olderLauncherSessionFile || stored.AgentResumeGeneration != 0 {
@@ -682,7 +683,7 @@ func TestAnOlderLauncherStartThatDoesNotRegisterForgetsTheSessionAtTheNextTry(t 
 			// The older launcher's pod carries the earlier release's plugin, so the registration
 			// speaks an older contract: the mark names this generation, which is what keeps the
 			// roll edge's rule from it.
-			if err := r.registerAs(olderLauncherOther, olderLauncherOtherFile, api.DaemonAPIVersion-1); !errors.Is(err, claim.SameAgentRefusal) {
+			if err := r.registerAs(olderLauncherOther, olderLauncherOtherFile, api.DaemonAPIVersion()-1); !errors.Is(err, claim.SameAgentRefusal) {
 				r.t.Fatalf("the registration as %s = %v; want the same-agent refusal, 409", olderLauncherOther, err)
 			}
 			r.gone()
@@ -708,13 +709,13 @@ func TestAnOlderLauncherStartThatDoesNotRegisterForgetsTheSessionAtTheNextTry(t 
 }
 
 // A forget through a launcher that has not said it can look a session up by its id says why in
-// every text a reader meets it in: the message on the issue, the notice its architect and the
-// controller are each published, with the one-line message it is published with, the fresh
-// agent's own prompt (its addressing, which the daemon builds; the role's prompt files use the word
-// "lost" in other senses), and the reason the claim keeps with the session it abandoned. Each names
-// the session, the pod's launcher and Oh My Pi's resume of the session by its id, and none says
-// the session was lost or that no store holds it: the session was not looked up, and a store may
-// hold it still (state-table row 7).
+// every text a reader meets it in: the message on the issue, the notice its architect is
+// published, with the one-line message it is published with, the fresh agent's own prompt (its
+// addressing, which the daemon builds; the role's prompt files use the word "lost" in other
+// senses), and the reason the claim keeps with the session it abandoned. Each names the session,
+// the pod's launcher and Oh My Pi's resume of the session by its id, and none says the session
+// was lost or that no store holds it: the session was not looked up, and a store may hold it
+// still (state-table row 7). The controller is published nothing of it (#4065).
 func TestAForgetThroughALauncherWithoutTheLookupSaysSoInEveryText(t *testing.T) {
 	t.Parallel()
 	r := newOlderLauncherRig(t, 0)
@@ -737,9 +738,11 @@ func TestAForgetThroughALauncherWithoutTheLookupSaysSoInEveryText(t *testing.T) 
 	}
 	texts = append(texts, text{"the message posted on the issue", posted[0]})
 	architect := mustClaimToken(t, olderLauncherIssue, claim.RoleArchitect)
+	if published := r.publishedOn(notify.ControllerTopic(olderLauncherProject)); len(published) != 0 {
+		t.Errorf("the outbox published %d times on the controller's topic; want nothing: the forget is the architect's", len(published))
+	}
 	for _, to := range []struct{ who, topic string }{
 		{"its architect", notify.RoleTopicPrefix + string(architect)},
-		{"the controller", notify.ControllerTopic(olderLauncherProject)},
 	} {
 		published := r.publishedOn(to.topic)
 		if len(published) != 1 {
@@ -782,9 +785,8 @@ func TestAForgetThroughALauncherWithoutTheLookupSaysSoInEveryText(t *testing.T) 
 // the claim recording the session, as the write the launch made before its start left it. The
 // next daemon builds its machines from the store, its launch forgets the session again, at a
 // generation of its own, and its fresh agent's Spawn succeeds. The issue is told in one message,
-// and the architect and the controller in one session-forgotten notice each: the fact's event id
-// names the session forgotten, so the second forget's fact is the first's (workflowRuntime's
-// sessionLost).
+// and the architect in one session-forgotten notice: the fact's event id names the session
+// forgotten, so the second forget's fact is the first's (workflowRuntime's sessionLost).
 func TestAForgetADaemonStopCutShortIsToldOnce(t *testing.T) {
 	t.Parallel()
 	r := newOlderLauncherRig(t, 0)

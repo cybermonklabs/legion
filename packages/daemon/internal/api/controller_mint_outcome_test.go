@@ -63,7 +63,7 @@ func newMintRig(t *testing.T) *mintRig {
 // secretVia posts the request mintedSecret posts, through handler.
 func secretVia(t *testing.T, handler http.Handler) *httptest.ResponseRecorder {
 	t.Helper()
-	body, err := json.Marshal(ControllerSecretRequest{PluginContract: DaemonAPIVersion})
+	body, err := json.Marshal(ControllerSecretRequest{PluginContract: DaemonAPIVersion()})
 	if err != nil {
 		t.Fatalf("encode the request: %v", err)
 	}

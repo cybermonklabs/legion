@@ -20,6 +20,7 @@ const appliedSeqRelease = "the release that keeps the sequence of the newest app
 // migration's header (migrations.WayBack), drops the column and deletes the migration's version
 // row, so the roll-forward's Migrate applies the file again and adds the column again at 0.
 func TestTheAppliedSequenceComesAtZeroAndItsWayBackLetsItComeAgain(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, appliedSeqVersion-1)

@@ -70,8 +70,9 @@ var sweepBatch = 1000
 var sweepMaxBatches = 10
 
 // sweepStatements are Sweep's statements for state deleted row by row, $1 the batch. Each
-// selects its batch by primary key through 0016's, 0018's, 0021's or 0042's *_expires index on
-// the predicate it sweeps by, oldest first, so a table of mostly live rows is never read whole.
+// selects its batch by primary key through 0016's, 0018's, 0021's or 0042's *_expires index, or
+// 0046's approve_grants_expires, on the predicate it sweeps by, oldest first, so a table of mostly
+// live rows is never read whole.
 var sweepStatements = []struct{ what, sql string }{
 	{"device codes", `delete from oauth_device_codes where signature in (select signature from oauth_device_codes
 		where expires_at < now() - interval '1 hour' order by expires_at limit $1)`},
@@ -88,6 +89,11 @@ var sweepStatements = []struct{ what, sql string }{
 	{"exchanged JWT ids", `delete from oauth_exchange_jtis where jti in (select jti from oauth_exchange_jtis
 		where expires_at <= now() order by expires_at limit $1)`},
 	{"pod session registrations", `delete from oauth_pod_sessions where (pod_uid, session) in (select pod_uid, session from oauth_pod_sessions
+		where expires_at <= now() order by expires_at limit $1)`},
+	// Every review trades an approve grant of its own (ApproveGrants), which no read serves once it
+	// has ended, so an ended one goes. The proxy's own copy of its values goes at its pod's next
+	// read of a new grant, by the one rule proxy.Server's valuesFor states.
+	{"approve grants", `delete from approve_grants where id in (select id from approve_grants
 		where expires_at <= now() order by expires_at limit $1)`},
 }
 
@@ -328,13 +334,16 @@ func sessionOf(request oauth2.Requester) (*oauth2.DefaultSession, error) {
 	return nil, fmt.Errorf("oauthstore stores *oauth2.DefaultSession and *ExchangeSession sessions, got %T", request.GetSession())
 }
 
-// ErrUnstorableText is a request the store keeps no row of, because text it would write holds a
-// control character: a key or value of the form a stored request carries, or a DPoP proof's jti.
-// Postgres writes U+0000 in neither text nor jsonb, so such a write failed and answered 500 where
-// the caller sent a request nobody could serve; the other control characters are refused with it,
-// since no client of the broker writes one in any of those fields. The provider answers it 400
-// invalid_request REQUEST_INVALID (oauth.Provider.writeError), and nothing is written.
-var ErrUnstorableText = errors.New("oauthstore: the request holds a control character, which the store does not keep")
+// ErrUnstorableText is a request the store keeps no row of, because text it would write cannot be
+// stored: a key or value of the form a stored request carries, or a DPoP proof's jti, holds a
+// control character (unicode.IsControl, U+0000 among them), or a proof's jti and htu together are
+// longer than maxStoredProofKey. Postgres writes U+0000 in neither text nor jsonb, and refuses a
+// key too long for the primary key's btree (SQLSTATE 54000), so such a write failed and answered
+// 500 where the caller sent a request nobody could serve; the other control characters are
+// refused with it, since no client of the broker writes one in any of those fields. The provider
+// answers it 400 invalid_request REQUEST_INVALID (oauth.Provider.writeError), and nothing is
+// written.
+var ErrUnstorableText = errors.New("oauthstore: the request holds a control character, or a DPoP proof whose jti and target URI are too long together, which the store does not keep")
 
 // holdsControl reports whether s holds a control character (unicode.IsControl: Cc, U+0000 among
 // them).
@@ -1053,15 +1062,17 @@ func KeyHoldsReadToken(ctx context.Context, db Querier, thumbprint string) (bool
 }
 
 // EndCredential deactivates, in tx, every access and refresh token whose session names the
-// launcher credential, so revoking the credential also ends the machine login's tokens.
-func EndCredential(ctx context.Context, tx pgx.Tx, credentialID string) error {
+// launcher credential, so revoking the credential also ends the machine login's tokens. It
+// answers how many live access tokens it ended.
+func EndCredential(ctx context.Context, tx pgx.Tx, credentialID string) (int, error) {
 	if _, err := tx.Exec(ctx, `update oauth_refresh_tokens set active = false where credential_id = $1 and active`, credentialID); err != nil {
-		return fmt.Errorf("end the credential's refresh tokens: %w", err)
+		return 0, fmt.Errorf("end the credential's refresh tokens: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `update oauth_access_tokens set active = false where credential_id = $1 and active`, credentialID); err != nil {
-		return fmt.Errorf("end the credential's access tokens: %w", err)
+	tag, err := tx.Exec(ctx, `update oauth_access_tokens set active = false where credential_id = $1 and active`, credentialID)
+	if err != nil {
+		return 0, fmt.Errorf("end the credential's access tokens: %w", err)
 	}
-	return nil
+	return int(tag.RowsAffected()), nil
 }
 
 // DeleteCredentialTokens deletes, in tx, every access and refresh token whose session names the
@@ -1083,13 +1094,20 @@ func DeleteCredentialTokens(ctx context.Context, tx pgx.Tx, credentialID string)
 // database's, so the margin covers skew between the two.
 const jtiRetentionMargin = time.Minute
 
+// maxStoredProofKey bounds the bytes of a recorded proof's jti and htu together, under the primary
+// key (jti, htu)'s btree limit of 2,704 bytes a tuple: the tuple adds to the two texts at most 26
+// bytes (its header, a length header for each column and alignment), and 2,048 leaves that and
+// more.
+const maxStoredProofKey = 2048
+
 // CheckAndSetDPoPProofUsed records a DPoP proof as used until exp plus jtiRetentionMargin, keyed
 // on its jti and target URI (htu), and reports whether it already was. The insert, or the takeover
 // of an expired record of the same key, is one statement, so two requests presenting the same
-// proof cannot both see it unused. Sweep deletes expired records. A jti holding a control character
-// is ErrUnstorableText, and records nothing.
+// proof cannot both see it unused. Sweep deletes expired records. A proof whose jti holds a control
+// character, or whose jti and htu are over maxStoredProofKey bytes together, is ErrUnstorableText,
+// and records nothing.
 func (s *Store) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _, htu string, exp time.Time) (bool, error) {
-	if holdsControl(jti) {
+	if holdsControl(jti) || len(jti)+len(htu) > maxStoredProofKey {
 		return false, ErrUnstorableText
 	}
 	var recorded bool

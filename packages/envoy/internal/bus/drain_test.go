@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // connectWithHandler connects a client and subscribes a core handler that signals when a
@@ -36,11 +37,7 @@ func connectWithHandler(t *testing.T, hold time.Duration) (*bus.Client, *atomic.
 	if err := client.Conn.Publish("drain.in-flight", nil); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the delivery never reached its handler")
-	}
+	testwait.Receive(t, "the delivery to reach its handler", started)
 	return client, finished
 }
 
@@ -145,11 +142,7 @@ func TestDrainLetsARoleForwardInItsHandlerFinish(t *testing.T) {
 	if err := publisher.Flush(); err != nil {
 		t.Fatalf("flush publishes: %v", err)
 	}
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the first role message never reached its handler")
-	}
+	testwait.Receive(t, "the first role message to reach its handler", started)
 
 	if err := client.Drain(5 * time.Second); err != nil {
 		t.Fatalf("drain: %v", err)
@@ -209,11 +202,7 @@ func TestDrainClosesAtItsDeadlineWhileADeliverySubscriptionDrains(t *testing.T) 
 	if err := client.Conn.Publish("notifications.role.drain-deadline", nil); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the delivery never reached its handler")
-	}
+	testwait.Receive(t, "the delivery to reach its handler", started)
 	began := time.Now()
 	err = client.Drain(300 * time.Millisecond)
 	if !errors.Is(err, context.DeadlineExceeded) {
@@ -241,7 +230,7 @@ func TestDrainWhileReconnectingClosesAtOnce(t *testing.T) {
 		t.Fatalf("role subscribe: %v", err)
 	}
 	srv.Stop(t)
-	waitFor(t, 15*time.Second, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
+	waitFor(t, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
 
 	began := time.Now()
 	_ = client.Drain(5 * time.Second)
@@ -274,7 +263,7 @@ func TestADrainWhileReconnectingRunsItsHooksOnAnEndedContext(t *testing.T) {
 		}
 	})
 	srv.Stop(t)
-	waitFor(t, 15*time.Second, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
+	waitFor(t, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
 
 	if err := client.Drain(5 * time.Second); !errors.Is(err, natsgo.ErrConnectionReconnecting) {
 		t.Fatalf("Drain while reconnecting = %v, want %v", err, natsgo.ErrConnectionReconnecting)
@@ -319,13 +308,9 @@ func TestDrainDoesNotWaitForABindInFlight(t *testing.T) {
 		_, err := client.Subscribe("", func(msg *natsgo.Msg) { _ = msg.Ack() }, natsgo.Bind(bus.Stream, consumer), natsgo.ManualAck())
 		bound <- err
 	}()
-	select {
-	case <-proxy.swallowed:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the bind's consumer lookup never reached the link")
-	}
+	testwait.Receive(t, "the bind's consumer lookup to reach the link", proxy.swallowed)
 	proxy.drop()
-	waitFor(t, 15*time.Second, "the connection to reconnect in place", func() bool {
+	waitFor(t, "the connection to reconnect in place", func() bool {
 		return client.Connected() && client.Conn.Stats().Reconnects > 0
 	})
 	select {
@@ -342,6 +327,8 @@ func TestDrainDoesNotWaitForABindInFlight(t *testing.T) {
 	if err != nil {
 		t.Fatalf("drain: %v", err)
 	}
+	// The bound under test, not a wait: the close ends the bind at once, where a bind left to
+	// itself waits out JetStream's 10 s for the lost lookup, so 2 s tells the two apart.
 	select {
 	case err := <-bound:
 		if err == nil {
@@ -394,46 +381,34 @@ func TestDrainKeepsAConnectionThatReconnectedBeforeIt(t *testing.T) {
 	if err := conn.Publish("drain.reconnected-before", nil); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	select {
-	case <-inHandler:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the delivery never reached its handler")
-	}
+	testwait.Receive(t, "the delivery to reach its handler", inHandler)
 
 	if err := conn.ForceReconnect(); err != nil {
 		t.Fatalf("reconnect: %v", err)
 	}
-	waitFor(t, 15*time.Second, "the connection to reconnect in place", func() bool {
+	waitFor(t, "the connection to reconnect in place", func() bool {
 		return conn.Status() == natsgo.CONNECTED && conn.Stats().Reconnects == 1
 	})
-	began := time.Now()
 	drained := make(chan error, 1)
 	go func() { drained <- client.Drain(5 * time.Second) }()
-	waitFor(t, 5*time.Second, "Drain to drain the connection", conn.IsDraining)
+	waitFor(t, "Drain to drain the connection", conn.IsDraining)
 
 	// nats.go's close() sends the CLOSED event synchronously, so a callback that closed the
 	// connection has sent it by the time the callback returns.
 	closed := conn.StatusChanged(natsgo.CLOSED)
 	defer conn.RemoveStatusListener(closed)
 	releaseCallbacks()
-	select {
-	case <-reconnectRan:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the reconnect callback never ran")
-	}
+	testwait.Receive(t, "the reconnect callback to run", reconnectRan)
 	select {
 	case <-closed:
 		t.Fatal("the late reconnect callback closed the connection with the delivery still in its handler")
 	default:
 	}
 	finishHandler()
-	select {
-	case err := <-drained:
-		if err != nil {
-			t.Fatalf("drain: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatalf("Drain had not returned 2s after the delivery finished (%s since it began)", time.Since(began))
+	// Drain returns an error once its own 5 s deadline passes, so a Drain that waited it out fails
+	// here too.
+	if err := testwait.Receive(t, "Drain to return once the delivery finished", drained); err != nil {
+		t.Fatalf("drain: %v", err)
 	}
 	if !finished.Load() {
 		t.Fatal("Drain returned before the delivery in its handler finished")
@@ -471,17 +446,15 @@ func TestDrainEndsWhenTheConnectionClosesWhileNATSDrainsIt(t *testing.T) {
 		if err := conn.Publish("drain.closed-while-draining", nil); err != nil {
 			t.Fatalf("publish: %v", err)
 		}
-		select {
-		case <-inHandler:
-		case <-time.After(5 * time.Second):
-			t.Fatal("the delivery never reached its handler")
-		}
+		testwait.Receive(t, "the delivery to reach its handler", inHandler)
 		drained := make(chan error, 1)
 		go func() { drained <- client.Drain(5 * time.Second) }()
 		// The delivery in its handler holds nats.go's drain of the connection's subscriptions.
-		waitFor(t, 5*time.Second, "Drain to drain the connection", conn.IsDraining)
+		waitFor(t, "Drain to drain the connection", conn.IsDraining)
 		conn.Close()
 		releaseHandler()
+		// The bound under test, not a wait: a close while nats.go drains ends the drain at once
+		// (above), and 1 s tells that from a drain still waiting on a state the close left stale.
 		select {
 		case err := <-drained:
 			if err != nil {

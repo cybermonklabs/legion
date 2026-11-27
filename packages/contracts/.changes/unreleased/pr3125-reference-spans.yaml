@@ -1,0 +1,5 @@
+kind: Added
+body: '`referenceSpans` and `trimReference` read the reference spans in a text, `dispatch://` addresses and `http(s)://` URLs, by the rule the server''s `text.ExtractAt` reads them by. They moved here from the dashboard so the document engine (`@legion/proof-editor`) reads a `dispatch://` address by the same rule when it keeps the address whole, as the server''s `text.DispatchSpans` does.'
+time: 2026-11-23T22:05:20.481221021Z
+custom:
+    Issue: pr3125

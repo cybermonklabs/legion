@@ -25,6 +25,7 @@ import (
 // with none handled — a message it keeps naking is not progress. A poison message it terminates is
 // handled.
 func TestConsumerLagCountsWhatWaitsAndCallsAConsumerStalledWhenNoneIsHandledFor60Seconds(t *testing.T) {
+	// Not parallel: its exact readings hold only while each NATS read beats consumerOldestBound, 1 s, a wall-clock bound the load of tests beside it can cross.
 	ctx := context.Background()
 	pool := migratedPool(t)
 	createWrites(t, pool)
@@ -110,6 +111,7 @@ func TestConsumerLagCountsWhatWaitsAndCallsAConsumerStalledWhenNoneIsHandledFor6
 // STREAM.MSG.GET that fails or never answers leaves only the oldest unknown, the never-answered
 // read cut at its own bound, before the consumer's.
 func TestConsumerLagNamesWhatNATSDidNotAnswer(t *testing.T) {
+	// Not parallel: it bounds Lag between consumerOldestBound and consumerLagBound, 1 to 2 s, a wall-clock bound the load of tests beside it can cross.
 	ctx := context.Background()
 	served, stream := testJetStream(t)
 	standIn := &lagStandIn{JetStream: served}
@@ -179,6 +181,7 @@ func TestConsumerLagNamesWhatNATSDidNotAnswer(t *testing.T) {
 // message could not be read keeps its waiting count and stalled flag and names that read, and Lag
 // as a whole stays within one consumerLagBound.
 func TestConsumerLagCountsEveryConsumerWhileNATSRefusesTheOldestMessageRead(t *testing.T) {
+	// Not parallel: it bounds Lag at consumerLagBound plus 1 s, a wall-clock bound the load of tests beside it can cross.
 	ctx := context.Background()
 	daemonSeed, daemonPublic := testnkeys.User(t)
 	adminSeed, adminPublic := testnkeys.User(t)

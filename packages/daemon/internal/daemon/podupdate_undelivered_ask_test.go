@@ -72,7 +72,7 @@ func TestPodUpdateAskTheEarlierReleaseQueuedAndMarkedIsDeliveredOnceAfterTheCuto
 	if c := rig.claimOf(claim.RoleImplementer); c.UpdateTaskedAt == nil {
 		t.Fatalf("the implementer holds no ask mark, want the earlier release's mark written at the enqueue")
 	}
-	if written, err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
+	if written, err := rig.s.plan.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
 		Role: claim.RoleImplementer, Round: podUpdateRound, Pod: podUpdatePod,
 		Text: supervise.UpdateTask(claim.RoleImplementer, podUpdateRound, podUpdateDrift, podUpdateBound),
 	}); err != nil || !written {
@@ -218,8 +218,8 @@ func TestPodUpdateAskThatFoundNoHolderBeforeTheSweepMovedOnIsAskedAgain(t *testi
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 	rig.listener.setAbsent(rig.roleTopic(claim.RoleImplementer))
-	enqueue := rig.s.enqueue
-	rig.s.enqueue = func(ctx context.Context, issue string, payloads ...record.OutboxPayload) (bool, error) {
+	enqueue := rig.s.plan.enqueue
+	rig.s.plan.enqueue = func(ctx context.Context, issue string, payloads ...record.OutboxPayload) (bool, error) {
 		written, err := enqueue(ctx, issue, payloads...)
 		if err != nil || !written {
 			return written, err
@@ -290,7 +290,7 @@ func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *test
 			rig.awaitRound(claim.RoleImplementer, podUpdateRound)
 			text := supervise.UpdateTask(claim.RoleImplementer, podUpdateRound, podUpdateDrift, podUpdateBound)
 			for range 2 {
-				if written, err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
+				if written, err := rig.s.plan.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
 					Role: claim.RoleImplementer, Round: podUpdateRound, Pod: podUpdatePod, Text: text,
 				}); err != nil || !written {
 					t.Fatalf("queue a row of the round = %t, %v; want it written", written, err)
@@ -405,10 +405,10 @@ type stoppingPublisher struct {
 	cancel context.CancelFunc
 }
 
-func (p stoppingPublisher) Publish(ctx context.Context, topic, message string, payload any, key string) error {
-	err := p.inner.Publish(ctx, topic, message, payload, key)
+func (p stoppingPublisher) Publish(ctx context.Context, topic, message string, payload any, key string) (string, error) {
+	holder, err := p.inner.Publish(ctx, topic, message, payload, key)
 	p.cancel()
-	return err
+	return holder, err
 }
 
 func (p stoppingPublisher) PublishKept(ctx context.Context, topic, message string, payload any, key string) (bool, error) {
@@ -449,5 +449,46 @@ func TestPodUpdateAskDeliveredAsTheDaemonStopsIsStillMarked(t *testing.T) {
 	}
 	if marked == nil {
 		t.Fatal("the ask reached the implementer as the daemon stopped, and the stored claim records no mark; want it marked, so the next boot does not ask again")
+	}
+}
+
+// An ask of a round reaches a role's agent only while its claim holds no answer of that round,
+// read under the claim's own lock where the ask is published (supervise's
+// Machine.PublishUpdateAsk). The sweep reads the claims before the ask is published, so a role
+// that answers in between is told nothing, and the row ends on its own line (askAnsweredLine). A
+// role asked first and answering after is told once, and that line is not written.
+func TestPodUpdateAskReachesNoRoleThatAnsweredBeforeItsPublish(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		answerFirst bool
+		want        int
+	}{
+		{name: "the answer, then the ask", answerFirst: true, want: 0},
+		{name: "the ask, then the answer", answerFirst: false, want: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+			rig.drifts(podUpdateDrift)
+			rig.tick()
+			row := rig.awaitAskQueued(claim.RoleImplementer, podUpdateRound)
+			if tc.answerFirst {
+				rig.signal(claim.RoleImplementer, "a1b2c3d")
+			}
+			rig.runAsk(row)
+			if !tc.answerFirst {
+				rig.signal(claim.RoleImplementer, "a1b2c3d")
+			}
+			if n := rig.deliveredTo(claim.RoleImplementer); n != tc.want {
+				t.Fatalf("the implementer's topic was delivered %d asks of the round, want %d", n, tc.want)
+			}
+			lines := loggedLines(t, rig.logs.String(), `"msg":"`+askAnsweredLine+`"`)
+			if tc.want == 1 && len(lines) != 0 {
+				t.Fatalf("lines %q = %v, want none: the ask reached the role before it answered", askAnsweredLine, lines)
+			}
+			if tc.want == 0 && (len(lines) != 1 || lines[0]["level"] != "INFO" || lines[0]["row"] != float64(row.ID) || lines[0]["round"] != podUpdateRound) {
+				t.Fatalf("lines %q = %v, want one Info line naming row %d and round %s", askAnsweredLine, lines, row.ID, podUpdateRound)
+			}
+		})
 	}
 }

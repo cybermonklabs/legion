@@ -12,6 +12,7 @@ import (
 // error, its payload kept, and no event id, since it named none the daemon could read; then it is
 // terminated, so the consumer's floor moves past it and nothing waits for it.
 func TestAMessageThatDoesNotDecodeIsRecordedAtItsFirstDelivery(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})

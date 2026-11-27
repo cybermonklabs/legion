@@ -90,13 +90,15 @@ func TestACredentialThatOpensNothingIsRefusedAndTunnelsNothing(t *testing.T) {
 
 // TestABoundHostGetsTheValueSwappedIntoTheHeaderTheEntryNames is the airlock itself: the command
 // holds a placeholder, the service receives the value, and what the command sent in any other
-// place is sent on as it was.
+// place is sent on as it was. A placeholder anywhere but the header its entry names is refused
+// (TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused); the body is not read, so a
+// placeholder there travels as the command wrote it.
 func TestABoundHostGetsTheValueSwappedIntoTheHeaderTheEntryNames(t *testing.T) {
 	r := newRig(t, Options{})
 	client := r.client(workerPlaceholder)
-	answer, body := r.do(client, http.MethodPost, "https://"+boundHost+"/v1/things?token="+workerPlaceholder, "the body holds "+workerPlaceholder,
+	answer, body := r.do(client, http.MethodPost, "https://"+boundHost+"/v1/things?token=query-text", "the body holds "+workerPlaceholder,
 		"Authorization", "Bearer "+workerPlaceholder,
-		"X-Other", "carried: "+workerPlaceholder)
+		"X-Other", "carried: other-text")
 	if answer.StatusCode != http.StatusOK {
 		t.Fatalf("the call answered %d %q; want 200 from the service", answer.StatusCode, body)
 	}
@@ -108,12 +110,12 @@ func TestABoundHostGetsTheValueSwappedIntoTheHeaderTheEntryNames(t *testing.T) {
 	if want := "Bearer " + workerValue; got.Header.Get("Authorization") != want {
 		t.Errorf("the service saw Authorization %q; want %q: the entry names that header, so the value goes in it", got.Header.Get("Authorization"), want)
 	}
-	// Everything the entry does not name travels as the command wrote it, placeholder and all:
-	// the airlock swaps the headers of the entry and nothing else.
-	if want := "carried: " + workerPlaceholder; got.Header.Get("X-Other") != want {
+	// Everything the entry does not name travels as the command wrote it: the airlock swaps the
+	// headers of the entry and nothing else.
+	if want := "carried: other-text"; got.Header.Get("X-Other") != want {
 		t.Errorf("the service saw X-Other %q; want %q: a header the entry does not name is not swapped", got.Header.Get("X-Other"), want)
 	}
-	if want := "token=" + workerPlaceholder; got.Query != want {
+	if want := "token=query-text"; got.Query != want {
 		t.Errorf("the service saw the query %q; want %q: the airlock changes no query", got.Query, want)
 	}
 	if want := "the body holds " + workerPlaceholder; got.Body != want {
@@ -934,11 +936,7 @@ func TestOneRequestIsHandledForOneNameOfTheGrant(t *testing.T) {
 		alphaPlaceholder = placeholder.Prefix + "alphaalphaalphaalphaalphaalpha01"
 		betaPlaceholder  = placeholder.Prefix + "betabetabetabetabetabetabetabe01"
 	)
-	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-		{Name: alphaName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},
-		{Name: betaName, Hosts: []string{boundHost}, Headers: []string{"x-beta"}},
-	}}
-	r := newRig(t, Options{Rules: rules})
+	r := newRuledRig(t, twoNameRules(alphaName, betaName), Options{})
 	r.grants.connections[alphaPlaceholder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 		Names: map[string]requests.AirlockGrantName{
@@ -981,18 +979,14 @@ func TestOneRequestIsHandledForOneNameOfTheGrant(t *testing.T) {
 	}
 
 	// A request that carries both is handled for the first candidate, and for that one alone:
-	// the decision is over one secret, so the other's placeholder travels on as the command
-	// wrote it rather than being swapped beside it.
-	r.get(client, "https://"+boundHost+"/v1/both", "Authorization", "Bearer "+alphaPlaceholder, "X-Beta", "Token "+betaPlaceholder)
-	seen = r.requests()
-	if len(seen) != 3 {
-		t.Fatalf("the service saw %d requests; want three", len(seen))
+	// the decision is over one secret, so the other's placeholder would leave the proxy as the
+	// command wrote it, and the request is refused rather than sent.
+	answer, body := r.get(client, "https://"+boundHost+"/v1/both", "Authorization", "Bearer "+alphaPlaceholder, "X-Beta", "Token "+betaPlaceholder)
+	if answer.StatusCode != http.StatusForbidden || !strings.Contains(body, "placeholder") {
+		t.Errorf("the request carrying both answered %d %q; want 403: one request is handled for one name, and beta's placeholder would leave the proxy", answer.StatusCode, body)
 	}
-	if want := "Bearer " + alphaValue; seen[2].Header.Get("Authorization") != want {
-		t.Errorf("the service saw Authorization %q; want %q", seen[2].Header.Get("Authorization"), want)
-	}
-	if want := "Token " + betaPlaceholder; seen[2].Header.Get("X-Beta") != want {
-		t.Errorf("the service saw X-Beta %q; want %q: one request is handled for one name", seen[2].Header.Get("X-Beta"), want)
+	if seen := r.requests(); len(seen) != 2 {
+		t.Errorf("the service saw %d requests; want the two above alone", len(seen))
 	}
 }
 
@@ -1255,6 +1249,85 @@ func TestAMintedValueIsMintedAgainBeforeItExpires(t *testing.T) {
 	}
 }
 
+// TestAnEndedStoredGrantsValuesAreDropped: a grant released from a stored secret ends at the end
+// its connection carries, as a minted capability's does, and nothing extends it, so the read that
+// adds a new grant's entry drops the entry of a stored grant whose end the pod's clock has reached,
+// keeps every live grant's entry, the older ones' too, and a grant's with no end at all, and reads
+// nothing to do it (TestAnEndedMintedGrantsValuesAreDropped is the minted half, with the same
+// script).
+func TestAnEndedStoredGrantsValuesAreDropped(t *testing.T) {
+	clock := &testClock{now: time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)}
+	r := newRig(t, Options{Now: clock.read})
+	// Four stored grants: the first ends a quarter of an hour in, the next two an hour after it,
+	// and the last has no end (its connection carries no Expires: it lasts until its session ends).
+	type storedGrant struct {
+		id, placeholder string
+		ends            time.Time
+	}
+	grants := []storedGrant{
+		{"grant-00000011", placeholder.Prefix + "QqRrSsTtUuVvWwXxYyZz0123456789cd", clock.read().Add(15 * time.Minute)},
+		{"grant-00000012", placeholder.Prefix + "QqRrSsTtUuVvWwXxYyZz0123456789ef", clock.read().Add(time.Hour)},
+		{"grant-00000013", placeholder.Prefix + "QqRrSsTtUuVvWwXxYyZz0123456789gh", clock.read().Add(time.Hour)},
+		{"grant-00000014", placeholder.Prefix + "QqRrSsTtUuVvWwXxYyZz0123456789ij", time.Time{}},
+	}
+	for _, g := range grants {
+		connection := testConnection()
+		connection.GrantID, connection.Expires = g.id, nil
+		if !g.ends.IsZero() {
+			connection.Expires = &g.ends
+		}
+		connection.Names = map[string]requests.AirlockGrantName{workerName: {Slots: map[string]string{requests.SlotValue: g.placeholder}}}
+		r.grants.setConnection(g.placeholder, connection)
+		r.grants.setValues(g.id, storedValues(workerName, workerValue))
+	}
+	call := func(g storedGrant) {
+		t.Helper()
+		answer, body := r.get(r.client(g.placeholder), "https://"+boundHost+"/v1/call", "Authorization", "Bearer "+g.placeholder)
+		if answer.StatusCode != http.StatusOK {
+			t.Fatalf("the call of grant %s = %d %s, want 200", g.id, answer.StatusCode, body)
+		}
+	}
+	holds := func(g storedGrant) bool {
+		r.proxy.valuesMu.Lock()
+		defer r.proxy.valuesMu.Unlock()
+		_, held := r.proxy.values[g.id]
+		return held
+	}
+	first, second, third, endless := grants[0], grants[1], grants[2], grants[3]
+
+	call(endless)
+	call(first)
+	if !holds(first) || !holds(endless) {
+		t.Fatalf("held: first %v, endless %v after their calls; the row cannot see a drop", holds(first), holds(endless))
+	}
+	// Before the first grant's end, a new grant's read leaves the first grant's values held.
+	clock.set(first.ends.Add(-time.Minute))
+	call(second)
+	if !holds(first) || !holds(second) {
+		t.Fatalf("held: first %v, second %v; want both, since neither grant has ended", holds(first), holds(second))
+	}
+	// At its end the broker answers the first grant's placeholder as no live grant, and the next
+	// new grant's read drops the first grant's values and keeps the live ones, the older second
+	// grant's among them.
+	clock.set(first.ends)
+	r.grants.refuseConnection(first.placeholder, requests.ErrGrantNotLive)
+	call(third)
+	if holds(first) {
+		t.Errorf("the pod still holds the values of stored grant %s, which ended at %s, with the clock at %s", first.id, first.ends, clock.read())
+	}
+	if !holds(second) || !holds(third) {
+		t.Errorf("held: second %v, third %v; want both, since neither grant has ended", holds(second), holds(third))
+	}
+	if !holds(endless) {
+		t.Errorf("the pod holds no values of grant %s, which has no end and so keeps its entry until the pod rolls", endless.id)
+	}
+	for _, g := range []storedGrant{first, endless} {
+		if reads := r.grants.valueReads(g.id); reads != 1 {
+			t.Errorf("the values of grant %s were read %d times; want once, for its call", g.id, reads)
+		}
+	}
+}
+
 // TestDropNameDropsOneNameAndKeepsTheGrantsOthers: a reread says one secret has a new version,
 // and says nothing about the rest of a grant, so the drop is of that name alone - and the next
 // request reads the grant's values again, which is what puts the new version in front of it.
@@ -1265,11 +1338,7 @@ func TestDropNameDropsOneNameAndKeepsTheGrantsOthers(t *testing.T) {
 		alphaPlaceholder = placeholder.Prefix + "alphaalphaalphaalphaalphaalpha01"
 		betaPlaceholder  = placeholder.Prefix + "betabetabetabetabetabetabetabe01"
 	)
-	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-		{Name: alphaName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},
-		{Name: betaName, Hosts: []string{boundHost}, Headers: []string{"x-beta"}},
-	}}
-	r := newRig(t, Options{Rules: rules})
+	r := newRuledRig(t, twoNameRules(alphaName, betaName), Options{})
 	r.grants.connections[alphaPlaceholder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 		Names: map[string]requests.AirlockGrantName{
@@ -1416,13 +1485,15 @@ func TestAGitHubAppInstallationsTokenIsSwappedForItsOwnSlotsPlaceholder(t *testi
 		acmeToken  = "ghs_the-real-acme-installation-token"
 		zedToken   = "ghs_the-real-zed-installation-token"
 	)
-	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{
-		Name:    appName,
-		Hosts:   []string{boundHost},
-		Headers: []string{"authorization"},
-		Allow:   []proxyrules.Allow{{Method: http.MethodGet, PathPrefix: "/v1/"}},
-	}}}
-	r := newRig(t, Options{Rules: rules})
+	// A github-app name is minted and swapped in (way mint), here on GET under /v1/ alone.
+	rules := proxyrules.Rules{
+		Kinds: []proxyrules.Kind{{
+			Name: "github", Hosts: []string{boundHost}, Headers: []string{"authorization"}, Ways: []string{proxyrules.WayMint},
+			Allow: []proxyrules.Allow{{Method: http.MethodGet, PathPrefix: "/v1/"}},
+		}},
+		Names: []proxyrules.Binding{{Name: appName, Kind: "github", Way: proxyrules.WayMint}},
+	}
+	r := newRuledRig(t, rules, Options{})
 	r.grants.connections[acmeHolder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 		Names: map[string]requests.AirlockGrantName{
@@ -1595,10 +1666,6 @@ func TestTheGrantIsReadAgainForEveryRequestOfABoundConnection(t *testing.T) {
 			alphaPlaceholder = placeholder.Prefix + "alphaalphaalphaalphaalphaalpha01"
 			betaPlaceholder  = placeholder.Prefix + "betabetabetabetabetabetabetabe01"
 		)
-		rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-			{Name: alphaName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},
-			{Name: betaName, Hosts: []string{boundHost}, Headers: []string{"x-beta"}},
-		}}
 		both := requests.AirlockConnection{
 			GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 			Names: map[string]requests.AirlockGrantName{
@@ -1606,7 +1673,7 @@ func TestTheGrantIsReadAgainForEveryRequestOfABoundConnection(t *testing.T) {
 				betaName:  {Slots: map[string]string{requests.SlotValue: betaPlaceholder}},
 			},
 		}
-		r := newRig(t, Options{Rules: rules})
+		r := newRuledRig(t, twoNameRules(alphaName, betaName), Options{})
 		r.grants.setConnection(alphaPlaceholder, both)
 		r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
 			alphaName: {Slots: map[string]string{requests.SlotValue: alphaValue}},
@@ -1626,24 +1693,17 @@ func TestTheGrantIsReadAgainForEveryRequestOfABoundConnection(t *testing.T) {
 		r.grants.setConnection(alphaPlaceholder, withheld)
 
 		answer, body := r.get(client, "https://"+boundHost+"/v1/things", "X-Beta", "Token "+betaPlaceholder)
-		if answer.StatusCode != http.StatusOK {
-			t.Fatalf("the call carrying the withheld name's placeholder answered %d %q; want it decided for alpha and forwarded", answer.StatusCode, body)
+		if answer.StatusCode != http.StatusForbidden || !strings.Contains(body, "placeholder") {
+			t.Fatalf("the call carrying the withheld name's placeholder answered %d %q; want 403: beta is withheld, so no name swaps its placeholder and it does not leave the proxy", answer.StatusCode, body)
 		}
-		seen := r.requests()
-		if len(seen) != 2 {
-			t.Fatalf("the service saw %d requests; want two", len(seen))
-		}
-		if got := seen[1].Header.Get("X-Beta"); got != "Token "+betaPlaceholder {
-			t.Fatalf("the service saw X-Beta %q; want the placeholder as the command wrote it: beta is withheld, so nothing of beta is swapped in", got)
-		}
-		if line := r.logs.callsAtLeast(t, 2)[1]; line.fields["secret"] != alphaName {
-			t.Fatalf("the second call logged the secret %v; want %s, the one name the grant still carries", line.fields["secret"], alphaName)
+		if seen := r.requests(); len(seen) != 1 {
+			t.Fatalf("the service saw %d requests; want the first alone", len(seen))
 		}
 
 		// And alpha's own placeholder on that same connection still gets alpha's value.
 		r.get(client, "https://"+boundHost+"/v1/things", "Authorization", "Bearer "+alphaPlaceholder)
-		seen = r.requests()
-		if got, want := seen[2].Header.Get("Authorization"), "Bearer "+alphaValue; got != want {
+		seen := r.requests()
+		if got, want := seen[1].Header.Get("Authorization"), "Bearer "+alphaValue; got != want {
 			t.Fatalf("the service saw Authorization %q; want %q: the grant's other name goes on", got, want)
 		}
 	})

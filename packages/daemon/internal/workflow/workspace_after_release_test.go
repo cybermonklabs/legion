@@ -13,6 +13,7 @@ import (
 // before said whatever its restore did, nor that nothing unpushed was lost, which a side head
 // breaks. A pause keeps the pod, so its wake task says the workspace is as the role left it.
 func TestTheReleasesWakeTaskNeverSaysUnpushedWorkWasKept(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{pods.WakeChecks, pods.WakeRoleMessage, pods.WakeAgentMessage, pods.WakeBackstop, pods.WakeDelivery} {
 		task := WakeTask(kind, "its detail", StoppedByRelease)
 		if !strings.Contains(task, WorkspaceAfterRelease) {

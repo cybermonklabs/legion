@@ -12,6 +12,7 @@
 //	                [--code-flow <client id>=<client secret file>=<redirect URI> ...]
 //	                [--device-flow <client id>=<client secret file> ...]
 //	                [--sign-in-as <email> [--sign-in-group <group>]]
+//	                [--actions-token <repository>=<workflow path>=<ref>=<request token file> ...]
 //
 // Each service account's tokens are bound to one pod of its own (kubernetes.io → pod → uid), kept
 // across rewrites as a pod keeps its uid, so a file serves a pod's enrolment and its token
@@ -61,14 +62,33 @@
 // suite's request seeder (internal/cipher/ciphertest/requestseed) enrolls each of its pods that
 // way, since every pod needs a uid of its own.
 //
-// Once every file is written it logs "issuer listening url=<issuer URL>", the value
-// BROKER_K8S_OIDC_ISSUER and DISPATCH_SIGNIN_ISSUER take, and serves until it is interrupted. Its
-// signing key lives in its memory alone: a restart publishes another, and no token minted before
-// it verifies again.
+// --actions-token stands in for GitHub's token request, where a GitHub Actions job asks for its
+// OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL, with ACTIONS_ID_TOKEN_REQUEST_TOKEN as its bearer),
+// for one run of <workflow path> in <repository> on <ref>, so a broker run on one machine can list
+// that workflow in BROKER_EXCHANGE_JOB_WORKFLOWS, with this issuer as
+// BROKER_EXCHANGE_GITHUB_ISSUER, and take the run's token at its exchange. It is repeatable. The
+// issuer writes a random request token to the file and serves the loopback-only route GET <issuer
+// URL>/_actions/token/<n>, n counting the flags from 1, whose URL with ?api-version=2.0 is the
+// run's request URL. A request with that token as its bearer is answered 200 {"value": "…"}, the
+// shape GitHub answers (internal/cipherclient/testdata/github-actions-token.json): a token signed
+// with the issuer's own key, with iss the issuer, aud the request's audience parameter, else
+// https://github.com/<owner> as GitHub's default is, sub repo:<repository>:ref:<ref>, repository,
+// repository_owner, workflow_ref and job_workflow_ref <repository>/<workflow path>@<ref>, ref, a
+// new jti at each request, since the broker takes each GitHub token once, iat and nbf now, and exp
+// ten minutes on. Any other bearer, or none, is answered 401 in GitHub's refusal shape,
+// {"source": "dev-oidc-issuer", "statusCode": 401, "errorMessage": "…"}.
+//
+// Once every file is written it logs, for each --actions-token, "<file> holds the request token of
+// <repository>/<workflow path>@<ref>'s Actions run (request URL <URL>)", and then "issuer
+// listening url=<issuer URL>", the value BROKER_K8S_OIDC_ISSUER, BROKER_EXCHANGE_GITHUB_ISSUER and
+// DISPATCH_SIGNIN_ISSUER take, and serves until it is interrupted. Its signing key lives in its
+// memory alone: a restart publishes another, and no token minted before it verifies again.
 package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -79,6 +99,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -94,6 +115,10 @@ const exitUsageError = 2
 // tokenLifetime is how long each minted token lives: the longest a listed caller's token may live
 // from its issue, so the files serve the broker's API routes as well as enrolment and exchange.
 const tokenLifetime = machine.MaxTokenLoginLifetime
+
+// actionsTokenLifetime is how long each Actions token lives: ten minutes, well inside the hour of
+// exp ahead of now that the broker's exchange takes a GitHub token with.
+const actionsTokenLifetime = 10 * time.Minute
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -111,6 +136,8 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 	fs.Var(&flow.deviceClients, "device-flow", "serve the device authorization grant for `<client id>=<client secret file>` (repeatable)")
 	fs.StringVar(&flow.signInAs, "sign-in-as", "", "sign each authorization or device approval in as `<email>` when none is queued (needs --code-flow or --device-flow)")
 	fs.StringVar(&flow.signInGroup, "sign-in-group", "", "make --sign-in-as's person a member of the sign-in pool group `<group>` (needs --sign-in-as)")
+	var actions actionsFlags
+	fs.Var(&actions, "actions-token", "answer GitHub's token request for `<repository>=<workflow path>=<ref>=<request token file>`'s Actions run, its request token in file (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -144,7 +171,7 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 			}
 		}
 	}
-	return serve(ctx, tokens, flow, tokenLifetime, stderr)
+	return serve(ctx, tokens, actions, flow, tokenLifetime, stderr)
 }
 
 // codeFlow is --code-flow, --device-flow, --sign-in-as and --sign-in-group: the clients each
@@ -253,14 +280,24 @@ func person(email, group string) map[string]any {
 	return claims
 }
 
+// loopbackCaller reports whether r comes from this machine's loopback, and otherwise refuses it,
+// 403 with "<what> answers loopback callers only". Each control below answers loopback callers
+// only, since whoever can reach one acts for the person or the run it stands in for.
+func loopbackCaller(w http.ResponseWriter, r *http.Request, what string) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
+		http.Error(w, what+" answers loopback callers only", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
 // signInAsHandler is POST /_dev/sign-in-as: it queues the JSON object of claims its body holds as
 // the person the next authorization signs in as. It answers loopback callers only: whoever can
 // reach it chooses who signs in, so a listener opened wider than loopback must not open it too.
 func signInAsHandler(issuer *oidctest.Issuer) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
-			http.Error(w, "the sign-in control answers loopback callers only", http.StatusForbidden)
+		if !loopbackCaller(w, r, "the sign-in control") {
 			return
 		}
 		var claims map[string]any
@@ -281,9 +318,7 @@ func signInAsHandler(issuer *oidctest.Issuer) http.Handler {
 // a sign-in nobody asked for.
 func approveDeviceCodeHandler(issuer *oidctest.Issuer) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
-			http.Error(w, "the device approval control answers loopback callers only", http.StatusForbidden)
+		if !loopbackCaller(w, r, "the device approval control") {
 			return
 		}
 		var want struct {
@@ -308,9 +343,7 @@ func approveDeviceCodeHandler(issuer *oidctest.Issuer) http.Handler {
 // the sign-in control does: whoever can reach it mints a token for any account the broker lists.
 func mintHandler(issuer *oidctest.Issuer, key *oidctest.Key, p *process, lifetime time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
-			http.Error(w, "the mint control answers loopback callers only", http.StatusForbidden)
+		if !loopbackCaller(w, r, "the mint control") {
 			return
 		}
 		var want struct {
@@ -358,11 +391,97 @@ func (f *tokenFlags) Set(value string) error {
 	return nil
 }
 
+// actionsSpec is one --actions-token: the GitHub Actions run whose token request the issuer
+// answers, the file it writes that run's request token to, and the request token itself, made as
+// the issuer starts.
+type actionsSpec struct {
+	repository, workflow, ref, file, requestToken string
+}
+
+// actionsFlags is the repeated --actions-token flag.
+type actionsFlags []actionsSpec
+
+func (f *actionsFlags) String() string { return "" }
+
+// Set parses <repository>=<workflow path>=<ref>=<request token file>. None of the first three
+// holds an "=", so the file is everything after the third one. A repository that is not
+// <owner>/<name>, a workflow path that is not a file under .github/workflows/, where GitHub runs
+// every workflow from, and a ref that is not refs/<kind>/<name> are refused: the token minted for
+// them would carry claims GitHub never writes, which no exchange entry names.
+func (f *actionsFlags) Set(value string) error {
+	parts := strings.SplitN(value, "=", 4)
+	if len(parts) != 4 || slices.Contains(parts, "") {
+		return errors.New("want <repository>=<workflow path>=<ref>=<request token file>")
+	}
+	repository, workflow, ref, file := parts[0], parts[1], parts[2], parts[3]
+	owner, name, _ := strings.Cut(repository, "/")
+	workflowFile, underWorkflows := strings.CutPrefix(workflow, ".github/workflows/")
+	kind, refName, _ := strings.Cut(strings.TrimPrefix(ref, "refs/"), "/")
+	switch {
+	case owner == "" || name == "" || strings.Contains(name, "/"):
+		return fmt.Errorf("repository %q is not <owner>/<name>", repository)
+	case !underWorkflows || workflowFile == "" || strings.HasSuffix(workflowFile, "/"):
+		return fmt.Errorf("workflow path %q is not a file under .github/workflows/", workflow)
+	case !strings.HasPrefix(ref, "refs/") || kind == "" || refName == "":
+		return fmt.Errorf("ref %q is not refs/<kind>/<name>", ref)
+	}
+	*f = append(*f, actionsSpec{repository: repository, workflow: workflow, ref: ref, file: file})
+	return nil
+}
+
+// actionsRefusal is the body GitHub answers a token request whose bearer is not the run's request
+// token (internal/cipherclient/testdata/github-actions-token.json, refused), with this issuer as
+// its source.
+type actionsRefusal struct {
+	Source       string `json:"source"`
+	StatusCode   int    `json:"statusCode"`
+	ErrorMessage string `json:"errorMessage"`
+}
+
+// actionsTokenHandler is GET /_actions/token/<n>, GitHub's token request for spec's run: a
+// request whose bearer is spec's request token is answered {"value": "…"}, a token the issuer's
+// key signs for the request's audience, else for https://github.com/<owner>, in the claims GitHub
+// writes of that run, with a new jti each time; any other is answered 401 in GitHub's refusal
+// shape. It answers loopback callers only, for the reason the sign-in control does: whoever can
+// reach it mints a token the broker takes for that workflow's run.
+func actionsTokenHandler(issuer *oidctest.Issuer, key *oidctest.Key, p *process, spec actionsSpec) http.Handler {
+	owner, _, _ := strings.Cut(spec.repository, "/")
+	run := spec.repository + "/" + spec.workflow + "@" + spec.ref
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !loopbackCaller(w, r, "the Actions token request") {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		scheme, bearer, _ := strings.Cut(r.Header.Get("Authorization"), " ")
+		if !strings.EqualFold(scheme, "bearer") || subtle.ConstantTimeCompare([]byte(bearer), []byte(spec.requestToken)) != 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(actionsRefusal{
+				Source: "dev-oidc-issuer", StatusCode: http.StatusUnauthorized,
+				ErrorMessage: "the bearer is not this run's request token",
+			})
+			return
+		}
+		audience := r.URL.Query().Get("audience")
+		if audience == "" {
+			audience = "https://github.com/" + owner
+		}
+		now := time.Now()
+		token := issuer.Mint(p, key, map[string]any{
+			"iss": issuer.URL(), "aud": audience, "sub": "repo:" + spec.repository + ":ref:" + spec.ref,
+			"iat": now.Unix(), "nbf": now.Unix(), "exp": now.Add(actionsTokenLifetime).Unix(),
+			"jti": uuid.NewString(), "repository": spec.repository, "repository_owner": owner,
+			"workflow_ref": run, "job_workflow_ref": run, "ref": spec.ref,
+		})
+		_ = json.NewEncoder(w).Encode(map[string]string{"value": token})
+	})
+}
+
 // serve runs the issuer until ctx ends, writing every spec's token before it reports its URL and
-// again each time four fifths of lifetime has passed, and serving the code flow for every client
-// flow names it for and the device grant for every client it names for that. A token it cannot
-// write ends it, 1.
-func serve(ctx context.Context, specs []tokenSpec, flow codeFlow, lifetime time.Duration, stderr io.Writer) int {
+// again each time four fifths of lifetime has passed, writing each run's request token and
+// answering that run's token request, and serving the code flow for every client flow names it
+// for and the device grant for every client it names for that. A token or a request token it
+// cannot write ends it, 1.
+func serve(ctx context.Context, specs []tokenSpec, actions []actionsSpec, flow codeFlow, lifetime time.Duration, stderr io.Writer) int {
 	p := &process{stderr: stderr}
 	defer p.stop()
 	issuer := oidctest.New(p)
@@ -407,6 +526,18 @@ func serve(ctx context.Context, specs []tokenSpec, flow codeFlow, lifetime time.
 	for _, spec := range specs {
 		fmt.Fprintf(stderr, "dev-oidc-issuer: %s holds %s's token for audience %s (pod %s)\n", spec.file, spec.account, spec.audience, spec.podUID)
 	}
+	// Each run's request token, written once: GitHub hands a job one for the whole run.
+	for i := range actions {
+		actions[i].requestToken = rand.Text()
+		if err := replaceFile(actions[i].file, actions[i].requestToken+"\n"); err != nil {
+			fmt.Fprintf(stderr, "dev-oidc-issuer: %v\n", err)
+			return 1
+		}
+		route := fmt.Sprintf("/_actions/token/%d", i+1)
+		issuer.Handle("GET "+route, actionsTokenHandler(issuer, key, p, actions[i]))
+		fmt.Fprintf(stderr, "dev-oidc-issuer: %s holds the request token of %s/%s@%s's Actions run (request URL %s%s?api-version=2.0)\n",
+			actions[i].file, actions[i].repository, actions[i].workflow, actions[i].ref, issuer.URL(), route)
+	}
 	signsIn := "nobody until one is queued"
 	if flow.signInAs != "" {
 		signsIn = strings.ToLower(flow.signInAs)
@@ -447,23 +578,28 @@ func mintToken(issuer *oidctest.Issuer, key *oidctest.Key, p *process, account, 
 }
 
 // writeToken mints spec's token, issued now and expiring lifetime from now, and replaces spec.file
-// with it in one rename, so a reader sees the old token or the new one and never a part of either.
+// with it.
 func writeToken(issuer *oidctest.Issuer, key *oidctest.Key, p *process, spec tokenSpec, lifetime time.Duration) error {
-	token := mintToken(issuer, key, p, spec.account, spec.audience, spec.podUID, lifetime)
-	temporary, err := os.CreateTemp(filepath.Dir(spec.file), "."+filepath.Base(spec.file)+".*")
+	return replaceFile(spec.file, mintToken(issuer, key, p, spec.account, spec.audience, spec.podUID, lifetime)+"\n")
+}
+
+// replaceFile replaces file with content in one rename, so a reader sees the old content or the
+// new and never a part of either, in a file its owner alone may read (os.CreateTemp's 0600).
+func replaceFile(file, content string) error {
+	temporary, err := os.CreateTemp(filepath.Dir(file), "."+filepath.Base(file)+".*")
 	if err != nil {
-		return fmt.Errorf("write %s: %w", spec.file, err)
+		return fmt.Errorf("write %s: %w", file, err)
 	}
-	_, err = temporary.WriteString(token + "\n")
+	_, err = temporary.WriteString(content)
 	if closeErr := temporary.Close(); err == nil {
 		err = closeErr
 	}
 	if err == nil {
-		err = os.Rename(temporary.Name(), spec.file)
+		err = os.Rename(temporary.Name(), file)
 	}
 	if err != nil {
 		_ = os.Remove(temporary.Name())
-		return fmt.Errorf("write %s: %w", spec.file, err)
+		return fmt.Errorf("write %s: %w", file, err)
 	}
 	return nil
 }

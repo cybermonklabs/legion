@@ -26,7 +26,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -220,8 +222,8 @@ type keptPublisher struct {
 	genErr    error
 }
 
-func (p *keptPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
-	return p.publish(topic, message, payload, key, false)
+func (p *keptPublisher) Publish(_ context.Context, topic, message string, payload any, key string) (string, error) {
+	return "", p.publish(topic, message, payload, key, false)
 }
 
 func (p *keptPublisher) PublishKept(_ context.Context, topic, message string, payload any, key string) (bool, error) {
@@ -473,7 +475,7 @@ func (r *keptRuntime) refused() int {
 //
 // A prompt the agent refuses busy is recorded nowhere: Oh My Pi answers that way exactly when a
 // turn of its own is already running, so the frame reached no agent and told it nothing
-// (supervise's agentBusy, and its own "the agent never read this task"). The run reads tellings
+// (supervise.OutcomeAgentBusy, and its own "the agent never read this task"). The run reads tellings
 // from the frames the connection kept, so a refused one must not stand among them.
 type keptConn struct {
 	*fake.Conn
@@ -485,17 +487,21 @@ var _ runtime.Conn = (*keptConn)(nil)
 
 // keptGate is one prompt held open: arrived is closed by the prompt that met the gate, release by
 // the step that armed it, and refusal is the answer that prompt is then given — Oh My Pi's busy
-// answer, or "" to let the frame through.
+// answer, or nil to let the frame through.
 type keptGate struct {
 	arrived chan struct{}
 	release chan struct{}
-	refusal string
+	refusal *keptRefusal
 }
 
-// keptBusyRefusal is Oh My Pi's own answer to a prompt arriving while a turn runs, worded as it
-// words it: the daemon reads it as the agent being busy rather than refusing the work, and charges
-// it nothing (supervise's agentBusy).
+// keptBusyRefusal is Oh My Pi's own words for a prompt arriving while a turn runs. They decide
+// nothing: the stream mints the agent being in a turn of its own from the code beside them
+// (stream.PromptRefusalOutcome, shimwire.CodeSessionBusy), which the daemon charges nothing
+// (supervise.Charges).
 const keptBusyRefusal = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
+
+// keptBusy is that refusal as an Oh My Pi that gives it its code sends it.
+var keptBusy = &keptRefusal{reason: keptBusyRefusal, code: shimwire.CodeSessionBusy}
 
 // keptSendBound is how long a step that armed the gate waits for the prompt. A send starts inside
 // the event that triggers it, on a goroutine of the machine's own, so the wait is a safety net
@@ -506,7 +512,7 @@ const keptSendBound = 5 * time.Second
 func newKeptConn() *keptConn { return &keptConn{Conn: fake.NewConn()} }
 
 // hold arms the gate for the next prompt, which is held open until the step releases it.
-func (c *keptConn) hold(refusal string) *keptGate {
+func (c *keptConn) hold(refusal *keptRefusal) *keptGate {
 	gate := &keptGate{arrived: make(chan struct{}), release: make(chan struct{}), refusal: refusal}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -542,20 +548,23 @@ func (c *keptConn) Prompt(ctx context.Context, deliveryID, message string) error
 		// the daemon reads as the transport losing the frame.
 		return ctx.Err()
 	}
-	if gate.refusal != "" {
-		return keptRefusal{reason: gate.refusal}
+	if gate.refusal != nil {
+		return *gate.refusal
 	}
 	return c.Conn.Prompt(ctx, deliveryID, message)
 }
 
-// keptRefusal is the agent answering a prompt `success: false`, as the runtime's own double writes
-// one (fake.Conn.RefusePrompt): an error that is runtime.ErrPromptRefused and carries the reason
-// the daemon reads to tell a busy agent from one that will not take the work.
-type keptRefusal struct{ reason string }
+// keptRefusal is the agent answering a prompt `success: false`, as the stream's refusal carries
+// it (stream.RefusedError): an error that is runtime.ErrPromptRefused, with the agent's words and
+// the outcome the stream mints from the code beside them, which is what the daemon decides on.
+type keptRefusal struct{ reason, code string }
 
 func (r keptRefusal) Error() string         { return r.reason + ": " + runtime.ErrPromptRefused.Error() }
 func (r keptRefusal) Is(target error) bool  { return target == runtime.ErrPromptRefused }
 func (r keptRefusal) RefusalReason() string { return r.reason }
+func (r keptRefusal) RefusalOutcome() runtime.Outcome {
+	return stream.PromptRefusalOutcome(r.code)
+}
 
 // keptCounts is what a run's injected failures drove, reported at the run's end so the operations
 // the generator chose are shown to have fired rather than assumed.
@@ -699,7 +708,13 @@ type keptDeparture struct {
 // outbox runner and claim supervisor over a database of its own, the model the generator drives
 // them from, and what each architect was told.
 type keptRun struct {
-	t     *testing.T
+	t *testing.T
+	// ctx is the run's own calls' context — its facts, reads, writes and row runs — with a hold
+	// mark of its own (store.ForConcurrentWorker), so the pool refuses one of them a second
+	// connection while another holds one (store.ErrNestedAcquire). It is the mark of one
+	// sequential flow: a goroutine the run starts beside it takes worker() instead. On an unmarked
+	// context the pool refuses nothing, and a run built on one passes whatever its calls do
+	// (TestTheKeptRunsGuardRefusesASecondConnectionOfItsOwnContext).
 	ctx   context.Context
 	seed  int64
 	rng   *rand.Rand
@@ -972,7 +987,7 @@ func newKeptRun(t *testing.T, seed int64, steps int) *keptRun {
 		slog.New(slog.NewJSONHandler(closeLog, nil)))
 	trees := outboxTreeStore(t, pool, keptRoot)
 	run := &keptRun{
-		t: t, ctx: ctx, seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), uint64(seed))), steps: steps,
+		t: t, ctx: store.ForConcurrentWorker(ctx), seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), uint64(seed))), steps: steps,
 		pool: pool, records: records,
 		engine: engine,
 		// Admission runs over the project key the records carry, which is what its own reads of the
@@ -1107,6 +1122,11 @@ func (r *keptRun) restart() {
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: 24,
 		RefreshGate:    supervise.NewRefreshGate(0),
+		// The supervisor runs on the run's own mark (r.ctx), and each goroutine a machine starts —
+		// a timer's firing, a prompt's send, whose outcome is a delivery write — takes a mark of its
+		// own, as the daemon gives it (daemon.go's supervise.Deps). Without it every such goroutine
+		// would share the run's mark (Machine.worker) and collide with the run's own reads.
+		Worker: store.ForConcurrentWorker,
 	}
 	r.t.Cleanup(sup.stop)
 	if !first {
@@ -1405,7 +1425,8 @@ func (r *keptRun) decideOn(issue string) {
 		}
 		tree = root.Key
 		outcome, err = record.RelayParkedDecision(r.ctx, tx, r.records, issue, *root, true,
-			record.ParkedDecision{Ref: ref, Decision: kind, Actor: actor, At: r.at}, 0, "", nil)
+			record.ParkedDecision{Ref: ref, Decision: kind, Actor: actor, At: r.at},
+			record.Notice{}, nil)
 		return err
 	}); err != nil {
 		r.fatalf("keep the decision %s: %v", ref, err)
@@ -1458,7 +1479,7 @@ const (
 // park takes the root out of the workflow — set back to backlog, or left lingering after its
 // close or beside a child one merge from landing — releases the slot its run held, as admission's
 // own pass does for an issue that needs none (releaseSlots), and writes the architect's suspend as
-// the workflow writes one (workflow's suspend). A park that leaves no linger is the tree once its
+// the workflow writes one (workflow's everyClaim). A park that leaves no linger is the tree once its
 // close has run, so its lifecycle is confirmed closed here: the lifecycle, and no longer the slot,
 // is what says a tree runs (record.TreeLive), and under one still open a labelled todo on a member
 // would be a re-entry into a running tree rather than the orphan's admission this park makes it.
@@ -2078,7 +2099,7 @@ func (r *keptRun) runTogether() {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = r.runner.execute(r.ctx, rows[i])
+			errs[i] = r.runner.execute(r.worker(), rows[i])
 		}(i)
 	}
 	wg.Wait()
@@ -2830,7 +2851,7 @@ func (r *keptRun) busyRefusalAfterAConfirmation(tree *keptTree) {
 	if !r.architectToHear(tree.key) {
 		r.readmit()
 	}
-	gate := tree.conn.hold(keptBusyRefusal)
+	gate := tree.conn.hold(keptBusy)
 	// A turn the agent started itself, whose end is what sends the task the claim holds
 	// (turnEnded's sendPending).
 	r.handle(machine, supervise.StreamTurnStart{Claim: tree.token})
@@ -2934,8 +2955,8 @@ func (r *keptRun) lateRefusalAfterAConfirmation(tree *keptTree) {
 	// through, which is what says the turn that confirmed the task was no prompt of this
 	// connection's (supervise's sentThrough).
 	r.sup.deps.Conns.(*fake.Conns).Register(tree.token, tree.conn)
-	r.handle(machine, supervise.StreamLateRefusal{Claim: tree.token, DeliveryID: sent, Error: keptBusyRefusal,
-		Replayed: true, ConnSequence: tree.conn.Sequence()})
+	r.handle(machine, supervise.StreamLateRefusal{Claim: tree.token, DeliveryID: sent, Error: keptBusy.reason,
+		Outcome: keptBusy.RefusalOutcome(), Replayed: true, ConnSequence: tree.conn.Sequence()})
 	r.waitMachines()
 	r.noteTakeBack(tree, sent)
 	// The turn the agent was in ends, and its end sends the task again.
@@ -3781,10 +3802,11 @@ func (r *keptRun) issuedRows() int64 {
 	return id
 }
 
-// lastRow is the newest outbox row's id, which names in the trace the row an operation wrote.
+// lastRow is the newest outbox row's id, which names in the trace the row an operation wrote: a
+// row of the lanes the operations write, the state lane's left out (notStateRows).
 func (r *keptRun) lastRow() int64 {
 	var id int64
-	if err := r.pool.QueryRow(r.ctx, "select coalesce(max(id), 0) from outbox").Scan(&id); err != nil {
+	if err := r.pool.QueryRow(r.ctx, "select coalesce(max(id), 0) from outbox where "+notStateRows).Scan(&id); err != nil {
 		r.fatalf("read the newest outbox row: %v", err)
 	}
 	return id
@@ -3854,6 +3876,62 @@ func (r *keptRun) handle(machine *supervise.Machine, ev supervise.Event) {
 
 func (r *keptRun) tracef(format string, args ...any) {
 	r.trace = append(r.trace, fmt.Sprintf("%3d %s", r.step, fmt.Sprintf(format, args...)))
+}
+
+// worker is the context of a goroutine the run starts beside its own calls — a row run of the
+// step that runs rows beside each other (runTogether) — with a hold mark of its own
+// (store.ForConcurrentWorker), as each lane of the outbox takes in production. On r.ctx those
+// goroutines would share one mark: one's transaction would set it, and the pool would refuse
+// another a connection it does not hold (store.ErrNestedAcquire). The operation a publish races
+// against (keptPublisher.publish) runs on r.ctx: the publishing flow waits for it outside every
+// transaction, so nothing else on the run's mark runs beside it.
+func (r *keptRun) worker() context.Context {
+	return store.ForConcurrentWorker(r.ctx)
+}
+
+// The kept-decision run's own context carries a hold mark, so the pool refuses a second
+// connection to a caller that already holds one: a goroutine started on r.ctx rather than on
+// worker() collides with the run's own reads, as #5396's pod-update tests did. On the unmarked
+// context this run used to take, the pool refused nothing and no run of this property could
+// catch that. Here a planted holder takes a connection on the run's context, and the run's own
+// read must be refused; so must a read on the supervisor's context, which every machine's
+// goroutine would run on with no Deps.Worker (Machine.worker). The same read on worker(), and on
+// the context Deps.Worker gives a machine's goroutine, is allowed.
+func TestTheKeptRunsGuardRefusesASecondConnectionOfItsOwnContext(t *testing.T) {
+	t.Parallel()
+	r := newKeptRun(t, 1, 1)
+	held, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+	go func() {
+		_ = store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	// The mark is set when the transaction takes its connection, before the body this waits for.
+	<-held
+
+	for _, shared := range []struct {
+		what string
+		ctx  context.Context
+	}{{"the run's own read", r.ctx}, {"a read on the supervisor's context, a machine goroutine's with no Deps.Worker", r.sup.ctx}} {
+		if _, err := r.pool.Exec(shared.ctx, "select 1"); !errors.Is(err, store.ErrNestedAcquire) {
+			t.Fatalf("%s while the planted holder holds a connection = %v, want %v: that context carries no hold mark, so nothing of this property can catch a goroutine that shares it",
+				shared.what, err, store.ErrNestedAcquire)
+		}
+	}
+	if r.sup.deps.Worker == nil {
+		t.Fatal("the run's supervisor sets no Deps.Worker, so each goroutine a machine starts shares the run's mark")
+	}
+	for _, own := range []struct {
+		what string
+		ctx  context.Context
+	}{{"a read on a goroutine's own mark (worker)", r.worker()}, {"a read on a machine goroutine's mark (Deps.Worker)", r.sup.deps.Worker(r.sup.ctx)}} {
+		if _, err := r.pool.Exec(own.ctx, "select 1"); err != nil {
+			t.Fatalf("%s while the holder holds one = %v, want it allowed: each goroutine's mark is its own", own.what, err)
+		}
+	}
 }
 
 // fatalf ends the run with what broke, the command that replays it, the step it broke at and

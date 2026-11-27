@@ -96,6 +96,7 @@ func (r *edgeRig) requireShown(t *testing.T, token, sender, when, other string) 
 // record an earlier build wrote, is hidden until it claims a role under its own PRIV token, and
 // then shown, since the renewal writes that token's projects.
 func TestARenewalBindsNoCopiedRecord(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const priv, pub, source, peer, heir = "ses_renew_priv", "ses_renew_pub", "ses_renew_source", "ses_renew_peer", "ses_renew_heir"
 	token := rig.personToken(priv, "PRIV")
@@ -148,6 +149,7 @@ func TestARenewalBindsNoCopiedRecord(t *testing.T) {
 // record lists [PRIV], the leader's. Control: with `entry.Projects = confirmed.Projects` removed
 // (api.go), the refresh keeps the direct get's [PRIV PUB].
 func TestARoleClaimRefreshKeepsTheLeaderRecordsProjects(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const claimant = "ses_d1t_claimant"
 	rig.placeElsewhere(t, claimant, "PRIV", "PUB")
@@ -169,6 +171,7 @@ func TestARoleClaimRefreshKeepsTheLeaderRecordsProjects(t *testing.T) {
 // `keepProjects = ok` without the `confirmed.SessionID == body.SessionID` test (api.go) keeps the
 // no-key record's [PUB].
 func TestARoleClaimRefreshDropsALeaderRecordNamingNoKey(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const claimant = "ses_d1r_claimant"
 	rig.placeElsewhere(t, claimant, "PRIV", "PUB")
@@ -194,6 +197,7 @@ func TestARoleClaimRefreshDropsALeaderRecordNamingNoKey(t *testing.T) {
 // field left uncleared, or a new field added to SessionEntry later, fails the row. Control: carrying
 // any one field (the api.go clearForged block keeping it) fails the compare.
 func TestARoleClaimRefreshClearsAForgedRecordsFields(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const claimant = "ses_h1_claimant"
 	rig.placeElsewhere(t, claimant, "PRIV")

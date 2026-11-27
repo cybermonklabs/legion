@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { api } from "../../../api/client";
 import type { Actor, ArtifactBlock, Comment, Decision, IssueDecisions } from "../../../api/types";
+import { decision, KEY } from "../../decision-card/decision-fixture";
 import type { TreeNode } from "../issue-tree";
 import { presetView } from "../presets";
 import { useDecisionsEntries } from "./decisions-entries";
@@ -13,12 +14,10 @@ import {
   answeredAsk,
   closing,
   DECISIONS_DOCUMENT,
-  decision,
   decisionNode,
   decisionsRead,
   issueDetails,
   issueTree,
-  KEY,
   openAsk,
   READER,
   READER_ACTOR,

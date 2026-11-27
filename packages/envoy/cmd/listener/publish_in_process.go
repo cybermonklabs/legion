@@ -42,16 +42,17 @@ var errEarlierAttemptInProcess = errors.New("the request ended while an earlier 
 // under the delivery's id, so a refusal there is answered 503 and logged `<source> publish in
 // process`, which no alarm counts (internal/webhook's failureOutcome); no sender limit charges a
 // webhook, and a redelivery, where its sender makes one, is answered by that copy as a duplicate.
-// The other three carry no request's answer or charge: the sweep's wake report
+// The other two carry no request's answer or charge: the sweep's wake report
 // (publishSweptRoleWake), which logs the report as not published and leaves the next sweep to
-// raise it; a kept copy's dead letter (endKeptCopyWithDeadLetter), whose walk ends as a failed one
-// with its claim left, so the walk that takes the claim over sends it again and is answered with
-// that copy; and a delivery exception (publishDeliveryException), which logs
-// exceptionPublishInProcessLine at WARN rather than exceptionPublishFailedLine.
+// raise it; and a kept copy's dead letter (endKeptCopyWithDeadLetter), whose walk ends as a failed
+// one with its claim left, so the walk that takes the claim over sends it again and is answered
+// with that copy. A delivery exception (publishDeliveryException) is published under no message
+// id, so no stream refuses it as in process.
 //
 // A call that ends after a refusal, because ctx ended or a later send failed, wraps
 // errEarlierAttemptInProcess: with ctx's error and the last refusal when ctx ended, and with the
-// failure itself otherwise.
+// failure itself otherwise. Where the last send ended with ctx's error, its own error stands for
+// ctx's, so a send that waited out a reconnect until ctx ended still names bus.ErrReconnecting.
 //
 // A send of the call that went out unanswered (bus.ErrUnacknowledged) may have stored the copy
 // itself, whether it came before a refusal or after one: a stream leader change drops the ids the
@@ -82,7 +83,11 @@ func publishPastInProcess(ctx context.Context, publish func() (bus.StoredAck, er
 		}
 		ownSend = ownSend || mayHaveStored(err)
 		if ctx.Err() != nil {
-			err = fmt.Errorf("%w: %w (after %w)", errEarlierAttemptInProcess, ctx.Err(), refusal)
+			cause := ctx.Err()
+			if errors.Is(err, cause) {
+				cause = err
+			}
+			err = fmt.Errorf("%w: %w (after %w)", errEarlierAttemptInProcess, cause, refusal)
 		} else {
 			err = fmt.Errorf("%w: %w", errEarlierAttemptInProcess, err)
 		}

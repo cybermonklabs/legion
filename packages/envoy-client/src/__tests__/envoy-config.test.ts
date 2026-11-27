@@ -1169,6 +1169,9 @@ describe("a ! command in envoy.json", () => {
       dispatchSettings(env, await readEnvoyConfig(file, env, { cwd: tempDir() }));
     const start = Date.now();
     try {
+      // The clock stands still from here, so the kept outcome is stamped at `start`: the first run
+      // takes the whole 10 s timeout, and the 61 s step would otherwise land inside a 60 s window.
+      setSystemTime(new Date(start));
       const first = await resolve();
       for (const later of [61_000, 24 * 60 * 60_000]) {
         setSystemTime(new Date(start + later));
@@ -1307,6 +1310,10 @@ describe("a ! command in envoy.json", () => {
     };
     const start = Date.now();
     try {
+      // The clock stands still from here, so the failure is stamped at `start` and the 61 s step
+      // reads it as over 60 s old: a run a loaded host stretches past a second would otherwise
+      // leave it younger, and the row would stop testing "however old".
+      setSystemTime(new Date(start));
       expect(await resolve()).toEqual(failed);
       setSystemTime(new Date(start + 61_000));
       expect(await resolve("kept")).toEqual(failed);

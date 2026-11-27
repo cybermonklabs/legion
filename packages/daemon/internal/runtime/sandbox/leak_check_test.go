@@ -16,6 +16,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/equality"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -89,6 +90,7 @@ func frameTypes(frames []shimwire.Frame) []string {
 // launcher installs the check once for the pod and every role's shim refuses to start its agent
 // without that install.
 func TestALauncherNamingItsPinIsSentTheLeakCheckBeforeTheStart(t *testing.T) {
+	t.Parallel()
 	source := servedLeakCheck()
 	g := newRig(t, nil, withLeakCheckHello(testLeakCheckTag, false), withOptions(func(o *Options) { o.LeakCheck = source }))
 	spec := workerSpec(t)
@@ -133,6 +135,7 @@ func TestALauncherNamingItsPinIsSentTheLeakCheckBeforeTheStart(t *testing.T) {
 // push, or a pod whose image carries no pin — and its role starts as it always has: the daemon
 // reads nothing and sends it no slice.
 func TestALauncherNamingNoPinIsSentNoLeakCheckAndStarts(t *testing.T) {
+	t.Parallel()
 	source := servedLeakCheck()
 	g := newRig(t, nil, withOptions(func(o *Options) { o.LeakCheck = source }))
 	spec := workerSpec(t)
@@ -157,6 +160,7 @@ func TestALauncherNamingNoPinIsSentNoLeakCheckAndStarts(t *testing.T) {
 // no write for the check's absence. Under the deployment's own setting the same launcher is pushed
 // the check and its role is told both, the checker being the setting's own.
 func TestADeploymentThatNamesNoLeakCheckPushesNoneAndTellsItsRolesNone(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		setting leakguard.Setting
@@ -214,6 +218,7 @@ func TestADeploymentThatNamesNoLeakCheckPushesNoneAndTellsItsRolesNone(t *testin
 // tarball, so the pushed check is hashed. A pod the launch builds itself is told the digest now
 // (TestADeploymentThatNamesNoLeakCheckPushesNoneAndTellsItsRolesNone).
 func TestARoleStartedInAKeptPodIsToldTheCheckerItsPodWasBuiltUnder(t *testing.T) {
+	t.Parallel()
 	moved := leakguard.Setting{Repository: testLeakCheck.Repository, ManifestSHA256: strings.Repeat("7c", 32)}
 	for _, tc := range []struct {
 		name     string
@@ -281,6 +286,7 @@ func leakCheckTold(start shimwire.LauncherStart) map[string]string {
 // told no digest and its guard would run the pushed check unhashed, which is what every such role
 // was told before the record existed, and the restarted daemon reads no leak check drift.
 func TestADigestPushedIntoAPodThatRecordsNoneIsToldToItsLaterRoles(t *testing.T) {
+	t.Parallel()
 	moved := leakguard.Setting{Repository: testLeakCheck.Repository, ManifestSHA256: strings.Repeat("7c", 32)}
 	movedReason := "leak check manifest " + testLeakCheck.ManifestSHA256 + ", now " + moved.ManifestSHA256
 	for _, tc := range []struct {
@@ -394,6 +400,7 @@ func TestADigestPushedIntoAPodThatRecordsNoneIsToldToItsLaterRoles(t *testing.T)
 // setting. Deciding the digest before the start from what an earlier hello said, rather than at the
 // serve, records and tells configured.ManifestSHA256 instead, so this row fails.
 func TestAKeptPodRecordsAndTellsTheManifestItsReconnectedLauncherWasServed(t *testing.T) {
+	t.Parallel()
 	configured := leakguard.Setting{Repository: testLeakCheck.Repository, ManifestSHA256: strings.Repeat("7c", 32)}
 	source := servedLeakCheck()
 	g := newRig(t, nil, withLeakCheckHello(testLeakCheckTag, false),
@@ -446,6 +453,7 @@ func TestAKeptPodRecordsAndTellsTheManifestItsReconnectedLauncherWasServed(t *te
 // A pod built under no setting records none and has not drifted for it, and neither has a pod
 // built under the digest the daemon still runs.
 func TestAChangedManifestDigestIsDrift(t *testing.T) {
+	t.Parallel()
 	moved := leakguard.Setting{Repository: testLeakCheck.Repository, ManifestSHA256: strings.Repeat("7c", 32)}
 	for _, tc := range []struct {
 		name   string
@@ -480,6 +488,7 @@ func TestAChangedManifestDigestIsDrift(t *testing.T) {
 // check before the daemon restarted — is sent nothing of it, and the daemon does not read
 // GitHub for a running pod.
 func TestALauncherHoldingItsPinInstalledIsSentNothingAndStarts(t *testing.T) {
+	t.Parallel()
 	source := servedLeakCheck()
 	g := newRig(t, nil, withLeakCheckHello(testLeakCheckTag, true), withOptions(func(o *Options) { o.LeakCheck = source }))
 	spec := workerSpec(t)
@@ -498,6 +507,7 @@ func TestALauncherHoldingItsPinInstalledIsSentNothingAndStarts(t *testing.T) {
 // sentence, which the claim reads (runtime.LeakCheckCause), wrapped as every start error of the
 // launch is.
 func TestARefusedLeakCheckStartsNothing(t *testing.T) {
+	t.Parallel()
 	podsLauncher := leakguard.Cause("the pod's launcher could not unpack the check the daemon served", errors.New("gzip: invalid header"))
 	for name, tc := range map[string]struct {
 		source  LeakCheckReader
@@ -564,29 +574,51 @@ func TestARefusedLeakCheckStartsNothing(t *testing.T) {
 }
 
 // The push has its own bound under the start's: a launcher that takes the check and answers
-// nothing within it refuses the start with the sentence that names the bound, and no start is
-// sent.
+// nothing within it, or reads nothing so the push never leaves its write, refuses the start with
+// the sentence that names the bound. The write's deadline is the hop's, and a write that runs into
+// it ends with the connection's timeout, before the hop's own timer may have ended the hop: it is
+// still the hop's bound that ran out (requestSession). A loaded machine makes a launcher that
+// reads too slowly the second row.
 func TestALeakCheckHopThatRunsPastItsBoundRefusesTheStart(t *testing.T) {
-	g := newRig(t, nil, withLeakCheckHello(testLeakCheckTag, false), withSilentLeakCheck(),
-		withOptions(func(o *Options) { o.LeakCheck = servedLeakCheck() }))
-	const bound = 50 * time.Millisecond
-	g.r.launchers.leakCheckHop = bound
-	spec := workerSpec(t)
-	g.launcher(spec.Claim)
-	_, err := g.r.Spawn(g.ctx, spec)
-	want := leakguard.Cause("the pod's launcher did not answer the install of "+testLeakCheckTag+" within 50ms", nil)
-	if cause := runtime.LeakCheckCause(err); cause != want {
-		t.Fatalf("the launch failed with %v carrying the cause %q, want %q", err, cause, want)
-	}
-	frames := g.sent(spec.Claim)
-	if countOf(frames, shimwire.TypeLauncherStart) != 0 || countOf(frames, shimwire.TypeLauncherStop) != 0 {
-		t.Fatalf("the launcher was sent %v, want no start and no stop after the hop ran out", frameTypes(frames))
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		launcher rigOption
+		// check is what else holds after the refusal, of what the launcher read and whether the
+		// daemon still holds its connection.
+		check func(t *testing.T, g *rig, token claim.Token)
+	}{
+		"a launcher that answers nothing": {withSilentLeakCheck(), func(t *testing.T, g *rig, token claim.Token) {
+			frames := g.sent(token)
+			if countOf(frames, shimwire.TypeLauncherStart) != 0 || countOf(frames, shimwire.TypeLauncherStop) != 0 {
+				t.Fatalf("the launcher was sent %v, want no start and no stop after the hop ran out", frameTypes(frames))
+			}
+		}},
+		"a launcher that reads nothing": {withDeafLauncher(), func(t *testing.T, g *rig, token claim.Token) {
+			if session := launcherOf(g, token); session != nil {
+				t.Fatal("the daemon still holds the connection whose write ran out, want it dropped so the launcher dials again")
+			}
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newRig(t, nil, withLeakCheckHello(testLeakCheckTag, false), tc.launcher,
+				withOptions(func(o *Options) { o.LeakCheck = servedLeakCheck() }))
+			g.r.launchers.leakCheckHop = 50 * time.Millisecond
+			spec := workerSpec(t)
+			g.launcher(spec.Claim)
+			_, err := g.r.Spawn(g.ctx, spec)
+			want := leakguard.Cause("the pod's launcher did not answer the install of "+testLeakCheckTag+" within 50ms", nil)
+			if cause := runtime.LeakCheckCause(err); cause != want {
+				t.Fatalf("the launch failed with %v carrying the cause %q, want %q", err, cause, want)
+			}
+			tc.check(t, g, spec.Claim)
+		})
 	}
 }
 
 // A launcher that installed the check on this connection is pushed it no more: the next start
 // of its role sends the role's start alone.
 func TestTwoStartsOnOneConnectionPushTheLeakCheckOnce(t *testing.T) {
+	t.Parallel()
 	source := servedLeakCheck()
 	g := newRig(t, nil, withLeakCheckHello(testLeakCheckTag, false), withOptions(func(o *Options) { o.LeakCheck = source }))
 	spec := workerSpec(t)
@@ -612,6 +644,7 @@ func TestTwoStartsOnOneConnectionPushTheLeakCheckOnce(t *testing.T) {
 // loaded in the role — `legion config check` in a pod, which reads the process
 // environment — loads with no refusal of a leak_check half-set.
 func TestARolesEnvironmentLoadsAConfigurationWithNoLeakCheckRefusal(t *testing.T) {
+	t.Parallel()
 	r, err := configure(testOptions())
 	if err != nil {
 		t.Fatal(err)

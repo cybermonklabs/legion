@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  A Legion role fixes a clear defect it finds itself, in its own pull request or a separate pull
+  request of its tree, in whichever repository the defect is. It writes a defect to another tree's
+  architect only when the fix would collide with that tree's open pull request or its token does
+  not reach the repository, as a Dispatch comment with `--mention`, and to the project's controller
+  to file only when no tree owns the code. The controller passes no message on and gets no copy:
+  it answers a routing request with the owner's address and forwards nothing.

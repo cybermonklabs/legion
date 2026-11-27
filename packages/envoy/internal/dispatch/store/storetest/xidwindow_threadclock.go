@@ -9,18 +9,19 @@ import (
 )
 
 // XidRequireGapsEnv names the environment variable that makes a run that cannot judge a window's
-// statement-free gaps fail instead of judging the window's shape alone (Measure). The plain CI jobs
-// that judge gaps, envoy-go and envoy-go-docs-finalizers, set it, so a runner whose kernel stops
-// showing a thread's clocks turns those jobs red with the reason rather than green on shape alone.
+// statement-free gaps fail instead of judging the window's shape alone (Measure). The plain CI steps
+// that judge gaps, envoy-go's, set it, so a runner whose kernel stops showing a thread's clocks
+// turns that job red with the reason rather than green on shape alone.
 const XidRequireGapsEnv = "DISPATCH_XID_REQUIRE_GAP_JUDGMENT"
 
 // xidThreadClockAvailability is what this process can give the rig to judge gaps with: whether
 // it can read an OS thread's scheduler clocks (read), and whether it can hold a thread, and the
 // memory every thread touches, out of NUMA balancing (hold, xidHoldMemory). Linux does not promise
 // either: gVisor, for example, exposes no /proc/thread-self/schedstat, and a container's seccomp
-// profile may refuse set_mempolicy and mbind. The first caller probes once while locked to an OS
-// thread, as a marked transaction's goroutine is; every later caller reads that same fact, so a
-// kernel that cannot give the rig either follows the race build and judges window shape alone.
+// profile may refuse get_mempolicy, set_mempolicy and mbind. The first caller probes once while
+// locked to an OS thread, as a marked transaction's goroutine is; every later caller reads that
+// same fact, so a kernel that cannot give the rig either follows the race build and judges window
+// shape alone.
 //
 // It is a pointer so its readers and its once can be replaced together by the test that proves an
 // unreadable clock, or a thread NUMA balancing cannot be kept off, judges no gap. Tests in this
@@ -46,9 +47,9 @@ func xidThreadClocksUnavailable() string {
 		case probe.read().thread == 0:
 			probe.unavailable = "this thread's scheduler clocks cannot be read (CLOCK_THREAD_CPUTIME_ID and the run_delay of /proc/thread-self/schedstat; this build reads them on Linux only)"
 		case !xidHoldOnce(probe.hold):
-			probe.unavailable = "this thread cannot be held out of NUMA balancing (set_mempolicy MPOL_LOCAL was refused)"
+			probe.unavailable = "this thread cannot be held out of NUMA balancing (its get_mempolicy or its set_mempolicy MPOL_LOCAL failed)"
 		case !probe.memory():
-			probe.unavailable = "the process's memory cannot be held out of NUMA balancing (mbind MPOL_LOCAL was refused)"
+			probe.unavailable = "the process's memory cannot be held out of NUMA balancing (its mbind MPOL_LOCAL was refused, or /proc/self/maps could not be read)"
 		}
 	})
 	return probe.unavailable

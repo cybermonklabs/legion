@@ -6,10 +6,8 @@ body: |-
   committer and message, whatever the number and size of the push's files, where a push adding
   25,000 files of 1.25 GB took 6.1 GiB before; what grows with the push is the list of its commit
   ids, and with one long line that line's size, held whole a few times over (a 73 MB line took
-  416 MiB), since a split line could hide a match that crosses the split. The
-  report is the same, but a refusal now names at most 1000 lines and counts the rest in a last
-  line of its own, so a push of many lines at a path a rule refuses no longer prints one line for
-  each. A read of git's output ends with the push's bound, and one `WaitDelay` after git exits,
+  416 MiB), since a split line could hide a match that crosses the split. A refusal's report
+  is bounded too: at most 40 lines, then a count of the matches left out. A read of git's output ends with the push's bound, and one `WaitDelay` after git exits,
   even when a process git started holds the pipe open or keeps writing to it, as exec's own copy
   of a child's output does; a read that then finds fewer bytes than the pipe held refuses the
   push.

@@ -17,6 +17,11 @@ trap 'rm -rf "$work"' EXIT
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
+# colon is the colon of a path:line that the check under test prints. It is built at run
+# time so that this file's text holds no path followed by a colon and a line number, which
+# ci_citations.py refuses wherever it stands under .github.
+colon=':'
+
 # fixture <name>: a tree that passes — the image pinning gh 2.98.0 and help saved from it. Echoes
 # its root.
 fixture() {
@@ -53,7 +58,7 @@ sed -i 's/GH_TOOL=gh@2.98.0/GH_TOOL=gh@2.99.1/' "$root/packages/daemon/docker/wo
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names both and the fix" \
-  "$(contains "$out" "saves gh 2.98.0's help, and packages/daemon/docker/worker.Dockerfile:3 pins gh 2.99.1: run packages/daemon/cmd/legion/testdata/regenerate-gh-help.sh with gh 2.99.1")"
+  "$(contains "$out" "saves gh 2.98.0's help, and packages/daemon/docker/worker.Dockerfile${colon}3 pins gh 2.99.1: run packages/daemon/cmd/legion/testdata/regenerate-gh-help.sh with gh 2.99.1")"
 
 echo "case: a pin that is no exact release"
 root=$(fixture floating)

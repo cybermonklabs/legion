@@ -18,6 +18,7 @@ import (
 // records, the client's Agent, RoleAgents and IssueAgents read back, with live and the replacement
 // the listener derives, an unknown session as ErrNotFound and an issue with no agents as none.
 func TestDispatchClientReadsTheLegionAgentRegistry(t *testing.T) {
+	t.Parallel()
 	l := newLegionListener(t, setupPublishTestClient(t))
 	server := httptest.NewServer(l.mux)
 	t.Cleanup(server.Close)
@@ -80,6 +81,7 @@ func TestDispatchClientReadsTheLegionAgentRegistry(t *testing.T) {
 // back as the issue's agents, merged by session id with a session that also commented, the
 // replaced one naming its successor, beside the people the issue's own rows name.
 func TestDispatchIssueCollaboratorsReadTheListenersLegionAgentRegistry(t *testing.T) {
+	t.Parallel()
 	l := newLegionListener(t, setupPublishTestClient(t))
 	listener := httptest.NewServer(l.mux)
 	t.Cleanup(listener.Close)

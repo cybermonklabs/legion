@@ -60,7 +60,7 @@ export function sentRequest(
   return {
     anchor: undefined,
     ask: { multiple: false, options: [], urgency: "med" },
-    draft: { body, mentions: [], replacement: "" },
+    draft: { body, replacement: "" },
     edit: undefined,
     kind: "comment",
     owner: { issueKey: "CORE-1", kind: "issue" },

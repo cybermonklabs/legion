@@ -1,0 +1,15 @@
+{"Time":"2026-11-16T23:45:13.562373084Z","Action":"start","Package":"example.com/acme/gotest/cached"}
+{"Time":"2026-11-16T23:45:13.562520252Z","Action":"run","Package":"example.com/acme/gotest/cached","Test":"TestA"}
+{"Time":"2026-11-16T23:45:13.562523458Z","Action":"output","Package":"example.com/acme/gotest/cached","Test":"TestA","Output":"=== RUN   TestA\n","OutputType":"frame"}
+{"Time":"2026-11-16T23:45:13.562531996Z","Action":"output","Package":"example.com/acme/gotest/cached","Test":"TestA","Output":"    cached_test.go:9: the answer is kept\n"}
+{"Time":"2026-11-16T23:45:13.56253662Z","Action":"output","Package":"example.com/acme/gotest/cached","Test":"TestA","Output":"--- PASS: TestA (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T23:45:13.562538951Z","Action":"pass","Package":"example.com/acme/gotest/cached","Test":"TestA","Elapsed":0}
+{"Time":"2026-11-16T23:45:13.562543492Z","Action":"run","Package":"example.com/acme/gotest/cached","Test":"TestB"}
+{"Time":"2026-11-16T23:45:13.56254505Z","Action":"output","Package":"example.com/acme/gotest/cached","Test":"TestB","Output":"=== RUN   TestB\n","OutputType":"frame"}
+{"Time":"2026-11-16T23:45:13.56254818Z","Action":"output","Package":"example.com/acme/gotest/cached","Test":"TestB","Output":"    cached_test.go:13: not here\n"}
+{"Time":"2026-11-16T23:45:13.562551242Z","Action":"output","Package":"example.com/acme/gotest/cached","Test":"TestB","Output":"--- SKIP: TestB (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T23:45:13.56255305Z","Action":"skip","Package":"example.com/acme/gotest/cached","Test":"TestB","Elapsed":0}
+{"Time":"2026-11-16T23:45:13.562554701Z","Action":"output","Package":"example.com/acme/gotest/cached","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-16T23:45:13.562557124Z","Action":"output","Package":"example.com/acme/gotest/cached","Output":"coverage: 100.0% of statements\n"}
+{"Time":"2026-11-16T23:45:13.562560703Z","Action":"output","Package":"example.com/acme/gotest/cached","Output":"ok  \texample.com/acme/gotest/cached\t(cached)\tcoverage: 100.0% of statements\n"}
+{"Time":"2026-11-16T23:45:13.562566168Z","Action":"pass","Package":"example.com/acme/gotest/cached","Elapsed":0}

@@ -409,6 +409,7 @@ func (f owedWindowFixture) owedIDs(kind ItemKind) []string {
 // one the block index has not reached and one whose null sum the stamp reads as the empty
 // string are each not.
 func TestItemsOwedWindowsListsTheItemsWhoseWindowsDoNotStandForTheirBlocks(t *testing.T) {
+	t.Parallel()
 	fixture := newOwedWindowFixture(t, windowStates)
 	ctx := context.Background()
 	for _, kind := range []ItemKind{ItemComment, ItemMessage, ItemAsk} {
@@ -437,6 +438,7 @@ func (f owedWindowFixture) describe(kind ItemKind, listed []string) string {
 // reaches every owed item once and in id order, which is the walk the window arm makes
 // (docs.windowDrift).
 func TestItemsOwedWindowsPagesTheOwedItemsByID(t *testing.T) {
+	t.Parallel()
 	fixture := newOwedWindowFixture(t, windowStates)
 	ctx := context.Background()
 	for _, kind := range []ItemKind{ItemComment, ItemMessage, ItemAsk} {
@@ -477,6 +479,7 @@ func TestItemsOwedWindowsPagesTheOwedItemsByID(t *testing.T) {
 // fixes, so holding the two equal over it would hold the fix to the bug. The listing test
 // writes them.
 func TestItemsOwedWindowsAnswersWhatTheShapesBeforeTheMarkerAnswered(t *testing.T) {
+	t.Parallel()
 	fixture := newOwedWindowFixture(t, windowStatesTheShapesBeforeAnswer())
 	ctx := context.Background()
 	for _, kind := range []ItemKind{ItemComment, ItemMessage, ItemAsk} {
@@ -524,6 +527,7 @@ var windowPlanSettings = []string{"set local enable_seqscan = off"}
 
 // Each kind's listing of the items owed their windows, held to that kind's own partial index.
 func TestItemsOwedWindowsReadsThePartialIndex(t *testing.T) {
+	t.Parallel()
 	fixture := newOwedWindowFixture(t, windowStates)
 	ctx := context.Background()
 	connection, err := fixture.database.Pool.Acquire(ctx)

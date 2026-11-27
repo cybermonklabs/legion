@@ -1,0 +1,21 @@
+kind: Added
+body: |-
+  The secrets broker refuses a person Dispatch holds. Where `BROKER_PROJECT_ACCESS_URL` is set, it
+  asks Dispatch's person route whether Dispatch holds the person a credential names, and refuses a
+  held person `403 MEMBERSHIP_HELD` on its session and machine-credential routes, its airlock and
+  its approval page, and `membership_held` at its token endpoint; it cuts a call its airlock carries
+  for them, and the NATS hub's auth service refuses their session's connection. It still serves a
+  held person's refresh grant, lease renewal and the calls that only end access. It keeps each
+  answer in `person_standing` (migration `0049_person_standing`), so while Dispatch cannot be asked
+  a person it last answered held stays held and everyone else is served, with one WARN line a
+  minute per person and `broker_hold_unchecked_total{last_answer}`. A Dispatch that answers with no
+  `held` field, as one older than the hold does, is answered the same way, with one WARN line a
+  minute for everyone and no count. A broker that cannot tell is `503 HOLD_UNCHECKABLE`, naming one
+  of six fixed reasons. Where `BROKER_HOLD_REQUIRES_DEADLINE` is true, as on an IAP deployment's
+  broker, it serves a not-held answer only until the deadline Dispatch put on it, and refuses a
+  person of whom it keeps no answer while Dispatch cannot be asked. With
+  `BROKER_PROJECT_ACCESS_URL` unset the broker holds nobody and logs
+  `hold of refused people state=off` at boot.
+time: 2026-11-25T20:48:35Z
+custom:
+    Issue: pr5557

@@ -1,0 +1,90 @@
+kind: Fixed
+body: |-
+  A listener's wake report that comes while an idle release is still stopping the session's pod
+  is no longer dropped: the daemon applies it again every 30 seconds until the release records
+  the claim released, for at most 15 minutes after the report, and then drops it with one
+  warning. A wake records the time the daemon took it as the pod's resume time, not the time of
+  the listener's report. A wake taken while its release stands is dated again to the release's
+  record, since its pod starts to come back only then. So a wake that waited for a release is not
+  reported stuck, and its claim is not reported stranded, while the new pod is still being built.
+  A listener's wake report, a CI settlement or a backstop for a released role takes no wake,
+  records no resume and queues no second start while one of three starts of that role is queued
+  for the issue's current
+  generation: a cancelled release's resume, the start of an earlier wake, or a root architect's
+  entry start. A production check's look queued for the role is no such start, since the look can
+  end without starting the role. An architect's start queued for news of the approved design alone
+  is no such start either, for the same reason. A CI settlement that does not wake the role is
+  sent to it as a message. The task of a role woken by a message says what reaches it when Envoy
+  stored or kept the message, and that a message Envoy did not store or keep must be sent again.
+  A role wake report of another project decodes to no
+  fact and writes no `processed_events` row. The role is read in either form of its name, the
+  token alone or `<PROJECT>.<token>`, and a token named under another project is no fact either.
+  A wake taken after the release recorded the claim released no longer cancels the release: the
+  daemon logs `outbox: released the idle pod of an issue`, not
+  `the idle release of an issue's pod did not finish` with hold `overtaken`, and the role starts
+  once in the new pod, told that its pod was released. Its one resume is recorded against that
+  release. While the project is paused, that wake is a wake the pause holds: its resume is
+  recorded against no release, and its start waits for the pause's resume too. A wake that a
+  pause holds, taken while the release that records its role still stands, is told the release's
+  words once the release is recorded: its task then says that its pod was released. A release
+  that is cancelled for another cause while the project is paused keeps that wake, and the woken
+  role's task then says that the pause stopped its session. A release cancelled for another cause
+  while the project runs deletes the wake's own start, and keeps a root architect's entry start
+  and a production check's look queued for the woken role; the teardown reads such a start as work
+  the pod was given and cancels the release, as it does for a phase's start. A notice, hook prompt,
+  merge-queue removal message or merge-forward message for a released role of a pod that a release
+  is still stopping waits in its outbox row until the release ends. Such a message for a role with
+  no open wake also waits while one of those three starts is queued for the role, and the release
+  records count no pod return for it. When a close, a linger or an operator took over a woken
+  role's claim before its release was cancelled, that wake's resume is not recorded, unless the
+  wake is the launch a project's pause owes the role, which the cancel keeps for the pause's
+  resume. The wake's start, which the role reads when an operator resumes it, says that the
+  release did not finish and the role goes on in the same pod; a start in the pause's words keeps
+  them. A role whose stop did not record it on the release's mark is told the same words by a
+  cancel, and when a close, a linger or an operator took its claim over too, its wake's resume is
+  not recorded either; a role that an earlier release left released keeps its start's words. A
+  cancel now resumes a role whose stop the release's mark did not record when no start of that
+  role is queued, or records it stopped by the pause while the project is paused, where before
+  that role stayed released until some wake came. A
+  cancel or a release's record that tells a wake's start again renders the task from the wake kind
+  and the detail the start carries (`wakeKind` and `wakeDetail`), which its task was written with,
+  also where a later wake of the role is of another kind; a start an earlier daemon queued with no
+  detail keeps its task, with one warning, and a cancel that drops such a start queues the role's
+  resume without that wake's words, with one warning too, which carries the dropped task. A
+  rollback to a release before this one strips
+  `wakeDetail` from each queued start after the daemon stops and before the earlier image starts
+  (docs: Rolling back idle release). A release is no longer cancelled once the runtime has read a
+  Sandbox of the issue, or found it gone, under the pod's launch turn and the store has then
+  authorized its teardown, before the runtime takes the pod. Until then, a takeover of a claim of
+  the pod or work given to the pod
+  still cancels it. A teardown that fails after that authorization runs again and finishes: it
+  asks the runtime again until the runtime answers without an error, and then records the release
+  once; a teardown that fails after that record asks the runtime nothing and finishes its own
+  steps. A record of a release that cannot be
+  written makes the teardown run again in the same way. The row's `outbox row failed` line names
+  that error, and the daemon no longer logs `outbox: could not record an issue pod's release`.
+  It runs again until 15 minutes after the release's mark: the first attempt at or past that bound
+  finishes without the record, and its last write settles the wakes taken while the release stood
+  and clears the mark in one transaction, so no wake is taken between the two. Then it logs one
+  ERROR line, `outbox: the record of a release could not be written within 15 minutes of its
+  mark`, with the issue, the release and the error. The release records then hold no row of that
+  release, and each wake taken while it stood still starts its role once, recorded against no
+  release.
+  A role that a project's pause stopped before such a release is told the release's words at its
+  next wake, that its pod was released, as after a recorded release, and the next wake of a role
+  whose earlier wake still waits for the pod that release took closes that wake's resume and takes
+  its own, as after a recorded release.
+  While such a release has not finished, the issue's whole workflow waits: every start of its
+  roles, and every notice, hook prompt, merge-queue removal message and merge-forward message to a
+  released role. That includes a start queued before the release's teardown, such as a worker
+  start whose admission slot comes while the teardown waits for its retry, which before ran in the
+  pod the teardown then took; it now starts its role once, after the release. The docs say how an
+  operator ends it when the cluster cannot be fixed. A delivery
+  wake that meets a wake whose start is still queued logs at debug, not as a resume with no process
+  behind it, and one whose take a pause's held wake refused in the same moment logs at info and
+  names that pause, since the take reads the open resume after the refusal, under the lock it
+  holds on the claim's row. A waiting retry logs
+  `an intake fact waits and is applied again after its delay` at info.
+time: 2026-11-16T18:39:58Z
+custom:
+    Issue: pr4194

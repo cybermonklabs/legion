@@ -1,9 +1,12 @@
-// Package specgraph reads the spec files of a repository, the *.md files directly in its
-// .dispatch/spec directory. Parse reads the four blocks of those files - statements
-// (requirement), checks (check), components (component) and terms (term) - with the one reader of
-// a typed block's opening line, pmdoc.ParseTypedDirectiveOpen. Print writes a node as the block
-// that Parse reads back as that node, and Digest names a node's content apart from the file and
-// the line it is on.
+// Package specgraph reads the spec files of a repository, the *.yaml files directly in its
+// .dispatch/spec directory (IsFile). A spec file holds one or more nodes, one YAML document for
+// each: statements (type requirement), checks (check), components and interfaces (component) and
+// terms (term). Parse reads each document with yaml.v3 and checks its data against the schema of
+// schema/spec-node.schema.json, which states the shape of a node, and holds each file to the
+// documents that Print writes for its nodes, so one node has one spelling. Validate states the
+// rules of words and meaning that the schema cannot state. Print writes a node as its document,
+// Layout.Place decides where print writes it, and Digest names a node's content apart from the
+// file and the line it is on.
 //
 // Validate reads a word as a name of code by its shape alone (CodeNames), so it refuses a plain
 // word or a product name of that shape too: a slash between two ASCII letters, as in I/O, and/or,

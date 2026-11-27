@@ -3,7 +3,12 @@ import { act, type RenderHookResult, renderHook } from "@testing-library/react";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import type { Message, MessageDelivery, MessageRead } from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
-import { type SessionSwitch, type SwitchRequest, useSessionSwitch } from "./use-session-switch";
+import {
+  type SessionSwitch,
+  type SwitchRequest,
+  type SwitchStatus,
+  useSessionSwitch,
+} from "./use-session-switch";
 
 const SESSION = "01a0e090-4848-7473-acc5-fc96e6a646d3";
 const MODEL_B: SwitchRequest = { kind: "model", value: "anthropic/model-b" };
@@ -79,11 +84,22 @@ async function pick(hook: SwitchHook, request: SwitchRequest, answer: Message): 
   });
 }
 
-test("a switch is pending until the session's reply, which it then quotes exactly", async () => {
+/** The header's line where it is the page's own words and quotes nothing. */
+function words(text: string): SwitchStatus {
+  return { words: text };
+}
+
+/** The header's line where it quotes the session's reply `id`: the reply is a part of its own,
+ *  the stored message the one reader draws, and never characters inside the page's words. */
+function answered(id: string, body: string): SwitchStatus {
+  return { reply: { body, id, tree: undefined }, words: "The session answered: " };
+}
+
+test("a switch is pending until the session's reply, which it then quotes as a part of its own", async () => {
   const hook = renderSwitch();
   const sent = switchMessage("s1", "/model anthropic/model-b");
   await pick(hook, MODEL_B, sent);
-  expect(hook.result.current.status).toBe("Switching model to anthropic/model-b…");
+  expect(hook.result.current.status).toEqual(words("Switching model to anthropic/model-b…"));
   expect(hook.result.current.pending).toBe(true);
 
   // Another person's reply in the thread is not the session's answer.
@@ -93,14 +109,14 @@ test("a switch is pending until the session's reply, which it then quotes exactl
   hook.rerender({
     thread: [{ message: sent, replies: [reply("r1", "s1", "Model set to anthropic/model-b.")] }],
   });
-  expect(hook.result.current.status).toBe("The session answered: Model set to anthropic/model-b.");
+  expect(hook.result.current.status).toEqual(answered("r1", "Model set to anthropic/model-b."));
   expect(hook.result.current.pending).toBe(false);
 });
 
 test("a thinking level switch says which level it asked for", async () => {
   const hook = renderSwitch();
   await pick(hook, HIGH, switchMessage("s1", "/effort high"));
-  expect(hook.result.current.status).toBe("Switching thinking level to high…");
+  expect(hook.result.current.status).toEqual(words("Switching thinking level to high…"));
 });
 
 test("a reply already in the thread when Dispatch answers the send ends the switch", async () => {
@@ -109,7 +125,7 @@ test("a reply already in the thread when Dispatch answers the send ends the swit
     { message: sent, replies: [reply("r1", "s1", "Model set to anthropic/model-b.")] },
   ]);
   await pick(hook, MODEL_B, sent);
-  expect(hook.result.current.status).toBe("The session answered: Model set to anthropic/model-b.");
+  expect(hook.result.current.status).toEqual(answered("r1", "Model set to anthropic/model-b."));
   expect(hook.result.current.pending).toBe(false);
 });
 
@@ -125,8 +141,8 @@ test("a refusal shows the session's own reason", async () => {
       },
     ],
   });
-  expect(hook.result.current.status).toBe(
-    "The session answered: Failed to set model: No API key for openai/model-c"
+  expect(hook.result.current.status).toEqual(
+    answered("r1", "Failed to set model: No API key for openai/model-c")
   );
   expect(hook.result.current.pending).toBe(false);
 });
@@ -137,12 +153,16 @@ test("a send Dispatch answers with a failed attempt ends at once, saying no answ
     attempt({ envelope_id: null, error: "no live session", state: "failed" }),
   ]);
   await pick(hook, MODEL_B, failed);
-  expect(hook.result.current.status).toBe("No answer came from the session: no live session");
+  expect(hook.result.current.status).toEqual(
+    words("No answer came from the session: no live session")
+  );
   expect(hook.result.current.pending).toBe(false);
 
   // The stored thread then holds the same failed attempt, which is not the session answering.
   hook.rerender({ thread: [{ message: failed, replies: [] }] });
-  expect(hook.result.current.status).toBe("No answer came from the session: no live session");
+  expect(hook.result.current.status).toEqual(
+    words("No answer came from the session: no live session")
+  );
 });
 
 test("a delivery the session's own error reply later fails is the session's answer", async () => {
@@ -166,7 +186,9 @@ test("a delivery the session's own error reply later fails is the session's answ
     }),
   ]);
   hook.rerender({ thread: [{ message: failed, replies: [] }] });
-  expect(hook.result.current.status).toBe("The session answered: the session refused the attempt");
+  expect(hook.result.current.status).toEqual(
+    words("The session answered: the session refused the attempt")
+  );
   expect(hook.result.current.pending).toBe(false);
 });
 
@@ -179,8 +201,8 @@ test("a delivery Dispatch later fails itself ends the switch, saying no answer c
     attempt({ envelope_id: null, error: "no receipt from the session", state: "failed" }),
   ]);
   hook.rerender({ thread: [{ message: failed, replies: [] }] });
-  expect(hook.result.current.status).toBe(
-    "No answer came from the session: no receipt from the session"
+  expect(hook.result.current.status).toEqual(
+    words("No answer came from the session: no receipt from the session")
   );
   expect(hook.result.current.pending).toBe(false);
 });
@@ -198,13 +220,13 @@ test("no answer in 30 seconds from the send's answer ends the switch; a late rep
   act(() => {
     jest.advanceTimersByTime(1);
   });
-  expect(hook.result.current.status).toBe(NO_ANSWER);
+  expect(hook.result.current.status).toEqual(words(NO_ANSWER));
   expect(hook.result.current.pending).toBe(false);
 
   hook.rerender({
     thread: [{ message: sent, replies: [reply("r1", "s1", "Model set to anthropic/model-b.")] }],
   });
-  expect(hook.result.current.status).toBe("The session answered: Model set to anthropic/model-b.");
+  expect(hook.result.current.status).toEqual(answered("r1", "Model set to anthropic/model-b."));
 });
 
 test("an earlier switch's late reply leaves a newer switch's status alone", async () => {
@@ -215,7 +237,7 @@ test("an earlier switch's late reply leaves a newer switch's status alone", asyn
   act(() => {
     jest.advanceTimersByTime(30_000);
   });
-  expect(hook.result.current.status).toBe(NO_ANSWER);
+  expect(hook.result.current.status).toEqual(words(NO_ANSWER));
 
   const second = switchMessage("s2", "/effort high");
   await pick(hook, HIGH, second);
@@ -225,7 +247,7 @@ test("an earlier switch's late reply leaves a newer switch's status alone", asyn
       { message: second, replies: [] },
     ],
   });
-  expect(hook.result.current.status).toBe("Switching thinking level to high…");
+  expect(hook.result.current.status).toEqual(words("Switching thinking level to high…"));
   expect(hook.result.current.pending).toBe(true);
 
   // Nor does the first switch's deadline, long gone, end the second early.
@@ -240,7 +262,7 @@ test("an earlier switch's late reply leaves a newer switch's status alone", asyn
       { message: second, replies: [reply("r2", "s2", "Thinking set to high.")] },
     ],
   });
-  expect(hook.result.current.status).toBe("The session answered: Thinking set to high.");
+  expect(hook.result.current.status).toEqual(answered("r2", "Thinking set to high."));
   expect(hook.result.current.pending).toBe(false);
 });
 

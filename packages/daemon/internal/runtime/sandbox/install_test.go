@@ -44,6 +44,7 @@ func forbid(resource string) k8stesting.ReactionFunc {
 // it — under a resourceNames grant a Deployment that does not exist is forbidden, not absent — or
 // the controller has no available replica (N8); an installed Agent Sandbox passes.
 func TestCheckInstalledNamesEveryMissingPiece(t *testing.T) {
+	t.Parallel()
 	crdPiece := "the Sandbox CRD sandboxes.agents.x-k8s.io"
 	controllerPiece := "the Agent Sandbox controller Deployment agent-sandbox-system/agent-sandbox-controller"
 	for name, tc := range map[string]struct {
