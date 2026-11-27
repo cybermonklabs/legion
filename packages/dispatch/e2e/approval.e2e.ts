@@ -26,7 +26,7 @@ import {
   withOpenedAsk,
 } from "./api";
 import { bodyOf } from "./bodies";
-import { documentEditor, needsYouCards, openSpecAndAwaitHeadingIds } from "./editor";
+import { needsYouCards, openSpecAndAwaitHeadingIds, placeCaret } from "./editor";
 import { askControls, inboxRow } from "./inbox-pane";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
@@ -812,9 +812,13 @@ test("reading an approved spec and moving the caret through its numbered list le
       .poll(async () => (await getArtifact(artifactID, { login: "alice" })).approval?.state)
       .toBe("approved");
 
-    // Bob reads the approved spec, and his editor gives its heading an id. Then he clicks into
-    // the list and moves the caret, typing nothing: the first such move has his editor label
-    // each numbered item, which changes the token again and none of the text.
+    // Bob reads the approved spec, and his editor gives its heading an id. Then he puts the caret
+    // in the list and moves it, typing nothing: the first caret move his editor reads has it label
+    // each numbered item, which changes the token again and none of the text. The caret goes in
+    // as `placeCaret` puts it, which the editor reads before the next key: a click is read as a
+    // pointer's move, which labels nothing (`syncListOrderPlugin` skips a transaction with meta),
+    // and on a busy page ProseMirror's focus handler wrote the click's caret back over every key's
+    // move before it read one (run 45974152779).
     const reader = await bob.newPage();
     const opened = await openSpecAndAwaitHeadingIds(
       reader,
@@ -822,7 +826,7 @@ test("reading an approved spec and moving the caret through its numbered list le
       artifactID,
       "The error rate stays flat."
     );
-    await documentEditor(reader).getByText("The migration ships.").click();
+    await placeCaret(reader, "after", "The migration ships.");
     for (const key of ["ArrowDown", "ArrowUp", "End", "Home"]) {
       await reader.keyboard.press(key);
     }
