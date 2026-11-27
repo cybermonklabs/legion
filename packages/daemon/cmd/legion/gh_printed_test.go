@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghroute"
 	"github.com/sjawhar/legion/daemon/internal/ghroute/ghroutetest"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // madeUpGhToken is the made-up token these rows write where a person or a CI checkout could.
@@ -70,7 +71,9 @@ func TestLegionGhPrintsNoTokenOfAURLScopedGitConfigKey(t *testing.T) {
 	repository := t.TempDir()
 	t.Chdir(repository)
 	env := append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
-	for _, args := range [][]string{{"init", "-q"}, {"config", "http.https://ghuser:" + madeUpGhToken + "@" + "ghe.example.com/.proxy", "http://proxy.example:3128"}} {
+	const user = "ghuser"
+	key := "http.https://" + user + ":" + madeUpGhToken + "@" + "ghe.example.com/.proxy"
+	for _, args := range [][]string{{"init", "-q"}, {"config", key, "http://proxy.example:3128"}} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir, cmd.Env = repository, env
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -85,7 +88,11 @@ func TestLegionGhPrintsNoTokenOfAURLScopedGitConfigKey(t *testing.T) {
 	if strings.Contains(printed, madeUpGhToken) {
 		t.Errorf("legion gh printed %q, which holds the token", printed)
 	}
-	if !strings.Contains(printed, "http.https://[a URL with credentials]/.proxy") {
+	if strings.Contains(printed, user) {
+		t.Errorf("legion gh printed %q, which holds the user name the key's URL carries", printed)
+	}
+	// The key as the URL rule writes it, read from the rule and never written out here.
+	if !strings.Contains(printed, redact.URLCredentials(key)) {
 		t.Errorf("legion gh printed %q, want the key named with its URL as the mark", printed)
 	}
 }

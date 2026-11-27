@@ -31,8 +31,8 @@ const PROJECT = "MENTION";
 /** The role the comment mentions. */
 const TARGET = "role:legion-infra-infra-1-architect";
 
-// Reserved here, at the file's module scope: the file's own `afterAll` removes each once the
-// `describe` below has stopped the server writing into it.
+// Reserved here, at the file's module scope: the file's own `afterAll` removes the state directory
+// once the `describe` below has ended, and hands the stack's to a removal it does not wait for.
 const directories = useDispatchCliDirectories();
 
 describe.skipIf(!dispatchStackEnabled)(
