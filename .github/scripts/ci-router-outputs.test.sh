@@ -231,6 +231,14 @@ statement_of() {
     shift 2
   fi
   printf '%s\nx: []\n' "$first" > "$work/statement-filters.yaml"
+  # lane-verdicts.py reads the ci.yaml beside it, so a copied workflow gets the script copied
+  # beside it too, and a case that breaks an output reads the broken output.
+  local verdicts="$script_dir/lane-verdicts.py"
+  if [ "$workflow" != "$repo/.github/workflows/ci.yaml" ]; then
+    verdicts="${workflow%/workflows/*}/scripts/lane-verdicts.py"
+    mkdir -p "${verdicts%/*}"
+    cp "$script_dir/lane-verdicts.py" "$script_dir/ci_router_outputs.py" "${verdicts%/*}/"
+  fi
   if ! spec=$("$script_dir/ci_router_outputs.py" "$workflow" --filters "$filters" --event "$event" \
     --step-env "$statement" "$@" 2>"$work/said.err"); then
     said="" said_status=2 said_err=$(cat "$work/said.err")
@@ -242,7 +250,7 @@ import json, os, subprocess, sys
 env = dict(os.environ, GITHUB_EVENT_NAME=sys.argv[2], **json.loads(sys.argv[1]))
 env["FILTERS_FILE"] = sys.argv[4]
 sys.exit(subprocess.run([sys.argv[3]], env=env).returncode)
-' "$spec" "$event" "$script_dir/lane-verdicts.py" "$work/statement-filters.yaml" 2>"$work/said.err")
+' "$spec" "$event" "$verdicts" "$work/statement-filters.yaml" 2>"$work/said.err")
   said_status=$?
   set -e
   said_err=$(cat "$work/said.err")
@@ -337,6 +345,11 @@ broken=$(copy_with "$work/statement-every-job" ci.yaml \
 statement_of "$broken" pull_request
 check "a step told every job runs on a pull request: lines that are not their outputs are named" \
   "$(contains "$(lines_hold "$(outputs --event pull_request)")" '^envoy-go-race: the line says')"
+broken=$(copy_with "$work/statement-misspelt-label" ci.yaml "'lane:envoy_smoke'" "'lane:envoy_smok'")
+statement_of "$broken" pull_request --label lane:envoy_smoke
+check "an output whose label term is misspelt: the line its label then cannot turn on is an ::error::" \
+  "$(contains "$said" '^::error::envoy-smoke: its paths matched and the pull request carries lane:envoy_smoke, and output envoy_smoke is false')"
+check "  and the script exits non-zero on it" "$(is "$said_status" 1)"
 printf 'not json' > "$work/bad-labels"
 set +e
 crash=$(GITHUB_EVENT_NAME=pull_request LABELS="$(cat "$work/bad-labels")" "$script_dir/lane-verdicts.py" 2>&1)
