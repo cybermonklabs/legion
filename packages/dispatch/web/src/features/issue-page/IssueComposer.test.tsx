@@ -609,6 +609,41 @@ test("two drafts kept on one statement's row, for its words before a new version
   });
 });
 
+// The same keying: a draft kept for one statement goes from the box's kept lines when that
+// statement's `r` takes it back into the field, and its line goes with it, while the lines of the
+// drafts still kept - one for another statement, one for bob's message - stay, each saying its
+// own words. Keyed by its reply alone, every line of a draft that answers no reply would share
+// one key, and React would leave the gone draft's line drawn.
+test("a statement draft that goes takes its kept line with it while drafts kept on another statement and a message wait", async () => {
+  const user = userEvent.setup();
+  const drawn = messageOutline();
+  const second = node({
+    id: "spec#b-r2",
+    reference: `dispatch://${KEY}/spec#b-r2`,
+    source: SPEC_SOURCE,
+    statement: true,
+    text: "The box sits at the foot of the outline.",
+    type: "requirement",
+  });
+  const page = renderPage({}, { ...drawn, children: [...drawn.children, second] });
+  await keepFor(user, page, "spec#b-r1", "On the first statement");
+  await keepFor(user, page, "message-1", "To bob's message");
+  await keepFor(user, page, "spec#b-r2", "On the second statement");
+  await page.press(user, "comment-2", "r");
+  await waitFor(() => expect(page.writer().reply?.id).toBe("comment-2"));
+  const aimed = keptLines();
+
+  await page.press(user, "spec#b-r1", "r");
+  await waitFor(() => expect(page.writer().statement?.row).toBe("spec#b-r1"));
+  expect({ aimed, back: { field: writeField().value, kept: keptLines() } }).toEqual({
+    aimed: [KEPT_FOR_STATEMENT, keptReplyLine("bob", "message"), KEPT_FOR_STATEMENT],
+    back: {
+      field: "On the first statement",
+      kept: [keptReplyLine("bob", "message"), KEPT_FOR_STATEMENT],
+    },
+  });
+});
+
 /** The outline with the planner's comment after its others: a Reply on it starts the box with a
  *  mention of the planner. */
 function plannerOutline(): TreeNode {
