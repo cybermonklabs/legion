@@ -1123,7 +1123,7 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // (conflict_confirm and merge_forward), dispatch://INFRA-175's 20261119203047,
 // dispatch://INFRA-3320's 20261122154643 (the two basis seeds), the change of
 // 20261126110259 (merge_holds_changed) and the fix beside the other steps of a task's
-// 20261123134547 (fix_job_read, ci_news and beside_branches_delete) do: the case of a database
+// 20261127131056 (fix_job_read, ci_news and beside_branches_delete) do: the case of a database
 // main migrated applies a version left out of the list before the list's own rewrites of that
 // check, which do not name the later kind, so the row seeded of that kind fails the upgrade. So
 // does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
@@ -1131,9 +1131,9 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // claims.last_start_failure (20261029121000): applied before that version, it fails on the missing
 // column. So does one that changes a table a version of the list creates, as the givers of a plan
 // version (20261124033010) add a column to 20261117034837's issue_plans, and the fix's
-// 20261123134547 alters step_starts (20261117004117) and plan_tasks (20261117034837): applied as
+// 20261127131056 alters step_starts (20261117004117) and plan_tasks (20261117034837): applied as
 // main's, before that table exists, it fails on the missing table. 20261126110259 and
-// 20261123134547 are the last two migrations that write outbox_kind_check, and the one of them
+// 20261127131056 are the last two migrations that write outbox_kind_check, and the one of them
 // that stands above the other names every kind of both: they stand above main's 20261122154643,
 // 20261119203047 and 20261119003157, which write it too, and main's 20261111090000,
 // 20261111091500 and 20261116144907 write none. The cache trimmer's two, 20261111090000 and
@@ -1152,7 +1152,7 @@ var thisRelease = map[int]bool{
 	20261114232555: true, 20261115060739: true, 20261115121838: true, 20261115194357: true,
 	20261116144907: true, 20261116165926: true, 20261117000528: true, 20261117004117: true,
 	20261117023932: true, 20261117034837: true, 20261117064152: true, 20261119003157: true,
-	20261119203047: true, 20261122154643: true, 20261123134547: true, 20261123212127: true,
+	20261119203047: true, 20261122154643: true, 20261127131056: true, 20261123212127: true,
 	20261124033010: true, 20261126110259: true,
 }
 

@@ -7,7 +7,7 @@ import (
 )
 
 // The way back of the release that starts a fix beside the other steps stands in two files: the
-// header of store migration 20261123134547_fix_beside_steps, which ships the block with the
+// header of store migration 20261127131056_fix_beside_steps, which ships the block with the
 // migration, and a fenced block of docs/kubernetes.md, under "Rolling back the release that starts
 // a fix beside the other steps", which is where an operator reads it at a rollback. internal/store's
 // TestMigrationFixBesideStepsKeepsEachRowAndItsWayBack runs the header's block over queued rows of
@@ -18,7 +18,7 @@ const (
 	fixBesideStepsWayBackSection = "Rolling back the release that starts a fix beside the other steps"
 	// fixBesideStepsWayBackMark is the line that deletes the migration's version row, which no
 	// other rollback's block carries.
-	fixBesideStepsWayBackMark = "delete from schema_version where version = 20261123134547;"
+	fixBesideStepsWayBackMark = "delete from schema_version where version = 20261127131056;"
 )
 
 // The guide's way back of the release that starts a fix beside the other steps is the block the

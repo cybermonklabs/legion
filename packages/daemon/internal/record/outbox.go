@@ -1429,7 +1429,7 @@ type SuperviseRequest struct {
 	// the implementer), which every start and resume of a fix names whether or not a push of it
 	// is recorded, and MoveTo the head the task's working copy moves to before the task, "" for
 	// none. The release before decodes strictly, so the way back of
-	// 20261123134547_fix_beside_steps deletes each queued fix start and takes moveTo off each other
+	// 20261127131056_fix_beside_steps deletes each queued fix start and takes moveTo off each other
 	// start.
 	Fix       int    `json:"fix,omitempty"`
 	FixFrom   string `json:"fixFrom,omitempty"`
@@ -1892,7 +1892,7 @@ type StepRecord struct {
 	// StartCommit and EndCommit are the commits the run of the step started and ended at, and
 	// FixCheck the check a fix's run is of (TaskFix.Check). Each is nil where the write does not
 	// name it. The release before decodes strictly, so the way back of
-	// 20261123134547_fix_beside_steps takes the three off each queued record.
+	// 20261127131056_fix_beside_steps takes the three off each queued record.
 	StartCommit *string `json:"startCommit,omitempty"`
 	EndCommit   *string `json:"endCommit,omitempty"`
 	FixCheck    *string `json:"fixCheck,omitempty"`
@@ -2228,7 +2228,7 @@ func (p HookPrompt) Message(issue string) string {
 // the role's push is still this one: Branch the branch beside a running fix the role pushes to,
 // OwnFix that the branch is the fix's own, and FixReads that the fix still reads its job, so the
 // implementer pushes nothing. An ask of an issue with no fix names none of them, and its row is
-// the release before's; the way back of 20261123134547_fix_beside_steps takes them off each queued
+// the release before's; the way back of 20261127131056_fix_beside_steps takes them off each queued
 // ask, since that release decodes strictly.
 type UpdateAsk struct {
 	Role     claim.Role `json:"role"`
@@ -3487,7 +3487,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // failure, which the task's owner is told of once for that check at that head (workflow's
 // endFailure, ciFailedNotice; Store.TellOwnerOnce): its reason names the check and the head and,
 // where a fix ran for it, that its one fix ended. No earlier release decodes it, so the way back
-// of migration 20261123134547_fix_beside_steps deletes its unsent rows.
+// of migration 20261127131056_fix_beside_steps deletes its unsent rows.
 //
 // `workspace-kept` (WorkspaceKeptNotice) is a pod no role runs in that the daemon keeps for its
 // disk, or a pod an update round kept for its disk; `workspace-taken` (WorkspaceTakenNotice) is a

@@ -1,4 +1,4 @@
--- 20261123134547_fix_beside_steps.up.sql — what a fix beside the other steps of a task is recorded
+-- 20261127131056_fix_beside_steps.up.sql — what a fix beside the other steps of a task is recorded
 -- in: whether a task's run takes a fix, each fix of a task, each failure of a CI check at a head,
 -- the commits and the check of each step's start, the fix a step started beside and the branch it
 -- pushes to, the fix, the working copies and the fix's branch of a pending delivery, the fix's
@@ -97,7 +97,7 @@
 --   alter table outbox drop constraint outbox_kind_check;
 --   execute format('alter table outbox add constraint outbox_kind_check check (kind in (%s))', (select string_agg(quote_literal(kind), ', ' order by kind) from unnest(held) as kind where kind not in ('fix_job_read', 'ci_news', 'beside_branches_delete')));
 -- end $$;
--- delete from schema_version where version = 20261123134547;
+-- delete from schema_version where version = 20261127131056;
 -- commit;
 alter table plan_tasks add column fixes_ci boolean not null default false;
 create table task_fixes (

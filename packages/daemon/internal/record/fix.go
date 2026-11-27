@@ -13,7 +13,7 @@ import (
 
 // A fix is the first implementation step of a task run again beside the task's other steps,
 // because a check that a CI job runs failed at the task's head (store migration
-// 20261123134547_fix_beside_steps). task_fixes holds each fix of a task, numbered from 1, and
+// 20261127131056_fix_beside_steps). task_fixes holds each fix of a task, numbered from 1, and
 // ci_failures holds each failure of such a check at a head of the task, once. Every row is keyed
 // by the issue, its generation and the task, as the plan's rows are. Whether a task's run takes a
 // fix at all is the task's own (PlanTask.FixesCI).
