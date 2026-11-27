@@ -2011,7 +2011,9 @@ describe("DispatchClient waits out Retry-After", () => {
       requests.push({ url: String(input), init: init ?? {} });
       const answer = answers[requests.length - 1];
       if (answer === undefined) throw new Error("unexpected request");
-      return answer((init?.headers as Record<string, string>)["Idempotency-Key"] ?? "");
+      return answer(
+        (init?.headers as Record<string, string> | undefined)?.["Idempotency-Key"] ?? ""
+      );
     }) as typeof fetch;
     return { fetchImpl, requests, probes };
   }
@@ -2026,22 +2028,22 @@ describe("DispatchClient waits out Retry-After", () => {
     return error as DispatchWriteUnsettledError;
   }
 
-  test.each([
-    "DATABASE_BUSY",
-    "REQUEST_TIMEOUT",
-  ])("a GET answered 503 %s succeeds after the Retry-After wait", async (code) => {
-    const issue = { key: "DSP-1", title: "Issue" };
-    const { fetchImpl, requests } = fakeFetch([refusal(503, code, "2"), jsonResponse(issue)]);
-    const { state, writeRetry } = fakeClock();
-    const client = retryClient(fetchImpl, writeRetry);
+  test.each(["DATABASE_BUSY", "REQUEST_TIMEOUT"])(
+    "a GET answered 503 %s succeeds after the Retry-After wait",
+    async (code) => {
+      const issue = { key: "DSP-1", title: "Issue" };
+      const { fetchImpl, requests } = fakeFetch([refusal(503, code, "2"), jsonResponse(issue)]);
+      const { state, writeRetry } = fakeClock();
+      const client = retryClient(fetchImpl, writeRetry);
 
-    await expect(client.getIssue("DSP-1")).resolves.toMatchObject(issue);
+      await expect(client.getIssue("DSP-1")).resolves.toMatchObject(issue);
 
-    expect(requests.map((request) => request.init.method)).toEqual(["GET", "GET"]);
-    expect(state.waits).toHaveLength(1);
-    expect(state.waits[0]).toBeGreaterThanOrEqual(2_000);
-    expect(state.waits[0]).toBeLessThanOrEqual(2_250);
-  });
+      expect(requests.map((request) => request.init.method)).toEqual(["GET", "GET"]);
+      expect(state.waits).toHaveLength(1);
+      expect(state.waits[0]).toBeGreaterThanOrEqual(2_000);
+      expect(state.waits[0]).toBeLessThanOrEqual(2_250);
+    }
+  );
 
   test.each([
     ["PUT", "OVERLOADED"],
@@ -2088,28 +2090,28 @@ describe("DispatchClient waits out Retry-After", () => {
 
   // A write's 429 is `try-later` in its table: nothing of the write ran, so it is asked again
   // under its one key, after the longer of its schedule's pause (1 s first) and the Retry-After.
-  test.each([
-    "OVERLOADED",
-    "EDIT_QUEUE_FULL",
-  ])("a POST answered 429 %s is sent again under its key after its Retry-After", async (code) => {
-    const { fetchImpl, requests } = fakeFetch([refusal(429, code, "3"), jsonResponse(posted)]);
-    const { state, writeRetry } = fakeClock();
-    const client = retryClient(fetchImpl, writeRetry);
+  test.each(["OVERLOADED", "EDIT_QUEUE_FULL"])(
+    "a POST answered 429 %s is sent again under its key after its Retry-After",
+    async (code) => {
+      const { fetchImpl, requests } = fakeFetch([refusal(429, code, "3"), jsonResponse(posted)]);
+      const { state, writeRetry } = fakeClock();
+      const client = retryClient(fetchImpl, writeRetry);
 
-    await expect(client.message("DSP-1", { body: "Shipped.", actor })).resolves.toMatchObject(
-      posted
-    );
+      await expect(client.message("DSP-1", { body: "Shipped.", actor })).resolves.toMatchObject(
+        posted
+      );
 
-    expect(requests.map((request) => request.init.method)).toEqual(["POST", "POST"]);
-    expect(requests.map(requestBody)).toEqual([
-      { body: "Shipped.", actor },
-      { body: "Shipped.", actor },
-    ]);
-    const keys = keysOf(requests);
-    expect(keys[0]).toBeString();
-    expect(keys).toEqual([keys[0], keys[0]]);
-    expect(state.waits).toEqual([3_000]);
-  });
+      expect(requests.map((request) => request.init.method)).toEqual(["POST", "POST"]);
+      expect(requests.map(requestBody)).toEqual([
+        { body: "Shipped.", actor },
+        { body: "Shipped.", actor },
+      ]);
+      const keys = keysOf(requests);
+      expect(keys[0]).toBeString();
+      expect(keys).toEqual([keys[0], keys[0]]);
+      expect(state.waits).toEqual([3_000]);
+    }
+  );
 
   // One call is one intent, so every send of it carries the one key: the caller's own, where it
   // named one, else the one the call minted. The refusal was answered before Dispatch's keyed
@@ -2164,54 +2166,57 @@ describe("DispatchClient waits out Retry-After", () => {
     [503, "DATABASE_BUSY", false, "may-have-landed"],
     [503, "REQUEST_TIMEOUT", true, "nothing-sent"],
     [503, "REQUEST_TIMEOUT", true, "may-have-landed"],
-  ] as const)("a POST answered %d %s (key back: %p) from %s is asked again under its key and returns the 2xx", async (status, code, echoed, from) => {
-    const { fetchImpl, requests, probes } = keyedDispatch([
-      ...(from === "may-have-landed" ? [reset] : []),
-      (key) => refusal(status, code, "5", echoed ? key : undefined),
-      created,
-    ]);
-    const { state, writeRetry } = fakeClock();
-    const client = retryClient(fetchImpl, writeRetry);
+  ] as const)(
+    "a POST answered %d %s (key back: %p) from %s is asked again under its key and returns the 2xx",
+    async (status, code, echoed, from) => {
+      const { fetchImpl, requests, probes } = keyedDispatch([
+        ...(from === "may-have-landed" ? [reset] : []),
+        (key) => refusal(status, code, "5", echoed ? key : undefined),
+        created,
+      ]);
+      const { state, writeRetry } = fakeClock();
+      const client = retryClient(fetchImpl, writeRetry);
 
-    await expect(client.message("DSP-1", { body: "Shipped.", actor })).resolves.toMatchObject(
-      posted
-    );
+      await expect(client.message("DSP-1", { body: "Shipped.", actor })).resolves.toMatchObject(
+        posted
+      );
 
-    const keys = keysOf(requests);
-    expect(keys).toHaveLength(from === "nothing-sent" ? 2 : 3);
-    expect(keys[0]).toBeString();
-    expect(new Set(keys).size).toBe(1);
-    expect(probes).toEqual([]);
-    expect(state.waits.at(-1)).toBe(5_000);
-  });
+      const keys = keysOf(requests);
+      expect(keys).toHaveLength(from === "nothing-sent" ? 2 : 3);
+      expect(keys[0]).toBeString();
+      expect(new Set(keys).size).toBe(1);
+      expect(probes).toEqual([]);
+      expect(state.waits.at(-1)).toBe(5_000);
+    }
+  );
 
   // A write's 503 can come after an earlier statement of it committed, its key's claim among them,
   // so its table reads it as `server-error` (`may-have-landed`). It is asked again under the key its
   // first send carried, with no `/healthz` read first - Dispatch answers the repeat from what the key
   // holds - after the longer of its schedule's pause and the Retry-After, and with no ask left the
   // write ends unsettled, carrying that key.
-  test.each([
-    "DATABASE_BUSY",
-    "REQUEST_TIMEOUT",
-  ])("a POST answered 503 %s is asked again under its first send's key with no /healthz read, then ends unsettled", async (code) => {
-    const { fetchImpl, requests, probes } = keyedDispatch(
-      Array.from({ length: 5 }, () => () => refusal(503, code, "1"))
-    );
-    const { state, writeRetry } = fakeClock();
-    const client = retryClient(fetchImpl, writeRetry);
+  test.each(["DATABASE_BUSY", "REQUEST_TIMEOUT"])(
+    "a POST answered 503 %s is asked again under its first send's key with no /healthz read, then ends unsettled",
+    async (code) => {
+      const { fetchImpl, requests, probes } = keyedDispatch(
+        Array.from({ length: 5 }, () => () => refusal(503, code, "1"))
+      );
+      const { state, writeRetry } = fakeClock();
+      const client = retryClient(fetchImpl, writeRetry);
 
-    const error = await unsettled(client.message("DSP-1", { body: "Shipped.", actor }));
+      const error = await unsettled(client.message("DSP-1", { body: "Shipped.", actor }));
 
-    const keys = keysOf(requests);
-    expect(keys).toHaveLength(5);
-    expect(keys[0]).toBeString();
-    expect(keys).toEqual(Array.from({ length: 5 }, () => keys[0]));
-    expect(probes).toEqual([]);
-    expect(error.key).toBe(keys[0] ?? "");
-    expect(error.attempts).toBe(5);
-    expect(error.last).toMatchObject({ name: "DispatchServiceError", code, status: 503 });
-    expect(state.waits).toEqual([1_000, 2_000, 4_000, 8_000]);
-  });
+      const keys = keysOf(requests);
+      expect(keys).toHaveLength(5);
+      expect(keys[0]).toBeString();
+      expect(keys).toEqual(Array.from({ length: 5 }, () => keys[0]));
+      expect(probes).toEqual([]);
+      expect(error.key).toBe(keys[0] ?? "");
+      expect(error.attempts).toBe(5);
+      expect(error.last).toMatchObject({ name: "DispatchServiceError", code, status: 503 });
+      expect(state.waits).toEqual([1_000, 2_000, 4_000, 8_000]);
+    }
+  );
 
   // Dispatch answers `500 COMMIT_OUTCOME_UNKNOWN` when it sent the write's COMMIT and heard nothing
   // back, so the write may have landed. Its table reads it as `server-error`, which moves the write
@@ -2419,7 +2424,7 @@ describe("DispatchClient waits out Retry-After", () => {
         probes.push(String(input));
         return jsonResponse({ idempotency_keys: false });
       }
-      const key = (init?.headers as Record<string, string>)["Idempotency-Key"];
+      const key = (init?.headers as Record<string, string> | undefined)?.["Idempotency-Key"];
       keys.push(key);
       const answer = answers[keys.length - 1];
       if (answer === undefined) throw new Error("unexpected request");
