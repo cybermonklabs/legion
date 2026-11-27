@@ -77,7 +77,7 @@ type DispatchIssue struct {
 	// nonempty id as decoded, or the operator's own write through its grant (api's
 	// recordOwnStatusWrite). It is empty for a session, for Dispatch's own system actor, for an
 	// event naming no actor, and for a view or listing, which no one event wrote. Only a person may
-	// confirm never-merged work (D17), so a door reads it, never ActorSession or DaemonActor.
+	// confirm never-merged work, so a door reads it, never ActorSession or DaemonActor.
 	PersonActor string
 	// Requester is who asked for the status a route's own write made (OwnStatusWrite): the
 	// controller's set_status, an architect's rerun_child or release_children, or a person's,

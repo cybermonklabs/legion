@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// mergeReadLock is the merge read slot's session advisory lock, by the name D17 gives it.
+// mergeReadLock is the statement of the merge read slot's session advisory lock, legion.merge_read.
 const mergeReadLock = "select %s(hashtext('legion.merge_read'))"
 
 // MergeReadSlot is the one database-wide slot of the merge read: a session advisory lock named

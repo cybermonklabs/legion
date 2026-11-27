@@ -108,6 +108,9 @@ type outbox struct {
 	// happens (config.IdleReleaseConfig.Backstop, `backstop_minutes`); zero where the deployment
 	// releases no pod, and then a release arms none.
 	backstop time.Duration
+	// mergeReads is the pass every merge read of this daemon spends its GET attempts from
+	// (mergeRead): eight a pass, across every issue whose read is pending.
+	mergeReads mergeReadPassCount
 	// readPullRequest reads one pull request from GitHub (one GET /pulls/{number}) and answers the
 	// implement App's client of its repository with it; applyMergeability applies what that read
 	// says about merging the head, reading the base's rules with that client on a conflicting
@@ -855,9 +858,13 @@ type rateLimit struct {
 // rules either makes on a conflicting answer (readBaseRules) is no exception: a rate limit there
 // reads as rules the daemon could not read. The move of a next change's branch is GraphQL
 // (ghbranch.Reset), and its budget is left out too: it is one call of a row that runs once per
-// change, and GitHub's limit on it fails that row, whose retry waits for GitHub's Retry-After.
+// change, and GitHub's limit on it fails that row, whose retry waits for GitHub's Retry-After. The
+// merge read of an older issue's merge (record.MergeRead, mergeRead) is in the map: it counts its
+// attempts in its own progress, so a deferral spends none, and a later shared rate-limit deadline
+// holds it.
 var githubBudgets = map[record.OutboxKind][]githubrest.Budget{
 	record.OutboxKindIssueBranch: {githubrest.BudgetCore, githubrest.BudgetSecondary},
+	record.OutboxKindMergeRead:   {githubrest.BudgetCore, githubrest.BudgetSecondary},
 }
 
 // standingLimit is the limit in limits, among the budgets a row of kind spends, that still stands
@@ -1075,6 +1082,8 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.closeRead(ctx, row, value)
 	case record.CloseWaitPublish:
 		return r.closeWaitPublish(ctx, row, value)
+	case record.MergeRead:
+		return r.mergeRead(ctx, row, value)
 	default:
 		return fmt.Errorf("outbox row %d: no executor for %T", row.ID, payload)
 	}
