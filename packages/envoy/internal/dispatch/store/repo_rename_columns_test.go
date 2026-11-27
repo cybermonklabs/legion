@@ -16,6 +16,9 @@ var repoColumnsThePassNeverWrites = map[string]string{
 	"check_states.repo": "the settler's published states, which a reader keys by repository: the pass's " +
 		"write of a pull request's row owes its issue a settle, which publishes each state under the new " +
 		"name with an event and deletes the state under the old one",
+	"check_state_sets.repo": "the settler's published set of checks at each head, which a reader keys by " +
+		"repository: the settle the pass's write owes publishes each head's set under the new name and " +
+		"deletes the set under the old one, as it does each state",
 	"pull_request_former_heads_aliases.repo": "a name the settler met a pull request under, which never " +
 		"leaves: an old name finds the identity of the new one by the rename rule, and a rewrite that " +
 		"dropped it where the new name holds an identity not yet joined would part a history from its pull request",

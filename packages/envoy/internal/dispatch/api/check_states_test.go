@@ -308,7 +308,7 @@ func eventsOfCheck(events []checkStatesEvent, check, head string) []checkStatesE
 	return of
 }
 
-// publishedState is one row of check_states.
+// publishedState is one row of check_states, or, for the set row, of check_state_sets.
 type publishedState struct {
 	state           *string
 	reason          string
@@ -321,15 +321,22 @@ type publishedState struct {
 }
 
 // publishedRow is the row of check_states the settler holds for check at head of repo on issue,
-// "" for the set row, and false where it holds none.
+// or, for check "", the head's set row, its row of check_state_sets, and false where it holds none.
 func publishedRow(t *testing.T, database *store.Store, issue, repo, head, check string) (publishedState, bool) {
 	t.Helper()
 	var row publishedState
-	err := database.Pool.QueryRow(context.Background(), `
-		select state, reason, roles, ci_case, checks, check_artifact_id::text, check_version, event_seq
+	query, args := `
+		select state, reason, roles, ci_case, '{}'::text[], check_artifact_id::text, check_version, event_seq
 		from check_states where issue_key = $1 and repo = $2 and head_sha = $3 and check_block_id = $4`,
-		issue, repo, head, check).Scan(&row.state, &row.reason, &row.roles, &row.ciCase, &row.checks,
-		&row.checkArtifactID, &row.checkVersion, &row.eventSeq)
+		[]any{issue, repo, head, check}
+	if check == "" {
+		query, args = `
+			select null::text, '', '{}'::text[], '', checks, check_artifact_id::text, null::integer, event_seq
+			from check_state_sets where issue_key = $1 and repo = $2 and head_sha = $3`,
+			[]any{issue, repo, head}
+	}
+	err := database.Pool.QueryRow(context.Background(), query, args...).Scan(&row.state, &row.reason, &row.roles,
+		&row.ciCase, &row.checks, &row.checkArtifactID, &row.checkVersion, &row.eventSeq)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return publishedState{}, false

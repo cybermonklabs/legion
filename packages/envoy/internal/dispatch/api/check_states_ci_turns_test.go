@@ -278,7 +278,7 @@ func TestAFailedReadWaitsItsBackoffOnceEveryFormerHeadIsRead(t *testing.T) {
 			var unread int
 			if err := rig.database.Pool.QueryRow(context.Background(), `
 				select count(*) from unnest($2::text[]) as head (sha) where not exists (
-					select 1 from check_states where issue_key = $1 and head_sha = head.sha and check_block_id = '' and ci_read_at >= $3)`,
+					select 1 from check_state_sets where issue_key = $1 and head_sha = head.sha and ci_read_at >= $3)`,
 				rig.issue, visited, owedAt).Scan(&unread); err != nil {
 				t.Fatalf("read when the former heads were read: %v", err)
 			}
