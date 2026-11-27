@@ -16,6 +16,7 @@ import (
 // states it on the node, the text reads the ask open, as its node holds it, with no answerer; once
 // the node holds an answer, the text reads that one.
 func TestTheTextsAsksReadTheAnswerOffTheAsksNodeNotItsRow(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	ctx := context.Background()

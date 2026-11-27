@@ -108,6 +108,7 @@ func ownAndOpenRows() map[string]model.Ask {
 // settlement cannot read. An open row's body is free. A copy of another document's ask agrees with
 // its source the same way, its provenance among what the roll window keeps.
 func TestAnAskAgreesWithItsNodeShowingNoAnswerStateOrTheRowsOwn(t *testing.T) {
+	t.Parallel()
 	rows := ownAndOpenRows()
 	for name, test := range map[string]struct {
 		id     string
@@ -214,6 +215,7 @@ func TestAnAskAgreesWithItsNodeShowingNoAnswerStateOrTheRowsOwn(t *testing.T) {
 // level, in a blockquote - and leaves every other node of the tree its own, so a tree without them
 // is answered as it is, with nothing taken, and the tree it was given is not changed.
 func TestWithoutAskServerAttributesTakesTheEightOffEveryAskBlock(t *testing.T) {
+	t.Parallel()
 	quoted := "> " + strings.ReplaceAll(strings.TrimSuffix(openDirective+openBody, "\n"), "\n", "\n> ") + "\n"
 	tree, err := pmdoc.Parse("Context.\n\n" + ownDecided + ownBody + "\n" + quoted)
 	if err != nil {
@@ -299,6 +301,7 @@ func TestAskNodesOfTheCarriedVersionReadEveryBlockOnceAndRefuseARepeatedID(t *te
 // build's rendering of. That every ask of N agrees with its node is its callers' to hold first
 // (asksAgreeWithTheirNodes).
 func TestCarryVerdictOverTheApprovedAndTheNewVersion(t *testing.T) {
+	t.Parallel()
 	const prose = "# Rollout\n\nThe service ships behind a flag.\n\n"
 	approvedText := prose + ownDecided + ownBody + "\n" + openDirective + openBody
 	parse := func(markdown string) *pmdoc.Node {
@@ -614,6 +617,7 @@ func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 // its node, so her approval is carried to it by the case that compares the two without them
 // (attributeRemovalCase, R5).
 func TestOnOneBuildAVersionTakenBeforeSettlementKeepsOnlyTheAsksStateAndCarriesTheApproval(t *testing.T) {
+	t.Parallel()
 	const spec = "Context\n\n:::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	for _, write := range []struct {
@@ -742,6 +746,7 @@ func askOpeningLine(markdown, blockID string) string {
 // against the write with the words alone, the block disagreed with its node, and bob's answer
 // superseded her approval.
 func TestAnAnswerLeftOutOfItsBlockForWantOfRoomCarriesTheApproval(t *testing.T) {
+	t.Parallel()
 	const ask = ":::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 	// The prose leaves the document 1,000 bytes short of the cap: room for the block's state,
 	// answerer and time, and none for bob's words.
@@ -845,6 +850,7 @@ func namedVersionByTheAgent(t *testing.T, service *Service, artifactID, summary 
 // the next version, which drops the answer's selection, carries her approval naming the version she
 // approved, not the one her words name.
 func TestACarriedReasonAPersonWroteNamesNoVersionTheyDidNotApprove(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, reason string
 		// bob is the version bob approved before alice, 0 for none.
@@ -884,6 +890,7 @@ func TestACarriedReasonAPersonWroteNamesNoVersionTheyDidNotApprove(t *testing.T)
 // version names the version alice approved and the version whose text it holds, D, which her
 // approval was carried to; said to hold A's text, the reason was false.
 func TestARestoreOfACarriedVersionNamesTheVersionWhoseTextItHolds(t *testing.T) {
+	t.Parallel()
 	service, artifactID, approved := approvedBeforeOneBuild(t, "")
 	dropped := namedVersionByTheAgent(t, service, artifactID, "The state dropped")
 	if reason := approvedReasonAt(t, service, artifactID, dropped); reason != attributeRemovalReason(approved) {
@@ -926,6 +933,7 @@ func TestARestoreOfACarriedVersionNamesTheVersionWhoseTextItHolds(t *testing.T) 
 // them that the parser no longer reads fails here rather than leaving every carried review to
 // read as a person's own.
 func TestCarriedFromVersionReadsTheVersionEachCarrysReasonNames(t *testing.T) {
+	t.Parallel()
 	carry := func(version int) string {
 		return fmt.Sprintf(carriedReasonPrefix, version) + attributeRemovalCase.change + carriedReasonEnd
 	}

@@ -47,6 +47,7 @@ import (
 // trigger on that table that makes the one row the step writes wait on an advisory key the holder
 // takes, so the path stops at the statement that takes that step and nowhere before it.
 func TestEverySettlementWriterTakesTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database, service := blockIndexService(t)
 	rig := &docsWriterRig{database: database, service: service}

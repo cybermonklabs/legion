@@ -320,6 +320,7 @@ func nextRelayFrame(t *testing.T, sub *natsgo.Subscription, within time.Duration
 // in its grant the start ends, naming the prefix, since every reply the listener asks for comes
 // under it.
 func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
+	t.Parallel()
 	t.Run("under its grant", func(t *testing.T) {
 		rig := newEdgeLiveRig(t, edgeLiveGrant(t))
 		edge := rig.startEdge(t)
@@ -417,6 +418,7 @@ func edgeRoleEnvelope(topic, summary string) contracts.Envelope {
 // spentProofRetention as its age. The edge then starts, and registers its session under a broker
 // token, which records the token's proof in that bucket.
 func TestASharedListenerMakesTheSpentProofBucketAnEdgeListenerStartsAgainst(t *testing.T) {
+	t.Parallel()
 	buckets := slices.DeleteFunc(bus.ListenerBuckets(), func(bucket string) bool { return bucket == bus.DPoPProofBucket })
 	rig := newEdgeLiveRigWithBuckets(t, edgeLiveGrant(t), buckets)
 	shared := rig.startShared(t)
@@ -444,6 +446,7 @@ func TestASharedListenerMakesTheSpentProofBucketAnEdgeListenerStartsAgainst(t *t
 // session. So the first frame the session is relayed is that second message: had the edge taken
 // the first, the first frame would be the first message.
 func TestARoleHeldAtTheEdgeIsReachedThroughASharedListener(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeLiveRig(t, edgeLiveGrant(t))
 	edge := rig.startEdge(t)
 	edge.waitHealthy(t)
@@ -486,6 +489,7 @@ func edgeRoleClaim(session string) string {
 // write would be refused by the server, and the claim answered 503 with nothing written
 // (errTakeoverUnrecorded).
 func TestAnEdgeSessionTakesARoleAnotherSessionHolds(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeLiveRig(t, edgeLiveGrant(t))
 	edge := rig.startEdge(t)
 	edge.waitHealthy(t)
@@ -511,6 +515,7 @@ func TestAnEdgeSessionTakesARoleAnotherSessionHolds(t *testing.T) {
 // held the role (TestARoleHeldAtTheEdgeIsReachedThroughASharedListener), on the subject and with
 // the role topic that forward carries.
 func TestAnEdgeSessionIsRelayedARoleMessageWhoseRoleAnotherSessionHolds(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeLiveRig(t, edgeLiveGrant(t))
 	edge := rig.startEdge(t)
 	edge.waitHealthy(t)

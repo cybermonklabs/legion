@@ -837,6 +837,7 @@ const respellDecisionSpec = "Context\n\n- first\n\n- second\n\n- third\n\n" +
 // version L+1, which shows the decision open, with no state on its opener, in this build's
 // spelling, reads approved by her, carried from her approval of L by R5's case.
 func TestAReopenCarriesAnApprovalOfAClosedVersionAnotherRendererVersionStored(t *testing.T) {
+	t.Parallel()
 	handler, database, documents := settlingCarryDocuments(t, time.Hour)
 	issue := createInteractionIssue(t, handler, "TEST", "A reopen carry over another renderer version's text", respellDecisionSpec)
 	c := reopenCarryCase{handler: handler, database: database, documents: documents, issue: issue.Key, spec: issue.PrimaryArtifactID}
@@ -881,6 +882,7 @@ func TestAReopenCarriesAnApprovalOfAClosedVersionAnotherRendererVersionStored(t 
 // this build's spelling: the request still waits on alice, names and requests that version, and
 // its last move is quiet.
 func TestAReopenKeepsTheRequestWithThePersonOverATextAnotherRendererVersionStored(t *testing.T) {
+	t.Parallel()
 	handler, database, documents := settlingCarryDocuments(t, time.Hour)
 	issue := createInteractionIssue(t, handler, "TEST", "A kept turn over another renderer version's text", respellDecisionSpec)
 	c := reopenCarryCase{handler: handler, database: database, documents: documents, issue: issue.Key, spec: issue.PrimaryArtifactID}

@@ -51,6 +51,9 @@ import (
 // lockTransaction pins a window's thread to the CPU it is on); and they are kept within the CPUs
 // the thread had, so a run confined to a set of CPUs stays in it.
 func TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP(t *testing.T) {
+	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
+	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
+	// (requireMeasuredAlone) It also sets GOMAXPROCS to xidLoadProcs itself.
 	storetest.RequireXidGapJudgment(t)
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(xidLoadProcs))
 	_, database, tracer := xidService(t)

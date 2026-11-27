@@ -31,6 +31,7 @@ import (
 // issue takes (lockArtifactOwner, store.LockOwner), which locks no table and no row; the issue's
 // row is the event append's, in its write phase.
 func TestTheDecisionsStepsWritersTakeTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, path := range []func(t *testing.T) (*docsWriterRig, docsWriter){followCatchUpPath} {
 		rig, writer := path(t)

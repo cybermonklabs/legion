@@ -76,6 +76,7 @@ func answerWithAct(login string, selected []string, act *model.ActorAct) model.A
 // case, whoever answered (TestCarryVerdictOverTheApprovedAndTheNewVersion, api's
 // TestWhileTwoBuildsServeAnAnswerKeepsTheApprovalCurrent).
 func TestNoActDecidesTheCarryOfTheVersionAnAnswerWrites(t *testing.T) {
+	t.Parallel()
 	narrow := &model.ActorAct{Session: "session-agent", TokenID: "token-1", TokenName: "planner", Scopes: []string{model.ScopePerson}}
 	approving := &model.ActorAct{Session: "session-agent", TokenID: "token-1", TokenName: "architect", Scopes: []string{model.ScopePerson, model.ScopeApprove}}
 	for _, test := range []struct {

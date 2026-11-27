@@ -11,6 +11,7 @@ import (
 )
 
 func TestTheNewTypesAreReadButNotWrittenBeforeTheirNodePass(t *testing.T) {
+	t.Parallel()
 	handler, database, documents := settlingCarryDocuments(t, pastTheRun)
 	const intro = "Introductory prose.\n\n"
 	const requirement = ":::requirement{#target}\nA requirement.\n:::\n\n"
