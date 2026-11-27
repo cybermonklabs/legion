@@ -119,6 +119,10 @@ function describe(
     }
     case "issue.deployed":
       return `deployed ${event.payload.repo}#${event.payload.number} to production (run ${event.payload.run_id})`;
+    case "issue.role_holders_changed":
+      return event.payload.holders.length === 0
+        ? "cleared the role holders"
+        : `gave the roles to ${event.payload.holders.map((holder) => `${holder.role} ${holder.session}`).join(", ")}`;
     case "deploy.recorded":
       return `recorded a deploy of ${event.payload.program} in ${event.payload.repo} at ${event.payload.commit}, deployed ${event.payload.deployed_at}.`;
     case "handoff.recorded":

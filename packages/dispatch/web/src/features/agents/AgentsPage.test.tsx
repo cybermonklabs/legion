@@ -57,12 +57,12 @@ import { messageDeliveryFields } from "./delivery-fixture";
 import "../agent-view/AgentConversationPage";
 import "../margin/Margin";
 import "./BroadcastPage";
-import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import type { AgentPart } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
 import { resetWriteStorage } from "../writes/write-storage";
+import { KEYED_SEND_LATE_TEXT } from "../writes/write-words";
 // The page itself is a lazy route of the app too, loaded here for the same reason.
 import "./AgentsPage";
 import type { AgentGroup } from "./agent-groups";

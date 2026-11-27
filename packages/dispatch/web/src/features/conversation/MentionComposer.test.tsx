@@ -49,6 +49,8 @@ import {
   SendExpiredError,
   SendStoppedError,
 } from "../writes/keyed-write";
+import { KEYED_SEND_LATE_TEXT } from "../writes/write-words";
+import { prefillMentions, replyPrefill } from "./composer-draft";
 import type {
   ComposerOwner,
   DraftIntake,
@@ -57,8 +59,8 @@ import type {
   ReplyParent,
   ReplyTarget,
 } from "./composer-model";
+import type { OutlineLook } from "./MentionComposer";
 import { MentionComposer } from "./MentionComposer";
-import { KEYED_SEND_LATE_TEXT } from "./send-request";
 import { unsentDraftsOf } from "./unsent-drafts";
 import { composerNameOf } from "./useKeptDrafts";
 
@@ -143,9 +145,14 @@ interface ComposerOptions {
   edit?: { body: string; id: string };
   kind?: "ask" | "comment" | "suggestion";
   seedMentions?: readonly { target: string; title: string }[];
+  /** The send's name, under which the composer keeps a draft for the address it was written at
+   *  (`keptNames`' `awayName`), as the Conversation tab's composer does. */
+  mutationKey?: MutationKey;
   onCancelReply?: () => void;
   onKindChange?: (kind: "ask" | "comment" | "suggestion") => string | undefined;
   onSent?: () => void;
+  /** Draws the composer as the issue page's box, in that host's words (`OutlineLook`). */
+  outline?: OutlineLook;
   owner?: ComposerOwner;
   replyTo?: (Omit<ReplyTarget, "parentKind"> & { parentKind?: ReplyTarget["parentKind"] }) | null;
   /** The host's copy of the post `replyTo` answers, as its read holds it now. */
@@ -182,10 +189,12 @@ function renderComposer(options: ComposerOptions = {}) {
         edit={props.edit}
         kind={props.kind}
         seedMentions={props.seedMentions}
+        mutationKey={props.mutationKey}
         onCancelReply={props.onCancelReply}
         onClose={() => {}}
         onKindChange={props.onKindChange}
         onSent={props.onSent ?? (() => {})}
+        outline={props.outline}
         owner={props.owner ?? { issueKey: "CORE-1", kind: "issue" }}
         replyParent={props.replyParent}
         replyTo={
@@ -897,6 +906,61 @@ test("reopening the same reply restores its canonical prefills after cancel", as
     await user.paste("Draft after cancellation");
     await user.click(screen.getByRole("button", { name: "Open reply" }));
     await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://role/planner) "));
+  } finally {
+    view.unmount();
+  }
+});
+
+// The issue page's box remembers the links a reply opens with (`prefillMentions`), and today's
+// composer writes that reply's prefill (`replyPrefill`): the two read the parent's mentions each
+// on its own, so they must name the same parties, each once, in the same order. A party the
+// parent was delivered to twice is one link, and an address no party route reaches is none.
+test("a reply's prefill on today's composer names each party its parent was delivered to once, in order, as the issue page's box seeds it", async () => {
+  const target: ReplyTarget = {
+    actor: plannerAuthor,
+    excerpt: "Question",
+    id: "comment-1",
+    mentions: [
+      { target: "role:reviewer", title: "reviewer" },
+      { target: "session:A", title: "Planner" },
+      { target: "role:reviewer", title: "reviewer" },
+      { target: "agent:s1", title: "Stranger" },
+    ],
+    parentKind: "comment",
+  };
+  const view = render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider
+        client={
+          new QueryClient({
+            defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+          })
+        }
+      >
+        <MentionComposer
+          box="conversation-composer"
+          onClose={() => {}}
+          onSent={() => {}}
+          owner={{ issueKey: "CORE-1", kind: "issue" }}
+          replyTo={target}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await waitFor(() =>
+      expect(field.value).toBe(
+        "[@reviewer](dispatch://role/reviewer) [@Planner](dispatch://agent/A) "
+      )
+    );
+    const seeds = prefillMentions(target).map((seed) => seed.text);
+    expect(seeds.map((text) => `${text} `).join("")).toBe(replyPrefill(target).body);
+    expect(seeds).toEqual([
+      "[@reviewer](dispatch://role/reviewer)",
+      "[@Planner](dispatch://agent/A)",
+    ]);
   } finally {
     view.unmount();
   }
@@ -1720,6 +1784,29 @@ test("Enter in an ask option takes the picker's row, and adds an option once it 
   }
 });
 
+// A key that ends an IME composition is the input method's: the Enter that commits the reader's
+// words in an ask option adds no option, and the same key once the composition is over does.
+test("an Enter that ends an IME composition in an ask option adds no option", async () => {
+  const user = userEvent.setup();
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
+  const { view } = renderComposer({ agents: [planner], kind: "ask" });
+
+  try {
+    const label = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Option 1 label" });
+    await user.click(label);
+    await user.paste("Left");
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(label, { isComposing: true, key: "Enter" });
+    expect(screen.queryByRole("textbox", { name: "Option 2 label" })).toBeNull();
+
+    await user.keyboard("{Enter}");
+    await screen.findByRole("textbox", { name: "Option 2 label" });
+  } finally {
+    view.unmount();
+    listAgents.mockRestore();
+  }
+});
+
 // The rule the "Not running" options follow is the renderer's (`role-holders.ts`): a role a live
 // agent holds is the live options' (never offered twice), every other role the collaborators
 // record is offered, once, by its newest session whatever replaced it - the replaced session is
@@ -2294,6 +2381,53 @@ test("reply mode shows the quote, sends reply_to, and cancels by chip or Escape"
   } finally {
     view.unmount();
     createComment.mockRestore();
+  }
+});
+
+// An Escape that ends an IME composition is the input method's too: it cancels no reply and
+// raises no `Discard draft?` over the reader's words, and the same key once the composition is
+// over does each.
+test("an Escape that ends an IME composition ends no reply and asks nothing", async () => {
+  const user = userEvent.setup();
+  let cancelled = 0;
+  const reply = renderComposer({
+    onCancelReply: () => {
+      cancelled += 1;
+    },
+    replyTo: {
+      actor: plannerAuthor,
+      excerpt: "Once the build is green.",
+      id: "comment-9",
+      parentKind: "comment",
+      to: "/issues/CORE-1/comments/comment-9",
+    },
+  });
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(field, { isComposing: true, key: "Escape" });
+    expect(cancelled).toBe(0);
+    await user.keyboard("{Escape}");
+    expect(cancelled).toBe(1);
+  } finally {
+    reply.view.unmount();
+  }
+
+  const draft = renderComposer();
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Half a thought");
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(field, { isComposing: true, key: "Escape" });
+    expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
+    field.focus();
+    await user.keyboard("{Escape}");
+    await screen.findByRole("button", { name: "Discard" });
+  } finally {
+    draft.view.unmount();
   }
 });
 
@@ -4012,6 +4146,47 @@ test("a stopped reply the reader cancels is sent anew from there, saying the fir
   }
 });
 
+// The composer writes what the reader types over a refusal into its held send a short wait after
+// each edit (`KEEP_DRAFT_MS`, 300 ms). A host that moves a composer with no look - the
+// Conversation tab's reply - off the refused reply to one that keeps nothing writes the field into
+// the held send as it goes, and the field holds it as the reader left it: the words typed since
+// the last keep stay, where the held send's last kept draft would lose them.
+test("a refused reply the host moves to another reply keeps the words typed since its last keep", async () => {
+  const createComment = spyOn(api, "createComment").mockRejectedValue(commentRefused);
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const replyTo = { actor: plannerAuthor, excerpt: "Is the build green?", id: "comment-1" };
+  const { rerender, view } = renderComposer({ mutationKey: hostKey, replyTo });
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Status please");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    // A send's mutation function runs a task after the press (`pressSend`).
+    await tick(20);
+    expect(screen.getByText(`Couldn't send — ${COMMENT_REFUSED}`)).toBeTruthy();
+
+    await user.click(field);
+    await user.paste(" and the logs");
+    // The keep wait runs out, and the held send keeps the field as it stands.
+    await tick(300);
+    await user.paste(" too");
+    rerender({
+      mutationKey: hostKey,
+      replyTo: { actor: plannerAuthor, excerpt: "And the deploy?", id: "comment-2" },
+    });
+
+    expect(field.value).toBe("Status please and the logs too");
+    expect(createComment).toHaveBeenCalledTimes(1);
+  } finally {
+    realClock();
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
 // A closed issue takes comments: its composer shows and sends one, and a refusal still shows,
 // with Retry, as on an open issue. It refuses suggestions and asks, so the kind switch offers
 // neither there.
@@ -4220,6 +4395,64 @@ test("a pasted file answered KEY_COMMITTED says it was stored and adds no refere
     realClock();
     view.unmount();
     uploadArtifact.mockRestore();
+  }
+});
+
+/** The issue page's look (`OutlineLook`) in a host's words, whose Retry says "Try again": a word
+ *  of the host's own, which the composer's own Retry never says. What the composer says in answer
+ *  to a send it takes as its own words (`COMPOSER_WORDS`). */
+const hostLook: OutlineLook = {
+  cancelReply: "Write on the issue",
+  discardDraft: "Drop the draft",
+  end: () => {},
+  endMark: "×",
+  kinds: [],
+  placeholder: "Write a comment",
+  retry: "Try again",
+  send: "Post",
+  sending: "Posting…",
+  uploadedUnanswered: "The file was stored, and its reference was not added.",
+  uploading: "Uploading the file…",
+};
+
+// The issue page's box says each word its host gives it (`OutlineLook`), its Retry among them:
+// the Retry beside a refused upload and the one beside a refused send both say the host's word,
+// and neither says the composer's own.
+test("the issue page's box draws its host's Retry word beside a refused upload and a refused send", async () => {
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
+    new ApiError(400, { code: "INVALID_INPUT", error: "The file is not allowed." })
+  );
+  const createComment = spyOn(api, "createComment").mockRejectedValue(commentRefused);
+  const user = userEvent.setup();
+  const { view } = renderComposer({ box: "issue-page-composer", outline: hostLook });
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    const file = new File(["# Notes"], "notes.md", { type: "text/markdown" });
+    // user-event's paste carries text, never files.
+    fireEvent.paste(field, { clipboardData: { files: [file] } });
+    const uploadRefused = (await screen.findByText("The file is not allowed.")).closest(
+      '[role="alert"]'
+    );
+    if (!(uploadRefused instanceof HTMLElement))
+      throw new Error("the upload's refusal is no alert");
+    expect(within(uploadRefused).getByRole("button", { name: "Try again" })).toBeTruthy();
+
+    await user.click(field);
+    await user.paste("Agreed");
+    await user.click(screen.getByRole("button", { name: "Post" }));
+    const sendRefused = (await screen.findByText(`Couldn't send — ${COMMENT_REFUSED}`)).closest(
+      '[role="alert"]'
+    );
+    if (!(sendRefused instanceof HTMLElement)) throw new Error("the send's refusal is no alert");
+    expect(within(sendRefused).getByRole("button", { name: "Try again" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(uploadArtifact).toHaveBeenCalledTimes(1);
+    expect(createComment).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    createComment.mockRestore();
   }
 });
 

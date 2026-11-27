@@ -24,6 +24,7 @@ import {
   DataTableGroupRow,
   type DataTableNames,
   type DataTableProps,
+  HAND_OFF_CONTAINER_ATTRIBUTE,
   type RowNoun,
   useDataTable,
 } from "./DataTable";
@@ -632,6 +633,38 @@ test("walks the rows by the attribute and the keymap scope the caller gives", as
   expect(rows[1]).toHaveFocus();
   await user.keyboard("k");
   expect(rows[0]).toHaveFocus();
+});
+
+// A group's heading line is a container of its own for the table's hand-off and no row of the
+// caller's: it carries the hand-off's marker and never the row attribute, so the row keys walk
+// past it. Grouped by region, the eu heading, d1, d3, the us heading, then d2: `j` from d3 steps
+// over the us heading to d2, and `k` back over it to d3.
+test("the row keys pass over a group's heading line between two rows, both ways", async () => {
+  const user = userEvent.setup();
+  draw(
+    <KeymapProvider>
+      <Scope />
+      <Deploys groupOrder={(_column, a, b) => a.localeCompare(b)} grouping={["region"]} />
+    </KeymapProvider>
+  );
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  const heading = within(table).getByRole("button", { name: "Collapse us" }).closest("tr");
+  expect(heading?.hasAttribute(HAND_OFF_CONTAINER_ATTRIBUTE)).toBe(true);
+  expect(heading?.hasAttribute("data-deploy-row")).toBe(false);
+  expect(listed(table)).toEqual(["d1", "d3", "d2"]);
+  const focusedRow = () => document.activeElement?.getAttribute("data-deploy-row") ?? null;
+
+  await user.keyboard("j");
+  expect(focusedRow()).toBe("d1");
+  await user.keyboard("j");
+  expect(focusedRow()).toBe("d3");
+  await user.keyboard("j");
+  expect(focusedRow()).toBe("d2");
+  await user.keyboard("k");
+  expect(focusedRow()).toBe("d3");
+  await user.keyboard("k");
+  expect(focusedRow()).toBe("d1");
 });
 
 /** The same words for a table whose next and previous answer from its own rows alone (`moveFrom:

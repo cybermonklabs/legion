@@ -1220,12 +1220,18 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   if (
     event.type === "issue.claimed" ||
     event.type === "issue.released" ||
-    event.type === "issue.deployed"
+    event.type === "issue.deployed" ||
+    event.type === "issue.role_holders_changed"
   ) {
     // A claim changes who holds the issue, and its holder is a collaborator from then on: the
     // detail, the log, the project lists that render the claim, and the collaborators and the
     // steps the branches above named. No rollup, ask count or component attachment moves with it.
-    // A deploy is a line in the issue's log and nothing the lists or rollups read.
+    // A deploy, and a change of the sessions the Legion daemon gave the issue's roles, add only a
+    // line to the issue's log. They still refresh the issue's project list, as every issue event
+    // does, because they move the issue's `last_seq` and `updated_at` (events.Broker.QueueAppend,
+    // envoy's internal/dispatch/events/broker.go). So a role change lights the issue's unread dot
+    // (`issueIsUnread`, UnreadDot.tsx), and counts as activity of the priorities the issue
+    // advances, as the quiet `comment.delivery`, `comment.anchor_refreshed` and `ask.edited` do.
     return targets;
   }
   if (event.type === "artifact.human_edited") {
