@@ -303,7 +303,9 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 		}
 		args = append([]string{"--config=git.executable-path=" + TOMLString(git)}, args...)
 	}
-	child := exec.CommandContext(bounded, executable, args...)
+	// PLANT (never merged, review 6085965957's two-stall fault): a 0.6 s prefix inside the
+	// command's own process before the command's first line.
+	child := exec.CommandContext(bounded, "/bin/sh", append([]string{"-c", `sleep 0.6; exec "$@"`, "sh", executable}, args...)...)
 	child.Dir = command.Dir
 	// Provisioning's children take their git configuration from the caller's intent, never from
 	// the process that happens to start them: the GIT_CONFIG_* block the environment carries goes
@@ -337,6 +339,8 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	var stdout, stderr bytes.Buffer
 	child.Stdout = &stdout
 	child.Stderr = &stderr
+	// PLANT (never merged): the runner spends 0.6 s before Start, inside the Timeout.
+	time.Sleep(600 * time.Millisecond)
 	err = child.Run()
 	if hook := exitedHook.Load(); hook != nil && child.ProcessState != nil {
 		(*hook)(command, child.ProcessState)
