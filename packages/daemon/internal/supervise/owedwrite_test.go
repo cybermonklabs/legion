@@ -215,6 +215,14 @@ func brokenConnection() *pgconn.PgError {
 	return &pgconn.PgError{Code: "08006", Message: "server closed the connection unexpectedly", Severity: "FATAL"}
 }
 
+// checkRefusal is the server judging the row a claim write sent: a CHECK the row breaks (class
+// 23), which the rule refuses (SortClaimWriteFailure), since the same write would be refused again
+// for as long as memory holds the row.
+func checkRefusal() *pgconn.PgError {
+	return &pgconn.PgError{Code: "23514", Message: `new row for relation "claims" violates check constraint "claims_state_check"`,
+		Severity: "ERROR", ConstraintName: "claims_state_check"}
+}
+
 // serverError is one answer a server gives about something other than the statement it was
 // given, written as pgx returns it from a live connection: the code's class is the whole of what
 // the rule reads, and each row below says which class it is holding and what that class is in
@@ -230,15 +238,15 @@ func serverError(code, message string) func(*testing.T) error {
 // measured incident lost, and one that leaves its state standing in memory whether or not the
 // row takes it.
 //
-// All but two leave the write owed, and the claim's next decision makes it: the row catches up
-// with what memory has held all along. The last two are the server reading the statement and
-// deciding against it, which it would decide the same way again, so nothing is owed and nothing
-// is written again — the write is attempted once and that is the end of it.
+// All but one leave the write owed, and the claim's next decision makes it: the row catches up
+// with what memory has held all along. The last is the server reading the statement and deciding
+// against it, which it would decide the same way again, so nothing is owed and nothing is written
+// again — the write is attempted once and that is the end of it.
 //
 // What the owed ones share is not a type: one is a pgx type, one is the standard library's, two
 // are a server's answer about a connection it refused, carried inside a pgx type, and the rest
-// are a server's answer on a live connection. It is that no server judged the statement, which
-// is the one question writeOwed asks.
+// are a server's answer on a live connection. It is that the row memory holds is not what failed,
+// which is the one question SortClaimWriteFailure asks.
 //
 // The two connections the server itself refused are the rows this change's order is for, and
 // they are built from a listener that speaks the startup message rather than written out, since
@@ -336,25 +344,23 @@ func TestTheOwedWriteErrorsAreTheOnesNoServerAnsweredAbout(t *testing.T) {
 			owed: true,
 		},
 		{
+			// A column the claims table has not got: a daemon deployed ahead of its migration.
+			// The server reads the statement and refuses it, but what it refuses is the schema
+			// the binary runs ahead of, not the row memory holds, and the same write is taken
+			// once the migration lands (SortClaimWriteFailure's 42703), so the write is owed
+			// rather than dropped with the claim fact only memory holds.
+			name: "a column the server has not got yet",
+			err: func(*testing.T) error {
+				return &pgconn.PgError{Code: "42703", Message: `column "turn_started_at" of relation "claims" does not exist`, Severity: "ERROR"}
+			},
+			owed: true,
+		},
+		{
 			// A statement the server read and refused: a unique violation is a decision about
 			// this very statement, and making the write again buys the same refusal.
 			name: "a statement the server refused",
 			err: func(*testing.T) error {
 				return &pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint", Severity: "ERROR"}
-			},
-			owed: false,
-		},
-		{
-			// A second statement the server read and refused, from a class of its own: a daemon
-			// deployed ahead of its migration writes a column the claims table has not got, and
-			// the server decides against that statement as plainly as it decides against a
-			// duplicate key. Two refusals are held here rather than one because one row holds
-			// only its own class: with 23505 alone, a build that owed every class but 23 would
-			// pass this table whole while repairing, at every decision for the life of the
-			// daemon, a write the server will refuse again.
-			name: "a column the server has not got",
-			err: func(*testing.T) error {
-				return &pgconn.PgError{Code: "42703", Message: `column "turn_started_at" of relation "claims" does not exist`, Severity: "ERROR"}
 			},
 			owed: false,
 		},

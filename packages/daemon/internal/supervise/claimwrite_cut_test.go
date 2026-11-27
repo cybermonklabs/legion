@@ -30,9 +30,9 @@ var (
 // answered that write past defaultClaimWrite) is made again in the same decision, so the decision
 // lands: one slow write costs a launch no probe interval and a boot's release no orphan sweep
 // (dispatch://INFRA-3904). A second such cut leaves the write owed, the decision failing with it,
-// as every write the database did not take is (owes, repair). A cut before the database was handed
-// the write — a dial, a wait in the pool's queue, a BEGIN, none of which the store marks — is not
-// made again, nor is a cut the daemon's stop made, nor a broken connection
+// as every write the database did not take is (claimWriteFailed, repair). A cut before the
+// database was handed the write — a dial, a wait in the pool's queue, a BEGIN, none of which the
+// store marks — is not made again, nor is a cut the daemon's stop made, nor a broken connection
 // (TestTheWriteATurnStartOwedIsMadeAtTheClaimsNextDecision). The release that is the exception to
 // the retry is TestAReleaseWhoseAnswerIsLostLeavesNoFreedNameCached's.
 func TestAClaimWriteTheBoundCutShortOnceIsMadeAgainInTheSameDecision(t *testing.T) {

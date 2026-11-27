@@ -292,7 +292,7 @@ func resumePause(m *Machine, ctx context.Context, ev Event) error {
 
 // persistStop is persist for the claim write a project pause's suspension ends in (suspended,
 // decision 6): the claim goes through the pause's stop transaction (Deps.PauseStopped) with the
-// pause's records, rather than through the plain write. A failure the rule owes (writeOwed)
+// pause's records, rather than through the plain write. A failure the rule owes (claimWriteFailed)
 // leaves the stop on the owed mark (owedClaimWrite.stops), for the repair and every write that
 // settles the mark to make (putStops). Where a write is already owed, the stop joins it and the
 // write is made as an owed one, the reports and any earlier stop with it. A daemon that hands no
@@ -314,7 +314,7 @@ func (m *Machine) persistStop(ctx context.Context, stop PauseStop) error {
 		pending := *m.claim.Pending
 		c.Pending = &pending
 	}
-	err := m.owes("PauseStopped", m.putStop(ctx, c, stop))
+	err := m.claimWriteFailed("PauseStopped", m.putStop(ctx, c, stop))
 	if err == nil && carried {
 		m.wroteCarried()
 	}
@@ -353,6 +353,7 @@ func (m *Machine) putStop(ctx context.Context, c Claim, stop PauseStop) error {
 	if err := m.write(ctx, func(ctx context.Context) error { return m.deps.PauseStopped(ctx, c, stop) }); err != nil {
 		return err
 	}
+	m.rowState = c.State
 	m.log.Info(PauseRoleStoppedMessage, "pause", stop.Pause, "launch_owed", stop.LaunchOwed)
 	return nil
 }

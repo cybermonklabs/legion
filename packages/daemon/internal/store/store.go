@@ -199,8 +199,9 @@ const DSNSetting = "postgres_dsn (or LEGION_POSTGRES_DSN)"
 //     before the connection answers, which pgconn.Timeout does not read.
 //
 // Every other error cannot clear, a stop of the caller (context.Canceled) among them. The rule
-// supervise's writeOwed reads a claim write by is not this one: it owes every *pgconn.ConnectError
-// whatever the server answered, which here would try a refused password ten times.
+// supervise.SortClaimWriteFailure reads a claim write by is not this one: it owes every
+// *pgconn.ConnectError whatever the server answered, which here would try a refused password ten
+// times.
 func OpenRetryable(err error) bool {
 	var answer *pgconn.PgError
 	if errors.As(err, &answer) {

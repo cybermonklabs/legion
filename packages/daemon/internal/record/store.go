@@ -790,7 +790,7 @@ func scanIssue(row scanner) (*Issue, error) {
 		issue.ReleasedForWaitAt = &utc
 	}
 	if generation < 0 {
-		return nil, fmt.Errorf("issue %s has negative generation %d", issue.Key, generation)
+		return nil, fmt.Errorf("issue %s has negative generation %d: %w", issue.Key, generation, ErrIssueUnreadable)
 	}
 	issue.Phase = phase.Phase(phaseValue)
 	if heldFrom != nil {
@@ -821,6 +821,12 @@ func scanIssue(row scanner) (*Issue, error) {
 	issue.Generation = uint64(generation)
 	return &issue, nil
 }
+
+// ErrIssueUnreadable is a stored issue record no daemon can act on, which scanIssue refuses in Go:
+// a generation below zero, which issues' own CHECK keeps any write from storing. A write that
+// reads the record on its way, a project pause's stop among them (internal/daemon's stopTx), meets
+// it again for as long as the row holds it, so that write reads it as refused.
+var ErrIssueUnreadable = errors.New("the stored issue record is unreadable")
 
 // phaseColumns is the columns of a phases row as scanPhase reads them, in its order.
 const phaseColumns = `issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_awaiting, entry_raised_at, entry_moved_back, coalesce(entry_from, ''), entry_given_task, entry_given_entry, entry_given_generation, reviewed_head, step_task, step_place`

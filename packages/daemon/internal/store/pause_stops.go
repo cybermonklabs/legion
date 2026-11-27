@@ -86,9 +86,13 @@ func OpenPauseStopTx(ctx context.Context, tx pgx.Tx, held Pause, stop PauseStopC
 	return true, nil
 }
 
+// validPauseStopClaim refuses a stop that does not name its claim, a claim's issue and a role. It
+// is the store's own refusal of a pause stop's records (supervise.RulePauseStop), which the claim
+// write a pause's stop makes reads as refused (supervise.Deps.PauseStopped).
 func validPauseStopClaim(stop PauseStopClaim) error {
 	if stop.Claim == "" || !claim.IsIssueKey(stop.Issue) || !claim.IsRole(stop.Role) {
-		return fmt.Errorf("a pause's stop names a claim, its issue and its role; it names %q, %q and %q", stop.Claim, stop.Issue, stop.Role)
+		return refusedRow(supervise.RulePauseStop, "a pause's stop names a claim, its issue and its role; it names %q, %q and %q",
+			stop.Claim, stop.Issue, stop.Role)
 	}
 	return nil
 }
@@ -192,7 +196,7 @@ type PauseStopRecord struct {
 // through it, so the two write one set of records.
 func RecordPauseStopTx(ctx context.Context, tx pgx.Tx, rec PauseStopRecord) (bool, error) {
 	if b := rec.Backstop; b != nil && (b.Issue != rec.Stop.Issue || b.Role != rec.Stop.Role) {
-		return false, fmt.Errorf("pause %d's stop of %s arms the backstop of %s's %s, not of its own issue and role",
+		return false, refusedRow(supervise.RulePauseStop, "pause %d's stop of %s arms the backstop of %s's %s, not of its own issue and role",
 			rec.Pause.ID, rec.Stop.Claim, b.Issue, b.Role)
 	}
 	first, err := RecordPauseStoppedTx(ctx, tx, rec.Pause, rec.Stop, rec.At, rec.LaunchOwed)

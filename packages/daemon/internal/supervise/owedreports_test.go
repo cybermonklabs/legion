@@ -258,7 +258,7 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 		if held := len(h.m.owedWrite.reports); held != 2 {
 			t.Fatalf("the mark holds %d reports, want the two working transitions whose writes failed", held)
 		}
-		written := len(h.records.of(owedWriteLine))
+		written := len(h.records.of(refusedWriteLine))
 
 		// The outage lifts, and what refuses the repair is the server itself: a unique
 		// violation is a decision about that very write, which R2 never makes again.
@@ -277,7 +277,7 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 		if seen := states(reports()); !slices.Equal(seen, []ClaimState{StateReady}) {
 			t.Fatalf("the daemon was told %v, want the ready alone: the owed working names a state the store never took", seen)
 		}
-		lines := h.records.of(owedWriteLine)[written:]
+		lines := h.records.of(refusedWriteLine)[written:]
 		if len(lines) != 1 {
 			t.Fatalf("the drop wrote %d lines, want the one that is the whole record of it: %v", len(lines), lines)
 		}
@@ -293,8 +293,11 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 		} else if err, isErr := got.Any().(error); !isErr || !errors.Is(err, refusal) {
 			t.Fatalf("the line carries error %v, want the server's own refusal %v", got, refusal)
 		}
-		if got, ok := line.attr("owed"); !ok || got.Bool() {
-			t.Fatalf("the line reads owed %v (present %v), want false: the write is dropped, not kept", got, ok)
+		if got, ok := line.attr("sqlstate"); !ok || got.String() != refusal.Code {
+			t.Fatalf("the line reads sqlstate %v (present %v), want %s: the server's code for the refused write", got, ok, refusal.Code)
+		}
+		if got, ok := line.attr("droppedStops"); !ok || got.Int64() != 0 {
+			t.Fatalf("the line reads droppedStops %v (present %v), want 0: the mark held no pause stop", got, ok)
 		}
 		// The reports went with the mark, and this line is the only record that they did: it
 		// says how many of them the write was holding (R6).

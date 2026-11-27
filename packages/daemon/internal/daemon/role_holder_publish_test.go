@@ -670,12 +670,12 @@ func TestTheWorkflowsBootQueuesTheRolePublicationOfALiveClaim(t *testing.T) {
 }
 
 // An end whose claim write failed with an error the daemon owes (here a broken connection,
-// supervise's writeOwed) is not lost: the claim's next decision makes the write, and that write
-// queues the issue's publication in its own transaction (store's putClaim), so the ended session
-// leaves Dispatch's set at the repair, with no restart and no other claim's change. Until then the
-// store holds the claim live, so nothing is queued, and nothing should be: a publication would read
-// the session as holding its role. Each end is driven from an idle claim through its machine over
-// the real store: a stop and a suspension.
+// supervise.SortClaimWriteFailure) is not lost: the claim's next decision makes the write, and that
+// write queues the issue's publication in its own transaction (store's putClaim), so the ended
+// session leaves Dispatch's set at the repair, with no restart and no other claim's change. Until
+// then the store holds the claim live, so nothing is queued, and nothing should be: a publication
+// would read the session as holding its role. Each end is driven from an idle claim through its
+// machine over the real store: a stop and a suspension.
 func TestARepairedEndIsPublishedWhenItsWriteLands(t *testing.T) {
 	t.Parallel()
 	for _, end := range []struct {

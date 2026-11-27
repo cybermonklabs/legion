@@ -106,26 +106,53 @@ func TestARefusedRelaunchOfAReleasedLaunchLeavesTheStoreAndTheMachineAgreeing(t 
 	h.wantCalls("Spawn", 0)
 }
 
-// A release the store does not take is undone: the claim stays launch_uncertain in memory as it is
-// in the store, so nothing launches on a release no restart would find.
+// A release whose write the rule owes stands, as a decision whose write is owed stands (D8 of
+// dispatch://INFRA-4099's plan): the claim is queued in memory, the write is owed, and the release
+// answers true with no error, so its caller launches, and the launch's decision makes the owed
+// write first (repair). A release the rule refuses is undone: the claim stays launch_uncertain in
+// memory as it is in the store, so nothing launches on a release no restart would find.
 func TestAReleaseTheStoreDoesNotTakeIsUndone(t *testing.T) {
-	h := newBareHarness(t)
-	uncertain := queuedClaim()
-	uncertain.State, uncertain.Generation = StateLaunchUncertain, 1
-	if err := h.store.PutClaim(h.ctx, uncertain); err != nil {
-		t.Fatal(err)
-	}
-	h.start(uncertain)
-	h.store.fail("PutClaim", errBoom)
+	for _, tc := range []struct {
+		name string
+		err  error
+		owed bool
+	}{
+		{name: "owed", err: brokenConnection(), owed: true},
+		{name: "refused", err: checkRefusal()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newBareHarness(t)
+			uncertain := queuedClaim()
+			uncertain.State, uncertain.Generation = StateLaunchUncertain, 1
+			if err := h.store.PutClaim(h.ctx, uncertain); err != nil {
+				t.Fatal(err)
+			}
+			h.start(uncertain)
+			h.store.fail("PutClaim", tc.err)
 
-	if released, err := h.m.ReleaseUncertainLaunch(h.ctx); released || !errors.Is(err, errBoom) {
-		t.Fatalf("release = %t, %v; want it refused with the store's error", released, err)
-	}
-	if got := h.m.Claim().State; got != StateLaunchUncertain {
-		t.Fatalf("after a release the store refused the machine holds %s, want launch_uncertain", got)
-	}
-	if got := h.m.View().State; got != StateLaunchUncertain {
-		t.Fatalf("after a release the store refused View reports %s, want launch_uncertain", got)
+			released, err := h.m.ReleaseUncertainLaunch(h.ctx)
+			want := StateLaunchUncertain
+			if tc.owed {
+				want = StateQueued
+				if !released || err != nil {
+					t.Fatalf("release = %t, %v; want it released, its write owed", released, err)
+				}
+			} else if released || !errors.Is(err, tc.err) {
+				t.Fatalf("release = %t, %v; want it refused with the store's error", released, err)
+			}
+			if got := h.m.Claim().State; got != want {
+				t.Fatalf("after the failed release write the machine holds %s, want %s", got, want)
+			}
+			if got := h.m.View().State; got != want {
+				t.Fatalf("after the failed release write View reports %s, want %s", got, want)
+			}
+			if owed := h.m.owedWrite != nil; owed != tc.owed {
+				t.Fatalf("the release write is owed = %t, want %t", owed, tc.owed)
+			}
+			if got := h.store.load(uncertain.Token).State; got != StateLaunchUncertain {
+				t.Fatalf("the store holds %s, want the launch_uncertain the failed write left", got)
+			}
+		})
 	}
 }
 

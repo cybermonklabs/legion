@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -508,9 +509,15 @@ func LockOpenPauseByTokenTx(ctx context.Context, tx pgx.Tx, token string) (Pause
 
 // LockPauseTx is pause id read with its row locked for share: the stop transaction of decision 6
 // takes it on the pause its suspension carries, open or ended, so a resume that would end it
-// waits for the stop's records to commit. A pause no row holds is an error.
+// waits for the stop's records to commit. A pause no row holds is an error, and the store's own
+// refusal of a pause stop's records (supervise.RulePauseStop): the stop names a pause the store
+// never held, and the same stop meets the same answer every time, so the claim write a pause's
+// stop makes reads it as refused (supervise.Deps.PauseStopped). It still carries pgx.ErrNoRows.
 func LockPauseTx(ctx context.Context, tx pgx.Tx, id int64) (Pause, error) {
 	p, err := scanPause(tx.QueryRow(ctx, `select `+pauseColumns+` from project_pauses where id = $1 for share`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Pause{}, refusedRow(supervise.RulePauseStop, "read pause %d: %w", id, err)
+	}
 	if err != nil {
 		return Pause{}, fmt.Errorf("read pause %d: %w", id, err)
 	}

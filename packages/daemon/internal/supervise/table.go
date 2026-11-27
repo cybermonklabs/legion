@@ -1980,7 +1980,7 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 	p.LastSendError = m.logFarSideError(ctx, level, msg, r.Err, args...)
 	var err error
 	if untold || handshakeMoved {
-		err = m.saved(m.putClaimAndPending(ctx))
+		err = m.saved(m.writeFailed(m.pendingWriteMethod(), m.putClaimAndPending(ctx)))
 	} else {
 		err = m.putPending(ctx)
 	}

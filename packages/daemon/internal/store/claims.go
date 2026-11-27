@@ -446,21 +446,38 @@ func lockedClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim, state *state
 // earlier release retired carries the column's default, 0, which is below every number the
 // sequence hands out, so no owed row of it is ever ended and it behaves as it did before the
 // column existed (20261109191929_outbox_write_mark).
+//
+// It refuses in Go, before its statement, a row no column of the table can hold, each refusal of
+// the type supervise's rule reads as refused (supervise.RowRefusedError, D8 of
+// dispatch://INFRA-4099's plan): a uint64 past the bigint column that holds it
+// (supervise.RuleBigintFit), an int past its integer column (claimInt4Columns,
+// supervise.RuleInt4Fit), which pgx would refuse too but with an error the rule could not tell
+// from an outage, and a value of a json column that does not encode (supervise.RuleJSONEncode).
+// Each is a refusal of the row memory holds, which the same write meets again for as long as
+// memory holds it, so the machine must not owe it.
 func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
-	if c.Generation > math.MaxInt64 {
-		return fmt.Errorf("put claim %s: generation %d does not fit a bigint", c.Token, c.Generation)
+	for _, fit := range []struct {
+		what  string
+		value uint64
+	}{
+		{"generation", c.Generation},
+		{"tree epoch", c.TreeEpoch},
+		{"serving generation", c.ServingGeneration},
+		{"handshake's generation", c.Handshake.Generation},
+		{"generation of its resume by Oh My Pi's own lookup", c.AgentResumeGeneration},
+	} {
+		if fit.value > math.MaxInt64 {
+			return refusedRow(supervise.RuleBigintFit, "put claim %s: its %s %d does not fit a bigint", c.Token, fit.what, fit.value)
+		}
 	}
-	if c.Handshake.Generation > math.MaxInt64 {
-		return fmt.Errorf("put claim %s: the generation %d of its handshake does not fit a bigint", c.Token, c.Handshake.Generation)
-	}
-	if c.AgentResumeGeneration > math.MaxInt64 {
-		return fmt.Errorf("put claim %s: the generation %d of its resume by Oh My Pi's own lookup does not fit a bigint", c.Token, c.AgentResumeGeneration)
+	if column, unfit := unfitInt4(claimInt4Columns(c)); unfit {
+		return refusedRow(supervise.RuleInt4Fit, "put claim %s: %s %d does not fit an integer column", c.Token, column.name, column.value)
 	}
 	var locator []byte
 	if c.Locator != nil {
 		encoded, err := json.Marshal(c.Locator)
 		if err != nil {
-			return fmt.Errorf("put claim %s: encode its locator: %w", c.Token, err)
+			return refusedRow(supervise.RuleJSONEncode, "put claim %s: encode its locator: %w", c.Token, err)
 		}
 		locator = encoded
 	}
@@ -470,7 +487,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	if len(c.TurnOutcomes) > 0 {
 		encoded, err := json.Marshal(c.TurnOutcomes)
 		if err != nil {
-			return fmt.Errorf("put claim %s: encode its turn outcomes: %w", c.Token, err)
+			return refusedRow(supervise.RuleJSONEncode, "put claim %s: encode its turn outcomes: %w", c.Token, err)
 		}
 		outcomes = encoded
 	}
@@ -480,7 +497,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	if c.Abandoned.Session != "" {
 		encoded, err := json.Marshal(c.Abandoned)
 		if err != nil {
-			return fmt.Errorf("put claim %s: encode its abandoned session: %w", c.Token, err)
+			return refusedRow(supervise.RuleJSONEncode, "put claim %s: encode its abandoned session: %w", c.Token, err)
 		}
 		abandoned = encoded
 	}
@@ -490,7 +507,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	if c.EndedWork.Cause != "" {
 		encoded, err := json.Marshal(c.EndedWork)
 		if err != nil {
-			return fmt.Errorf("put claim %s: encode what its last let-go ended: %w", c.Token, err)
+			return refusedRow(supervise.RuleJSONEncode, "put claim %s: encode what its last let-go ended: %w", c.Token, err)
 		}
 		endedWork = encoded
 	}
@@ -499,7 +516,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	// SessionRun, dispatch://INFRA-2045 R1).
 	sessionRun, err := json.Marshal(c.SessionRun)
 	if err != nil {
-		return fmt.Errorf("put claim %s: encode its session's run: %w", c.Token, err)
+		return refusedRow(supervise.RuleJSONEncode, "put claim %s: encode its session's run: %w", c.Token, err)
 	}
 	var enrollmentID, enrollmentIncarnation *string
 	if c.Enrollment != nil {
@@ -642,6 +659,59 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
 	}
 	return nil
+}
+
+// refusedRow is a claim write the store refuses itself, in Go, before the statement: the error
+// format and args spell, under rule, of the type supervise's rule reads as refused
+// (supervise.RowRefusedError). A %w in format keeps the error it wraps in the chain.
+func refusedRow(rule, format string, args ...any) error {
+	return &supervise.RowRefusedError{Rule: rule, Err: fmt.Errorf(format, args...)}
+}
+
+// int4Column is one integer column a claim write sends, by its name, with the value it sends.
+type int4Column struct {
+	name  string
+	value int
+}
+
+// claimInt4Columns is every integer column of claims that a claim write sends (upsertClaim), each
+// with the value c gives it: the one inventory the store's range check reads, which
+// TestEveryIntegerColumnOfAClaimWriteIsCheckedBeforeTheStatement holds to the migrated schema.
+// step_args_bytes is no column of a claim write: PutClaimStep writes it alone.
+func claimInt4Columns(c supervise.Claim) []int4Column {
+	return []int4Column{
+		{"launch_failures", c.Budgets.LaunchFailures},
+		{"deaths", c.Budgets.Deaths},
+		{"prompt_failures", c.Budgets.PromptFailures},
+		{"prompt_retires", c.Budgets.PromptRetires},
+		{"uncertain_streak", c.UncertainStreak},
+		{"plugin_contract", c.PluginContract},
+		{"plugin_relaunch_for", c.PluginRelaunchFor},
+		{"provider_error_run", c.ProviderErrorRun},
+		{"serving_check_look", c.ServingCheckLook.Look},
+	}
+}
+
+// deliveryInt4Columns is every integer column of pending_task_deliveries that a delivery write
+// sends (putDelivery), each with the value d gives it, as claimInt4Columns is of claims.
+func deliveryInt4Columns(d supervise.Delivery) []int4Column {
+	return []int4Column{
+		{"check_look", d.CheckLook.Look},
+		{"send_failures", d.SendFailures},
+		{"provider_error_retries", d.ProviderErrorRetries},
+	}
+}
+
+// unfitInt4 is the first of columns whose value no integer column holds, and false where each
+// fits. It is checked before the statement, so pgx's own refusal of such a value (pgtype), which
+// carries no SQLSTATE and would be read as an outage, is never what a claim write answers.
+func unfitInt4(columns []int4Column) (int4Column, bool) {
+	for _, column := range columns {
+		if column.value < math.MinInt32 || column.value > math.MaxInt32 {
+			return column, true
+		}
+	}
+	return int4Column{}, false
 }
 
 // Claims reads every claim with its pending delivery, in token order. A stored locator that does
@@ -850,14 +920,21 @@ func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.
 // final credit (Delivery.Ran) folds it into the told rows (settleDesignNews).
 // All of it is in the caller's transaction, so no row is ever held by a delivery the store does
 // not hold, and no confirmation commits without telling what it confirmed.
+//
+// It refuses, before any statement, a delivery no column holds, as upsertClaim refuses a claim:
+// a generation past its bigint column, an int past its integer column (deliveryInt4Columns) and a
+// resume mark whose JSON does not encode, each a supervise.RowRefusedError.
 func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.Delivery) error {
 	if d.Generation > math.MaxInt64 {
-		return fmt.Errorf("put delivery %s on %s: generation %d does not fit a bigint", d.ID, token, d.Generation)
+		return refusedRow(supervise.RuleBigintFit, "put delivery %s on %s: generation %d does not fit a bigint", d.ID, token, d.Generation)
+	}
+	if column, unfit := unfitInt4(deliveryInt4Columns(d)); unfit {
+		return refusedRow(supervise.RuleInt4Fit, "put delivery %s on %s: %s %d does not fit an integer column", d.ID, token, column.name, column.value)
 	}
 	kept, news, carried := keptDecisions(d.Kept), designNews(d.News), designNews(d.Carried)
 	resume, err := resumeColumn(d)
 	if err != nil {
-		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)
+		return refusedRow(supervise.RuleJSONEncode, "put delivery %s on %s: %w", d.ID, token, err)
 	}
 	unconfirmed := d.ConfirmedAt.IsZero()
 	if unconfirmed {

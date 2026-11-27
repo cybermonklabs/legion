@@ -36,15 +36,33 @@ import (
 // process, so its launch lets none go and records nothing of one (noEnd). Each was raised by a
 // request, which the pod's start gate puts first among the starts waiting in the claim's pod
 // (launchAfter's requested, podQueue.next).
+//
+// The admission writes the claim as memory holds it, normalized as every claim write is
+// (stored), so one that lands is the repair of any claim write the machine owed
+// (settleOwedWrite), unless a pause's stop is owed, which only its own transaction records
+// (putStops). Its failure is put to the rule (writeFailed), but for the tree lifecycle's own
+// answers, which keep their handling: a reserved cleanup, a lifecycle that is absent, its row
+// missing among them, or one whose cleanup is confirmed is returned as it is, the claim left
+// exactly as it was. A failure the rule owes owes nothing: nothing of this decision has reached
+// memory before the admission lands (admitted runs after it), so memory is what the row holds.
 func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place, admitted func()) error {
 	// The admission writes the claim row alone, so a take-back the claim must carry goes first
 	// (carryPending, writeCarried).
-	if err := m.writeCarried(ctx); err != nil {
+	if err := m.writeFailed(m.pendingWriteMethod(), m.writeCarried(ctx)); err != nil {
 		return err
 	}
-	bound, err := m.deps.Store.AdmitClaim(ctx, m.claim)
-	if err != nil {
+	c := m.stored()
+	bound, err := m.deps.Store.AdmitClaim(ctx, c)
+	switch {
+	case errors.Is(err, treelifecycle.ErrCleanupReserved), errors.Is(err, treelifecycle.ErrLifecycleAbsent),
+		errors.Is(err, treelifecycle.ErrLifecycleClosed):
 		return err
+	case err != nil:
+		return m.writeFailed("AdmitClaim", err)
+	}
+	m.rowState = bound.State
+	if len(m.owedStops()) == 0 {
+		m.settleOwedWrite("AdmitClaim")
 	}
 	m.claim.TreeEpoch = bound.TreeEpoch
 	if admitted != nil {

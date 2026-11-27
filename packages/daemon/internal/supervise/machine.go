@@ -1379,6 +1379,13 @@ type Deps struct {
 	// tells nobody, as it does for TaskConfirmed above. It is called inside the machine's
 	// decision, so it returns at once.
 	ProviderErrorRunReached func(c Claim, reason string)
+	// ClaimWriteRefused is told of each claim write the rule refuses (SortClaimWriteFailure,
+	// refusedWrite), once for each refusal, with the claim as memory held it and the fields of
+	// refusedWriteLine: the store, the server or the driver judged the row memory holds, which is
+	// a defect of the daemon or of its schema that a person has to read (D10 of
+	// dispatch://INFRA-4099's plan). Nil tells no one. It is called inside the machine's decision,
+	// so it returns at once and does its work elsewhere.
+	ClaimWriteRefused func(WriteRefusal)
 	// Paused is the daemon's project pause flag (decision 18 of dispatch://INFRA-3759's plan):
 	// the id of the open pause and true while the project is paused, 0 and false while it runs.
 	// The daemon hands the pause service's method value (internal/pause's Service.Paused), which
@@ -1407,16 +1414,18 @@ type Deps struct {
 	// internal/daemon's projectPause.stopped is the implementation, and it owns what the
 	// transaction writes beside the claim and in what order.
 	//
-	// Its error is read by the rule a plain write's is (writeOwed). A failure the rule owes
-	// leaves the stop owed on the machine (owedClaimWrite.stops), and every later claim write
-	// comes back here with that same stop until one lands: the repair at the head of each
-	// decision, and every write that settles an owed write when it lands (putClaim,
-	// putClaimAndPending, the stop-first write of retirePending, StartedBy's persist). So c can
-	// be a claim that is no longer suspended by then — a later write of a claim whose stop is
-	// owed — and the transaction records the stop all the same. It must therefore be safe to run
-	// again for one pause and claim: a commit whose answer the deadline cut off is owed and made
-	// again, and must not open a second stop row, a second held wake or a second pod hold. nil
-	// writes the claim through the plain write and records nothing of a pause.
+	// Its error is read by the rule a plain write's is (SortClaimWriteFailure), and the store's
+	// own refusals of the stop's records carry the refusal type it reads (RowRefusedError,
+	// RulePauseStop). A failure the rule owes leaves the stop owed on the machine
+	// (owedClaimWrite.stops), and every later claim write comes back here with that same stop
+	// until one lands: the repair at the head of each decision, and every write that settles an
+	// owed write when it lands (putClaim, putClaimAndPending, the stop-first write of
+	// retirePending, StartedBy's persist). So c can be a claim that is no longer suspended by
+	// then — a later write of a claim whose stop is owed — and the transaction records the stop
+	// all the same. It must therefore be safe to run again for one pause and claim: a commit whose
+	// answer the deadline cut off is owed and made again, and must not open a second stop row, a
+	// second held wake or a second pod hold. nil writes the claim through the plain write and
+	// records nothing of a pause.
 	PauseStopped func(ctx context.Context, c Claim, stop PauseStop) error
 	// WakeLetOut is told the moment a launch of the claim token (of issue's role) stops waiting
 	// for the wake pacing (decision 14). That is its let-out, told at the let-out and never at the
@@ -1506,8 +1515,8 @@ func (d Deps) check() error {
 // the BEGIN (5.0 s before this retry), and at most two tries of 37 s. A dial, a queue wait or a
 // BEGIN the bound cut is owed at once.
 // The write a second cut leaves is not lost: a bare context deadline is a write the server never
-// answered, which writeOwed owes, so the claim write is marked and made again at the claim's next
-// decision (owes, repair).
+// answered, which the rule owes (SortClaimWriteFailure), so the claim write is marked and made
+// again at the claim's next decision (claimWriteFailed, repair).
 //
 // It counts the write and not the wait in the pool's queue (Deps.BoundWrite). Counted from before
 // that wait, it was the queue's bound too: a boot relaunches every unfinished claim at once, each
@@ -1668,8 +1677,8 @@ type Machine struct {
 	unsaved bool
 	// owedWrite is the claim write a decision made and the store did not take, nil for none: the
 	// mark that the stored row is behind what memory holds, and that the write is to be made
-	// again at the head of the claim's next decision (owes, repair). It is a mark of its own
-	// rather than unsaved, which says the same of the pending delivery, because unsaved is
+	// again at the head of the claim's next decision (claimWriteFailed, repair). It is a mark of
+	// its own rather than unsaved, which says the same of the pending delivery, because unsaved is
 	// cleared by writes that say nothing about the claim write owed: queue and retirePending both
 	// set it false when their own write lands, so a claim write marked with it would be dropped
 	// without a word. It is memory only, as unsaved is: a daemon that stops with a write owed
@@ -1677,6 +1686,13 @@ type Machine struct {
 	// failed write left unchanged — which is the same claim a crash between a decision and its
 	// write has always left behind.
 	owedWrite *owedClaimWrite
+	// rowState is the state the claim's row holds as far as this machine knows: the state of the
+	// claim it was built from (NewMachine), and then of each claim write that landed — a write of
+	// the claim's row, alone or with a delivery, a retirement, an admission, a release of names and
+	// a pause's stop; a write of the delivery alone leaves it. It is what refusedWriteLine and
+	// the refusal hook name as the stored state beside memory's (D10 of dispatch://INFRA-4099's
+	// plan), since a refused write leaves the row where the last landed one put it.
+	rowState ClaimState
 	// sentThrough is the registration sequence of the newest connection a prompt was sent through
 	// (takesBackConfirmed). A send always goes through the connection registered last, so it only
 	// rises, and a relaunch leaves it: the new process's connections are registered later still.
@@ -2224,6 +2240,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		claim:          copyClaim(c),
 		sessionFrom:    c.Generation,
 		registeredPods: bootRegisteredPods(c),
+		rowState:       c.State,
 		timers:         map[TimerKind]armed{},
 		stale:          map[string]bool{},
 	}
@@ -2425,12 +2442,17 @@ func (m *Machine) handle(ctx context.Context, ev Event, read func()) error {
 // calls it only after reconciliation proves the unrecorded predecessor absent or reaped; concurrent
 // old-pane hellos move the state first, so the caller does not open a second pane. The release is
 // written, queued at the generation the claim had, so the store and memory agree whatever the
-// relaunch then meets: a refused admission leaves both queued. A release the store does not take
-// is undone, the claim left launch_uncertain in both. A stop between the release and the launch's
-// own write leaves the claim stored queued at that generation, which ReleasedLaunch tells apart.
-// Because that undo puts the state back, the write goes through putClaim and leaves nothing owed:
-// memory then holds launch_uncertain, which is what the store still holds, so there is no write
-// left to make, and the release is made again only by this call's own caller retrying it.
+// relaunch then meets: a refused admission leaves both queued. A stop between the release and the
+// launch's own write leaves the claim stored queued at that generation, which ReleasedLaunch tells
+// apart.
+//
+// A release whose write the rule owes (SortClaimWriteFailure) stands, as every decision whose
+// write is owed stands (D8 of dispatch://INFRA-4099's plan): the claim stays queued in memory, the
+// write is owed, and the call answers true with no error, so its caller launches. The launch's
+// own write makes the owed one good, or is owed with it, and the repair at the head of the
+// launch's decision makes it first. A release the rule refuses is undone, the claim left
+// launch_uncertain in memory as in the store, and the call answers false with the refusal, so
+// nothing launches on a release no restart would find.
 func (m *Machine) ReleaseUncertainLaunch(ctx context.Context) (bool, error) {
 	m.mu.Lock()
 	defer m.unlock()
@@ -2438,7 +2460,12 @@ func (m *Machine) ReleaseUncertainLaunch(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	m.claim.State = StateQueued
+	method := m.claimWriteMethod()
 	if err := m.putClaim(ctx); err != nil {
+		if m.sortWriteFailure(method, err) == WriteOwed {
+			m.oweWrite(method, err)
+			return true, nil
+		}
 		m.claim.State = StateLaunchUncertain
 		return false, err
 	}
@@ -2452,11 +2479,11 @@ func (m *Machine) ReleaseUncertainLaunch(ctx context.Context) (bool, error) {
 //
 // It stamps nothing and reports false when the claim is no longer in round — the round ended, or
 // another opened — or when this round was already told: both are decisions already taken, not
-// faults, since the sweep posts over the same claims at every tick. A write the store refuses is
-// returned with false, and the sweep tells the round again at the next tick rather than lose the
-// notice. That is also why the write goes through putClaim and leaves nothing owed: the stamp is
-// taken back here, so there is no mark to make again, and the next tick's call writes the stamp
-// it makes then.
+// faults, since the sweep posts over the same claims at every tick. A stamp whose write the rule
+// owes stands and is owed, and is reported true with no error, so the sweep tells the round once:
+// a restart before the repair loses the stamp with the mark and tells it once more, as a restart
+// before any owed write loses it. A write the rule refuses takes the stamp back and is returned
+// with false, and the sweep tells the round again at the next tick rather than lose the notice.
 func (m *Machine) PodUpdateTold(ctx context.Context, round string) (bool, error) {
 	return m.markRound(ctx, round, &m.claim.UpdateToldAt)
 }
@@ -2539,10 +2566,10 @@ const (
 //     no statement, is owed (persist) and the mark stays in memory, and the call answers
 //     UpdateAskDelivered with the store's error: the row stays queued, its next attempt makes the
 //     owed write at its head (repair), finds the mark and publishes nothing, and it answers an
-//     error for as long as the write stays owed. A write the store refuses outright is not owed
-//     (writeOwed): the mark stays in memory alone, the row's next attempt finds it and finishes,
-//     and after a restart, which loads the claim without it, the sweep asks the role again under
-//     a new row's dedupe key.
+//     error for as long as the write stays owed. A write the rule refuses is not owed
+//     (SortClaimWriteFailure): the mark stays in memory alone, the row's next attempt finds it
+//     and finishes, and after a restart, which loads the claim without it, the sweep asks the
+//     role again under a new row's dedupe key.
 //
 // What is left is a daemon that dies between a delivered publish and the write of its mark, a
 // crash rather than a stop, which the write outlives. It boots with the row still queued and the
@@ -2586,7 +2613,8 @@ func (m *Machine) PublishUpdateAsk(ctx context.Context, round string, publish fu
 
 // markRound stamps mark, one of this claim's own update-round marks, at the clock, for round
 // (PodUpdateTold). It stamps nothing and reports false when the claim is not in round or the mark
-// is already set. A write the store refuses takes the stamp back and is returned with false.
+// is already set. A write the rule owes keeps the stamp, owes it and reports true; a write the
+// rule refuses takes the stamp back and is returned with false.
 func (m *Machine) markRound(ctx context.Context, round string, mark **time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.unlock()
@@ -2595,7 +2623,12 @@ func (m *Machine) markRound(ctx context.Context, round string, mark **time.Time)
 	}
 	at := m.deps.Clock.Now()
 	*mark = &at
+	method := m.claimWriteMethod()
 	if err := m.putClaim(ctx); err != nil {
+		if m.sortWriteFailure(method, err) == WriteOwed {
+			m.oweWrite(method, err)
+			return true, nil
+		}
 		*mark = nil
 		return false, err
 	}
@@ -2695,8 +2728,8 @@ func (m *Machine) releaseHeld(ctx context.Context, row int64, task *RequestDeliv
 // a row run again after the claim was given a later entry's work cannot take it back.
 //
 // The raised number stands in memory whether or not the store takes the write, as the row
-// StartedBy records does: the claim holds that entry's task either way, and a write the store
-// refused is owed and made again at the claim's next decision (persist, owes).
+// StartedBy records does: the claim holds that entry's task either way, and a write the rule owes
+// is owed and made again at the claim's next decision (persist, claimWriteFailed).
 func (m *Machine) EntryGiven(ctx context.Context, entry int64) error {
 	m.mu.Lock()
 	defer m.unlock()
@@ -4468,10 +4501,10 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	// lifecycle's refusal of the relaunch below keeps the claim exactly as it stands
 	// (relaunchRefused), and a relaunch the wake pacing parks writes nothing until its turn
 	// comes (launchNow). A write the store would not take is owed and logged where it fails,
-	// and the claim's next decision makes it good (owes); the relaunch goes on under it, since
-	// a death that left the claim standing for want of a write would be a worse answer to an
-	// outage than a charge written late — and a launch that does run clears the charge with
-	// the process it replaces anyway (letGo).
+	// and the claim's next decision makes it good (claimWriteFailed); the relaunch goes on
+	// under it, since a death that left the claim standing for want of a write would be a worse
+	// answer to an outage than a charge written late — and a launch that does run clears the
+	// charge with the process it replaces anyway (letGo).
 	return errors.Join(m.persist(ctx), m.relaunchAfterFailure(ctx, o, ended, nil))
 }
 
@@ -5039,8 +5072,9 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 // is over (observe, table's onObservation row), and no death, displacement or repoint charged
 // from any other verdict. The next report of the same process repeats nothing of the write: the
 // clear is already made in memory, so reportedProcess reports none to write. The write is owed
-// where it failed, and the claim's next decision makes it good (owes, repair), as died's is;
-// the sweep observes the process again at its next pass, and that report is judged whole.
+// where it failed, and the claim's next decision makes it good (claimWriteFailed, repair), as
+// died's is; the sweep observes the process again at its next pass, and that report is judged
+// whole.
 func (m *Machine) judge(ctx context.Context, observation runtime.Observation, alive func(context.Context) error, again TimerKind, after time.Duration) error {
 	if m.reportedProcess(observation) {
 		if err := m.persist(ctx); err != nil {
@@ -5264,7 +5298,10 @@ func (m *Machine) forgetSend() {
 // caller of write must have such a reason too. The one bounded write that has none is the
 // exception to the retry and does not come here: ReleaseHolds answers the names it freed, so
 // ReleaseNames makes it once under bounded. A second cut is owed as every write the database did
-// not take is (owes, repair). Any other failure is answered at once and is not made again here.
+// not take is (claimWriteFailed, repair). Any other failure is answered at once and is not made
+// again here. What a failure is, owed or refused, is read by the caller of each write, where what
+// the decision does with it is known (SortClaimWriteFailure, sortWriteFailure): write itself reads
+// no rule.
 func (m *Machine) write(ctx context.Context, call func(context.Context) error) error {
 	for try := 1; ; try++ {
 		writing, cancel := m.bounded(ctx)
@@ -5317,13 +5354,14 @@ func (m *Machine) bounded(ctx context.Context) (context.Context, context.CancelF
 	return m.deps.BoundWrite(ctx, defaultClaimAcquire, m.deps.claimWrite())
 }
 
-// putClaim writes the claim alone, under the claim-write deadline, and marks nothing owed: a
-// caller that rolls its own field back when the write fails must not leave a write owed for a
-// state the machine has just put back, since the repair would then write a decision this machine
-// has already taken back. Every write first normalizes state that is valid only while the claim
-// records a running process: a capability belongs to a registered agent, a suspension source
-// belongs to a suspended claim, and an enrollment belongs to the process it names. A confirmation
-// and a retire write the claim together with the delivery they change, each in one transaction.
+// putClaim writes the claim alone, under the claim-write deadline, and marks nothing owed and
+// puts nothing to the rule: its caller does, since what an owed failure leaves is the caller's
+// own — persist owes the write, and a locked section that writes one mark of its own keeps it
+// owed and undoes it only where the rule refuses the write (markRound, ReleaseUncertainLaunch).
+// Every write first normalizes state that is valid only while the claim records a running
+// process: a capability belongs to a registered agent, a suspension source belongs to a
+// suspended claim, and an enrollment belongs to the process it names. A confirmation and a retire
+// write the claim together with the delivery they change, each in one transaction.
 //
 // A write that lands settles a write the machine owed (settleOwedWrite): it wrote the claim as
 // the machine holds it, which is exactly what the repair would have written, so this write is
@@ -5352,6 +5390,7 @@ func (m *Machine) putClaim(ctx context.Context) error {
 	if err := m.write(ctx, func(ctx context.Context) error { return m.deps.Store.PutClaim(ctx, c) }); err != nil {
 		return err
 	}
+	m.rowState = c.State
 	m.settleOwedWrite("PutClaim")
 	return nil
 }
@@ -5384,7 +5423,8 @@ func (m *Machine) writeCarried(ctx context.Context) error {
 
 // putDelivery writes one delivery of this claim under the claim-write deadline, as putClaim
 // writes the claim row under it. Every delivery write a decision makes goes through it, and it
-// marks nothing: a delivery write that fails has a mark of its own (saved, settle).
+// marks nothing and puts nothing to the rule: a delivery write that fails has a mark of its own
+// (saved, settle), and its caller puts the failure to the rule (writeFailed).
 func (m *Machine) putDelivery(ctx context.Context, d Delivery) error {
 	return m.write(ctx, func(ctx context.Context) error { return m.deps.Store.PutDelivery(ctx, m.claim.Token, d) })
 }
@@ -5399,10 +5439,17 @@ func (m *Machine) putDelivery(ctx context.Context, d Delivery) error {
 // it takes only once the store has taken it, beside a claim whose telling that take-back moved
 // (moveTelling), so its saved mark is takeBackPending's own; interrupted, whose delivery is the
 // task taken back under the id it takes only once the store has taken it, beside a claim whose
-// telling a let-go took back (untellInFlight); and putClaimAndPending, which passes memory's own
-// claim with memory's own pending delivery and is the call that settles both.
+// telling a let-go took back (untellInFlight); providerErrorClears, whose claim and delivery are
+// memory's own, each changed first; and putClaimAndPending, which passes memory's own claim with
+// memory's own pending delivery and is the call that settles both. Each caller puts the failure
+// to the rule itself (claimWriteFailed, writeFailed). A write that lands moves the row to c's
+// state (Machine.rowState), whatever else of c is ahead of memory.
 func (m *Machine) putClaimAndDelivery(ctx context.Context, c Claim, d Delivery) error {
-	return m.write(ctx, func(ctx context.Context) error { return m.deps.Store.PutClaimAndDelivery(ctx, c, d) })
+	if err := m.write(ctx, func(ctx context.Context) error { return m.deps.Store.PutClaimAndDelivery(ctx, c, d) }); err != nil {
+		return err
+	}
+	m.rowState = c.State
+	return nil
 }
 
 // putClaimAndPending writes the claim as the machine holds it together with the delivery it holds
@@ -5453,14 +5500,37 @@ func (m *Machine) putClaimAndPending(ctx context.Context) error {
 
 // persist is putClaim with the mark, and is what every caller that leaves its decision standing
 // in memory uses: the claim the machine holds came from the worker's own frame and nothing puts
-// it back, so a write the store did not take is the only thing still missing, and it is owed and
-// made again at the claim's next decision rather than lost with the event that failed.
+// it back, so a write the store did not take is the only thing still missing, and a failure the
+// rule owes is owed and made again at the claim's next decision rather than lost with the event
+// that failed (claimWriteFailed).
 func (m *Machine) persist(ctx context.Context) error {
-	method := "PutClaim"
-	if len(m.owedStops()) > 0 {
-		method = "PauseStopped"
+	method := m.claimWriteMethod()
+	return m.claimWriteFailed(method, m.putClaim(ctx))
+}
+
+// claimWriteMethod is the store call a write of the claim through putClaim makes now, for the
+// lines of its failure: the pause's stop transaction while one is owed (putStops), the claim with
+// its pending delivery while a take-back obliges the write to carry it (carriesPending), and the
+// claim alone otherwise. It is read before the write, which can settle what it reads.
+func (m *Machine) claimWriteMethod() string {
+	switch {
+	case len(m.owedStops()) > 0:
+		return "PauseStopped"
+	case m.carriesPending():
+		return "PutClaimAndDelivery"
+	default:
+		return "PutClaim"
 	}
-	return m.owes(method, m.putClaim(ctx))
+}
+
+// pendingWriteMethod is the store call putClaimAndPending makes now, for the lines of its
+// failure: the pause's stop transaction while one is owed (putStops), and the claim with its
+// pending delivery otherwise. It is read before the write, as claimWriteMethod is.
+func (m *Machine) pendingWriteMethod() string {
+	if len(m.owedStops()) > 0 {
+		return "PauseStopped"
+	}
+	return "PutClaimAndDelivery"
 }
 
 // putStep writes the claim's step columns and nothing else (Store.PutClaimStep): what the

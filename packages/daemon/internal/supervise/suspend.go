@@ -549,10 +549,13 @@ const (
 // that found the process gone said so (goneOutOfMemory), and the claim keeps that report's
 // account of the death for the operator's listing and a failed claim's notices (goneCause,
 // Claim.LastDeathCause), as died keeps the death it judges. A take-back the store will not write
-// stops everything — nothing is stopped, nothing is sent and the claim is left as it stands, its
-// last death's cause put back, as died leaves it — so the caller's next request takes it back
-// then, rather than this leaving a suspended claim holding a task settle would retire as a
-// finished turn.
+// stops everything — nothing is stopped, nothing is sent and the task is left as it stands — so
+// the caller's next request takes it back then, rather than this leaving a suspended claim holding
+// a task settle would retire as a finished turn. What becomes of the death's account turns on the
+// rule (D8 of dispatch://INFRA-4099's plan): a take-back whose write the rule owes keeps it, a true
+// account of the death, and owes the claim write that records it, as died keeps the account its
+// own failed take-back leaves; a take-back the rule refuses puts the last death's cause back, so
+// memory holds what the row holds.
 //
 // The clean stop of the dead process's Envoy session is sent once that write has landed, and
 // before the process is let go (sessionGone), so it goes whether or not the runtime's stop of a
@@ -583,8 +586,12 @@ const (
 func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSuspend) error {
 	cause, at := m.claim.LastDeathCause, m.claim.LastDeathAt
 	m.claim.LastDeathCause, m.claim.LastDeathAt = m.goneCause, m.deps.Clock.Now()
-	if err := m.interrupted(ctx, "the process the task's turn ran on is gone", m.goneOutOfMemory); err != nil {
-		m.claim.LastDeathCause, m.claim.LastDeathAt = cause, at
+	if method, err := m.takeBackInterrupted(ctx, "the process the task's turn ran on is gone", m.goneOutOfMemory); err != nil {
+		if SortClaimWriteFailure(err) == WriteOwed {
+			m.oweWrite(method, err)
+		} else {
+			m.claim.LastDeathCause, m.claim.LastDeathAt = cause, at
+		}
 		return err
 	}
 	m.recordEnd(ctx, endDied(m.goneCause))

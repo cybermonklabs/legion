@@ -173,6 +173,32 @@ func waitForCompacting(t *testing.T, h *harness) {
 	t.Fatal("the claim never reported itself being compacted with the compaction held at its connection")
 }
 
+// compactOverAnOwedTake runs a compaction whose take the rule owes (D8 of dispatch://INFRA-4099's
+// plan): the take's write fails with a broken connection, the claim is taken all the same and Oh
+// My Pi is asked, and the store takes writes again before the compaction ends, so the end's
+// decision makes the owed write at its head (repair). before is called once the compaction is
+// held at the connection, with the take still unwritten. It answers what Machine.Compact did.
+func compactOverAnOwedTake(t *testing.T, h *harness, before func()) error {
+	t.Helper()
+	release := h.conn.HoldCompact()
+	h.store.fail("PutClaim", brokenConnection())
+	compacted := make(chan error, 1)
+	go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
+	waitForCompacting(t, h)
+	h.m.mu.Lock()
+	owed := h.m.owedWrite != nil
+	h.m.mu.Unlock()
+	if !owed {
+		t.Fatal("the take whose write failed with a broken connection left no write owed")
+	}
+	if before != nil {
+		before()
+	}
+	h.store.fail("PutClaim", nil)
+	release()
+	return <-compacted
+}
+
 // A turn that ends while the session is being compacted leaves the claim exactly where it is: a
 // turn can start and end under the compaction, a background turn among them, and taking its end
 // for the compaction's end would hand the claim its owed task while Oh My Pi is still writing the
@@ -256,90 +282,156 @@ func TestATurnThatStartsDuringACompactionKeepsTheClaimWorkingUntilItEnds(t *test
 }
 
 // A claim that was ready is ready again when the compaction ends: no turn of it has begun or
-// ended, so idling it would say one had. The rollback of a take the store would not write
-// restores the same state.
+// ended, so idling it would say one had. The rollback of a take the rule refuses restores the same
+// state; a take whose write the rule owes is a compaction asked, which gives the claim back ready
+// at its end.
 func TestACompactionGivesBackAReadyClaimReady(t *testing.T) {
-	h := newHarness(t)
-	h.reach(StateReady)
-	h.store.fail("PutClaim", errors.New("the store is down"))
+	t.Run("refused", func(t *testing.T) {
+		h := newHarness(t)
+		h.reach(StateReady)
+		h.store.fail("PutClaim", checkRefusal())
 
-	refused := h.m.Compact(h.ctx, testCompactInstructions)
+		refused := h.m.Compact(h.ctx, testCompactInstructions)
 
-	if refused == nil {
-		t.Fatal("a compaction the store would not write the take of answered no error")
-	}
-	if got := h.state(); got != StateReady {
-		t.Fatalf("the claim is %s after the take was rolled back, want the ready it was", got)
-	}
-	if got := len(h.conn.Compactions()); got != 0 {
-		t.Fatalf("Oh My Pi was asked for %d compactions, want none: the claim was never taken", got)
-	}
-	h.store.fail("PutClaim", nil)
-
-	if err := h.m.Compact(h.ctx, testCompactInstructions); err != nil {
-		t.Fatalf("compact: %v", err)
-	}
-
-	h.m.Wait()
-	if got := h.state(); got != StateReady {
-		t.Fatalf("the compacted claim is %s, want the ready it was: no turn of it has ended", got)
-	}
-	if got := h.store.load(h.token).State; got != StateReady {
-		t.Fatalf("the stored claim is %s, want ready", got)
-	}
-}
-
-// A compaction whose take the store would not write asked Oh My Pi nothing and sent the claim
-// nothing, so it is told apart from a compaction that ran and was refused: its caller answers
-// a failure rather than report a compaction that did not run, which carries the claim's task
-// with it (api's compact).
-func TestACompactionTheStoreWouldNotTakeSaysNothingWasAsked(t *testing.T) {
-	notices := 0
-	h := ladderStuck(t, &notices)
-	h.store.fail("PutClaim", errors.New("the store is down"))
-
-	err := h.m.Compact(h.ctx, testCompactInstructions)
-
-	if !errors.Is(err, ErrCompactNotTaken) {
-		t.Fatalf("a compaction the store would not take answered %v, want ErrCompactNotTaken", err)
-	}
-	if got := len(h.conn.Compactions()); got != 0 {
-		t.Fatalf("Oh My Pi was asked for %d compactions, want none", got)
-	}
-	h.wantPrompts(ladderSends)
-}
-
-// A compaction the store would not take puts back the end it dated as well as the state: its take
-// closes a turn the claim's times still show open (compactStart), and a write that fails leaves
-// the claim exactly as it found it, in memory and in the store. A claim left with the end dated
-// and no compaction running would read as in no turn, and the controller keeper would never end
-// the turn that is still open (dispatch://INFRA-2045 R2).
-func TestACompactionTheStoreWouldNotTakeLeavesTheCutOffTurnOpen(t *testing.T) {
-	h := newHarness(t)
-	h.reach(StateReady)
-	h.must(StreamTurnStart{Claim: h.token})
-	// A displacement cuts the turn off without dating its end, and the relaunched agent stands
-	// ready with that turn still open.
-	h.observeDisplaced(runtime.Gone)
-	h.relaunched()
-	before := h.claim()
-	if !before.LastTurnStart.After(before.LastTurnEnd) {
-		t.Fatalf("the relaunched claim's turn started %s and the last ended %s, want the cut-off turn still open", before.LastTurnStart, before.LastTurnEnd)
-	}
-	h.advance(time.Minute)
-	h.store.fail("PutClaim", errors.New("the store is down"))
-
-	if err := h.m.Compact(h.ctx, testCompactInstructions); !errors.Is(err, ErrCompactNotTaken) {
-		t.Fatalf("a compaction the store would not take answered %v, want ErrCompactNotTaken", err)
-	}
-
-	h.store.fail("PutClaim", nil)
-	for where, got := range map[string]Claim{"the machine": h.claim(), "the store": h.store.load(h.token)} {
-		if got.State != before.State || !got.LastTurnEnd.Equal(before.LastTurnEnd) {
-			t.Errorf("%s reads the claim %s with its last turn ended %s, want %s and %s as the compaction found them",
-				where, got.State, got.LastTurnEnd, before.State, before.LastTurnEnd)
+		if refused == nil {
+			t.Fatal("a compaction the store refused the take of answered no error")
 		}
+		if got := h.state(); got != StateReady {
+			t.Fatalf("the claim is %s after the take was rolled back, want the ready it was", got)
+		}
+		if got := len(h.conn.Compactions()); got != 0 {
+			t.Fatalf("Oh My Pi was asked for %d compactions, want none: the claim was never taken", got)
+		}
+		h.store.fail("PutClaim", nil)
+
+		if err := h.m.Compact(h.ctx, testCompactInstructions); err != nil {
+			t.Fatalf("compact: %v", err)
+		}
+
+		h.m.Wait()
+		if got := h.state(); got != StateReady {
+			t.Fatalf("the compacted claim is %s, want the ready it was: no turn of it has ended", got)
+		}
+		if got := h.store.load(h.token).State; got != StateReady {
+			t.Fatalf("the stored claim is %s, want ready", got)
+		}
+	})
+	t.Run("owed", func(t *testing.T) {
+		h := newHarness(t)
+		h.reach(StateReady)
+
+		if err := compactOverAnOwedTake(t, h, nil); err != nil {
+			t.Fatalf("a compaction whose take was owed answered %v, want it run", err)
+		}
+
+		h.m.Wait()
+		if got := len(h.conn.Compactions()); got != 1 {
+			t.Fatalf("Oh My Pi was asked for %d compactions, want the one the owed take asked for", got)
+		}
+		if got := h.state(); got != StateReady {
+			t.Fatalf("the compacted claim is %s, want the ready it was: no turn of it has ended", got)
+		}
+		if got := h.store.load(h.token).State; got != StateReady {
+			t.Fatalf("the stored claim is %s, want ready", got)
+		}
+	})
+}
+
+// A compaction whose take the rule refuses asked Oh My Pi nothing and sent the claim nothing, so
+// it is told apart from a compaction that ran and was refused: its caller answers a failure rather
+// than report a compaction that did not run, which carries the claim's task with it (api's
+// compact). A take whose write the rule owes is a compaction that ran, and its end sends the task.
+func TestACompactionTheStoreWouldNotTakeSaysNothingWasAsked(t *testing.T) {
+	t.Run("refused", func(t *testing.T) {
+		notices := 0
+		h := ladderStuck(t, &notices)
+		h.store.fail("PutClaim", checkRefusal())
+
+		err := h.m.Compact(h.ctx, testCompactInstructions)
+
+		if !errors.Is(err, ErrCompactNotTaken) {
+			t.Fatalf("a compaction the store refused answered %v, want ErrCompactNotTaken", err)
+		}
+		if got := len(h.conn.Compactions()); got != 0 {
+			t.Fatalf("Oh My Pi was asked for %d compactions, want none", got)
+		}
+		h.wantPrompts(ladderSends)
+	})
+	t.Run("owed", func(t *testing.T) {
+		notices := 0
+		h := ladderStuck(t, &notices)
+
+		if err := compactOverAnOwedTake(t, h, nil); err != nil {
+			t.Fatalf("a compaction whose take was owed answered %v, want it run", err)
+		}
+
+		h.m.Wait()
+		if got := len(h.conn.Compactions()); got != 1 {
+			t.Fatalf("Oh My Pi was asked for %d compactions, want the one the owed take asked for", got)
+		}
+		h.wantPrompts(ladderSends + 1)
+	})
+}
+
+// A compaction the store refuses puts back the end it dated as well as the state: its take closes
+// a turn the claim's times still show open (compactStart), and a write the rule refuses leaves the
+// claim exactly as it found it, in memory and in the store. A claim left with the end dated and no
+// compaction running would read as in no turn, and the controller keeper would never end the turn
+// that is still open (dispatch://INFRA-2045 R2). A take whose write the rule owes keeps the end it
+// dated with the compaction it runs, in memory, while the store still holds the turn open.
+func TestACompactionTheStoreWouldNotTakeLeavesTheCutOffTurnOpen(t *testing.T) {
+	openTurn := func(t *testing.T) (*harness, Claim) {
+		h := newHarness(t)
+		h.reach(StateReady)
+		h.must(StreamTurnStart{Claim: h.token})
+		// A displacement cuts the turn off without dating its end, and the relaunched agent
+		// stands ready with that turn still open.
+		h.observeDisplaced(runtime.Gone)
+		h.relaunched()
+		before := h.claim()
+		if !before.LastTurnStart.After(before.LastTurnEnd) {
+			t.Fatalf("the relaunched claim's turn started %s and the last ended %s, want the cut-off turn still open", before.LastTurnStart, before.LastTurnEnd)
+		}
+		h.advance(time.Minute)
+		return h, before
 	}
+	t.Run("refused", func(t *testing.T) {
+		h, before := openTurn(t)
+		h.store.fail("PutClaim", checkRefusal())
+
+		if err := h.m.Compact(h.ctx, testCompactInstructions); !errors.Is(err, ErrCompactNotTaken) {
+			t.Fatalf("a compaction the store refused answered %v, want ErrCompactNotTaken", err)
+		}
+
+		h.store.fail("PutClaim", nil)
+		for where, got := range map[string]Claim{"the machine": h.claim(), "the store": h.store.load(h.token)} {
+			if got.State != before.State || !got.LastTurnEnd.Equal(before.LastTurnEnd) {
+				t.Errorf("%s reads the claim %s with its last turn ended %s, want %s and %s as the compaction found them",
+					where, got.State, got.LastTurnEnd, before.State, before.LastTurnEnd)
+			}
+		}
+	})
+	t.Run("owed", func(t *testing.T) {
+		h, before := openTurn(t)
+
+		err := compactOverAnOwedTake(t, h, func() {
+			if got := h.claim(); got.State != StateWorking || !got.LastTurnEnd.Equal(h.clock.Now()) {
+				t.Errorf("the machine reads the claim %s with its last turn ended %s, want working with the end the take dated, %s",
+					got.State, got.LastTurnEnd, h.clock.Now())
+			}
+			if got := h.store.load(h.token); got.State != before.State || !got.LastTurnEnd.Equal(before.LastTurnEnd) {
+				t.Errorf("the store reads the claim %s with its last turn ended %s, want %s and %s: the take's write is owed",
+					got.State, got.LastTurnEnd, before.State, before.LastTurnEnd)
+			}
+		})
+		if err != nil {
+			t.Fatalf("a compaction whose take was owed answered %v, want it run", err)
+		}
+		h.m.Wait()
+		if got := h.store.load(h.token); got.LastTurnEnd.Before(before.LastTurnStart) {
+			t.Errorf("the store reads the last turn ended %s, before the turn the take closed began at %s", got.LastTurnEnd, before.LastTurnStart)
+		}
+	})
 }
 
 // A compaction of a claim whose shim is not connected asks nothing and takes nothing: the daemon

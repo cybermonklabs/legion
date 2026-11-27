@@ -293,7 +293,8 @@ func blocked(t *testing.T, behind supervise.Store, token claim.Token) *claimWrit
 
 // brokenConnection is the server saying the connection under the statement failed: class 08,
 // which is an answer about the connection and not about the statement, and so one the rule owes
-// (supervise's writeOwed). It is what a claim write meets when the database goes away under it.
+// (supervise.SortClaimWriteFailure). It is what a claim write meets when the database goes away
+// under it.
 func brokenConnection() *pgconn.PgError {
 	return &pgconn.PgError{Code: "08006", Message: "server closed the connection unexpectedly", Severity: "FATAL"}
 }
