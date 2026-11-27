@@ -417,7 +417,9 @@ func ReadEndedOnTransport(err error) bool {
 
 // read applies every sync frame the room sends and answers its sync step 1, keeps every awareness
 // update and hands on every auth answer, until the connection closes, handing answers the content
-// of each sync step 2 once it is applied and awareness each awareness update once it is kept.
+// of each sync step 2 once it is applied and awareness each awareness update once it is kept. A
+// frame it cannot decode or apply stops it with the connection still open; readErr then says
+// which, so a test that sees Ended can tell a reader that gave up from a connection that ended.
 func (p *Peer) read(answers chan<- []byte, awareness chan<- []AwarenessEntry) {
 	for {
 		_, message, err := p.connection.ReadMessage()
@@ -430,6 +432,7 @@ func (p *Peer) read(answers chan<- []byte, awareness chan<- []AwarenessEntry) {
 		}
 		decoder := encoding.NewDecoder(message)
 		if _, err := decoder.ReadVarString(); err != nil {
+			p.readErr = fmt.Errorf("the reader stopped on a frame with no document name: %w", err)
 			return
 		}
 		kind, err := decoder.ReadVarUint()
@@ -439,15 +442,18 @@ func (p *Peer) read(answers chan<- []byte, awareness chan<- []AwarenessEntry) {
 		switch kind {
 		case messageSync:
 			if err := p.applySync(decoder.RemainingBytes(), answers); err != nil {
+				p.readErr = fmt.Errorf("the reader stopped on a sync frame it could not apply: %w", err)
 				return
 			}
 		case messageAwareness:
 			update, err := decoder.ReadVarBytes()
 			if err != nil {
+				p.readErr = fmt.Errorf("the reader stopped on an awareness frame with no update: %w", err)
 				return
 			}
 			entries, err := decodeAwareness(update)
 			if err != nil {
+				p.readErr = fmt.Errorf("the reader stopped on an awareness update it could not decode: %w", err)
 				return
 			}
 			p.foldAwareness(entries)
