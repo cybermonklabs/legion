@@ -36,13 +36,13 @@ const ON_PAGE = {
  * (`features/conversation/MentionField.tsx`), the draft behind it, the line that says why a send
  * refuses, and the host's uploads, which a file pasted or dropped into the box starts. Its two
  * hosts differ only in the box's row of the writing list and in what they send it with, which
- * they pass as `field` and `actions`: the open card's Answer and Ask back (`AskCard.tsx`, which
- * answers through `useAskAnswerForm`), and the reply box under an answered ask (`AskThread.tsx`).
- * The host mounts the field itself, since the field's row is the host's (`writing`), and the
- * area hands it everything else it holds (`AskAnswerFieldProps`). The draft is the host's - the
- * ask's answer draft or its reply draft (`answer-drafts.ts`, `reply-drafts.ts`) - and so is the
- * upload behind it, because the host is what sends them: a compact card's lone Answer stands
- * where this area is not mounted, and an upload the area held would have left that send ungated.
+ * they pass as `field` and `actions`: the open ask's Answer and Ask back (`ask-body/AskBody.tsx`,
+ * which answers through `useAskAnswerForm`), and the reply box under an answered ask
+ * (`AskThread.tsx`). The host mounts the field itself, since the field's row is the host's
+ * (`writing`), and the area hands it everything else it holds (`AskAnswerFieldProps`). The draft
+ * is the host's - the ask's answer draft or its reply draft (`answer-drafts.ts`,
+ * `reply-drafts.ts`) - and so is the upload behind it, because the host is what sends them: the
+ * ask's form holds its upload (`useAskAnswerForm`), which outlives a body drawn again for it.
  *
  * A picked session is a reference written in the draft's text. The comment that Ask back and
  * Reply post carries it to the server, and the server delivers the comment to that session. An
@@ -55,6 +55,7 @@ export function AskAnswerArea<Name extends string, UploadDraft>({
   field,
   onDraftChange,
   readOnly = false,
+  reasonMark,
   refusals,
   upload,
   uploadDraft,
@@ -69,6 +70,9 @@ export function AskAnswerArea<Name extends string, UploadDraft>({
   /** Inside `NoTooltips`, the host refuses the draft while its own write is out: the field keeps
    *  the focus, `readOnly` in place of `disabled`, and takes no paste, drop or Ctrl/Cmd+Enter. */
   readonly readOnly?: boolean;
+  /** The mark of the words each refusal's line holds, where the host divides its own words from
+   *  an author's (the ask body's `marks.pageChrome`, `features/ask-body/ask-text.tsx`). */
+  readonly reasonMark?: Readonly<Record<string, string>>;
   /** Why each of the host's buttons refuses the draft as it stands, by the name the host knows it
    *  by: each reason is shown on one line under the field, and `actions` is handed that line's id
    *  for the button's `refusalShownBy`. */
@@ -128,6 +132,7 @@ export function AskAnswerArea<Name extends string, UploadDraft>({
             className={`text-xs ${tooltips ? textMutedOnSurface : ON_PAGE.reason}`}
             id={reasonId[name]}
             key={name}
+            {...reasonMark}
           >
             {reason}
           </p>

@@ -37,6 +37,11 @@ export interface Drawn {
   /** The row the copy control and the lines are read in, as a selector inside the header, or
    *  matching the header itself where the header is its own row (a decision block's). */
   readonly row: string;
+  /** Where the place's layout reads another box's width than the header's own - the ask body's
+   *  first line reads the ask body's (`@container/ask-body`, `AskHeader.tsx`) - that box, as a
+   *  selector of the header's nearest ancestor matching it: a sweep sizes it in place of the
+   *  header, and `lines` is read by its width. */
+  readonly sized?: string;
 }
 
 /** A box the page draws, or the span of what a part draws, in the page's px. */
@@ -95,6 +100,10 @@ function readHeader(
   { drawn, widths }: { drawn: Drawn; widths: ReadWidths | null }
 ): Reading[] {
   const root = node as HTMLElement;
+  /** The box a sweep sizes: the header, or the ancestor whose width its layout reads
+   *  (`Drawn.sized`). */
+  const sizedBox =
+    (drawn.sized === undefined ? null : root.closest<HTMLElement>(drawn.sized)) ?? root;
   /** The sub-pixel slack two boxes laid side by side meet within. */
   const SLACK = 1;
   /** How much of a truncated name keeps it visible: a letter or two and the ellipsis. */
@@ -269,10 +278,10 @@ function readHeader(
   // draws it.
   const measure = (width: number | null): Reading => {
     if (width !== null) {
-      root.style.width = `${width}px`;
-      root.style.maxWidth = "none";
-      root.style.minWidth = "0px";
-      root.style.flex = "none";
+      sizedBox.style.width = `${width}px`;
+      sizedBox.style.maxWidth = "none";
+      sizedBox.style.minWidth = "0px";
+      sizedBox.style.flex = "none";
     }
     const failures: string[] = [];
     const fail = (message: string) => {
@@ -312,10 +321,13 @@ function readHeader(
           part.rects.length > 0
       );
       const first = inRow[0];
+      // The copy control holds the line of the place's state label, where it draws one, and of
+      // the row's first part where it draws none.
+      const lead = inRow.find((part) => part.element.matches("[data-ask-state-label]")) ?? first;
       const copyPart = all.find((part) => part.element === copy);
-      if (copy !== null && first !== undefined && copyPart !== undefined) {
-        if (!sameLine(spanOf(copyPart.rects), spanOf(first.rects))) {
-          fail(`the copy control is not on the line of ${first.name}`);
+      if (copy !== null && lead !== undefined && copyPart !== undefined) {
+        if (!sameLine(spanOf(copyPart.rects), spanOf(lead.rects))) {
+          fail(`the copy control is not on the line of ${lead.name}`);
         }
       }
       for (const span of inRow.map((part) => spanOf(part.rects)).sort((a, b) => a.top - b.top)) {
@@ -328,7 +340,7 @@ function readHeader(
           line.right = Math.max(line.right, span.right);
         }
       }
-      const at = width ?? head.right - head.left;
+      const at = width ?? sizedBox.getBoundingClientRect().width;
       const band = drawn.lines?.find(([least]) => at >= least);
       if (band !== undefined && (lines.length < band[1] || lines.length > band[2])) {
         fail(
@@ -371,7 +383,7 @@ function readHeader(
       head,
       lines: lines.length,
       row: row === null ? null : boxOf(row.getBoundingClientRect()),
-      width: width ?? Math.round(head.right - head.left),
+      width: width ?? Math.round(sizedBox.getBoundingClientRect().width),
     };
   };
 
@@ -380,19 +392,19 @@ function readHeader(
   if ("at" in widths) {
     swept.push(...widths.at);
   } else {
-    const own = root.getBoundingClientRect().width;
+    const own = sizedBox.getBoundingClientRect().width;
     for (let width = widths.from; width < Math.max(widths.widest, own); width += widths.step) {
       swept.push(width);
     }
     swept.push(Math.max(widths.widest, Math.round(own)));
   }
-  // Run in the page by `evaluate`: the root's own style, kept so the sweep can put it back.
-  const style = root.getAttribute("style");
+  // Run in the page by `evaluate`: the sized box's own style, kept so the sweep can put it back.
+  const style = sizedBox.getAttribute("style");
   try {
     return swept.map((width) => measure(width));
   } finally {
-    if (style === null) root.removeAttribute("style");
-    else root.setAttribute("style", style);
+    if (style === null) sizedBox.removeAttribute("style");
+    else sizedBox.setAttribute("style", style);
   }
 }
 

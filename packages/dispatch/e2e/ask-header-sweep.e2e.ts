@@ -14,8 +14,9 @@ import {
 import { type Drawn, holds, holdsAt } from "./ask-header-reader";
 import {
   ANSWERED_BLOCK,
+  ASK_BODY_BESIDE,
   asker,
-  cardHeader,
+  CARD_HEADER,
   containerWidth,
   DEFAULT_FONT,
   resetToPlanner,
@@ -71,13 +72,13 @@ import { asUser } from "./users";
 
 test.beforeEach(resetToPlanner);
 
-/** The header widths a layout switches at, at a root whose `rem` is `rem` px: just under each of
- *  the three container sizes, and at it. */
+/** The widths a layout switches at, at a root whose `rem` is `rem` px, just under each and at
+ *  it: the ask body's width from which its first line's end stands beside the words
+ *  (`ASK_BODY_BESIDE`), and the decision block header's container size. */
 function switchWidths(rem: number): number[] {
-  return ["ask-card-two-lines", "ask-card-line", "ask-block-line"].flatMap((name) => {
-    const width = containerWidth(name, rem);
-    return [width - 1, width];
-  });
+  return [(ASK_BODY_BESIDE / DEFAULT_FONT) * rem, containerWidth("ask-block-line", rem)].flatMap(
+    (width) => [width - 1, width]
+  );
 }
 
 /** What `drawn` draws at a root whose `rem` is `rem` px rather than the browser's own: each band
@@ -191,14 +192,14 @@ test("the Inbox card's header holds its layout from 216 px to its widest, whoeve
   const { alice, page } = await alicePage(browser);
   try {
     await page.goto("/");
-    for (const [state, ask, turn] of [
-      ["waiting on you", yours, true],
-      ["an agent's turn", theirs, true],
+    for (const [state, ask] of [
+      ["waiting on you", yours],
+      ["an agent's turn", theirs],
     ] as const) {
       const card = await askCard(page, ask.id);
       await holds(
         card.locator("[data-ask-header]").first(),
-        cardHeader({ anchored: true, notched: true, turn }),
+        CARD_HEADER,
         `the Inbox card, ${state}`
       );
     }
@@ -212,7 +213,7 @@ test("the Inbox card's header holds its layout from 216 px to its widest, whoeve
     await expect(card.getByRole("button", { name: "Save answer" })).toBeVisible();
     await holds(
       card.locator("[data-ask-header]").first(),
-      cardHeader({ anchored: true, notched: true, turn: false }),
+      CARD_HEADER,
       "the Inbox card, answered, while the answer changes"
     );
   } finally {
@@ -235,13 +236,13 @@ test("the compact Inbox card's header holds its layout from 216 px to its widest
     ] as const) {
       await holds(
         page.locator(`[data-turn="ask:${ask.id}"] [data-ask-header]`).first(),
-        cardHeader({ anchored: true, notched: true, turn: true }),
+        CARD_HEADER,
         `the compact card, ${state}`
       );
     }
     await holds(
       await changing(page.locator(`[data-turn="ask:${answered.id}"]`)),
-      cardHeader({ anchored: true, notched: true, turn: false }),
+      CARD_HEADER,
       "the compact card, answered, while the answer changes"
     );
   } finally {
@@ -266,13 +267,13 @@ test("the margin card's header holds its layout from 216 px to its widest, whoev
     ] as const) {
       await holds(
         marginCard(page, ask.id).locator("[data-ask-header]").first(),
-        cardHeader({ anchored: true, notched: true, turn: true }),
+        CARD_HEADER,
         `the margin card, ${state}`
       );
     }
     await holds(
       await changing(marginCard(page, answered.id)),
-      cardHeader({ anchored: true, notched: true, turn: false }),
+      CARD_HEADER,
       "the margin card, answered, while the answer changes"
     );
   } finally {
@@ -336,9 +337,7 @@ test("a decision block's headers hold their layout from 216 px to their widest, 
       );
       await holds(
         block.locator("article [data-ask-header]").first(),
-        hosted === "card"
-          ? cardHeader({ anchored: false, notched: false, turn: true })
-          : recordHeader({ anchored: false, notched: false }),
+        hosted === "card" ? CARD_HEADER : recordHeader({ anchored: false, notched: false }),
         `the block's ${hosted}, ${state}`
       );
     }
@@ -440,8 +439,7 @@ test("at a 20 px default font the cards' and records' headers hold their layout 
   try {
     await setDefaultFont(page, LARGE_FONT);
     const widths = switchWidths(LARGE_FONT);
-    const card = (turn: boolean) =>
-      atRem(cardHeader({ anchored: true, notched: true, turn }), LARGE_FONT);
+    const card = atRem(CARD_HEADER, LARGE_FONT);
     for (const viewport of XL_SIDES) {
       const compact = viewport < XL * LARGE_FONT;
       const at = `at ${viewport} px with a ${LARGE_FONT} px default font`;
@@ -458,7 +456,7 @@ test("at a 20 px default font the cards' and records' headers hold their layout 
         const host = compact ? await cardInReadingView(page, ask.id) : await askCard(page, ask.id);
         const header = host.locator("[data-ask-header]").first();
         await readsAtLargeFont(header, compact);
-        await holdsAt(header, card(true), widths, `the Inbox card, ${state}, ${at}`);
+        await holdsAt(header, card, widths, `the Inbox card, ${state}, ${at}`);
       }
 
       await page.goto(`/issues/${issue.key}/conversation`);
@@ -468,7 +466,7 @@ test("at a 20 px default font the cards' and records' headers hold their layout 
       ] as const) {
         const header = page.locator(`[data-turn="ask:${ask.id}"] [data-ask-header]`).first();
         await readsAtLargeFont(header, compact);
-        await holdsAt(header, card(true), widths, `the compact card, ${state}, ${at}`);
+        await holdsAt(header, card, widths, `the compact card, ${state}, ${at}`);
       }
       for (const [state, ask, notched, label] of [
         ["answered", answered, true, "Answered"],
@@ -487,7 +485,7 @@ test("at a 20 px default font the cards' and records' headers hold their layout 
       }
       await holdsAt(
         await changing(page.locator(`[data-turn="ask:${answered.id}"]`)),
-        card(false),
+        card,
         widths,
         `the compact card, answered, while the answer changes, ${at}`
       );
@@ -508,7 +506,7 @@ test("at a 20 px default font the cards' and records' headers hold their layout 
       ] as const) {
         const header = marginCard(page, ask.id).locator("[data-ask-header]").first();
         await readsAtLargeFont(header, compact);
-        await holdsAt(header, card(true), widths, `the margin card, ${state}, ${at}`);
+        await holdsAt(header, card, widths, `the margin card, ${state}, ${at}`);
       }
     }
   } finally {

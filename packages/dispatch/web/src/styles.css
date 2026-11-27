@@ -24,18 +24,14 @@
    `not-refused:hover:` never lights a refused button, and no look has to be stated twice. */
 @custom-variant refused (&:is(:disabled, [aria-disabled="true"]));
 
-/* The three widths an ask header's layout switches at (`features/inbox/AskHeader.tsx`), each a
-   width of the header's own row, which is its `@container`, and never the viewport's. Named
-   here once as container sizes, so every class reads one of them by name (`@max-ask-block-line:`
-   and the like) and `e2e/ask-header-rows.ts` reads these same values:
-     - `ask-block-line`: from it a read-only decision block's header is one line; below it, rows;
-     - `ask-card-line`: from it an ask card's row is one line;
-     - `ask-card-two-lines`: from it to `ask-card-line` the card's row is two lines beside the
-       copy control; below it, the phone's layout. */
+/* The width a decision block's own header switches its layout at (`features/ask-body/AskHeader.tsx`,
+   `BlockAskHeader`), a width of the header's own row, which is its `@container`, and never the
+   viewport's. Named here once as a container size, so every class reads it by name
+   (`@max-ask-block-line:`) and `e2e/ask-header-rows.ts` reads this same value: from it a
+   read-only decision block's header is one line; below it, rows. The ask body's first line reads
+   the ask body's own width instead (`@container/ask-body`, `@max-[32rem]/ask-body`). */
 @theme {
   --container-ask-block-line: 36rem;
-  --container-ask-card-line: 27.5rem;
-  --container-ask-card-two-lines: 19.5rem;
 }
 
 /* The end room of a scroller under the foot's floats (`hooks/useFootInset.ts` says what that is
@@ -1286,6 +1282,13 @@ html:has([data-issue-page])
    text (the prototype's `.body a`), never the app's link blue: the underline says it is a link,
    and the page's colours are its palette's (part G's R4, ruling 5). */
 [data-node-words] .dispatch-markdown {
+  --tw-prose-links: currentColor;
+}
+
+/* A link in the words the new page's Dashboard draws (`issue-page/slots/view-dashboard.tsx`'s
+   `data-dashboard`) is the words' own ink too (dispatch://INFRA-3940 R13); today's page marks no
+   Dashboard so, and its links keep the app's link blue. */
+[data-dashboard] .dispatch-markdown {
   --tw-prose-links: currentColor;
 }
 

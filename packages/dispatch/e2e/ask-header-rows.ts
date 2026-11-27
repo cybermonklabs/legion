@@ -57,16 +57,19 @@ export function containerWidth(name: string, rem = DEFAULT_FONT): number {
 /** From this width a read-only decision block's header is one line, below it rows
  *  (`--container-ask-block-line`, 36rem). */
 const ASK_BLOCK_LINE = containerWidth("ask-block-line");
-/** From this width an ask card's row is one line (`--container-ask-card-line`, 27.5rem). */
-export const ASK_CARD_LINE = containerWidth("ask-card-line");
-/** From this width to `ASK_CARD_LINE` an ask card's row is two lines beside its copy control,
- *  and below it the phone's layout (`--container-ask-card-two-lines`, 19.5rem). */
-export const ASK_CARD_TWO_LINES = containerWidth("ask-card-two-lines");
+/** From this width of the ask body the end of its first line - the kind, who asked and when,
+ *  the state label and the copy control - stands beside the question's words, on one line; below
+ *  it, under them (`@container/ask-body` and `@max-[32rem]/ask-body` in
+ *  `web/src/features/ask-body/AskHeader.tsx`, dispatch://INFRA-5702 R15). */
+export const ASK_BODY_BESIDE = 32 * DEFAULT_FONT;
 
-/** The Inbox card's row (`CardAskHeader`): one line from `ASK_CARD_LINE`, two below it. */
+/** The end of the ask body's first line (`CardAskHeader`): one line beside the words from
+ *  `ASK_BODY_BESIDE`; under them below it, where each of its parts - the kind, who asked and
+ *  when, and the label with the copy control - moves to a line of its own before it gives up
+ *  width. */
 const CARD_LINES: Lines = [
-  [ASK_CARD_LINE, 1, 1],
-  [0, 2, 2],
+  [ASK_BODY_BESIDE, 1, 1],
+  [0, 1, 3],
 ];
 
 /** A read-only decision block's header (`BlockAskHeader`): from `ASK_BLOCK_LINE` one line, with
@@ -78,24 +81,23 @@ const ANSWERED_BLOCK_LINES: Lines = [
   [0, 3, 4],
 ];
 
-/** The header's own parts of a card, at each place a card is drawn. */
-export function cardHeader(options: { anchored: boolean; notched: boolean; turn: boolean }): Drawn {
-  return {
-    fields: {
-      asked: "[data-ask-card-asked]",
-      asker: "[data-ask-card-asked] span.truncate[title]",
-      copy: "[data-copy-ref] button",
-      label: "[data-ask-state-label]",
-      "live link": '[data-ask-card-asked] a[aria-label^="Open live conversation"]',
-      time: "[data-ask-card-asked] time",
-      ...(options.turn ? { turn: '[data-testid^="turn-"]' } : {}),
-      ...(options.notched ? { urgency: "[data-ask-urgency-notch]" } : {}),
-      ...(options.anchored ? { anchor: ":scope > blockquote" } : {}),
-    },
-    lines: CARD_LINES,
-    row: "[data-ask-card-row]",
-  };
-}
+/** The header's own parts on an open ask's first line, at each place a card is drawn: the
+ *  header is that line (`[data-ask-card-row]`), its row the line's end, and its layout follows
+ *  the ask body's width, which the sweeps size. The urgency notch, the anchor and whose turn it
+ *  is stand outside it, on the card and under the words. */
+export const CARD_HEADER: Drawn = {
+  fields: {
+    asked: "[data-ask-card-asked]",
+    asker: "[data-ask-card-asked] span.truncate[title]",
+    copy: "[data-copy-ref] button",
+    label: "[data-ask-state-label]",
+    "live link": '[data-ask-card-asked] a[aria-label^="Open live conversation"]',
+    time: "[data-ask-card-asked] time",
+  },
+  lines: CARD_LINES,
+  row: "[data-ask-card-end]",
+  sized: "[data-ask-body]",
+};
 
 /** A closed issue's answered block, whose own header draws everything. */
 export const ANSWERED_BLOCK: Drawn = {

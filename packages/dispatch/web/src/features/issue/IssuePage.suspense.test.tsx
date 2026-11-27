@@ -311,7 +311,9 @@ test("the tab strip lands in a commit after the document's, with the tabs it has
   const { issue: mount } = await theMounts();
 
   expect(mount.settled.specTabId).toBe("issue-spec-tab");
+  // Dashboard is today's first tab, before Spec (dispatch://INFRA-5702 R1).
   expect(mount.settled.tabLabels).toEqual([
+    "Dashboard",
     "Spec",
     "Verification",
     "Plan",

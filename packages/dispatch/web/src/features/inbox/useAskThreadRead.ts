@@ -11,6 +11,9 @@ import {
 
 interface UseAskThreadReadOptions {
   readonly ask: Pick<Ask, "id" | "issue_key">;
+  /** Whether the thread is read at all (`GET /api/v1/asks/{id}`). Default `true`; a host that
+   *  draws no thread and sends no such read turns it off (`useAskAnswerForm`'s `readThread`). */
+  readonly enabled?: boolean;
   readonly getAskThread: (id: string) => Promise<AskRead>;
   /** Data the Inbox response already hydrated for the first render. */
   readonly initialThread?: AskRead;
@@ -28,6 +31,7 @@ interface UseAskThreadReadOptions {
  */
 export function useAskThreadRead({
   ask,
+  enabled = true,
   getAskThread,
   initialThread,
   initialThreadUpdatedAt,
@@ -54,6 +58,7 @@ export function useAskThreadRead({
       threadBeforeSeed.fetchStatus !== "idle"
   );
   const threadQuery = useQuery<AskRead, Error>({
+    enabled,
     initialData: refreshInitialThread ? undefined : initialThread,
     initialDataUpdatedAt: refreshInitialThread ? undefined : initialThreadUpdatedAt,
     queryKey: ["ask-thread", ask.id],

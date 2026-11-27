@@ -5,10 +5,9 @@ import { createAsk, createComment, createIssue, createProject, getAsk, patchIssu
 import { type FieldReading, type Reading, type Rect, readAtHostWidth } from "./ask-header-reader";
 import {
   ANSWERED_BLOCK,
-  ASK_CARD_LINE,
-  ASK_CARD_TWO_LINES,
+  ASK_BODY_BESIDE,
   asker,
-  cardHeader,
+  CARD_HEADER,
   planner,
   resetToPlanner,
   seedAnsweredBlock,
@@ -279,42 +278,37 @@ async function seedTurns() {
   };
 }
 
-/** An ask card's own line at the width its host draws it, read as every sweep reads it: the
- *  width of its `@container` row, the one condition that picks its layout (`CardAskHeader`: one
- *  line from `ASK_CARD_LINE`, two lines beside the copy control from `ASK_CARD_TWO_LINES`, the
- *  phone's lines below that), the viewport's width, which no longer picks it and which a row
- *  reads only to say which reader it stands for, whether the copy control shares the label's
- *  line, whether who asked and when opens a line of its own under that one, and whether the
- *  asker's name is drawn whole. The row and who asked are read by their own marks, so a row that
- *  lost either says which. */
+/** An ask card's first line at the width its host draws it, read as every sweep reads it: the
+ *  width of its ask body, the one condition that picks its layout (`CardAskHeader`: the line's
+ *  end beside the question's words from `ASK_BODY_BESIDE`, under them below it), the viewport's
+ *  width, which does not pick it and which a row reads only to say which reader it stands for,
+ *  whether the copy control shares the label's line, and whether the asker's name is drawn
+ *  whole. The line's end and who asked are read by their own marks, so a row that lost either
+ *  says which. */
 async function cardLine(card: Locator, name: string) {
   await expect(card.locator("[data-ask-header] [data-copy-ref] button")).toBeVisible();
   const viewport = card.page().viewportSize();
   if (viewport === null) throw new Error("the page has no viewport");
-  const drawn = cardHeader({ anchored: true, notched: false, turn: true });
   const reading = await readAtHostWidth(card.locator("[data-ask-header]").first(), {
-    ...drawn,
-    fields: { ...drawn.fields, name: `[data-ask-card-asked] [title="${name}"]` },
+    ...CARD_HEADER,
+    fields: { ...CARD_HEADER.fields, name: `[data-ask-card-asked] [title="${name}"]` },
   });
-  const asked = drawnField(reading, "asked");
   const copy = drawnField(reading, "copy");
   const label = drawnField(reading, "label");
   const asker = drawnField(reading, "name");
-  const { row } = reading;
-  if (row === null) throw new Error(`the card draws no row: ${reading.failures.join("; ")}`);
+  if (reading.row === null) {
+    throw new Error(`the card draws no first line's end: ${reading.failures.join("; ")}`);
+  }
   return {
-    askerOwnLine:
-      firstLine(asked) > Math.max(lastLine(label), lastLine(copy)) &&
-      Math.abs(asked.span.left - row.left) <= 1,
     askerWhole: asker.drawn >= asker.whole - 0.5,
+    body: reading.width,
     copyOnLabelLine: copy.lines.includes(firstLine(label)),
     failures: reading.failures,
-    row: row.right - row.left,
     viewport: viewport.width,
   };
 }
 
-test("the Inbox card's copy control ends the label's one line, whoever's turn it is", async ({
+test("the Inbox card's copy control is on the label's line, at the end of the first line beside the question's words, whoever's turn it is", async ({
   browser,
 }) => {
   const { turns } = await seedTurns();
@@ -327,10 +321,10 @@ test("the Inbox card's copy control ends the label's one line, whoever's turn it
       await expect(card.getByTestId(`turn-${ask.id}`)).toContainText(turn);
       const line = await cardLine(card, `${author.title} · ${author.session_id}`);
       expect(line.failures, `${turn}: the Inbox card's header at its own width`).toEqual([]);
-      // The card's widest layout: a row of `ASK_CARD_LINE` or more, where label, turn, asker and
-      // copy control are one line.
-      expect(line.row, `${turn}: the Inbox card's row is 27.5rem or wider`).toBeGreaterThanOrEqual(
-        ASK_CARD_LINE
+      // The card's widest layout: an ask body of `ASK_BODY_BESIDE` or more, where the kind, who
+      // asked and when, the label and the copy control are one line beside the question's words.
+      expect(line.body, `${turn}: the Inbox card's body is 32rem or wider`).toBeGreaterThanOrEqual(
+        ASK_BODY_BESIDE
       );
       expect(line.copyOnLabelLine, `${turn}: the copy control is on the label's line`).toBe(true);
     }
@@ -339,7 +333,7 @@ test("the Inbox card's copy control ends the label's one line, whoever's turn it
   }
 });
 
-test("the margin card's copy control stands beside its two lines, on the label's, whoever's turn it is", async ({
+test("the margin card's copy control is on the label's line, under the question's words, whoever's turn it is", async ({
   browser,
 }) => {
   const { issue, turns } = await seedTurns();
@@ -353,16 +347,12 @@ test("the margin card's copy control stands beside its two lines, on the label's
       await expect(card.getByTestId(`turn-${ask.id}`)).toContainText(turn);
       const line = await cardLine(card, `${author.title} · ${author.session_id}`);
       expect(line.failures, `${turn}: the margin card's header at its own width`).toEqual([]);
-      // The margin: a row from `ASK_CARD_TWO_LINES` to under `ASK_CARD_LINE`, which breaks the
-      // label and turn from the asker and stands the copy control beside both lines. The
-      // viewport check no longer picks that layout; it says this row reads the margin as a
-      // desktop reader does, at `md` or wider.
+      // The margin: an ask body under `ASK_BODY_BESIDE`, where the first line's end stands under
+      // the question's words. The viewport check does not pick that layout; it says this row
+      // reads the margin as a desktop reader does, at `md` or wider.
       expect(line.viewport, `${turn}: the viewport is md or wider`).toBeGreaterThanOrEqual(768);
-      expect(line.row, `${turn}: the margin card's row is 19.5rem or wider`).toBeGreaterThanOrEqual(
-        ASK_CARD_TWO_LINES
-      );
-      expect(line.row, `${turn}: the margin card's row is under 27.5rem`).toBeLessThan(
-        ASK_CARD_LINE
+      expect(line.body, `${turn}: the margin card's body is under 32rem`).toBeLessThan(
+        ASK_BODY_BESIDE
       );
       expect(line.copyOnLabelLine, `${turn}: the copy control is on the label's line`).toBe(true);
     }
@@ -385,7 +375,7 @@ async function answerBox(card: Locator): Promise<{ content: number; line: number
   });
 }
 
-test("on a phone the Inbox card's copy control ends the label's line, the asker has the next line whole and the answer box is two lines tall, whoever's turn it is @phone", async ({
+test("on a phone the Inbox card's copy control is on the label's line under the question's words, the asker's name is drawn whole and the answer box is two lines tall, whoever's turn it is @phone", async ({
   browser,
 }) => {
   const { turns } = await seedTurns();
@@ -399,20 +389,19 @@ test("on a phone the Inbox card's copy control ends the label's line, the asker 
       const title = `${author.title} · ${author.session_id}`;
       const line = await cardLine(card, title);
       expect(line.failures, `${turn}: the phone card's header at its own width`).toEqual([]);
-      // A phone: a row under `ASK_CARD_TWO_LINES`, where the copy control ends the label's line
-      // and the asker has the next line to itself. The viewport check no longer picks that
-      // layout; it says this row reads the card as a phone does, under `md`, where the copy
-      // control and the live link are 44 px touch boxes.
+      // A phone: an ask body under `ASK_BODY_BESIDE`, where the first line's end stands under
+      // the question's words and each of its parts takes a line of its own before it gives up
+      // width. The viewport check does not pick that layout; it says this row reads the card as
+      // a phone does, under `md`, where the copy control and the live link are 44 px touch boxes.
       expect(line.viewport, `${turn}: the viewport is under md`).toBeLessThan(768);
-      expect(line.row, `${turn}: the phone card's row is under 19.5rem`).toBeLessThan(
-        ASK_CARD_TWO_LINES
+      expect(line.body, `${turn}: the phone card's body is under 32rem`).toBeLessThan(
+        ASK_BODY_BESIDE
       );
       expect(line.copyOnLabelLine, `${turn}: the copy control is on the label's line`).toBe(true);
-      expect(line.askerOwnLine, `${turn}: the asker opens the next line`).toBe(true);
       await expect(card.locator(`[data-ask-header] [title="${title}"]`)).toHaveText(author.title);
-      // A name that fits that line is drawn whole. The agent's own title does not fit it at
-      // all - 223 px of name beside the live link and the time, which leave it 160 - so it
-      // truncates there whatever the copy control does, and its tooltip holds it whole.
+      // A name that fits its line is drawn whole. The agent's own title does not fit a phone's
+      // line beside the live link and the time, so it truncates there whatever the copy control
+      // does, and its tooltip holds it whole.
       if (author === ledger) continue;
       expect(line.askerWhole, `${turn}: the asker's name is not cut short`).toBe(true);
     }

@@ -55,6 +55,7 @@ func returnsFromChildren(t *testing.T, pool *pgxpool.Pool, engine *Engine, key s
 // the start it holds. A return as testing whatever the walk holds would have no place to move the
 // task to.
 func TestAReturnOnAWalkWithNoTesterStartsTheReviewer(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	waiting := waitsOnItsChild(t, pool, engine, "implementer", "reviewer")
@@ -96,6 +97,7 @@ func TestAReturnOnAWalkWithNoTesterStartsTheReviewer(t *testing.T) {
 // from awaiting_children (issues_held_from_check), so the stop's hold could not stand there. The
 // task keeps running at the place of the start the parent holds, and the outbox is as it was.
 func TestAStopOfAWaitingParentsTaskIsRefused(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	waiting := waitsOnItsChild(t, pool, engine, "implementer", "tester")
@@ -127,6 +129,7 @@ func TestAStopOfAWaitingParentsTaskIsRefused(t *testing.T) {
 // architect is told once. When the child is done the return starts the implementer on the task
 // the restart held, which names why.
 func TestARestartUnderAnOpenChildWaitsOnTheChild(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stoppedAtTesting(t, pool, engine)

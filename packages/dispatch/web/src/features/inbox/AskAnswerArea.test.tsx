@@ -11,11 +11,11 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { architectureTree } from "../../__tests__/search-fixture";
 import { api } from "../../api/client";
 import type { Agent, Ask, AskRead, Comment, CreateCommentInput } from "../../api/types";
+import { ASK_FORM_WORDS } from "../ask-body/ask-body-words";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { AskCard } from "./AskCard";
 import { AskReplyComposer } from "./AskThread";
 import { EMPTY_DRAFT_REFUSAL } from "./draft-store";
-import { ANSWER_REFUSAL } from "./useAskAnswerForm";
 
 /** INFRA-341: the ask's shared answer area stores a picked session as a reference in the text
  * that Ask back, Reply and Answer send. */
@@ -336,8 +336,8 @@ test("an empty answer area refuses Answer and Ask back, sends nothing, and keeps
     await view.findByLabelText("Your answer");
     const answer = view.getByRole("button", { name: "Answer" });
     const askBack = view.getByRole("button", { name: "Ask back" });
-    expect(answer.getAttribute("title")).toBe(ANSWER_REFUSAL);
-    expect(shownReason(answer)).toBe(ANSWER_REFUSAL);
+    expect(answer.getAttribute("title")).toBe(ASK_FORM_WORDS.refused.answer);
+    expect(shownReason(answer)).toBe(ASK_FORM_WORDS.refused.answer);
     expect(askBack.getAttribute("title")).toBe(EMPTY_DRAFT_REFUSAL);
     expect(shownReason(askBack)).toBe(EMPTY_DRAFT_REFUSAL);
     for (const button of [answer, askBack]) {
@@ -383,7 +383,7 @@ test("Answer with it anyway sends a draft another card put a mention in", async 
     await user.click(asking);
     await user.paste("How does this fit the release plan?");
     await user.click(view.getAllByRole("button", { name: "Answer" })[0] as HTMLElement);
-    const choice = await view.findByRole("group", { name: "Question-shaped answer" });
+    const choice = await view.findByRole("group", { name: "Your answer reads as a question" });
     const anyway = within(choice).getByRole("button", { name: "Answer with it anyway" });
 
     await pickPlanner(view, other, "How does this fit the release plan? ");

@@ -155,6 +155,11 @@ const VerificationTab = chunkComponent(() =>
   issueTabChunks.verification().then((module) => module.VerificationTab)
 );
 
+/** Dashboard, today's first tab, in a chunk of its own that the browser fetches only when the
+ *  reader opens the tab (dispatch://INFRA-5702/spec#b-r-today-tab): this is the one import of
+ *  today's page that reaches it (R14). */
+const DashboardTab = lazy(() => import("../dashboard/DashboardTab"));
+
 export function IssuePage(): ReactNode {
   const { pathname, search } = useLocation();
   const route = parseIssuePath(pathname, search);
@@ -630,6 +635,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     children: activeTab === "children",
     collaborators: activeTab === "collaborators",
     conversation: activeTab === "conversation",
+    dashboard: activeTab === "dashboard",
     decisions: activeTab === "decisions",
     plan: activeTab === "plan",
     spec: activeTab === "spec",
@@ -783,6 +789,19 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           />
         </Suspense>
       </ChromeAfterTheFirstBatch>
+      <div
+        aria-hidden={activeTab !== "dashboard"}
+        aria-labelledby="issue-dashboard-tab"
+        hidden={activeTab !== "dashboard"}
+        id="issue-dashboard-panel"
+        role="tabpanel"
+      >
+        {activatedTabs.dashboard ? (
+          <Suspense fallback={null}>
+            <DashboardTab issueKey={issueKey} page="today" />
+          </Suspense>
+        ) : null}
+      </div>
       <div
         aria-hidden={activeTab !== "spec"}
         aria-labelledby="issue-spec-tab"

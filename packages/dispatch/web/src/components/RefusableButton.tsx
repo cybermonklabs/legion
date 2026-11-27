@@ -56,6 +56,7 @@ export function RefusableButton({
   refusalShownBy,
   refusedWhileOut = false,
   type = "button",
+  wordsMark,
 }: {
   /** The label while a press is in flight; the one state that renders `disabled`. */
   readonly busy?: string;
@@ -78,6 +79,9 @@ export function RefusableButton({
    *  so everywhere else `busy` disables the button as it always has. */
   readonly refusedWhileOut?: boolean;
   readonly type?: "button" | "submit";
+  /** The mark of the words the button holds, where its host divides its own words from an
+   *  author's (the ask body's `marks.pageChrome`, `features/ask-body/ask-text.tsx`). */
+  readonly wordsMark?: Readonly<Record<string, string>>;
 }): ReactNode {
   const tooltips = useTooltips();
   const ownReasonId = useId();
@@ -104,6 +108,7 @@ export function RefusableButton({
         }}
         title={tooltips ? (refusal ?? undefined) : undefined}
         type={type}
+        {...wordsMark}
       >
         {busy ?? children}
       </button>
@@ -115,3 +120,6 @@ export function RefusableButton({
     </>
   );
 }
+
+// The page's looks, which the decision card's own buttons draw too (`DecisionCard.tsx`'s `TONES`).
+export { PAGE_LOOKS };

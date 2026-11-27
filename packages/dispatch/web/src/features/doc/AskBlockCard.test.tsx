@@ -228,12 +228,9 @@ function renderCard({
     footer: scoped,
     section,
     user,
-    /** The compact card's free-text disclosure: opens the composer and returns its field. */
-    async openComposer() {
-      await user.click(
-        scoped.getByRole("button", { name: "Add a note or answer in your own words" })
-      );
-      return scoped.getByLabelText("Your answer") as HTMLTextAreaElement;
+    /** The compact card's answer box, which stands in place. */
+    async answerField() {
+      return (await scoped.findByLabelText("Your answer")) as HTMLTextAreaElement;
     },
     /** The option rows of the record under the block, which a reply in the same footer - a
      *  list item of its own - is no part of. */
@@ -477,12 +474,18 @@ test("the hosted card offers the options as the shared choice rows, plus Other, 
     })) as HTMLInputElement;
     expect(card.footer.getByRole("radio", { name: "Hold" })).toBeDefined();
     expect(card.footer.getByRole("radio", { name: "Other" })).toBeDefined();
-    // Nothing chosen: nothing to submit yet.
-    expect(card.footer.queryByRole("button", { name: "Answer" })).not.toBeInTheDocument();
+    // Nothing chosen: nothing to submit yet. Answer stands in place under the box and refuses
+    // with its reason, focusable rather than disabled (dispatch://INFRA-341 R3,
+    // dispatch://INFRA-341/comment/4f455df5-2d9d-45de-8a62-e4b070f41be9).
+    const refused = card.footer.getByRole("button", { name: "Answer" }) as HTMLButtonElement;
+    expect(refused.disabled).toBe(false);
+    expect(refused.getAttribute("aria-disabled")).toBe("true");
+    expect(refused).toHaveAccessibleDescription("Pick an option or write an answer.");
     await card.user.click(ship);
     expect(ship.checked).toBe(true);
     const submit = card.footer.getByRole("button", { name: "Answer" });
     expect((submit as HTMLButtonElement).disabled).toBe(false);
+    expect(submit.getAttribute("aria-disabled")).toBeNull();
     await card.user.click(submit);
     await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
     expect(answerAsk.mock.calls[0]).toEqual([
@@ -569,7 +572,7 @@ test("a decision with no options answers in words alone", async () => {
   });
   try {
     expect(card.footer.queryByRole("radio")).not.toBeInTheDocument();
-    const field = await card.openComposer();
+    const field = await card.answerField();
     const submit = card.footer.getByRole("button", { name: "Answer" });
     expect(submit).toHaveAttribute("aria-disabled", "true");
     await card.user.click(field);
@@ -610,7 +613,7 @@ test("Ask back on an issue document's decision posts a clarification on the issu
   try {
     // No exchange yet: nothing to disclose.
     expect(card.footer.queryByRole("button", { name: /repl/ })).not.toBeInTheDocument();
-    const field = await card.openComposer();
+    const field = await card.answerField();
     const askBack = card.footer.getByRole("button", { name: "Ask back" });
     // Nothing to send yet.
     expect(askBack).toHaveAttribute("aria-disabled", "true");
@@ -655,7 +658,7 @@ test("Ask back on a project document's decision posts the clarification on the d
     owner: { project: "CORE", slug: "design" },
   });
   try {
-    await card.user.click(await card.openComposer());
+    await card.user.click(await card.answerField());
     await card.user.paste("Before or after the freeze?");
     await card.user.click(card.footer.getByRole("button", { name: "Ask back" }));
     await waitFor(() => expect(createArtifactComment).toHaveBeenCalledTimes(1));
@@ -674,7 +677,7 @@ test("a question-shaped answer with no option chosen offers Ask back instead, as
   createComment.mockResolvedValue(reply("Which release train?"));
   const card = renderCard({ node: askNode({ urgency: "med" }) });
   try {
-    await card.user.click(await card.openComposer());
+    await card.user.click(await card.answerField());
     await card.user.paste("Which release train?");
     const submit = card.footer.getByRole("button", { name: "Answer" });
     expect((submit as HTMLButtonElement).disabled).toBe(false);

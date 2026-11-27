@@ -1463,14 +1463,16 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
       "Implementer · session-live-0001",
       "Open live conversation with Implementer",
       localTime("2026-10-08T00:00:00Z"),
+      // The ask's reference is the header's, at the end of the first line (`AskHeader`), and the
+      // session's handles open onto their own line under the ask body.
       "Copy reference dispatch://CORE-1/ask/ask-1",
-      "Copy session ID session-live-0001",
-      "Copy session title Implementer",
-      "Copy tmux target legion:3",
       // Answer and Ask back are `RefusableButton`s, which carry a refusal as their `title`
       // outside `NoTooltips` (dispatch://INFRA-341).
       "Pick an option or write an answer.",
       "Write something first.",
+      "Copy session ID session-live-0001",
+      "Copy session title Implementer",
+      "Copy tmux target legion:3",
     ],
   ],
   [
@@ -1481,6 +1483,10 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
       "Open live conversation with Implementer",
       localTime("2026-10-08T00:00:00Z"),
       "Copy reference dispatch://CORE-1/ask/ask-2",
+      // The compact card's box and its sends stand in place (dispatch://INFRA-5702 R15), and
+      // each refuses an empty draft with its reason (dispatch://INFRA-341 R3).
+      "Pick an option or write an answer.",
+      "Write something first.",
     ],
   ],
   [
@@ -1488,6 +1494,8 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
     [
       "alice",
       localTime("2026-10-08T00:00:00Z"),
+      // The card's reference stands at the end of the ask body's first line, in its one header
+      // (`ask-body/AskHeader.tsx`, dispatch://INFRA-341 R1 on INFRA-5702 R15's line).
       "Copy reference dispatch://CORE-1/ask/ask-2",
       "Add a reason to send Request changes",
       // Ask back's refusal of an empty box, its `RefusableButton`'s `title` (dispatch://INFRA-341).
@@ -2145,11 +2153,12 @@ function wrapOffences(mountName: string, value: Element, root: Element): string[
  */
 const ON_PAGE_FILES = [
   "components/MultiSelect.tsx",
+  "features/ask-body/AskBody.tsx",
+  "features/ask-body/AskHeader.tsx",
   "features/conversation/MentionField.tsx",
   "features/doc/ApprovalChip.tsx",
   "features/inbox/AskAnswerArea.tsx",
   "features/inbox/AskCard.tsx",
-  "features/inbox/AskHeader.tsx",
   "features/inbox/AskThread.tsx",
   "features/issue-page/IssueFieldForms.tsx",
   "features/issue/RepoControl.tsx",

@@ -41,7 +41,7 @@
  *    `e2e/visual-seed.ts` wrote the corpus (`seededAt`), so every relative label reads the same
  *    gap on every run - a fixed literal would drift against a corpus written at wall-clock time.
  *    The `<time>` elements (`web/src/features/refs/Timestamp.tsx`, `web/src/features/inbox/
- *    Inbox.tsx`, `web/src/features/inbox/EarlierApproval.tsx`) are painted over as well, by the
+ *    Inbox.tsx`, `web/src/features/ask-body/EarlierApproval.tsx`) are painted over as well, by the
  *    page itself (`e2e/visual-time.css`; the mask list below says why that is not a mask). The
  *    cost is that the text of a timestamp is in no baseline; its place, its size and the layout
  *    around it still are.

@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { createPortal } from "react-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { renderWithQueries } from "../../__tests__/query-provider";
 import type { Artifact, Comment } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -48,7 +49,7 @@ const specArtifact: Artifact = {
 };
 
 test("an issue margin offers Comments and Pinned, Comments first", () => {
-  const view = render(
+  const view = renderWithQueries(
     <MarginSheet
       model={{
         actions: {

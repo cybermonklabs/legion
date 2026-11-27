@@ -52,6 +52,8 @@ export const lazyPieces = {
     "the create-issue dialog (features/issue/CreateIssueDialog.tsx), which the shell mounts " +
     "while it is open and a reader opens from the rail's New issue or `c` " +
     "(features/shell/deferred-shell.ts)",
+  dashboard:
+    "today's Dashboard tab, visible inside #issue-dashboard-panel (features/issue/IssuePage.tsx)",
   echarts: "the delivery timeline's chart, echarts (features/delivery/Timeline.tsx)",
   editor:
     "the document editor, @legion/proof-editor and its stylesheet (features/doc/editor.ts), " +

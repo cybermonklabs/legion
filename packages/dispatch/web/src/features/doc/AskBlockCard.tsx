@@ -9,10 +9,10 @@ import {
   textMutedOnSurfaceMuted,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import { AskCompletionCard } from "../ask-body/AskCompletionCard";
+import { AskHeader } from "../ask-body/AskHeader";
+import { AskOptionList } from "../ask-body/AskOptionList";
 import { AskCard } from "../inbox/AskCard";
-import { AskCompletionCard } from "../inbox/AskCompletionCard";
-import { AskHeader } from "../inbox/AskHeader";
-import { AskOptionList } from "../inbox/AskOptionList";
 import { blockFragment } from "../refs/block-reference";
 import { type DocumentOwner, parseNodeReference, referenceHref, shortForm } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";

@@ -26,6 +26,7 @@ import (
 // first, and publishes once the woken session holds the role. The same event delivered twice
 // writes the deliveries once, and an event of another project writes none.
 func TestAMergeHoldsChangeReachesTheArchitectInAcceptingAndTheMergerInMerging(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -117,6 +118,7 @@ func TestAMergeHoldsChangeReachesTheArchitectInAcceptingAndTheMergerInMerging(t 
 // issue that the architect sent back to implementing does not merge, so no hold is its concern.
 // Nothing is published and no pod is woken.
 func TestAMergeHoldsChangeOfAnIssueThatLeftMergingEndsUndelivered(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

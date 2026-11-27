@@ -10,6 +10,7 @@ import type { IssueTab } from "../refs/routes";
  *  list alone and the tablist itself stays in the issue page's own chunk. */
 export function issueTabs(artifactCount: number): readonly TabDefinition<IssueTab>[] {
   return [
+    { id: "dashboard", label: "Dashboard" },
     { id: "spec", label: "Spec" },
     { id: "verification", label: "Verification" },
     { id: "plan", label: "Plan" },
