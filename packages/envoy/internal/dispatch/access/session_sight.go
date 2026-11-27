@@ -67,25 +67,33 @@ func SessionSeesProjectClause(sessionExpr, projectAlias string) string {
 		listed))
 }
 
-// SightListSQL is two boolean columns of a select, for the sessions of the text array sessionsExpr
-// over the projects of the text array projectsExpr. The first is whether a verdict of
-// SessionSeesProjectClause can depend on a listener list: a project is private, or a session is
+// SightListSQL is two boolean columns of a select, for the session sessionExpr names over the
+// project row projectAlias names. The first is whether that pair's verdict of
+// SessionSeesProjectClause can depend on a listener list: the project is private, or the session is
 // tied to a restricted member, the two cases where the clause answers otherwise with a list than
 // without one. The second is whether the stored listener record (route_roster) holds an answer
 // that has not passed its expires_at; a silence the API stored for a listener that did not answer
 // lists no session, so it is no answer. The clause reads a record past its expires_at as no list
 // at all, and read in the clause's own statement, on its one now(), the second column says whether
-// the clause had a list to read, so it needs no margin: a reader whose verdict depends on a list
-// and finds the record expired refreshes it and reads again before it judges (the outbox's
-// ListenerRefresh, the api's withheldFromSession).
-func SightListSQL(sessionsExpr, projectsExpr string) string {
-	return fmt.Sprintf(`exists (select 1 from projects where key = any(%[2]s) and visibility = 'private')
+// the clause had a list to read, so it needs no margin: a reader whose verdict of a pair depends on
+// a list and finds the record expired refreshes it and reads again before it judges that pair (the
+// outbox's ListenerRefresh, the api's refreshedSessionSight).
+func SightListSQL(sessionExpr, projectAlias string) string {
+	return fmt.Sprintf(`%[2]s.visibility = 'private'
 		or exists (select 1 from session_owners tied
 			join people tied_person on tied_person.email = tied.login and tied_person.member_kind = 'restricted'
-			where tied.session_id = any(%[1]s)),
+			where tied.session_id = %[1]s),
 		coalesce((select answered and expires_at > now() from route_roster), false)`,
-		sessionsExpr, projectsExpr)
+		sessionExpr, projectAlias)
 }
+
+// SightMayDependOnAListSQL is a select of one boolean: whether a verdict of
+// SessionSeesProjectClause can depend on a listener list anywhere in the deployment - a project is
+// private, or a person is a restricted member - SightListSQL's first column over every pair at
+// once. A reader that judges a session it cannot name before its transaction opens refreshes the
+// stored listener record first only where it holds (the api's refreshRosterBeforeSight).
+const SightMayDependOnAListSQL = `select exists (select 1 from projects where visibility = 'private')
+	or exists (select 1 from people where member_kind = 'restricted')`
 
 // RowsQuerier is the one read ReadSessionSight makes: a pool, a transaction, or a reader that runs
 // a query, such as the outbox's lookup reader.
@@ -93,38 +101,34 @@ type RowsQuerier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// SessionSightSQL is ReadSessionSight's one statement, of every session of $1 and every project of
-// $2: a row for each pair whose session sees the project (SessionSeesProjectClause), each beside
-// SightListSQL's two columns, and where no pair sees, one row of those two columns alone, its
-// project and session null. A key no project row holds pairs with no session. A census of the
-// statements a reader sends names it by this text.
+// SessionSightSQL is ReadSessionSight's one statement: a row for each pair of a session of $1 and
+// a project row of $2, with whether the session sees the project (SessionSeesProjectClause) beside
+// SightListSQL's two columns for that pair. A key no project row holds pairs with no session. A
+// census of the statements a reader sends names it by this text.
 var SessionSightSQL = `
-	select list.depends, list.fresh, pair.key, pair.id
-	from (select ` + SightListSQL("$1::text[]", "$2::text[]") + `) as list (depends, fresh)
-	left join (
-		select p.key, s.id
-		from projects p
-		cross join unnest($1::text[]) as s(id)
-		where p.key = any($2::text[]) and ` + SessionSeesProjectClause("s.id", "p") + `
-	) as pair on true`
+	select p.key, s.id, ` + SessionSeesProjectClause("s.id", "p") + `, ` + SightListSQL("s.id", "p") + `
+	from projects p
+	cross join unnest($1::text[]) as s(id)
+	where p.key = any($2::text[])`
 
 // SessionSight is what one read of sessions' sight answers (ReadSessionSight). Sees is, for each
-// project key, the sessions that see it (SessionSeesProjectClause). ListExpired is whether that
-// verdict could depend on a listener list while the stored listener record held no answer that
-// had not expired (SightListSQL), so the clause judged every session by its ties alone: a reader
-// that must not judge by a list it could not read refreshes the record and reads again (the
-// outbox's ListenerRefresh).
+// project key, the sessions that see it (SessionSeesProjectClause). ListExpired is, for each
+// project key, the sessions whose verdict of it could depend on a listener list while the stored
+// listener record held no answer that had not expired (SightListSQL), so the clause judged that
+// pair by the session's ties alone: a reader that must not judge by a list it could not read
+// refreshes the record and reads again (the outbox's ListenerRefresh, the api's
+// refreshedSessionSight), and judges no pair it still holds.
 type SessionSight struct {
 	Sees        map[string]map[string]bool
-	ListExpired bool
+	ListExpired map[string]map[string]bool
 }
 
 // ReadSessionSight answers, in one statement (SessionSightSQL), which of sessions see which of
-// projects, and whether that verdict depended on a list of a listener record that had expired. A
-// session or a project it names no pair for sees, or is seen by, nothing. With no session or no
+// projects, and which of those verdicts depended on a list of a listener record that had expired.
+// A session or a project it names no pair for sees, or is seen by, nothing. With no session or no
 // project it reads nothing, and no verdict depends on a list.
 func ReadSessionSight(ctx context.Context, q RowsQuerier, sessions, projects []string) (SessionSight, error) {
-	sight := SessionSight{Sees: map[string]map[string]bool{}}
+	sight := SessionSight{Sees: map[string]map[string]bool{}, ListExpired: map[string]map[string]bool{}}
 	if len(sessions) == 0 || len(projects) == 0 {
 		return sight, nil
 	}
@@ -134,24 +138,30 @@ func ReadSessionSight(ctx context.Context, q RowsQuerier, sessions, projects []s
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var depends, fresh bool
-		var project, session *string
-		if err := rows.Scan(&depends, &fresh, &project, &session); err != nil {
+		var project, session string
+		var sees, depends, fresh bool
+		if err := rows.Scan(&project, &session, &sees, &depends, &fresh); err != nil {
 			return SessionSight{}, fmt.Errorf("read which sessions see which projects: %w", err)
 		}
-		sight.ListExpired = depends && !fresh
-		if project == nil {
-			continue
+		if sees {
+			markPair(sight.Sees, project, session)
 		}
-		if sight.Sees[*project] == nil {
-			sight.Sees[*project] = map[string]bool{}
+		if depends && !fresh {
+			markPair(sight.ListExpired, project, session)
 		}
-		sight.Sees[*project][*session] = true
 	}
 	if err := rows.Err(); err != nil {
 		return SessionSight{}, fmt.Errorf("read which sessions see which projects: %w", err)
 	}
 	return sight, nil
+}
+
+// markPair records session under project in pairs, either of SessionSight's maps.
+func markPair(pairs map[string]map[string]bool, project, session string) {
+	if pairs[project] == nil {
+		pairs[project] = map[string]bool{}
+	}
+	pairs[project][session] = true
 }
 
 // SessionsSeeProjects answers, in one statement (ReadSessionSight), which of sessions see which of

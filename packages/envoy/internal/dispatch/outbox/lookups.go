@@ -143,8 +143,8 @@ func (e *unansweredRecipients) Unwrap() error { return e.err }
 // or an id whose recipient read failed (loadRecipients) - keyed by its kind and that same key,
 // with the error the event's destinations then report. sight is what the batch read of the sight
 // of the sessions read for each project read (sightSessions, sightProjects: loadSessionSight), and
-// sightUnread why the batch may not judge by it (errListenerRecordExpired: settleSight), nil when
-// it may.
+// sightUnread, for each project, the sessions the batch may not judge by it
+// (errListenerRecordExpired: settleSight), none before it is settled.
 type lookups struct {
 	asks      map[string][]string
 	roots     map[string]json.RawMessage
@@ -160,7 +160,7 @@ type lookups struct {
 	sight         access.SessionSight
 	sightSessions map[string]struct{}
 	sightProjects map[string]struct{}
-	sightUnread   error
+	sightUnread   map[string]map[string]bool
 }
 
 func (l *lookups) followers(askID string) ([]string, error) {
@@ -242,8 +242,8 @@ func (l *lookups) sees(sessionID, project string) (bool, error) {
 	switch {
 	case !session || !judged:
 		return false, fmt.Errorf("the batch read no sight of session %s for project %s", sessionID, project)
-	case l.sightUnread != nil:
-		return false, fmt.Errorf("the batch read no sight of session %s for project %s: %w", sessionID, project, l.sightUnread)
+	case l.sightUnread[project][sessionID]:
+		return false, fmt.Errorf("the batch read no sight of session %s for project %s: %w", sessionID, project, errListenerRecordExpired)
 	}
 	return l.sight.Sees[project][sessionID], nil
 }
@@ -400,34 +400,30 @@ func loadSessionSight(ctx context.Context, db queryer, want *wanted, found *look
 }
 
 // settleSight judges the sight loadLookups read as every outbox read of a sight is judged
-// (ListenerRefresh.settle), once the gate the lookups held is given back: where its verdict
+// (ListenerRefresh.settle), once the gate the lookups held is given back: where a verdict of it
 // depended on a list of an expired listener record, the listener is asked again and the sight read
 // once more, under the gate (readSightOnce). A record that stays expired fails no read: the batch
-// may judge by no sight (lookups.sightUnread), so every copy it would judge is withheld and its
-// event backs off (destinations.withheld), and nothing is sent or withheld on a list it could not
-// read.
+// may not judge a pair whose verdict depends on a list of it (lookups.sees), so that copy alone is
+// withheld and its event backs off (destinations.withheld), and nothing is sent or withheld on a
+// list it could not read. A pair whose verdict depends on no list is judged in the same pass.
 func (l *lookups) settleSight(ctx context.Context, deps Deps) error {
 	sight, err := deps.ListenerRefresh.settle(ctx, l.sight, func() (access.SessionSight, error) {
 		return readSightOnce(ctx, deps, slices.Sorted(maps.Keys(l.sightSessions)), slices.Sorted(maps.Keys(l.sightProjects)))
 	})
-	switch {
-	case errors.Is(err, errListenerRecordExpired):
-		l.sightUnread = err
-	case err != nil:
+	if err != nil {
 		return err
-	default:
-		l.sight = sight
 	}
+	l.sight, l.sightUnread = sight, sight.ListExpired
 	return nil
 }
 
 // ListenerRefresh is the API's refresh of the stored listener record (route_roster), which every
 // outbox read of a session's sight runs where its verdict depended on a list of a record that had
-// expired, before it reads the sight again (settle), as the API's readers refresh the record before
-// the session content rule reads it. cmd/dispatch builds the outbox before it registers the API, so
-// it gives the outbox an empty one and binds the API's refresh into it once the API is registered
-// (Bind). Until then it refreshes nothing, and a read whose verdict depends on a list of an expired
-// record fails as when the listener does not answer.
+// expired, before it reads the sight again (settle), as the API refreshes it before it judges a
+// session's sight (api: refreshedSessionSight). cmd/dispatch builds the outbox before it registers
+// the API, so it gives the outbox an empty one and binds the API's refresh into it once the API is
+// registered (Bind). Until then it refreshes nothing, and a read whose verdict depends on a list of
+// an expired record fails as when the listener does not answer.
 type ListenerRefresh struct {
 	bound atomic.Pointer[func(context.Context)]
 }
@@ -438,31 +434,27 @@ func (l *ListenerRefresh) Bind(refresh func(context.Context)) {
 	l.bound.Store(&refresh)
 }
 
-// errListenerRecordExpired is a sight not read because a verdict of it depends on a listener list
-// and the stored listener record holds no answer that has not expired, even once the listener was
-// asked again (ListenerRefresh.settle).
-var errListenerRecordExpired = errors.New("the stored listener record has expired and asking the listener again did not renew it, so no session's list could be read")
+// errListenerRecordExpired is a pair's sight not read because its verdict depends on a listener
+// list and the stored listener record holds no answer that has not expired, even once the listener
+// was asked again (ListenerRefresh.settle).
+var errListenerRecordExpired = errors.New("the stored listener record has expired and asking the listener again did not renew it, so the session's list could not be read")
 
 // settle answers sight, one read of sessions' sight (access.ReadSessionSight), as the outbox judges
-// by it. Where its verdict depended on a list of a listener record that had expired, it runs the
-// bound refresh (askAgain) and answers what reread then reads; a record that has still expired
-// answers errListenerRecordExpired, which each caller takes as a sight it could not read. Where no
-// verdict depended on a list it asks nothing, and with no ListenerRefresh, as this package's tests
-// and a process with no API build Deps, it answers sight as it was read.
+// by it. Where a verdict of it depended on a list of a listener record that had expired, it runs
+// the bound refresh (askAgain) and answers what reread then reads, whose ListExpired holds each
+// pair whose verdict still depends on a list of an expired record: each caller takes such a pair
+// alone as a sight it could not read (errListenerRecordExpired, sightOf). Where no verdict depended
+// on a list it asks nothing, and with no ListenerRefresh, as this package's tests and a process
+// with no API build Deps, it answers sight as it was read and holds no pair unread.
 func (l *ListenerRefresh) settle(ctx context.Context, sight access.SessionSight, reread func() (access.SessionSight, error)) (access.SessionSight, error) {
-	if l == nil || !sight.ListExpired {
+	if l == nil {
+		sight.ListExpired = nil
 		return sight, nil
 	}
-	if l.askAgain(ctx) {
-		var err error
-		if sight, err = reread(); err != nil {
-			return access.SessionSight{}, err
-		}
+	if len(sight.ListExpired) == 0 || !l.askAgain(ctx) {
+		return sight, nil
 	}
-	if sight.ListExpired {
-		return access.SessionSight{}, errListenerRecordExpired
-	}
-	return sight, nil
+	return reread()
 }
 
 // askAgain runs the bound refresh, and reports false, running nothing, before Bind. Every caller
@@ -484,15 +476,29 @@ func (l *ListenerRefresh) askAgain(ctx context.Context) bool {
 
 // readSight is every outbox read of which of sessions see which of projects but the batch's own
 // (loadSessionSight, settleSight): one statement on deps's pool under its gate (readSightOnce),
-// judged as settle judges it, so where its verdict depended on a list of an expired listener record
-// the listener is asked again, with the gate free, and the statement run once more.
-func readSight(ctx context.Context, deps Deps, sessions, projects []string) (map[string]map[string]bool, error) {
+// judged as settle judges it, so where a verdict depended on a list of an expired listener record
+// the listener is asked again, with the gate free, and the statement run once more. Its caller
+// judges each pair by what it answers (sightOf).
+func readSight(ctx context.Context, deps Deps, sessions, projects []string) (access.SessionSight, error) {
 	read := func() (access.SessionSight, error) { return readSightOnce(ctx, deps, sessions, projects) }
 	sight, err := read()
 	if err == nil {
 		sight, err = deps.ListenerRefresh.settle(ctx, sight, read)
 	}
-	return sight.Sees, err
+	return sight, err
+}
+
+// sightOf answers whether session sees project by sight, a read that answered err (readSight):
+// err where the read failed, and errListenerRecordExpired where that pair's verdict still depends
+// on a list of an expired listener record (access.SessionSight.ListExpired), each seeing nothing.
+func sightOf(sight access.SessionSight, err error, session, project string) (bool, error) {
+	switch {
+	case err != nil:
+		return false, err
+	case sight.ListExpired[project][session]:
+		return false, errListenerRecordExpired
+	}
+	return sight.Sees[project][session], nil
 }
 
 // readSightOnce is one read of which of sessions see which of projects (access.ReadSessionSight)
