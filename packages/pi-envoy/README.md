@@ -65,10 +65,12 @@ which fails the route rather than reporting a release it did not make — is sen
 next heartbeat, so the role is not left standing while this process's registrations renew its
 claim. The transcript's `envoy-role-claim` entry names the session claimed for and this process
 too: a release another process wrote on the same transcript ends no role here, and a claim
-another process wrote is pressed only while this process holds none. The queues, deadlines and
-shared role state behind all of this are `src/registration-state.ts`, beside the extension's
-other `src/` modules: a queued task acts through a handle that refuses every step past the
-task's deadline, or once its session is no longer the open session.
+another process wrote is pressed only while this process holds none. The shared role state
+behind all of this, its two serial queues and the handle each queued task acts through are
+`src/registration-state.ts`, beside the extension's other `src/` modules. It builds the queues
+from the generic serial queue of `src/task-queue.ts`, which holds each task's deadline timer. A
+queued task acts through a handle that refuses every step past the task's deadline, or once its
+session is no longer the open session.
 
 A session pod's launch names the role its session holds in `ENVOY_SESSION_ROLE`, and that
 session in `ENVOY_SESSION_ROLE_SESSION`: the id the pod starts the agent with (`omp
@@ -173,7 +175,31 @@ is dropped, so a restart at the consumer's ack floor shows nothing again (up to 
 shown in 72 hours); a crash between
 showing a message and recording it can show it twice, never lose it. A registration the listener
 can give no consumer is refused by name, and the session says once that Envoy inbound is
-unavailable and asks again at every heartbeat.
+unavailable and asks again at every heartbeat. When a registration is accepted after that, the
+session says once that Envoy inbound is restored and that what the stream stored meanwhile
+arrives now. A registration the listener answers with the bus-outage 503 (its message bus did not
+answer) is held for two minutes from the first such answer, also where its retry got no answer or
+a 5xx that names no reason; after that the session is told once that its registration is not
+recorded for certain, since the retry may have landed, and, when one is accepted, that the
+listener recorded one. A retry the listener refuses with a reason, such as `consumer_limit`, is
+told at once as Envoy inbound unavailable. A refusal or a lost relay subject after that
+notice is told once more, as Envoy inbound unavailable, and the accepted registration after it
+says that Envoy inbound is restored. An edge listener's 503 `repositories_unknown` (it could not
+read the repositories of the session's projects) is told at once as Envoy GitHub topics withheld:
+the listener withholds the messages of the session's GitHub topics. If the listener already held
+the session's registration, it kept that registration and the session's consumer, so the session
+receives its other messages; if it held none, the session receives nothing until a registration
+is accepted. The notice, the pane note and the log line say both. The accepted registration after
+it says that the listener follows those topics again. A refusal or a lost relay subject after that
+notice is told once more, as Envoy inbound unavailable. At the session's start the first NATS
+dial can fail: the start warns in the pane that the session is not registered and keeps trying in
+the background, but the session is told that Envoy inbound is unavailable only when no
+registration is accepted within two minutes. The log does not wait: the first registration that
+finds no relay subject
+writes a warning at once, `envoy: a registration found that this session holds no relay subject`,
+with why the relay subject could not be opened, and a later one of the same outage writes no
+second one. A session whose stop has begun registers nothing, and is told neither that
+Envoy inbound is unavailable nor that it is restored.
 
 ## A person's message from Dispatch
 

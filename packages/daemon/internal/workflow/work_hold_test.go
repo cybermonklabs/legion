@@ -1556,6 +1556,12 @@ func (s projectedSource) State(ctx context.Context, tx pgx.Tx) (api.State, []sup
 	return state, s.claims, err
 }
 
+func (s projectedSource) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
+	observed, err := projection.Observe(ctx, projection.ObservedInputs{Tx: tx, Store: record.NewStore(), Project: "LEGION",
+		Steps: config.DesignGateRootIssues.Steps(), Now: holdNow})
+	return observed, s.claims, err
+}
+
 // The rule "a queued opening start stands" (OpeningStartStands), the one body the opening and the
 // outbox read it with: a queued start of the opening stands over a start for current where it is
 // newer than any stop that still acts and than the start in hand's own row, and it does not stand

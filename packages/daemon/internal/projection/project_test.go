@@ -1,6 +1,7 @@
 package projection
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -34,7 +35,7 @@ type projectionStore struct {
 	mirror []record.DispatchIssueRow
 	// lifecycles names the trees whose lifecycle stands open under the workflow, which is what
 	// says a tree runs (record.TreeLive); gates is each issue's design gates by step, as
-	// record.Store.GatesOf and record.Store.Gates answer them; owed is the start each issue owes
+	// record.Store.Gates answers them; owed is the start each issue owes
 	// a worker of it, which is a returning issue's place in the waiting line. The three are what
 	// record.ReadLineFacts reads for the line.
 	lifecycles []string
@@ -97,28 +98,29 @@ func (s projectionStore) HeldRows(context.Context, pgx.Tx, string, string, time.
 	return s.held, nil
 }
 
+// AllPhases is every issue's phases rows, by issue, as the real store answers them in one
+// statement for the project's issues (record.Postgres.AllPhases). Every issue of this store is
+// the project's.
+func (s projectionStore) AllPhases(context.Context, pgx.Tx, string) (map[string][]record.PhaseRow, error) {
+	return s.phases, nil
+}
+
+// PullRequestsOf is the pull request of each of issues this store holds, by issue, as the real
+// store reads them in one statement: an issue with none has no entry.
+func (s projectionStore) PullRequestsOf(_ context.Context, _ pgx.Tx, issues []string) (map[string]record.PullRequest, error) {
+	requests := make(map[string]record.PullRequest, len(issues))
+	for _, issue := range issues {
+		if pr := s.pullRequests[issue]; pr != nil {
+			requests[issue] = *pr
+		}
+	}
+	return requests, nil
+}
+
 // OpenIntakeGiveUps answers no give-up open: the projection's reading of real records is
 // intake_giveups_test.go's, on PostgreSQL.
 func (projectionStore) OpenIntakeGiveUps(context.Context, pgx.Tx, string, int) (record.IntakeGiveUps, error) {
 	return record.IntakeGiveUps{}, nil
-}
-func (s projectionStore) Phases(_ context.Context, _ pgx.Tx, issue string) ([]record.PhaseRow, error) {
-	return s.phases[issue], nil
-}
-
-// PullRequestsOf answers the pull request of each of issues the store holds, by key, as the real
-// store reads them in one statement: an issue it holds none for has no entry.
-func (s projectionStore) PullRequestsOf(_ context.Context, _ pgx.Tx, issues []string) (map[string]record.PullRequest, error) {
-	of := make(map[string]record.PullRequest, len(issues))
-	for _, issue := range issues {
-		if pr := s.pullRequests[issue]; pr != nil {
-			of[issue] = *pr
-		}
-	}
-	return of, nil
-}
-func (s projectionStore) GatesOf(_ context.Context, _ pgx.Tx, issue string) (map[record.DesignStep]record.DesignGate, error) {
-	return s.gates[issue], nil
 }
 func (s projectionStore) OpenProductionChecks(context.Context, pgx.Tx) ([]record.ProductionCheck, error) {
 	return s.checks, nil
@@ -168,6 +170,51 @@ func (s projectionStore) IssuesOf(_ context.Context, _ pgx.Tx, _ string, keys []
 		}
 	}
 	return issues, nil
+}
+
+// LiveIssues is every record of project that is not finished, by key, as the real store reads
+// them (record.Postgres.LiveIssues): each not in phase done, each set back to todo, and each done
+// one that still holds a slot. It is the read the admission block is judged from
+// (blockers.JudgeAdmission).
+func (s projectionStore) LiveIssues(_ context.Context, _ pgx.Tx, project string) ([]record.Issue, error) {
+	slotted := make(map[string]bool, len(s.slots))
+	for _, slot := range s.slots {
+		slotted[slot.Issue] = true
+	}
+	var live []record.Issue
+	for _, issue := range s.issues {
+		if issue.Project == project && (issue.Phase != phase.Done || issue.Status == "todo" || slotted[issue.Key]) {
+			live = append(live, issue)
+		}
+	}
+	slices.SortFunc(live, func(a, b record.Issue) int { return cmp.Compare(a.Key, b.Key) })
+	return live, nil
+}
+
+// AncestorsOf is the record of each of keys and of every issue above it on the chain of recorded
+// parents, for the issues of project, by key, as the real store walks it: the read the line's facts
+// make of a done parent the live records leave out (record.ReadParents).
+func (s projectionStore) AncestorsOf(_ context.Context, _ pgx.Tx, project string, keys []string) ([]record.Issue, error) {
+	byKey := make(map[string]record.Issue, len(s.issues))
+	for _, issue := range s.issues {
+		if issue.Project == project {
+			byKey[issue.Key] = issue
+		}
+	}
+	chain := map[string]record.Issue{}
+	for _, key := range keys {
+		for issue, ok := byKey[key]; ok; {
+			if _, walked := chain[issue.Key]; walked {
+				break
+			}
+			chain[issue.Key] = issue
+			if issue.Parent == nil {
+				break
+			}
+			issue, ok = byKey[*issue.Parent]
+		}
+	}
+	return slices.SortedFunc(maps.Values(chain), func(a, b record.Issue) int { return cmp.Compare(a.Key, b.Key) }), nil
 }
 
 // GatesRestingOn is every gate this store holds that rests on one of ancestors

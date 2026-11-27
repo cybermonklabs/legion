@@ -885,7 +885,7 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 			r.enqueue(record.SuperviseRequest{Op: "start", Tree: r.tree.key, Role: claim.RoleTester, Generation: 1, Phase: phase.Testing, News: true})
 		}},
 		{name: "the resume of an idle release the outbox cancelled", act: func(r *workHoldRig) {
-			resume, err := r.runner.releaseResume(r.tree.key, r.tree.key)(claim.RoleImplementer, 1)
+			resume, err := r.runner.releaseResume(r.tree.key, r.tree.key)(claim.RoleImplementer, 1, store.DroppedWake{})
 			if err != nil {
 				r.t.Fatalf("build the cancelled release's resume: %v", err)
 			}

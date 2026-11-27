@@ -32,8 +32,8 @@ func logged() (*slog.Logger, *bytes.Buffer) {
 // program does not start: ENVOY_SESSION_REAP_INTERVAL=0 reached time.NewTicker and panicked the
 // listener's reaper loops before these readers existed. A value time.ParseDuration cannot read
 // is a WARN and the default, since a program never refuses to start over a malformed duration.
-// A setting where zero says something - ENVOY_UNPLACEABLE_RETRY_WINDOW=0s, which asks for no
-// retry at all - is read through Duration, which takes it.
+// A setting where zero says something - ENVOY_UNPLACEABLE_RETRY_WINDOW=0s, which asks for no wait
+// before a wake is reported - is read through Duration, which takes it.
 func TestPositiveDurationRefusesADurationThatIsNotPositive(t *testing.T) {
 	const name = "ENVOY_SESSION_REAP_INTERVAL"
 	for _, value := range []string{"0", "0s", "-1m"} {
@@ -70,12 +70,13 @@ func TestPositiveDurationRefusesADurationThatIsNotPositive(t *testing.T) {
 		}
 	})
 	t.Run("a setting zero speaks for keeps taking it", func(t *testing.T) {
-		// ENVOY_UNPLACEABLE_RETRY_WINDOW=0s asks the listener to retry an unplaceable delivery
-		// not at all; its own default is five minutes (defaultUnplaceableRetryWindow).
+		// ENVOY_UNPLACEABLE_RETRY_WINDOW=0s asks the listener for no wait before it reports the
+		// wake of a session with no record; its own default is a minute
+		// (defaultUnplaceableRetryWindow).
 		const window = "ENVOY_UNPLACEABLE_RETRY_WINDOW"
 		logger, _ := logged()
-		if got := envconf.Duration(logger, environment(map[string]string{window: "0s"}), window, 5*time.Minute); got != 0 {
-			t.Fatalf("Duration(\"0s\") = %s, want the zero window that asks for no retry", got)
+		if got := envconf.Duration(logger, environment(map[string]string{window: "0s"}), window, time.Minute); got != 0 {
+			t.Fatalf("Duration(\"0s\") = %s, want the zero window that asks for no wait", got)
 		}
 	})
 }
