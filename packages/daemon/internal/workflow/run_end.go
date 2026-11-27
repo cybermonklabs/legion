@@ -309,22 +309,12 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 // open is proved by nothing here, and this says only what the code does.
 func (e *Engine) queueDeletesAfterOldRuns(ctx context.Context, tx pgx.Tx, runs *factRuns) error {
 	for task, issue := range runs.deleteAfterOldRuns {
-		starts, err := e.store.StepRuns(ctx, tx, []string{task.issue})
+		_, err := e.store.StepRuns(ctx, tx, []string{task.issue})
 		if err != nil {
 			return err
 		}
-		open := false
-		for _, start := range starts {
-			if start.Generation == task.generation && start.Place.Task == task.place.Task && start.Run == record.RunOpen {
-				open = true
-				e.logOnCommit(ctx, "workflow: a start of the task is still open, so the deletion its move into the retro queued is the one", "issue", task.issue,
-					"generation", task.generation, "task", task.place.Task, "kind", start.Place.Kind, "place", start.Place.Place)
-				break
-			}
-		}
-		if open {
-			continue
-		}
+		// CONTROL (fb8-ctl-2): the read of the task's open starts is taken out, so a leave or a
+		// new generation queues the deletion whatever still runs.
 		if err := e.queueBesideDelete(ctx, tx, issue, task.place.Task); err != nil {
 			return err
 		}
