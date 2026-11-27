@@ -1091,3 +1091,96 @@ test("a refused call keeps no change and changes no answer", () => {
   expect(gh(run, "pr", "view", "7", "--json", "body").stdout).toBe('{"body":"new"}\n');
   expect(pullChanges(run)).toEqual([{ action: "edit", numbers: [7], body: "new" }]);
 });
+
+// The typed GitHub parts of a case's world: the repository's settings over the stand-in's own, each
+// branch's rules and `[]` for a branch they do not name, and a pull request's node id, merge state,
+// auto-merge request, diff and merge answer, in each read GitHub answers them in; a world that
+// states no rules answers their read 404, as before the part.
+test("the world's settings, branch rules and a pull request's merge state answer GitHub's reads and the merge", () => {
+  const diff = "diff --git a/x b/x\n+x\n";
+  const merged = { sha: "c".repeat(40), merged: true, message: "Pull Request successfully merged" };
+  const pull = {
+    ...worldPull(7, "legion/ACME-12"),
+    nodeId: "PR_kwDOfixture7",
+    mergeStateStatus: "BLOCKED",
+    autoMergeRequest: null,
+    diff,
+    mergeResult: merged,
+  };
+  const run = runWith(
+    githubFixtures(
+      {
+        repository: "acme/widgets",
+        pullRequests: [pull],
+        mergeQueue: [
+          { pullRequest: 7, request: "enqueuePullRequest", answer: "queued", detail: "" },
+        ],
+        settings: { default_branch: "main", allow_merge_commit: false },
+        branchRules: [{ branch: "main", rules: [{ type: "merge_queue" }] }],
+      },
+      "main",
+      "ACME-12"
+    ).routes
+  );
+  writeFileSync(
+    path.join(run, "world.json"),
+    JSON.stringify({ dispatch: { issue: { key: "ACME-12" } } })
+  );
+  const out = (...args: string[]) => gh(run, ...args).stdout;
+  expect(out("api", "repos/acme/widgets", "--jq", "[.full_name, .allow_merge_commit] | @tsv")).toBe(
+    "acme/widgets\tfalse\n"
+  );
+  expect(JSON.parse(out("api", "repos/acme/widgets/rules/branches/main"))).toEqual([
+    { type: "merge_queue" },
+  ]);
+  expect(JSON.parse(out("api", "repos/acme/widgets/rules/branches/develop"))).toEqual([]);
+  expect(
+    JSON.parse(out("pr", "view", "7", "--json", "id,mergeStateStatus,autoMergeRequest"))
+  ).toEqual({
+    id: "PR_kwDOfixture7",
+    mergeStateStatus: "BLOCKED",
+    autoMergeRequest: null,
+  });
+  expect(
+    out("api", "repos/acme/widgets/pulls/7", "--jq", "[.node_id, .mergeable_state] | @tsv")
+  ).toBe("PR_kwDOfixture7\tblocked\n");
+  const read = JSON.parse(
+    out(
+      "api",
+      "graphql",
+      "-F",
+      "number=7",
+      "-f",
+      'query=query($number:Int!){repository(owner:"acme",name:"widgets"){pullRequest(number:$number){id mergeStateStatus autoMergeRequest headRefOid}}}'
+    )
+  );
+  expect(read.data.repository.pullRequest).toMatchObject({
+    id: "PR_kwDOfixture7",
+    mergeStateStatus: "BLOCKED",
+    autoMergeRequest: null,
+    headRefOid: "b".repeat(40),
+  });
+  expect(out("pr", "diff", "7")).toBe(diff);
+  expect(out("pr", "diff")).toBe(diff);
+  const enqueue =
+    "query=mutation($pr:ID!){enqueuePullRequest(input:{pullRequestId:$pr}){mergeQueueEntry{position}}}";
+  expect(gh(run, "api", "graphql", "-f", enqueue, "-f", "pr=PR_kwDOfixture7").code).toBe(0);
+  expect(JSON.parse(out("pr", "merge", "7", "--squash"))).toEqual(merged);
+  expect(
+    JSON.parse(
+      out("api", "-X", "PUT", "repos/acme/widgets/pulls/7/merge", "-f", "merge_method=squash")
+    )
+  ).toEqual(merged);
+  expect(pullChanges(run)).toEqual([
+    { action: "enqueue", number: 7, id: "PR_kwDOfixture7" },
+    { action: "merge", number: 7, method: "squash", auto: false },
+    { action: "merge", number: 7, method: "squash", auto: false },
+  ]);
+
+  const before = worldRun([worldPull(7, "legion/ACME-12")]);
+  expect(gh(before, "api", "repos/acme/widgets/rules/branches/main")).toMatchObject({
+    code: 1,
+    stderr: "gh: Not Found (HTTP 404)\n",
+  });
+  expect(gh(before, "pr", "diff", "7").code).toBe(1);
+});

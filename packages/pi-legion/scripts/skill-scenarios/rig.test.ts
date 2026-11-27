@@ -2047,7 +2047,7 @@ describe.skipIf(withoutCaseTools)("lane R dry world builders", () => {
           'start_process() { shift 2; printf "%s\\n" "$@" >"$R/standin.argv"; daemon_pid=1; }',
           "await_start() { :; }",
           'bun() { shift; printf "%s\\n" "$@" >"$R/pane.argv"; : >"$R/worker.env"; }',
-          "R=$1 here=$2 co=/label/checkout profile=skills-base",
+          "R=$1 here=$2 co=/label/checkout profile=skills-base dispatch_port=1 work=$R",
           "case_legion_pane implementer",
         ].join("\n"),
         [R, scenarios]
@@ -2065,6 +2065,52 @@ describe.skipIf(withoutCaseTools)("lane R dry world builders", () => {
         pane: [...want],
       });
     }
+  });
+
+  // Catches: a root architect's case whose stand-in and pane hold the claim on the case's issue,
+  // as lane D once did, when the world states the claim on the tree's root (`daemon.claim`).
+  test("a world's claim is the claim the daemon stand-in and the pane are given", () => {
+    const example = JSON.parse(readFileSync(heldoutExample, "utf8"));
+    example.cases[0].world.daemon.claim = { issue: "ACME-10", tree: "ACME-10" };
+    const file = path.join(freshDir("claim-input"), "cases.json");
+    writeFileSync(file, JSON.stringify(example));
+    const R = freshDir("claim");
+    const run = dryRun(R, file, "heldout", "P05");
+    expect({ code: run.exitCode, error: run.stderr.toString() }).toEqual({ code: 0, error: "" });
+    mkdirSync(path.join(R, "logs"));
+    writeFileSync(path.join(R, "logs", "daemon.log"), "listening on http://127.0.0.1:1\n");
+    const launched = bash(
+      [
+        "set -euo pipefail",
+        defs("case_legion_pane"),
+        'start_process() { shift 2; printf "%s\\n" "$@" >"$R/standin.argv"; daemon_pid=1; }',
+        "await_start() { :; }",
+        'bun() { shift; printf "%s\\n" "$@" >"$R/pane.argv"; : >"$R/worker.env"; }',
+        "R=$1 here=$2 co=/label/checkout profile=skills-base dispatch_port=17 work=$R",
+        "case_legion_pane root-architect",
+      ].join("\n"),
+      [R, scenarios]
+    );
+    expect({ code: launched.code, stderr: launched.stderr }).toEqual({ code: 0, stderr: "" });
+    const standin = readFileSync(path.join(R, "standin.argv"), "utf8").trimEnd().split("\n");
+    const pane = readFileSync(path.join(R, "pane.argv"), "utf8").trimEnd().split("\n");
+    const after = (flag: string, count = 1) =>
+      standin.slice(standin.indexOf(flag) + 1, standin.indexOf(flag) + 1 + count);
+    expect({
+      issue: standin[5],
+      role: standin[6],
+      tree: after("--tree"),
+      caseDispatch: after("--case-dispatch"),
+      dispatch: after("--dispatch", 2),
+      pane: pane.slice(-5, -2),
+    }).toEqual({
+      issue: "ACME-10",
+      role: "architect",
+      tree: ["ACME-10"],
+      caseDispatch: [path.join(R, "dispatch-fixture.json")],
+      dispatch: ["http://127.0.0.1:17", path.join(R, "services", "dispatch-token")],
+      pane: ["architect", "ACME-10", "ACME-10"],
+    });
   });
 });
 

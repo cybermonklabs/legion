@@ -1428,3 +1428,385 @@ test.skipIf(skipGo)(
   },
   GO_BOUND
 );
+
+// The typed daemon parts of a case's world (daemon-standin-world.ts), each on a synthetic world made
+// from the example's P05 (ACME-12, a child of ACME-10, implementing): every read answers from the
+// part, a fact no part holds is 404, and an architect's operation is held to the rules of
+// api/architect.go over the records and the run's Dispatch.
+
+/** P05's world with `edit` made to its daemon part and its Dispatch part. */
+function typedWorld(edit: (world: World) => void): World {
+  const world = structuredClone(worldOf("P05"));
+  edit(world);
+  return World.parse(world);
+}
+
+/** A record of `daemon.records`. */
+const daemonRecord = (
+  key: string,
+  fields: Partial<NonNullable<NonNullable<World["daemon"]>["records"]>[number]> = {}
+) => ({
+  key,
+  tree: "ACME-10",
+  parent: "ACME-10",
+  phase: "planning" as const,
+  status: "in_progress",
+  generation: 1,
+  architect: null,
+  ...fields,
+});
+
+/** The run's Dispatch as an architect's operation reads an issue of it (`GET /api/v1/issues/{key}`)
+ * and the daemon writes its status (`PATCH`), holding `issues`, each by key; `writes` is each
+ * status write, its issue, its status and its actor. */
+function caseDispatch(
+  issues: Record<string, { status: string; parent: string | null; blocked_by?: string[] }>
+) {
+  const writes: { key: string; status: unknown; actor: unknown }[] = [];
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    async fetch(request) {
+      const named = /^\/api\/v1\/issues\/([^/]+)$/.exec(new URL(request.url).pathname)?.[1];
+      const key = named === undefined ? undefined : decodeURIComponent(named);
+      const held = key === undefined ? undefined : issues[key];
+      if (held === undefined || key === undefined)
+        return Response.json({ code: "ISSUE_NOT_FOUND", error: "no issue" }, { status: 404 });
+      if (request.method === "PATCH") {
+        const body = (await request.json()) as { status: string; actor: unknown };
+        writes.push({ key, status: body.status, actor: body.actor });
+        held.status = body.status;
+      }
+      return Response.json({ key, blocked_by: [], ...held });
+    },
+  });
+  started.push({ stop: () => server.stop(true) });
+  return { url: `http://127.0.0.1:${server.port}`, token: "dispatch-token", writes };
+}
+
+test("a case's typed daemon parts answer read_record and read_state, and an issue no part records is 404", async () => {
+  const gateId = randomUUID();
+  const world = typedWorld((w) => {
+    if (w.daemon === null) throw new Error("P05 has a daemon");
+    w.daemon.claim = { issue: "ACME-12", tree: "ACME-10" };
+    w.daemon.issue = { tree: "ACME-10", parent: "ACME-10", generation: 2, lingerUntil: null };
+    w.daemon.architect = { state: "suspended" };
+    w.daemon.entry = { phase: 2, turn: 2, owedTask: null };
+    w.daemon.records = [
+      daemonRecord("ACME-10", { tree: "ACME-10", parent: null, architect: { state: "working" } }),
+      daemonRecord("ACME-13", { phase: "admitted", status: "todo" }),
+    ];
+    w.daemon.admission = {
+      cap: 2,
+      active: ["ACME-10", "ACME-12"],
+      waiting: ["ACME-13"],
+      blocked: ["ACME-13"],
+    };
+    w.daemon.gate = [{ step: "spec", document: "spec.md", current: 2, approved: 1 }];
+    w.dispatch.issues = [
+      {
+        key: "ACME-13",
+        status: "todo",
+        parent: "ACME-10",
+        rank: null,
+        labels: [],
+        blockedBy: ["ACME-14"],
+        claimedBy: null,
+      },
+    ];
+  });
+  const daemon = boot({
+    role: "implementer",
+    tree: "ACME-10",
+    phase: "implementing",
+    world,
+    gateIds: { spec: gateId },
+  });
+  expect((await daemon.call("GET", RECORD("ACME-12"))).body).toEqual(
+    LegionIssueRecordResponse.parse({
+      key: "ACME-12",
+      generation: 2,
+      phase: "implementing",
+      status: "in_progress",
+      tree: "ACME-10",
+      repo: "cybermonklabs/legion",
+      defaultBranch: "main",
+      workers: {},
+      architect: { state: "suspended" },
+      phaseEntry: 2,
+      givenEntry: 2,
+    })
+  );
+  expect((await daemon.call("GET", RECORD("ACME-10"))).body).toMatchObject({
+    tree: "ACME-10",
+    phase: "planning",
+    architect: { state: "working" },
+    designGate: { artifactId: gateId, currentVersion: 2, approvedVersion: 1 },
+    gatedSteps: [
+      {
+        step: "spec",
+        artifactId: gateId,
+        currentVersion: 2,
+        approvedVersion: 1,
+        status: "waiting",
+      },
+    ],
+  });
+  expect(await daemon.call("GET", RECORD("ACME-99"))).toMatchObject({
+    status: 404,
+    body: { code: "RECORD_NOT_FOUND" },
+  });
+  const state = LegionStateResponse.parse((await daemon.call("GET", "/legion/v1/state")).body);
+  expect(Object.keys(state.issues ?? {})).toEqual(["ACME-12", "ACME-10", "ACME-13"]);
+  expect(state.admission).toMatchObject({
+    cap: 2,
+    active: ["ACME-10", "ACME-12"],
+    waiting: ["ACME-13"],
+    blocked: [{ issue: "ACME-13", blockedBy: ["ACME-14"] }],
+  });
+});
+
+test("a case's architect is held to its claim's ownership of the world's records and the run's Dispatch", async () => {
+  const world = typedWorld((w) => {
+    if (w.daemon === null) throw new Error("P05 has a daemon");
+    w.daemon.claim = { issue: "ACME-10", tree: "ACME-10" };
+    w.daemon.records = [
+      daemonRecord("ACME-10", { tree: "ACME-10", parent: null }),
+      daemonRecord("ACME-11", { phase: "done", status: "done" }),
+      daemonRecord("ACME-15", { tree: "ACME-20", parent: "ACME-20", phase: "admitted" }),
+      daemonRecord("ACME-20", { tree: "ACME-20", parent: null }),
+    ];
+    w.daemon.gate = [{ step: "spec", document: "spec.md", current: 1, approved: 1 }];
+  });
+  const dispatch = caseDispatch({
+    "ACME-10": { status: "in_progress", parent: null },
+    "ACME-11": { status: "done", parent: "ACME-10" },
+    "ACME-12": { status: "in_progress", parent: "ACME-10" },
+    "ACME-13": { status: "triage", parent: "ACME-12" },
+    "ACME-14": { status: "backlog", parent: "ACME-10", blocked_by: ["ACME-16"] },
+    "ACME-15": { status: "backlog", parent: "ACME-10" },
+    "ACME-16": { status: "todo", parent: null },
+    "ACME-17": { status: "triage", parent: "ACME-30" },
+    "ACME-30": { status: "in_progress", parent: null },
+  });
+  const root = boot({
+    role: "architect",
+    issue: "ACME-10",
+    tree: "ACME-10",
+    phase: "implementing",
+    world,
+    gateIds: { spec: randomUUID() },
+    caseDispatch: dispatch,
+  });
+  const { grantId } = await root.grant();
+  const release = (...issues: string[]) =>
+    root.call("POST", "/legion/v1/waves/release", { grantId, issues });
+  const op = (route: string, body: Body) => root.call("POST", route, { grantId, ...body });
+  const code = (status: number, value: string) => ({ status, body: { code: value } });
+  expect(await release("ACME-99")).toMatchObject(code(404, "ISSUE_NOT_FOUND"));
+  expect(await release("ACME-17")).toMatchObject(code(403, "ISSUE_OUTSIDE_TREE"));
+  expect(await release("ACME-12")).toMatchObject(code(409, "ISSUE_ALREADY_RELEASED"));
+  expect(await release("ACME-15")).toMatchObject({
+    status: 409,
+    body: {
+      code: "CHILD_IN_OTHER_TREE",
+      error: "ACME-15 runs in the tree of ACME-20, not ACME-10",
+    },
+  });
+  expect(await release("ACME-13", "ACME-14", "ACME-13")).toMatchObject({
+    status: 200,
+    body: {
+      released: ["ACME-13", "ACME-14"],
+      started: ["ACME-13"],
+      held: [{ issue: "ACME-14", blockedBy: ["ACME-16"] }],
+    },
+  });
+  expect((await root.call("GET", RECORD("ACME-13"))).body).toMatchObject({
+    tree: "ACME-10",
+    phase: "planning",
+    status: "in_progress",
+    architect: { state: "launching" },
+  });
+  expect((await root.call("GET", RECORD("ACME-14"))).body).toMatchObject({
+    phase: "admitted",
+    status: "todo",
+  });
+  // The release writes each child it releases todo, as the project's daemon (setDispatchStatus).
+  const daemon = { kind: "session", id: "legion-daemon:ACME" };
+  expect(dispatch.writes).toEqual([
+    { key: "ACME-13", status: "todo", actor: daemon },
+    { key: "ACME-14", status: "todo", actor: daemon },
+  ]);
+
+  expect(await op("/legion/v1/signoff", { issue: "ACME-99" })).toMatchObject(
+    code(404, "ISSUE_NOT_FOUND")
+  );
+  expect(await op("/legion/v1/signoff", { issue: "ACME-20" })).toMatchObject(
+    code(403, "ISSUE_OUTSIDE_TREE")
+  );
+  expect(await op("/legion/v1/signoff", { issue: "ACME-12" })).toMatchObject({ status: 200 });
+  expect(await op("/legion/v1/tasks/stop", { issue: "ACME-20", task: "t1" })).toMatchObject(
+    code(403, "ISSUE_OUTSIDE_TREE")
+  );
+  expect(await op("/legion/v1/children/rerun", { issue: "ACME-10" })).toMatchObject(
+    code(403, "CHILD_REQUIRED")
+  );
+  expect(await op("/legion/v1/children/rerun", { issue: "ACME-12" })).toMatchObject(
+    code(409, "CHILD_RUNNING")
+  );
+  expect(await op("/legion/v1/children/rerun", { issue: "ACME-11" })).toMatchObject({
+    status: 200,
+  });
+  expect((await root.call("GET", RECORD("ACME-11"))).body).toMatchObject({
+    phase: "admitted",
+    status: "todo",
+    generation: 2,
+  });
+  const register = (issue: string, version: number) =>
+    op("/legion/v1/gates/register", { issue, artifactId: randomUUID(), version });
+  expect(await register("ACME-12", 2)).toMatchObject(code(403, "GATE_ROOT_ONLY"));
+  expect(await register("ACME-10", 2)).toMatchObject({ status: 200 });
+  expect((await root.call("GET", RECORD("ACME-10"))).body).toMatchObject({
+    gatedSteps: [{ step: "spec", currentVersion: 2, approvedVersion: 1, status: "waiting" }],
+  });
+  const plan = (issue: string) =>
+    op("/legion/v1/plans/register", { issue, artifactId: randomUUID(), version: 1 });
+  expect(await plan("ACME-13")).toMatchObject({ status: 200, body: { plan: { version: 1 } } });
+  expect(await plan("ACME-17")).toMatchObject(code(403, "ISSUE_OUTSIDE_TREE"));
+
+  // A sub-architect owns only what is under its own issue.
+  const child = boot({
+    role: "architect",
+    issue: "ACME-12",
+    tree: "ACME-10",
+    phase: "implementing",
+    world: typedWorld((w) => {
+      if (w.daemon === null) throw new Error("P05 has a daemon");
+      w.daemon.claim = { issue: "ACME-12", tree: "ACME-10" };
+      w.daemon.records = [daemonRecord("ACME-10", { tree: "ACME-10", parent: null })];
+    }),
+    caseDispatch: dispatch,
+  });
+  const sub = await child.grant();
+  expect(
+    await child.call("POST", "/legion/v1/waves/release", {
+      grantId: sub.grantId,
+      issues: ["ACME-14"],
+    })
+  ).toMatchObject(code(403, "ISSUE_NOT_OWNED"));
+  expect(
+    await child.call("POST", "/legion/v1/signoff", { grantId: sub.grantId, issue: "ACME-10" })
+  ).toMatchObject(code(403, "ISSUE_NOT_OWNED"));
+  expect(
+    await child.call("POST", "/legion/v1/waves/release", {
+      grantId: sub.grantId,
+      issues: ["ACME-13"],
+    })
+  ).toMatchObject({ status: 200, body: { released: ["ACME-13"], started: ["ACME-13"] } });
+
+  // Without the run's Dispatch the daemon reads no issue to release.
+  const blind = boot({
+    role: "architect",
+    issue: "ACME-10",
+    tree: "ACME-10",
+    phase: "implementing",
+    world,
+    gateIds: { spec: randomUUID() },
+  });
+  const blindGrant = await blind.grant();
+  expect(
+    await blind.call("POST", "/legion/v1/waves/release", {
+      grantId: blindGrant.grantId,
+      issues: ["ACME-13"],
+    })
+  ).toMatchObject(code(500, "DISPATCH_UNAVAILABLE"));
+});
+
+test("a case's completion is held to the claim's phase entry, as api's entryFence holds it", async () => {
+  const head = "c".repeat(40);
+  const entered = (entry: NonNullable<NonNullable<World["daemon"]>["entry"]>) =>
+    typedWorld((w) => {
+      if (w.daemon === null || w.github === null) throw new Error("P05 has a daemon and GitHub");
+      w.daemon.entry = entry;
+      w.github.pullRequests.push({
+        number: 41,
+        state: "open",
+        draft: false,
+        head: { ref: "legion/ACME-12", sha: head },
+        base: "main",
+        title: "ACME-12",
+        body: "",
+        mergeCommit: null,
+        reviews: [],
+        reviewThreads: [],
+        checks: [],
+      });
+    });
+  const completion = async (world: World, commit: string) => {
+    const daemon = boot({ role: "implementer", tree: "ACME-10", phase: "implementing", world });
+    const { grantId } = await daemon.grant();
+    return daemon.call("POST", COMPLETE, {
+      grantId,
+      summary: "done",
+      verdict: "",
+      commit,
+      handoffId: "h-1",
+      handoffVersion: 1,
+    });
+  };
+  const owed = "Phase: implementing. Reason: the tests show a fault in the code.";
+  const movedBack = await completion(
+    entered({ phase: 2, turn: 1, owedTask: owed, movedBack: true }),
+    head
+  );
+  expect(movedBack).toMatchObject({ status: 409, body: { code: "HANDOFF_STALE_ENTRY" } });
+  expect(String(movedBack.body?.error)).toStartWith(
+    `ACME-12 handed the implementer phase implementing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on, and this completion is at commit ${head} while the pull request the record holds is at head ${head}, and the move that handed the phase out again moved the issue back`
+  );
+  expect(String(movedBack.body?.error)).toContain(
+    "your turn began before the daemon's task for entry 2 (owed-acme-12-implementer-entry-2)"
+  );
+  // The same head, no move back: the completion is the entry's work, and is taken.
+  expect(await completion(entered({ phase: 2, turn: 1, owedTask: null }), head)).toMatchObject({
+    status: 200,
+  });
+  expect(
+    await completion(entered({ phase: 2, turn: 1, owedTask: null }), "d".repeat(40))
+  ).toMatchObject({ status: 409, body: { code: "HANDOFF_STALE_ENTRY" } });
+  const above = await completion(entered({ phase: 1, turn: 2, owedTask: null }), head);
+  expect(above).toMatchObject({ status: 409, body: { code: "HANDOFF_STALE_ENTRY" } });
+  expect(String(above.body?.error)).toStartWith(
+    "this completion is of entry 2 of phase implementing of ACME-12"
+  );
+});
+
+test("a case's typed part the stand-in cannot serve refuses the start, naming the part", () => {
+  const start =
+    (world: World, options: Partial<StandinOptions> = {}) =>
+    () =>
+      boot({ role: "implementer", tree: "ACME-10", phase: "implementing", world, ...options });
+  expect(
+    start(
+      typedWorld((w) => {
+        if (w.daemon === null) throw new Error("P05 has a daemon");
+        w.daemon.records = [daemonRecord("ACME-10", { architect: { state: "active" } })];
+      })
+    )
+  ).toThrow("world.daemon.records[0].architect.state active is no state of a claim");
+  expect(
+    start(
+      typedWorld((w) => {
+        if (w.daemon === null) throw new Error("P05 has a daemon");
+        w.daemon.gate = [{ step: "spec", document: "spec.md", current: 1, approved: null }];
+      })
+    )
+  ).toThrow("world.daemon.gate[0].document spec.md");
+  expect(
+    start(
+      typedWorld((w) => {
+        if (w.daemon === null) throw new Error("P05 has a daemon");
+        w.daemon.claim = { issue: "ACME-10", tree: "ACME-10" };
+      })
+    )
+  ).toThrow("world.daemon.claim is ACME-10 in the tree of ACME-10");
+});

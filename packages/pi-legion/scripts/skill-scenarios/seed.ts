@@ -89,6 +89,7 @@
 //   seed.ts case-world                     seed the Dispatch part of $SKILL_SCENARIO_RUN/launch-world.json
 //   seed.ts case-readback <run dir>         capture the issue, documents, handoffs, comments,
 //                                          asks, results and complete event log (with seed cursor)
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
@@ -123,9 +124,12 @@ import {
   listComments,
   listIssueAsks,
   listIssueMessages,
+  listIssues,
+  patchIssue,
   recordCheckResult,
   resolveAsk,
 } from "../../../dispatch/e2e/api";
+import { caseClaim } from "./daemon-standin-world";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { World } from "./heldout-case";
 import { captureScored, ownerWalkIssues } from "./owner-walk-seed";
@@ -683,7 +687,7 @@ export async function implementHandoff(
   if (typeof body !== "object" || body === null || Array.isArray(body))
     throw new Error(`${bodyFile} holds no JSON object, which a handoff body is`);
   const recorded = await createHandoff(issue, "implement", body, IMPLEMENTER);
-  await agentPost(`/api/v1/issues/${encodeURIComponent(issue)}/results`, {
+  await agentCall("POST", `/api/v1/issues/${encodeURIComponent(issue)}/results`, {
     check: "k1",
     role: "implementer",
     verdict: "pass",
@@ -702,19 +706,20 @@ export async function implementHandoff(
   console.log(`seeded ${issue}'s implement handoff, version ${recorded.version} (${recorded.id})`);
 }
 
-/** `POST route` as the agent bearer, with `input` as its JSON body; a refusal names the route and
- * Dispatch's answer. */
-async function agentPost(route: string, input: unknown): Promise<void> {
+/** `method route` as the agent bearer, with `input` as its JSON body where it has one, answering
+ * Dispatch's JSON (undefined for an empty body); a refusal names the route and Dispatch's answer. */
+async function agentCall(method: string, route: string, input?: unknown): Promise<unknown> {
   const response = await fetch(new URL(route, baseUrl), {
-    method: "POST",
+    method,
     headers: {
       Authorization: `Bearer ${e2eAgentToken}`,
-      "Content-Type": "application/json",
+      ...(input === undefined ? {} : { "Content-Type": "application/json" }),
     },
-    body: JSON.stringify(input),
+    ...(input === undefined ? {} : { body: JSON.stringify(input) }),
   });
-  if (!response.ok)
-    throw new Error(`POST ${route} failed: ${response.status} ${await response.text()}`);
+  const text = await response.text();
+  if (!response.ok) throw new Error(`${method} ${route} failed: ${response.status} ${text}`);
+  return text === "" ? undefined : JSON.parse(text);
 }
 
 /** `capture-handoffs <file> <run dir>`: every handoff record of the run's issue, the seeded
@@ -1059,14 +1064,177 @@ export function caseDispatchRefs(
   );
 }
 
+/** The fields of a step record a world's step run (`world.dispatch.steps`) does not name, each one
+ * fixed value for every run the seed writes: the agent and the model, which name the seed and no
+ * real worker, and no type of work, which the step route takes as a field left out. Dispatch gives
+ * each run its attempt, which no write states. */
+const SEEDED_RUN = { agent: "rig-seed", model: "rig-seed" } as const;
+
+/** What the seed reads back of a Dispatch issue (`GET /api/v1/issues/{key}`, model.Issue). */
+const IssueReadBack = z.looseObject({
+  status: z.string(),
+  parent: z.string().nullish(),
+  rank: z.string().nullish(),
+  labels: z.array(z.string()).nullish(),
+  blocked_by: z.array(z.string()).nullish(),
+  claim: z.object({ actor: z.object({ kind: z.string(), id: z.string() }) }).nullish(),
+  artifacts: z.array(z.looseObject({ id: z.string(), name: z.string() })).nullish(),
+});
+type IssueReadBack = z.infer<typeof IssueReadBack>;
+
+/** What the seed reads back of the issue's step runs (`GET /api/v1/issues/{key}/steps`, the route
+ * `dispatch steps` reads, model.IssueSteps): each task's runs, in the order Dispatch lists them. */
+const StepsReadBack = z.looseObject({
+  tasks: z.array(
+    z.looseObject({
+      task: z.string(),
+      steps: z
+        .array(
+          z.looseObject({
+            task: z.string(),
+            step: z.number(),
+            kind: z.string(),
+            role: z.string(),
+            started_at: z.string().nullish(),
+            ended_at: z.string().nullish(),
+            result: z.string().nullish(),
+            rating: z.number().nullish(),
+            rating_reason: z.string().nullish(),
+          })
+        )
+        .nullish(),
+    })
+  ),
+});
+
+/** Whether `a` and `b` hold the same names, in any order. */
+function sameNames(a: readonly string[], b: readonly string[]): boolean {
+  return JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+}
+
+/** Each fact of the case's Dispatch parts (`world.dispatch.issue.labels`, `issues`, `steps`) the
+ * scratch Dispatch does not answer as the world states it, named by its part, as its own reads
+ * answer: `GET /api/v1/issues/{key}` (`dispatch read`) and `GET /api/v1/issues/{key}/steps`
+ * (`dispatch steps`). A rank is the place on the board, so the issues of rank 1, 2 and on stand in
+ * that order, the first before every other issue of its project. */
+async function caseDispatchFaults(world: World): Promise<string[]> {
+  const reader = { as: "agent" } as const;
+  const { issue } = world.dispatch;
+  const faults: string[] = [];
+  const read = async (key: string) => IssueReadBack.parse(await getIssue(key, reader));
+  const listed = (what: string, held: readonly string[], stated: readonly string[]) => {
+    if (!sameNames(held, stated))
+      faults.push(
+        `${what}: Dispatch answers [${held.join(", ")}], and the world states [${stated.join(", ")}]`
+      );
+  };
+  if (issue.labels !== undefined)
+    listed("world.dispatch.issue.labels", (await read(issue.key)).labels ?? [], issue.labels);
+  const others = world.dispatch.issues ?? [];
+  const held = new Map<string, IssueReadBack>();
+  for (const [index, each] of others.entries()) {
+    const at = `world.dispatch.issues[${index}]`;
+    const answer = await read(each.key);
+    held.set(each.key, answer);
+    const stated = (field: string, got: string | null, want: string | null) => {
+      if (got !== want)
+        faults.push(
+          `${at}.${field}: Dispatch answers ${got ?? "none"}, and the world states ${want ?? "none"}`
+        );
+    };
+    stated("status", answer.status, each.status);
+    stated("parent", answer.parent ?? null, each.parent);
+    stated("claimedBy", answer.claim?.actor.id ?? null, each.claimedBy);
+    listed(`${at}.labels`, answer.labels ?? [], each.labels);
+    listed(`${at}.blockedBy`, answer.blocked_by ?? [], each.blockedBy);
+  }
+  const ranked = others
+    .filter((each) => each.rank !== null)
+    .sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
+  for (const [place, each] of ranked.entries()) {
+    const rank = held.get(each.key)?.rank ?? "";
+    const before = ranked[place - 1];
+    if (before !== undefined && !((held.get(before.key)?.rank ?? "") < rank))
+      faults.push(
+        `world.dispatch.issues rank: Dispatch's board places ${each.key} (rank ${each.rank}) before ${before.key} (rank ${before.rank})`
+      );
+  }
+  const first = ranked[0];
+  if (first !== undefined) {
+    const project = first.key.split("-")[0] ?? "";
+    const board = await listIssues(project, reader);
+    const ahead = board.filter(
+      (each) => each.key !== first.key && (each.rank ?? "") < (held.get(first.key)?.rank ?? "")
+    );
+    if (ahead.length > 0)
+      faults.push(
+        `world.dispatch.issues rank: ${first.key} is rank ${first.rank}, and Dispatch's board places ${ahead.map((each) => each.key).join(", ")} before it`
+      );
+  }
+  const runs = world.dispatch.steps;
+  if (runs !== undefined) {
+    const answer = StepsReadBack.parse(
+      await agentCall("GET", `/api/v1/issues/${encodeURIComponent(issue.key)}/steps`)
+    );
+    const listedRuns = answer.tasks.flatMap((task) => task.steps ?? []);
+    if (listedRuns.length !== runs.length)
+      faults.push(
+        `world.dispatch.steps: Dispatch lists ${listedRuns.length} runs, and the world states ${runs.length}`
+      );
+    const instant = (text: string | null | undefined) =>
+      text === null || text === undefined ? undefined : parseInstant(text);
+    runs.forEach((run, index) => {
+      const got = listedRuns[index];
+      if (got === undefined) return;
+      const want = {
+        task: run.task,
+        step: run.step,
+        kind: run.kind,
+        role: run.role,
+        result: run.result,
+        rating: run.planRating ?? null,
+        reason: run.planReason ?? null,
+      };
+      const have = {
+        task: got.task,
+        step: got.step,
+        kind: got.kind,
+        role: got.role,
+        result: got.result === "" || got.result === undefined ? null : got.result,
+        rating: got.rating ?? null,
+        reason: got.rating_reason ?? null,
+      };
+      if (
+        JSON.stringify(have) !== JSON.stringify(want) ||
+        instant(got.started_at) !== instant(run.startedAt) ||
+        instant(got.ended_at) !== instant(run.endedAt)
+      )
+        faults.push(
+          `world.dispatch.steps[${index}]: Dispatch lists ${JSON.stringify({ ...have, startedAt: got.started_at, endedAt: got.ended_at ?? null })}, and the world states ${JSON.stringify({ ...want, startedAt: run.startedAt, endedAt: run.endedAt })}`
+        );
+    });
+  }
+  return faults;
+}
+
 /** File in a fresh scratch Dispatch. Dispatch allocates issue numbers; the placeholders reserve
  * preceding keys so the case's own references (including its parent's key) resolve unchanged.
- * Dispatch owns the ids and stamps of records. Seed across record kinds in case time order. */
+ * Dispatch owns the ids and stamps of records. Seed across record kinds in case time order. Then
+ * each other issue of the world (`world.dispatch.issues`) takes its status, its `blocked_by` links,
+ * its claim and its place on the board, each step run (`world.dispatch.steps`) is written as the
+ * project's daemon writes it (`PUT /api/v1/issues/{key}/steps/{id}` and the retro's rating, as the
+ * session legion-daemon:<project>, SEEDED_RUN), and every one of those facts is read back through
+ * Dispatch's own reads (caseDispatchFaults): a fact Dispatch does not answer as the world states
+ * it fails the seed. The id the scratch Dispatch gives the document of each step of the claim
+ * tree's design gate (`world.daemon.gate`, the document of the claim's tree root by its file name)
+ * goes in dispatch-fixture.json (`gate`, by step), and the prompt names it wherever it names the
+ * world's id of that document. */
 export async function seedCaseDispatch(runDir: string): Promise<void> {
   const world = World.parse(
     JSON.parse(readFileSync(path.join(runDir, "launch-world.json"), "utf8"))
   );
   const { issue, documents, handoffs, comments, asks, results } = world.dispatch;
+  const others = world.dispatch.issues ?? [];
   const seed = { as: "agent", actor: { kind: "session", id: "rig-seed" } } as const;
   const writer = (id: string) => ({ as: "agent", actor: { kind: "session", id } }) as const;
   // The case supplies a session id or a human login, not a Dispatch Actor object.
@@ -1083,27 +1251,62 @@ export async function seedCaseDispatch(runDir: string): Promise<void> {
   const parent = issue.parent === null ? undefined : keyParts(issue.parent);
   if (parent?.[0] === project && parent[1] >= number)
     throw new Error(`${issue.key}: parent ${issue.parent} must precede its child in the project`);
-  const createThrough = async (prefix: string, count: number, target: boolean) => {
+  // Dispatch files a child only under an issue it holds, so each parent precedes its child.
+  others.forEach((each, index) => {
+    if (each.parent === null) return;
+    const [above, n] = keyParts(each.parent);
+    const [own, m] = keyParts(each.key);
+    if (above === own && n >= m)
+      throw new Error(
+        `world.dispatch.issues[${index}].parent ${each.parent} must precede ${each.key} in the project`
+      );
+  });
+  (world.dispatch.steps ?? []).forEach((run, index) => {
+    if (run.role === null)
+      throw new Error(
+        `world.dispatch.steps[${index}].role is null, and Dispatch records no run without its role: the first write of a run names it`
+      );
+  });
+  const filed = new Map(others.map((each) => [each.key, each]));
+  /** The number each project's keys are filed through. */
+  const through = new Map<string, number>();
+  for (const key of [
+    issue.key,
+    ...(issue.parent === null ? [] : [issue.parent]),
+    ...filed.keys(),
+  ]) {
+    const [prefix, n] = keyParts(key);
+    through.set(prefix, Math.max(through.get(prefix) ?? 0, n));
+  }
+  const createThrough = async (prefix: string, count: number) => {
     await createProject({ key: prefix, name: prefix });
     for (let n = 1; n <= count; n += 1) {
       const expected = `${prefix}-${n}`;
-      const own = target && expected === issue.key;
+      const own = expected === issue.key;
+      const other = filed.get(expected);
       const created = await createIssue(
         {
           project: prefix,
           force: true,
           title: own
             ? issue.title
-            : expected === issue.parent
-              ? `Parent of ${issue.key}`
-              : `Reserved key ${expected}`,
+            : (other?.title ??
+              (expected === issue.parent
+                ? `Parent of ${issue.key}`
+                : other !== undefined
+                  ? expected
+                  : `Reserved key ${expected}`)),
           ...(own
             ? {
                 spec: dispatchBlockRefs(issue.spec, issue.key, "spec"),
                 parent: issue.parent,
                 repo: world.github?.repository,
+                ...(issue.labels === undefined ? {} : { labels: issue.labels }),
               }
             : {}),
+          ...(other === undefined
+            ? {}
+            : { labels: other.labels, ...(other.parent === null ? {} : { parent: other.parent }) }),
         },
         seed
       );
@@ -1111,8 +1314,10 @@ export async function seedCaseDispatch(runDir: string): Promise<void> {
         throw new Error(`scratch Dispatch assigned ${created.key}, wanted ${expected}`);
     }
   };
-  if (parent && parent[0] !== project) await createThrough(...parent, false);
-  await createThrough(project, number, true);
+  // The parent's project first, as the case's issue names its parent; the case's own last.
+  const place = (prefix: string) => (prefix === project ? 2 : prefix === parent?.[0] ? 0 : 1);
+  for (const prefix of [...through.keys()].sort((a, b) => place(a) - place(b)))
+    await createThrough(prefix, through.get(prefix) ?? 0);
   for (const { name, body } of documents)
     await createIssueArtifact(
       issue.key,
@@ -1194,16 +1399,95 @@ export async function seedCaseDispatch(runDir: string): Promise<void> {
     })),
   ];
   for (const step of steps.sort((a, b) => byTime(a.at, b.at))) await step.write();
-  // The run's task names a comment or an ask as the case does: it now names the id Dispatch gave.
-  const prompt = path.join(runDir, "prompt.txt");
-  if (existsSync(prompt))
-    writeFileSync(prompt, caseDispatchRefs(readFileSync(prompt, "utf8"), issue.key, ids));
   // A closed issue refuses a document upload. Finish seeding the evidence before closing it.
   if (issue.status !== "triage") {
     await changeIssueStatus(issue.key, { status: issue.status, include_parent: true }, seed);
   }
+  // Each other issue after the case's, so that the status each takes is the world's and not one
+  // the case's move set on an ancestor.
+  for (const each of others) {
+    if (each.status !== "triage") await changeIssueStatus(each.key, { status: each.status }, seed);
+    if (each.blockedBy.length > 0)
+      await patchIssue(each.key, { blocked_by: [...each.blockedBy] }, seed);
+    if (each.claimedBy !== null)
+      await agentCall("POST", `/api/v1/issues/${encodeURIComponent(each.key)}/claim`, {
+        actor: { kind: "session", id: each.claimedBy },
+      });
+  }
+  // The board: rank 1 before every other issue of its project, each next rank right after it.
+  const ranked = others
+    .filter((each) => each.rank !== null)
+    .sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
+  for (const [index, each] of ranked.entries()) {
+    const previous = ranked[index - 1];
+    if (previous !== undefined) {
+      await patchIssue(each.key, { rank: { after: previous.key } }, seed);
+      continue;
+    }
+    const board = await listIssues(each.key.split("-")[0] ?? "", { as: "agent" });
+    const head = board
+      .filter((listed) => listed.key !== each.key)
+      .sort((a, b) => ((a.rank ?? "") < (b.rank ?? "") ? -1 : 1))[0];
+    if (head !== undefined) await patchIssue(each.key, { rank: { before: head.key } }, seed);
+  }
+  // Each run as the project's daemon writes it, under an id of its own.
+  const daemon = { kind: "session", id: `legion-daemon:${project}` } as const;
+  for (const run of world.dispatch.steps ?? []) {
+    const route = `/api/v1/issues/${encodeURIComponent(issue.key)}/steps/${randomUUID()}`;
+    const write = {
+      actor: daemon,
+      task: run.task,
+      step: run.step,
+      kind: run.kind,
+      role: run.role,
+      agent: SEEDED_RUN.agent,
+      model: SEEDED_RUN.model,
+      generation: world.daemon?.issue?.generation ?? 1,
+      started_at: run.startedAt,
+      ...(run.endedAt === null ? {} : { ended_at: run.endedAt, result: run.result }),
+    };
+    await agentCall("PUT", route, write);
+    if (run.planRating !== undefined)
+      await agentCall("PUT", `${route}/rating`, {
+        ...write,
+        rating: run.planRating,
+        rating_reason: run.planReason ?? "",
+      });
+  }
+  const faults = await caseDispatchFaults(world);
+  if (faults.length > 0)
+    throw new Error(`the scratch Dispatch does not hold the case's world: ${faults.join("; ")}`);
+  // The id of each gate step's document, the claim tree root's by its file name.
+  const gate: Record<string, string> = {};
+  const artifacts = new Map<string, string>();
+  const rows = world.daemon?.gate ?? [];
+  if (rows.length > 0) {
+    const root = caseClaim(world).tree;
+    const held = IssueReadBack.parse(await getIssue(root, { as: "agent" })).artifacts ?? [];
+    rows.forEach((row, index) => {
+      const document = held.find((each) => each.name === row.document);
+      if (document === undefined)
+        throw new Error(
+          `world.daemon.gate[${index}].document ${row.document}: the scratch Dispatch holds no document of ${root} by that name`
+        );
+      gate[row.step] = document.id;
+      if (row.artifactId !== undefined) artifacts.set(row.artifactId, document.id);
+    });
+  }
+  // The run's task names a comment or an ask as the case does, and a gate's document by the
+  // world's id: it now names the id Dispatch gave each.
+  const prompt = path.join(runDir, "prompt.txt");
+  if (existsSync(prompt)) {
+    let text = caseDispatchRefs(readFileSync(prompt, "utf8"), issue.key, ids);
+    for (const [stated, given] of artifacts) text = text.replaceAll(stated, given);
+    writeFileSync(prompt, text);
+  }
   const seeded = await caseEvents(issue.key);
-  const fixture = { issue: issue.key, seedThrough: seeded.at(-1)?.seq ?? 0 };
+  const fixture = {
+    issue: issue.key,
+    seedThrough: seeded.at(-1)?.seq ?? 0,
+    ...(rows.length === 0 ? {} : { gate }),
+  };
   writeFileSync(path.join(runDir, "dispatch-fixture.json"), `${JSON.stringify(fixture)}\n`);
 }
 

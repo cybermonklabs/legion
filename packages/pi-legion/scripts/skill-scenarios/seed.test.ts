@@ -94,13 +94,37 @@ interface Call {
   body: Record<string, unknown> | undefined;
 }
 
+/** A place on the fake's board as Dispatch answers a rank: a text whose order is the board's. */
+function rankText(place: number): string {
+  return place.toFixed(4).padStart(16, "0");
+}
+
 /** The scratch Dispatch seed.ts talks to, held in memory: just the routes seed.ts calls. */
 class FakeDispatch {
   calls: Call[] = [];
   issues = new Map<
     string,
-    { key: string; title: string; spec_artifact: string; parent: string | null; status: string }
+    {
+      key: string;
+      title: string;
+      spec_artifact: string;
+      parent: string | null;
+      status: string;
+      labels: string[];
+      blocked_by: string[];
+      claim: { actor: Actor } | null;
+      /** The issue's place on the board, a number here: the read answers it as a rank text. */
+      rank: number;
+    }
   >();
+  /** Each step run written, in the order written, with the rating written on it. */
+  runs: Record<string, unknown>[] = [];
+  /** What the issue read answers of an issue, after the fake's own answer: a Dispatch that holds
+   * a fact otherwise than it was written. */
+  misread: (key: string, answer: Record<string, unknown>) => Record<string, unknown> = (
+    _key,
+    answer
+  ) => answer;
   asks: FakeAsk[] = [];
   messages: { message: Record<string, unknown>; replies: Record<string, unknown>[] }[] = [];
   comments: Record<string, unknown>[] = [];
@@ -125,9 +149,24 @@ class FakeDispatch {
   id(prefix: string): string {
     return `${prefix}-${++this.#ids}`;
   }
-  issue(key: string, title = "A title", parent: string | null = null): string {
+  issue(
+    key: string,
+    title = "A title",
+    parent: string | null = null,
+    labels: string[] = []
+  ): string {
     const spec = this.id("art");
-    this.issues.set(key, { key, title, spec_artifact: spec, parent, status: "triage" });
+    this.issues.set(key, {
+      key,
+      title,
+      spec_artifact: spec,
+      parent,
+      status: "triage",
+      labels,
+      blocked_by: [],
+      claim: null,
+      rank: 1000 + this.issues.size,
+    });
     this.artifacts.push({
       id: spec,
       issue_key: key,
@@ -167,7 +206,56 @@ class FakeDispatch {
     // Each route: its method and path pattern, and what it answers for the path's captures.
     const routes: [RegExp, (id: string, second: string) => Response][] = [
       [/^POST \/api\/v1\/projects$/, () => json(body, 201)],
-      [/^POST \/api\/v1\/issues\/([^/]+)\/status-change$/, () => json({ changed: [] })],
+      [
+        /^POST \/api\/v1\/issues\/([^/]+)\/status-change$/,
+        (key) => {
+          const issue = this.issues.get(key);
+          if (issue !== undefined && typeof body?.status === "string") issue.status = body.status;
+          return json({ changed: [] });
+        },
+      ],
+      [
+        /^POST \/api\/v1\/issues\/([^/]+)\/claim$/,
+        (key) => {
+          const issue = this.issues.get(key);
+          if (issue === undefined) return json({ code: "ISSUE_NOT_FOUND" }, 404);
+          issue.claim = { actor: actor() };
+          return json({ ...issue, legion_managed_status: false });
+        },
+      ],
+      [
+        /^PUT \/api\/v1\/issues\/([^/]+)\/steps\/([^/]+)\/rating$/,
+        (_key, id) => {
+          const run = this.runs.find((each) => each.id === id);
+          if (run === undefined) return json({ code: "STEP_INPUT" }, 400);
+          run.rating = body?.rating;
+          run.rating_reason = body?.rating_reason;
+          return json(run);
+        },
+      ],
+      [
+        /^PUT \/api\/v1\/issues\/([^/]+)\/steps\/([^/]+)$/,
+        (key, id) => {
+          const run = { ...body, id, issue: key, rating: null, rating_reason: null };
+          this.runs.push(run);
+          return json(run);
+        },
+      ],
+      [
+        /^GET \/api\/v1\/issues\/([^/]+)\/steps$/,
+        (key) => {
+          const tasks: { task: string; needs: null; steps: Record<string, unknown>[] }[] = [];
+          for (const run of this.runs.filter((each) => each.issue === key)) {
+            let task = tasks.find((each) => each.task === run.task);
+            if (task === undefined) {
+              task = { task: String(run.task), needs: null, steps: [] };
+              tasks.push(task);
+            }
+            task.steps.push({ result: "", ended_at: null, ...run });
+          }
+          return json({ issue: key, tasks });
+        },
+      ],
       [
         /^POST \/api\/v1\/issues\/([^/]+)\/comments$/,
         (issue) => {
@@ -210,7 +298,7 @@ class FakeDispatch {
           const project = String(body?.project);
           const count = [...this.issues].filter(([key]) => key.startsWith(`${project}-`)).length;
           const key = `${project}-${count + (project === "LWEVAL" ? 2 : 1)}`;
-          const spec = this.issue(key, body?.title, body?.parent ?? null);
+          const spec = this.issue(key, body?.title, body?.parent ?? null, body?.labels ?? []);
           const artifact = this.artifacts.find((a) => a.id === spec);
           if (artifact !== undefined && typeof body?.spec === "string") {
             artifact.markdown = body.spec;
@@ -236,8 +324,26 @@ class FakeDispatch {
           const issue = this.issues.get(key);
           if (issue === undefined) return json({ code: "ISSUE_NOT_FOUND" }, 404);
           if (typeof body?.status === "string") issue.status = body.status;
+          if (Array.isArray(body?.labels)) issue.labels = body.labels;
+          if (Array.isArray(body?.blocked_by)) issue.blocked_by = body.blocked_by;
+          const neighbour = (other: unknown) => this.issues.get(String(other))?.rank ?? 0;
+          if (body?.rank?.before !== undefined) issue.rank = neighbour(body.rank.before) - 0.5;
+          if (body?.rank?.after !== undefined) issue.rank = neighbour(body.rank.after) + 0.25;
           return json(issue);
         },
+      ],
+      [
+        /^GET \/api\/v1\/issues$/,
+        () =>
+          json(
+            [...this.issues.values()]
+              .filter(({ key }) => key.startsWith(`${url.searchParams.get("project")}-`))
+              .map((issue) => ({
+                key: issue.key,
+                status: issue.status,
+                rank: rankText(issue.rank),
+              }))
+          ),
       ],
       [
         /^POST \/api\/v1\/artifacts\/([^/]+)\/approval-requests$/,
@@ -372,13 +478,19 @@ class FakeDispatch {
         /^GET \/api\/v1\/issues\/([^/]+)$/,
         (issue) => {
           const held = this.issues.get(issue);
-          return json({
-            key: issue,
-            title: held?.title ?? "A title",
-            status: held?.status ?? "triage",
-            parent: held?.parent ?? null,
-            artifacts: this.artifacts.filter((a) => a.issue_key === issue).map(strip),
-          });
+          return json(
+            this.misread(issue, {
+              key: issue,
+              title: held?.title ?? "A title",
+              status: held?.status ?? "triage",
+              parent: held?.parent ?? null,
+              labels: held?.labels ?? [],
+              blocked_by: held?.blocked_by ?? [],
+              claim: held?.claim ?? null,
+              rank: rankText(held?.rank ?? 0),
+              artifacts: this.artifacts.filter((a) => a.issue_key === issue).map(strip),
+            })
+          );
         },
       ],
       [
@@ -1489,6 +1601,190 @@ describe("case-world Dispatch", () => {
     const ask = dispatch.asks.find(({ question }) => question === "Keep it?");
     expect(readFileSync(path.join(dir, "prompt.txt"), "utf8")).toBe(
       `From the tester: dispatch://${key}/comment/${comment?.id}. See dispatch://${key}/ask/${ask?.id} and dispatch://ACME-1/comment/c-1.\n`
+    );
+  });
+
+  /** P05's world with its Dispatch parts: the issue's labels, two other issues (ACME-13 under the
+   * case's parent, waiting on ACME-14, claimed and second on the board, and ACME-14, first), and
+   * three step runs (a passed step, a rated retro, a merge that runs). */
+  const partsWorld = () => {
+    const p05 = parseHeldoutFile(example("heldout")).cases.find(({ id }) => id === "P05");
+    if (!p05) throw new Error("missing P05");
+    const world = structuredClone(p05.world);
+    world.dispatch.issue.labels = ["legion"];
+    world.dispatch.issues = [
+      {
+        key: "ACME-13",
+        title: "A sibling",
+        status: "todo",
+        parent: "ACME-10",
+        rank: 2,
+        labels: ["ux"],
+        blockedBy: ["ACME-14"],
+        claimedBy: "ses-acme-13",
+      },
+      {
+        key: "ACME-14",
+        status: "in_progress",
+        parent: null,
+        rank: 1,
+        labels: [],
+        blockedBy: [],
+        claimedBy: null,
+      },
+    ];
+    const at = (minute: number) => `2030-01-07T14:${String(minute).padStart(2, "0")}:00Z`;
+    world.dispatch.steps = [
+      {
+        task: "default",
+        step: 1,
+        kind: "step",
+        role: "planner",
+        result: "passed",
+        startedAt: at(0),
+        endedAt: at(10),
+      },
+      {
+        task: "default",
+        step: 0,
+        kind: "retro",
+        role: "implementer",
+        result: "passed",
+        startedAt: at(20),
+        endedAt: at(25),
+        planRating: 4,
+        planReason: "The plan fit.",
+      },
+      {
+        task: "default",
+        step: 0,
+        kind: "merge",
+        role: "merger",
+        result: null,
+        startedAt: at(30),
+        endedAt: null,
+      },
+    ];
+    return world;
+  };
+
+  test("files the world's other issues and step runs as the daemon writes them, and reads each back", async () => {
+    const world = partsWorld();
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(world));
+    await seed.seedCaseDispatch(dir);
+    const created = (key: string) =>
+      dispatch.calls.filter(({ method, path }) => method === "POST" && path === "/api/v1/issues")[
+        Number(key.split("-")[1]) - 1
+      ]?.body;
+    expect(created("ACME-12")).toMatchObject({ labels: ["legion"], parent: "ACME-10" });
+    expect(created("ACME-13")).toMatchObject({
+      title: "A sibling",
+      labels: ["ux"],
+      parent: "ACME-10",
+    });
+    expect(created("ACME-14")).toMatchObject({ title: "ACME-14", labels: [] });
+    expect(dispatch.issues.get("ACME-13")).toMatchObject({
+      status: "todo",
+      blocked_by: ["ACME-14"],
+      claim: { actor: { kind: "session", id: "ses-acme-13" } },
+    });
+    const rank = (key: string) => dispatch.issues.get(key)?.rank ?? 0;
+    expect(rank("ACME-14")).toBeLessThan(
+      Math.min(...[...dispatch.issues.keys()].filter((key) => key !== "ACME-14").map(rank))
+    );
+    expect(rank("ACME-13")).toBeGreaterThan(rank("ACME-14"));
+    const daemon = { kind: "session", id: "legion-daemon:ACME" };
+    expect(dispatch.runs).toEqual([
+      expect.objectContaining({
+        actor: daemon,
+        task: "default",
+        step: 1,
+        kind: "step",
+        role: "planner",
+        agent: "rig-seed",
+        model: "rig-seed",
+        generation: 1,
+        result: "passed",
+        ended_at: "2030-01-07T14:10:00Z",
+      }),
+      expect.objectContaining({
+        kind: "retro",
+        step: 0,
+        rating: 4,
+        rating_reason: "The plan fit.",
+      }),
+      expect.objectContaining({
+        kind: "merge",
+        role: "merger",
+        started_at: "2030-01-07T14:30:00Z",
+      }),
+    ]);
+    expect(dispatch.runs[2]).not.toHaveProperty("result");
+    expect(JSON.parse(readFileSync(path.join(dir, "dispatch-fixture.json"), "utf8"))).toEqual({
+      issue: "ACME-12",
+      seedThrough: 0,
+    });
+  });
+
+  // Catches: a seed that files a world Dispatch then holds otherwise, which the run would read as
+  // the world, where it is a setup failure that names the part.
+  test("a world Dispatch does not answer as it states fails the seed, naming each part", async () => {
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(partsWorld()));
+    dispatch.misread = (key, answer) =>
+      key === "ACME-13" ? { ...answer, labels: [], status: "backlog" } : answer;
+    const seeded = seed.seedCaseDispatch(dir);
+    await expect(seeded).rejects.toThrow(
+      "world.dispatch.issues[0].status: Dispatch answers backlog, and the world states todo"
+    );
+    await expect(seeded).rejects.toThrow(
+      "world.dispatch.issues[0].labels: Dispatch answers [], and the world states [ux]"
+    );
+    expect(existsSync(path.join(dir, "dispatch-fixture.json"))).toBe(false);
+
+    const nameless = partsWorld();
+    const merge = nameless.dispatch.steps?.[2];
+    if (merge === undefined) throw new Error("the world lost its merge");
+    merge.role = null;
+    const other = runDir();
+    writeFileSync(path.join(other, "launch-world.json"), JSON.stringify(nameless));
+    await expect(seed.seedCaseDispatch(other)).rejects.toThrow(
+      "world.dispatch.steps[2].role is null"
+    );
+  });
+
+  test("names each gate step's document by the id the scratch Dispatch gives it, in the fixture and the prompt", async () => {
+    const p05 = parseHeldoutFile(example("heldout")).cases.find(({ id }) => id === "P05");
+    if (!p05?.world.daemon) throw new Error("missing P05's daemon");
+    const world = structuredClone(p05.world);
+    const stated = "6c174565-c501-58c9-b35a-149c49ff8ffa";
+    if (world.daemon === null) throw new Error("missing P05's daemon");
+    world.daemon.gate = [
+      { step: "spec", document: "spec.md", current: 1, approved: 1, artifactId: stated },
+    ];
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(world));
+    writeFileSync(path.join(dir, "prompt.txt"), `The spec is ${stated}.\n`);
+    await seed.seedCaseDispatch(dir);
+    // The gate is the claim's tree root's, ACME-10 (P05's parent), whose spec Dispatch names spec.md.
+    const given = dispatch.issues.get("ACME-10")?.spec_artifact;
+    expect(JSON.parse(readFileSync(path.join(dir, "dispatch-fixture.json"), "utf8")).gate).toEqual({
+      spec: given,
+    });
+    expect(readFileSync(path.join(dir, "prompt.txt"), "utf8")).toBe(`The spec is ${given}.\n`);
+  });
+
+  test("a gate step whose document the claim tree's root does not hold fails the seed, naming it", async () => {
+    const p05 = parseHeldoutFile(example("heldout")).cases.find(({ id }) => id === "P05");
+    const world = structuredClone(p05?.world);
+    if (world?.daemon === null || world?.daemon === undefined)
+      throw new Error("missing P05's daemon");
+    world.daemon.gate = [{ step: "criteria", document: "criteria.md", current: 1, approved: null }];
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(world));
+    await expect(seed.seedCaseDispatch(dir)).rejects.toThrow(
+      "world.daemon.gate[0].document criteria.md: the scratch Dispatch holds no document of ACME-10"
     );
   });
 });
