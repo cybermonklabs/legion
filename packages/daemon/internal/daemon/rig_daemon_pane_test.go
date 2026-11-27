@@ -181,6 +181,14 @@ func (r *rigRuntime) PodDrift(ctx context.Context, k runtime.Known) ([]string, e
 	return r.holder(k.Claim).PodDrift(ctx, k)
 }
 
+// PodRepository is the repository the place a claim's process runs in was built from, which each
+// of the two runtimes answers for its own claims. Neither has a pod: the fake runtime holds a
+// process of its own and the pane runtime a tmux pane, and each answers "", so the daemon reads
+// the repository of the spec a launch named and replaces nothing for drift.
+func (r *rigRuntime) PodRepository(ctx context.Context, k runtime.Known) (string, error) {
+	return r.holder(k.Claim).PodRepository(ctx, k)
+}
+
 func (r *rigRuntime) ReplacePod(ctx context.Context, k runtime.Known, due func(context.Context) error) error {
 	return r.holder(k.Claim).ReplacePod(ctx, k, due)
 }
