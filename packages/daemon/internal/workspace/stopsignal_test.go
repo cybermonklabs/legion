@@ -36,6 +36,18 @@ func inFlight[T any](f func() T) <-chan T {
 // kills them, and a failing row has nothing left to kill them with.
 const commandLives = `ticks=0; while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks=$((ticks+1)); done`
 
+// cpuHold is shell that keeps the shell it runs in waiting for a CPU for about secs seconds, as a
+// loaded machine would (CONTROL ONLY): the shell pins itself to one of its CPUs, starts a busy
+// loop on that CPU that SIGKILL ends after secs, drops its own priority to nice 19 under the
+// loop's, and spins until the loop has ended and done exists. Nearly all of that span is the
+// shell's run-queue wait (/proc/self/schedstat); its own run is about 1.5% of it. A kernel that
+// keeps no run-queue wait (gVisor) has the same span with nothing to read it by.
+func cpuHold(secs, done string) string {
+	return `cpu=$(taskset -pc $$ | sed 's/.*: //; s/[,-].*//'); taskset -pc "$cpu" $$ >/dev/null; ` +
+		`( timeout -s KILL ` + secs + ` sh -c 'while :; do :; done'; : >` + done + ` ) 2>/dev/null & ` +
+		`renice -n 19 -p $$ >/dev/null; until [ -e ` + done + ` ]; do :; done`
+}
+
 // RunCommand's jj and git are stopped the way execRunner's are: the budget's end sends SIGTERM to
 // the command's own process group, which is the group procgroup.Configure gives it and which
 // RunCommand never had before dispatch://INFRA-3098, waits the grace, and sends SIGKILL only
@@ -55,7 +67,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		defer cancel()
 		// The lock is taken before the command reports that it is running, so a lock that is gone
 		// at the end is one the command's own SIGTERM handler removed.
-		script := `: >"$1"; trap 'rm -f "$1"; exit 0' TERM; : >"$2"; ` + commandLives
+		script := `: >"$1"; trap 'rm -f "$1"; exit 0' TERM; ` + cpuHold("1.5", `"${2%/*}/held"`) + `; : >"$2"; ` + commandLives
 
 		started := time.Now()
 		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready})
@@ -99,7 +111,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		// SIGTERM rather than leave it to the SIGKILL, and this row — which reads only that the
 		// helper is gone — would pass on the opposite of what it claims.
 		helper := `trap '' TERM; : >"$2"; ` + commandLives
-		script := `sh -c "$2" sh "$3" "$4" & trap '' TERM; until [ -e "$4" ]; do sleep 0.01; done; : >"$1"; ` + commandLives
+		script := `sh -c "$2" sh "$3" "$4" & trap '' TERM; until [ -e "$4" ]; do sleep 0.01; done; ` + cpuHold("2.5", `"${1%/*}/held"`) + `; : >"$1"; ` + commandLives
 
 		started := time.Now()
 		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", ready, helper, marker, trapped})
@@ -117,7 +129,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		dir := t.TempDir()
 		lock, ready := filepath.Join(dir, "index.lock"), filepath.Join(dir, "ready")
 		fakeGit := filepath.Join(dir, "git")
-		script := "#!/bin/sh\n: >\"" + lock + "\"\ntrap 'rm -f \"" + lock + "\"; exit 0' TERM\n: >\"" + ready + "\"\n" + commandLives + "\n"
+		script := "#!/bin/sh\n: >\"" + lock + "\"\ntrap 'rm -f \"" + lock + "\"; exit 0' TERM\n" + cpuHold("1.5", `"`+filepath.Join(dir, "held")+`"`) + "\n: >\"" + ready + "\"\n" + commandLives + "\n"
 		if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 			t.Fatalf("write the fake git: %v", err)
 		}
