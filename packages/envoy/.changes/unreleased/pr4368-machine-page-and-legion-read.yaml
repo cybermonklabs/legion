@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  `agent-secrets machine login` names the page where a person types its code as
+  `/credentials/machine` joined onto `AGENT_SECRETS_APPROVE_URL`'s path, as every other route of the
+  command is joined. An approve URL with a fragment put the route inside the fragment, so the line
+  printed no page at all; one with a query put it inside the query.
+
+  A Legion state read that got no answer is now recorded, in `legion_reads` and on the Legion
+  board's header, as the route and the failure's class (`connection refused`, `timed out`). It kept
+  net/http's innermost error, which for a redirect to a `Location` the URL parser refuses quotes
+  that `Location` as the daemon, or whatever answered at its URL, wrote it, a credential the
+  daemon URL's query carried among what it can echo.
+time: 2026-11-27T00:07:16Z
+custom:
+    Issue: pr4368

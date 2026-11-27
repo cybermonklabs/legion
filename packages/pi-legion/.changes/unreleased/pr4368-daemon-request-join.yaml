@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  Every request to the Legion daemon now joins its route onto `LEGION_DAEMON_URL`'s path, with the
+  URL's query kept. A daemon URL with a path and a query (`http://host/prefix?key=v`) put the route
+  inside the query, so the daemon was asked `/prefix` with the query
+  `?key=v/legion/v1/claims/ready`; it is now asked `/prefix/legion/v1/claims/ready?key=v`. A daemon
+  URL that is a plain origin is asked as before.
+time: 2026-11-27T00:07:16Z
+custom:
+    Issue: pr4368
