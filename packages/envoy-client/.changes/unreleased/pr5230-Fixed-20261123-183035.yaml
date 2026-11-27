@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+    A listener call answered 408 is sent once more, as one answered with a 5xx is, and a send an
+    attempt of which was answered 408 is `EnvoySendUnconfirmedError`, naming its key, as after a
+    5xx: the listener writes no 408, so one is a hop's timeout, which a hop can send after it
+    forwarded the send (an Envoy proxy's `stream_idle_timeout`, Google's load balancer's
+    `client_timed_out`). A 429 is still not sent again: the listener's 429 is
+    `sender_rate_limited`, and the agent decides when to send again. A Dispatch write a gateway
+    answered 408 may have landed, as one answered with a 5xx may: it ends
+    `DispatchWriteUnsettledError` with its key, not the gateway's error saying the write did not
+    reach Dispatch and a retry may succeed.
+time: 2026-11-23T18:30:35.657356157Z
+custom:
+    Issue: pr5230

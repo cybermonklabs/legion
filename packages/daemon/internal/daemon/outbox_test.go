@@ -2598,8 +2598,8 @@ func TestTerminalReplayAfterPersistedFailureHoldsOnceAndEmitsOneWorkerDiedNotice
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate failure notices: %v", err)
 	}
-	if fmt.Sprint(notices) != "[held held (controller) worker-died]" {
-		t.Fatalf("failure notices = %v, want held to the issue and the controller and worker-died, each once", notices)
+	if fmt.Sprint(notices) != "[held worker-died]" {
+		t.Fatalf("failure notices = %v, want held and worker-died to the issue, each once, and no copy to the controller (#4065)", notices)
 	}
 }
 
@@ -2829,15 +2829,17 @@ type outboxPublisher struct {
 }
 
 // outboxPublish is one publish a fake publisher recorded. keep is that the publish asked the
-// listener to keep the message for the role's next holder (notify.Publisher.PublishKept).
+// listener to keep the message for the role's next holder (notify.Publisher.PublishKept); holder
+// is the session a delivered publish was stored for, "" where the fake names none.
 type outboxPublish struct {
 	topic, message, key string
 	payload             any
 	keep                bool
+	holder              string
 }
 
-func (p *outboxPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
-	return p.record(outboxPublish{topic: topic, message: message, key: key, payload: payload})
+func (p *outboxPublisher) Publish(_ context.Context, topic, message string, payload any, key string) (string, error) {
+	return "", p.record(outboxPublish{topic: topic, message: message, key: key, payload: payload})
 }
 
 func (p *outboxPublisher) PublishKept(_ context.Context, topic, message string, payload any, key string) (bool, error) {

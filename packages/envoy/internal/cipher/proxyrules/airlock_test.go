@@ -2,9 +2,13 @@ package proxyrules
 
 import (
 	"encoding/base64"
+	"math/rand/v2"
 	"net"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1210,6 +1214,80 @@ func mustReason(rules Rules, r *Request) string {
 
 func basic(payload string) string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(payload))
+}
+
+// TestAdmitIsTheDecisionBeforeTheValue: Admit is check's rules up to the one that reads the
+// value, so on every case the committed FuzzAirlock corpus and a fixed run of random byte strings
+// generate (genCase), a request Admit refuses Decide refuses with the same reason, for the case's
+// value and for no value at all; and a request Admit lets through, Decide lets through with no
+// value, and with the case's value lets through or refuses for that value alone. It needs no
+// model, so it runs in every `go test`. The run must reach each of Admit's seventeen refusals and
+// the value's own, so that each rule is one a disagreement could show on.
+func TestAdmitIsTheDecisionBeforeTheValue(t *testing.T) {
+	const carries = "request already carries the value"
+	var cases [][]byte
+	seeds, err := os.ReadDir(filepath.Join("testdata", "fuzz", "FuzzAirlock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, seed := range seeds {
+		text, err := os.ReadFile(filepath.Join("testdata", "fuzz", "FuzzAirlock", seed.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A seed file is the line "go test fuzz v1" and one []byte literal of Go.
+		header, literal, _ := strings.Cut(strings.TrimSpace(string(text)), "\n")
+		quoted, ok := strings.CutPrefix(literal, "[]byte(")
+		quoted, closed := strings.CutSuffix(quoted, ")")
+		data, err := strconv.Unquote(quoted)
+		if header != "go test fuzz v1" || !ok || !closed || err != nil {
+			t.Fatalf("seed %s is no one []byte literal: %q", seed.Name(), text)
+		}
+		cases = append(cases, []byte(data))
+	}
+	if len(cases) == 0 {
+		t.Fatal("the committed corpus holds no seed, so the run below would read only random cases")
+	}
+	random := rand.New(rand.NewPCG(1, 2))
+	for range 20000 {
+		data := make([]byte, random.IntN(64))
+		for i := range data {
+			data[i] = byte(random.UintN(256))
+		}
+		cases = append(cases, data)
+	}
+	reached := map[string]int{}
+	for _, data := range cases {
+		c := genCase(data)
+		kind, admitted := Admit(c.Rules, c.Grant, c.Request)
+		_, decided := Decide(c.Rules, c.Grant, c.Value, c.Request)
+		_, valueless := Decide(c.Rules, c.Grant, "", c.Request)
+		reached[admitted]++
+		if decided == carries {
+			reached[carries]++
+		}
+		switch {
+		case (kind == nil) != (admitted != ""):
+			t.Fatalf("Admit answered the kind %v with the reason %q for %x; want a kind exactly when it gives no reason", kind, admitted, data)
+		case valueless != admitted:
+			t.Fatalf("Admit answered %q and Decide with no value %q for %x; want the same answer", admitted, valueless, data)
+		case admitted != "" && decided != admitted:
+			t.Fatalf("Admit refused %x for %q and Decide with the value answered %q; want the same refusal", data, admitted, decided)
+		case admitted == "" && decided != "" && decided != carries:
+			t.Fatalf("Admit let %x through and Decide with the value refused it for %q; want only the value's own refusal", data, decided)
+		}
+	}
+	for _, why := range []string{
+		"", "empty placeholder", "unknown secret", "secret not behind airlock", "host not bound", "connect port is not 443",
+		"sni mismatch", "host header mismatch", "path has a dot segment", "path has an empty segment",
+		"path has an encoded slash", "path has a backslash", "path has a parameter on a dot segment",
+		"path has a double-encoded character", "not allowed by rule", "not allowed by the profile's rule",
+		"request carries a method override header", "request carries a method override parameter", carries,
+	} {
+		if reached[why] == 0 {
+			t.Errorf("no case of the %d reached the answer %q, so a disagreement on its rule could not show", len(cases), why)
+		}
+	}
 }
 
 func TestRewrite(t *testing.T) {

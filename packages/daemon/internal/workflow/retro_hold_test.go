@@ -302,8 +302,10 @@ func TestAParentMovedBackOutOfMergingIsToldTheMoveThatHeldIt(t *testing.T) {
 // work beneath it, so the pass of its last step, the reviewer's approval, holds it before its retro:
 // issues.phase held, from retro for its children, its task at the retro's place, no retro
 // started, and its owner told once in a retro-held notice naming the child. The child's leave
-// starts the retro, told the review the reviewer passed. The known pass is a plan whose sign-off
-// is its last step, which the sign-off moves into its retro with no hold.
+// starts the retro, told the review the reviewer passed. The control changes one thing, the child:
+// the same plan with no issue beneath the parent, whose approval moves it into its retro with no
+// hold. The known pass is a plan whose sign-off is its last step, which the sign-off moves into its
+// retro with no hold.
 func TestAParentWhoseSignOffIsNotItsLastStepIsHeldBeforeItsRetro(t *testing.T) {
 	t.Parallel()
 	t.Run("the approval after the sign-off holds the parent before its retro, and the child's leave starts it", func(t *testing.T) {
@@ -355,6 +357,33 @@ func TestAParentWhoseSignOffIsNotItsLastStepIsHeldBeforeItsRetro(t *testing.T) {
 		}
 		if line := logged.String(); !strings.Contains(line, "act=children_done") {
 			t.Fatalf("the log of the release = %q, want the act children_done", line)
+		}
+	})
+
+	t.Run("control: the same plan with no child beneath moves into its retro at the approval with no hold", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine, logged := loggedEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "acceptance:owner", "reviewer")
+		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		reportsHandoff(t, pool, engine, root.Key, claim.RoleImplementer, 3)
+		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		if result := signsOff(t, pool, engine, root.Key); result.Refusal != nil {
+			t.Fatalf("the sign-off was refused: %+v", result.Refusal)
+		}
+		assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
+
+		approveReview(t, pool, engine)
+
+		assertWalksAt(t, pool, engine, root.Key, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
+		if got := startsIn(t, pool, root.Key, claim.RoleImplementer, phase.Retro); len(got) != 1 {
+			t.Fatalf("the approval wrote %d starts of the retro, want one", len(got))
+		}
+		if notices := noticesOf(t, pool, root.Key, "retro-held"); len(notices) != 0 {
+			t.Fatalf("the approval told %+v, want no retro-held notice", notices)
+		}
+		if line := logged.String(); strings.Contains(line, "held before its retro") {
+			t.Fatalf("the log = %q, want no hold", line)
 		}
 	})
 

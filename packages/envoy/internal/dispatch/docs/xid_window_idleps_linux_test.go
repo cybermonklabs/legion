@@ -23,6 +23,9 @@ import (
 // broke D6, the gap 26.8 to 137.7 ms made with its goroutine 45.7 to 152.0 ms runnable on the
 // runtime (a 288-CPU machine at a load of about 600, 2026-11-21).
 func TestXidWindowKeepsD6WhenTheLoadHoldsThePs(t *testing.T) {
+	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
+	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
+	// (requireMeasuredAlone) It also sets GOMAXPROCS to xidLoadProcs itself.
 	storetest.RequireXidGapJudgment(t)
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(xidLoadProcs))
 	_, database, tracer := xidService(t)

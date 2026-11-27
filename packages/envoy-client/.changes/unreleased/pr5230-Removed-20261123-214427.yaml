@@ -1,0 +1,7 @@
+kind: Removed
+body: |-
+    `transientStatus` (`./dispatch-http`), which answered what `outage` from
+    `@legion/contracts/http-status` answers: read `outage` there.
+time: 2026-11-23T21:44:27.630673431Z
+custom:
+    Issue: pr5230

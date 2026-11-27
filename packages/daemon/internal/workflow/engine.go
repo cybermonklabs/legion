@@ -328,6 +328,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.mergeStateUnread(ctx, tx, fact)
 	case intake.MergeQueueReadDone:
 		return e.mergeQueueReadDone(ctx, tx, fact)
+	case intake.MergeHoldsChanged:
+		return e.mergeHoldsChanged(ctx, tx, fact)
 	case intake.ConflictConfirmDone:
 		return e.conflictConfirmDone(ctx, tx, fact)
 	case intake.PullRequestMissing:
@@ -497,7 +499,10 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// cutover's repair and the silence repair send a claim level with its entry. The
 	// movement is the fact that raised the entry, which the transition's phase write and its
 	// start mark below (Engine.transition, StartOrOwe), and not each delivery of it.
-	if !fact.DaemonActor {
+	// An event that changed nothing of the issue but the priority Dispatch resolves it to — an
+	// ancestor's priority or parent moved (intake.DispatchIssue.ResolvedOnly) — is no work of the
+	// issue's own, so it marks no movement either, while the record still takes its priority.
+	if !fact.DaemonActor && !fact.ResolvedOnly {
 		if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 			return intake.Result{}, err
 		}
@@ -739,7 +744,7 @@ func (e *Engine) observedIssue(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err != nil {
 		return issue, err
 	}
-	issue.Title, issue.Rank, issue.Priority, issue.Parent, issue.LastDispatchSeq = fact.Title, fact.Rank, fact.Priority, record.ParentOf(fact.Parent), fact.Seq
+	issue.Title, issue.Rank, issue.Priority, issue.Resolved, issue.Parent, issue.LastDispatchSeq = fact.Title, fact.Rank, fact.Priority, fact.Resolved, record.ParentOf(fact.Parent), fact.Seq
 	issue.HandedOver, issue.DispatchStatus, issue.Ancestry = fact.HandedOver, fact.Status, ancestry
 	return issue, nil
 }
@@ -866,7 +871,7 @@ func (e *Engine) HearRepository(ctx context.Context, repo string) {
 func RecordedFact(issue record.Issue) intake.DispatchIssue {
 	fact := intake.DispatchIssue{
 		Key: issue.Key, Seq: issue.LastDispatchSeq, Status: issue.Status, Title: issue.Title,
-		Rank: issue.Rank, Priority: issue.Priority, HandedOver: issue.HandedOver, ResolvedRepo: issue.Repo,
+		Rank: issue.Rank, Priority: issue.Priority, Resolved: issue.Resolved, HandedOver: issue.HandedOver, ResolvedRepo: issue.Repo,
 	}
 	if issue.Parent != nil {
 		fact.Parent = *issue.Parent
@@ -961,7 +966,7 @@ func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, root record.Issue, f
 	at Resolution) error {
 	parentKey := fact.Parent
 	child := record.Issue{Key: fact.Key, Tree: root.Tree, Project: root.Project, Title: fact.Title, Parent: &parentKey, Phase: phase.Admitted,
-		Generation: generation, Status: fact.Status, Rank: fact.Rank, Priority: fact.Priority, HandedOver: fact.HandedOver, LastDispatchSeq: fact.Seq, DispatchStatus: fact.Status,
+		Generation: generation, Status: fact.Status, Rank: fact.Rank, Priority: fact.Priority, Resolved: fact.Resolved, HandedOver: fact.HandedOver, LastDispatchSeq: fact.Seq, DispatchStatus: fact.Status,
 		Repo: at.Repo, DefaultBranch: at.DefaultBranch, GitHubRepo: at.GitHubRepo}
 	if err := e.WriteIssue(ctx, tx, child); err != nil {
 		return err
@@ -1149,7 +1154,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// (record.MergeForwardReview).
 	if current {
 		if refusal, fenced := mergedForwardRefusal(*issue, fact.Role, reported, fact.Commit, pr); fenced {
-			return refusal, nil
+			return refusal.Result(), nil
 		}
 	}
 	if word, _, ok := phase.Handoff(reported); ok {
@@ -1229,23 +1234,26 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 }
 
 // claimFailed holds the issue whose phase worker's claim failed — a budget ran out — and tells the
-// architect and the controller of the hold; the worker-died that comes with it is the architect's
-// alone. The tree's architect failing holds nothing, since a phase is its worker's; it is told as a
-// worker-died of the architect, lingering or not, and the controller hears it from a row of its
-// own, because every notice of the tree that no child's own architect takes reaches that
-// architect and nobody inside the tree is left to act on its own. That is why the architect's
-// branch comes before the lingering tree's guard. The row sent to the architect's own role
-// finishes undelivered once its claim has failed (the daemon's notice executor).
+// architect of the hold and of the worker-died that comes with it. The controller is told
+// neither: the hold is the architect's to retry or escalate, and only the escalation reaches the
+// controller (retryOrEscalate). The tree's architect failing holds nothing, since a phase is its
+// worker's; it is told as a worker-died of the architect, lingering or not, and while the root is
+// not done the controller hears it from a row of its own, because every notice of the tree that no
+// child's own architect takes reaches that architect and nobody inside the tree is left to act on
+// its own. A root that is done is parked, lingers or is closed, and the controller does nothing for
+// it, so that copy is not written (#4065). That is why the architect's branch comes before the
+// lingering tree's guard. The row sent to the architect's own role finishes undelivered once its
+// claim has failed (the daemon's notice executor).
 //
-// The hold, the copy of it the controller reads and the worker-died beside them name the failure
-// the fact carries: the one word for what failed the claim, the sentence written beside it and
-// the four counts the failure left, each against the limit it ran out at (noticeFailure). The
-// worker-died of a role that does not work the issue's phase names it too, since that role's
-// architect decides whether to start it again on the same evidence. The tree architect's own
-// worker-died carries no failure record, so its reason carries the sentence instead, with the
-// pod end when the claim holds one, or else, for a claim that failed because its process died,
-// the first line of the runtime's account of that death (deathReason): it is the one notice of
-// that failure the architect and the controller are sent.
+// The hold and the worker-died beside it name the failure the fact carries: the one word for
+// what failed the claim, the sentence written beside it and the four counts the failure left,
+// each against the limit it ran out at (noticeFailure). The worker-died of a role that does not
+// work the issue's phase names it too, since that role's architect decides whether to start it
+// again on the same evidence. The tree architect's own worker-died carries no failure record, so
+// its reason carries the sentence instead, with the pod end when the claim holds one, or else,
+// for a claim that failed because its process died, the first line of the runtime's account of
+// that death (deathReason): it is the one notice of that failure the architect and the
+// controller are sent.
 //
 // A child's own architect works no phase but its child's acceptance (accepting), where no worker
 // runs: the daemon starts it with the child's first phase (StartFirstPhase). Its claim failing
@@ -1255,11 +1263,11 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // (record.OwningArchitect). That architect takes the child's notices from then on, because the
 // failed claim no longer holds its role, until the child's architect runs again: the daemon starts
 // it again at the child's next phase start (start), and so do a re-admission of the tree while the
-// child stands in a phase (admit's startMidPhaseMembers) and an operator's retry. The worker-died
-// names the failure, as a finished role's does, so the architect above it reads why the child's
-// architect stopped; no controller copy goes with it, since an architect inside the tree is left
-// to act on it. A child that left the workflow or a member of a lingering tree tells nobody,
-// as below.
+// child stands in a phase (admit's startMidPhaseMembers), an operator's retry and the retry of an
+// architect above it through the agent door (api's retryAgent). The worker-died names the failure,
+// as a finished role's does, so the architect above it reads why the child's architect stopped; no
+// controller copy goes with it, since an architect inside the tree is left to act on it. A child
+// that left the workflow or a member of a lingering tree tells nobody, as below.
 //
 // A phase role that finished its phase stays live until its issue closes, so its claim can fail
 // while another role works the issue's phase, or while the issue waits on a person: the architect
@@ -1288,8 +1296,11 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		return intake.Result{}, err
 	}
 	if claim.IsTreeArchitect(fact.Role, issue.Key, issue.Tree) {
-		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase,
-			Reason: deathReason(fact, false)})
+		died := record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Reason: deathReason(fact, false)}
+		if issue.Phase == phase.Done {
+			return intake.Result{}, e.notice(ctx, tx, issue.Key, died)
+		}
+		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, died)
 	}
 	if fact.Role == claim.RoleArchitect {
 		if !record.InWorkflow(*issue) {
@@ -1346,9 +1357,16 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	working := issue.WorkingPhase()
 	failure := noticeFailure(fact)
 	if phase.RoleFor(working) != fact.Role {
-		reason := fmt.Sprintf("the %s does not work %s's phase %s; nothing is held", fact.Role, issue.Key, working)
+		// A merge owed to the role whose claim failed is asked again at the ready of that role's
+		// next launch (askAgainAtLaunch), and the notice its failure sends says so (owedAskClause),
+		// after the role's own clauses, so the "it" of noStartOfItsOwn still names the role.
+		owed, err := e.owedAskClause(ctx, tx, *issue, fact.Role)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		reason := joinReason(fmt.Sprintf("the %s does not work %s's phase %s; nothing is held", fact.Role, issue.Key, working), noStartOfItsOwn(fact))
 		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: failure,
-			Reason: joinReason(reason, noStartOfItsOwn(fact))})
+			Reason: reason + owed})
 	}
 	if issue.Phase == phase.Held {
 		return intake.Result{}, nil
@@ -1369,7 +1387,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 		return intake.Result{}, err
 	}
-	if err := e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "held", Role: fact.Role, Phase: from,
+	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "held", Role: fact.Role, Phase: from,
 		Failure: failure}); err != nil {
 		return intake.Result{}, err
 	}
@@ -1838,12 +1856,13 @@ func missingList(list []record.VolumeMissing) string {
 	return strings.Join(quoted, ", ")
 }
 
-// sessionLost tells the issue, its architect and the controller that a worker forgot its recorded
-// session, so the agent working the issue now has read none of its own earlier work: it runs from
-// a fresh session, and only what it pushed and committed survives. Nothing of the issue moves — the
-// worker is running — and nothing is held: the report is the whole point, since a worker that lost
-// its memory is otherwise indistinguishable from one that is merely slow. An issue the record does
-// not hold tells nobody.
+// sessionLost tells the issue and its architect that a worker forgot its recorded session, so the
+// agent working the issue now has read none of its own earlier work: it runs from a fresh session,
+// and only what it pushed and committed survives. Nothing of the issue moves — the worker is
+// running — and nothing is held: the report is the whole point, since a worker that lost its
+// memory is otherwise indistinguishable from one that is merely slow. The controller gets no copy:
+// the architect is the one who acts on it, and a person reads the issue (#4065). An issue the
+// record does not hold tells nobody.
 //
 // The fact's cause chooses the words, the notice kind and the warning line. A session no store
 // holds (gone, and a fact with no cause) and a Claude Code claim's session with no transcript file
@@ -1851,8 +1870,8 @@ func missingList(list []record.VolumeMissing) string {
 // than this release, could not look up by its id, and that Oh My Pi did not resume by that id, is
 // told as forgotten, in a notice of the kind session-forgotten, and nothing says it was lost:
 // nothing of it was deleted, and a store may hold it still (dispatch://INFRA-4108 R3). The kind is
-// part of what the architect and the controller hear, since the outbox publishes each notice as
-// `<kind> on <issue>` (the daemon's noticeSummary), so that forget has a kind of its own.
+// part of what the architect hears, since the outbox publishes each notice as `<kind> on <issue>`
+// (the daemon's noticeSummary), so that forget has a kind of its own.
 //
 // The detail of a lost session can be the runtime's own account of the failed resume, which
 // carries a session file name and a transport error from outside the daemon, and this sentence is
@@ -1883,7 +1902,7 @@ func (e *Engine) sessionLost(ctx context.Context, tx pgx.Tx, fact intake.Session
 		return intake.Result{}, err
 	}
 	e.warnOnCommit(ctx, line, fields...)
-	return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{
+	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{
 		Kind: kind, Role: fact.Role, Phase: issue.Phase, Reason: told})
 }
 
@@ -2208,11 +2227,10 @@ func binarySize(bytes uint64) string {
 // each against the limit it ran out at (record.NoticeFailure). Deaths are measured against the
 // launch failure limit, as the supervisor measures them (supervise.Limits).
 //
-// The hold, the copy of it the controller reads and the worker-died are built from this one
-// value, so the three cannot name the same failure differently. It is nil for a fact carrying no
-// cause — a failure recorded before the daemon kept one, replayed at a boot — and such a notice
-// carries no failure record at all rather than a record of zeroes, which would read as a claim
-// that failed with every budget untouched.
+// The hold and the worker-died are built from this one value, so the two cannot name the same
+// failure differently. It is nil for a fact carrying no cause — a failure recorded before the
+// daemon kept one, replayed at a boot — and such a notice carries no failure record at all rather
+// than a record of zeroes, which would read as a claim that failed with every budget untouched.
 func noticeFailure(fact intake.ClaimFailed) *record.NoticeFailure {
 	if fact.Cause == "" {
 		return nil
@@ -2402,9 +2420,15 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}, freshSession); err != nil {
 		return "", err
 	}
-	// The release puts the issue back in a phase, so it queues the reconcile of the tree's news as
-	// a move does after its start (queueMovedNews). It puts the issue back in the phase the hold is
-	// from, which is no move between phases, so the merge forward stands as the hold left it.
+	// The release puts the issue back in the phase the hold is from, which is no move between
+	// phases, so the merge forward stands as the hold left it; but the worker it starts again is
+	// held as a worker a move starts is, where the merge of the head is owed to another role
+	// (holdStartedWorker). A merge owed to that worker itself is asked again at the ready of its new
+	// launch (askAgainAtLaunch). Then it queues the reconcile of the tree's news as a move does
+	// after its start (queueMovedNews).
+	if err := e.holdStartedWorker(ctx, tx, issue, pr); err != nil {
+		return "", err
+	}
 	return from, e.queueMovedNews(ctx, tx, issue)
 }
 
@@ -2818,13 +2842,10 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 // acceptedRoleOn is the role of the step the owner's acceptance of issue accepts on w, the walk of
 // its run: the step before the acceptance's place on the task of w, by place and never by type, so
 // the step after the sign-off reads the report the owner read. An issue with no plan rows walks
-// today's line, where the review stands before accepting.
+// today's line on today's steps (todaysWalk), where the review stands before accepting.
 func acceptedRoleOn(issue record.Issue, w Walk) (claim.Role, error) {
-	if !w.Stored {
-		return claim.RoleReviewer, nil
-	}
 	place, ok := w.PlaceOf(phase.Accepting)
-	if !ok || place.Kind != record.PlaceStep || place.Position < 2 {
+	if !ok || place.Position < 2 {
 		return "", fmt.Errorf("sign off %s: task %s of its line %v has no step before its acceptance", issue.Key, w.Task, w.Line)
 	}
 	return claim.Role(w.Steps[place.Position-2].Role), nil
@@ -2991,7 +3012,8 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	// The merge forward follows the move (mergeForwardOnEntry): a move into implementing drops
-	// it, and a move at a head held in a confirmed conflict asks for it where the merge comes
+	// it, a move while another role's merge forward of the head is open holds the worker it
+	// starts, and a move at a head held in a confirmed conflict asks for it where the merge comes
 	// next. It comes after the start, so the worker of the phase entered is
 	// started before the hold that tells it to wait for the merge.
 	if err := e.mergeForwardOnEntry(ctx, tx, issue, w); err != nil {

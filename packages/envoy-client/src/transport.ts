@@ -11,6 +11,7 @@ import {
   MINTED_DEDUPE_KEY_PATTERN,
 } from "@legion/contracts";
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
+import { mayHaveReachedServer } from "@legion/contracts/http-status";
 import { errorClass, requestForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
@@ -94,6 +95,18 @@ const StringListWireSchema = z
   .array(z.string())
   .nullish()
   .transform((list) => list ?? []);
+
+/**
+ * A granted role claim's answer (`roleSetResponse` in the listener): the claimant's interest row,
+ * and `warnings`, each a sentence the listener says about the claim that its caller must log and,
+ * where an agent asked for the claim, tell the agent. A role named in the old form gets one that
+ * names the new form to claim; a claim that names the session it replaces (`previous_session_id`)
+ * and hands over none of its messages gets one that says so and why: the rule that holds a
+ * handover to one principal refused it, the listener's known-session bucket is not open, or the
+ * listener is an edge listener, which hands over no messages. The listener omits the field
+ * when there are none, and a listener predating it sends none: both read as [].
+ */
+const RoleSetWireSchema = InterestWireSchema.extend({ warnings: StringListWireSchema });
 
 const SessionWireSchema = z.object({
   session_id: z.string(),
@@ -679,12 +692,18 @@ export type SetRoleInput = {
    */
   readonly soft?: boolean;
   /**
-   * The session id this claimant continues (a fork or branch mints a new id
-   * in the same process). A soft claim takes the role from that predecessor
-   * only when the predecessor has no live registry entry, when its live entry
-   * carries this client instance's own `clientInstanceID`, or when either
-   * side carries no instance id; a predecessor still live under another
-   * client instance keeps the role. Sent only with `soft`.
+   * On a soft claim, the session id this claimant continues (a fork or branch
+   * mints a new id in the same process): the claim takes the role from that
+   * predecessor only when the predecessor has no live registry entry, when its
+   * live entry carries this client instance's own `clientInstanceID`, or when
+   * either side carries no instance id; a predecessor still live under another
+   * client instance keeps the role.
+   *
+   * On any claim, soft or hard, the session this claim replaces: once the
+   * claim lands and the named session is not live, a listener that supports it
+   * hands that session's unread direct and role messages to this session. A
+   * listener older than that ignores it on a hard claim. Sent whenever it is a
+   * non-empty string.
    */
   readonly previousSessionID?: string;
   /**
@@ -700,8 +719,17 @@ export type SetRoleInput = {
   readonly clientInstanceID?: string;
 };
 
+/**
+ * A claim's result. A granted claim carries the listener's interest row and its `warnings` about
+ * the claim (`RoleSetWireSchema`), [] when it sent none, as an older listener never does; the
+ * warnings are read here alone, never off the interest.
+ */
 export type SetRoleResult =
-  | { readonly claimed: true; readonly interest: Interest }
+  | {
+      readonly claimed: true;
+      readonly interest: Interest;
+      readonly warnings: readonly string[];
+    }
   | { readonly claimed: false; readonly holder: string };
 
 export type ListSessionsInput = {
@@ -836,8 +864,8 @@ export class EnvoyApiError extends Error {
   /**
    * The whole seconds until the sender may send again, when the body names them: a
    * `sender_rate_limited` refusal's `retry_after_seconds`. The client never sends a refused
-   * message again by itself (`request` retries nothing below 500), so a caller that wants the
-   * message sent waits this long and sends it again.
+   * message again by itself (`request` sends no 429 again), so a caller that wants the message
+   * sent waits this long and sends it again.
    */
   readonly retryAfterSeconds: number | undefined;
   /** The topics a registration's project refusal names (`topic_not_in_project`,
@@ -894,7 +922,7 @@ export class EnvoyApiError extends Error {
       details.status === 503 && parsed?.error.startsWith(`${MESSAGE_NOT_SENT_PREFIX}: `) === true;
     const earlier =
       notSentAnswer && shown.afterUnanswered === true
-        ? " An earlier attempt got no answer or a 5xx, so that attempt may have stored the message."
+        ? " An earlier attempt got no answer, a 5xx or a 408, so that attempt may have stored the message."
         : "";
     // The reason joins the message: a refused registration must fail with the listener's own
     // machine-readable why in what the session is shown, not only in the client's field.
@@ -922,15 +950,16 @@ const mintedDedupeKey = new RegExp(MINTED_DEDUPE_KEY_PATTERN);
 /**
  * A send that ended without the listener's word that it was stored: an attempt got no answer at
  * all (the request timed out, its connection failed, or a 2xx answer's body did not arrive or did
- * not parse) or got a 5xx other than the listener's word that it sent nothing
- * (`EnvoyApiError.notSent`), so the message may or may not have reached its target, even when a
- * later attempt was refused. Every attempt carried `idempotencyKey`. The listener sends under the
- * dedupe key `agent.<target>.<idempotencyKey>`, and when that key is one a repeat is recognised by
+ * not parse), or got a 5xx or a 408 (a hop's timeout, which can come after the hop forwarded the
+ * send) other than the listener's word that it sent nothing (`EnvoyApiError.notSent`), so the
+ * message may or may not have reached its target, even when a later attempt was refused. Every
+ * attempt carried `idempotencyKey`. The listener sends under the dedupe key
+ * `agent.<target>.<idempotencyKey>`, and when that key is one a repeat is recognised by
  * (`MINTED_DEDUPE_KEY_PATTERN`: a lower-case UUID and a target with no dot), the stream stores
  * one copy and the recipient's plugin drops a repeat inside `DELIVERY_DUPLICATE_WINDOW_MS`, which
  * states the rare cases where a recipient that restarted still sees it twice (`resendSafe`). A
- * send refused with a 4xx, or answered that it was not sent, on every attempt it made stays an
- * `EnvoyApiError`. `last` (also the `cause`) is what the last attempt got.
+ * send refused with a 4xx other than a 408, or answered that it was not sent, on every attempt it
+ * made stays an `EnvoyApiError`. `last` (also the `cause`) is what the last attempt got.
  */
 export class EnvoySendUnconfirmedError extends Error {
   override readonly name = "EnvoySendUnconfirmedError";
@@ -996,7 +1025,11 @@ export type EnvoyClient = {
    * (`previousSessionID`) takes the role from it only when that predecessor has no live registry
    * entry, when its live entry carries this client instance's own instance id, or when either
    * side carries no instance id; any other live holder keeps the role and is reported as
-   * `{ claimed: false, holder }`.
+   * `{ claimed: false, holder }`. On any claim, `previousSessionID` also names the session the
+   * claim replaces, whose unread direct and role messages a listener that supports it hands to
+   * this session once the claim lands and that session is not live. A granted claim answers the
+   * listener's warnings about it beside the interest row, such as a handover of that session it
+   * did not make; the caller logs each.
    */
   readonly setRole: (input: SetRoleInput) => Promise<SetRoleResult>;
   readonly getRole: (role: string) => Promise<RoleInfo>;
@@ -1006,8 +1039,9 @@ export type EnvoyClient = {
 type RequestOptions = {
   readonly timeoutMs?: number;
   readonly retry?: boolean;
-  /** Called for each attempt that got no answer, or a 5xx other than the listener's word that it
-   *  sent nothing (`EnvoyApiError.notSent`): one the listener may have acted on. */
+  /** Called for each attempt that got no answer, or a 5xx or a 408 (`mayHaveReachedServer`) other
+   *  than the listener's word that it sent nothing (`EnvoyApiError.notSent`): one the listener may
+   *  have acted on. */
   readonly onUnanswered?: () => void;
   /**
    * Called when the call fails on an attempt that reached no route of the listener: its
@@ -1184,8 +1218,8 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
   ): Promise<string> => {
     const url = `${baseUrl}${path}`;
     const tries = options.retry === false ? 1 : attempts;
-    // Whether an earlier attempt got no answer or a 5xx, after which the listener may have acted
-    // on the call: a later answer that it sent nothing then speaks for that attempt alone.
+    // Whether an earlier attempt got no answer, a 5xx or a 408, after which the listener may have
+    // acted on the call: a later answer that it sent nothing then speaks for that attempt alone.
     let unanswered = false;
     for (let attempt = 0; attempt < tries; attempt += 1) {
       options.onAttempt?.();
@@ -1233,11 +1267,14 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
           afterUnanswered: unanswered,
         }
       );
-      // Only a 5xx is sent again. A 4xx is the listener's answer to this message, and so is a 429
-      // `sender_rate_limited`: the agent reads its sentence and decides when to send it again. The
-      // 503 that says nothing was sent is sent again too, under the same key, but is no attempt the
-      // listener may have acted on.
-      if (response.status >= 500) {
+      // An attempt answered with a 5xx or a 408 is sent again (`mayHaveReachedServer`). The listener
+      // writes no 408, so one is a hop's timeout, and a hop can count it after it forwarded the whole
+      // request. Such an attempt may have reached the listener, which may have acted on it
+      // (`onUnanswered`), except the listener's 503 that says nothing was sent (`notSent`), which is
+      // sent again under the same key but is no attempt the listener may have acted on. A 429 is not
+      // sent again: the listener's 429 is `sender_rate_limited`, its answer to this message, whose
+      // sentence the agent reads to decide when to send it again. Any other 4xx is its answer too.
+      if (mayHaveReachedServer(response.status)) {
         if (!error.notSent) {
           unanswered = true;
           options.onUnanswered?.();
@@ -1466,13 +1503,17 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     setRole: async (input) => {
       // `soft`, `previous_session_id` and `client_instance_id` are omitted from
       // the wire unless set, so an older listener sees an unchanged hard-claim
-      // request. The claim's own `client_instance_id` is the process it is made
-      // for: the listener records it on the claim, and weighs a claim under the
-      // holder's own session id against the standing claim's. A soft claim
-      // against a live predecessor is still decided by the instance id each
-      // side's registry entry carries (`SubscribeInput.clientInstanceID`).
+      // request from a caller that sets none of them. `previous_session_id` is
+      // sent on a hard claim as well as a soft one: it names the session this
+      // claim replaces, whose unread messages the listener hands over, and a
+      // listener older than that ignores it on a hard claim. The claim's own
+      // `client_instance_id` is the process it is made for: the listener
+      // records it on the claim, and weighs a claim under the holder's own
+      // session id against the standing claim's. A soft claim against a live
+      // predecessor is still decided by the instance id each side's registry
+      // entry carries (`SubscribeInput.clientInstanceID`).
       const soft = input.soft === true;
-      const previous = soft ? (input.previousSessionID ?? "") : "";
+      const previous = input.previousSessionID ?? "";
       const body: {
         session_id: string;
         role: string;
@@ -1507,10 +1548,10 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         }
         throw error;
       }
-      return {
-        claimed: true,
-        interest: InterestWireSchema.parse(answerJson(raw, "POST", "/v1/roles/set")),
-      };
+      const { warnings, ...interest } = RoleSetWireSchema.parse(
+        answerJson(raw, "POST", "/v1/roles/set")
+      );
+      return { claimed: true, interest, warnings };
     },
     getRole: async (role) =>
       RoleWireSchema.parse(

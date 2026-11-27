@@ -471,6 +471,28 @@ func TestTheAirlockHoldsOnlyItsBudgetOfBodiesToHash(t *testing.T) {
 	}
 }
 
+// TestAPlaceholderInAnAWSCallsQueryIsRefusedOnTheSignPath: the leftover scan reads the query of
+// an AWS call signed with the real key, so a whole placeholder the command wrote in its query is
+// refused 403 PLACEHOLDER_NOT_SWAPPED. This is a regression test: an SC14 draft blanked the query
+// for the sign path under the false assumption that the sign path rewrites it.
+func TestAPlaceholderInAnAWSCallsQueryIsRefusedOnTheSignPath(t *testing.T) {
+	r := newAWSRig(t, true)
+	verifyingStandIn(r, true)
+	target := "https://" + boundHost + "/v1/things?tag=" + placeholder.Prefix + "0123456789abcdef0123456789abcdef"
+	request := awsRequest(t, "GET", target, "", "execute-api", true)
+	answer, body := sendAWS(t, r.client(awsKeyPlaceholder), request)
+	if answer.StatusCode != http.StatusForbidden {
+		t.Fatalf("a signed AWS call with a placeholder in its query answered %d %q; want 403", answer.StatusCode, body)
+	}
+	lines := r.logs.refusals()
+	if len(lines) != 1 || lines[0].fields["code"] != codePlaceholderLeft {
+		t.Fatalf("the refusal logged %v; want one line coded %s", lines, codePlaceholderLeft)
+	}
+	if seen := r.requests(); len(seen) != 0 {
+		t.Fatalf("the service saw %d requests; want none", len(seen))
+	}
+}
+
 // sendAWS sends a request a row built itself through the proxy and reads the answer.
 func sendAWS(t *testing.T, client *http.Client, request *http.Request) (*http.Response, string) {
 	t.Helper()

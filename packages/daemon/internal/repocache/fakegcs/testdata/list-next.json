@@ -1,0 +1,22 @@
+{
+  "kind": "storage#objects",
+  "items": [
+    {
+      "kind": "storage#object",
+      "id": "example-legion-packs/acme/widgets/objects/pack/pack-0000000000000000000000000000000000000001.pack/1764000000000001",
+      "name": "acme/widgets/objects/pack/pack-0000000000000000000000000000000000000001.pack",
+      "bucket": "example-legion-packs",
+      "generation": "1764000000000001",
+      "metageneration": "1",
+      "contentType": "application/octet-stream",
+      "storageClass": "STANDARD",
+      "size": "2048",
+      "md5Hash": "1B2M2Y8AsgTpgAmY7PhCfg==",
+      "crc32c": "AAAAAA==",
+      "etag": "CAE=",
+      "timeCreated": "2026-01-01T00:00:00.000Z",
+      "updated": "2026-01-01T00:00:00.000Z"
+    }
+  ],
+  "nextPageToken": "fixture-next-page-token"
+}
