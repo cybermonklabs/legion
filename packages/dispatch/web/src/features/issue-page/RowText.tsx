@@ -68,8 +68,8 @@ import { titleReading } from "./statement-rules";
  * pass, which reads one target for each reference, is given nothing to link.
  * One the read answered gone with the version that last held it, which the page publishes beside
  * its names (`graph-edit/last-held-store.ts`' `useKnownLastHeldReferences`), reads the page's
- * gone word instead, linked to that version and titled so, as the row's chip draws it
- * (`NodeRow.tsx`'s `Chip`, R9 of INFRA-5705).
+ * gone word instead, linked to that version, as the row's chip draws it (`NodeRow.tsx`'s `Chip`,
+ * R9 of Graph editing's spec).
  *
  * A reference to a post its author corrected reads as the page published it (INFRA-1523, R2 and
  * R3): a post its author edited by its words, cut, then ` · edited` (`rowReferenceWords`,
@@ -279,14 +279,6 @@ const ROW_CHIP = "data-row-chip";
 
 /** The mark the deleted line carries wherever it is drawn (`DeletedBody`, `RefLink`). */
 const POST_DELETED = "data-post-deleted";
-
-/** What a row's link to a reference the read answered gone with the version that last held it
- *  reads, and its title (R9 of INFRA-5705): the gone word and the title the row's chip draws
- *  (`NodeRow.tsx`'s `Chip`). */
-const LAST_HELD_WORDS = {
-  gone: CONTROL_LABELS.target_gone,
-  title: CONTROL_LABELS.last_held_title,
-} as const;
 
 /** A typed block's source line in a node's words: its opening `:::requirement{#r1}`, or its
  *  closing `:::`. It is markup and no word of the node (part G's R4, the tester's F20): a
@@ -613,7 +605,7 @@ function DrawnText({
     dropDirectiveLines(element);
     linkRowReferences(element, names, issues, issue, ambiguous, edited);
     linkedHeld.current = lastHeld.current;
-    linkLastHeldReferences(element, names, linkedHeld.current, LAST_HELD_WORDS);
+    linkLastHeldReferences(element, names, linkedHeld.current, CONTROL_LABELS.target_gone);
     for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[data-row-reference]")) {
       const reference = anchor.getAttribute("data-row-reference") ?? "";
       const route = parseNodeReference(reference);

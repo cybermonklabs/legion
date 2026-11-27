@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, waitFor } from "@testing-library/react";
-import { type ComponentProps, createElement, type ReactNode } from "react";
+import { type ComponentProps, createElement, type ReactElement, type ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { renderWithQueries } from "../../../__tests__/query-provider";
@@ -15,7 +15,7 @@ import {
   ReferenceNamesProvider,
   usePublishReferenceNames,
 } from "../../refs/reference-names";
-import { parseIssuePath } from "../../refs/routes";
+import { parseIssuePath, parseNodeReference, referenceHref } from "../../refs/routes";
 import { blockReferences } from "../address-target";
 import { artifact, issueDetails, KEY, node } from "../decisions-filter/decisions-fixtures";
 import { buildIssueTree, type TreeNode, targetNaming } from "../issue-tree";
@@ -63,9 +63,10 @@ import {
  *   (`last-held-chips.ts`' `targetLastHeld`), and `useKnownLastHeldReferences()` hands that map
  *   to the surfaces under the page's query client.
  * - A gone chip with `lastHeld` draws `CONTROL_LABELS.target_gone` as a link to `lastHeldPath` of
- *   it, titled `CONTROL_LABELS.last_held_title` (`NodeRow.tsx`'s `Chip`); a gone reference in a
- *   row's words (`RowText.tsx`, `row-references.ts`) draws the same link in place; with no
- *   `lastHeld` both draw it as they draw any gone reference.
+ *   it, with no `title` (`NodeRow.tsx`'s `Chip`); a gone reference in a row's words (`RowText.tsx`,
+ *   `row-references.ts`) draws the same link in place, and goes back to its target's own address,
+ *   still with no `title`, once the read no longer answers it so; with no `lastHeld` both draw it
+ *   as they draw any gone reference.
  * - An address on the issue page whose `#b-<block>` names a block that no read holds (the Spec
  *   view's own address: `last-held-ask.ts`' `lastHeldAsk`, through the page's names read in
  *   `useIssueTree.ts`, which publishes where it opens by the issue's key,
@@ -232,6 +233,45 @@ function publishedOf(
   return { ...targetNaming(reads), asked: new Set(asked) };
 }
 
+/** A row's words that cite `reference`, as the page draws them under the names it publishes from
+ *  `reads`' batched read and the versions `lastHeld` names. */
+function citingWords(
+  reference: string,
+  reads: Parameters<typeof targetNaming>[0],
+  lastHeld: ReadonlyMap<string, string | undefined>
+): ReactElement {
+  return createElement(
+    MemoryRouter,
+    null,
+    createElement(
+      ReferenceNamesProvider,
+      null,
+      createElement(
+        Publish,
+        { lastHeld, published: publishedOf(reads) },
+        createElement(RowText, { markdown: `See ${reference}.` })
+      )
+    )
+  );
+}
+
+/** The value each `title` held before an element under `root` took, changed or dropped it, from
+ *  the call on: `null` where the element took one it did not hold. The call it answers with ends
+ *  the watch and gives them. */
+function titleChanges(root: Node): () => (string | null)[] {
+  const changes: (string | null)[] = [];
+  const take = (records: MutationRecord[]): void => {
+    for (const { oldValue } of records) changes.push(oldValue);
+  };
+  const watch = new MutationObserver(take);
+  watch.observe(root, { attributeFilter: ["title"], attributeOldValue: true, subtree: true });
+  return () => {
+    take(watch.takeRecords());
+    watch.disconnect();
+    return changes;
+  };
+}
+
 // R9: every surface that draws a reference to a gone node reads `last_held`, none by a new import of
 // the model: `chipOf` carries it into `NodeChip`, the row's `Chip` draws it, and a row's words and
 // the versions the page publishes (`last-held-store.ts`, `row-references.ts`, `RowText.tsx`) draw
@@ -254,7 +294,7 @@ test("every surface that draws a gone reference reads last_held", async () => {
   expect(context.chipOf(live?.ref ?? "").lastHeld).toBeUndefined();
   expect(context.chipOf(LENS().ref).lastHeld).toBeUndefined();
 
-  // `Chip` of `NodeRow.tsx`: Deleted, as a link to the version.
+  // `Chip` of `NodeRow.tsx`: Deleted, as a link to the version, with no title.
   const row = drawRow(chip);
   const link = [...row.container.querySelectorAll("a")].find(
     (each) => each.textContent === CONTROL_LABELS.target_gone
@@ -264,7 +304,7 @@ test("every surface that draws a gone reference reads last_held", async () => {
   expect(urlOf(link?.getAttribute("href") ?? "").searchParams.get("v")).toBe(
     expected.searchParams.get("v")
   );
-  expect(link?.getAttribute("title")).toBe(CONTROL_LABELS.last_held_title);
+  expect(link?.hasAttribute("title"), "the chip's Deleted link carries a title").toBe(false);
   row.unmount();
   // With no `lastHeld` the chip draws Deleted, with no link.
   const bare = drawRow({ ...chip, lastHeld: undefined } as typeof chip);
@@ -281,21 +321,7 @@ test("every surface that draws a gone reference reads last_held", async () => {
   const lastHeld = new Map([[statement.ref, statement.last_held ?? ""]]);
   // Under a query client, as the page draws a row's words: who is signed in is the read
   // `stubReads` answers.
-  const words = renderWithQueries(
-    createElement(
-      MemoryRouter,
-      null,
-      createElement(
-        ReferenceNamesProvider,
-        null,
-        createElement(
-          Publish,
-          { lastHeld, published: publishedOf(reads) },
-          createElement(RowText, { markdown: `See ${statement.ref}.` })
-        )
-      )
-    )
-  );
+  const words = renderWithQueries(citingWords(statement.ref, reads, lastHeld));
   await waitFor(() =>
     expect(
       words.container.querySelector<HTMLAnchorElement>("a[data-row-reference]")?.textContent,
@@ -307,7 +333,46 @@ test("every surface that draws a gone reference reads last_held", async () => {
   expect(urlOf(cited?.getAttribute("href") ?? "").searchParams.get("v")).toBe(
     expected.searchParams.get("v")
   );
+  expect(cited?.hasAttribute("title"), "the row's Deleted link carries a title").toBe(false);
   words.unmount();
+});
+
+// R9, and no element of the page carries a tooltip: a row's link to a reference the read answers
+// gone with a version reads Deleted and opens that version, and goes back to its target's own
+// address once the read no longer answers it so. No element of the words takes or drops a
+// `title` on the way, so the link carries none while it reads Deleted, and none after.
+test("a row's Deleted link takes no title, and drops none as it goes back to its target", async () => {
+  await warmMarkdownRenderer();
+  const statement = STATEMENT();
+  const opened = lastHeldPath(statement.last_held ?? "");
+  const route = parseNodeReference(statement.ref);
+  const own = route === undefined ? undefined : referenceHref(route);
+  if (opened === undefined || own === undefined) {
+    throw new Error("the deleted statement opens no version or no address of its own");
+  }
+  const reads = {
+    issue: issueDetails(),
+    targets: allTargets(),
+    tree: undefined as TreeAnswer | undefined,
+  };
+  const titles = titleChanges(document.body);
+  const view = renderWithQueries(
+    citingWords(statement.ref, reads, new Map([[statement.ref, statement.last_held ?? ""]]))
+  );
+  const link = () => view.container.querySelector<HTMLAnchorElement>("a[data-row-reference]");
+  await waitFor(() =>
+    expect(
+      { href: link()?.getAttribute("href"), words: link()?.textContent },
+      "the row's words draw the gone reference as Deleted, linked to the version"
+    ).toEqual({ href: opened, words: CONTROL_LABELS.target_gone })
+  );
+  view.rerender(citingWords(statement.ref, reads, new Map()));
+  await waitFor(() =>
+    expect(link()?.getAttribute("href"), "the link goes back to its target's own address").toBe(own)
+  );
+  expect(link()?.textContent).not.toBe(CONTROL_LABELS.target_gone);
+  expect(titles(), "an element of the row's words took or dropped a title").toEqual([]);
+  view.unmount();
 });
 
 // R9: where the Spec view's address opens instead is published by the page's names read, by the
@@ -795,5 +860,10 @@ test("a comment citing a node deleted in Graph draws it on a chip as in its word
     ])
   );
   expect(view.container.querySelectorAll("[data-node-chip]")).toHaveLength(2);
+  // No element of the row carries a title, which a pointer raises as a tooltip.
+  expect(
+    [...view.container.querySelectorAll("[title]")].map((element) => element.getAttribute("title")),
+    "an element of the row carries a title"
+  ).toEqual([]);
   view.unmount();
 });

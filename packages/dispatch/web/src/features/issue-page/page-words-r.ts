@@ -53,9 +53,6 @@ export default {
       delete_rows: "rows",
       /** The confirm's control that sends the delete. */
       confirm_delete: "Delete",
-      /** The title of the Deleted link that opens the version that last held a row (R9): the
-       *  link's own words are `target_gone`. */
-      last_held_title: "Opens the version that last held it",
       /** The kind of the container that a refused move or delete would leave empty, named in
        *  the line that links to its row (R8): "This would leave this container empty: list
        *  item, The first item of the list". */

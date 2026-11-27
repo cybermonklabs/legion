@@ -1563,7 +1563,6 @@ function Chip({
           <Link
             className={`dispatch-inline-link font-medium whitespace-nowrap underline decoration-page-bullet underline-offset-[3px] ${pageMutedText}`}
             tabIndex={tabStops ? undefined : -1}
-            title={CONTROL_LABELS.last_held_title}
             to={lastHeld}
             {...pageChrome}
           >

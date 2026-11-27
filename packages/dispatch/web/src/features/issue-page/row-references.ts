@@ -424,31 +424,28 @@ function lastHeldRowPath(
 /**
  * The pass after the row's own link pass (`linkRowReferences`) over words a reading painted into
  * `root` (`RowText.tsx`): each of the row's links whose reference the batched read answered gone
- * with the version that last held it (`lastHeldRowPath`) reads `words.gone`, titled
- * `words.title`, and goes to that version, as the row's chip does (`NodeRow.tsx`'s `Chip`). A
- * link this pass sent there whose reference the read no longer answers so goes back to its
- * target's own address, which `linkRowReferences` has named again. Run it after every run of that
- * pass, and whenever `lastHeld` changes.
+ * with the version that last held it (`lastHeldRowPath`) reads `gone` and goes to that version,
+ * as the row's chip does (`NodeRow.tsx`'s `Chip`). A link this pass sent there whose reference
+ * the read no longer answers so goes back to its target's own address, which `linkRowReferences`
+ * has named again. Run it after every run of that pass, and whenever `lastHeld` changes.
  */
 export function linkLastHeldReferences(
   root: HTMLElement,
   names: ReadonlyMap<string, string>,
   lastHeld: ReadonlyMap<string, string | undefined>,
-  words: { readonly gone: string; readonly title: string }
+  gone: string
 ): void {
   for (const anchor of root.querySelectorAll<HTMLAnchorElement>(`a[${ROW_REFERENCE}]`)) {
     const reference = anchor.getAttribute(ROW_REFERENCE) ?? "";
     const path = lastHeldRowPath(reference, names, lastHeld);
     if (path !== undefined) {
       if (anchor.getAttribute("href") !== path) anchor.setAttribute("href", path);
-      if (anchor.textContent !== words.gone) anchor.textContent = words.gone;
-      if (anchor.title !== words.title) anchor.title = words.title;
+      if (anchor.textContent !== gone) anchor.textContent = gone;
       anchor.setAttribute(ROW_LAST_HELD, "");
       continue;
     }
     if (!anchor.hasAttribute(ROW_LAST_HELD)) continue;
     anchor.removeAttribute(ROW_LAST_HELD);
-    anchor.removeAttribute("title");
     const route = parseNodeReference(reference);
     const href = route === undefined ? undefined : referenceHref(route);
     if (href !== undefined) anchor.setAttribute("href", href);
