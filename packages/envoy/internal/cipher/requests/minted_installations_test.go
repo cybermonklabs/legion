@@ -151,3 +151,26 @@ func TestAMintedInstallationsValueSplitsAsAGitHubAppValue(t *testing.T) {
 		t.Fatalf("the split of an installations object = %v, %v; want ada's slot holding its token", split.values, err)
 	}
 }
+
+// TestAnInstallationsSlotIsTheOneTheProxyReadsForItsOwner: the release writes each installation's
+// slot with GitHubSlot, the function the proxy reads the slot of the account a request's path
+// names with (proxy's accountSlot), so an owner GitHub answered in capitals has the slot a path
+// naming it in any case reads. The fold is ASCII's alone: an owner written with U+212A KELVIN SIGN
+// keeps it, where strings.ToLower, which the release folded with before, would fold it onto "k"
+// and give it the slot of the ASCII login "kelvin-org".
+func TestAnInstallationsSlotIsTheOneTheProxyReadsForItsOwner(t *testing.T) {
+	const kelvin = "\u212aelvin-org"
+	if got := GitHubSlot("Acme-Org"); got != SlotGitHubPrefix+"acme-org" {
+		t.Fatalf("GitHubSlot(Acme-Org) = %q; want %q", got, SlotGitHubPrefix+"acme-org")
+	}
+	if got := GitHubSlot(kelvin); got != SlotGitHubPrefix+kelvin {
+		t.Fatalf("GitHubSlot(%q) = %q; want the owner kept, %q: only A-Z is lowered", kelvin, got, SlotGitHubPrefix+kelvin)
+	}
+	installations := `{"installations":{"Acme-Org":{"installation_id":42,"token":"ghs_acme","expires_at":"2026-11-22T13:00:00Z"},` +
+		`"` + kelvin + `":{"installation_id":43,"token":"ghs_kelvin","expires_at":"2026-11-22T13:00:00Z"}}}`
+	split, err := airlockSplitOf("", policy.TypeGitHubApp, githubname.ValueInstallations, installations)
+	want := map[string]string{GitHubSlot("ACME-ORG"): "ghs_acme", GitHubSlot(kelvin): "ghs_kelvin"}
+	if err != nil || !maps.Equal(split.values, want) {
+		t.Fatalf("the split of installations Acme-Org and %q = %v, %v; want %v, each slot GitHubSlot's", kelvin, split.values, err, want)
+	}
+}
