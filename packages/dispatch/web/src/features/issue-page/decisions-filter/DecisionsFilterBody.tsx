@@ -46,6 +46,7 @@ import {
   PRESET_NAMES,
   STATE_LINES,
 } from "../page-words";
+import { nodeReading } from "../presets";
 import { usePressFocus } from "../press-focus";
 import { FAILED_READ_RETRY, FailedReadLine } from "../slots/failed-read-line";
 import { usePublishViewReadings } from "../slots/view-readings";
@@ -262,21 +263,25 @@ export function DecisionsFilterBody({
   // it, its first block that holds words (`KnownReferences.lines`), cut to a chip's room, which
   // each row draws as it is. One the store holds no line for yet is named by nothing until it
   // does, as a chip draws nothing until its name comes. A statement drawn under two parents is
-  // one node, so its first placement in the page's reading order names it. A statement only the
-  // coverage read holds, past the pages of Conversation's read, is one the page's names read was
-  // never asked for: the body publishes the reading of that read's row of it to the names store
-  // (`ShapedStatement.reading`), as a view publishes the blocks only its own tree holds
-  // (`slots/view-readings.ts`), and names it by the same rule, by the row's own address. Beside
-  // its name goes its whole line, the title of the link its line draws, which cuts the name to
-  // the line's width (decision 583 (2), amended).
+  // one node, so its first placement in the page's reading order names it. The page's names read
+  // is asked for the addresses the outline's chips and words name (`useIssueTree.ts`), and the
+  // decisions this view draws come from the decisions view read, whose ties it never asks for;
+  // a statement only the coverage read holds, past the pages of Conversation's read, is not in
+  // the outline at all. So the body publishes the reading of every statement a decision is tied
+  // to to the names store: the coverage read's row of it where the tree holds no node of it
+  // (`ShapedStatement.reading`), else the tree's node of it (`nodeReading`), as a view publishes
+  // the blocks only its own tree holds (`slots/view-readings.ts`), and names it by the same rule,
+  // by its own address, so each line is named from the first drawing ("586 (F), corrected").
+  // Beside its name goes its whole line, the title of the link its line draws, which cuts the
+  // name to the line's width (decision 583 (2), amended).
   const { lines } = useKnownReferences();
   const covered = useMemo(() => {
     const readings = new Map<string, ReferenceNameReading>();
     const references = new Map<string, string>();
     for (const entry of every) {
       for (const { id, node, reading } of entry.shapes) {
-        if (reading === undefined || node.reference === undefined) continue;
-        readings.set(node.reference, reading);
+        if (node.reference === undefined) continue;
+        readings.set(node.reference, reading ?? nodeReading(node));
         references.set(id, node.reference);
       }
     }

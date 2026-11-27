@@ -2218,10 +2218,10 @@ function informsLines(view: RenderResult, block: string): number {
   ).length;
 }
 
-// Decision 583 (2), amended, and decision 586 (F): a decision's row draws one line for each
+// Decision 583 (2), amended, and "586 (F), corrected": a decision's row draws one line for each
 // statement it is tied to at its first drawing, before any name comes from the names read - here
-// the names read answers none, so `s1`, which the tree holds, draws its line with no link yet,
-// while `s2`, on the page not read yet, is named from its coverage row - so the row's height is
+// the names read answers none - and names each from its own words: `s1`, which the tree holds,
+// by its node, and `s2`, on the page not read yet, by its coverage row. So the row's height is
 // known from the first drawing, and the count stays two once that page lands.
 test("a decision's row draws one informs line for each statement it is tied to before any name comes, one of them on a page not read yet", async () => {
   const next = Promise.withResolvers<TreeAnswer>();
@@ -2259,10 +2259,17 @@ test("a decision's row draws one informs line for each statement it is tied to b
       `the row did not draw one informs line for each tie; the stage drew ${drawnSlot(view)}`
     ).toBe(2)
   );
-  expect(
-    view.container.querySelector('[data-decisions-body] [data-decision-statement="spec#b-s1"] a'),
-    "a tree statement was named, though the names read answers none"
-  ).toBeNull();
+  await waitFor(() =>
+    expect(
+      ["spec#b-s1", "spec#b-s2"].map(
+        (statement) =>
+          view.container.querySelector(
+            `[data-decisions-body] [data-decision-statement="${statement}"] a`
+          ) !== null
+      ),
+      "a statement was not named from its own words, though the names read answers none"
+    ).toEqual([true, true])
+  );
   await act(async () =>
     next.resolve(
       treeAnswer([
