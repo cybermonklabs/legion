@@ -1,0 +1,29 @@
+---
+type: requirement
+id: acme-keeps-each-order
+kind: behavior
+text:
+  - ACME keeps each order that a customer sends.
+---
+type: requirement
+id: an-order-survives-a-restart
+kind: behavior
+parent: acme-keeps-each-order
+text:
+  - ACME keeps each stored order after the order service starts again.
+---
+type: check
+id: a-restart-keeps-each-order
+serves: an-order-survives-a-restart
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/acme/orders TestARestartKeepsEachOrder
+  job: go-checks
+claim: The order service reads each stored order after it starts again.
+procedure_text:
+  - The program stores one order, starts the order service again and reads the orders.
+  - It must find the order one time.
+failing_example:
+  - An order service that keeps its orders in memory only.

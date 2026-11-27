@@ -9,6 +9,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -120,9 +121,10 @@ func jobKey(*natsgo.Msg) (string, *contracts.Envelope, bool) { return "job", nil
 // (heldDurable). A standby tries every durableBindInterval for the life of the process, so one
 // that outlives the holder takes the durable over seconds after the holder releases its hold or
 // its hold lapses. When ctx ends it stops delivering, under the stop deadline armed then
-// (stopContext), and releases the hold, then stops every burst's timer.
+// (stopContext), and releases the hold, then stops every burst's timer. Every read it makes of
+// GitHub is the intake's (intakeCaller).
 func (j *JobIntake) Run(ctx context.Context) {
-	j.ctx = ctx
+	j.ctx = githubrate.WithCaller(ctx, intakeCaller)
 	defer j.stopPending()
 	j.run(ctx)
 }

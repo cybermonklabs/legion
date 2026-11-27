@@ -19,6 +19,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/natsconn"
 	"github.com/sjawhar/envoy/steprecord"
 
@@ -371,6 +372,14 @@ type workflowRuntime struct {
 	// readBounds are the bounds of the runtime's reads for a repository and of the refresher's
 	// waits, nil for the production ones (reads). Only a test sets them (withReads).
 	readBounds *repositoryReadBounds
+	// rates is the GitHub rate reading (rateReader), which run starts beside the other loops:
+	// the reading of the token manager the workflow makes itself, and nil beside a token source
+	// a test supplies, whose calls nothing counts.
+	rates *rateReader
+	// ownsTransport says the workflow put the process's REST client on its rate counter's
+	// transport (countingTokens), which stop gives back, so no later boot or test inherits it. A
+	// workflow over a supplied token source put nothing there, and resets nothing.
+	ownsTransport bool
 }
 
 // readyReleaseTimeout bounds one release of ready architects' waiting notices
@@ -739,17 +748,34 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	ctx = store.WithTransactionTracking(ctx)
 	log.Info("legion workflow boot stage", "stage", "config")
 	tokens := suppliedTokens
+	var owned *appauth.Manager
+	var rates *rateReader
 	if tokens == nil {
-		// The workflow owns a manager it makes: a boot that fails before the workflow is returned
-		// closes it, so a token_command still waiting on a grant does not outlive the boot.
-		owned := appauth.New(cfg.GitHubApps, appauth.Options{Log: log})
+		// Every call the daemon makes to GitHub with an installation token counts on that
+		// installation (countingTokens): the manager's own and every workflow read's, all through
+		// the process's REST client. The rate reading logs the counts beside GitHub's own counters.
+		// The manager mints at the same GitHub root as the workflow reads (empty is
+		// api.github.com).
+		var counter *githubrate.Counter
+		owned, counter = countingTokens(cfg.GitHubApps, githubAPI, log)
 		tokens = owned
-		defer func() {
-			if opened == nil {
-				owned.Close()
-			}
-		}()
+		rates = newRateReader(owned, counter, cfg.GitHubApps, cfg.Project, githubAPI, log)
 	}
+	// The process runs one workflow, which owns the REST client's transport and the manager it
+	// made. A boot that fails before returning the workflow gives the transport back and closes
+	// the manager, so neither the counter nor a token_command outlives the failed boot.
+	ownsTransport := owned != nil
+	defer func() {
+		if opened != nil {
+			return
+		}
+		if owned != nil {
+			owned.Close()
+		}
+		if ownsTransport {
+			githubrest.SetTransport(nil)
+		}
+	}()
 	installs, ok := tokens.(appauth.Installations)
 	if !ok {
 		return nil, fmt.Errorf("the GitHub App token source answers no App installation on a repository, which the daemon reads both role Apps' installations on each repository it works with")
@@ -772,6 +798,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		mergeStateRunning: map[string]*mergeStateRun{}, baseWake: newWakeSet[string](), etags: githubrest.NewETags(etagBytes),
 		controllerWake: cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock, graphQLShare: cfg.GitHubGraphQLShare, appCalls: appCalls,
 		defaultBranches: newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
+		rates:           rates, ownsTransport: ownsTransport,
 	}
 	// A read of a default branch GitHub's rate limit refuses, answered from the branch held, is
 	// logged and read again once the limit has passed, wherever it is made.
@@ -2392,6 +2419,12 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 		w.tickEntrySweep(store.ForConcurrentWorker(running))
 		return nil
 	})
+	if w.rates != nil {
+		group.Go(func() error {
+			w.rates.run(running)
+			return nil
+		})
+	}
 	group.Go(func() error {
 		w.wakeAtLingerDeadlines(store.ForConcurrentWorker(running))
 		return nil
@@ -2967,5 +3000,9 @@ func (w *workflowRuntime) stop() {
 	w.closeNATS()
 	if closer, ok := w.tokens.(interface{ Close() }); ok {
 		closer.Close()
+	}
+	if w.ownsTransport {
+		// An owned counter must not outlive this workflow in a later boot or test.
+		githubrest.SetTransport(nil)
 	}
 }

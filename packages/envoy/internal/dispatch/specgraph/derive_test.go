@@ -134,10 +134,10 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 		// serves, which names no statement (R6).
 		{name: "an approved parent that names no node", change: func(in *Input) {
 			approveText(in, func(s *Statement) { s.Parent = "no-such-statement" })
-		}, want: `specgraph: approved node "a-stored-message-survives-a-restart" version 1: bad-approved-block: parent "no-such-statement" names no node of the approved spec (line 1 of its block)`},
+		}, want: `specgraph: approved node "a-stored-message-survives-a-restart" version 1: bad-approved-document: parent "no-such-statement" names no node of the approved spec (line 1 of its document)`},
 		{name: "an approved parent that names a check", change: func(in *Input) {
 			approveText(in, func(s *Statement) { s.Parent = checkStateCheck.ID })
-		}, want: `specgraph: approved node "a-stored-message-survives-a-restart" version 1: bad-approved-block: parent "a-restart-loses-no-message" names a check, not a statement (line 1 of its block)`},
+		}, want: `specgraph: approved node "a-stored-message-survives-a-restart" version 1: bad-approved-document: parent "a-restart-loses-no-message" names a check, not a statement (line 1 of its document)`},
 		// R5: "The parent and support relations taken together form no cycle, and Dispatch refuses a
 		// change that makes one."
 		{name: "a loop of parents in the approved spec", change: func(in *Input) {
@@ -148,7 +148,7 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 				panic(err)
 			}
 			n := in.Approved.Nodes[top.ID]
-			n.Versions = []ApprovedVersion{{Version: 1, At: checkStateApproved, Block: block}}
+			n.Versions = []ApprovedVersion{{Version: 1, At: checkStateApproved, Document: block}}
 			in.Approved.Nodes[top.ID] = n
 		}, want: "specgraph: approved spec: loop: a-stored-message-survives-a-restart -[parent]-> messages-reach-sessions -[parent]-> a-stored-message-survives-a-restart"},
 		{name: "an approved node with no id", change: func(in *Input) {
@@ -171,7 +171,7 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 			want: "specgraph: subject: it sets graph_tx with no deploy; the commit that production runs reads the graph, and the head of a branch does not"},
 		{name: "an approved text with no time", change: func(in *Input) {
 			n := in.Approved.Nodes[checkStateLeaf.ID]
-			n.Versions = []ApprovedVersion{{Version: 1, Block: n.Versions[0].Block}}
+			n.Versions = []ApprovedVersion{{Version: 1, Document: n.Versions[0].Document}}
 			in.Approved.Nodes[checkStateLeaf.ID] = n
 		}, want: `specgraph: approved node "a-stored-message-survives-a-restart" version 1: it has no time`},
 		{name: "an approved node with no version", change: func(in *Input) {
@@ -179,11 +179,11 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 			n.Versions = nil
 			in.Approved.Nodes[checkStateCheck.ID] = n
 		}, want: `specgraph: approved node "a-restart-loses-no-message": it has no version`},
-		{name: "an approved text with no block", change: func(in *Input) {
+		{name: "an approved text with no document", change: func(in *Input) {
 			n := in.Approved.Nodes[checkStateCheck.ID]
 			n.Versions = []ApprovedVersion{{Version: 1, At: checkStateApproved}}
 			in.Approved.Nodes[checkStateCheck.ID] = n
-		}, want: `specgraph: approved node "a-restart-loses-no-message" version 1: bad-approved-block: the block holds 0 nodes, not one (line 1 of its block)`},
+		}, want: `specgraph: approved node "a-restart-loses-no-message" version 1: no-node: a spec file holds one or more nodes (line 1 of its document)`},
 		{name: "a commit of the history with no files", change: func(in *Input) {
 			in.History = &FixtureHistory{Commits: []FixtureCommit{{ID: "c1"}}}
 		}, want: `specgraph: history: commit "c1": it sets no files`},
@@ -523,7 +523,7 @@ func approveText(in *Input, change func(s *Statement)) {
 		panic(err)
 	}
 	n := in.Approved.Nodes[leaf.ID]
-	n.Versions = []ApprovedVersion{{Version: 1, At: checkStateApproved, Block: block}}
+	n.Versions = []ApprovedVersion{{Version: 1, At: checkStateApproved, Document: block}}
 	in.Approved.Nodes[leaf.ID] = n
 }
 
@@ -554,7 +554,7 @@ func TestTheEntryRefusesARelationOfNoNodeOfItsKindAndALoopOfTheApprovedSpec(t *t
 		return func(nodes map[string]ApprovedNode) {
 			n := nodes[id]
 			v := n.Versions[0]
-			v.Block = strings.Replace(v.Block, `parent="envoy-delivers-messages"`, `parent="`+parent+`"`, 1)
+			v.Document = strings.Replace(v.Document, "parent: envoy-delivers-messages\n", "parent: "+parent+"\n", 1)
 			n.Versions = []ApprovedVersion{v}
 			nodes[id] = n
 		}
@@ -564,7 +564,7 @@ func TestTheEntryRefusesARelationOfNoNodeOfItsKindAndALoopOfTheApprovedSpec(t *t
 		return func(nodes map[string]ApprovedNode) {
 			n := nodes[id]
 			v := n.Versions[0]
-			v.Block = strings.Replace(v.Block, `parent="envoy-delivers-messages"}`, `parent="envoy-delivers-messages" serves="`+supported+`"}`, 1)
+			v.Document = strings.Replace(v.Document, "parent: envoy-delivers-messages\n", "parent: envoy-delivers-messages\nserves:\n  - "+supported+"\n", 1)
 			n.Versions = []ApprovedVersion{v}
 			nodes[id] = n
 		}
@@ -578,7 +578,7 @@ func TestTheEntryRefusesARelationOfNoNodeOfItsKindAndALoopOfTheApprovedSpec(t *t
 				v := n.Versions[0]
 				v.Version = number
 				if parent != "" {
-					v.Block = strings.Replace(v.Block, `parent="envoy-delivers-messages"`, `parent="`+parent+`"`, 1)
+					v.Document = strings.Replace(v.Document, "parent: envoy-delivers-messages\n", "parent: "+parent+"\n", 1)
 				}
 				return v
 			}
@@ -600,7 +600,7 @@ func TestTheEntryRefusesARelationOfNoNodeOfItsKindAndALoopOfTheApprovedSpec(t *t
 					if err != nil {
 						panic(err)
 					}
-					n.Versions = append(n.Versions, ApprovedVersion{Version: i + 1, At: at.AddDate(0, 0, i), Block: block})
+					n.Versions = append(n.Versions, ApprovedVersion{Version: i + 1, At: at.AddDate(0, 0, i), Document: block})
 				}
 				return n
 			}
@@ -628,18 +628,18 @@ func TestTheEntryRefusesARelationOfNoNodeOfItsKindAndALoopOfTheApprovedSpec(t *t
 		{name: "control: wait-cycle as written"},
 		{name: "control: the parent a statement that the approved spec removed", changes: []func(map[string]ApprovedNode){parentOf(survives, "old-parent")}},
 		{name: "the parent no node", changes: []func(map[string]ApprovedNode){parentOf(survives, "no-such-statement")},
-			want: `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-block: parent "no-such-statement" names no node of the approved spec (line 1 of its block)`},
+			want: `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-document: parent "no-such-statement" names no node of the approved spec (line 1 of its document)`},
 		{name: "the parent the check of the statement", changes: []func(map[string]ApprovedNode){parentOf(survives, "a-restart-keeps-the-message")},
-			want: `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-block: parent "a-restart-keeps-the-message" names a check, not a statement (line 1 of its block)`},
+			want: `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-document: parent "a-restart-keeps-the-message" names a check, not a statement (line 1 of its document)`},
 		{name: "the parent a check of another statement", changes: []func(map[string]ApprovedNode){parentOf(survives, "a-late-session-gets-the-message")},
-			want: `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-block: parent "a-late-session-gets-the-message" names a check, not a statement (line 1 of its block)`},
+			want: `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-document: parent "a-late-session-gets-the-message" names a check, not a statement (line 1 of its document)`},
 		{name: "the failing check with its serves left out", changes: []func(map[string]ApprovedNode){func(nodes map[string]ApprovedNode) {
 			n := nodes["a-restart-keeps-the-message"]
 			v := n.Versions[0]
-			v.Block = strings.Replace(v.Block, ` serves="a-message-survives-a-restart"`, "", 1)
+			v.Document = strings.Replace(v.Document, "serves: a-message-survives-a-restart\n", "", 1)
 			n.Versions = []ApprovedVersion{v}
 			nodes[n.ID] = n
-		}}, want: `specgraph: approved node "a-restart-keeps-the-message" version 1: bad-approved-block: serves "" names no node of the approved spec (line 1 of its block)`},
+		}}, want: `specgraph: approved node "a-restart-keeps-the-message" version 1: bad-approved-document: serves "" names no node of the approved spec (line 1 of its document)`},
 		{name: "a statement its own parent", changes: []func(map[string]ApprovedNode){parentOf(survives, survives)},
 			want: "specgraph: approved spec: loop: a-message-survives-a-restart -[parent]-> a-message-survives-a-restart"},
 		{name: "version 2 of a statement of two versions makes it its own parent", changes: []func(map[string]ApprovedNode){twoVersions(survives, "", survives)},
@@ -652,18 +652,18 @@ func TestTheEntryRefusesARelationOfNoNodeOfItsKindAndALoopOfTheApprovedSpec(t *t
 			changes: []func(map[string]ApprovedNode){components("envoy-to-dispatch", "")}},
 		{name: "version 2 of a component, its current text, under a component that is an interface at its version 2",
 			changes: []func(map[string]ApprovedNode){components("envoy", "envoy-to-dispatch")},
-			want:    `specgraph: approved node "envoy-delivery" version 2: bad-approved-block: parent "envoy-to-dispatch" names an interface, not a component (line 1 of its block)`},
+			want:    `specgraph: approved node "envoy-delivery" version 2: bad-approved-document: parent "envoy-to-dispatch" names an interface, not a component (line 1 of its document)`},
 		{name: "a removed component under no node", changes: []func(map[string]ApprovedNode){components("no-such-component", "")},
-			want: `specgraph: approved node "envoy-delivery" version 1: bad-approved-block: parent "no-such-component" names no node of the approved spec (line 1 of its block)`},
+			want: `specgraph: approved node "envoy-delivery" version 1: bad-approved-document: parent "no-such-component" names no node of the approved spec (line 1 of its document)`},
 		{name: "version 1 of a statement of two versions under no node, and version 2 as written",
 			changes: []func(map[string]ApprovedNode){twoVersions(survives, "no-such-statement", "")},
-			want:    `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-block: parent "no-such-statement" names no node of the approved spec (line 1 of its block)`},
+			want:    `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-document: parent "no-such-statement" names no node of the approved spec (line 1 of its document)`},
 		{name: "two statements each the parent of the other", changes: []func(map[string]ApprovedNode){parentOf(survives, late), parentOf(late, survives)},
 			want: "specgraph: approved spec: loop: a-message-reaches-a-late-session -[parent]-> a-message-survives-a-restart -[parent]-> a-message-reaches-a-late-session"},
 		{name: "a statement that serves the statement under it", changes: []func(map[string]ApprovedNode){func(nodes map[string]ApprovedNode) {
 			n := nodes["envoy-delivers-messages"]
 			v := n.Versions[0]
-			v.Block = strings.Replace(v.Block, `kind="behavior"}`, `kind="behavior" serves="`+survives+`"}`, 1)
+			v.Document = strings.Replace(v.Document, "kind: behavior\n", "kind: behavior\nserves:\n  - "+survives+"\n", 1)
 			n.Versions = []ApprovedVersion{v}
 			nodes[n.ID] = n
 		}}, want: "specgraph: approved spec: loop: a-message-survives-a-restart -[parent]-> envoy-delivers-messages -[serves]-> a-message-survives-a-restart"},
@@ -681,7 +681,7 @@ func TestTheEntryRefusesARelationOfNoNodeOfItsKindAndALoopOfTheApprovedSpec(t *t
 			in := s.Input(0)
 			nodes := map[string]ApprovedNode{"old-parent": {ID: "old-parent", Removed: true, PartlyChecked: false, Versions: []ApprovedVersion{{
 				Version: 1, At: in.Approved.Nodes["envoy-delivers-messages"].Versions[0].At,
-				Block: ":::requirement{#old-parent kind=\"behavior\"}\nEnvoy keeps each message.\n:::\n"}}}}
+				Document: "---\ntype: requirement\nid: old-parent\nkind: behavior\ntext:\n  - Envoy keeps each message.\n"}}}}
 			for id, n := range in.Approved.Nodes {
 				nodes[id] = n
 			}

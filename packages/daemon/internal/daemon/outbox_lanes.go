@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/githubrate"
+
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -69,8 +71,10 @@ func nudge(wake chan struct{}) {
 // restart drops the pool's connections) is logged and tried again at the next tick, so the runner
 // outlives the failure instead of ending with it. Once ctx ends it closes the registry, so no wake
 // starts a lane, and waits for every lane to return: a row mid-run ends and settles first
-// (runRow), so the daemon's stop is a real join.
+// (runRow), so the daemon's stop is a real join. Every call a lane makes to GitHub counts as the
+// outbox's (callerOutbox).
 func (r *outbox) Run(ctx context.Context) {
+	ctx = githubrate.WithCaller(ctx, callerOutbox)
 	if r.log == nil {
 		r.log = slog.Default()
 	}
