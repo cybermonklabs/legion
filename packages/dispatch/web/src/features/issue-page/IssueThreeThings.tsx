@@ -46,10 +46,10 @@ const CHECK_STATES = Object.keys(NODE_STATE_WORDS.check) as CheckState[];
 
 /** What the two rows under the sentences count (`briefCounts`). */
 export interface BriefCounts {
-  // A check of another issue that the tree draws with no state is in the number and in no state,
-  // so there the states' counts add up to less than it (`briefCounts`).
   /** The issue's checks: how many there are, each once, and how many stand in each state that
-   *  holds one, in `NODE_STATE_WORDS.check`'s order, so the counts add up to the number. Undefined
+   *  holds one, in `NODE_STATE_WORDS.check`'s order. A check of another issue that the tree
+   *  draws with no state is in the number and in no state (`briefCounts`), so there the counts
+   *  add up to less than the number. Undefined
    *  where the issue holds no check. */
   readonly checks:
     | {

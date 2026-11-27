@@ -1598,7 +1598,7 @@ function Statement({
   // Nor does a statement the page holds no verdict of (`SpecStatement.noVerdict`): until it reads
   // the results of a check of another issue that serves it, Met, Not met and Unknown would each
   // say more than the page knows.
-  if (statement.noVerdict === true && statement.mark !== "no_check") marked = false;
+  if (statement.noVerdict === true) marked = false;
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
   const stage = useDocumentStage(editing);

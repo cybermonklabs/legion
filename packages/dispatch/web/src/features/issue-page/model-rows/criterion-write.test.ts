@@ -23,7 +23,7 @@ import {
   OutlineWriterProvider,
   useOutlineWriter,
 } from "../outline-writer";
-import { CRITERION_STOPPED_WORDS } from "../page-words";
+import { ANSWER_LINES, CRITERION_STOPPED_WORDS } from "../page-words";
 import { issueMessagesQuery } from "../useIssueTree";
 import {
   criterionMarkdown,
@@ -270,7 +270,7 @@ test("a refusal keeps the text", async () => {
     answerEdits(() => refusal(400, "INVALID_JSON"));
     act(() => line.result.current.setText(TEXT));
     act(() => line.result.current.send());
-    await waitFor(() => expect(line.result.current.answer).toBe("criterion_not_written"));
+    await waitFor(() => expect(line.result.current.said).toBe(ANSWER_LINES.criterion_not_written));
     expect(line.result.current.text).toBe(TEXT);
     expect(line.result.current.pending).toBe(false);
     // The box held its aim while the write was out, and the refusal lets it go.
@@ -278,20 +278,20 @@ test("a refusal keeps the text", async () => {
 
     answerEdits(() => refusal(404, "NOT_FOUND"));
     act(() => line.result.current.send());
-    await waitFor(() => expect(line.result.current.answer).toBe("criterion_gone"));
+    await waitFor(() => expect(line.result.current.said).toBe(ANSWER_LINES.criterion_gone));
     expect(line.result.current.text).toBe(TEXT);
     expect(told).toEqual(["out", "settled", "out", "settled"]);
 
     // The next change of the text lets the answer go.
     act(() => line.result.current.setText(`${TEXT} Still.`));
-    expect(line.result.current.answer).toBeUndefined();
+    expect(line.result.current.said).toBeUndefined();
 
     // While the write is out the text stays; its landing tells the line and then lets it go.
     const answered = Promise.withResolvers<Response>();
     answerEdits(() => answered.promise);
     act(() => line.result.current.send());
     expect(line.result.current.pending).toBe(true);
-    expect(line.result.current.answer).toBeUndefined();
+    expect(line.result.current.said).toBeUndefined();
     expect(line.result.current.text).toBe(`${TEXT} Still.`);
     expect(textAtLanding).toEqual([]);
     await waitFor(() => expect(told).toHaveLength(5));
@@ -299,7 +299,7 @@ test("a refusal keeps the text", async () => {
     answered.resolve(Response.json(LANDED));
     await waitFor(() => expect(line.result.current.text).toBe(""));
     expect(textAtLanding).toEqual([`${TEXT} Still.`]);
-    expect(line.result.current.answer).toBeUndefined();
+    expect(line.result.current.said).toBeUndefined();
     expect(line.result.current.pending).toBe(false);
     // The box lets go of its aim before the landing ends it.
     expect(told.slice(4)).toEqual(["out", "settled", "landed"]);
@@ -317,7 +317,7 @@ test("a refusal keeps the text", async () => {
     await waitFor(() => expect(unanswered.result.current.text).toBe(""));
     expect(onLanded).toHaveBeenCalledTimes(1);
     expect(onOut.mock.calls).toEqual([[true], [false]]);
-    expect(unanswered.result.current.answer).toBeUndefined();
+    expect(unanswered.result.current.said).toBeUndefined();
   } finally {
     unanswered.unmount();
   }
@@ -341,8 +341,8 @@ test("a stopped write says it is unconfirmed, and its Retry sends the same reque
       act(() => line.result.current.send());
       await stopTheLateWrite(client);
     });
-    expect(line.result.current.answer).toBeUndefined();
-    expect(line.result.current.stopped).toBe(STOPPED_NOTE);
+    expect(line.result.current.said).toBe(STOPPED_NOTE);
+    expect(line.result.current.retry).toBeDefined();
     expect(line.result.current.text).toBe(TEXT);
     expect(line.result.current.pending).toBe(false);
     // The stop settled the write, so the box lets go of its aim.
@@ -353,11 +353,12 @@ test("a stopped write says it is unconfirmed, and its Retry sends the same reque
     const stopped = edits.mock.calls.length;
 
     down = false;
-    act(() => line.result.current.retry());
+    act(() => line.result.current.retry?.());
     await waitFor(() => expect(onLanded).toHaveBeenCalledTimes(1));
     expect(attemptsOf(edits).slice(stopped)).toEqual([{ body, key: first?.key, tree: TREE }]);
     expect(line.result.current.text).toBe("");
-    expect(line.result.current.stopped).toBeUndefined();
+    expect(line.result.current.said).toBeUndefined();
+    expect(line.result.current.retry).toBeUndefined();
     expect(told).toEqual([true, false, true, false]);
   } finally {
     line.unmount();
@@ -384,7 +385,7 @@ test("a send while a write is stopped makes that write again under its key, and 
 
     act(() => line.result.current.setText(`${TEXT} Edited.`));
     expect(line.result.current.text).toBe(TEXT);
-    expect(line.result.current.stopped).toBe(STOPPED_NOTE);
+    expect(line.result.current.said).toBe(STOPPED_NOTE);
 
     down = false;
     act(() => line.result.current.send());

@@ -693,8 +693,12 @@ function CriterionLine({
  * Dispatch, so the line says so in place of the refusal's sentence, in the page's own words
  * (`criterionStopped`), with a Retry that makes that very write again under its key. Until then
  * the field keeps the write's words and takes no typing, and Enter and Send make the same write
- * again as Retry does (`useCriterionLine`), so a press that had landed is never written twice;
- * Escape and the target line's control still end the aim.
+ * again as Retry does (`useCriterionLine`), so while the line keeps its aim on the node the
+ * stopped write is never written twice. Nothing is out after a stop, so the box no longer holds
+ * that aim: Escape, the target line's control and any other target - a Reply, a criterion under
+ * another row - end it. `IssueComposer` keys the line by its node, so each unmounts the stopped
+ * write and its Retry, and a criterion the reader then writes under that node goes under a new
+ * key, and may be written twice.
  *
  * It is a form of its own, with the line that writes on the issue kept mounted and hidden beside
  * it, so the page keeps one box. Its words go into the issue's own text, which tells nobody they
@@ -737,12 +741,10 @@ function CriterionForm({
   });
   // A line the page stops drawing while its write is out lets go of the box.
   useEffect(() => () => hold(false), [hold]);
-  // What the line says of its last write: the reader's stop, or Dispatch's refusal.
-  const said = line.stopped ?? (line.answer === undefined ? undefined : ANSWER_LINES[line.answer]);
   // Whether a write of the line was out at the last render: its end with a refusal, or with the
   // reader's stop, gives the field back the focus its disabled line moved to the page.
   const wasOut = useRef(false);
-  const ended = said !== undefined;
+  const ended = line.said !== undefined;
   useEffect(() => {
     if (line.pending) {
       wasOut.current = true;
@@ -807,7 +809,7 @@ function CriterionForm({
             placeholder={placeholderOf("criterion", place.phone)}
             // A stopped write's words are on the wire: the field keeps them, and its focus,
             // until the write's Retry.
-            readOnly={line.stopped !== undefined}
+            readOnly={line.retry !== undefined}
             writing={dispatchWritingBox("issue-page-composer", "criterion")}
           />
           {/* A press here leaves the focus where it is (`keepFocusOnPress`), so on a phone the
@@ -826,14 +828,14 @@ function CriterionForm({
             </RefusableButton>
           </div>
         </div>
-        {said === undefined ? null : (
+        {line.said === undefined ? null : (
           <div className="flex flex-wrap items-center gap-3">
             <p data-criterion-answer="" role="status" {...pageChrome}>
-              {said}
+              {line.said}
             </p>
             {/* A press leaves the focus where it is (`keepFocusOnPress`), as one on Send does,
                 and the fieldset holds Retry while the write it makes is out. */}
-            {line.stopped === undefined ? null : (
+            {line.retry === undefined ? null : (
               <button
                 className="font-medium underline disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={line.retry}

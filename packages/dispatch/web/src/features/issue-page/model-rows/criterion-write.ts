@@ -5,7 +5,7 @@ import type { Body } from "../../../api/paths";
 import { retriesUnderItsKey } from "../../writes/keyed-write";
 import { endedStopped, useKeyedWrite } from "../../writes/useKeyedWrite";
 import { KEY_HOURS } from "../../writes/write-words";
-import { type ANSWER_LINES, CONTROL_LABELS, CRITERION_STOPPED_WORDS } from "../page-words";
+import { ANSWER_LINES, CONTROL_LABELS, CRITERION_STOPPED_WORDS } from "../page-words";
 import type { RoomFacts } from "./room-target";
 
 /**
@@ -119,8 +119,8 @@ export function criterionRequest(tree: string, markdown: string) {
 /** What the line says of a refused criterion, by the refusal's status alone: a 404 says the row
  *  it was written under is gone, and any other refusal that it was not written - a parent
  *  comment deleted meanwhile answers `400 INVALID_MARKDOWN` (pmdoc's `itemReach`), which says
- *  the same. A write the reader stopped is no refusal, and the line never reads it here
- *  (`useCriterionLine`'s `stopped`). */
+ *  the same. A write the reader stopped is no refusal, and the line never reads it here: it says
+ *  `criterionStopped`'s sentence in its place (`useCriterionLine`'s `said`). */
 export function criterionAnswer(error: unknown): CriterionAnswer {
   return error instanceof ApiError && error.status === 404
     ? "criterion_gone"
@@ -201,25 +201,24 @@ export interface CriterionLineState {
   /** Whether the text is blank: such a line sends nothing, by Enter or by Send, whose refusal
    *  says why. */
   readonly blank: boolean;
-  /** Sets the text, and lets the last refusal's answer go. While a stopped write waits for its
-   *  Retry it changes nothing: the text is that write's own (`stopped`). */
+  /** Sets the text, and lets the last refusal's sentence go. While a stopped write waits for its
+   *  Retry it changes nothing: the text is that write's own (`retry`). */
   readonly setText: (text: string) => void;
   /** Writes the text as a criterion, unless it is `blank` or a write of it is still out. While a
    *  stopped write waits, it makes that write again under its key, as `retry` does. */
   readonly send: () => void;
   /** Whether the criterion's write is out. */
   readonly pending: boolean;
-  /** The key of `ANSWER_LINES` the last refusal draws, until the next change of the text or the
-   *  next send; `undefined` while there is none, and for a write the reader stopped. */
-  readonly answer: CriterionAnswer | undefined;
-  /** What the line says, in place of a refusal's answer, of its last write where the reader
-   *  stopped it: Dispatch has not confirmed the criterion, which may be written, and what its
-   *  Retry does (`criterionStopped`); `undefined` while the last write did not end stopped. */
-  readonly stopped: string | undefined;
+  /** What the line says of its last write. Where the reader stopped it: Dispatch has not
+   *  confirmed the criterion, which may be written, and what its Retry does (`criterionStopped`).
+   *  Else the last refusal's sentence (`criterionAnswer`'s key of `ANSWER_LINES`), until the next
+   *  change of the text or the next send. `undefined` while there is neither. */
+  readonly said: string | undefined;
   /** Makes the stopped write again: the same request under its own key, which Dispatch answers
-   *  with what that write did there where it landed (`KeyedWriteResult.retry`). It does nothing
-   *  unless `stopped`. */
-  readonly retry: () => void;
+   *  with what that write did there where it landed (`KeyedWriteResult.retry`). Present only
+   *  while the last write ended stopped, so the line offers its Retry and holds its text exactly
+   *  then. */
+  readonly retry: (() => void) | undefined;
 }
 
 /**
@@ -231,7 +230,13 @@ export interface CriterionLineState {
  * A write the reader stopped may have reached Dispatch, and an insert at the end of the tree
  * matches nothing it already holds, so a second write under a new key would write the criterion
  * twice. Until its Retry the line holds that write: its text takes no change, and a send makes
- * that write again under its key rather than a new one (`useKeyedWrite`'s `retry`).
+ * that write again under its key rather than a new one (`useKeyedWrite`'s `retry`), so while the
+ * line keeps its aim on the node the stopped write is never written twice. Nothing is out after a
+ * stop, so the box no longer holds that aim (`OutlineWriter.holdCriterion`): Escape, the target
+ * line's control and any other target - a Reply, a criterion under another row - end it.
+ * `IssueComposer.tsx` keys the line by its node, so each unmounts this hook, and the stopped write
+ * and its Retry with it; a criterion the reader then writes under that node goes under a new key,
+ * and may be written twice.
  */
 export function useCriterionLine({ onLanded, ...aim }: CriterionWriteOptions): CriterionLineState {
   const [text, setTyped] = useState("");
@@ -245,27 +250,24 @@ export function useCriterionLine({ onLanded, ...aim }: CriterionWriteOptions): C
   const pending = write.isPending;
   const blank = text.trim() === "";
   const stopped = criterionStopped(write);
-  const retry = () => {
-    if (stopped !== undefined) write.retry();
-  };
+  const retry = stopped === undefined ? undefined : write.retry;
   return {
-    answer:
-      write.error === null || stopped !== undefined ? undefined : criterionAnswer(write.error),
     blank,
     pending,
     retry,
+    said:
+      stopped ?? (write.error === null ? undefined : ANSWER_LINES[criterionAnswer(write.error)]),
     send: () => {
       if (pending || blank) return;
-      if (stopped !== undefined) retry();
+      if (retry !== undefined) retry();
       else write.mutate(criterionMarkdown(aim.parent, text));
     },
     setText: (next) => {
-      if (stopped !== undefined) return;
+      if (retry !== undefined) return;
       // A refused write is settled, so letting its error go leaves nothing out.
       if (write.error !== null) write.reset();
       setTyped(next);
     },
-    stopped,
     text,
   };
 }

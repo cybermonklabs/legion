@@ -1043,6 +1043,19 @@ test("a statement a child's check serves draws no verdict until the page reads t
   expect(childServedVerdicts(passed, childCheckRead(false).verification)).toEqual([
     ["spec#b-r1", undefined],
   ]);
+  // "No check" is a mark of its own: a statement marked so holds no `noVerdict`, though a child's
+  // check whose results the page has not read is drawn under it.
+  const unchecked = issueTree([
+    statement("r1", {
+      children: [
+        node({ id: "c9", issue: "CORE-2", readId: childCheckRead().check.id, type: "check" }),
+      ],
+      gaps: ["no_check"],
+    }),
+  ]);
+  expect(bodyOf(unchecked)[0]?.runs[0]?.statements.map((one) => [one.mark, one.noVerdict])).toEqual(
+    [["no_check", undefined]]
+  );
 });
 
 // R20: a node an address names outranks the filter, whatever its kind. It is no statement: it

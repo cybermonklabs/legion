@@ -179,7 +179,8 @@ export interface SpecStatement {
   /** Whether the page holds no verdict of how its checks stand (`StatementStanding.noVerdict`):
    *  it has read no result of a check of another issue that serves it, and no check of it reads
    *  Failed. Its `mark` is then Unknown, and its row draws none of the three marks
-   *  (`SpecFilterBody.tsx`'s `Statement`); "No check" stays a mark of its own. */
+   *  (`SpecFilterBody.tsx`'s `Statement`). It is set only where `mark` is one of the three:
+   *  "No check" stays a mark of its own. */
   readonly noVerdict?: true;
   /** The node as the filter's view left it, whose words the row draws. */
   readonly node: TreeNode;
@@ -334,7 +335,11 @@ export function specDecidedBy({
           ? "no_check"
           : standing.state,
       node,
-      ...(standing?.noVerdict === true ? { noVerdict: true } : {}),
+      // Only where `mark` above is a statement's state: "No check" is a mark of its own, which no
+      // missing verdict hides (`SpecStatement.noVerdict`).
+      ...(standing?.noVerdict === true && standing.covered && !node.gaps.includes("no_check")
+        ? { noVerdict: true }
+        : {}),
     };
     const fresh = {
       ...(head?.decision === undefined ? {} : { decision: head.decision }),
