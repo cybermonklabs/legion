@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  `rig.sh check-stored` counts a run only when a pod's log stores it: a `got` line of a name no
+  given log stores, and a second `stored` line of another sha256 for a run whose row was stored,
+  are rig errors. It exits 1 on any fault or any file it leaves out. The pack of a scored run
+  leaves out every directory named `home`, nested ones too.
+time: 2026-11-27T14:57:59Z
+custom:
+    Issue: pr5856
