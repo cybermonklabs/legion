@@ -17,10 +17,10 @@ import (
 // id or question (a key or issue_key the payload lacks it reads from events.issue_key), and a
 // serving process tries that event again, at most a minute apart, so the keyword table never
 // fills past it. A history with every shape the rig writes (trees the sampler saw and trees it
-// never saw, parked children, merged pull requests and filings of every class), filled once to
-// the horizon, has every event decided with no refusal. The fill returns no error, its cursor
-// stands at the newest event, each issue's latest keyword version holds the title the rig wrote
-// the issue with, and each comment and each ask has its version.
+// never saw, children moved to backlog or icebox, merged pull requests and filings of every
+// class), filled once to the horizon, has every event decided with no refusal. The fill returns
+// no error, its cursor stands at the newest event, each issue's latest keyword version holds
+// the title the rig wrote the issue with, and each comment and each ask has its version.
 func TestTheKeywordFillReadsEveryEventOfTheSeededHistory(t *testing.T) {
 	database := storetest.Open(t)
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)

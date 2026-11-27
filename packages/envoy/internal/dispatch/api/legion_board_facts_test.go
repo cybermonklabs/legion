@@ -374,7 +374,7 @@ func legionCardHeld(board legionBoardResponse, key string) (legionBoardCard, boo
 
 // TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock: one issue's card and
 // one issue's stored row answer the same reason, because both read the one waiting line
-// (legion.WaitingLine), the one column rule (legion.Column) and the one card rule
+// (legion.WaitingLine), the one column rule (legion.ColumnOf) and the one card rule
 // (legion.CardWaiting).
 //
 // The case that broke is a project whose daemon recorded no admission block: the board queues
@@ -545,9 +545,9 @@ func TestTheLegionBoardsOldAddressIsGone(t *testing.T) {
 	if board.Project != "INFRA" {
 		t.Fatalf("the project-path board names %q, want INFRA", board.Project)
 	}
-	if len(board.Columns) != len(legionBoardColumnOrder) {
+	if len(board.Columns) != len(legion.Columns) {
 		t.Fatalf("the project-path board has %d columns, want the %d the view draws",
-			len(board.Columns), len(legionBoardColumnOrder))
+			len(board.Columns), len(legion.Columns))
 	}
 	t.Logf("GET /api/v1/legion/board answers 404 at both of its old spellings; GET /api/v1/projects/INFRA/legion/board answers %d columns holding %d cards",
 		len(board.Columns), countBoardCards(board))

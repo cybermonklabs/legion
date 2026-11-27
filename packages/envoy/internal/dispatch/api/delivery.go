@@ -88,9 +88,9 @@ func parseDeliveryWindow(query url.Values) (from, to time.Time, err error) {
 
 // The query keys each delivery read takes one value of, in the order its shape declares them,
 // which a query names once at most (repeatedQueryKey): the fields of its route shape's query
-// struct (routeShapes' Params) that hold one value (oneValueQueryKeys), read once when the package
-// starts. Every facet the timeline and the measures filter by (deliveryFacets) is a list field
-// there, and so stays repeatable.
+// struct (routeShape.Params, in the route's file) that hold one value (oneValueQueryKeys), read
+// once when the package starts. Every facet the timeline and the measures filter by
+// (deliveryFacets) is a list field there, and so stays repeatable.
 var (
 	deliveryWindowOneValueKeys   = oneValueQueryKeys(deliveryWindowQuery{})
 	deliveryPipelineOneValueKeys = oneValueQueryKeys(deliveryPipelineQuery{})

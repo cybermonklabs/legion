@@ -56,8 +56,8 @@ type Handoff struct {
 	At      time.Time
 }
 
-// RunPlan is the plan one run of the issue ran from, as Dispatch holds it (workflowstore's plan
-// node): when its node was made, which is when the run's work started, and the roles of its one
+// RunPlan is one version of the plan a run of the issue ran from, as Dispatch holds it
+// (workflowstore's plan node): when that version was written, and the roles of its one
 // task's steps, in the task's order (`acceptance` for `acceptance:owner`). Steps is empty for a
 // plan whose tasks are not exactly one, which the fallback timeline reads as the default steps.
 type RunPlan struct {
@@ -94,7 +94,7 @@ type Issue struct {
 	// StatusMarks is every status the issue's own events snapshotted, oldest first.
 	StatusMarks []Mark
 
-	// Plans is the plan of each run of the issue, oldest first: what the fallback timeline reads
+	// Plans is each version of the plan of each run of the issue, oldest first: what the fallback timeline reads
 	// the order of the task's steps from (phaseLine). An issue Legion ran before it recorded
 	// plans has none.
 	Plans []RunPlan
@@ -131,8 +131,9 @@ type Filed struct {
 	Ancestors []string
 }
 
-// Population is every fact one computation of the facts reads, from the project's beginning
-// (From, the zero time for both reads) to To, the moment an open issue's hours run to.
+// Population is every fact one computation of the facts reads, from the project's beginning to
+// To, the moment an open issue's hours run to. From is the zero time for ReadProject and
+// ReadIssues, and is set only by test fixtures that narrow windowOf.
 type Population struct {
 	Project string
 	From    time.Time
@@ -178,7 +179,7 @@ type Population struct {
 // it is the read a build makes once per project, and its walks may ask about any issue.
 func ReadProject(ctx context.Context, pool *store.Pool, project string, now time.Time) (*Population, error) {
 	return read(ctx, pool, project, now, func(ctx context.Context, p *Population) error {
-		return p.readFiled(ctx, pool, project, time.Time{}, now)
+		return p.readFiled(ctx, pool, project, now)
 	}, func(p *Population) []string {
 		return p.Keys
 	}, func(ctx context.Context, _ *Population, _ []string) (map[string]struct{}, error) {
@@ -217,7 +218,7 @@ func ReadIssues(ctx context.Context, pool *store.Pool, project string, keys, fil
 
 // read is the body the two readers share, from the beginning to `to`. filed reads the
 // population's filings, before the scope is chosen because the scope holds each filer's issue,
-// scope names which issues the seven detail reads cover, and phaseWork reads which issues carry
+// scope names which issues the six detail reads cover, and phaseWork reads which issues carry
 // Legion phase work, given that scope, for the tree walks (TreeNode).
 func read(ctx context.Context, pool *store.Pool, project string, to time.Time,
 	filed func(ctx context.Context, p *Population) error,
@@ -320,7 +321,7 @@ func (p *Population) readIssues(ctx context.Context, pool *store.Pool, project s
 // readFiled reads every `issue.created` event before `to` a session wrote, whatever project
 // the new issue belongs to — an issue filed out of the filer's tree is one of metric 4's
 // classes — and keeps the ones a Legion session of this project filed.
-func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project string, from, to time.Time) error {
+func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project string, to time.Time) error {
 	return p.readFilings(ctx, pool, project, `
 		select coalesce(events.issue_key, ''), events.created_at,
 			coalesce(events.actor->>'id', ''), coalesce(events.payload->>'parent', ''),
@@ -328,9 +329,9 @@ func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project st
 		from events
 		where events.type = 'issue.created'
 			and events.actor->>'kind' = 'session'
-			and events.created_at >= $1 and events.created_at < $2
+			and events.created_at < $1
 		order by events.created_at, events.id
-	`, from, to)
+	`, to)
 }
 
 // readFiledIssues reads the `issue.created` event a session wrote of each named issue, whatever
@@ -785,7 +786,7 @@ func (p *Population) readHandoffs(ctx context.Context, pool *store.Pool, keys []
 	return nil
 }
 
-// readPlans reads the plan of each run of the issues (workflowstore.IssuesPlans), oldest first:
+// readPlans reads each version of the plan of each run of the issues (workflowstore.IssuesPlans), oldest first:
 // what the fallback timeline reads the order of a task's steps from (Issue.phaseLine). A plan
 // whose tasks are not exactly one keeps no steps, which reads as the default steps.
 func (p *Population) readPlans(ctx context.Context, pool *store.Pool, keys []string) error {
@@ -878,7 +879,7 @@ func (p *Population) readReported(ctx context.Context, tx pgx.Tx, project string
 		}
 		// A value of another shape leaves the block unread: the daemon owns the wire shape,
 		// and a reader of one names what it expects, as the board does (observeProject).
-		if admission, read := legion.ParseAdmission(one.Value); read {
+		if admission := legion.AdmissionOf(one.Value); admission != nil {
 			p.Admission = admission
 		}
 	}

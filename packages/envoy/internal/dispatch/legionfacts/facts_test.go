@@ -614,7 +614,7 @@ func cardReasons(t *testing.T, seeded history) map[string]string {
 		}
 		waiting := legion.CardWaiting(legion.WaitingInput{
 			Phase:        phases[key],
-			Column:       legion.Column(phases[key], slots[key], queuedBy(admitted, place != nil || len(blockers[key]) > 0)),
+			Column:       legion.ColumnOf(phases[key], slots[key], queuedBy(admitted, place != nil || len(blockers[key]) > 0)),
 			WaitingPlace: place,
 			BlockedBy:    blockers[key],
 			PhaseSince:   phaseSince,

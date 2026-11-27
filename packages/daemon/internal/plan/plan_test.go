@@ -186,34 +186,19 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 	}
 }
 
-// MovesBackPairs is every pair of two different workflow phases but the 14 no line of a task
+// CanMoveBack holds every pair of two different workflow phases but the 14 no line of a task
 // Supported takes makes as a move back, written out here rather than read from the checks: each
 // step phase to retro or to merging, and retro to merging, since the retro and the merge end every
 // line, and implementing to testing, reviewing or accepting, since the steps that read the
 // implementer's pull request come after it. Among the 28: a move back of another order than
 // today's (testing-reviewing, on implementer reviewer tester), a planner's move back to the
 // implementer (planning-implementing, on implementer planner), and the merge's move back to the
-// retro. CanMoveBack answers each pair as the list holds it, and the list is a fresh slice.
-func TestMovesBackPairsAreTheMovesBackOfEveryLineSupportedTakes(t *testing.T) {
+// retro.
+func TestCanMoveBackHoldsTheMovesBackOfEveryLineSupportedTakes(t *testing.T) {
 	never := []string{
 		"planning-retro", "implementing-retro", "testing-retro", "reviewing-retro", "accepting-retro",
 		"planning-merging", "implementing-merging", "testing-merging", "reviewing-merging", "accepting-merging",
 		"retro-merging", "implementing-testing", "implementing-reviewing", "implementing-accepting",
-	}
-	var want []string
-	for _, pair := range phase.MovePairs() {
-		if !slices.Contains(never, pair) {
-			want = append(want, pair)
-		}
-	}
-	got := MovesBackPairs()
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("MovesBackPairs() = %q (%d), want %q (%d)", got, len(got), want, len(want))
-	}
-	for _, pair := range []string{"testing-reviewing", "planning-implementing", "merging-retro"} {
-		if !slices.Contains(got, pair) {
-			t.Errorf("MovesBackPairs() leaves out %s", pair)
-		}
 	}
 	for _, pair := range phase.MovePairs() {
 		from, to, _ := phase.ParsePair(pair)
@@ -222,8 +207,9 @@ func TestMovesBackPairsAreTheMovesBackOfEveryLineSupportedTakes(t *testing.T) {
 			t.Errorf("CanMoveBack(%s, %s) = %t, want %t", from, to, can, fires)
 		}
 	}
-	got[0] = "rubbish"
-	if MovesBackPairs()[0] == "rubbish" {
-		t.Fatal("MovesBackPairs returned the stored slice, which a caller can overwrite")
+	for _, move := range [][2]phase.Phase{{phase.Testing, phase.Reviewing}, {phase.Planning, phase.Implementing}, {phase.Merging, phase.Retro}} {
+		if !CanMoveBack(move[0], move[1]) {
+			t.Errorf("CanMoveBack(%s, %s) = false, want a move back", move[0], move[1])
+		}
 	}
 }

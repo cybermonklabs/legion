@@ -137,4 +137,7 @@ func TestNoPartsReadNoValueAndAZeroPartReadsZero(t *testing.T) {
 		t.Errorf("FoldReworkShare of a zero part = %v, want nil: no pull request has no share", *got)
 	}
 	assertLeadTimeCell(t, "FoldLeadTime of a zero part", FoldLeadTime(MergeToProductionDay(foldDays[0], nil)), 0, nil, nil, nil)
+	if got := FoldChangeFailureRate(ChangeFailureRateDay(foldDays[0], nil, nil, nil)); got != (ChangeFailureRate{}) {
+		t.Errorf("FoldChangeFailureRate of a zero part = %+v, want every count 0 and every rate nil", got)
+	}
 }

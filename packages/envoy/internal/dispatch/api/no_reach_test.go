@@ -100,10 +100,10 @@ func onePersonRead(t *testing.T) {
 	}
 	// What a caller may hand it: the login the path names, and the page. A node kind, a filter
 	// or an edge to walk is what this route exists not to take.
-	shape, shaped := routeShapes[personNodesRoute]
-	if !shaped {
+	if !read.Shape.stated() {
 		t.Fatalf("%s declares no shape", personNodesRoute)
 	}
+	shape := read.Shape
 	keys := queryTagsOf(shape.Params)
 	sort.Strings(keys)
 	if want := []string{"limit", "offset"}; !slices.Equal(keys, want) {
@@ -779,7 +779,8 @@ func seededProbePath(pattern string, owned crossProject) string {
 // undeclaredTraversal is the traversal one route is sent: every traversal word the route does
 // not declare as a query parameter of its own, each with a value a traversal would take.
 func undeclaredTraversal(route string) string {
-	declared := queryTagsOf(routeShapes[route].Params)
+	declaration, _ := declaredRoute(route)
+	declared := queryTagsOf(declaration.Shape.Params)
 	query := url.Values{}
 	for _, word := range traversalWords {
 		if !slices.Contains(declared, word) {

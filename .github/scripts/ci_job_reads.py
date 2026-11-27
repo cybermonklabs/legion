@@ -1531,6 +1531,19 @@ LISTENERWIRE_STEP = "Test the listener's wire package, its clients and wirecheck
 LISTENERWIRE_PKGS = [f"./{p}/" for p in LISTENERWIRE_PACKAGES]
 LISTENERWIRE_TEXT = "go test -count=1 " + " ".join(LISTENERWIRE_PKGS)
 
+# The route adopter, cmd/dispatch-route-adopt, runs its rows under git and under jj, so
+# envoy-go-skips installs jj (./.github/actions/install-jj) and tests the package in a step of its
+# own with -v, which names each row in the log: a leg's go test -json report names no test that
+# passed, so a jj row that skipped would read as green there. The rows that need jj fail rather
+# than skip on GitHub Actions without it. As with the packages above, that step's package list
+# and the package's `elsewhere` line in .github/go-legs.yaml (hold_envoy_legs) are built from this
+# one list. The tool is deleted once the branches open when routes moved into files have adopted,
+# and this list and its step with it.
+ADOPTER_PACKAGES = ["cmd/dispatch-route-adopt"]
+ADOPTER_STEP = "Test the route adopter under git and jj"
+ADOPTER_PKGS = [f"./{p}/" for p in ADOPTER_PACKAGES]
+ADOPTER_TEXT = "go test -count=1 -v -timeout 4m " + " ".join(ADOPTER_PKGS)
+
 # The packages whose skips envoy-go's unit step counts: each leg runs its packages through
 # packages/envoy/scripts/database-skips.sh --count-table, one `go test -json`, and the script
 # counts the skips of the packages of its default table (DEFAULT_PACKAGES there) among them: the
@@ -1689,8 +1702,9 @@ def hold_envoy_legs(entry: dict, root=ENVOY) -> None:
     race legs' packages whose skips the unit legs count (database_skips_table), so each of those
     runs plain, where it is counted, and no other runs twice; and `elsewhere` is exactly the
     packages other jobs' steps are built here to run, each with that job: envoy-go-natslive's
-    integration suite, the text checks and envoy-go-build's (NOTE_AND_SPEC_PACKAGES,
-    LISTENERWIRE_PACKAGES). With go_legs.py's own check, every package of the module then runs
+    integration suite, the text checks, envoy-go-build's (NOTE_AND_SPEC_PACKAGES,
+    LISTENERWIRE_PACKAGES) and envoy-go-skips' route adopter (ADOPTER_PACKAGES). With go_legs.py's
+    own check, every package of the module then runs
     once in the job it is built for, and every package of the counter's table in a plain leg,
     which counts its skips. check-ci-filters.sh imports this table in the changes and ci-filters
     jobs, so a refusal here fails the run that brings the entry, the pull request that adds a
@@ -1738,6 +1752,7 @@ def hold_envoy_legs(entry: dict, root=ENVOY) -> None:
                         f"twice")
     elsewhere = {ENVOY_INTEGRATION_PACKAGE: ENVOY_NATSLIVE_JOB, TEXT_CHECK_PACKAGE: "text-checks"}
     elsewhere.update({p: "envoy-go-build" for p in NOTE_AND_SPEC_PACKAGES + LISTENERWIRE_PACKAGES})
+    elsewhere.update({p: ENVOY_SKIPS_JOB for p in ADOPTER_PACKAGES})
     if (entry.get(go_legs.ELSEWHERE) or {}) != elsewhere:
         problems.append(f"it runs packages elsewhere as {entry.get(go_legs.ELSEWHERE)}, and the packages other jobs' "
                         f"steps are built here to run are {elsewhere}")
@@ -2439,6 +2454,7 @@ SMOKE_IMAGE_STEP = "Build the listener image the smoke test runs against"
 BASE_IMAGES_STEP = "Read the smoke image's base images"
 FOLD_CHECK_STEP = "Check every changelog fragment renders"
 CHECK_STEP = "Check every CI filter matches every file its job reads"
+TC_LINKS_STEP = "Check no command or self-starting test binary links testcontainers-go"
 ACTIONLINT_STEP = "Check every workflow file with actionlint"
 GUIDES_STEP = "Check the guides' semantic line breaks"
 COPY_STEP = "Copy every image the package does not hold"

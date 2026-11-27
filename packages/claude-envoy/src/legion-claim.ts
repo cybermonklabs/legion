@@ -14,6 +14,7 @@ import pkg from "../package.json" with { type: "json" }
 import { configuredValue } from "./claude-session"
 import type { ChannelSession } from "./envoy-channel-server"
 import { paneReminderLog } from "./legion-phase-hook"
+import { logRoleClaimWarnings } from "./role-claim-warnings"
 
 /**
  * A Claude Code phase worker's claim on the Legion daemon, made by the MCP server Claude Code runs
@@ -286,10 +287,13 @@ export function startLegionClaim(deps: {
       setCapability: (registered) => {
         capability = registered
       },
-      claimRole: async (role) => {
+      claimRole: async (role, replaces) => {
         // Soft, so a role another live session holds is left with it, and naming this process,
         // so the listener records the claim as this process's: a second `claude` that resumed
         // this session id can then neither be taken for the holder nor release what it holds.
+        // `replaces`, the session the registration says this one replaces, is named as the
+        // claim's predecessor: the listener hands that session's unread direct and role messages
+        // to this one once the claim lands.
         //
         // A refusal naming this very session is that same claim seen from the other side: the
         // process this pane was relaunched from renewed it at its last heartbeat, so it stands
@@ -306,8 +310,12 @@ export function startLegionClaim(deps: {
             role,
             soft: true,
             clientInstanceID: deps.clientInstanceID,
+            ...(replaces ? { previousSessionID: replaces } : {}),
           })
-          if (claimed.claimed) break
+          if (claimed.claimed) {
+            logRoleClaimWarnings(deps.log, role, sessionID, claimed.warnings)
+            break
+          }
           if (claimed.holder !== sessionID) {
             throw new Error(`Envoy role ${role} is held by live session ${claimed.holder}`)
           }

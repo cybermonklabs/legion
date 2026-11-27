@@ -66,16 +66,20 @@ type MergedRows struct {
 // ReadMergedRows reads MergedRows for [from, to) in q: the pull requests, and every apply run
 // followed by their production jobs, side by side on the pool (readAll).
 func ReadMergedRows(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time) (MergedRows, error) {
-	return readMergedRows(ctx, q, settings, from, to, nil)
+	return readMergedRows(ctx, q, settings, from, to, "", nil)
 }
 
-// readMergedRows is ReadMergedRows, and with createdBefore set only the apply runs GitHub created
-// before it.
-func readMergedRows(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time, createdBefore *time.Time) (MergedRows, error) {
+// readMergedRows is ReadMergedRows, narrowed to repo's pull requests when repo is non-empty and,
+// with createdBefore set, to only the apply runs GitHub created before it.
+func readMergedRows(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time, repo string, createdBefore *time.Time) (MergedRows, error) {
 	var rows MergedRows
 	err := readAll(ctx, q,
 		func(ctx context.Context) (err error) {
-			rows.PullRequests, err = ListPullRequestsInWindow(ctx, q, from, to)
+			if repo != "" {
+				rows.PullRequests, err = listRepoPullRequestsInWindow(ctx, q, repo, from, to)
+			} else {
+				rows.PullRequests, err = ListPullRequestsInWindow(ctx, q, from, to)
+			}
 			return err
 		},
 		func(ctx context.Context) error {
@@ -180,10 +184,7 @@ func readWindowRuns(ctx context.Context, pool *store.Pool, settings DeliverySett
 		return err
 	}}
 	if failedJobs {
-		applyIDs := make([]int64, len(listed.apply))
-		for i, run := range listed.apply {
-			applyIDs[i] = run.RunID
-		}
+		applyIDs := runIDsOf(listed.apply)
 		reads = append(reads, func(ctx context.Context) (err error) {
 			failed, err = listRunJobsFailedForRuns(ctx, pool, settings.DeployRepo, applyIDs, names)
 			return err
@@ -400,11 +401,12 @@ type Deploys struct {
 	Started RunsWithJobs
 	// Applies is the deploys among Started (ProductionApplies), in compareApplies' order.
 	Applies []Apply
-	// Earlier is the pull requests merged before the window that Applies can ship, and the deploy
-	// runs on main GitHub created before the window, which can ship them first: MergedRows from
-	// since (ReadDeploys says what it is) up to the window's start, its apply runs those created
-	// in that span alone. Empty where no pull request merged before the window can ship with one
-	// of Applies.
+	// Earlier is the deploy repository's pull requests merged before the window that Applies can
+	// ship, and the deploy runs on main GitHub created before the window, which can ship them
+	// first: MergedRows from since (ReadDeploys says what it is) up to the window's start, its
+	// pull requests narrowed to settings.DeployRepo before the row cap and its apply runs those
+	// created in that span alone. Empty where no pull request merged before the window can ship
+	// with one of Applies.
 	Earlier MergedRows
 }
 
@@ -442,7 +444,7 @@ func deploysOf(ctx context.Context, q Querier, settings DeliverySettings, from t
 	if !since.Before(from) {
 		return deploys, nil
 	}
-	if deploys.Earlier, err = readMergedRows(ctx, q, settings, since, from, &from); err != nil {
+	if deploys.Earlier, err = readMergedRows(ctx, q, settings, since, from, settings.DeployRepo, &from); err != nil {
 		return Deploys{}, err
 	}
 	return deploys, nil
@@ -570,13 +572,14 @@ func ListPullRequestsOnDays(ctx context.Context, q Querier, days []time.Time) ([
 	if err != nil {
 		return nil, err
 	}
-	return listPullRequestsInWindows(ctx, q, from, to)
+	return listPullRequestsInWindows(ctx, q, from, to, "")
 }
 
 // listPullRequestsInWindows lists, for each window [from[i], to[i]), what ListPullRequestsInWindow
 // lists of it, in one statement, a pull request of two windows in each, up to
-// maxPullRequestsPerWindow pull requests a window.
-func listPullRequestsInWindows(ctx context.Context, q Querier, from, to []time.Time) ([][]DeliveryPullRequest, error) {
+// maxPullRequestsPerWindow pull requests a window; narrowed to repo's pull requests when repo is
+// non-empty, as readMergedRows narrows a window's earlier rows (Deploys.Earlier).
+func listPullRequestsInWindows(ctx context.Context, q Querier, from, to []time.Time, repo string) ([][]DeliveryPullRequest, error) {
 	listed := make([][]DeliveryPullRequest, len(from))
 	for i := range listed {
 		listed[i] = []DeliveryPullRequest{}
@@ -588,9 +591,10 @@ func listPullRequestsInWindows(ctx context.Context, q Querier, from, to []time.T
 		select `+PullRequestColumns+`, d.i
 		from unnest($1::timestamptz[], $2::timestamptz[]) with ordinality as d(from_at, to_at, i)
 		join delivery_pull_requests p on p.merged_at >= d.from_at and p.merged_at < d.to_at
+		where $4 = '' or p.repo = $4
 		order by p.merged_at, (p.repo || '#' || p.number) collate "C"
 		limit $3
-	`, from, to, maxPullRequestsPerWindow*len(from))
+	`, from, to, maxPullRequestsPerWindow*len(from), repo)
 	if err != nil {
 		return nil, err
 	}
@@ -728,8 +732,8 @@ type DaysDeploys struct {
 // the runs of every day in one statement (daysRunsQuery, or listRunsStartedOnDays' alone without
 // applies) and their production jobs in one more; the latest ship before each day's first deploy
 // completes in one (latestShipBefore of each); and the earlier rows each day's deploys read
-// (Deploys.Earlier), the pull requests of every day in one statement and the apply runs in one,
-// side by side, and their jobs in one more.
+// (Deploys.Earlier), the deploy repository's pull requests of every day in one statement and the
+// apply runs in one, side by side, and their jobs in one more.
 func ReadDaysDeploys(ctx context.Context, pool *store.Pool, settings DeliverySettings, days []time.Time, applies bool) (DaysDeploys, error) {
 	from, to, err := dayWindows(days)
 	if err != nil {
@@ -838,7 +842,7 @@ func ReadDaysDeploys(ctx context.Context, pool *store.Pool, settings DeliverySet
 	var earlierJobs map[int64][]DeliveryRunJob
 	if err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) (err error) {
-			prs, err = listPullRequestsInWindows(ctx, pool, earlierFrom, earlierTo)
+			prs, err = listPullRequestsInWindows(ctx, pool, earlierFrom, earlierTo, repo)
 			return err
 		},
 		func(ctx context.Context) (err error) {
