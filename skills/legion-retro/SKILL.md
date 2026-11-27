@@ -10,7 +10,10 @@ Retro records what the work taught, between the task's last step and the merge. 
 1. Read the issue, `dispatch results --issue <issue>`, the pull request, and each step's handoff. Where a `before_merge` check has no pass standing at the head, send the issue back with `request_backward_move` to the phase that owes the result, and name the check.
    A check that carries `ci_check` is CI's (`skill://legion-worker/references/ci-checks.md`), and no phase owes its result. A run of it that has not concluded is no failure: name it in step 4's `Runs still going` line and go on. A failed run is the merger's to judge: name it in step 4. A run that concluded `skipped`, `neutral` or `cancelled`, or a held-back job with no label, sends the issue back to implementing. Send a name that no run answers to the architect as a finding.
    With no reviewer step, list the unresolved bot threads and answer the ones you find, as `skill://legion-worker/references/review-threads.md` says.
-   For a thread that needs a fix, `request_backward_move` with `to: implementing`, the thread's URL in its `reason`.
+   For a thread that needs a fix, call `report_defect` with the thread's URL in its `defect`.
+   Reply `Reported as defect <id>: <one line>` on the thread, and resolve it.
+   Call `report_defect` for each other defect that you find in the change, and go on with your retro.
+   Do not send the issue back for it.
 2. Record what the work taught as one `dispatch comment` on the issue. Each point gives the rule, its evidence (a file and symbol, or quoted text, or a commit of this pull request, and what went wrong), and the file the rule belongs in. Write no comment when no point qualifies. One comment holds every kept point, each under its own `###` heading:
 
    ```bash

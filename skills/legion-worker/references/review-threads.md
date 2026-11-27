@@ -6,6 +6,8 @@ Reply on each thread you answer, one reply a thread: the implementer writes `Fix
 gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -F id=<thread node id>
 ```
 
+At retro, a thread reported with `report_defect` takes the reply `Reported as defect <id>: <one line>`.
+
 List every thread across every page. `gh` refuses `--slurp` together with `--jq` or `--template`, so pipe the slurped pages to `jq`; its filter receives an array of page objects. A failed read is not an empty list: `jq` exits 0 on empty input, so the subshell's `pipefail` makes a failed `gh` fail the whole command.
 
 ```bash
