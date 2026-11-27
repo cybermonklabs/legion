@@ -154,3 +154,21 @@ legion/INFRA-4730:
                       server's agent token, its actor {"kind":"session","id":"ses-not-the-daemon"},
                       a session other than legion-daemon:LEGION: 403 ROLE_HOLDER_FORBIDDEN, as a
                       token that does not prove the daemon's session gets once R26's refusal is on.
+
+The refusal of a status write without the legion-status scope was captured on 2026-11-27 at
+09:23Z by TestCaptureStatusScopeRequired (internal/daemon/role_holders_capture_test.go, build tag
+capture, run by hand), from the rig's scratch Dispatch built from this repository's working copy
+of legion/INFRA-4730 at aa58c2a70f1f and started with DISPATCH_LEGION_STATUS_SCOPE=on, which
+`bun run dispatch:local` cannot set (packages/dispatch/e2e/run-server.sh drops every inherited
+DISPATCH_ setting):
+
+  go -C packages/daemon test -tags capture -count=1 -run '^TestCaptureStatusScopeRequired$' ./internal/daemon/
+
+  status_scope_required.http
+                      LEGION-1 at triage, labelled legion by the person (sequence 2), then
+                      PATCH /api/v1/issues/LEGION-1 with status todo and expected_sequence 2 under
+                      the scratch server's agent token, its actor
+                      {"kind":"session","id":"legion-daemon:LEGION"}, as SetStatusAt sends it: 403
+                      LEGION_STATUS_SCOPE_REQUIRED with its insufficient_scope challenge naming
+                      legion-status, as a token that holds neither the person scope nor
+                      legion-status gets on a Legion issue.
