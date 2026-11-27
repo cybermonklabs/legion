@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+    A production check's look report gives its look's secret id as lookId, and the daemon takes
+    the look from that id. Before, the daemon took the look from the turn the session was in, and
+    a turn does not say which prompt it answers. So a testing turn's verdict could close a check
+    as a pass, and a report of the current look could be refused. A report with no lookId gets
+    CHECK_LOOK_ID_REQUIRED, and a lookId that is not the current look's gets CHECK_LOOK_NOT_OPEN.
+    Each of these answers names the current look and records nothing. A step's completion that
+    gives lookId gets CHECK_LOOK_ID_UNEXPECTED. The daemon API contract entry 20261127185859
+    (report-gives-its-look-id) pairs the daemon with both plugins.
+time: 2026-11-27T19:01:20Z
+custom:
+    Issue: report-gives-its-look-id

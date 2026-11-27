@@ -240,8 +240,8 @@ func TestClaimOwedIsTheProductionCheckLookItsTesterHolds(t *testing.T) {
 // an open look, and a report reaches the check route only when it names its check
 // (checkOpenedAt). A merged close spares the tester's
 // claim and opens a look behind its running testing turn: the record holds the look open for the
-// tester, while the tester still serves its testing task. A report from that turn is refused as no
-// report on production (CHECK_LOOK_NOT_SERVED), so the turn owes nothing — not the look, and not
+// tester, while the tester still serves its testing task. That turn has not read the look's task,
+// which alone gives the look id a report needs, so the turn owes nothing — not the look, and not
 // the testing phase of an issue that is done. Once the look's own task starts a turn, it owes the
 // look.
 func TestClaimOwedIsNoLookItsTesterHasNotTaken(t *testing.T) {

@@ -223,16 +223,28 @@ func boundText(bound time.Duration) string {
 }
 
 // checkReported records the checking agent's report on a look (intake.CheckReport). A report on an
-// issue with no open check is refused (CHECK_NOT_OPEN), and so is one naming a look that is not
-// the check's current one (CHECK_LOOK_NOT_OPEN: the report is of an earlier look) or carrying no
-// verdict of pass, pending or fail (CHECK_VERDICT_REQUIRED). The look ends;
-// pass closes the check as recorded and fail as a defect (closeCheck), and pending ends the look
-// as one with nothing to show (endLookPending), named for the next look at the time the report
-// carries (intake.CheckReport.WakeAt, which the route holds a pending to), clamped into the
-// record with the look's close, and the summary as its reason, which the route requires of every
-// report (api.handoffComplete, before it reaches its checkReport). A pending that names no time
-// is woken as a look nobody reported is, a look bound out, so the check is never left with no row
-// to wake it. A report of any verdict ends the role's run of failed looks
+// issue with no open check is refused (CHECK_NOT_OPEN), and so is one that names a check instance
+// a later merge replaced (CHECK_NOT_OPEN: record.ProductionCheck.NamedBy, the fact's OpenedAt), one
+// naming a look that is not the check's current one (CHECK_LOOK_NOT_OPEN: the report is of an
+// earlier look), and one carrying no verdict of pass, pending or fail (CHECK_VERDICT_REQUIRED).
+// The route reads the check, holds the report's look id to the current look and sends that look
+// and the check's OpenedAt (api's checkReport), so the refusals of a replaced check and of an
+// earlier look answer a report that a later merge or a new look overtook between the route's read
+// and this transaction: the report of the replaced check or of the ended look is never recorded
+// on the check or the look after it. Each says that a report gives check_opened_at and look_id
+// from the task of its look, in the route's own words for that rule (api's lookIDRule), and
+// neither holds a look id. A zero OpenedAt names the open check, as NamedBy reads a zero for
+// every fact of a check: the route always sends the opening time it matched, and an older daemon
+// applied its own reports, which carried none, in the transaction of their request, so no such
+// fact waits to be applied here.
+//
+// The look ends: pass closes the check as recorded and fail as a defect (closeCheck), and pending
+// ends the look as one with nothing to show (endLookPending), named for the next look at the time
+// the report carries (intake.CheckReport.WakeAt, which the route holds a pending to), clamped
+// into the record with the look's close, and the summary as its reason, which the route requires
+// of every report (api.handoffComplete, before it reaches its checkReport). A pending that names
+// no time is woken as a look nobody reported is, a look bound out, so the check is never left with
+// no row to wake it. A report of any verdict ends the role's run of failed looks
 // (record.ProductionCheck.FailedLooks): the role came up, so a later failure of its claim is named
 // a look bound out again (failedLookRetry).
 //
@@ -250,8 +262,12 @@ func (e *Engine) checkReported(ctx context.Context, tx pgx.Tx, fact intake.Check
 	if check == nil || !check.Open() {
 		return refused("CHECK_NOT_OPEN", fmt.Sprintf("%s has no open production check; this report changed nothing", fact.Issue)), nil
 	}
+	if !check.NamedBy(fact.OpenedAt) {
+		return refused("CHECK_NOT_OPEN", fmt.Sprintf("This report names the production check of %s that opened at %s. A later merge replaced that check with the check that opened at %s. The current look of that check is look %d. This report changed nothing. A report gives check_opened_at and look_id from the task of its look.",
+			fact.Issue, fact.OpenedAt.UTC().Format(time.RFC3339Nano), check.OpenedAt.UTC().Format(time.RFC3339Nano), check.Looks)), nil
+	}
 	if fact.Look != check.Looks {
-		return refused("CHECK_LOOK_NOT_OPEN", fmt.Sprintf("look %d of %s's production check is not the look to report: the check is at look %d; this report changed nothing",
+		return refused("CHECK_LOOK_NOT_OPEN", fmt.Sprintf("Look %d of %s's production check is not the current look. The current look of the check is look %d. This report changed nothing. A report gives check_opened_at and look_id from the task of its look.",
 			fact.Look, fact.Issue, check.Looks)), nil
 	}
 	var outcome record.CheckOutcome

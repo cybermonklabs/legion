@@ -55,7 +55,7 @@ func testNamedLook(t *testing.T, at phase.Phase) {
 	seedIssueAt(t, h, "LEGION-208", at)
 	seedCheck(t, h, "LEGION-208", claim.RoleTester, false, false)
 	c := newCheckLookClaim(t, h, "LEGION-208", claim.RoleTester, 2)
-	completion(t, completeCheck(h, HandoffCompleteRequest{GrantID: c.grant(t), Summary: "still checking", Verdict: "pending", WakeAt: &checkWakeAt}, checkOpenedAt))
+	completion(t, completeCheck(h, HandoffCompleteRequest{GrantID: c.grant(t), Summary: "still checking", Verdict: "pending", WakeAt: &checkWakeAt, LookID: checkLookID}, checkOpenedAt))
 	got := lastCheckReport(t, facts)
 	if got.Look != 2 || got.Verdict != "pending" || !got.WakeAt.Equal(checkWakeAt) {
 		t.Fatalf("report = %+v, want look 2 pending until %s", got, checkWakeAt)
@@ -68,8 +68,13 @@ func TestADoneIssuesLookReportThatNamesNoCheckIsRefused(t *testing.T) {
 	seedCheck(t, h, "LEGION-208", claim.RoleTester, false, false)
 	c := newCheckLookClaim(t, h, "LEGION-208", claim.RoleTester, 2)
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: c.grant(t), Summary: "production passes", Verdict: "pass"}), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
-	if !strings.Contains(message, "checkOpenedAt") {
-		t.Fatalf("refusal = %q, want the missing check identity", message)
+	for _, want := range []string{"checkOpenedAt", "check_opened_at and look_id from the task of its look"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("refusal = %q, want the missing check identity and the rule, %q", message, want)
+		}
+	}
+	if strings.Contains(message, "read_record") || strings.Contains(message, checkLookID) {
+		t.Fatalf("refusal = %q, want no read_record and no look id: a report gives its look's values from that look's task", message)
 	}
 	assertNoNamedFact(t, h, facts)
 }
@@ -100,7 +105,7 @@ func TestOneClaimsStepAndLookAreEachTheCallThatSaysSo(t *testing.T) {
 				lastCompletion(t, facts)
 			}
 			look := func() {
-				completion(t, completeCheck(h, HandoffCompleteRequest{GrantID: c.grant(t), Summary: "still checking", Verdict: "pending", WakeAt: &checkWakeAt}, checkOpenedAt))
+				completion(t, completeCheck(h, HandoffCompleteRequest{GrantID: c.grant(t), Summary: "still checking", Verdict: "pending", WakeAt: &checkWakeAt, LookID: checkLookID}, checkOpenedAt))
 				if got := lastCheckReport(t, facts); got.Look != 2 || got.Verdict != "pending" {
 					t.Fatalf("report = %+v, want look 2 pending", got)
 				}
@@ -134,18 +139,21 @@ func TestOneClaimsStepAndLookAreEachTheCallThatSaysSo(t *testing.T) {
 				}
 				look()
 			case "unconfirmed look":
+				// No turn confirmed the look's task: the look id, not the turn, names the look.
 				if err := m.Handle(t.Context(), supervise.StreamTurnEnd{Claim: c.token}); err != nil {
 					t.Fatal(err)
 				}
 				id := "outbox:look:2"
-				if err := m.Handle(t.Context(), supervise.RequestDeliver{Claim: c.token, ID: id, Task: "check production", Generation: 1, CheckLook: supervise.CheckLook{Look: 2, OpenedAt: checkOpenedAt}}); err != nil {
+				if err := m.Handle(t.Context(), supervise.RequestDeliver{Claim: c.token, ID: id, Task: "check production", Generation: 1, CheckLook: supervise.CheckLook{Look: 2, OpenedAt: checkOpenedAt}, LookID: checkLookID}); err != nil {
 					t.Fatal(err)
 				}
 				if err := m.Handle(t.Context(), supervise.PromptAcked{Claim: c.token, Generation: m.Claim().Generation, DeliveryID: id}); err != nil {
 					t.Fatal(err)
 				}
-				refused(t, completeCheck(h, HandoffCompleteRequest{GrantID: c.grant(t), Summary: "passes", Verdict: "pass"}, checkOpenedAt), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
-				assertNoNamedFact(t, h, facts)
+				if served := m.Claim().ServingCheck(); served.Look != 0 {
+					t.Fatalf("the claim serves look %+v, want none: no turn confirmed the look's task", served)
+				}
+				look()
 			}
 		})
 	}
@@ -177,12 +185,15 @@ func TestAReportNamingNoOpenCheckOfThatTimeIsRefused(t *testing.T) {
 			} else {
 				c.worksLook(t, 2, opened)
 			}
-			message := refused(t, completeCheck(h, HandoffCompleteRequest{GrantID: c.grant(t), Summary: "passes", Verdict: "pass"}, opened), http.StatusConflict, "CHECK_NOT_OPEN")
+			message := refused(t, completeCheck(h, HandoffCompleteRequest{GrantID: c.grant(t), Summary: "passes", Verdict: "pass", LookID: checkLookID}, opened), http.StatusConflict, "CHECK_NOT_OPEN")
 			if which == "replaced" || which == "wrong time" {
-				for _, detail := range []string{"production check is open", "check_opened_at", "check.openedAt", "read_record"} {
+				for _, detail := range []string{"production check is open", "look 2", "check_opened_at and look_id from the task of its look"} {
 					if !strings.Contains(message, detail) {
-						t.Fatalf("refusal = %q, want the open check and its recovery source %q", message, detail)
+						t.Fatalf("refusal = %q, want the open check, its current look and the rule %q", message, detail)
 					}
+				}
+				if strings.Contains(message, "read_record") || strings.Contains(message, checkLookID) {
+					t.Fatalf("refusal = %q, want no read_record and no look id", message)
 				}
 			} else if strings.Contains(message, "production check is open") {
 				t.Fatalf("refusal = %q, but no check is open", message)
@@ -207,7 +218,7 @@ func TestANamedCheckReportRefusesPhaseOnlyFields(t *testing.T) {
 			seedIssueAt(t, h, "LEGION-208", phase.Done)
 			seedCheck(t, h, "LEGION-208", claim.RoleTester, false, false)
 			c := newCheckLookClaim(t, h, "LEGION-208", claim.RoleTester, 2)
-			tc.req.GrantID, tc.req.Summary, tc.req.Verdict = c.grant(t), "production passes", "pass"
+			tc.req.GrantID, tc.req.Summary, tc.req.Verdict, tc.req.LookID = c.grant(t), "production passes", "pass", checkLookID
 			refused(t, completeCheck(h, tc.req, checkOpenedAt), http.StatusBadRequest, "CHECK_PHASE_FIELDS_UNEXPECTED")
 			assertNoNamedFact(t, h, facts)
 		})
@@ -219,7 +230,7 @@ func TestAReportNamingAnotherRolesCheckIsRefused(t *testing.T) {
 	seedIssueAt(t, h, "LEGION-208", phase.Done)
 	seedCheck(t, h, "LEGION-208", claim.RoleImplementer, false, false)
 	c := newCheckLookClaim(t, h, "LEGION-208", claim.RoleTester, 2)
-	refused(t, completeCheck(h, HandoffCompleteRequest{GrantID: c.grant(t), Summary: "passes", Verdict: "pass"}, checkOpenedAt), http.StatusConflict, "CHECK_ROLE_MISMATCH")
+	refused(t, completeCheck(h, HandoffCompleteRequest{GrantID: c.grant(t), Summary: "passes", Verdict: "pass", LookID: checkLookID}, checkOpenedAt), http.StatusConflict, "CHECK_ROLE_MISMATCH")
 	assertNoNamedFact(t, h, facts)
 }
 

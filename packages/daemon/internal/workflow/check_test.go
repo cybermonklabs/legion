@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -283,6 +284,105 @@ func TestAFactOfAReplacedCheckChangesNothingOfItsSuccessor(t *testing.T) {
 	}
 	if got := superviseRequests(t, rig.pool, "suspend"); got["LEGION-209/tester"] != 1 {
 		t.Fatalf("suspend rows after the second check's look bound = %v, want the tester's", got)
+	}
+}
+
+// lookIDRule is the rule each refusal of a report that a later merge or a new look overtook names,
+// in the route's words for it (api's lookIDRule).
+const lookIDRule = "A report gives check_opened_at and look_id from the task of its look."
+
+// A report of a check that a later merge replaced — the route read the first check, and the
+// rerun's merge opened the second before the report's fact applied — names the first check's
+// OpenedAt, and is refused CHECK_NOT_OPEN: the second check, which counts its looks from one
+// again, is not changed in any field, no claim is closed and nothing is suspended. The refusal
+// names the second check's current look and the rule, and holds no look id. The same report
+// naming the second check is recorded on it.
+func TestAReportOfAReplacedCheckIsNotRecordedOnItsSuccessor(t *testing.T) {
+	t.Parallel()
+	rig := newCheckRig(t)
+	seedMergingChild(t, rig.pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+	firstOpened := checkOpened.Add(-24 * time.Hour)
+	firstClosed := firstOpened.Add(2 * time.Hour)
+	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
+		return record.NewStore().PutProductionCheck(t.Context(), tx, record.ProductionCheck{
+			Issue: "LEGION-209", Project: "LEGION", Tree: "LEGION-208", Repo: "sjawhar/legion", Number: 41, MergeSHA: "merge-41",
+			OpenedAt: firstOpened, BoundAt: firstOpened.Add(checkBound), Looks: 1, LookWakeAt: &firstOpened,
+			LastWakeKind: "merge", LastWakeDetail: "merge-41", LastWakeAt: &firstOpened, ClosedAt: &firstClosed, Outcome: record.CheckNotRun,
+		})
+	})
+	rig.apply("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"})
+	successor := productionCheck(t, rig.pool, "LEGION-209")
+	if successor == nil || !successor.Open() || !successor.OpenedAt.Equal(checkOpened) || successor.Looks != 1 || !successor.LookOpen || successor.CurrentLookID() == "" {
+		t.Fatalf("the check after the rerun's merge = %+v, want the second check, opened at the merge, at look 1 open with its look id", successor)
+	}
+	closesBefore := superviseRequests(t, rig.pool, "issue_close")["LEGION-209/tester"]
+
+	result := rig.apply("stale-report", intake.CheckReport{Issue: "LEGION-209", Claim: "tester", Look: 1, OpenedAt: firstOpened,
+		Verdict: "pass", Summary: "driven in production"})
+	if got := refusalCode(result); got != "CHECK_NOT_OPEN" {
+		t.Fatalf("the report of the replaced check = %q, want CHECK_NOT_OPEN", got)
+	}
+	for _, want := range []string{"look 1", lookIDRule} {
+		if !strings.Contains(result.Refusal.Message, want) {
+			t.Fatalf("the refusal is %q, want it to say %q", result.Refusal.Message, want)
+		}
+	}
+	if strings.Contains(result.Refusal.Message, successor.LookID) {
+		t.Fatalf("the refusal is %q, which holds the second check's look id", result.Refusal.Message)
+	}
+	if after := productionCheck(t, rig.pool, "LEGION-209"); !reflect.DeepEqual(after, successor) {
+		t.Fatalf("the second check after the first check's report = %+v, want it unchanged: %+v", after, successor)
+	}
+	if got := superviseRequests(t, rig.pool, "issue_close")["LEGION-209/tester"]; got != closesBefore {
+		t.Fatalf("the tester's issue_close rows after the first check's report = %d, want %d: no report closed the second check", got, closesBefore)
+	}
+	if got := superviseRequests(t, rig.pool, "suspend"); len(got) != 0 {
+		t.Fatalf("suspend rows after the first check's report = %v, want none", got)
+	}
+
+	if result := rig.apply("report", intake.CheckReport{Issue: "LEGION-209", Claim: "tester", Look: 1, OpenedAt: checkOpened,
+		Verdict: "pass", Summary: "driven in production"}); result.Refusal != nil {
+		t.Fatalf("the second check's own report = %+v, want it recorded", result.Refusal)
+	}
+	if check := productionCheck(t, rig.pool, "LEGION-209"); check.Open() || check.Outcome != record.CheckRecorded || !check.OpenedAt.Equal(checkOpened) {
+		t.Fatalf("the second check after its own report = %+v, want it closed as recorded", check)
+	}
+}
+
+// A report that a new look overtook — the route read look 1 as the current look, and look 1's
+// pending named a wake that started look 2 before the report's fact applied — is refused
+// CHECK_LOOK_NOT_OPEN and changes nothing: look 2 stays open. The refusal names look 2 as the
+// current look and the rule that a report gives check_opened_at and look_id from the task of its
+// look, and holds neither look's id.
+func TestAReportThatANewLookOvertookNamesTheCurrentLookAndTheRule(t *testing.T) {
+	t.Parallel()
+	rig := childCheckRig(t)
+	first := productionCheck(t, rig.pool, "LEGION-209")
+	wake := checkOpened.Add(time.Hour)
+	rig.apply("pending", intake.CheckReport{Issue: "LEGION-209", Look: 1, OpenedAt: checkOpened, Verdict: "pending", Summary: "the deploy has not carried the merge", WakeAt: &wake})
+	rig.clock.now = wake
+	rig.apply("wake", intake.CheckWakeDue{Issue: "LEGION-209", Look: 1, OpenedAt: checkOpened, Reason: "the deploy has not carried the merge"})
+	second := productionCheck(t, rig.pool, "LEGION-209")
+	if second == nil || second.Looks != 2 || !second.LookOpen || second.CurrentLookID() == "" {
+		t.Fatalf("the check after the wake = %+v, want look 2 open with its look id", second)
+	}
+
+	result := rig.apply("overtaken", intake.CheckReport{Issue: "LEGION-209", Look: 1, OpenedAt: checkOpened, Verdict: "pass", Summary: "driven in production"})
+	if got := refusalCode(result); got != "CHECK_LOOK_NOT_OPEN" {
+		t.Fatalf("the report of look 1 after look 2 started = %q, want CHECK_LOOK_NOT_OPEN", got)
+	}
+	for _, want := range []string{"current look of the check is look 2", lookIDRule} {
+		if !strings.Contains(result.Refusal.Message, want) {
+			t.Fatalf("the refusal is %q, want it to say %q", result.Refusal.Message, want)
+		}
+	}
+	for _, id := range []string{first.LookID, second.LookID} {
+		if strings.Contains(result.Refusal.Message, id) {
+			t.Fatalf("the refusal is %q, which holds a look id", result.Refusal.Message)
+		}
+	}
+	if after := productionCheck(t, rig.pool, "LEGION-209"); !reflect.DeepEqual(after, second) {
+		t.Fatalf("the check after the overtaken report = %+v, want it unchanged: %+v", after, second)
 	}
 }
 
