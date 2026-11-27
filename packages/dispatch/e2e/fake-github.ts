@@ -8,8 +8,10 @@ import { harnessPorts } from "./harness-ports";
 // holds no such commit, empty delivery listings, and a seeded pull request with its
 // commits, its head's check runs and workflow runs. The GraphQL route answers the
 // aliased pull request queries of the reconcile's facts reads from the seeded pull
-// requests. It answers the merged search of the reconcile from the merged pull requests
-// that a seed marks `searched`. It answers an empty search to every other query. The seed
+// requests, and the aliased `object(oid:)` query of many commits' pull requests from
+// `commit_pulls`, as the REST read of one commit's pull requests answers. It answers the
+// merged search of the reconcile from the merged pull requests that a seed marks
+// `searched`. It answers an empty search to every other query. The seed
 // fields of the search and the completion are `searched`, `author`, `created_at`,
 // `merged_at` and `labels`. A pull request with one of them also answers what the
 // completion of a partial row reads. A repository seeded as rate_limited answers as GitHub
@@ -374,6 +376,49 @@ function askedRepositories(query: string, variables: Record<string, unknown>): A
   return asked;
 }
 
+/** One `repository(owner:, name:)` field of a GraphQL query that asks for the pull requests of
+ *  commits, the results read's batched read-through (delivery's commitPullsQuery): the name its
+ *  answer goes under, the repository, and each `<alias>: object(oid:)` field in it, with how many
+ *  pull requests its `associatedPullRequests(first:)` reads. */
+interface AskedCommits {
+  readonly alias: string;
+  readonly fullName: string;
+  readonly commits: readonly {
+    readonly alias: string;
+    readonly sha: string;
+    readonly first: number;
+  }[];
+}
+
+/** Each repository field of `query` that holds an `object(oid:)` field, in the order the query
+ *  names them. A query with none answers an empty list. */
+function askedCommits(query: string, variables: Record<string, unknown>): AskedCommits[] {
+  const asked: AskedCommits[] = [];
+  for (const field of query.matchAll(/(?:(\w+)\s*:\s*)?\brepository\s*\(([^)]*)\)\s*\{/g)) {
+    const selection = selectionAt(query, (field.index ?? 0) + field[0].length - 1);
+    const commits = [...selection.matchAll(/(\w+)\s*:\s*object\s*\(([^)]*)\)\s*\{/g)].map(
+      (object) => {
+        const inner = selectionAt(selection, (object.index ?? 0) + object[0].length - 1);
+        return {
+          alias: object[1] ?? "object",
+          first: Number(
+            inner.match(/\bassociatedPullRequests\s*\(\s*first\s*:\s*(\d+)/)?.[1] ?? 30
+          ),
+          sha: String(argumentsOf(object[2] ?? "", variables).oid),
+        };
+      }
+    );
+    if (commits.length === 0) continue;
+    const { name, owner } = argumentsOf(field[2] ?? "", variables);
+    asked.push({
+      alias: field[1] ?? "repository",
+      commits,
+      fullName: `${String(owner)}/${String(name)}`,
+    });
+  }
+  return asked;
+}
+
 // "owner/repo" → its installation; a missing repository answers 404 (App not
 // installed).
 let repos = new Map<string, FakeRepo>();
@@ -621,18 +666,32 @@ const server = Bun.serve({
       for (const repository of asked) {
         countPullRead(repository.fullName, "graphql_pulls", repository.pulls.length);
       }
+      // A commit the batched query names counts as one read of that commit's pull requests, the
+      // read of one commit over REST that it stands for.
+      const commitsAsked = askedCommits(query, variables);
+      for (const repository of commitsAsked) {
+        countPullRead(repository.fullName, "commit_pulls", repository.commits.length);
+      }
       logCall({
         asks:
-          asked.length === 0
-            ? "search"
-            : asked
+          commitsAsked.length > 0
+            ? commitsAsked
                 .flatMap((repository) =>
-                  repository.pulls.map(
-                    (pull) =>
-                      `${repository.fullName}#${pull.number}${repository.counted ? " (absence)" : ""}`
+                  repository.commits.map(
+                    (commit) => `${repository.fullName}@${commit.sha.slice(0, 12)}`
                   )
                 )
-                .join(", "),
+                .join(", ")
+            : asked.length === 0
+              ? "search"
+              : asked
+                  .flatMap((repository) =>
+                    repository.pulls.map(
+                      (pull) =>
+                        `${repository.fullName}#${pull.number}${repository.counted ? " (absence)" : ""}`
+                    )
+                  )
+                  .join(", "),
         route: "POST /graphql",
       });
       const installationId = tokenInstallation(request);
@@ -649,6 +708,47 @@ const server = Bun.serve({
           },
           { headers: spentBudgetHeaders("graphql") }
         );
+      }
+      // The batched read of commits' pull requests: each commit answers what `GET
+      // …/commits/{sha}/pulls` answers for it (`commit_pulls`), its first `first` pull requests
+      // with their count, so a commit that names none answers an empty list, as REST does. A
+      // repository the token's installation does not hold answers null with NOT_FOUND.
+      if (commitsAsked.length > 0) {
+        const data: Record<string, unknown> = {};
+        const errors: { message: string; path: string[]; type: string }[] = [];
+        for (const repository of commitsAsked) {
+          const seeded = repos.get(repository.fullName);
+          if (
+            seeded === undefined ||
+            seeded.installation_missing === true ||
+            seeded.installation_id !== installationId
+          ) {
+            data[repository.alias] = null;
+            errors.push({
+              message: `Could not resolve to a Repository with the name '${repository.fullName}'.`,
+              path: [repository.alias],
+              type: "NOT_FOUND",
+            });
+            continue;
+          }
+          const answer: Record<string, unknown> = {};
+          for (const commit of repository.commits) {
+            const named = (seeded.commit_pulls?.[commit.sha] ?? []).filter(
+              (number) => seeded.pulls?.[String(number)] !== undefined
+            );
+            answer[commit.alias] = {
+              associatedPullRequests: {
+                nodes: named.slice(0, commit.first).map((number) => {
+                  const pull = seeded.pulls?.[String(number)] as FakePull;
+                  return pullNode(repository.fullName, number, pull, 0);
+                }),
+                totalCount: named.length,
+              },
+            };
+          }
+          data[repository.alias] = answer;
+        }
+        return Response.json(errors.length === 0 ? { data } : { data, errors });
       }
       if (asked.length === 0) {
         const search = query.match(/\bsearch\s*\(([^)]*)\)/)?.[1] ?? "";
