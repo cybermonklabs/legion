@@ -948,6 +948,19 @@ type PluginInstall struct {
 	Contract          int
 }
 
+// PluginScope is the npm scope of the two plugins a launch installs, PiLegionPackage and
+// PiEnvoyPackage (runtime/sandbox's installBlock). A registry tarball URL of one holds it as a
+// path segment of its own, and it is the one segment holding an "@" a plugin source's URL may
+// carry (config's readPluginSource): any other is where a credential pasted as the URL's user
+// lands.
+const PluginScope = "@sjawhar"
+
+// PiLegionPackage and PiEnvoyPackage are the npm names of the plugins PluginInstall pins.
+const (
+	PiLegionPackage = PluginScope + "/pi-legion"
+	PiEnvoyPackage  = PluginScope + "/pi-envoy"
+)
+
 // PromptParts are the pieces of the agent's system prompt, in the one order the runtime
 // concatenates them into exactly one text (ComposePrompt), which the agent reads from the one
 // file its one `--append-system-prompt` names — one, because a second occurrence of the flag

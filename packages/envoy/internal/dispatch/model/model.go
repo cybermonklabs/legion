@@ -23,6 +23,10 @@ import (
 const (
 	ScopePerson  = "person"
 	ScopeApprove = "approve"
+	// ScopeP0 is the right to make an issue's own priority 0 (P0): a write that names a priority
+	// of 0 on an issue whose own priority is not 0 needs it. A person's own sign-in holds it; a
+	// personal token holds it only where its maker gave it.
+	ScopeP0 = "p0"
 )
 
 // ScopeLegionStatus is the OAuth scope of a Legion daemon's own broker token. Where
@@ -32,22 +36,23 @@ const (
 // (api's legion_status_scope.go). The secrets broker grants it to the daemon's token alone, and
 // Dispatch reads it from the broker's answer (brokerTokenActor).
 //
-// It is not in Scopes, and it must stay out. The browser's credential, the personal-token check,
-// a new token's default scopes and the approve-only token's scopes (brokerTokenActor) all read
-// Scopes, and none of them may hold this scope: it is the daemon's broker token's alone. A
-// person-scoped broker token holds ScopePerson alone (brokerPersonScopes), and the approve-only
-// token both of Scopes, never this scope either. DISPATCH_SCOPES in @legion/contracts and the
+// It is not in Scopes, and it must stay out. The browser's credential and the words a personal
+// token's scopes may hold both read Scopes, and neither may hold this scope: it is the daemon's
+// broker token's alone. A person-scoped broker token holds ScopePerson alone
+// (brokerPersonScopes), and the approve-only token ScopePerson and ScopeApprove
+// (brokerApproveOnlyScopes), never this scope either. DISPATCH_SCOPES in @legion/contracts and the
 // check on agent_tokens.scopes do not name it either, so no personal token can hold it. The word
 // is the broker's own (oauthwire), so the scope the broker grants and the one Dispatch reads are
 // one string.
 const ScopeLegionStatus = oauthwire.ScopeLegionStatus
 
 // Scopes is every OAuth scope a person's own credential can hold (ScopeLegionStatus is not one),
-// in the order a credential holding both carries them: the whole set a person's own credential
-// holds, and the set a mint gives a token when its body names none. Read it, never write it —
-// every such credential shares this one slice, as every surface shares DISPATCH_SCOPES in
-// @legion/contracts.
-var Scopes = []string{ScopePerson, ScopeApprove}
+// in the order a credential holding all of them carries them: the whole set a person's browser
+// sign-in holds, ScopeP0 among it. A personal token holds the set its row names, which may leave
+// any of them out, and a mint that names none gives every scope its maker holds but ScopeP0 (api's
+// callerScopes). Read it, never write it — every such credential shares this one slice, as every
+// surface shares DISPATCH_SCOPES in @legion/contracts.
+var Scopes = []string{ScopePerson, ScopeApprove, ScopeP0}
 
 // ScopeRead is the word that marks a read-only credential. GET /api/v1/whoami lists it among such
 // a credential's scopes, and a read-only personal token's set holds it: POST
@@ -93,10 +98,14 @@ func (a *ActorAct) Holds(scope string) bool {
 // only read. A pointer, so Actor stays comparable with ==, which this package's callers and its
 // tests rely on.
 type Credential struct {
-	// Scopes are the OAuth scopes the credential holds: ScopePerson, ScopeApprove, or neither.
-	// A named broker token (one the secrets broker scoped to a project) holds ScopeLegionStatus
-	// alone where the broker granted it, which the broker does for a Legion daemon's own token
-	// only (brokerTokenActor). No credential holds ScopeLegionStatus beside ScopePerson.
+	// Scopes are the OAuth scopes the credential holds, any of ScopePerson, ScopeApprove and
+	// ScopeP0: a browser holds all three, and a personal token the set its row names, which may be
+	// none. A broker-issued token acting for its person holds ScopePerson alone
+	// (brokerPersonScopes), except an approve-only token, which holds ScopePerson and ScopeApprove
+	// (brokerApproveOnlyScopes); no broker-issued token holds ScopeP0. A named broker token (one
+	// the secrets broker scoped to a project) holds ScopeLegionStatus alone where the broker
+	// granted it, which the broker does for a Legion daemon's own token only (brokerTokenActor). No
+	// credential holds ScopeLegionStatus beside ScopePerson.
 	Scopes []string
 	// Session is the session a broker-issued token proved, and is empty for every other
 	// credential, none of which proves one.
@@ -119,10 +128,11 @@ type Credential struct {
 	// ApproveOnly is a broker-issued token that holds only the scope approve
 	// (ciphertoken.ScopeApprove) beside the project scope person: the token the secrets broker
 	// mints for a person's approve grant, binds to its own pod's key and spends through its proxy,
-	// never released. It acts as its person with both of the person's scopes, and Dispatch serves
-	// it on the routes its approve list names (approveScopeRoutes) alone, answering it 403
-	// APPROVE_ONLY_TOKEN on every other (refuseApproveOnlyToken), before anything else the route
-	// does. False for every other credential.
+	// never released. It acts as its person with ScopePerson and ScopeApprove, never ScopeP0
+	// (brokerApproveOnlyScopes), and Dispatch serves it on the routes its approve list names
+	// (approveScopeRoutes) alone, answering it 403 APPROVE_ONLY_TOKEN on every other
+	// (refuseApproveOnlyToken), before anything else the route does. False for every other
+	// credential.
 	ApproveOnly bool
 	// Cut is the past time a read-only credential reads at (ciphertoken.Caller.Cut), in UTC, and
 	// the zero time for a credential that names no cut. Only a read-only credential carries one.

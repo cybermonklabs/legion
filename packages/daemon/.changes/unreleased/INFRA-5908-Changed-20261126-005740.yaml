@@ -1,0 +1,5 @@
+kind: Changed
+body: "The role prompts and the production check's task name no owner of code and send no ask to the report issue, and the merger sends a check that also fails on the base back to `implementing` unless the holder of the issue that tracks it lands a fix in time. The planner asks only between real choices, and asks for an act only a person can do as that act, with the options `Done` and `Can't`."
+time: 2026-11-26T00:57:40Z
+custom:
+    Issue: INFRA-5908

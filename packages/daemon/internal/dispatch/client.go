@@ -14,10 +14,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
 
 const requestTimeout = 10 * time.Second
+
+// dispatchServer is how a request's error names Dispatch when its address does not parse
+// (redact.RequestError).
+const dispatchServer = "Dispatch"
 
 // HTTPClient calls Dispatch's native /api/v1 routes, presenting the daemon's credential through the
 // transport it was made with (New). Every write names as its actor the session actor answers.
@@ -925,23 +930,27 @@ func (c *HTTPClient) call(ctx context.Context, method, path string, body any) ([
 			return nil, fmt.Errorf("encode Dispatch %s %s: %w", method, path, err)
 		}
 	}
-	request, err := http.NewRequestWithContext(bounded, method, c.baseURL+path, bytes.NewReader(encoded))
+	route := c.baseURL + path
+	request, err := http.NewRequestWithContext(bounded, method, route, bytes.NewReader(encoded))
 	if err != nil {
-		return nil, fmt.Errorf("create Dispatch %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("create Dispatch %s %s: %w", method, path, redact.RequestError(dispatchServer, route, err))
 	}
 	request.Header.Set("Accept", "application/json")
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
 
+	// A request that got no answer is named through redact.RequestError, before transportFailure
+	// reads its class: dispatch_url can carry a user name and a password, and a dial's or a
+	// resolver's error names the host, which is a password's tail when it holds an unencoded "@".
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("call Dispatch %s %s: %w", method, path, transportFailure(err))
+		return nil, fmt.Errorf("call Dispatch %s %s: %w", method, path, transportFailure(redact.RequestError(dispatchServer, route, err)))
 	}
 	defer response.Body.Close()
 	payload, err := io.ReadAll(response.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read Dispatch %s %s: %w", method, path, transportFailure(err))
+		return nil, fmt.Errorf("read Dispatch %s %s: %w", method, path, transportFailure(redact.RequestError(dispatchServer, route, err)))
 	}
 	if response.StatusCode/100 != 2 {
 		return payload, dispatchError(response.StatusCode, response.Status, payload)
