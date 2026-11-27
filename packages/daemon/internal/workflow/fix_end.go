@@ -232,9 +232,6 @@ func (e *Engine) copyMoveAfterFix(ctx context.Context, tx pgx.Tx, issue record.I
 // same way: the copy holds the fix's commits without that push, as a copy holds no push made after
 // its step started.
 func headWithFix(fix record.TaskFix, pr *record.PullRequest) string {
-	if _, head := taskHead(pr); head != "" && movedFrom(pr.Moves, fix.EndHead, head) {
-		return head
-	}
 	return fix.EndHead
 }
 
