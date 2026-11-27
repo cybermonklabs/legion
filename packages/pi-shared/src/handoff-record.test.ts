@@ -280,9 +280,9 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
     accepting: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     retro: row("@-", "@-", "200"),
     merging: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
-    // `verifying` is outside the daemon's `phase.Order`, so `phase.MovesBack(verifying, retro)`
-    // is false and this completion is of implementing, as it is at every phase but merging.
-    verifying: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    // Past its retro, in merging and after the merge in verifying, the implementer's completion is
+    // of the retro it left (`phase.Of`, `phase.LeftBy`), so it sends `@-` as the retro does.
+    verifying: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
     integrating: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     done: row({ record: "implement" }, "nothing", "409 CHECK_LOOK_NOT_SERVED"),
     held: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),

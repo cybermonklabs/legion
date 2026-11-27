@@ -292,9 +292,11 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 
 	// A caller below causeTimesContract is below dispatchCredentialContract too, the one frozen row
 	// above it, and below each entry's band, so it is told of each of those rows, in the table's
-	// order: this band's line, the Dispatch credential's, then the line of each entry's band that
-	// found its keys on the golden (narrowingsExpected), which holds no entry to be the newest.
-	golden := populatedState(t)
+	// order: this band's line, the Dispatch credential's, then the line of each entry's band, which
+	// finds its keys on the golden with each entry's own keys carried into it (carriedState,
+	// entryTestRows.carry), as intake_giveups_test.go reads it (narrowingsExpected), which holds no
+	// entry to be the newest.
+	golden := carriedState(t)
 	_, narrowings := stateNarrowedStating(t, golden, statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
 	want := narrowingsExpected(golden, causeTimesContract-1)

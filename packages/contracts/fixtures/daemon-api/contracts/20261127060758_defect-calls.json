@@ -1,0 +1,244 @@
+{
+  "answers": [
+    {
+      "answer": "defect-report",
+      "change": "add",
+      "noBody": false,
+      "addKeyPaths": [
+        "defect",
+        "nextChange",
+        "state"
+      ]
+    },
+    {
+      "answer": "defect-withdraw",
+      "change": "add",
+      "noBody": false,
+      "addKeyPaths": [
+        "defect",
+        "state"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "addKeyPaths": [
+        "closeWait",
+        "closeWait.beneath",
+        "closeWait.beneath.*",
+        "closeWait.beneath.*.key",
+        "closeWait.beneath.*.since",
+        "closeWait.beneath.*.status",
+        "closeWait.checks",
+        "closeWait.checks.*",
+        "closeWait.checks.*.answer",
+        "closeWait.checks.*.id",
+        "closeWait.checks.*.reason",
+        "closeWait.checks.*.since",
+        "closeWait.checks.*.when",
+        "closeWait.defects",
+        "closeWait.defects.*",
+        "closeWait.defects.*.check",
+        "closeWait.defects.*.head",
+        "closeWait.defects.*.id",
+        "closeWait.defects.*.kind",
+        "closeWait.defects.*.role",
+        "closeWait.defects.*.since",
+        "closeWait.defects.*.text",
+        "closeWait.nextChanges",
+        "closeWait.openChildren",
+        "closeWait.openChildren.*",
+        "closeWait.openChildren.*.key",
+        "closeWait.openChildren.*.since",
+        "closeWait.openChildren.*.status",
+        "closeWait.production",
+        "closeWait.production.generation",
+        "closeWait.production.merge",
+        "closeWait.production.nextLookAt",
+        "closeWait.production.outcome",
+        "closeWait.production.since",
+        "closeWait.production.state",
+        "closeWait.since",
+        "closeWait.unapproved",
+        "closeWait.unapproved.checks",
+        "closeWait.unapproved.checks.*",
+        "closeWait.unapproved.since",
+        "closeWait.unread",
+        "closeWait.unread.cause",
+        "closeWait.unread.since"
+      ],
+      "addValues": {
+        "architect.pendingTask.phase": [
+          "verifying"
+        ],
+        "heldFrom": [
+          "verifying"
+        ],
+        "phase": [
+          "verifying"
+        ],
+        "workers.*.claim.pendingTask.phase": [
+          "verifying"
+        ]
+      }
+    },
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "issues.*.closeWait",
+        "issues.*.closeWait.beneath",
+        "issues.*.closeWait.beneath.*",
+        "issues.*.closeWait.beneath.*.key",
+        "issues.*.closeWait.beneath.*.since",
+        "issues.*.closeWait.beneath.*.status",
+        "issues.*.closeWait.checks",
+        "issues.*.closeWait.checks.*",
+        "issues.*.closeWait.checks.*.answer",
+        "issues.*.closeWait.checks.*.id",
+        "issues.*.closeWait.checks.*.reason",
+        "issues.*.closeWait.checks.*.since",
+        "issues.*.closeWait.checks.*.when",
+        "issues.*.closeWait.defects",
+        "issues.*.closeWait.defects.*",
+        "issues.*.closeWait.defects.*.check",
+        "issues.*.closeWait.defects.*.head",
+        "issues.*.closeWait.defects.*.id",
+        "issues.*.closeWait.defects.*.kind",
+        "issues.*.closeWait.defects.*.role",
+        "issues.*.closeWait.defects.*.since",
+        "issues.*.closeWait.defects.*.text",
+        "issues.*.closeWait.nextChanges",
+        "issues.*.closeWait.openChildren",
+        "issues.*.closeWait.openChildren.*",
+        "issues.*.closeWait.openChildren.*.key",
+        "issues.*.closeWait.openChildren.*.since",
+        "issues.*.closeWait.openChildren.*.status",
+        "issues.*.closeWait.production",
+        "issues.*.closeWait.production.generation",
+        "issues.*.closeWait.production.merge",
+        "issues.*.closeWait.production.nextLookAt",
+        "issues.*.closeWait.production.outcome",
+        "issues.*.closeWait.production.since",
+        "issues.*.closeWait.production.state",
+        "issues.*.closeWait.since",
+        "issues.*.closeWait.unapproved",
+        "issues.*.closeWait.unapproved.checks",
+        "issues.*.closeWait.unapproved.checks.*",
+        "issues.*.closeWait.unapproved.since",
+        "issues.*.closeWait.unread",
+        "issues.*.closeWait.unread.cause",
+        "issues.*.closeWait.unread.since"
+      ],
+      "addValues": {
+        "issues.*.architect.pendingTask.phase": [
+          "verifying"
+        ],
+        "issues.*.heldFrom": [
+          "verifying"
+        ],
+        "issues.*.phase": [
+          "verifying"
+        ],
+        "issues.*.workers.*.claim.pendingTask.phase": [
+          "verifying"
+        ]
+      }
+    }
+  ],
+  "routes": [
+    {
+      "route": "POST /legion/v1/defects/report",
+      "change": "add",
+      "addFieldPaths": [
+        "check",
+        "defect",
+        "grantId",
+        "head",
+        "issue"
+      ]
+    },
+    {
+      "route": "POST /legion/v1/defects/withdraw",
+      "change": "add",
+      "addFieldPaths": [
+        "defect",
+        "grantId",
+        "issue",
+        "reason"
+      ]
+    }
+  ],
+  "answerRows": [
+    {
+      "id": "defect-report",
+      "routes": [
+        "POST /legion/v1/defects/report"
+      ],
+      "noBody": false
+    },
+    {
+      "id": "defect-withdraw",
+      "routes": [
+        "POST /legion/v1/defects/withdraw"
+      ],
+      "noBody": false
+    }
+  ],
+  "enumeratedRows": [
+    {
+      "answer": "state",
+      "keyPath": "issues.*.phase",
+      "values": [
+        "verifying"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.heldFrom",
+      "values": [
+        "verifying"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.architect.pendingTask.phase",
+      "values": [
+        "verifying"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.workers.*.claim.pendingTask.phase",
+      "values": [
+        "verifying"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "phase",
+      "values": [
+        "verifying"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "heldFrom",
+      "values": [
+        "verifying"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "architect.pendingTask.phase",
+      "values": [
+        "verifying"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "workers.*.claim.pendingTask.phase",
+      "values": [
+        "verifying"
+      ]
+    }
+  ]
+}
