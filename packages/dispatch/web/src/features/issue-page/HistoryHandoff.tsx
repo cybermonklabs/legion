@@ -86,12 +86,13 @@ export function useHandoffFold(issueKey: string): HandoffFold {
  * The handoff entries of one history within one screen of the view of the box Details scrolls in
  * (`NEAR_BAND` above and below it), seen by one `IntersectionObserver` whose root is that box
  * (`observeIn`), and told, in the order drawn, to the bodies' loader of the period Details is
- * open (`use`), with each scroll of that box (the plan's D13). A handoff's place is watched only
- * while its fields are open (`watch`), so a folded handoff is no part of the band and its body is
- * read only once it is opened. The band is told once the observer has first reported, so the
- * history's first request names every entry its first view holds, and once for each task's
- * changes, as the browser reports every entry an observation found in one call. It keeps the
- * history's landing too (`landed`), so the loader of a later period of Details starts at once.
+ * open (`use`), with each scroll the reader makes of that box (the plan's D13). A handoff's place
+ * is watched only while its fields are open (`watch`), so a folded handoff is no part of the band
+ * and its body is read only once it is opened. The band is told once the observer has first
+ * reported, so the history's first request names every entry its first view holds, and once for
+ * each task's changes, as the browser reports every entry an observation found in one call. It
+ * keeps the history's landing too (`landed`), so the loader of a later period of Details starts
+ * at once.
  */
 class HandoffBand {
   /** The handoff whose place each element watched is. */
@@ -140,11 +141,18 @@ class HandoffBand {
     );
     this.#observer = observer;
     for (const element of this.#watched.keys()) observer.observe(element);
+    // The reader's own scroll of the box: a turn of the wheel, a touch's move or a key, the acts
+    // the history's anchor reads as the reader's too (`ViewportAnchor`). A scroll event alone is
+    // no reader's: the history's landing, the anchor's put-backs and the browser's own scroll
+    // anchoring raise it as well, and as an answer's bodies are drawn, which would send the ids
+    // that answer left at once rather than 2 seconds after it is drawn.
     this.#scrolls = new AbortController();
-    (root ?? window).addEventListener("scroll", () => this.#loader?.scrolled(), {
-      passive: true,
-      signal: this.#scrolls.signal,
-    });
+    for (const type of ["keydown", "touchmove", "wheel"]) {
+      (root ?? window).addEventListener(type, () => this.#loader?.scrolled(), {
+        passive: true,
+        signal: this.#scrolls.signal,
+      });
+    }
   }
 
   stop(): void {

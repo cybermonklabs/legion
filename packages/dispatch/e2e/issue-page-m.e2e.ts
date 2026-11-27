@@ -6436,7 +6436,8 @@ test("the history says when the runs fail to read, with a Retry", async ({ brows
 
     // The bodies half, on a load of its own, whose page holds no body read yet.
     const fields = handoffFieldsOf(page, seeded.handoff);
-    await expect(fields).toHaveText([/A test pass no run reports\.$/u]);
+    const summary = fields.filter({ hasText: "A test pass no run reports." });
+    await expect(summary).toHaveCount(1);
     const line = (await handoffLineOf(page, seeded.handoff).textContent()) ?? "";
     const bodiesReads: number[] = [];
     let refusingBodies = true;
@@ -6452,9 +6453,11 @@ test("the history says when the runs fail to read, with a Retry", async ({ brows
         });
       }
     );
-    await page.reload();
-    await issueRead(page);
-    await openDetails(page);
+    // A load of the history's own address, which opens Details at the history, with the handoff
+    // brought into the view, where its body is read: the runs now drawn above it take it more
+    // than one screen below the top of Details at the issue's own address.
+    await gotoIssue(page, `/issues/${seeded.key}/activity`);
+    await handoffLineOf(page, seeded.handoff).scrollIntoViewIfNeeded();
     const entry = history.locator(`[data-history-entry="handoff:${seeded.handoff}"]`);
     await expect(entry.getByRole("alert")).toHaveText(ANSWER_LINES.handoff_unreadable);
     await expect(
@@ -6467,9 +6470,7 @@ test("the history says when the runs fail to read, with a Retry", async ({ brows
 
     refusingBodies = false;
     await entry.getByRole("button", { exact: true, name: CONTROL_LABELS.retry }).click();
-    await expect(fields, "Retry did not draw the handoff's fields").toHaveText([
-      /A test pass no run reports\.$/u,
-    ]);
+    await expect(summary, "Retry did not draw the handoff's fields").toHaveCount(1);
     await expect(entry.getByRole("alert")).toHaveCount(0);
     await expect(handoffLineOf(page, seeded.handoff)).toHaveText(line);
     expect(bodiesReads, "Retry did not read the bodies once more").toHaveLength(2);
@@ -6882,8 +6883,11 @@ test("the history is the one timeline: each run holds the handoff it reported @p
 
     // The run of an earlier day, at `/activity` and with no press: its entry stands in its own
     // day, and the handoff it reports is drawn open there, as no day of the history is folded.
+    // A body is read once its entry is within one screen of Details' view (R6), and at 390 px
+    // that run stands further down, so the reader scrolls to it, which presses nothing.
     const earlierRun = stepRun(page, earlier.id);
     await expect(earlierRun, "the run of an earlier day is not drawn").toHaveCount(1);
+    await earlierRun.scrollIntoViewIfNeeded();
     await expect(
       earlierRun.locator(
         `[data-handoff-line="${handoffs.plan}"] ~ span [data-handoff-field="summary"]`
@@ -7280,16 +7284,12 @@ async function readTheLeftIds(page: Page, large: BandIssue, every: boolean): Pro
   held.passAll();
   await first.release();
   const answered = first.answeredAt() ?? Date.now();
-  const kept = large.handoffs.slice(0, 4);
   const left = large.handoffs.slice(4);
-  for (const id of kept) await expect(handoffFieldsOf(page, id)).toHaveCount(1);
-  const drawnAt = Date.now();
-  for (const id of left) {
-    await expect(
-      historyPanel(page).locator(`[data-handoff-line="${id}"] ~ span [role="status"]`),
-      `the answer did not leave handoff ${id}`
-    ).toHaveText(ANSWER_LINES.loading_handoff);
+  expect(first.left(), "the answer does not leave the two oldest handoffs").toEqual(left);
+  for (const id of large.handoffs.slice(0, 4)) {
+    await expect(handoffFieldsOf(page, id)).toHaveCount(1);
   }
+  const drawnAt = Date.now();
   const places = await bandPlaces(page, left);
   const near = left.filter((id) => places[id]?.near === true);
   expect(

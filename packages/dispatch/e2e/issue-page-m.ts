@@ -2,6 +2,7 @@ import type { StepExperimentInput } from "@legion/contracts";
 import { expect, type Locator, type Page, type Request, type Response } from "@playwright/test";
 
 import { routeUrl } from "../web/src/api/paths";
+import type { HandoffBodies } from "../web/src/api/types";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { PAGE_SIZE } from "../web/src/features/issue-page/show-more-fixture";
 import { issueProject } from "../web/src/lib/issue-key";
@@ -294,6 +295,8 @@ export interface HeldBodiesRead {
   readonly answeredAt: () => number | undefined;
   /** The ids it asks for, in the order asked. */
   readonly ids: readonly string[];
+  /** The ids its answer left (`left`), or undefined while it is held or out. */
+  readonly left: () => readonly string[] | undefined;
   /** Lets it through to the server, and resolves once its answer has reached the page. */
   readonly release: () => Promise<void>;
   /** When the page sent it, by the row's clock. */
@@ -317,9 +320,11 @@ export async function holdBodiesReads(
       const gate = Promise.withResolvers<void>();
       const answered = Promise.withResolvers<void>();
       let answeredAt: number | undefined;
+      let left: readonly string[] | undefined;
       reads.push({
         answeredAt: () => answeredAt,
         ids: (new URL(route.request().url()).searchParams.get("ids") ?? "").split(","),
+        left: () => left,
         release: async () => {
           gate.resolve();
           await answered.promise;
@@ -332,6 +337,8 @@ export async function holdBodiesReads(
       const response = await route.fetch();
       await route.fulfill({ response });
       answeredAt = Date.now();
+      const answer: HandoffBodies = await response.json();
+      left = answer.left ?? [];
       answered.resolve();
     }
   );
