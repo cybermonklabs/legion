@@ -336,14 +336,20 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 // for a body that cannot be read whole or does not decode, and for a holder the rule would change:
 // the 200 itself says the listener took the message, so only its recipient is unknown, and no
 // caller sends a message again for that.
+//
+// It reads the body through the listener's own role shape (RoleHolderAs), which names the holder
+// and its state under the field names the publish answer uses for the same two words
+// (listenerwire.PublishResponse, RoleHolder below), and leaves the rest of that answer unread. A
+// struct of this package's own, even of one field, would be a copy of the listener's body, which
+// no client of the wire package may hold (TestListenerClientsUseListenerwire); PublishResponse
+// itself decodes into nothing here, since its expects_reply takes the answer's text as it came,
+// which the rule refuses (redact.Answer.Decode).
 func storedFor(response *http.Response) string {
 	answer, cut, err := listenerAnswer(response, answerBodyLimit)
 	if err != nil || cut {
 		return ""
 	}
-	var stored struct {
-		Holder oauth2call.RemoteText `json:"holder"`
-	}
+	var stored listenerwire.RoleHolderAs[oauth2call.RemoteText, oauth2call.RemoteText]
 	if answer.Decode(&stored) != nil {
 		return ""
 	}

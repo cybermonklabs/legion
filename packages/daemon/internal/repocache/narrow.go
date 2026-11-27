@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -39,18 +40,43 @@ var (
 	errNarrowingOutOfSpace = errors.New("the narrowing repack ran out of space")
 )
 
+// heldTokens are the credentials of the cache that a ref of its clone, or git's words about one,
+// can echo: the provisioning token its fetch carries, as its file stands now. The cache's fetch
+// reads the same file as each attempt starts (workspace.Fetch), so a refresh whose token cannot
+// be read fails there too; narrowing reads it first, so nothing it prints of the clone's refs can
+// hold a token it did not read.
+func (c *cache) heldTokens() ([]string, error) {
+	token, err := config.ReadSecretPointer(tokenFileEnv, c.opts.TokenFile)
+	if err != nil {
+		return nil, err
+	}
+	return []string{token}, nil
+}
+
+// narrow keeps the clone at the one branch its HEAD names: it lists the clone's refs, deletes
+// every other one and repacks what is left, marking the volume so a later refresh that finds
+// nothing to remove repacks nothing. A ref of the clone is whatever answered the cache's fetch in
+// GitHub's place, which can name a branch with the provisioning token that fetch carried: the
+// cache names no ref of its own (as its tar stream and its walk do, tarEntry.kind and unpathed),
+// and the git commands that list and delete those refs run under the fetch's filter
+// (workspace.CacheGitHolding, CacheGitStdinHolding), so git's words about a ref it could not read
+// or lock carry no run of a token the cache holds.
 func (c *cache) narrow(ctx context.Context, freshClone, rewritten bool) (err error) {
 	c.narrowed = false
 	defer func() { c.narrowed = err == nil }()
+	held, err := c.heldTokens()
+	if err != nil {
+		return err
+	}
 	head, err := workspace.CacheGit(ctx, c.opts.Run, c.dir, "symbolic-ref", "HEAD")
 	if err != nil {
 		return fmt.Errorf("read the cache's HEAD branch: %w", err)
 	}
 	branch := strings.TrimSuffix(head.Stdout, "\n")
 	if !strings.HasPrefix(branch, "refs/heads/") {
-		return fmt.Errorf("the cache's HEAD names %q, not a branch", branch)
+		return errors.New("the cache's HEAD names no branch")
 	}
-	refs, err := workspace.CacheGit(ctx, c.opts.Run, c.dir, "for-each-ref", "--format=%(refname)")
+	refs, err := workspace.CacheGitHolding(ctx, c.opts.Run, c.dir, held, "for-each-ref", "--format=%(refname)")
 	if err != nil {
 		return fmt.Errorf("list the cache's refs: %w", err)
 	}
@@ -69,7 +95,7 @@ func (c *cache) narrow(ctx context.Context, freshClone, rewritten bool) (err err
 		remove = append(remove, ref)
 	}
 	if !hasHead {
-		return fmt.Errorf("%w: %s", errCacheHeadMissing, branch)
+		return errCacheHeadMissing
 	}
 	marked, err := c.defaultBranchOnlyMarked()
 	if err != nil {
@@ -100,7 +126,7 @@ func (c *cache) narrow(ctx context.Context, freshClone, rewritten bool) (err err
 	}
 	if len(remove) != 0 {
 		input := "delete " + strings.Join(remove, "\ndelete ") + "\n"
-		if _, err := workspace.CacheGitStdin(ctx, c.opts.Run, c.dir, input, "update-ref", "--no-deref", "--stdin"); err != nil {
+		if _, err := workspace.CacheGitStdinHolding(ctx, c.opts.Run, c.dir, input, held, "update-ref", "--no-deref", "--stdin"); err != nil {
 			return fmt.Errorf("delete the cache's extra refs: %w", err)
 		}
 	}

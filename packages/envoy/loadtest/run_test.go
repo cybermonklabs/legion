@@ -114,9 +114,9 @@ func TestAForeignRunsMetaHoldsNoTokenOrPassword(t *testing.T) {
 				"-pg", "postgres://postgres:" + password + "@127.0.0.1:1/dispatch?sslmode=disable&password=" + password,
 			},
 			want: []string{
-				"-allow-foreign=true", "-listener=http://127.0.0.1:2", "-listener-token-file=" + listenerFile,
-				"-nats=nats://127.0.0.1:3", "-nats-mon=http://127.0.0.1:4", "-pg=" + pgRecorded,
-				"-pprof=http://127.0.0.1:5", "-token-file=" + agentFile, "-url=http://127.0.0.1:1",
+				"-allow-foreign=true", "-listener=http://" + redact.URLWithCredentials, "-listener-token-file=" + listenerFile,
+				"-nats=nats://127.0.0.1:3", "-nats-mon=http://" + redact.URLWithCredentials, "-pg=" + pgRecorded,
+				"-pprof=http://" + redact.URLWithCredentials, "-token-file=" + agentFile, "-url=http://" + redact.URLWithCredentials,
 			},
 		},
 		{
@@ -511,7 +511,9 @@ func TestLoopSummaryConfigRecordsItsFactorAndItsGenerator(t *testing.T) {
 
 // TestMetaRecordsTheLoopListenersWithoutCredentials: -loop-listeners is a list of listener URLs,
 // and meta.json records every element of it without its userinfo, as it records the endpoint
-// flags (TestAForeignRunsMetaHoldsNoTokenOrPassword).
+// flags (TestAForeignRunsMetaHoldsNoTokenOrPassword): an element that holds user information is
+// recorded with its authority as the rule's mark, and an element that holds none is recorded as
+// it was given.
 func TestMetaRecordsTheLoopListenersWithoutCredentials(t *testing.T) {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.String("loop-listeners", "", "")
@@ -519,7 +521,7 @@ func TestMetaRecordsTheLoopListenersWithoutCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := recordedArgs(fs)
-	want := []string{"-loop-listeners=http://127.0.0.1:1,http://127.0.0.1:2"}
+	want := []string{"-loop-listeners=http://" + redact.URLWithCredentials + ",http://127.0.0.1:2"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("recorded %q, want %q", got, want)
 	}

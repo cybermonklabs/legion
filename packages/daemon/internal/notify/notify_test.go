@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/listenerwire"
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 )
 
 // The controller topic is the one the plugin's controller subscribes to
@@ -68,27 +69,50 @@ func TestHTTPPublisherSendsPayloadAndOutboxDedupeKey(t *testing.T) {
 // 200 names (listenerwire.PublishResponse.Holder), which is the one evidence a sender has of who
 // was told at the write (the listener's roleSend.delivered). An answer that names no holder, a
 // 200 with no body, and one whose body is not the listener's JSON are a publish taken for a
-// recipient nobody named: no error, and no holder.
+// recipient nobody named: no error, and no holder. So is a holder holding a run of the bearer the
+// publish carried (echoed-bearer), as whatever answers in the listener's place can write one: the
+// holder is the listener's words, handed on only where the rule prints them as they came
+// (RemoteText.SendBack), so a caller that records a launch as told names no session rather than
+// one that echoes its credential. The twin is that same answer to a publish whose bearer shares
+// no run with it, which is answered whole. Captures notify.publish-holder/echoed-bearer.
 func TestHTTPPublisherAnswersTheHolderTheListenerStoredTheMessageFor(t *testing.T) {
+	// echoedBearer holds the gate's marker, and the listener's 200 writes a holder from it.
+	const echoedBearer = "envoy-" + "not-a-secret-token"
+	const echoedHolder = "ses_" + echoedBearer
+	const echoed = `{"event_id":"evt-1","topic":"notifications.role.legion-demo-tester","holder":"` + echoedHolder + `","holder_state":"live"}`
+	answering := func(t *testing.T, body string) string {
+		t.Helper()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(body))
+		}))
+		t.Cleanup(server.Close)
+		return server.URL
+	}
+	t.Run("twin", func(t *testing.T) {
+		holder, err := New(answering(t, echoed), "another-credential-24680").Publish(context.Background(), "notifications.role.legion-demo-tester", "hold the demo's testing", map[string]string{"step": "hold"}, "legion-outbox:9")
+		if err != nil || holder != echoedHolder {
+			t.Fatalf("publish under a bearer the holder echoes none of = holder %q, %v; want %q, so the row can see a leak", holder, err, echoedHolder)
+		}
+	})
 	for _, tc := range []struct {
 		name   string
+		bearer string
 		body   string
 		holder string
 	}{
-		{"the listener names the holder", `{"event_id":"evt-1","topic":"notifications.role.legion-demo-tester","holder":"ses_fresh","holder_state":"live"}`, "ses_fresh"},
-		{"the listener names no holder", `{"event_id":"evt-1","topic":"notifications.legion.LEGION.LEGION-208"}`, ""},
-		{"a 200 with no body", ``, ""},
-		{"a 200 whose body is not the listener's JSON", `stored`, ""},
+		{"the listener names the holder", "", `{"event_id":"evt-1","topic":"notifications.role.legion-demo-tester","holder":"ses_fresh","holder_state":"live"}`, "ses_fresh"},
+		{"the listener names no holder", "", `{"event_id":"evt-1","topic":"notifications.legion.LEGION.LEGION-208"}`, ""},
+		{"a 200 with no body", "", ``, ""},
+		{"a 200 whose body is not the listener's JSON", "", `stored`, ""},
+		{"echoed-bearer", echoedBearer, echoed, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte(tc.body))
-			}))
-			defer server.Close()
-
-			holder, err := New(server.URL, "").Publish(context.Background(), "notifications.role.legion-demo-tester", "hold on DEMO-1", map[string]string{"step": "hold"}, "legion-outbox:9")
+			holder, err := New(answering(t, tc.body), tc.bearer).Publish(context.Background(), "notifications.role.legion-demo-tester", "hold the demo's testing", map[string]string{"step": "hold"}, "legion-outbox:9")
+			if tc.bearer != "" {
+				oauth2calltest.RequireNoPiece(t, "notify.publish-holder/"+tc.name, holder, tc.bearer)
+			}
 			if err != nil || holder != tc.holder {
 				t.Fatalf("publish answered by %q = holder %q, %v; want holder %q and no error", tc.body, holder, err, tc.holder)
 			}
