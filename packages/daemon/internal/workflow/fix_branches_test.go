@@ -448,14 +448,15 @@ func TestALeaveQueuesDeletionAfterItsLastOldStartEnds(t *testing.T) {
 	}
 }
 
-// A leave while the task's merge can still land queues no deletion, and no branch beside a fix
-// stays for it: that merge is the one start of the task the leave's settle leaves open (runOver),
-// and the task's move into its retro queued the deletion of every branch of its fixes before the
-// merge started. On a task whose one step is the implementation, a check fails at its end and fix 1
-// ends with commits; CI passes, the retro starts, which queues the deletion through fix 1, and
-// completes; the merger starts, and a person moves the issue to backlog while the merge can land.
-// The outbox holds the one deletion, and the merge's run stays open.
-func TestALeaveWhileTheMergeCanLandLeavesNoBranchBehind(t *testing.T) {
+// A start of a task that a leave's settle leaves open is its merge, and that task's branches are
+// already queued for deletion: it passed its move into the retro, which queues the deletion of
+// every branch of its fixes, and no fix opens after that move (TestAFailureInTheRetroGoesToTheMerger).
+// So the deferred deletion the leave skips while that start is open leaves no branch behind, which
+// is what queueDeletesAfterOldRuns says. On a task whose one step is the implementation, a check
+// fails at its end and fix 1 ends with commits; CI passes, the retro starts, and its completion
+// starts the merger: the deletion through fix 1 is queued before the merge starts, and a failure
+// at the head while the merge runs opens no fix and names the merger.
+func TestATaskInItsMergeHasEveryBesideBranchQueuedAlready(t *testing.T) {
 	r := newFixRig(t, returnEngine(), []string{"implementer"})
 	r.at(fixHead, jobRunning("k-ci"))
 	r.move(TriggerImplementationReady, "", record.PhaseRow{})
@@ -465,13 +466,13 @@ func TestALeaveWhileTheMergeCanLandLeavesNoBranchBehind(t *testing.T) {
 	r.allCIPasses(headTwo)
 	r.assertRetroStarted()
 	assertStrings(t, "the deletions at the move into the retro", r.deletions(), []string{"1 a through 1"})
+
 	r.nextStart(TriggerRetroCompleted, claim.RoleMerger, phase.Merging)
+	r.fails(headTwo, "k-ci")
 
-	r.parks()
-
-	assertStrings(t, "the merge's run after the leave", outboxStrings(t, r.pool,
-		`select run from step_starts where issue = $1 and kind = '`+string(record.PlaceMerge)+`'`, "LEGION-208"), []string{"open"})
-	assertStrings(t, "the deletions after the leave", r.deletions(), []string{"1 a through 1"})
+	assertStrings(t, "the fixes after the failure in the merge", r.fixes(), []string{"1 ended k-ci@" + fixHead + " place 1"})
+	assertStrings(t, "the failures after the failure in the merge", r.failures(),
+		[]string{"k-ci@" + fixHead + " fix 1", "k-ci@" + headTwo + " merger 0"})
 }
 
 // testerWaitReasons is the reason of each phase-finished notice of LEGION-208's tester whose testing
