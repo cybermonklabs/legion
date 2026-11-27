@@ -160,7 +160,8 @@ func receiveRelayed(t *testing.T, database *store.Store, subscription <-chan rel
 		}
 		fmt.Fprintf(os.Stderr, "relay-debug TIMEOUT %s: events head %d\nactivity:\n%s\nstacks:\n%s\n", t.Name(), head, activity, strings.Join(kept, "\n\n"))
 		t.Logf("relay-debug TIMEOUT %s: events head %d\nactivity:\n%s\nstacks:\n%s", t.Name(), head, activity, strings.Join(kept, "\n\n"))
-		panic("relay-debug: the relay's next event did not arrive in 60s")
+		time.Sleep(2 * time.Second)
+		os.Exit(3)
 	}
 	_ = horizontest.WaitInProcess[relayReceipt]
 	if !receipt.open {
