@@ -267,11 +267,21 @@ test("hostTool runs no mise for a program that is no link to it, even with a mis
   expect(existsSync(ran)).toBe(false);
 });
 
-test("hostTool looks at a name that holds a path separator itself, as Bun.which does", () => {
+test("hostTool takes a name that holds a path separator as one file, under the same rules", () => {
   const directory = realTool();
-  process.env["PATH"] = realTool();
+  const after = realTool();
+  process.env["PATH"] = after;
+  // The file itself, and not the PATH's `tool`.
   expect(hostTool(join(directory, "tool"))).toBe(join(directory, "tool"));
   expect(hostTool(join(directory, ABSENT))).toBeNull();
+  // A mise shim named by its path is what mise names for it, never the shim itself.
+  const named = realTool();
+  expect(hostTool(join(miseShims(join(named, "tool")), "tool"))).toBe(join(named, "tool"));
+  // A shim mise names nothing for is no program: no PATH entry follows a file the caller named.
+  expect(hostTool(join(miseShims(null), "tool"))).toBeNull();
+  // A file at or below `outside` is no answer either.
+  expect(hostTool(join(directory, "tool"), directory)).toBeNull();
+  expect(hostTool(join(directory, "tool"), after)).toBe(join(directory, "tool"));
 });
 
 test("hostTool skips a directory at or below the one it is told to stay outside", () => {
