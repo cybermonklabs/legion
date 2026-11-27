@@ -2805,6 +2805,11 @@ type commitPullsFake struct {
 	pullReads map[string]int
 	// factsQueried counts the batched queries of facts that GitHub was asked.
 	factsQueried int
+	// commitQueried counts the batched queries of the pull requests of many commits that GitHub
+	// was asked (serveCommitPullsQuery), apart from asked, which counts the commits each of those
+	// queries asks about: one read of an issue's results asks about every commit it must learn in
+	// one query of its repository.
+	commitQueried int
 	// refused maps a commit to the status that GitHub refuses the list of its pull requests with.
 	// GitHub answers the list of each other commit.
 	refused map[string]int
@@ -2933,13 +2938,96 @@ func (f *commitPullsFake) factsQueries() int {
 	return f.factsQueried
 }
 
+// commitQueries is how often GitHub has been asked the batched query of the pull requests of many
+// commits, for any repository.
+func (f *commitPullsFake) commitQueries() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.commitQueried
+}
+
 // factsAlias reads the aliases of the batched query of facts (delivery's factsQuery), in their
 // order. Each is a repository alias with the names of its two variables, or a pull request alias
 // with its number.
 var factsAlias = regexp.MustCompile(`(r\d+): repository\(owner: \$(\w+), name: \$(\w+)\)|(p\d+): pullRequest\(number: (\d+)\)`)
 
-// serveFactsQuery answers POST /graphql for the batched query of facts (delivery's
-// readFactsBatch), whose text holds the fragment pullRequestFacts. Each pull request is the REST
+// commitPullsAlias reads the aliases of the batched query of a commit's pull requests (delivery's
+// commitPullsQuery), in their order: each is `c<i>: object(oid: "<sha>")`.
+var commitPullsAlias = regexp.MustCompile(`c\d+: object\(oid: "([0-9a-fA-F]+)"\)`)
+
+// serveCommitPullsQuery answers POST /graphql for the batched query of the pull requests of many
+// commits (delivery's ReadThroughCommitsPulls), from the same state the REST route answers from
+// (serveCommitPulls): each commit's aliased object holds the pull requests answer names for it,
+// each in the fields of the query (factsNodeOf). It counts one ask of the repository for each
+// commit the query asks about, as the REST route counts one for its one commit, so asks measures
+// what one read of the results spent however the read asked.
+//
+// A commit the test refuses (refusesCommitPulls) refuses the whole query with its status: one
+// query is one answer of GitHub's, so a refusal of a commit in it is a refusal of the batch, and
+// the read answers none of its commits.
+func (f *commitPullsFake) serveCommitPullsQuery(t *testing.T, w http.ResponseWriter, query string, variables map[string]any) {
+	owner, _ := variables["owner"].(string)
+	name, _ := variables["name"].(string)
+	repo := owner + "/" + name
+	aliases := commitPullsAlias.FindAllStringSubmatch(query, -1)
+	f.mu.Lock()
+	answer := f.answer
+	f.asked[repo] += len(aliases)
+	f.commitQueried++
+	var refusal int
+	for _, alias := range aliases {
+		if status, refused := f.refused[alias[1]]; refused {
+			refusal = status
+			break
+		}
+	}
+	f.mu.Unlock()
+	if refusal != 0 {
+		w.WriteHeader(refusal)
+		fmt.Fprintf(w, `{"message":%q}`, http.StatusText(refusal))
+		return
+	}
+	commits := map[string]any{}
+	for index, alias := range aliases {
+		nodes := []any{}
+		if answer != nil {
+			var pulls []json.RawMessage
+			if err := json.Unmarshal([]byte(answer(repo, alias[1])), &pulls); err != nil {
+				t.Errorf("the pull requests of %s@%s are no JSON array: %v", repo, alias[1], err)
+				http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
+				return
+			}
+			for _, raw := range pulls {
+				var named struct {
+					Number int `json:"number"`
+				}
+				if err := json.Unmarshal(raw, &named); err != nil {
+					t.Errorf("a pull request of %s@%s names no number: %v", repo, alias[1], err)
+					http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
+					return
+				}
+				node, err := factsNodeOf(string(raw), named.Number)
+				if err != nil {
+					t.Errorf("the answer of %s#%d is no pull request of GitHub's REST API: %v", repo, named.Number, err)
+					http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
+					return
+				}
+				nodes = append(nodes, node)
+			}
+		}
+		commits["c"+strconv.Itoa(index)] = map[string]any{
+			"associatedPullRequests": map[string]any{"nodes": nodes},
+		}
+	}
+	if err := json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": commits}}); err != nil {
+		t.Errorf("encode the answer to the query of %d commits' pull requests: %v", len(aliases), err)
+	}
+}
+
+// serveFactsQuery answers POST /graphql for the two batched queries that carry the fragment
+// pullRequestFacts: the query of the facts of named pull requests (delivery's readFactsBatch),
+// below, and the query of the pull requests of many commits (delivery's commitPullsQuery), which
+// serveCommitPullsQuery answers. Each pull request of the facts query is the REST
 // answer of pull, in the fields of the query (factsNodeOf). GitHub's 404 is a null pull request
 // with NOT_FOUND on its alias path. A repository that the App is not installed on is a null
 // repository with NOT_FOUND on its alias. The fake answers any other query 404, as the mux did
@@ -2952,6 +3040,10 @@ func (f *commitPullsFake) serveFactsQuery(t *testing.T, installed map[string]boo
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || !strings.Contains(request.Query, "fragment pullRequestFacts") {
 			http.NotFound(w, r)
+			return
+		}
+		if commitPullsAlias.MatchString(request.Query) {
+			f.serveCommitPullsQuery(t, w, request.Query, request.Variables)
 			return
 		}
 		f.mu.Lock()

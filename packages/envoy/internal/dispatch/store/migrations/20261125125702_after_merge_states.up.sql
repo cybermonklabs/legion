@@ -40,10 +40,12 @@
 --                      decide no answer: they bound which open issues a recorded deploy is
 --                      announced on. check_results_live holds the rows that name a subject.
 --
--- How the merge columns fill. This release raises delivery.AttributionRuleVersion, so the
--- reconcile's rule arm offers each stored merged row once more (ListStalePullRequestHeads), and its
--- refresh writes the merge commit and its time from GitHub's answer. Until the offer reaches a row,
--- a read that must order it refreshes it first. A write that carries neither keeps both as stored.
+-- How the merge columns fill. Any read of GitHub that writes a merged row writes them (headRow,
+-- upsertHeadRow): the reconcile's facts line, which reads each row whose texts are not current,
+-- a merged row stored before these columns among them, and a results read's refresh of a merged
+-- row it must order and that holds no time (api's fillMergeTimes, RefreshMergedPullRequest). The
+-- reconcile's own pass lists open rows alone (ListStalePullRequestHeads). A write that carries
+-- neither column keeps both as stored.
 -- No result recorded before this migration can name a subject or a program, since no build lets an
 -- author write either yet, so no backfill is owed.
 --

@@ -7,21 +7,18 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// What one read of an issue's results may spend on GitHub when many of its results stand at
-// commits no stored head names. learn reads each such commit through, one call after another
-// (results_comparison.go), and a production read of dispatch://INFRA-3904 took longer than two
-// minutes where the same read with ?at= took 8.3 s, since ?at= reads nothing through: an issue
-// with scores of results pays a round trip for each of their commits before the first check is
-// answered.
+// What one read of an issue's results spends on GitHub when many of its results stand at commits
+// no stored head names: one question for all of them, whatever their number. Before the batched
+// read, learn read each such commit through in a call of its own (results_comparison.go), and a
+// production read of an issue with 18 such results took longer than two minutes where the same
+// read with ?at= took 8.3 s, since ?at= reads nothing through.
 //
-// The bound is readThroughsPerRead. The rest of the commits keep the answer the stored rows give
-// this read, and the next read of the results — the Verification tab refetches on every
-// result.recorded, and a reader's own refresh is another — reads more of them, since each read
-// through of this read is claimed and the unread ones are not.
-//
-// Red before the bound: the read asks GitHub once per commit, which this row reads as the whole
-// of its results, and the count is the measurement the production finding asked for.
-func TestOneResultsReadReadsThroughNoMoreCommitsThanItsBound(t *testing.T) {
+// This row reads an issue of eighteen results at eighteen such commits and counts both what one
+// read asks GitHub about — every one of the eighteen commits, since no bound leaves any of them
+// unread — and how many questions it asks for them: one, since the commits of one repository go
+// in one query (delivery.ReadThroughCommitsPulls). A read that asks a question per commit, as the
+// read before this change did, fails it, and so does a read that leaves a commit unasked.
+func TestOneResultsReadAsksGitHubOnceForEveryCommitItLearns(t *testing.T) {
 	t.Parallel()
 	handler, _, _, fake := readThroughGitHub(t, "acme/widgets")
 	issue := issueInRepository(t, handler, "RESRT", "acme/widgets", "Many results at many commits")
@@ -29,23 +26,24 @@ func TestOneResultsReadReadsThroughNoMoreCommitsThanItsBound(t *testing.T) {
 
 	// Each result stands at a commit of its own, and GitHub names a pull request for none of
 	// them, so no record and no read stores a head and every commit stays unread.
-	const results = readThroughsPerRead + 6
+	const results = 18
 	for at := range results {
 		commit := fmt.Sprintf("%040x", at+1)
 		if response := recordResult(t, handler, issue.Key, resultBody("k1", "pass", commit, nil)); response.Code != 201 {
 			t.Fatalf("record the result at %s: %d %s", commit, response.Code, response.Body.String())
 		}
 	}
-	// The records' own read-throughs, which the read-time bound neither counts nor is bound by.
-	spent := fake.asks("acme/widgets")
+	// The records' own read-throughs, which the read-time read neither counts nor is bound by.
+	spent, queried := fake.asks("acme/widgets"), fake.commitQueries()
 
 	read := readResults(t, handler, issue.Key)
-	if asked := fake.asks("acme/widgets") - spent; asked > readThroughsPerRead {
-		t.Fatalf("one read of %d results at %d commits asked GitHub for a commit's pull requests %d times, want at most %d",
-			results, results, asked, readThroughsPerRead)
+	asked, queries := fake.asks("acme/widgets")-spent, fake.commitQueries()-queried
+	if asked != results || queries != 1 {
+		t.Fatalf("one read of %d results at %d commits asked GitHub about %d commits in %d queries, want every commit in one question",
+			results, results, asked, queries)
 	}
-	// The answer is whole however many commits the read left unread: every result is read, and
-	// each stands at another commit, which is what the stored rows say of an unread one.
+	// The answer is whole: every result is read, and each stands at another commit, which is what
+	// the stored rows say of a commit no pull request carries.
 	check := checkOf(t, read, "k1")
 	if len(check.Results) != results {
 		t.Fatalf("the check answers %d results, want %d", len(check.Results), results)
@@ -58,28 +56,34 @@ func TestOneResultsReadReadsThroughNoMoreCommitsThanItsBound(t *testing.T) {
 	}
 }
 
-// What the bound costs a reader: whether a read that stopped short answers a check wrongly, or
-// only less completely. The issue's one pass is at headCommit, recorded before any pull request
-// carried it; then a pull request of the issue opens there and no event of it reaches Dispatch,
-// so only a read-time read-through of headCommit can learn it (TestAResultStandsAtItsCommitOnceAPullRequestOpensThere).
-// After the pass, fails are recorded at commits GitHub names no pull request for. Results are read
-// newest first, so those fails' commits are the ones learn reads through first.
+// A pass at a commit that only a read-time read-through can learn stands on the FIRST read,
+// however many results of the issue stand at commits before it. The issue's one pass is at
+// headCommit, recorded before any pull request carried it; then a pull request of the issue opens
+// there and no event of it reaches Dispatch, so only this read can learn it
+// (TestAResultStandsAtItsCommitOnceAPullRequestOpensThere). After the pass, fails are recorded at
+// commits GitHub names no pull request for, and results are read newest first, so those commits
+// are the ones the read learns first.
 //
-// With one fail fewer than the bound the read reaches headCommit, learns the pull request, and
-// the pass stands: the fixture can answer yes. With as many fails as the bound it cannot reach
-// headCommit, and the answer it gives there is what this row measures, on a first read, on a
-// second read inside delivery.CommitPullReadStaleAfter, and on a read after that span.
-func TestABoundedReadAnswersAPassAtAnUnreadCommit(t *testing.T) {
+// This is the measurement that took a bound on the commits one read may learn out of this branch.
+// With that bound at twelve, a read of an issue with eleven such fails reached the pass and
+// answered pass_stands `yes`, and a read with twelve did not reach it and answered `no` — on the
+// first read, on a second inside delivery.CommitPullReadStaleAfter, and on a read after that span,
+// which asked about the same twelve commits again. A gate reading that `no` would refuse an
+// approval for a pass that stands, so the bound is gone: every commit of one repository goes in
+// one question. Each case below answers `yes` on its first read, and the fails' count is no part
+// of the answer.
+func TestAPassAtACommitOnlyAReadThroughLearnsStandsOnTheFirstRead(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		fails  int
 		stored bool
 	}{
-		{"the read reaches the pass, no stored head", readThroughsPerRead - 1, false},
-		{"the read reaches the pass, a stored head", readThroughsPerRead - 1, true},
-		{"the bound is spent before the pass, no stored head", readThroughsPerRead, false},
-		{"the bound is spent before the pass, a stored head", readThroughsPerRead, true},
+		{"a few results before the pass, no stored head", 11, false},
+		{"a few results before the pass, a stored head", 11, true},
+		{"more results before the pass than the bound allowed, no stored head", 12, false},
+		{"more results before the pass than the bound allowed, a stored head", 12, true},
+		{"scores of results before the pass", 30, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -87,8 +91,11 @@ func TestABoundedReadAnswersAPassAtAnUnreadCommit(t *testing.T) {
 			issue := issueInRepository(t, handler, "RESBD", "acme/widgets", "A pass past the bound")
 			uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 			if tc.stored {
-				// An open pull request of the issue whose head Dispatch holds, at another commit.
-				writeHead(t, database, "acme/widgets", 90, newHeadCommit, "open", issue.Key)
+				// A merged pull request of the issue whose head Dispatch holds, at another commit:
+				// a basis the check compares with, and no subject, since an open pull request is
+				// (headBases). A second OPEN head would be a second subject, and a pass at one
+				// subject alone does not make a check's pass stand.
+				writeHead(t, database, "acme/widgets", 90, newHeadCommit, "merged", issue.Key)
 			}
 			pass := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil)))
 			for at := range tc.fails {
@@ -124,16 +131,14 @@ func TestABoundedReadAnswersAPassAtAnUnreadCommit(t *testing.T) {
 			second := answered("second read")
 			rewindCommitPullReads(t, served)
 			third := answered("read after the span")
-			if tc.fails < readThroughsPerRead {
-				if first != model.PassStandsYes {
-					t.Fatalf("a read that reaches the pass answers pass_stands %q, want yes: the fixture cannot measure the bound", first)
-				}
-				return
+			if first != model.PassStandsYes {
+				t.Fatalf("the first read of a pass at a commit only this read can learn answers pass_stands %q, want yes "+
+					"(second read %q, after the span %q): %d results stand at commits before it, and no number of them may change the answer",
+					first, second, third, tc.fails)
 			}
-			for _, answer := range []string{first, second, third} {
-				if answer == model.PassStandsNo {
-					t.Fatalf("a read whose bound is spent before the pass answers pass_stands no (first %q, second %q, after the span %q), where a read that reaches it answers yes: the bound answers wrongly, not less completely",
-						first, second, third)
+			for _, answer := range []string{second, third} {
+				if answer != model.PassStandsYes {
+					t.Fatalf("a later read answers pass_stands %q, want yes: the head the first read learned is stored", answer)
 				}
 			}
 		})

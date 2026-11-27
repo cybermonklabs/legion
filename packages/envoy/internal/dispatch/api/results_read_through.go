@@ -61,47 +61,73 @@ import (
 //
 // A read-only caller's read makes the same read and stores nothing, takes no claim and settles
 // nothing (answerCommitPulls).
-func (c *comparisonReader) readThroughHead(ctx context.Context, result model.CheckResult) {
+func (c *comparisonReader) readThroughHeads(ctx context.Context, repo string, results []model.CheckResult) {
 	if c.server.deps.GitHub == nil {
 		return
 	}
-	repo, readable := c.readThroughRepository(ctx, result)
-	if !readable {
-		return
-	}
 	now := c.server.resultsNow()
+	var asking []string
+	for _, result := range results {
+		if c.readOnly {
+			// A read-only caller takes no claim: it asks nothing where a writer's claim or settle
+			// stands, as a writer's read whose claim is refused asks nothing, and a read of that
+			// claim that fails asks nothing either, as a writer's claim that fails grants nothing.
+			refused, err := c.server.commitPulls.RefusesAcrossProcesses(ctx, c.server.deps.Store.Pool, repo, result.CommitSHA, now)
+			if err != nil {
+				slog.Info("dispatch: the claim of a read of a result's commit was not read, so the read asks GitHub nothing",
+					"repo", repo, "commit", result.CommitSHA, "error", err)
+				continue
+			}
+			if refused {
+				continue
+			}
+			asking = append(asking, result.CommitSHA)
+			continue
+		}
+		claimed, err := c.server.commitPulls.ClaimAcrossProcesses(ctx, c.server.deps.Store.Pool, repo, result.CommitSHA, now)
+		if err != nil {
+			slog.Info("dispatch: the claim of a read of a result's commit was not taken, so the read asks GitHub nothing",
+				"repo", repo, "commit", result.CommitSHA, "error", err)
+			continue
+		}
+		if claimed {
+			asking = append(asking, result.CommitSHA)
+		}
+	}
+	if len(asking) == 0 {
+		return
+	}
+	var reads map[string]delivery.CommitPullsRead
+	var err error
 	if c.readOnly {
-		c.answerCommitPulls(ctx, repo, result.CommitSHA, now)
-		return
+		reads, err = c.server.deps.Attributor.AnswerCommitsPulls(
+			ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, &c.answers, repo, asking, now)
+	} else {
+		reads, err = c.server.deps.Attributor.ReadThroughCommitsPulls(
+			ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, repo, asking, now)
 	}
-	claimed, err := c.server.commitPulls.ClaimAcrossProcesses(ctx, c.server.deps.Store.Pool, repo, result.CommitSHA, now)
-	if err != nil {
-		slog.Info("dispatch: the claim of a read of a result's commit was not taken, so the read asks GitHub nothing",
-			"repo", repo, "commit", result.CommitSHA, "error", err)
-		return
-	}
-	if !claimed {
-		return
-	}
-	written, atHead, err := c.server.deps.Attributor.ReadThroughCommitPulls(
-		ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, repo, result.CommitSHA, now)
 	if err != nil {
 		slog.Info("dispatch: GitHub named no pull request for a result's commit",
-			"repo", repo, "commit", result.CommitSHA, "error", err)
-		if errors.Is(err, delivery.ErrReadThroughNotStored) {
-			// Nothing was stored, so the claim protects no GitHub answer: give it back, so the
-			// next read asks again at once rather than CommitPullReadStaleAfter later.
-			if err := c.server.commitPulls.ReleaseAcrossProcesses(ctx, c.server.deps.Store.Pool, repo, result.CommitSHA, now); err != nil {
-				slog.Info("dispatch: the claim of a read that stored nothing was not given back, so the next read waits it out",
-					"repo", repo, "commit", result.CommitSHA, "error", err)
-			}
-		}
-		return
+			"repo", repo, "commits", len(asking), "answered", len(reads), "error", err)
 	}
-	if written > 0 && !atHead {
-		if err := c.server.commitPulls.SettleAcrossProcesses(ctx, c.server.deps.Store.Pool, repo, result.CommitSHA, now); err != nil {
-			slog.Info("dispatch: the settle of a read of a result's commit was not recorded, so a later read asks GitHub again",
-				"repo", repo, "commit", result.CommitSHA, "error", err)
+	for _, sha := range asking {
+		read, answered := reads[sha]
+		switch {
+		case !answered && errors.Is(err, delivery.ErrReadThroughNotStored):
+			if c.readOnly {
+				continue
+			}
+			// Nothing was stored for this commit, so its claim protects no GitHub answer: give it
+			// back, so the next read asks again at once rather than CommitPullReadStaleAfter later.
+			if err := c.server.commitPulls.ReleaseAcrossProcesses(ctx, c.server.deps.Store.Pool, repo, sha, now); err != nil {
+				slog.Info("dispatch: the claim of a read that stored nothing was not given back, so the next read waits it out",
+					"repo", repo, "commit", sha, "error", err)
+			}
+		case answered && read.Written > 0 && !read.AtHead && !c.readOnly:
+			if err := c.server.commitPulls.SettleAcrossProcesses(ctx, c.server.deps.Store.Pool, repo, sha, now); err != nil {
+				slog.Info("dispatch: the settle of a read of a result's commit was not recorded, so a later read asks GitHub again",
+					"repo", repo, "commit", sha, "error", err)
+			}
 		}
 	}
 }

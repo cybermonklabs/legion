@@ -566,23 +566,26 @@ func (c *comparisonReader) nothingReason(ctx context.Context, issueKey string) s
 // learn (comparedWith, notKnownOf), so each holds every row that this read's read-throughs wrote,
 // and the same answer names a pull request it learned (review 18, note 3).
 //
-// readThroughsPerRead bounds what one read spends: learn reads commits through one call after
-// another, so an issue whose results stand at scores of commits no stored head names would pay a
-// GitHub round trip for each of them before the first check is answered — a production read of
-// an issue with many such results took longer than two minutes, where the same read with ?at=,
-// which reads nothing through, took 8.3 s
-// (dispatch://INFRA-3992/comment/56fe3d7a-64af-456c-bff5-cd1c977c6bc0). Past the bound the read
-// answers each remaining result from the stored rows, exactly as a read that learned nothing
-// about it does, and the next read reads more of them: each commit this read learned is claimed
-// (delivery.CommitPullReads) and each one it left is not, so the reads walk the commits rather
-// than one read paying for all of them. The Verification tab refetches on every result.recorded,
-// and a reader's own refresh is another read.
-const readThroughsPerRead = 12
-
+// It asks GitHub once for each repository, not once for each commit: the commits of one read that
+// no stored head names are read through together (delivery.ReadThroughCommitsPulls, and
+// AnswerCommitsPulls for a read-only caller), so an issue whose results stand at scores of such
+// commits costs one question rather than one for each. Before the bound this read spent one GitHub
+// round trip per commit in turn, and a production read of an issue with many such results took
+// longer than two minutes, where the same read with ?at=, which reads nothing through, took 8.3 s.
+// A bound on how many commits one read may learn was built for that and dropped: a read that
+// stopped short answered a check's pass_stands `no` where a read that reached the pass answered
+// `yes` (A/results_read_through_bound_test.go), which is a false verdict and not a slower one.
+//
+// Each commit is claimed before the question and settled after it exactly as the read of one
+// commit claims and settles (readThroughHead): a commit another process or an earlier read of
+// this process claimed is left out of the question, a commit whose answer named a pull request
+// headed elsewhere is settled, and a read that stored nothing gives its claims back.
 func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock) {
 	if c.at != noCommitNamed {
 		return
 	}
+	byRepository := map[string][]model.CheckResult{}
+	var repositories []string
 	for _, check := range checks {
 		if check.When != docs.CheckWhenBeforeMerge {
 			continue
@@ -592,12 +595,19 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 			if _, asked := c.readThroughs[key]; asked {
 				continue
 			}
-			if len(c.readThroughs) >= readThroughsPerRead {
-				return
-			}
 			c.readThroughs[key] = struct{}{}
-			c.readThroughHead(ctx, result)
+			repo, readable := c.readThroughRepository(ctx, result)
+			if !readable {
+				continue
+			}
+			if _, held := byRepository[repo]; !held {
+				repositories = append(repositories, repo)
+			}
+			byRepository[repo] = append(byRepository[repo], result)
 		}
+	}
+	for _, repo := range repositories {
+		c.readThroughHeads(ctx, repo, byRepository[repo])
 	}
 }
 
