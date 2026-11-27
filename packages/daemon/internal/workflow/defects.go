@@ -14,6 +14,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
+// maxOpenDefects is the most open reported defects an issue holds (record.DefectKindDefect): each
+// is rendered whole into close-wait.md, which Dispatch holds to a megabyte, and carried by the
+// next change, so a role that finds more has found work the change must be planned for, which its
+// owner asks for in a person's request rather than one defect at a time.
+const maxOpenDefects = 20
+
 // defectReport applies a role's report_defect (intake.DefectReport, D8 of
 // dispatch://INFRA-5580/artifact/plan-md). It is refused, recording nothing, for an issue the
 // record does not hold (ISSUE_NOT_FOUND), in a tree that lingers (TREE_LINGERING), after the

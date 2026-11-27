@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -502,6 +503,35 @@ func TestADefectReportedInTheRetroStartsNothingBeforeTheMerge(t *testing.T) {
 	rig.started(waitRoot, changeGeneration, 1)
 	if rows := rig.defectRows(waitRoot); len(rows) != 1 || rows[0].kind != record.DefectKindDefect || rows[0].carriedBy != changeGeneration {
 		t.Fatalf("the reasons of %s = %+v, want the reported defect, carried by %d", waitRoot, rows, changeGeneration)
+	}
+}
+
+// An issue holds at most maxOpenDefects open reported defects. The report past them is refused
+// 409 DEFECT_LIMIT_REACHED and records nothing, since each open defect is rendered whole into
+// close-wait.md and carried by the next change, and no bound let a role grow both without end.
+// The control is a report whose text is a standing defect's, which is that defect and is answered
+// so at the limit, recording nothing.
+func TestAnIssueHoldsAtMostItsLimitOfOpenDefects(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, "")
+	rig.seedRoot(phase.Retro, "retro")
+	seedPhase(t, rig.pool, record.PhaseRow{Issue: waitRoot, Role: claim.RoleImplementer, Claim: "implementer-claim"})
+	report := func(text string) intake.Result {
+		return rig.fact(intake.DefectReport{Issue: waitRoot, Role: claim.RoleImplementer, By: "implementer-claim", Text: text, Head: headOne})
+	}
+	for n := 1; n <= maxOpenDefects; n++ {
+		if result := report(fmt.Sprintf("Defect number %d.", n)); result.Refusal != nil || result.Defect == nil {
+			t.Fatalf("report %d = %+v, want it recorded below the limit", n, result)
+		}
+	}
+	if result := report("One defect too many."); result.Refusal == nil || result.Refusal.Code != "DEFECT_LIMIT_REACHED" || result.Refusal.Status != 409 {
+		t.Fatalf("the report past the limit = %+v, want it refused 409 DEFECT_LIMIT_REACHED", result)
+	}
+	if rows := rig.defectRows(waitRoot); len(rows) != maxOpenDefects {
+		t.Fatalf("the issue holds %d defects after the refusal, want %d: the refusal records nothing", len(rows), maxOpenDefects)
+	}
+	if result := report("Defect number 1."); result.Refusal != nil || result.Defect == nil || result.Defect.State != intake.DefectSame {
+		t.Fatalf("a report of a standing defect at the limit = %+v, want it answered as that defect", result)
 	}
 }
 
