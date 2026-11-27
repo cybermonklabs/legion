@@ -8,6 +8,7 @@
  */
 import type { MessageRead } from "../../../api/types";
 import { isDaemon } from "../../dashboard/useWaitingItems";
+import { agentsOnlyIds } from "../agents-only";
 import type { ThreadChoice } from "./ThreadChoices";
 import { type ThreadRecord, threadRecords } from "./thread-records";
 
@@ -30,10 +31,11 @@ export function recordChoice(record: ThreadRecord, project: string): ThreadChoic
  * The record `/messages/<id>` opens in Threads, with the message `id` focused (R12, decision 501
  * (7)), or undefined where the message opens as on `main`. A message opens in the view that draws
  * it, and in Threads only where no view draws it. On this part's base the outline leaves out every
- * thread that only agents wrote in (`agents-only.ts`), and no other view draws a message, so a
- * message of a thread between agents and one of an agent's note open in Threads. A message of a
- * thread a person wrote in is the outline's, and one of a thread the Legion daemon began opens
- * where `main` opens it, so neither opens here.
+ * thread that only agents wrote in (`agents-only.ts`'s `agentsOnlyIds`, which this reads too, so
+ * the two agree), and no other view draws a message, so a message of a thread between agents and
+ * one of an agent's note open in Threads. A message of a thread a person wrote in is the
+ * outline's, and one of a thread the Legion daemon began opens where `main` opens it, so neither
+ * opens here.
  *
  * `messages` is the issue's conversation as the outline reads it, each root with its replies,
  * undefined while that read is out.
@@ -47,9 +49,7 @@ export function messageRecord(
     ({ message, replies }) => message.id === id || (replies ?? []).some((reply) => reply.id === id)
   );
   if (thread === undefined || isDaemon(thread.message.author, project)) return undefined;
-  if ([thread.message, ...(thread.replies ?? [])].some((turn) => turn.author.kind === "user")) {
-    return undefined;
-  }
+  if (!agentsOnlyIds(undefined, [thread], undefined).has(id)) return undefined;
   return threadRecords(thread).find(
     (record) =>
       record.root.id === id || record.replies.some((reply: { id: string }) => reply.id === id)
