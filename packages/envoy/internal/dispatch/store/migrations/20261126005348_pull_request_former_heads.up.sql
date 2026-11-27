@@ -220,12 +220,16 @@
 -- pull request closed when the install runs or reopened since, in the order of their times
 -- (below), which it reads from Dispatch's record of each write that opened or closed a row
 -- (pull_request_heads_lifecycle); the migration after this one drops that record, which nothing
--- reads once this one has. So a reopen, whose start leaves the issue's whole population, never
--- brings back a result of the lifecycle its close ended, however healthy the read that would
--- confirm it, and neither does a reopen before the install, which finds the pull request open;
--- while a result recorded after the install, or before it since a close Dispatch recorded, while
--- the pull request was closed included, is a candidate of the new lifecycle; and a head the
--- reopened pull request truly visits is its former head by its own record.
+-- reads once this one has. So a reopen, whose start leaves the issue's whole population, makes no
+-- result of the lifecycle its close ended a candidate, however healthy the read that would confirm
+-- it, and neither does a reopen before the install, which finds the pull request open; while a
+-- result recorded after the install, or before it since a close Dispatch recorded, while the pull
+-- request was closed included, is a candidate of the new lifecycle; and a head the reopened pull
+-- request truly visits is its former head by its own record. The rule covers candidate commits
+-- alone. A head the reopened pull request stands at is never a candidate, since leave takes no
+-- commit an open row of the pull request stands at, and its state reads every result recorded at
+-- that commit (api/results_pass_stands.go, subjectState); so a pull request reopened with no push
+-- keeps the results of the head it closed at, a pass from before the close among them.
 -- A head an open pull request left since this release has its row once applied, verified, so a
 -- result there leaves nothing to read. They draw from one population through those functions, so
 -- they cannot drift apart. A result and a row's start written at once in two transactions are
@@ -924,7 +928,8 @@ create trigger pull_request_former_heads_of_ci_check_results after insert on ci_
 -- pull request's last lifecycle before it, in the order of Dispatch's own times, since no record
 -- of this migration's tables orders them. Without an end before the install, a pull request that
 -- reopens after it, or that reopened before it, would take the results recorded before that end
--- as its own, a pass from before the close among them, which the close forbids.
+-- as candidates of its own, a pass from before the close among them. Like every end, it covers
+-- candidate commits alone: a head the reopened pull request stands at keeps its results (above).
 --
 -- The end is where the pull request's last closed period began, as Dispatch's record of each
 -- write that opened or closed a row of it shows (pull_request_heads_lifecycle, migration
@@ -953,10 +958,11 @@ create trigger pull_request_former_heads_of_ci_check_results after insert on ci_
 -- the install finds; so does the end of a pull request closed now whose last recorded write opened
 -- a row, whose close is in no record, and of one closed now the record holds nothing of, which only
 -- a rename learned since that migration makes. Taken the other way, a result from before the close
--- could carry its pass across the reopen, which is the defect the close exists to prevent. The
--- cost is liveness alone: the head such a result was recorded at gets no state, and Legion waits
--- there until a tester records again at a head it tests. A result recorded after the install is
--- placed after the end all the same.
+-- could carry its pass across the reopen as a candidate, to a head the pull request had left. The
+-- cost is liveness alone: a former head such a result was recorded at gets no state, and Legion
+-- waits there until a tester records again at a head it tests; the head the reopened pull request
+-- stands at keeps its results. A result recorded after the install is placed after the end all the
+-- same.
 --
 -- The times are of one clock, the database's: each result's at the time Dispatch recorded it
 -- (created_at), each write's at the time the record took it. A result goes first where the two
