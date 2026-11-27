@@ -77,6 +77,25 @@ const repoRenameLockNamespace int32 = 0x524E414D
 // that waits longer fails and is logged, and the next boot writes it.
 const repoRenameLockTimeout = `set local lock_timeout = '5s'`
 
+// deliverySettingsLock is the lock each line that writes project_delivery_settings or
+// project_deploy_sources takes first (repoRenameLine.lock): both tables' own locks in share row
+// exclusive mode, project_delivery_settings first, the order every other writer of both takes
+// them in. Those tables' change triggers take the change log's lock (6900, 0, delivery's
+// lockChangesStatement), so a line takes it in the trigger of each statement that writes a logged
+// column, and then locks more rows in its later statements. A settings save
+// (delivery.PutProjectSettings) does the same: it takes the change log's lock in the trigger of its
+// first write that moves a logged column, and holds it while it deletes and writes the project's
+// sources. Without this lock, a line beside a save holds a source row and waits for the change
+// log's lock, and the save holds that lock and waits for the row: a deadlock (40P01). Each save
+// writes its settings row first, a save that changes only the sources too, so it holds
+// project_delivery_settings' row exclusive lock before it takes the change log's lock or locks a
+// source row. So the line waits for each running save, and holds no lock the save waits for; a save
+// that begins its first write after the line takes the lock waits for the line, and holds no row
+// and no change log's lock while it waits. The bookkeeping writes of a source
+// (delivery.RecordEventAt, RecordReconcileSuccess, RecordReconcileError) are one statement each and
+// take no change log's lock, so they and the line take turns. Reads go on beside the line.
+const deliverySettingsLock = `lock table project_delivery_settings, project_deploy_sources in share row exclusive mode`
+
 // repoRenamesLeftTimeout bounds each count of the rows left on an old name, the one before the
 // lines and the one after them. The count has a bound of its own, which the end of the pass's
 // bound does not end, so a pass whose lines ran out of time still says how much they left. The
@@ -786,8 +805,11 @@ var repoRenameLines = []repoRenameLine{
 	{
 		// A github_workflow source that names no repository reads its project's default
 		// repository, so the new name can make such a source read a repository another source
-		// reads already, which is deleted first (sharedSources).
+		// reads already, which is deleted first (sharedSources). That delete writes
+		// project_deploy_sources, so the line takes the settings tables' lock first
+		// (deliverySettingsLock).
 		fields: "projects.default_repo",
+		lock:   deliverySettingsLock,
 		steps: func(r repoRename) []repoRenameStep {
 			return []repoRenameStep{
 				sharedSources(r,
@@ -1054,8 +1076,9 @@ var repoRenameLines = []repoRenameLine{
 		// source of its project reads through the default repository, or a source of another
 		// delivery-on project reads, where its own project has delivery on (sharedSources). A
 		// source that names none reads its project's default repository, which the projects line
-		// writes.
+		// writes. The line takes the settings tables' lock first (deliverySettingsLock).
 		fields: "project_deploy_sources.repo",
+		lock:   deliverySettingsLock,
 		steps: func(r repoRename) []repoRenameStep {
 			return []repoRenameStep{
 				collisions(r, "project_deploy_sources", "project_key"),
@@ -1065,7 +1088,9 @@ var repoRenameLines = []repoRenameLine{
 		},
 	},
 	{
+		// The line takes the settings tables' lock first (deliverySettingsLock).
 		fields: "project_delivery_settings.excluded_repos",
+		lock:   deliverySettingsLock,
 		steps: func(r repoRename) []repoRenameStep {
 			return []repoRenameStep{projectSettingsExcludedWrite(r)}
 		},

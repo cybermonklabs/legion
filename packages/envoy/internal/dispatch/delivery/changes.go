@@ -196,9 +196,17 @@ const ChangesChannel = "delivery_changes"
 //     the run row and every job in one statement.
 //   - In the triggers of its first statement that moves a logged column, then held through its
 //     later statements and its commit: a project's settings save (PutProjectSettings), which
-//     writes project_delivery_settings, then the project's project_deploy_sources rows, then
-//     deletes their repositories' reconcile progress, under the project's lock and its
-//     repositories' (LockProject, LockRepositories), both taken before any of those writes.
+//     writes project_delivery_settings on every save, then the project's project_deploy_sources
+//     rows, then deletes their repositories' reconcile progress, under the project's lock and its
+//     repositories' (LockProject, LockRepositories), both taken before any of those writes; and
+//     each line of the boot's rename pass that writes either table (store's repoRenameLines),
+//     which locks rows of every project in several statements. Two saves of one project take turns
+//     on the project's lock, two that read one repository on that repository's lock, and any other
+//     two lock none of each other's rows. A line beside a save would hold a row the save waits for
+//     while it waits for the lock the save holds, so the line takes both tables' own locks first,
+//     before any row lock, in share row exclusive mode (store's deliverySettingsLock): it waits for
+//     each running save, which holds project_delivery_settings' row exclusive lock from its first
+//     write on, and a later save waits for the line before that write.
 //   - Last, in the statement that ends its transaction: the issue.deployed write
 //     (recordDeployedEvent), which appends the event and then marks its pull request's row, in
 //     the update that locks the row.
