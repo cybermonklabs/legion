@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 )
 
@@ -33,7 +34,7 @@ func (h *harness) paceOnTheTestClock() *advancingPaceClock {
 	h.t.Helper()
 	h.boundByTheTest()
 	c := &advancingPaceClock{Fake: h.bound}
-	h.reconciler.pacingClock = c
+	h.reconciler.passClock = checkedPassClock{Clock: c, h: h}
 	h.github.now = c.Now
 	h.github.queryWait = c.Advance
 	return c
@@ -52,4 +53,17 @@ func (h *harness) requireWaits(c *advancingPaceClock, want ...time.Duration) {
 	if got := c.takeWaits(); !slices.Equal(got, want) {
 		h.t.Fatalf("the production pacing waits are %v, want exactly %v", got, want)
 	}
+}
+
+// expiredPassClock ends each deadline as production arms it, so a test can exercise a pass
+// whose bound is already spent without racing a one-nanosecond wall-clock timeout.
+type expiredPassClock struct {
+	clock.Clock
+	advance func(time.Duration)
+}
+
+func (c expiredPassClock) WithTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	bounded, cancel := c.Clock.WithTimeout(ctx, timeout)
+	c.advance(timeout)
+	return bounded, cancel
 }

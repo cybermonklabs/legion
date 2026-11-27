@@ -116,35 +116,14 @@ func (r *Reconciler) pace(ctx context.Context, c *counts) {
 	r.waitForPace(ctx, c.pace)
 }
 
-// pacingClock is the part of clock.Clock used by request pacing.
-type pacingClock interface {
-	Now() time.Time
-	Sleep(context.Context, time.Duration) error
-}
-
 func (r *Reconciler) pacingNow() time.Time {
-	if r.pacingClock != nil {
-		return r.pacingClock.Now()
-	}
-	return time.Now()
+	return r.deadlineClock().Now()
 }
 
 func (r *Reconciler) pacingSince(started time.Time) time.Duration {
-	if r.pacingClock != nil {
-		return r.pacingClock.Now().Sub(started)
-	}
-	return time.Since(started)
+	return r.deadlineClock().Now().Sub(started)
 }
 
 func (r *Reconciler) waitForPace(ctx context.Context, wait time.Duration) {
-	if r.pacingClock != nil {
-		_ = r.pacingClock.Sleep(ctx, wait)
-		return
-	}
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-	case <-timer.C:
-	}
+	_ = r.deadlineClock().Sleep(ctx, wait)
 }

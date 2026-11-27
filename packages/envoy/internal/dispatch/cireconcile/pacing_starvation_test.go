@@ -149,7 +149,7 @@ func TestThePassAfterOneThatReachedNoHeadKeepsAShorterConfiguredPace(t *testing.
 	const configured = 50 * time.Millisecond
 	h.reconciler.Pace = configured
 	starveFirstPass(t, h)
-	h.requireWaits(clock, 100*time.Millisecond) // Before any page count is known, the floor applies.
+	h.requireWaits(clock, 50*time.Millisecond)
 
 	h.pass()
 	h.requireWaits(clock, 50*time.Millisecond, 50*time.Millisecond, 50*time.Millisecond, 50*time.Millisecond)
@@ -270,7 +270,7 @@ func TestALimitGitHubAnswersAsTheBoundFallsLeavesThePaceAsItWas(t *testing.T) {
 	readBothHeads(t, h, clock)
 
 	h.reconciler.GitHub = h.github.client(&boundRecordLimits{
-		Limits: ratelimit.New(h.pool), falls: h.endBound, refuse: context.DeadlineExceeded,
+		Limits: ratelimit.New(h.pool), t: t, falls: h.endBound, refuse: context.DeadlineExceeded,
 	})
 	h.github.rateLimitNext(runsOf(head(7)))
 	h.reconciler.PassTimeout = 4 * time.Second
@@ -311,12 +311,8 @@ func TestABoundThatEndsAPassBeforeItReadsGitHubSetsTheFloor(t *testing.T) {
 	// sent -- the shared limits', which the pass reads first, and the covered repositories' -- so
 	// no request reaches GitHub and the walk counts no cut.
 	h.reconciler.PassTimeout = time.Nanosecond
-	bound := h.reconciler.bound
-	h.reconciler.bound = func(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-		bounded, cancel := bound(ctx, timeout)
-		clock.Advance(timeout)
-		return bounded, cancel
-	}
+	passClock := h.reconciler.passClock
+	h.reconciler.passClock = expiredPassClock{Clock: passClock, advance: clock.Advance}
 	sentBefore := h.github.count()
 	h.pass()
 	h.requireWaits(clock)
@@ -325,7 +321,7 @@ func TestABoundThatEndsAPassBeforeItReadsGitHubSetsTheFloor(t *testing.T) {
 			line["heads"], line["deadline_reached"], h.github.count()-sentBefore, line)
 	}
 	h.reconciler.PassTimeout = 5 * time.Second
-	h.reconciler.bound = bound
+	h.reconciler.passClock = passClock
 
 	h.pass()
 	h.requireWaits(clock, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond)

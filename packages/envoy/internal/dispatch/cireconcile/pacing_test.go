@@ -542,11 +542,11 @@ func TestARateLimitLeavesTheCursorAtTheHeadItCutShort(t *testing.T) {
 // context; the write is given whatever context the client chose for it.
 type boundRecordLimits struct {
 	githubapp.Limits
-	t *testing.T
-	falls func()
+	t      *testing.T
+	falls  func()
 	refuse error
-	mu sync.Mutex
-	pass context.Context
+	mu     sync.Mutex
+	pass   context.Context
 }
 
 func (l *boundRecordLimits) Wait(ctx context.Context, scope string) (time.Duration, time.Time, error) {
