@@ -1656,14 +1656,17 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 	//
 	// A stored claim of another slot whose role names no App (namesApp: a role the deployment no
 	// longer defines, such as a keyed agent's claim held at a step of the dropped checker) does not
-	// hold its slot here: it can never start, since its launch asks the App of that role before any
-	// child starts and is refused (this build for the launching claim, writeLaunchCredential in a
-	// pod a launch keeps), so no process of that role ever reads the slot's files. The slot is built
-	// as one no claim runs in: a role's slot holds its own name's App, and an agent's slot that of
-	// its agent's first step, which names an App (agentSlots). Without that, the one claim would fail
-	// the build of every pod of its issue, whichever claim the launch was for. The launching claim's
-	// own slot is never built so: a launch of a role that names no App is refused here, naming the
-	// role, and never runs as its slot's other App.
+	// hold its slot here: it can never start, so no process of that role ever reads the slot's
+	// files. Its launch is refused before any child starts, on one of four paths: in a new pod, by
+	// this build (the launching claim's own slot, below); in a pod a launch keeps, by the pod's lack
+	// of that role where the pod was built after the role was dropped (runtime.PodLacks), and in one
+	// built with it by slotAppChanges for a launcher that waits for no start's credential, or by
+	// writeLaunchCredential for one that does, both asking the App of the launch's role. The slot is
+	// built as one no claim runs in: a role's slot holds its own name's App, and an agent's slot
+	// that of its agent's first step, which names an App (agentSlots). Without that, the one claim
+	// would fail the build of every pod of its issue, whichever claim the launch was for. The
+	// launching claim's own slot is never built so: a launch of a role that names no App is refused
+	// here, naming the role, and never runs as its slot's other App.
 	holders, err := r.slotHolders(ctx)
 	if err != nil {
 		r.log.Warn("sandbox runtime: a pod's build cannot read the stored claims; its other slots hold their own names' Apps until their launches",

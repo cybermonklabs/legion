@@ -221,9 +221,10 @@ func (r *Runtime) issueSlots(ctx context.Context, l *launch) {
 // An agent whose first step's role names no App — a role the deployment no longer defines, such as
 // the agent `checker` of a plan made while the deployment defined the checker — gets no slot: no
 // App is there to write into it before a claim of the agent runs (gitHubBundles), and a build that
-// asked for one would fail the whole launch, whichever claim it was for. Nothing of that agent can
-// start meanwhile: a task that names such a role is stopped, and a launch of its role is refused
-// (gitHubBundles, writeLaunchCredential). The pod's build (issueSlots) and the update sweep
+// asked for one would fail the whole launch, whichever claim it was for. A task that names such a
+// role is stopped, and a launch of that role is refused before any child starts, on each of the
+// four paths gitHubBundles names; a claim of the agent launched in a role that names an App gets
+// its own slot all the same (issueSlots). The pod's build (issueSlots) and the update sweep
 // (slotsDrift) both take their slots from here, so a pod built without such a slot does not drift
 // for it, and once its role names an App again the sweep reads the slot as one the pod lacks.
 func (r *Runtime) agentSlots(roles []claim.Role, agents map[claim.Agent]claim.Role) []claim.Role {
