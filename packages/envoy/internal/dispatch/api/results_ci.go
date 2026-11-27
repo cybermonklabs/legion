@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -88,9 +89,13 @@ const ciUnreadDetailRunes = ciObservedOutputRunes
 // The cases that name why a check CI proves holds no derived result, beside the conclusions GitHub
 // writes. A conclusion is its own case: success is a pass; neutral, skipped and cancelled prove
 // nothing; failure, timed_out, action_required, startup_failure and stale are a fail, and so is
-// a conclusion this list does not name, as GitHub wrote it.
+// a conclusion this list does not name, whose case is failure and whose detail names the
+// conclusion as GitHub wrote it (ciAnswerOf). So every case is one of contracts.CheckCICasesEnded
+// and contracts.CheckCICasesNotEnded, the closed list check.state_changed's ci_case is published
+// from, which TestEveryCICaseIsOneOfContractsCases holds these constants to.
 const (
 	ciConclusionSuccess   = "success"
+	ciConclusionFailure   = "failure"
 	ciConclusionNeutral   = "neutral"
 	ciConclusionSkipped   = "skipped"
 	ciConclusionCancelled = "cancelled"
@@ -701,9 +706,15 @@ func ciAnswerOf(check model.CheckBlock, name string, head delivery.NewestHead, r
 			fmt.Sprintf("CI run %s concluded %s at %s, and its job recorded its own result of %s there: the conclusion of the whole job decides no check its job records.",
 				run.name, run.conclusion, at, check.BlockID), words), nil
 	}
-	verdict := model.CIStateFail
-	if run.conclusion == ciConclusionSuccess {
+	// A conclusion GitHub wrote that the closed list does not name (contracts.CheckCICasesEnded)
+	// is a fail, published as the case failure; the detail and the derived result's observed text
+	// keep the conclusion as GitHub wrote it.
+	verdict, ciCase := model.CIStateFail, run.conclusion
+	switch {
+	case run.conclusion == ciConclusionSuccess:
 		verdict = model.CIStatePass
+	case run.conclusion == ciCaseJobRecorded || !slices.Contains(contracts.CheckCICasesEnded, run.conclusion):
+		ciCase = ciConclusionFailure
 	}
 	result := model.CheckResult{
 		ID:       ciResultIDPrefix + strconv.FormatInt(run.id, 10),
@@ -716,7 +727,7 @@ func ciAnswerOf(check model.CheckBlock, name string, head delivery.NewestHead, r
 		CreatedAt: run.completedAt,
 	}
 	answer := &model.CheckCI{
-		Run: run.name, State: verdict, Case: run.conclusion,
+		Run: run.name, State: verdict, Case: ciCase,
 		Detail: fmt.Sprintf("CI run %s concluded %s at %s.", run.name, run.conclusion, at),
 		Line:   ciVerdictLine(check, name, verdict, head.HeadSHA, words),
 		Commit: head.HeadSHA, Repo: head.Repo, Result: result.ID,

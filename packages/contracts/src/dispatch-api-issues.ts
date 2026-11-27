@@ -369,6 +369,40 @@ export type CheckResultRetractedEventPayload = z.output<
   typeof CheckResultRetractedEventPayloadSchema
 >;
 
+/** The cases a `check.state_changed` of a check a CI job runs names in `ci_case` where its job
+ *  ended at the head: a conclusion GitHub wrote (`success` is a pass; `neutral`, `skipped` and
+ *  `cancelled` prove nothing; the rest fail, and Dispatch names a conclusion outside this list
+ *  `failure`), or `job_recorded`, a run beside which the job recorded a result of its own for the
+ *  check. Generated into Go as `contracts.CheckCICasesEnded`, which Dispatch writes the case from
+ *  and the Legion daemon reads it by, through `github.com/sjawhar/envoy/cicase`. */
+export const CHECK_CI_CASES_ENDED = [
+  "success",
+  "failure",
+  "timed_out",
+  "action_required",
+  "startup_failure",
+  "stale",
+  "neutral",
+  "skipped",
+  "cancelled",
+  "job_recorded",
+] as const;
+
+/** The cases of such a check whose job has not ended at the head, or whose end Dispatch could not
+ *  read: its run has not concluded, no run of its name is on the head, Dispatch holds no head to
+ *  read at, GitHub did not answer, a result of the job named no repository Dispatch could resolve,
+ *  or the read had not started when its batch's bound ended. Generated into Go as
+ *  `contracts.CheckCICasesNotEnded`: the Legion daemon waits on each of them, and tells no
+ *  implementer of a failure there. */
+export const CHECK_CI_CASES_NOT_ENDED = [
+  "not_completed",
+  "absent",
+  "no_head",
+  "github_unreadable",
+  "read_failed",
+  "not_started",
+] as const;
+
 /** `check.state_changed`: the state of one `before_merge` check at one head, appended on the
  *  **check's** issue by the system actor `dispatch-check-states` each time that state changes. The
  *  head is open, or one an open pull request has left (a former head, which keeps its states while
@@ -379,8 +413,9 @@ export type CheckResultRetractedEventPayload = z.output<
  *  with no check, a check removed). `check_artifact_id` is null where the issue has no
  *  Verification document. `reason` is why a state is not yes, and empty for yes; `roles` the
  *  roles whose pass counts there; `results` the ids of the results that decide the state;
- *  `ci_case` the `ci.case` of a check CI proves, empty for every other check; and `serial` counts
- *  the issue's `check.state_changed` events from 1, one counter across all its heads.
+ *  `ci_case` the `ci.case` of a check CI proves, one of `CHECK_CI_CASES_ENDED` and
+ *  `CHECK_CI_CASES_NOT_ENDED`, and empty for every other check; and `serial` counts the issue's
+ *  `check.state_changed` events from 1, one counter across all its heads.
  *  `fixtures/dispatch-events/check-state-changed.json` holds both forms as Go writes them. */
 export const CheckStateChangedEventPayloadSchema = z
   .strictObject({
@@ -396,7 +431,7 @@ export const CheckStateChangedEventPayloadSchema = z
     reason: z.enum(["", "fail", "no_result", "pass_and_fail", "read_failed"]),
     roles: z.array(z.string()),
     results: z.array(z.string()),
-    ci_case: z.string(),
+    ci_case: z.enum(["", ...CHECK_CI_CASES_ENDED, ...CHECK_CI_CASES_NOT_ENDED]),
     serial: z.number().int(),
   })
   .readonly();

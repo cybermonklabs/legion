@@ -16,10 +16,11 @@ import (
 // head, whatever roles its results came from. A check of the head's set with no state waits, since
 // it has no state it ends at, and its kind is not known until its first state. Leaving out the
 // checks a CI job runs, as the testing move does, a check whose state names its CI job's case is no
-// part of the judgement, whatever that state is: k3 here. Reading every check, a CI run still going
-// with no result waits too. Every other state is conclusive, and one that is not yes fails and is
-// named with why, a state Dispatch could not read among them. A state of a check outside the set is
-// no part of the judgement, and no set held is no judgement at all.
+// part of the judgement, whatever that state is: k3 here. Reading every check, a CI job that has
+// not ended at the head, or whose end Dispatch could not read, waits too while its state names no
+// result. Every other state is conclusive, and one that is not yes fails and is named with why, a
+// state Dispatch could not read of a check no CI job runs among them. A state of a check outside
+// the set is no part of the judgement, and no set held is no judgement at all.
 func TestJudgeStates(t *testing.T) {
 	state := func(check, answer, reason, ciCase string, roles ...string) record.CheckState {
 		return record.CheckState{Check: check, State: answer, Reason: reason, CICase: ciCase, Roles: roles}

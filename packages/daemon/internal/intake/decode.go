@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/cicase"
 	"github.com/sjawhar/envoy/subjectforms"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -606,9 +607,10 @@ var commitHead = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // decodeCheckState decodes a check.state_changed of the issue it is appended on (Dispatch's
 // model.CheckStateChangedEventPayload) into the fact the workflow moves a tested issue by. The
 // workflow cannot place or judge a payload of another issue, with no repository, a head that is
-// no full commit id, a state outside `yes`, `no` and `unknown`, a check with no state or a state of
-// no check, or no serial, so each is an error and the consumer terminates the event as poison: a
-// fact the workflow cannot read must not pass in silence, as a nil fact would.
+// no full commit id, a state outside `yes`, `no` and `unknown`, a CI case outside the closed list
+// Dispatch publishes (cicase.Known), a check with no state or a state of no check, or no serial, so
+// each is an error and the consumer terminates the event as poison: a fact the workflow cannot read
+// must not pass in silence, as a nil fact would.
 func decodeCheckState(event dispatchEvent) (Fact, error) {
 	var payload struct {
 		Issue        string   `json:"issue"`
@@ -636,6 +638,8 @@ func decodeCheckState(event dispatchEvent) (Fact, error) {
 		return nil, fmt.Errorf("Dispatch check.state_changed payload head %q is not 40 lowercase hex digits", payload.Head)
 	case payload.Serial < 1:
 		return nil, fmt.Errorf("Dispatch check.state_changed payload has no serial from 1 up (serial %d)", payload.Serial)
+	case !cicase.Known(payload.CICase):
+		return nil, fmt.Errorf("Dispatch check.state_changed payload ci_case %q is no case Dispatch publishes", payload.CICase)
 	}
 	fact := DispatchCheckState{Key: event.IssueKey, Mark: event.mark(), Repo: payload.Repo, Head: payload.Head,
 		PullRequests: payload.PullRequests, Checks: payload.Checks, Reason: payload.Reason, Roles: payload.Roles,

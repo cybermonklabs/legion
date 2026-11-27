@@ -7,7 +7,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // checkStateChangedFixturePath is the file the Legion daemon's intake tests and the contracts'
@@ -118,5 +122,17 @@ func TestCheckStateChangedEventPayloadWritesEachListAsAList(t *testing.T) {
 		if string(value) != "[]" {
 			t.Errorf("%s is written %s, want []", list, string(value))
 		}
+	}
+}
+
+// The CI case is a closed list: "" for a check no CI job runs, and each case of
+// contracts.CheckCICasesEnded and contracts.CheckCICasesNotEnded, which @legion/contracts' schema
+// closes `ci_case` to and the Legion daemon reads. The payload's enum tag names exactly that list,
+// in that order, so the struct never names a case the schema or the daemon refuses.
+func TestTheCICaseTagIsContractsList(t *testing.T) {
+	field, _ := reflect.TypeFor[CheckStateChangedEventPayload]().FieldByName("CICase")
+	want := "," + strings.Join(append(append([]string{}, contracts.CheckCICasesEnded...), contracts.CheckCICasesNotEnded...), ",")
+	if got := field.Tag.Get("enum"); got != want {
+		t.Fatalf("CheckStateChangedEventPayload.CICase names the enum %q, want contracts' %q", got, want)
 	}
 }

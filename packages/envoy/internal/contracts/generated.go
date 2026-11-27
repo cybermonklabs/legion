@@ -413,6 +413,34 @@ var DispatchEventTypes = []string{
 	"user_thread_state.updated",
 }
 
+// CheckCICasesEnded and CheckCICasesNotEnded are the cases a check.state_changed of a check a CI
+// job runs names in ci_case: where the job ended at the head, a conclusion GitHub wrote or
+// job_recorded; and where it has not ended, or Dispatch could not read its end. Generated from
+// CHECK_CI_CASES_ENDED and CHECK_CI_CASES_NOT_ENDED in packages/contracts, which the event's schema
+// closes ci_case to: Dispatch writes no other case, and the Legion daemon reads them through
+// github.com/sjawhar/envoy/cicase, so neither side spells a case of its own.
+var CheckCICasesEnded = []string{
+	"success",
+	"failure",
+	"timed_out",
+	"action_required",
+	"startup_failure",
+	"stale",
+	"neutral",
+	"skipped",
+	"cancelled",
+	"job_recorded",
+}
+
+var CheckCICasesNotEnded = []string{
+	"not_completed",
+	"absent",
+	"no_head",
+	"github_unreadable",
+	"read_failed",
+	"not_started",
+}
+
 // DispatchHandoffBodyMax is the longest phase handoff body, in UTF-8 bytes, that
 // POST /api/v1/issues/{key}/handoffs/{phase} accepts. Generated from DISPATCH_HANDOFF_BODY_MAX in
 // packages/contracts so the server's 413 and the `dispatch handoff-write` command's pre-send

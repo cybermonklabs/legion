@@ -618,11 +618,12 @@ func (f DispatchClaim) namedIssue() (string, bool) { return f.Key, true }
 // with no check, a check removed), Check and State are "" and CheckVersion is 0. State is `yes`,
 // `no` or `unknown`; Reason is why it is not yes (`fail`, `no_result`, `pass_and_fail`,
 // `read_failed`), "" for yes; Roles are the roles whose pass counts there; CICase is the `ci.case`
-// of a check CI proves (`not_completed` while its run goes on), "" for every other check. Serial
-// counts the issue's check.state_changed events from 1, one counter across all its heads, and Mark
-// places the event in the issue's Dispatch event log: the store keeps the state of the newest
-// sequence (record.Store.PutCheckState), and the tester's move waits for every serial through its
-// handoff's (record.Store.StatesFenceReached).
+// of a check CI proves (`not_completed` while its run goes on), one of the closed list
+// github.com/sjawhar/envoy/cicase reads, which the decoder holds it to, and "" for every other
+// check. Serial counts the issue's check.state_changed events from 1, one counter across all its
+// heads, and Mark places the event in the issue's Dispatch event log: the store keeps the state of
+// the newest sequence (record.Store.PutCheckState), and the tester's move waits for every serial
+// through its handoff's (record.Store.StatesFenceReached).
 type DispatchCheckState struct {
 	Key          string
 	Mark         record.EventMark

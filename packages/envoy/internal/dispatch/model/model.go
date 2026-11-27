@@ -2270,8 +2270,11 @@ type CheckStateChangedEventPayload struct {
 	Roles           []string `json:"roles"`
 	Results         []string `json:"results"`
 	// CICase is the `ci.case` of a check CI proves at this head ("not_completed" while its run
-	// goes on), "" for every other check.
-	CICase string `json:"ci_case"`
+	// goes on), "" for every other check: one of contracts.CheckCICasesEnded and
+	// contracts.CheckCICasesNotEnded, the list @legion/contracts' schema closes `ci_case` to. A
+	// struct tag cannot name a constant, so the tag spells the list out, and
+	// TestTheCICaseTagIsContractsList holds it to the generated lists.
+	CICase string `json:"ci_case" enum:",success,failure,timed_out,action_required,startup_failure,stale,neutral,skipped,cancelled,job_recorded,not_completed,absent,no_head,github_unreadable,read_failed,not_started"`
 	// Serial counts the issue's check.state_changed events: 1, 2, 3 and on, one counter for the
 	// issue across all its heads.
 	Serial int64 `json:"serial"`

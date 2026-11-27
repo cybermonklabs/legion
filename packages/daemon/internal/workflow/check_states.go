@@ -7,6 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/cicase"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -19,8 +21,8 @@ const (
 	stateYes = "yes"
 	// reasonNoResult is a check with no result at the head.
 	reasonNoResult = "no_result"
-	// ciNotCompleted is the case of a check CI proves whose run at the head has not concluded.
-	ciNotCompleted = "not_completed"
+	// reasonReadFailed is a state Dispatch published because a read it needed failed.
+	reasonReadFailed = "read_failed"
 )
 
 // testingJudgement is what the states the daemon holds at the tested head say of each check of the
@@ -29,8 +31,8 @@ const (
 // it. A judgement with neither passes.
 type testingJudgement struct {
 	// Waiting is each check whose state is not conclusive: one with no state, or, reading every
-	// check, one with no result while its CI run goes on (ci_case not_completed with the reason
-	// no_result).
+	// check, one a CI job runs whose job has not ended at the head, or whose end Dispatch could not
+	// read (ciJobNotEnded), while its state names no result (no_result, read_failed).
 	Waiting []string
 	// Failing is each check with a conclusive state that is not yes, with that state and its
 	// reason: k2 no for fail, k3 unknown for pass_and_fail, k4 unknown for read_failed.
@@ -51,13 +53,17 @@ type testingJudgement struct {
 // and the review, the acceptance and the end of the task read it. The testing move passes
 // Config.TestingLeavesCI, which the daemon wires false until the change that builds that hold at
 // the end of a task turns it on, since a task whose steps after testing hold no review and no
-// acceptance would otherwise end with no gate on its CI checks. Reading every check, one with no result while
-// its CI run goes on waits as well, since that is no state the check ends at, and a fail or a pass
-// and a fail is a fail whatever its CI run says.
+// acceptance would otherwise end with no gate on its CI checks. Reading every check, one a CI job
+// runs whose job has not ended at the head, or whose end Dispatch could not read (ciJobNotEnded,
+// the one predicate tellCIFailure reads too), waits as well while its state names no result:
+// no_result, or read_failed where Dispatch could not read the job. That is no state the check ends
+// at, so the move sends such a check back only once its job ended there without a pass. A fail or
+// a pass and a fail is a fail whatever its CI run says.
 //
 // Every other state of a check judged is conclusive, and one that is not yes fails: a fail, a pass
-// and a fail, and a state Dispatch published because a read it needed failed (read_failed), which
-// is a state of the check all the same. false is no set held at the head, which judges nothing.
+// and a fail, and a state Dispatch published because a read it needed failed (read_failed) of a
+// check no CI job runs, which is a state of the check all the same. false is no set held at the
+// head, which judges nothing.
 func judgeStates(head record.HeadStates, leaveCI bool) (testingJudgement, bool) {
 	if head.Checks == nil {
 		return testingJudgement{}, false
@@ -72,7 +78,7 @@ func judgeStates(head record.HeadStates, leaveCI bool) (testingJudgement, bool) 
 			continue
 		case state.State == stateYes:
 			continue
-		case state.Reason == reasonNoResult && state.CICase == ciNotCompleted:
+		case ciJobNotEnded(state.CICase) && (state.Reason == reasonNoResult || state.Reason == reasonReadFailed):
 			judgement.Waiting = append(judgement.Waiting, check)
 		default:
 			judgement.Failing = append(judgement.Failing, record.FailingCheck{Check: check, State: state.State, Reason: state.Reason})
@@ -357,21 +363,23 @@ func (e *Engine) checkState(ctx context.Context, tx pgx.Tx, fact intake.Dispatch
 	return intake.Result{}, e.decideTesting(ctx, tx, *issue, row, pr, false)
 }
 
-// ciJobNotEnded are the CI cases Dispatch names for a check a CI job runs whose job has not ended
-// at the head, or whose end Dispatch could not read (envoy's results_ci.go): its run has not
-// concluded, no run of its name is on the head, Dispatch holds no head to read at, GitHub did not
-// answer, a result of the job named no repository Dispatch could resolve, or the read had not
-// started when its batch's bound ended. Every other case names an end: a conclusion as GitHub wrote
-// it, or a result the job recorded of its own.
-var ciJobNotEnded = map[string]bool{
-	ciNotCompleted: true, "absent": true, "no_head": true, "github_unreadable": true, "read_failed": true, "not_started": true,
+// ciJobNotEnded says whether ciCase is a CI case Dispatch names for a check a CI job runs whose
+// job has not ended at the head, or whose end Dispatch could not read: its run has not concluded,
+// no run of its name is on the head, Dispatch holds no head to read at, GitHub did not answer, a
+// result of the job named no repository Dispatch could resolve, or the read had not started when
+// its batch's bound ended. The list is contracts', which Dispatch writes the case from
+// (cicase.NotEnded). Every other case names an end: a conclusion as GitHub wrote it, or a result
+// the job recorded of its own. It is the one predicate the testing move (judgeStates) and the
+// implementer's message of a failed job (ciJobFailed) read.
+func ciJobNotEnded(ciCase string) bool {
+	return cicase.NotEnded(ciCase)
 }
 
 // ciJobFailed says whether a state of a check is one of a check a CI job runs whose job ended at
 // its head without a pass: the state names a CI case that is an end, the case is not a success,
 // and the state is not yes. A cancelled or skipped job ended without a pass too.
 func ciJobFailed(state, ciCase string) bool {
-	return ciCase != "" && !ciJobNotEnded[ciCase] && ciCase != "success" && state != stateYes
+	return cicase.Ended(ciCase) && ciCase != "success" && state != stateYes
 }
 
 // sameFailure says whether two states of one check at one head say the same failure: the same

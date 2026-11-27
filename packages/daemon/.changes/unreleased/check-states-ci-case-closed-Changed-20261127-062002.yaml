@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  Reading every check (`TestingLeavesCI` off, as the daemon wires it), the testing move waits on a
+  check a CI job runs whose job has not ended at the tested head, or whose end Dispatch could not
+  read, while its state names no result: the cases `not_completed`, `absent`, `no_head`,
+  `github_unreadable`, `read_failed` and `not_started`. Before, only `not_completed` waited, and the
+  other five sent the work back as a fail. The move and the implementer's message of a failed CI
+  job read one predicate, from the closed list `github.com/sjawhar/envoy/cicase` reads. The intake
+  refuses a `check.state_changed` whose `ci_case` is outside that list, as it refuses a state
+  outside `yes`, `no` and `unknown`.
+time: 2026-11-27T06:20:02Z
+custom:
+  Issue: check-states-ci-case-closed

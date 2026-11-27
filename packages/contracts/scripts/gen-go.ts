@@ -3,6 +3,8 @@ import { dirname, relative, resolve } from "node:path";
 
 import { AGENT_STREAM_SUBJECT_PREFIX } from "../src/agent-stream";
 import {
+  CHECK_CI_CASES_ENDED,
+  CHECK_CI_CASES_NOT_ENDED,
   DEFAULT_ISSUE_PAGE_LIMIT,
   DELETED_POST_DELIVERY_ERROR,
   DELIVERY_DUPLICATE_WINDOW_MS,
@@ -608,6 +610,20 @@ const DispatchEventBodyMax = ${DISPATCH_EVENT_BODY_MAX}
 // fill's inventory test (internal/dispatch/textversions) does, learns of a new type from it.
 var DispatchEventTypes = []string{
 ${DISPATCH_EVENT_TYPES.map((type) => `\t${JSON.stringify(type)},`).join("\n")}
+}
+
+// CheckCICasesEnded and CheckCICasesNotEnded are the cases a check.state_changed of a check a CI
+// job runs names in ci_case: where the job ended at the head, a conclusion GitHub wrote or
+// job_recorded; and where it has not ended, or Dispatch could not read its end. Generated from
+// CHECK_CI_CASES_ENDED and CHECK_CI_CASES_NOT_ENDED in packages/contracts, which the event's schema
+// closes ci_case to: Dispatch writes no other case, and the Legion daemon reads them through
+// github.com/sjawhar/envoy/cicase, so neither side spells a case of its own.
+var CheckCICasesEnded = []string{
+${CHECK_CI_CASES_ENDED.map((ciCase) => `\t${JSON.stringify(ciCase)},`).join("\n")}
+}
+
+var CheckCICasesNotEnded = []string{
+${CHECK_CI_CASES_NOT_ENDED.map((ciCase) => `\t${JSON.stringify(ciCase)},`).join("\n")}
 }
 
 // DispatchHandoffBodyMax is the longest phase handoff body, in UTF-8 bytes, that
