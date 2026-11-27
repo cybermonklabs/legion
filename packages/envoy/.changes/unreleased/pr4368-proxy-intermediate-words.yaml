@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  The broker pod's request for its proxy intermediate (`BROKER_PROXY_CA_POOL`) prints no credential
+  in its `proxy intermediate request failed` line. The certificates resource is joined onto the
+  endpoint (`BROKER_PROXY_TEST_CA_URL`) with its path and query kept, and an endpoint that cannot be
+  used is named by its setting, never printed. The request follows no redirect, since it carries the
+  pod's own Google token. A request that got no answer names the URL asked without its user
+  information or query; a refusal names its status by the standard phrase, and Google's status and
+  message, or the body, are printed with every credential the request carried redacted. An answer
+  refused for its chain names a certificate by its place in the chain, a root by its SHA-256, an
+  x509 failure by fixed words, and name constraints by the bound hosts' names they leave out and the
+  count of others, never a name the answer's certificates hold.
+time: 2026-11-27T02:33:40Z
+custom:
+    Issue: pr4368

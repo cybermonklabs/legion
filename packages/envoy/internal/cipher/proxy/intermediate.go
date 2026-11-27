@@ -11,6 +11,7 @@ package proxy
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -22,7 +23,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -33,6 +33,10 @@ import (
 
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // intermediateLifetime is the life a pod asks for its intermediate, Infisical Agent Proxy's
@@ -86,7 +90,8 @@ type Pool struct {
 	// local stand-in reads none, and a stack on a box with a person's application default
 	// credentials must not hand them to it.
 	Token oauth2.TokenSource
-	// HTTP is the client the requests go out on, and nil is a client of its own.
+	// HTTP is the client the requests go out on, and nil is http.DefaultClient; either follows no
+	// redirect (create).
 	HTTP *http.Client
 }
 
@@ -219,10 +224,6 @@ func intermediateCSR(key *ecdsa.PrivateKey, names []string) ([]byte, error) {
 // request and the request id deduplicates nothing. It answers the certificate and its chain,
 // issuer first and root last.
 func (p Pool) create(ctx context.Context, csr []byte) (*x509.Certificate, []*x509.Certificate, error) {
-	endpoint := p.Endpoint
-	if endpoint == "" {
-		endpoint = privateCAEndpoint
-	}
 	random := make([]byte, 6)
 	if _, err := rand.Read(random); err != nil {
 		return nil, nil, err
@@ -238,45 +239,58 @@ func (p Pool) create(ctx context.Context, csr []byte) (*x509.Certificate, []*x50
 	if err != nil {
 		return nil, nil, err
 	}
+	// The resource is joined onto the endpoint (urljoin.Join), which keeps the endpoint's path and
+	// query, and each segment of the pool's name is escaped (url.PathEscape), so none of it reads
+	// to the join as a query, a fragment or an escape. An endpoint Join cannot use fails in fixed
+	// words: it can carry user information and a query (BROKER_PROXY_TEST_CA_URL), and url.Parse's
+	// error quotes it whole.
+	asked, err := urljoin.Join(cmp.Or(p.Endpoint, privateCAEndpoint), "v1/"+escapedSegments(p.Name)+"/certificates?"+query.Encode())
+	if err != nil {
+		return nil, nil, errors.New("the pool's endpoint (BROKER_PROXY_TEST_CA_URL) is not an absolute URL with a host (the URL is not printed)")
+	}
 	ctx, cancel := context.WithTimeout(ctx, intermediateRequestTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(endpoint, "/")+"/v1/"+p.Name+"/certificates?"+query.Encode(), bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, asked.String(), bytes.NewReader(body))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.New("the pool's certificates URL does not parse (the URL is not printed)")
 	}
 	request.Header.Set("Content-Type", "application/json")
 	if p.Token != nil {
-		token, err := p.Token.Token()
+		// A token source's error can quote the credential it read (redact.OAuth2 reads it).
+		token, err := redact.OAuth2(p.Token.Token())
 		if err != nil {
 			return nil, nil, fmt.Errorf("the pod's own token for the pool: %w", err)
 		}
 		token.SetAuthHeader(request)
 	}
-	client := p.HTTP
-	if client == nil {
-		client = &http.Client{}
-	}
-	response, err := client.Do(request)
+	// No redirect is followed (redirects.Refused): the request carries the pod's own token, so a
+	// 3xx is the answer, refused by its status below, and the token goes nowhere its Location names.
+	response, err := redirects.Refused(cmp.Or(p.HTTP, http.DefaultClient)).Do(request)
 	if err != nil {
-		return nil, nil, fmt.Errorf("ask the pool: %w", err)
+		// net/http's error can quote what the pool sent, and names the URL with its user
+		// information and query: redact.Unanswered names the request by the URL asked, without.
+		return nil, nil, fmt.Errorf("ask the pool: %w", redact.Unanswered(err, request, ""))
 	}
 	defer response.Body.Close()
-	answer, err := io.ReadAll(io.LimitReader(response.Body, maxIntermediateAnswer+1))
+	// The answer is the words of whoever answered a request that carried the pod's token: it is
+	// read and decoded through redact (ReadAnswer, Answer.Decode), and a refusal prints its status
+	// by the standard phrase (redact.StatusLine), never the pool's own, and its words as
+	// googleError reads them.
+	answer, err := redact.ReadAnswer(response, maxIntermediateAnswer)
+	if errors.Is(err, redact.ErrAnswerTooLarge) {
+		return nil, nil, fmt.Errorf("the pool's answer is past %d bytes", maxIntermediateAnswer)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("read the pool's answer: %w", err)
 	}
-	if len(answer) > maxIntermediateAnswer {
-		return nil, nil, fmt.Errorf("the pool's answer is past %d bytes", maxIntermediateAnswer)
-	}
 	if response.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("the pool answered %s: %s", response.Status, googleError(answer))
+		return nil, nil, fmt.Errorf("the pool answered %s: %s", redact.StatusLine(response.StatusCode), googleError(answer))
 	}
 	var issued struct {
 		PEMCertificate      string   `json:"pemCertificate"`
 		PEMCertificateChain []string `json:"pemCertificateChain"`
 	}
-	if err := json.Unmarshal(answer, &issued); err != nil {
+	if err := answer.Decode(&issued); err != nil {
 		return nil, nil, fmt.Errorf("the pool's answer is no certificate: %w", err)
 	}
 	cert, err := onePEMCertificate(issued.PEMCertificate)
@@ -292,6 +306,15 @@ func (p Pool) create(ctx context.Context, csr []byte) (*x509.Certificate, []*x50
 	return cert, chain, nil
 }
 
+// escapedSegments is name, a resource name, with each of its segments escaped (url.PathEscape).
+func escapedSegments(name string) string {
+	segments := strings.Split(name, "/")
+	for i, segment := range segments {
+		segments[i] = url.PathEscape(segment)
+	}
+	return strings.Join(segments, "/")
+}
+
 // onePEMCertificate is the one PEM certificate text holds.
 func onePEMCertificate(text string) (*x509.Certificate, error) {
 	block, rest := pem.Decode([]byte(text))
@@ -302,17 +325,23 @@ func onePEMCertificate(text string) (*x509.Certificate, error) {
 }
 
 // googleError is what a Google API's refusal says, {"error": {"status", "message"}}, and the
-// first bytes of a body in any other shape. It is cut short, since it goes in a log line.
-func googleError(body []byte) string {
+// whole of a body in any other shape, each as the rule prints another party's words (Decode's
+// boxes, Answer.Words): every credential the request carried redacted - the pod's token, the
+// endpoint's user information and query values - and a URL's user information and query values
+// left out, so a refusal that echoes the request, as whatever answers in the pool's place can
+// write one, prints none of it. It is cut short, since it goes in a log line.
+func googleError(answer redact.Answer) string {
 	var refusal struct {
 		Error struct {
-			Status  string `json:"status"`
-			Message string `json:"message"`
+			Status  redact.RemoteText `json:"status"`
+			Message redact.RemoteText `json:"message"`
 		} `json:"error"`
 	}
-	text := strings.TrimSpace(string(body))
-	if json.Unmarshal(body, &refusal) == nil && refusal.Error.Status != "" {
-		text = refusal.Error.Status + ": " + refusal.Error.Message
+	var text string
+	if answer.Decode(&refusal) == nil && !refusal.Error.Status.IsEmpty() {
+		text = refusal.Error.Status.String() + ": " + refusal.Error.Message.String()
+	} else {
+		text = answer.Words().String()
 	}
 	if runes := []rune(text); len(runes) > 300 {
 		text = string(runes[:300]) + "…"

@@ -351,9 +351,9 @@ func TestEachBoundNamesWhatItRefuses(t *testing.T) {
 			c.UnknownExtKeyUsage = []asn1.ObjectIdentifier{{1, 2, 3, 4}}
 		}},
 		{"30 days", "its life is 720h0m0s", names, 30 * 24 * time.Hour, nil},
-		{"a name no host binds", "permit [evil.example googleapis.com s.airlock.test]", append([]string{"evil.example"}, names...), week, nil},
-		{"no DNS name permitted", "permit []", nil, week, nil},
-		{"no name-constraints extension at all", "permit []", nil, week, noNameConstraints},
+		{"a name no host binds", "permit 1 other name(s); want exactly the bound hosts' names [googleapis.com s.airlock.test]", append([]string{"evil.example"}, names...), week, nil},
+		{"no DNS name permitted", "permit no name and leave out [googleapis.com s.airlock.test]", nil, week, nil},
+		{"no name-constraints extension at all", "permit no name and leave out [googleapis.com s.airlock.test]", nil, week, noNameConstraints},
 		{"no IP address excluded", "excludes 0.0.0.0/0 and ::/0", names, week, func(c *x509.Certificate) { c.ExcludedIPRanges = nil }},
 		{"IPv4 excluded alone", "do not exclude ::/0", names, week, func(c *x509.Certificate) { c.ExcludedIPRanges = []*net.IPNet{everyIPv4()} }},
 		{"IPv6 excluded alone", "do not exclude 0.0.0.0/0", names, week, func(c *x509.Certificate) { c.ExcludedIPRanges = []*net.IPNet{everyIPv6()} }},
