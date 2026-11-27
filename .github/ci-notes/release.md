@@ -117,8 +117,9 @@ Two checks hold the list. packages/daemon/cmd/legion/release_list_test.go
 target and fails naming each package the list misses, with the targets that link it, or that no
 target links any longer. ci.yaml's lint job holds the list to what the release builds legion from
 (.github/scripts/check-legion-release-paths.sh) on every change the go_notices filter selects,
-which names release.yaml, the target list, the check and the two scripts it runs, and every Go and
-module file, and runs it after the module cache that filter restores: it reads the step that
+which names release.yaml, the target list, the check and the two scripts it runs, and every Go file
+but a `_test.go`, and every go.mod and go.sum, and runs it after the module cache that filter
+restores: it reads the step that
 expands LEGION_VERSION_ARGS as GitHub Actions runs it, the paths release-push.sh parses out of it,
 and the files git reads them as, so it also holds go.work, the release scripts and the target list,
 which no `go list` names. The check's header says which program it asks each question of, and
