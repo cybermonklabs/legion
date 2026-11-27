@@ -82,7 +82,9 @@ func TestAPhaseEndedMessageRetriesEveryFailureButNoHolder(t *testing.T) {
 	row := mustOutboxRow(t, "LEGION-208", endedByTheWait, time.Now())
 	row.ID = 61
 	publisher := &outboxPublisher{}
-	runner := &outbox{project: "legion", notices: publisher, log: quietLogger()}
+	// The row reads the claim of the tester's step from the record (outbox.workerToken), which
+	// holds no phases row of LEGION-208, so the claim is the tester's own token.
+	runner := &outbox{project: "legion", pool: isolatedOutboxPool(t), records: record.NewStore(), notices: publisher, log: quietLogger()}
 	const denial = `envoy: the message bus denied the publish under this listener's own permissions: bus: NATS denied the publish to "notifications.agent.ses_t"`
 	for _, tc := range []struct {
 		name string

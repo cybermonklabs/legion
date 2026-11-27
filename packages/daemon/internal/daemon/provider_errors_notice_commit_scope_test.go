@@ -186,6 +186,13 @@ func TestAProviderErrorsNoticeReachesTheIssuesArchitectAndTheController(t *testi
 				if !ok {
 					t.Fatalf("delivered %+v, want a publish on %s", delivered, topic)
 				}
+				// The controller's copy names the claim whose turns keep ending in a provider error,
+				// so another claim of the role keeps a notice of its own (record.NoticePerClaim);
+				// the architect's copy names none.
+				want := want
+				if topic == controller {
+					want.Claim = mustClaimToken(t, tc.issue, tc.role)
+				}
 				if message := "provider-errors on " + tc.issue; published.message != message || !reflect.DeepEqual(published.payload, want) {
 					t.Fatalf("the publish on %s = %q %+v, want %s carrying %+v", topic, published.message, published.payload, message, want)
 				}

@@ -118,6 +118,11 @@ type idleWakeRig struct {
 	baseline map[string]int
 	// toolsPath holds the rig's `legion` and `omp` stand-ins, made once.
 	toolsPath string
+	// streamSocket holds the worker stream's port, cfg.WorkerStreamPort, from the rig's start until
+	// the test ends; every boot serves on a descriptor of its own of it (heldSocketListen), so a
+	// restart listens where the launchers of the pods made before it dial, as a deployment's fixed
+	// worker_stream_port does (controllerSandboxRig holds its port the same way).
+	streamSocket *os.File
 
 	// stop ends the running daemon, and done answers when it has.
 	stopMu sync.Mutex
@@ -156,6 +161,8 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 	// daemon binds a consumer on it, which is the order a deployment rolls them in.
 	listener := startIdleRigListener(t, natsURL, "idlerig")
 	cfg := workflowConfig(t, natsURL)
+	streamSocket, streamPort := heldSocket(t)
+	cfg.WorkerStreamPort = streamPort
 	cfg.PostgresDSN = pool.Config().ConnString()
 	cfg.EnvoyURL = listener.url
 	// One admission slot per issue of the rig, and a cap with room for them all: an issue the
@@ -184,7 +191,7 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 	cfg.DispatchURL = board.url
 	rig := &idleWakeRig{t: t, cfg: cfg, board: board, pool: pool, natsURL: natsURL, js: workflowJetStream(t, natsURL),
 		kube: newIssueSandboxAPI(), agents: newIdleRigAgents(t, pool), listener: listener,
-		records: record.NewStore(), project: project, logs: &syncBuffer{}, built: &built{}}
+		records: record.NewStore(), project: project, logs: &syncBuffer{}, built: &built{}, streamSocket: streamSocket}
 	rig.pods = newIdleRigPods(t, func(string, string) (string, bool, bool) { return rig.address(), false, true },
 		cfg.Runtime.Kubernetes.SessionStore.Database,
 		func(context.Context, sessionproxy.Signer) (sessionproxy.Dialer, error) {
@@ -448,7 +455,7 @@ func (r *idleWakeRig) boot() {
 	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(r.logs, r.logFile()), &slog.HandlerOptions{Level: slog.LevelDebug}))
 	go func() {
 		done <- run(ctx, r.cfg, logger, overrides{
-			listen: heldListen, runtime: r.newRuntime, clock: stillClock{}, idleTick: idleRigTick, outboxSweep: idleRigOutboxSweep,
+			listen: heldListen, streamListen: heldSocketListen(r.streamSocket, r.cfg.WorkerStreamPort), runtime: r.newRuntime, clock: stillClock{}, idleTick: idleRigTick, outboxSweep: idleRigOutboxSweep,
 			workflowTokens: idleRigAppTokens{workflowTokenRecorder: &workflowTokenRecorder{}}, githubAPI: repositoriesGitHub(r.t),
 		})
 	}()
