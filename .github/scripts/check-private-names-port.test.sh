@@ -89,9 +89,11 @@ engine="$work/legion"
 export PUBLIC_LEAK_CHECK="$work/public-leak-check.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$PUBLIC_LEAK_CHECK"
 chmod +x "$PUBLIC_LEAK_CHECK"
-# A local path as the push's URL names no GitHub repository, so the guard reads the destination as
-# public (its fail-closed answer) and scans, without a gh call.
-remote_url="$work/remote.git"
+# The push door's URL. `legion leak-check pre-push`, the command the pod's pre-push hook runs,
+# clears a push that can only write to a local path, so the door's refusals are read at a URL with a
+# host that names no GitHub repository: the guard reads that destination as public (its fail-closed
+# answer) and scans, without a gh call.
+remote_url="https://example.invalid/o/n.git"
 # The engine's private-name rules: the rule file this suite compares against, named as a
 # deployment names its own (the header says why every run needs it). The path is absolute, since
 # the engine runs from each fixture's own directory.
