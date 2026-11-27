@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+    The stale-plugin gate of a pending task now writes one Info line the first time it holds a
+    delivery, naming the delivery, the claim's recorded plugin contract and the daemon's, so a task
+    held behind the stale-plugin relaunch lane can be read in the log (dispatch://INFRA-3916, R3).
+time: 2026-11-27T22:00:00Z
+custom:
+    Issue: INFRA-3916

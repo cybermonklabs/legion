@@ -1567,6 +1567,7 @@ func rigClaim() supervise.Claim {
 // claim's notices as a `worker-stalled` notice carrying the machine's reason, through the stall
 // notice's own rows (promptAnswersReached, enqueueStallNotice).
 func TestATaskThatKeepsFailingWithAnAnswerIsToldAsAWorkerStalledNotice(t *testing.T) {
+	t.Parallel()
 	rig := newBackstopRig(t)
 	c := rig.claim(claim.RoleImplementer, "LEGION-219", time.Minute, false)
 	const reason = "The implementer claim did not get its task: 3 sends in a row failed with an answer."

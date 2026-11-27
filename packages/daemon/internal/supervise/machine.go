@@ -2102,6 +2102,11 @@ type Machine struct {
 	// session it does not hold, so its Error line is written once per delivery rather than at every
 	// sweep that asks again. Memory only.
 	unheldDelivery string
+	// staleHeldDelivery is the pending delivery sendPending last held back because this daemon
+	// refuses the claim's every `legion` call for a stale plugin (staleRefusesClaim), so its Info
+	// line is written once per delivery rather than at every sweep that asks again. Memory only: a
+	// restarted daemon writes the line once more for the delivery it finds held.
+	staleHeldDelivery string
 	// refusalLogged is the Warn line holdRecorded last wrote for a refused hold, so a refusal asked
 	// again at every sweep (sendPending, for a claim that does not hold its session) is written
 	// once rather than every probe interval; a hold admitted clears it (warnRefusal). Memory only.

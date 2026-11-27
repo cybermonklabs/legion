@@ -785,7 +785,11 @@ func (c Claim) openRoundHoldsTask() bool {
 // holdStaleRelaunch). So the task waits, and it goes when the replacement process registers on
 // this daemon's contract and says it is ready, where every task held for a launch goes
 // (finishReady, table.go). Nothing else is needed to release it: the registration records the
-// daemon's own contract, which takes the claim out of the set this hold reads.
+// daemon's own contract, which takes the claim out of the set this hold reads. The wait can run
+// for many sweeps while the lane works through a fleet, so the first time this hold keeps a
+// delivery back it writes one line naming the delivery and both contracts, and no line again for
+// that delivery (Machine.staleHeldDelivery): a task that waits here is read in the log rather than
+// by elimination of every hold that writes one (dispatch://INFRA-3916 R3).
 //
 // One task never waits on that third hold: an operator's own, which runs the launch the pacing
 // holds before the row that queues it is reached (runParkedLaunchNow). A person is waiting on
@@ -858,8 +862,14 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// task: it waits for the process the refresh lane's relaunch starts (staleRefusesClaim). It is
 	// asked below the three above and below the question of whether there is a task at all,
 	// because it is the costliest of the four — Deps.NoPluginInstall reads the daemon's
-	// configuration — and every send of a claim holding nothing would otherwise pay for it.
+	// configuration — and every send of a claim holding nothing would otherwise pay for it. The
+	// hold is told once per delivery, the first time it keeps that delivery back.
 	if m.staleRefusesClaim() {
+		if m.staleHeldDelivery != p.ID {
+			m.staleHeldDelivery = p.ID
+			m.log.Info("supervise: the process speaks another plugin contract, so this daemon refuses its every legion call; the task waits for the process the refresh lane's relaunch starts",
+				"delivery", p.ID, "pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract)
+		}
 		return nil
 	}
 	if _, awaiting := m.timers[TimerTurn]; awaiting {
