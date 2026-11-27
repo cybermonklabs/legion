@@ -154,8 +154,8 @@ test("a node anchor sends node, quote and occurrence", async () => {
   ]);
 });
 
-// A comment on a node's words names no document (`artifact: ""`), so a reference in it is read
-// in the issue's spec, as one in a comment on the issue is, and never in a document of that name.
+// A comment on a node's words names no document, so a reference in it is read in the issue's
+// spec, as one in a comment on the issue is, and never in a document of that name.
 test("a node anchor reads its references in the issue's spec", () => {
   const { anchor, replyTo } = addressOf("lens", "item", item("lens-1"));
   expect(anchor?.node, "the lens's words are anchored to the lens").toBe("lens-1");

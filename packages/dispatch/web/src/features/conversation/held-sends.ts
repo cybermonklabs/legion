@@ -256,6 +256,8 @@ export const keptAnchor = shape.either(
     ),
     quote: shape.string,
   }),
+  // A node anchor names no document: the node, and the quote in its text (`ComposerAnchor`).
+  shape.record({ node: shape.string, occurrence: shape.number, quote: shape.string }),
   shape.record({ artifact: shape.string, occurrence: shape.number, quote: shape.string })
 );
 

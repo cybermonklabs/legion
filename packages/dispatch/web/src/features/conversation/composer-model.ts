@@ -50,7 +50,7 @@ export type ComposerAnchor =
        *  lens, a finding, a risk, a constraint or a result - named by its node (INFRA-1253's node
        *  anchor). The send leaves `artifact` out, and a reference in the comment is read in the
        *  issue's spec, as `draftSource` reads it. */
-      readonly artifact: "";
+      readonly artifact?: never;
       readonly block_id?: never;
       readonly mark_id?: never;
       /** The node the words are in, by its store address; the send names it, the quote and the
@@ -73,6 +73,10 @@ export type ComposerAnchor =
       readonly placement?: never;
       readonly quote: string;
     };
+
+/** The anchors a document gives, a mark the editor wrote or a quote of one block: every member but
+ *  the node anchor, which names no document. The margin of a document holds these alone. */
+export type DocumentComposerAnchor = Exclude<ComposerAnchor, { readonly node: string }>;
 
 /** Why a compose's mark could not be written again after the server refused its send for a mark
  *  the document does not hold, in the reader's words, kept with the mark it answers: the composer

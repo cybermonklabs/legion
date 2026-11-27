@@ -486,7 +486,7 @@ export function useMarginSheet(): MarginSheetModel {
   const turnedAway =
     shownCompose?.turnedAway === true && shownCompose.artifact === visibleArtifactId;
   const shownComposer = useMemo<MarginComposer | undefined>(() => {
-    if (heldRequest?.anchor !== undefined) {
+    if (heldRequest?.anchor !== undefined && heldRequest.anchor.node === undefined) {
       return {
         anchor: heldRequest.anchor,
         kind: heldRequest.kind,

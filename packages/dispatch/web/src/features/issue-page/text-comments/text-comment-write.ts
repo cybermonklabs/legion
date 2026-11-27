@@ -235,10 +235,10 @@ export function composerAddressOf(
     };
   }
   if (write.request === "node") {
-    // A node anchor names no document (`artifact: ""`), and a reference in the comment is read in
-    // the issue's spec (`draftSource`).
+    // A node anchor names no document, and a reference in the comment is read in the issue's spec
+    // (`draftSource`).
     return {
-      anchor: { artifact: "", node: nodeAddressOf(at), occurrence, quote },
+      anchor: { node: nodeAddressOf(at), occurrence, quote },
       replyTo: null,
     };
   }

@@ -10,7 +10,11 @@ import {
   useState,
 } from "react";
 import { isAnchorMissing } from "../../api/client";
-import type { AnchorRefusal, ComposerAnchor, ComposerKind } from "../conversation/composer-model";
+import type {
+  AnchorRefusal,
+  ComposerKind,
+  DocumentComposerAnchor,
+} from "../conversation/composer-model";
 import type { HeldSend } from "../conversation/held-sends";
 import { heldSends } from "../conversation/held-sends";
 import { unsentDraftsOf } from "../conversation/unsent-drafts";
@@ -72,7 +76,10 @@ export interface ComposerBridge {
  *  the margin's re-anchor and the composer's kind switch. The answer names that mark, so an
  *  anchor that named its text by quote alone - which only a document the server marks for itself
  *  carries, and which neither caller re-anchors - is not one of them. */
-export function anchorAt(anchor: ComposerAnchor, mark: RetypedMark): ComposerAnchor {
+export function anchorAt(
+  anchor: DocumentComposerAnchor,
+  mark: RetypedMark
+): DocumentComposerAnchor {
   return {
     artifact: anchor.artifact,
     mark_id: mark.markId,
@@ -171,12 +178,12 @@ const QUOTE_KIND_SWITCH_REFUSAL =
  *  as its composer closes unsent or a newer compose takes its place, which takes the editor's mark
  *  back out of the document. */
 export type MarkComposePlace = (compose: {
-  readonly anchor: ComposerAnchor;
+  readonly anchor: DocumentComposerAnchor;
   readonly kind: ComposerKind;
 }) => Promise<void>;
 
 interface MarkComposeRequest {
-  anchor: ComposerAnchor;
+  anchor: DocumentComposerAnchor;
   kind: ComposerKind;
   /** Where the compose opens in place of the margin's own composer, where the page gives one
    *  (`MarkComposePlace`); with none, the margin opens it where it always has. */

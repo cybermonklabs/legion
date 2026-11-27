@@ -247,7 +247,7 @@ test("a lens, finding, risk, constraint and result take the control and address 
       composerAddressOf(write, node, { block: null, occurrence: 1, quote: "words" }),
       `the composer address for ${want}`
     ).toEqual({
-      anchor: { artifact: "", node: want, occurrence: 1, quote: "words" },
+      anchor: { node: want, occurrence: 1, quote: "words" },
       replyTo: null,
     });
   }
