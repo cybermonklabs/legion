@@ -129,7 +129,7 @@ func fetch(t *testing.T, f *fakeGCP) fetchRun {
 	script := filepath.Join(scriptDir, "fetch-secret")
 	require.NoError(t, testexec.WriteFile(script, []byte(fetchScript(t)), 0o700))
 	binDir := t.TempDir()
-	require.NoError(t, testexec.WriteFile(filepath.Join(binDir, "sleep"), []byte(sleepStub), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "sleep"), []byte(sleepStub), 0o700)) // CONTROL ONLY
 	sleepLog := filepath.Join(scriptDir, "sleeps")
 	dir := t.TempDir()
 	out := filepath.Join(dir, "tailnet-auth-key")
