@@ -12,13 +12,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// Three writes change a field with no event that dates the change: the restore of a decided ask's
-// wording (docs' decidedWordingRestore), the orphaning of a comment's anchor that a 409 of an
-// accept or a reject wrote with no event, before such a 409 appended one, and that a delete of a
-// suggestion writes, and the backfill of anchor blocks (docs' Service.BackfillAnchorBlocks), which
-// writes the block id of a comment's or an ask's anchor that names none. The statements that tell
-// a read at a cut where such a field is unknown read the present log and rows; these tests hold
-// each case of their rules.
+// Six writes can change what a read at a cut would have given without appending an event:
+//   - the restore of a decided ask's wording (docs' decidedWordingRestore);
+//   - a comment anchor orphaned by a suggestion action before that action's 409 wrote an event,
+//     or by the deletion of a suggestion;
+//   - an outbox attempt that records a session's published destination (outbox.recordBatch);
+//   - the pin of an anchor's block id (docs' Service.BackfillAnchorBlocks);
+//   - an item's block re-plan (refs.IndexOwedItemBlocks);
+//   - the boot fill of a review's content hash and its source (docs.FillReviewContentHashes).
+// The tests here hold the shadow statements' rules for undated writes. The HTTP regressions
+// check what each route names absent and gives at the cut.
 
 // The wording of an ask at a cut is unknown where the wording just after the cut, by the record,
 // is not the wording of the ask's newest state event at the cut: the previous wording of its

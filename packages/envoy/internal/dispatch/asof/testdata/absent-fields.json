@@ -1,14 +1,21 @@
 {
   "GET /api/v1/agents/{session_id}/answers": [
-    "/items/*/ask/question"
+    "/items",
+    "/items/*/ask/question",
+    "/total"
   ],
   "GET /api/v1/agents/{session_id}/artifacts/{slug}": [
+    "/approval/content_sha256",
+    "/approval/content_sha256_source",
     "/approval/documents"
   ],
   "GET /api/v1/artifacts/{id}": [
+    "/approval/content_sha256",
+    "/approval/content_sha256_source",
     "/approval/documents"
   ],
   "GET /api/v1/artifacts/{id}/asks": [
+    "/*/anchor/block_id",
     "/*/answer/id",
     "/*/approval/documents",
     "/*/multiple",
@@ -22,6 +29,7 @@
     "/*/waiting_on_person"
   ],
   "GET /api/v1/artifacts/{id}/comments": [
+    "/*/anchor/block_id",
     "/*/anchor/orphaned",
     "/*/body",
     "/*/deliveries/*/created_at",
@@ -56,6 +64,7 @@
     "/asks/*/waiting_on_person"
   ],
   "GET /api/v1/asks/{id}": [
+    "/ask/anchor/block_id",
     "/ask/anchor_block",
     "/ask/answer/id",
     "/ask/approval/documents",
@@ -68,6 +77,7 @@
     "/ask/revision",
     "/ask/urgency",
     "/ask/waiting_on_person",
+    "/replies/*/anchor/block_id",
     "/replies/*/anchor/orphaned",
     "/replies/*/body",
     "/replies/*/deliveries/*/created_at",
@@ -85,6 +95,7 @@
     "/route_status_reason"
   ],
   "GET /api/v1/comments/{id}": [
+    "/comment/anchor/block_id",
     "/comment/anchor/orphaned",
     "/comment/anchor_block",
     "/comment/body",
@@ -98,6 +109,7 @@
     "/comment/reply_block/removed",
     "/comment/reply_block/text",
     "/comment/reply_block/text_tree",
+    "/replies/*/anchor/block_id",
     "/replies/*/anchor/orphaned",
     "/replies/*/body",
     "/replies/*/deliveries/*/created_at",
@@ -120,6 +132,7 @@
     "/*/payload/revision"
   ],
   "GET /api/v1/inbox": [
+    "/*/anchor/block_id",
     "/*/answer/id",
     "/*/approval/documents",
     "/*/multiple",
@@ -130,6 +143,7 @@
     "/*/referenced_by_count",
     "/*/revision",
     "/*/snoozed_until",
+    "/*/thread/replies/*/anchor/block_id",
     "/*/thread/replies/*/anchor/orphaned",
     "/*/thread/replies/*/body",
     "/*/thread/replies/*/deliveries/*/created_at",
@@ -162,12 +176,15 @@
   ],
   "GET /api/v1/issues/resolve": [],
   "GET /api/v1/issues/{key}": [
+    "/artifacts/*/approval/content_sha256",
+    "/artifacts/*/approval/content_sha256_source",
     "/artifacts/*/approval/documents",
     "/components/ids",
     "/components/unknown",
     "/design_gates",
     "/holder_state",
     "/last_seen",
+    "/open_asks/*/anchor/block_id",
     "/open_asks/*/answer/id",
     "/open_asks/*/approval/documents",
     "/open_asks/*/multiple",
@@ -186,9 +203,13 @@
     "/takeable_at"
   ],
   "GET /api/v1/issues/{key}/artifacts": [
+    "/*/approval/content_sha256",
+    "/*/approval/content_sha256_source",
     "/*/approval/documents"
   ],
   "GET /api/v1/issues/{key}/artifacts/{slug}": [
+    "/approval/content_sha256",
+    "/approval/content_sha256_source",
     "/approval/documents"
   ],
   "GET /api/v1/issues/{key}/artifacts/{slug}/blocks": [
@@ -200,6 +221,7 @@
     "/*/token"
   ],
   "GET /api/v1/issues/{key}/asks": [
+    "/*/anchor/block_id",
     "/*/answer/id",
     "/*/approval/documents",
     "/*/multiple",
@@ -209,6 +231,7 @@
     "/*/question_tree",
     "/*/referenced_by_count",
     "/*/revision",
+    "/*/thread/replies/*/anchor/block_id",
     "/*/thread/replies/*/anchor/orphaned",
     "/*/thread/replies/*/body",
     "/*/thread/replies/*/deliveries/*/created_at",
@@ -228,6 +251,7 @@
     "/*/waiting_on_person"
   ],
   "GET /api/v1/issues/{key}/comments": [
+    "/*/anchor/block_id",
     "/*/anchor/orphaned",
     "/*/body",
     "/*/deliveries/*/created_at",
@@ -334,9 +358,13 @@
   ],
   "GET /api/v1/messages/{id}/history": [],
   "GET /api/v1/projects/{key}/artifacts": [
+    "/*/approval/content_sha256",
+    "/*/approval/content_sha256_source",
     "/*/approval/documents"
   ],
   "GET /api/v1/projects/{key}/artifacts/{slug}": [
+    "/approval/content_sha256",
+    "/approval/content_sha256_source",
     "/approval/documents"
   ],
   "GET /api/v1/projects/{key}/artifacts/{slug}/blocks": [
