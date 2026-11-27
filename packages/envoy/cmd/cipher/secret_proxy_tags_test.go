@@ -23,7 +23,7 @@ import (
 func TestCreateAndRetagWriteTheProxyTags(t *testing.T) {
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		useStdin(t, "probe-value")
-		if _, stderr, code := runSecret("create", "PROXIED_KEY", "--owner", "me", "--tier", "agent", "--proxy", "github"); code != 0 {
+		if _, stderr, code := runSecret("create", "PROXIED_KEY", "--owner", "ada@example.com", "--tier", "agent", "--proxy", "github"); code != 0 {
 			t.Fatalf("create --proxy github: exit %d, stderr %q", code, stderr)
 		}
 		want := map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent, policy.TagProxy: "github", policy.TagRequesters: policy.KindsRollbackGuard}
@@ -32,7 +32,7 @@ func TestCreateAndRetagWriteTheProxyTags(t *testing.T) {
 		}
 
 		useStdin(t, "probe-value")
-		if _, stderr, code := runSecret("create", "NARROWED_KEY", "--owner", "me", "--tier", "human", "--proxy", "anthropic", "--proxy-narrowed", "true"); code != 0 {
+		if _, stderr, code := runSecret("create", "NARROWED_KEY", "--owner", "ada@example.com", "--tier", "human", "--proxy", "anthropic", "--proxy-narrowed", "true"); code != 0 {
 			t.Fatalf("create --proxy anthropic --proxy-narrowed true: exit %d, stderr %q", code, stderr)
 		}
 		want = map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierHuman, policy.TagProxy: "anthropic", policy.TagProxyNarrowed: policy.ProxyNarrowedTrue, policy.TagRequesters: policy.KindsRollbackGuard}
@@ -119,7 +119,7 @@ func TestTheProxyFlagsRefuseEveryOtherForm(t *testing.T) {
 		store.put(t, "API_KEY", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent}, "v1")
 		before := store.calls()
 		create := func(flags ...string) []string {
-			return append([]string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}, flags...)
+			return append([]string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent"}, flags...)
 		}
 		const (
 			proxyForm      = "--proxy is the name of a kind of the broker's profiles file"

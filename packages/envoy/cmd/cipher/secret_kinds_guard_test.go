@@ -132,7 +132,7 @@ func TestCreateWritesTheKindsGuardBesideAProxyTag(t *testing.T) {
 			{"PLAIN_LISTED", []string{"--tier", "human", "--requesters", "ada@example.com"}, "v", "ada@example.com"},
 		} {
 			useStdin(t, c.value)
-			args := append([]string{"create", c.name, "--owner", "me"}, c.args...)
+			args := append([]string{"create", c.name, "--owner", "ada@example.com"}, c.args...)
 			if _, stderr, code := runSecret(args...); code != 0 {
 				t.Fatalf("%v: exit %d, stderr %q", args, code, stderr)
 			}
