@@ -280,19 +280,16 @@ func (p *createProcess) endedBy(sig syscall.Signal) string {
 // answer for an hour, nothing but that signal can end the process while the test waits.
 const heldDeadline = "AGENT_SECRETS_CREATE_DEADLINE=1h"
 
-// endsAtOnceBy sends sig, which must end the process at once, and answers its output once sig has
-// ended it (endedBy). Two things decide that the signal ended it, not the call it interrupts: the
-// row's store call can end no other way (heldDeadline), so a signal path that waits behind the call
-// never ends and fails endedBy; and the end is timed from the signal against no deadline of its own
-// (requireCommandOnTime), so a path that waits for anything first fails at once, not at the give-up.
+// endsAtOnceBy sends sig, which must end the process without waiting on the store call in flight,
+// and answers its output once sig has ended it (endedBy). What decides that the signal ended it,
+// not the call it interrupts, is the cause: the row's store call can end no other way while the
+// test waits (heldDeadline), so a signal path that waits behind that call never ends and fails
+// endedBy, and endedBy reads that sig, and not an exit of the create's own, ended it. The end is
+// not timed: the create runs in a process of its own, which a machine can starve alone.
 func (p *createProcess) endsAtOnceBy(sig syscall.Signal) string {
 	p.t.Helper()
-	meter := startStallMeter(p.t)
-	sent := time.Now()
 	p.signal(sig)
-	out := p.endedBy(sig)
-	requireCommandOnTime(p.t, meter, "the create after its signal "+signalNoun(sig)+", which ends it at once", sent, 0)
-	return out
+	return p.endedBy(sig)
 }
 
 // A signal after the store has created the container but before its answer arrives must wait

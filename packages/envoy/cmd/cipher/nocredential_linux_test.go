@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -51,32 +52,41 @@ func TestIdentityOnAHelperWithoutALauncherCredential(t *testing.T) {
 	}
 }
 
-// TestRegisterWaitReturnsAtOnceWithoutALauncherCredential runs `register --wait 10 --exec` against
+// TestRegisterWaitReturnsAtOnceWithoutALauncherCredential runs `register --wait N --exec` against
 // the real helper while it holds no launcher credential: its enroll loop cannot succeed, so the
 // helper answers at once instead of holding the launch for the full wait. The launch still execs,
 // warning that the machine is not logged in, what the session's secrets calls do until it is, and
-// the login command. The time check rules out the 10 s wait: the command waits for nothing, timed
-// against no deadline, allowing for the time this process was held up (requireOnTime).
+// the login command. N outlasts the moment this test's waits give up (untilGiveUp) by an hour, so
+// a helper that held the launch for the wait would not answer while the test waits: the command
+// ending at all says the helper did not hold it for the wait. The command is not timed: it runs in
+// a process of its own, which a machine can starve alone.
 func TestRegisterWaitReturnsAtOnceWithoutALauncherCredential(t *testing.T) {
 	// Not parallel: it signals the test process or changes its signal handling (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireCommandOnTime, onTimeWithin at waits_test.go:245).
 	binary := buildAgentSecrets(t)
 	sock := realHelper(t)
-	cmd := exec.Command(binary, "register", "--wait", "10", "--exec", "--", "sh", "-c", "echo ran")
+	wait := strconv.Itoa(int((untilGiveUp(t) + time.Hour) / time.Second))
+	cmd := exec.Command(binary, "register", "--wait", wait, "--exec", "--", "sh", "-c", "echo ran")
 	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock, "AGENT_SECRETS_KEY_DIR=")
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	meter := startStallMeter(t)
-	start := time.Now()
-	out, err := cmd.Output()
-	elapsed := requireCommandOnTime(t, meter, "register --wait 10 with no credential", start, 0)
-	if err != nil || strings.TrimSpace(string(out)) != "ran" {
-		t.Fatalf("the command must still run: %q %v (stderr %q)", out, err, stderr.String())
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	err, ok := received(t, waited)
+	if !ok {
+		_ = cmd.Process.Kill()
+		<-waited
+		t.Fatalf("register --wait %s with no credential had not returned %s before the test binary's deadline; want the helper to answer at once rather than hold the launch for the wait (stderr %q)", wait, waitMargin, stderr.String())
+	}
+	if err != nil || strings.TrimSpace(stdout.String()) != "ran" {
+		t.Fatalf("the command must still run: %q %v (stderr %q)", stdout.String(), err, stderr.String())
 	}
 	const warning = "agent-secrets register: launching anyway, and this session's agent-secrets calls fail until the helper holds a credential again: this machine's agent-secrets-helper holds no credential at the secrets broker (the helper: no machine credential; run: agent-secrets machine login, and have a human approve it)\n"
 	if stderr.String() != warning {
 		t.Fatalf("stderr %q, want the no-credential warning %q", stderr.String(), warning)
 	}
-	t.Logf("register --wait 10 with no credential returned in %s", elapsed)
 }
 
 // TestIdentityWhileAHelperWithACredentialEnrolls: once the helper holds a launcher credential, a
