@@ -315,8 +315,9 @@ func (s spentProofs) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _,
 	sum := sha256.Sum256([]byte(jti + "\x00" + htu))
 	key := hex.EncodeToString(sum[:])
 	// BoundedOn ends the wait with the request, or with the connection the create went out on, as
-	// the session, interest and role-claim bucket calls a request makes do; the abandoned create
-	// may still land, which is the right way round for a record whose whole purpose is to be there.
+	// the session, interest and role-claim bucket calls a request makes do, and waits within it for
+	// a connection nats.go is reconnecting; the abandoned create may still land once sent, which is
+	// the right way round for a record whose whole purpose is to be there.
 	revision, _, err := bus.BoundedOn(ctx, s.kv, func() (uint64, error) {
 		return s.kv.Create(key, nil)
 	})

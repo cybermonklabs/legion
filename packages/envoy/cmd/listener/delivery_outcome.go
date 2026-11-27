@@ -1,18 +1,14 @@
 package main
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
-	"time"
 
-	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
@@ -33,8 +29,12 @@ type deliveryExceptionPayload struct {
 	SourceSession    string `json:"source_session"`
 }
 
+// isControlTopic reports whether topic is a role lane, whose undeliverable message raises a
+// delivery exception whatever its outcome names. A message on an agent subject raises none: the
+// session's own consumer delivers it, and the listener reports a session with no record by its
+// wake (noRecordAgentDelivery).
 func isControlTopic(topic string) bool {
-	return strings.HasPrefix(topic, contracts.RoleTopicPrefix) || strings.HasPrefix(topic, contracts.AgentTopicPrefix)
+	return strings.HasPrefix(topic, contracts.RoleTopicPrefix)
 }
 
 func isExceptionsTopic(topic string) bool {
@@ -101,94 +101,36 @@ func deliveryExceptionEnvelope(item contracts.Envelope, reason, recipientSession
 }
 
 // publishDeliveryException publishes item's delivery exception for reason, on the transport its
-// own lane takes: the stream stores the lane of an agent subject and of a team topic, and a role
+// own lane takes (bus.Client.Publish): the stream stores the lane of a team topic, and a role
 // lane's exception keeps core NATS, since no stream subject captures it. Every fanout refusal took
 // core NATS until team topics were stored, which keeps nothing: the report of a team message
 // reached only a reader subscribed at that moment, where the stream's copy reaches a session's
-// consumer whenever that session comes back. With no origin it publishes through
-// bus.Client.Publish, which judges the lane's transport once itself (bus.Client.UsesCoreTransport,
-// bus.Client.PublishTakesJetStream). origin, when not empty, identifies the stored message the
-// exception is about (exceptionOrigin), and the lane is then judged once, as the publish's
-// transport judges it (bus.Client.PublishTakesJetStream), within exceptionLaneJudgement, and the
-// exception published on that answer: on a lane it takes JetStream for, under Nats-Msg-Id
-// exception.<reason>.<origin>, so the stream keeps one copy however many listeners raise it for
-// that message, each from its own durable, a lane only a newer build's subjects capture among
-// them; on any other lane, over core NATS (bus.Client.PublishAckOn), never through Publish, whose
-// own judgement could answer otherwise on a read of the deployed stream's subjects landing between
-// the two. A lane the client's own subjects leave uncaptured takes JetStream once a read of those
-// subjects again captures it, so a lane only a read since the client's last captures is stored
-// under that one id too, rather than sent over core NATS, which the stream stores under no message
-// id: a second copy beside the one another listener stored under the one-copy id. That judgement
-// makes no read within the bus's 250 ms gap after the last one or while another read younger than
-// 2 s is in flight, and a read can fail: in each case the lane is judged on the subjects the
-// client holds, and an exception on a lane only a newer build's subjects capture can still be that
-// second copy.
+// consumer whenever that session comes back. No message on an agent subject raises one: the
+// session's own consumer delivers it, and a session with no record is reported by its wake
+// (agentSubjectDelivery).
 //
-// A clustered stream still storing another listener's copy refuses this one as still in process
-// under that publish (bus.ErrDuplicateInProcess), which applyDeliveryOutcome logs apart from a
-// failure (exceptionPublishInProcessLine).
+// Publish judges the lane's transport once, on the deployed stream's subjects, read again where
+// the subjects the client holds leave the lane uncaptured (bus.Client.PublishTakesJetStream), and
+// publishes on that judgement (bus.Client.PublishAckWithin). On a lane it takes JetStream for, the
+// exception's own dedupe key, envoy.exception.<deliveryExceptionID of the event, the recipient and
+// the reason>, is its Nats-Msg-Id (bus.namesItsDeliveryException), so one report raised again - by
+// a redelivery, or by another pod of the machine reading the same message after a take-over - is
+// stored once, and two different reports are stored as two. A clustered stream still storing an
+// earlier publish of the same report refuses this one as still in process under it
+// (bus.ErrDuplicateInProcess), which applyDeliveryOutcome logs apart from a failure
+// (exceptionPublishInProcessLine) and settles as a failure, never as a stored report.
 //
-// It runs inside a delivery handler, which has no request deadline of its own, so each of its
-// publishes keeps the bus's own bound, which Publish sets and PublishStoredAs and PublishAckOn
-// take for a context with no deadline, and it carries the original payload whatever its size.
-func publishDeliveryException(client *bus.Client, item contracts.Envelope, reason, recipientSession, origin string) error {
+// It runs inside a delivery handler, which has no request deadline of its own, so it keeps the
+// publish's own bound and carries the original payload whatever its size.
+func publishDeliveryException(client *bus.Client, item contracts.Envelope, reason, recipientSession string) error {
 	exception, err := deliveryExceptionEnvelope(item, reason, recipientSession, 0)
 	if err != nil {
 		return err
 	}
-	switch {
-	case origin == "":
-		err = client.Publish(exception)
-	case exceptionTakesJetStream(client, exception.Topic):
-		// One stored copy however many listeners raise it, each reading the same message from its
-		// own durable: they agree on the origin, where they would each mint their own message id.
-		err = client.PublishStoredAs(context.Background(), exception.Topic, exception, "exception."+reason+"."+origin)
-	default:
-		_, err = client.PublishAckOn(context.Background(), exception, false)
-	}
-	if err != nil {
+	if err := client.Publish(exception); err != nil {
 		return fmt.Errorf("publish delivery exception: %w", err)
 	}
 	return nil
-}
-
-// exceptionLaneJudgement bounds publishDeliveryException's judgement of its lane: its wait for a
-// read of the deployed stream's subjects, which the bus bounds at 2 s itself
-// (bus.Client.PublishTakesJetStream, firstStreamSubjectsRead). It is that same 2 s, so the handler
-// waits no longer than the read does, and a read the server leaves unanswered costs the exception
-// at most 2 s.
-const exceptionLaneJudgement = 2 * time.Second
-
-// exceptionTakesJetStream reports whether a publish of an exception on lane takes JetStream
-// (bus.Client.PublishTakesJetStream), judged within exceptionLaneJudgement.
-func exceptionTakesJetStream(client *bus.Client, lane string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), exceptionLaneJudgement)
-	defer cancel()
-	return client.PublishTakesJetStream(ctx, lane)
-}
-
-// exceptionOrigin identifies the stored message an exception is about for its Nats-Msg-Id: the
-// message's own Nats-Msg-Id, else its stream sequence, and "" for a message that is stored under
-// neither. Two pods that raise the same exception for one stored message therefore raise one
-// stored exception, whether it reached them through the machine's durable (deliveryMessage) or
-// through a session consumer's relay (bus.SessionMessage).
-func exceptionOrigin(header nats.Header, streamSeq uint64) string {
-	if msgID := header.Get(nats.MsgIdHdr); msgID != "" {
-		return msgID
-	}
-	if streamSeq == 0 {
-		return ""
-	}
-	return strconv.FormatUint(streamSeq, 10)
-}
-
-// exceptionOrigin is exceptionOrigin for a durable message, and "" for a core or live one, which
-// the stream stores nothing of to dedupe an exception by.
-func (message deliveryMessage) exceptionOrigin() string {
-	if message.mode != durableDelivery || message.msg == nil {
-		return ""
-	}
-	return exceptionOrigin(message.msg.Header, message.storedSeq())
 }
 
 // ledgerSettle is what a delivery outcome does with the pair's delivery-ledger attempt. settleNone
@@ -252,8 +194,6 @@ type deliveryOutcome struct {
 	// outcome is otherwise applied as it would be had the exception gone out.
 	exceptionReason string
 	fanoutRefusal   bool
-	// origin identifies the durable message an exception is about (exceptionOrigin), "" for none.
-	origin string
 	// exceptionFailureClearsAttempt makes an exception-publish failure settle the ledger attempt
 	// settleClear, whatever settle below names.
 	exceptionFailureClearsAttempt bool
@@ -284,7 +224,7 @@ func applyDeliveryOutcome(cfg listenerDeliveryHandlerConfig, item contracts.Enve
 	if outcome.exceptionReason != "" && !isExceptionsTopic(item.Topic) && (isControlTopic(item.Topic) || outcome.fanoutRefusal) {
 		if !cfg.edge.publishesException(item) {
 			cfg.edge.withhold(cfg.logger, item, outcome.exceptionReason)
-		} else if err := publishDeliveryException(cfg.client, item, outcome.exceptionReason, outcome.sessionID, outcome.origin); err != nil {
+		} else if err := publishDeliveryException(cfg.client, item, outcome.exceptionReason, outcome.sessionID); err != nil {
 			if errors.Is(err, bus.ErrDuplicateInProcess) {
 				cfg.logger.Warn(exceptionPublishInProcessLine, slog.String("error", err.Error()), slog.String("topic", item.Topic))
 			} else {

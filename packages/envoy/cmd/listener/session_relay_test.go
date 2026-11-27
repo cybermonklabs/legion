@@ -596,19 +596,19 @@ func TestSessionConsumerRestartWritesTheTopicsStoredWhenItHoldsTheLock(t *testin
 // next registration.
 func TestRelayRunExitTakesOrRefusesEveryWake(t *testing.T) {
 	t.Parallel()
-	wokenFirst := &relayRun{resume: make(chan struct{}, 1)}
-	if !wokenFirst.wake() {
+	wokenFirst := &relayRun{resume: make(chan uint64, 1)}
+	if !wokenFirst.wake(7) {
 		t.Fatal("a run that is not returning refused a wake")
 	}
-	if !wokenFirst.exit() {
-		t.Fatal("the run's exit missed the wake sent before it")
+	if heard, woken := wokenFirst.exit(); !woken || heard != 7 {
+		t.Fatalf("the run's exit took a wake %t of mark %d, want the wake sent before it, of mark 7", woken, heard)
 	}
 
-	exitedFirst := &relayRun{resume: make(chan struct{}, 1)}
-	if exitedFirst.exit() {
+	exitedFirst := &relayRun{resume: make(chan uint64, 1)}
+	if _, woken := exitedFirst.exit(); woken {
 		t.Fatal("the run's exit found a wake nobody sent")
 	}
-	if exitedFirst.wake() {
+	if exitedFirst.wake(7) {
 		t.Fatal("a returning run took a wake, which nothing would act on")
 	}
 }
@@ -617,8 +617,8 @@ func TestRelayRunExitTakesOrRefusesEveryWake(t *testing.T) {
 // a registration heard while the failed call ran included, rather than waiting its backoff out.
 func TestRelayRunRetryWaitEndsOnAWake(t *testing.T) {
 	t.Parallel()
-	run := &relayRun{resume: make(chan struct{}, 1)}
-	run.wake()
+	run := &relayRun{resume: make(chan uint64, 1)}
+	run.wake(1)
 	goesOn := make(chan bool, 1)
 	go func() { goesOn <- run.waitRetry(context.Background(), time.Hour) }()
 	select {
@@ -639,7 +639,7 @@ func newRestartableRun(t *testing.T, prefix string) (*relayRig, *relayRun) {
 	rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
 	sessionID := prefix + id.New()
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	return rig, &relayRun{sessionID: sessionID, resume: make(chan struct{}, 1)}
+	return rig, &relayRun{sessionID: sessionID, resume: make(chan uint64, 1)}
 }
 
 // restartRun restarts run's consumer at its ack floor as the relay does (sessionRelays.restart)
@@ -665,7 +665,7 @@ func (rig *relayRig) restartRun(t *testing.T, run *relayRun) {
 func TestRelayRunWakeFromBeforeARestartCostsNoRetryStep(t *testing.T) {
 	t.Parallel()
 	rig, run := newRestartableRun(t, "ses_wake_before_restart_")
-	if !run.wake() {
+	if !run.wake(rig.relays.delivery.mark()) {
 		t.Fatal("a run that is not returning refused a wake")
 	}
 	rig.restartRun(t, run)
@@ -686,7 +686,7 @@ func TestRelayRunWakeAfterARestartEndsTheRetryWaitAtOnce(t *testing.T) {
 	t.Parallel()
 	rig, run := newRestartableRun(t, "ses_wake_after_restart_")
 	rig.restartRun(t, run)
-	if !run.wake() {
+	if !run.wake(rig.relays.delivery.mark()) {
 		t.Fatal("a run that is not returning refused a wake")
 	}
 	goesOn := make(chan bool, 1)
@@ -701,32 +701,39 @@ func TestRelayRunWakeAfterARestartEndsTheRetryWaitAtOnce(t *testing.T) {
 	}
 }
 
-// A paused run waits its whole pause backoff out even when a wake was sent before the pause
-// began: the pause drops that wake as it begins (relayRun.dropWake), so a registration heard
-// before the pause costs the session no step of its backoff, and only one heard during the pause
-// ends it. The pause below is 300 ms and must last at least that long with a wake sent before it;
-// an hour-long pause, with a wake sent before it too, must still be running 300 ms in and end
-// within 5 s of the wakes sent during it. Kept, the wake sent before ended each pause at once.
-func TestRelayRunPauseOutlastsAWakeSentBeforeIt(t *testing.T) {
+// A paused run waits its whole pause backoff out when the wake sent before the pause began is for
+// a registration heard before the frame it paused on went out (relayRun.waitPause takes that wake
+// and drops it), so such a registration costs the session no step of its backoff, and only one
+// heard after that frame ends it. The pause below is 300 ms and must last at least that long with
+// such a wake sent before it; an hour-long pause, with such a wake sent before it too, must still
+// be running 300 ms in and end within 5 s of the wakes sent during it, each heard after the frame.
+// Kept, the wake sent before ended each pause at once.
+func TestRelayRunPauseOutlastsAWakeHeardBeforeItsFrame(t *testing.T) {
 	t.Parallel()
-	run := &relayRun{resume: make(chan struct{}, 1)}
-	if !run.wake() {
+	// from is the mark of the frame the run paused on: a wake at or below it was heard before
+	// that frame went out, one above it after.
+	const from = 5
+	run := &relayRun{resume: make(chan uint64, 1)}
+	if !run.wake(from) {
 		t.Fatal("a run that is not returning refused a wake")
 	}
 	const pause = 300 * time.Millisecond
 	started := time.Now()
-	if !run.waitPause(context.Background(), pause) {
-		t.Fatal("the pause reported the run stopped")
+	if goesOn, woken := run.waitPause(context.Background(), pause, from); !goesOn || woken {
+		t.Fatalf("the pause reported goesOn %t, woken %t, want the run going on, its backoff waited out", goesOn, woken)
 	}
 	if waited := time.Since(started); waited < pause {
 		t.Fatalf("the pause ended after %s, want its whole %s: the wake sent before it began cut it short", waited.Round(time.Millisecond), pause)
 	}
 
-	if !run.wake() {
+	if !run.wake(from) {
 		t.Fatal("a run that is not returning refused a wake")
 	}
 	goesOn := make(chan bool, 1)
-	go func() { goesOn <- run.waitPause(context.Background(), time.Hour) }()
+	go func() {
+		ok, _ := run.waitPause(context.Background(), time.Hour, from)
+		goesOn <- ok
+	}()
 	select {
 	case <-goesOn:
 		t.Fatalf("an hour-long pause ended within %s on the wake sent before it began", pause)
@@ -735,7 +742,7 @@ func TestRelayRunPauseOutlastsAWakeSentBeforeIt(t *testing.T) {
 	// Woken again and again, so a wake lands after the pause has begun whenever it began.
 	ended := time.After(5 * time.Second)
 	for {
-		run.wake()
+		run.wake(from + 1)
 		select {
 		case ok := <-goesOn:
 			if !ok {

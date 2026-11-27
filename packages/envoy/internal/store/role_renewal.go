@@ -216,7 +216,7 @@ func (r *Registry) releaseRefusedRoleClaimsByScan(ctx context.Context, sessionID
 		slog.String("session_id", sessionID),
 		slog.String("reason", viewErr.Error()),
 	)
-	claims, answered, err := bus.Bounded(ctx, func() ([]scannedRoleClaim, error) { return r.roleClaimsUntil(ctx) })
+	claims, answered, err := bus.Bounded(ctx, r.roles().Conn(), func() ([]scannedRoleClaim, error) { return r.roleClaimsUntil(ctx) })
 	if !answered || err != nil {
 		return nil, fmt.Errorf("list the role bucket's keys to release %s's claims of roles it may not hold: %w", sessionID, err)
 	}
@@ -513,14 +513,15 @@ func (f *renewalFailures) prune(now time.Time, window time.Duration) {
 }
 
 // RecordRenewalFailures records cause as a renewal failure of every role sessionID may hold, for a
-// registration whose store work failed before its renewal could run: the interest record's read
-// or write, or the session entry's write. Such a registration renews nothing, so every claim it
-// would have renewed goes unrenewed as surely as one whose own read failed. The roles are the ones
-// the renewal would have weighed but for the record it never got (weighedRoles): the role claim
-// copy's for sessionID while it can be served, and the role topics of the session's cached
-// interest row (Cached), so a role the copy lost still gets its record when the registration's
-// own read of the interest record is what failed. It reads nothing from either bucket, since the
-// bus it would read is the one that just failed the registration.
+// registration that failed before its renewal could run: at its store work (the interest record's
+// read or write, or the session entry's write), or at a consumer call that failed because NATS is
+// reconnecting (cmd/listener's deliveryRefusal.unanswered). Such a registration renews nothing, so
+// every claim it would have renewed goes unrenewed as surely as one whose own read failed. The
+// roles are the ones the renewal would have weighed but for the record it never got
+// (weighedRoles): the role claim copy's for sessionID while it can be served, and the role topics
+// of the session's cached interest row (Cached), so a role the copy lost still gets its record
+// when the registration's own read of the interest record is what failed. It reads nothing from
+// either bucket, since the bus it would read is the one that just failed the registration.
 func (r *Registry) RecordRenewalFailures(sessionID string, cause error) {
 	var topics []string
 	if row, ok := r.Cached(sessionID); ok {

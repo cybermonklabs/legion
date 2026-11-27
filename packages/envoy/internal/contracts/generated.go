@@ -374,6 +374,7 @@ var DispatchEventTypes = []string{
 	"issue.deployed",
 	"issue.pull_request_attribution_changed",
 	"issue.released",
+	"issue.role_holders_changed",
 	"issue.updated",
 	"message.accepted",
 	"message.answered",
@@ -596,6 +597,12 @@ const SessionClaimStale = 300000 * time.Millisecond
 const ListenerCallTimeout = 5000 * time.Millisecond
 const ListenerCallRetryDelay = 250 * time.Millisecond
 const ListenerCallAttempts = 2
+
+// BusUnansweredPrefix opens the error of every 503 the listener answers when its message bus did
+// not answer a request. Generated from BUS_UNANSWERED_PREFIX in packages/contracts, which
+// envoy-client's isBusUnanswered reads, so the words the listener writes and the words a client
+// tells that answer by cannot drift apart.
+const BusUnansweredPrefix = "envoy: the message bus did not answer"
 
 // DispatchLoginHeader is the request header a page puts on every write it makes, naming the login
 // of the person who pressed it, and DispatchLoginChanged the code of the 409 for one whose caller

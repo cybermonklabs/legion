@@ -320,7 +320,7 @@ Every other listener answers the path `404`, an upgrade included, so no shared l
   A frame unanswered at a close, or held by a socket that closed `slow_consumer`, is sent again by the owning relay, so a reopen loses nothing.
   So is a frame the NATS client drops past its own pending limits ahead of the queue (the socket's 32 frames and 16 MiB): the socket stays open, and the frame comes again after the owning relay's ack wait.
 
-- **Tests**: `cmd/listener/relay_socket_test.go` and `cmd/listener/relay_socket_caller_test.go` run the socket in one process with a stand-in broker, on the rig of `relay_socket_fixture_test.go`.
+- **Tests**: `cmd/listener/relay_socket_test.go`, `cmd/listener/relay_socket_reconnect_test.go` and `cmd/listener/relay_socket_caller_test.go` run the socket in one process with a stand-in broker, on the rig of `relay_socket_fixture_test.go`.
   `cmd/listener/relay_socket_live_test.go` (build tag `natslive`) runs two edge listeners under `natsgrant.Edge` on the hub's NATS image, with the real broker of `internal/cipher/ciphertest` and 30-second tokens; its binary checks every second (`-ldflags "-X main.relaySocketCheckBuild=1s"`).
 
 - **Rollout**: the socket holds each frame to the projects of the token that opened it before it holds the frame for its client (`edgeFrameVerdict`, called from `forward` before `enqueue`), as the relay holds each frame it sends (**Frames** above).

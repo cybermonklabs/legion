@@ -110,16 +110,17 @@ func ListenerBuckets() []string {
 const LastSeenPrefix = "seen."
 
 // ListenerLeaseKey is the key of machine machineID's delivery lease in ListenerStateBucket. The
-// listener's grant writes this key and no other machine's.
+// listener's grant writes this key and no other machine's. The machine's token in it is its
+// durable's name in the bucket's spelling (listenerStateToken).
 func ListenerLeaseKey(machineID string) string {
-	return "lease." + ListenerDurable(machineID)
+	return "lease." + listenerStateToken(ListenerDurable(machineID))
 }
 
 // ListenerLedgerPrefix begins each key of the delivery ledger in ListenerStateBucket of the
-// listeners that bind durable (ListenerDurable). The listener's grant writes its own machine's
-// ledger and no other.
+// listeners that bind durable (ListenerDurable), durable spelled as one token of the bucket's keys
+// (listenerStateToken). The listener's grant writes its own machine's ledger and no other.
 func ListenerLedgerPrefix(durable string) string {
-	return "delivery." + durable + "."
+	return "delivery." + listenerStateToken(durable) + "."
 }
 
 // ListenerHandBackPrefix begins each clean-hand-back mark in ListenerStateBucket of the listeners
@@ -129,9 +130,50 @@ func ListenerLedgerPrefix(durable string) string {
 // (cmd/listener, lease.MarkHandBack and lease.HandBackMarked). The listener's grant writes its own
 // machine's marks and no other's, and the bucket's MaxAge removes a mark nobody reads. A mark is
 // keyed by the revision it vouches for, not by the machine alone, so a stopping pod writes
-// nothing about the lease record once another pod has taken it.
+// nothing about the lease record once another pod has taken it. durable is spelled in the key as
+// listenerStateToken spells it.
 func ListenerHandBackPrefix(durable string) string {
-	return "handback." + durable + "."
+	return "handback." + listenerStateToken(durable) + "."
+}
+
+// listenerStateToken is durable, a listener's durable name (ListenerDurable), as one token of a
+// key of ListenerStateBucket. nats.go takes a key only in its alphabet, `-`, `/`, `_`, `=`, `.`, a
+// letter or a digit (nats.go@v1.55.0 kv.go validKeyRe), and a `.` there separates two tokens of the
+// key, so every byte outside that alphabet, and a `.`, is written as `/` and its two upper-case hex
+// digits: the `%` that starts each escape in a dotted machine id's durable
+// (listener-host%2Eexample%2Einternal) is `/25`, so that machine's lease key is
+// `lease.listener-host/252Eexample/252Einternal`. Every other byte stays as it is, so the key of a
+// machine whose durable is already spelled in the alphabet - every id that holds none of the
+// characters listenerName escapes - is the key it has always been. A durable never holds a `/`,
+// which listenerName escapes, so no two durables give one token, and each machine's grant
+// (natsgrant.ListenerState) names its own keys alone.
+func listenerStateToken(durable string) string {
+	keySafe := func(c byte) bool {
+		return c == '-' || c == '/' || c == '_' || c == '=' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+	}
+	escape := false
+	for i := range len(durable) {
+		if !keySafe(durable[i]) {
+			escape = true
+			break
+		}
+	}
+	if !escape {
+		return durable
+	}
+	const hex = "0123456789ABCDEF"
+	var b strings.Builder
+	b.Grow(3 * len(durable))
+	for i := range len(durable) {
+		if c := durable[i]; keySafe(c) {
+			b.WriteByte(c)
+		} else {
+			b.WriteByte('/')
+			b.WriteByte(hex[c>>4])
+			b.WriteByte(hex[c&0x0f])
+		}
+	}
+	return b.String()
 }
 
 // NotificationTopicPrefix begins every notification topic: the subjects the stream carries, the
@@ -141,6 +183,15 @@ const NotificationTopicPrefix = "notifications."
 // ExceptionTopicPrefix begins a delivery's exception lane: a failed or refused delivery is reported
 // on ExceptionTopicPrefix followed by its original topic.
 const ExceptionTopicPrefix = NotificationTopicPrefix + "envoy.exceptions."
+
+// DispatchTopicPrefix begins Dispatch's lane: every topic Dispatch publishes an issue's, a
+// document's or a project's events on, and its own announcements. Only Dispatch's NATS user may
+// publish directly under it, since the Legion daemon trusts an event there as Dispatch's
+// (packages/envoy/natsgrant, listenerGrant's publish deny, which a hub's users and the auth
+// service's answers both carry). A session on a host user it shares with the host's listener can
+// still have a message stored under it, by a stream update that adds a subject transform, until
+// the host's sessions connect through the auth service (dispatch://INFRA-840).
+const DispatchTopicPrefix = NotificationTopicPrefix + "dispatch."
 
 // LegionWakeTopic is the one topic the listener reports a wake of a released Legion issue pod
 // on: a message published to a role topic with no live holder, a message sent to the agent
@@ -160,16 +211,86 @@ const DispatchDeliveryDurable = "delivery-events"
 const DispatchJobDurable = "delivery-jobs"
 
 // ListenerDurable is the durable consumer of the stream that the listener of machine machineID
-// binds. A space in the machine id is a hyphen in the name.
+// binds: listener-<machineID> in the listener's spelling (listenerName).
 func ListenerDurable(machineID string) string {
-	return "listener-" + strings.ReplaceAll(machineID, " ", "-")
+	return listenerName("listener-", machineID)
 }
 
 // ListenerQueue is the queue group the listener of machine machineID subscribes the role lanes in,
-// so NATS hands each role message to one of the machine's listeners while a rolling deploy runs two.
-// A space in the machine id is a hyphen in the name.
+// so NATS hands each role message to one of the machine's listeners while a rolling deploy runs two:
+// envoy-listener-<machineID> in the listener's spelling (listenerName).
 func ListenerQueue(machineID string) string {
-	return "envoy-listener-" + strings.ReplaceAll(machineID, " ", "-")
+	return listenerName("envoy-listener-", machineID)
+}
+
+// ListenerSpelling is machineID in the listener's spelling (listenerName) with no prefix: the token
+// ListenerDurable and ListenerQueue carry after theirs. An edge listener's inbox prefix and its
+// receipt family carry it too (natsgrant.EdgeInboxPrefix, natsgrant.EdgeRelayReplyPrefix), so a
+// dotted id, such as a fully qualified host name, is one subject token there as well. An id that
+// holds none of the characters listenerName escapes stays as it is.
+func ListenerSpelling(machineID string) string {
+	return listenerName("", machineID)
+}
+
+// listenerNameRefused are the characters NATS refuses in a consumer name: nats-server refuses a
+// space, a tab, a carriage return, a line feed, a form feed, '.', '*', '>', '\' and '/'
+// (server/jetstream.go isValidAssetName), and nats.go refuses '.' and a space (jsm.go
+// checkConsumerName). A dot is also the separator of the subject tokens that carry the durable's
+// name ($JS.API.CONSUMER.CREATE.<stream>.<durable>, $JS.ACK.<stream>.<durable>.>).
+const listenerNameRefused = " \t\r\n\f.*>\\/"
+
+// machineIDEscape starts each escape in a listener name (listenerName).
+const machineIDEscape = '%'
+
+// maxConsumerNameBytes is the longest consumer name nats-server takes (server/jetstream_api.go
+// JSMaxNameLen).
+const maxConsumerNameBytes = 255
+
+// listenerName is prefix then machineID, with each ordinary space as a hyphen, as the listener has
+// always named its durable and queue group, and each other character NATS refuses in a consumer
+// name (listenerNameRefused) as machineIDEscape and that byte in two upper-case hex digits: a dot is
+// "%2E". Every other byte stays as it is, so the names of a machine id NATS takes do not change.
+// The escape makes a name NATS takes of an id with a dot, such as a fully qualified host name. An
+// id that holds machineIDEscape is refused (CheckListenerMachineID), so no two ids a listener
+// starts with give one name, except a space and a hyphen, which the listener has always spelled
+// alike.
+func listenerName(prefix, machineID string) string {
+	if !strings.ContainsAny(machineID, listenerNameRefused) {
+		return prefix + machineID
+	}
+	const hex = "0123456789ABCDEF"
+	var b strings.Builder
+	b.Grow(len(prefix) + 3*len(machineID))
+	b.WriteString(prefix)
+	for i := range len(machineID) {
+		switch c := machineID[i]; {
+		case c == ' ':
+			b.WriteByte('-')
+		case strings.IndexByte(listenerNameRefused, c) >= 0:
+			b.WriteByte(machineIDEscape)
+			b.WriteByte(hex[c>>4])
+			b.WriteByte(hex[c&0x0f])
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// CheckListenerMachineID refuses a machine id whose listener names (ListenerDurable,
+// ListenerQueue) can be the names of another id, or that NATS refuses. An id that holds
+// machineIDEscape can spell the escape of a dot in another id, and then the two ids share one
+// durable and one queue group. An id whose durable is over NATS's 255-byte limit for a consumer
+// name names no durable. The error does not name the setting: the caller adds the name of the
+// setting it read the id from.
+func CheckListenerMachineID(machineID string) error {
+	if strings.ContainsRune(machineID, machineIDEscape) {
+		return fmt.Errorf("holds %q, which starts an escape in the listener's NATS names, so another machine id can give the same names", machineIDEscape)
+	}
+	if n := len(ListenerDurable(machineID)); n > maxConsumerNameBytes {
+		return fmt.Errorf("makes the durable name listener-<id> %d bytes long, over NATS's %d-byte limit for a consumer name", n, maxConsumerNameBytes)
+	}
+	return nil
 }
 
 // RoleLaneQueue is the queue group every listener subscribes the role lanes in, whatever its
@@ -193,7 +314,8 @@ func DeliverSubject(sessionID string) string {
 }
 
 // RelayReplyPrefix begins the receipt family of the edge listeners: an edge machine's relay frame
-// receipts are this prefix and its machine id, then a nuid, the session id and a token
+// receipts are this prefix and its machine id in the listener's spelling (ListenerSpelling), then a
+// nuid, the session id and a token
 // (relayreply.<machine>.<nuid>.<session id>.<token>; natsgrant.EdgeRelayReplyPrefix).
 // Its grant subscribes only its own machine's and publishes every machine's, since the listener
 // serving a session's relay socket answers on the family of the machine holding the session's
@@ -205,8 +327,9 @@ func DeliverSubject(sessionID string) string {
 const RelayReplyPrefix = NotificationTopicPrefix + "envoy.relayreply."
 
 // SessionReplySubject is the reply subject of one request made of session sessionID,
-// <inbox>.<session id>.<token>: inbox a reply inbox of the requester's own (nats.NewInbox), then
-// the session's id, then a token of 128 random bits (crypto/rand.Text, 26 base32 characters).
+// <inbox>.<session id>.<token>: inbox a reply inbox of the requester's own (nats.NewInbox), or an
+// edge listener's receipt family and a nuid (RelayReplyPrefix), then the session's id, then a
+// token of 128 random bits (crypto/rand.Text, 26 base32 characters).
 // Every request a session answers carries one - the relay's frames (cmd/listener's
 // sessionRelays), the listener's connection probe and Dispatch's agent stream replay
 // (internal/dispatch/agentstream). The id is there so that a grant can admit a session's own
@@ -308,7 +431,7 @@ const streamDuplicateWindow = contracts.DeliveryDuplicateWindow
 // own kept and resume lanes (listenerOwnStreamLanes, streamCarriedSubjects).
 var streamSubjects = []string{
 	"notifications.agent.>",
-	"notifications.dispatch.>",
+	DispatchTopicPrefix + ">",
 	"notifications.github.>",
 	"notifications.slack.>",
 	// The Go Legion daemon's notices for the project's controller
@@ -1097,7 +1220,7 @@ func ensureStreamWithConfig(ctx context.Context, logger *slog.Logger, js nats.Je
 	// every other wait of it, naming the write that was in flight. The update bounds itself
 	// (updateStream).
 	written := func(step string, write func() error) error {
-		_, answered, err := Bounded(ctx, func() (struct{}, error) { return struct{}{}, write() })
+		_, answered, err := Bounded(ctx, nil, func() (struct{}, error) { return struct{}{}, write() })
 		if !answered {
 			return fmt.Errorf("%s %s: no answer when the wait ended: %w", step, Stream, context.Cause(ctx))
 		}
@@ -1343,7 +1466,7 @@ func updateStream(ctx context.Context, logger *slog.Logger, js nats.JetStreamCon
 			return result, nil
 		}
 		result.sent = update
-		_, answered, err := Bounded(ctx, func() (*nats.StreamInfo, error) { return js.UpdateStream(&update) })
+		_, answered, err := Bounded(ctx, nil, func() (*nats.StreamInfo, error) { return js.UpdateStream(&update) })
 		switch {
 		case !answered:
 			return result, fmt.Errorf("the update drew no answer when the wait ended: %w", context.Cause(ctx))

@@ -153,6 +153,13 @@ func sessionConsumerNameOf(sessionID string) (string, error) {
 // wait out their whole timeout for an answer a refused request never gets. The configuration and
 // the answers are the jetstream package's types. A pull (SessionPull) sends its own pull
 // requests, so starting one costs no API call.
+//
+// Every request it sends goes through requestConfirmed: a consumer's info, create, update and
+// delete, the consumer list, the stream read and each stored-message read. So a call made while
+// nats.go reconnects the connection waits for the connection within its ctx, and fails as
+// ErrReconnecting, `bus: NATS is reconnecting`, when ctx ends first or when a request fails while
+// the connection is still not connected. The listener answers that error as a bus that did not
+// answer (cmd/listener sessionDelivery.refused), not as a consumer it could not make.
 type SessionConsumers struct {
 	client *Client
 	// ackWait is SessionConsumerAckWait, shortened by a test that waits out a redelivery.
@@ -336,11 +343,24 @@ func (s *SessionConsumers) Drain(timeout time.Duration) error { return s.client.
 // Publish publishes msg over core NATS on the connection, waiting for a connection nats.go is
 // replacing until ctx ends: a relay frame on a session's DeliverSubject, which the stream does not
 // store, so it travels on the connection the frame's message was pulled and is answered on.
+//
+// A frame whose headers and data together are past the server's max payload is refused before it
+// is sent, as ErrTooLarge naming both sizes: a stored message that fits the limit alone can still
+// make such a frame once the relay adds its headers, and every send of it is refused again. A
+// frame the connection dropped under after the wait is refused as ErrReconnecting (Reconnecting).
 func (s *SessionConsumers) Publish(ctx context.Context, msg *nats.Msg) error {
 	if err := s.client.ensureConnWithContext(ctx); err != nil {
 		return err
 	}
-	return s.client.Connection().PublishMsg(msg)
+	conn := s.client.Connection()
+	err := conn.PublishMsg(msg)
+	if errors.Is(err, nats.ErrMaxPayload) {
+		// nats.go weighs the headers and the data against the limit; Size counts the subject
+		// and the reply too.
+		return fmt.Errorf("%w: a frame of %d bytes, headers included, against the server's max payload of %d bytes",
+			ErrTooLarge, msg.Size()-len(msg.Subject)-len(msg.Reply), conn.MaxPayload())
+	}
+	return Reconnecting(err)
 }
 
 // NewInbox names a new inbox on the connection, under its inbox prefix (WithInboxPrefix): the
@@ -405,7 +425,10 @@ type SessionConsumerStart struct {
 	// floor, which is at or above StartSeq-1 unless the server lowered it after the stream lost
 	// data (ackFloor), and says nothing about where the consumer was created: a session that has
 	// acked for days is recreated from AckFloor+1 and not from StartSeq (the listener restores a
-	// consumer a delete took, sessionDelivery.deleteConsumer).
+	// consumer a delete took, sessionDelivery.deleteConsumer). A restart that keeps the consumer
+	// it found (RestartAtFloor's keepAtFloor, KeepListed) answers the sequence after that floor as
+	// StartSeq, so there too AckFloor is StartSeq-1. Every start a relay runs from carries it
+	// (cmd/listener relayPassedSet.prune).
 	AckFloor uint64
 }
 
@@ -981,11 +1004,11 @@ func (s *SessionConsumers) ListSessionConsumers(ctx context.Context) (map[string
 // when that restart would send nothing: nothing it delivered awaits an ack, its filters and
 // settings are already what subjects reduce to, no restart left it a pending start, and its next
 // sequence (ackFloor plus one) is not past the sequence after the stream's last. It then returns
-// the start RestartAtFloor's keep returns (the sequence after the floor, the stream's identity and
-// the gap, from a stream read shared as streamState shares it) and true, with no API call of its
-// own. Otherwise it returns false and the caller restarts the consumer (RestartAtFloor), which
-// creates a consumer past the stream's end again at that next sequence, and create clamps that
-// start to the stream's first sequence.
+// the start RestartAtFloor's keep returns (the sequence after the floor, that floor as the
+// start's AckFloor, and the stream's identity and the gap, from a stream read shared as
+// streamState shares it) and true, with no API call of its own. Otherwise it returns false and
+// the caller restarts the consumer (RestartAtFloor), which creates a consumer past the stream's
+// end again at that next sequence, and create clamps that start to the stream's first sequence.
 //
 // The stream read begins after this call, and so after the list that read info, so it cannot trail
 // the consumer as listed: where keepAtFloor holds a consumer past its read's end to a second read,
@@ -1017,7 +1040,7 @@ func (s *SessionConsumers) KeepListed(ctx context.Context, sessionID string, sub
 	if startSeq > state.lastSeq+1 {
 		return SessionConsumerStart{}, false, nil
 	}
-	return SessionConsumerStart{StartSeq: startSeq, Gap: startSeq < state.firstSeq, StreamID: state.id}, true, nil
+	return SessionConsumerStart{StartSeq: startSeq, Gap: startSeq < state.firstSeq, StreamID: state.id, AckFloor: startSeq - 1}, true, nil
 }
 
 // StreamID returns the stream's identity, its StreamIDMetadataKey metadata, which a relay frame
@@ -1192,9 +1215,9 @@ func (s *SessionConsumers) reportNarrowedAs(sessionID string, passedOver map[str
 }
 
 // deleteReadBackTimeout bounds the read of a consumer whose delete went unanswered
-// (reportUnansweredDelete). It runs on a context of its own, since the caller's may have ended
-// with the delete: the read decides whether a loss is named, and costs that bound only on that
-// error.
+// (reportUnansweredDelete), within the caller's own ctx: a read whose ctx has ended sends no
+// request (publishConfirmed) and fails, so the loss is then reported unconfirmed rather than read
+// past the caller's bound.
 const deleteReadBackTimeout = 2 * time.Second
 
 // reportUnansweredDelete reports the loss passedOver counted for a restart of consumer name whose
@@ -1208,7 +1231,7 @@ func (s *SessionConsumers) reportUnansweredDelete(ctx context.Context, sessionID
 	if s.narrowed == nil || len(passedOver) == 0 {
 		return
 	}
-	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deleteReadBackTimeout)
+	readCtx, cancel := context.WithTimeout(ctx, deleteReadBackTimeout)
 	defer cancel()
 	_, err := s.info(readCtx, name)
 	switch {

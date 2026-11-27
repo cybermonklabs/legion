@@ -111,11 +111,11 @@ func kvOperation(header nats.Header) nats.KeyValueOp {
 // answers for the key's subject `$KV.<bucket>.<key>`, and whether it is a delete or purge marker:
 // the read NewestFromLeader and GetLatest's marker read (newestMarker) both make. It goes out on
 // the legacy JetStream context of the connection this handle reads the bucket's stream through;
-// building one sends nothing, so each read builds its own rather than keep one on the handle. A
-// subject that holds no message answers nats.ErrMsgNotFound, and every error is nats.go's own,
-// which each caller names.
+// building one sends nothing, so each read builds its own rather than keep one on the handle. Its
+// read names a refusal while nats.go reconnects (namedRequests). A subject that holds no message
+// answers nats.ErrMsgNotFound, and every other error is nats.go's own, which each caller names.
 func (kv KeyValue) newestMessage(key string, opts ...nats.JSOpt) (*nats.RawStreamMsg, bool, error) {
-	js, err := kv.streams.Conn().JetStream()
+	js, err := JetStreamOn(kv.streams.Conn())
 	if err != nil {
 		return nil, false, err
 	}

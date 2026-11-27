@@ -800,7 +800,7 @@ func newRelayBench(b *testing.B) *relayBench {
 		publishDeadLetter:   client.PublishStoredAs,
 		publishExpiryNotice: client.PublishKeptCopyExpiry,
 		keepPublish:         client.PublishStoredAck,
-		deferredUnplaceable: newUnplaceableDeferrals(),
+		deferredUnplaceable: newUnplaceableDeferrals(0),
 		roleKeepDrains:      newRoleKeepGuards(),
 		now:                 time.Now,
 		consumerGrant:       &consumerGrantAnswer{},

@@ -7,8 +7,9 @@ import {
   startEnvoyStack,
   useEnvoyStackDirectory,
 } from "../../test/envoy-stack";
-import { createConsumerDelivery, inboundUnavailable } from "../consumer-delivery";
+import { createConsumerDelivery } from "../consumer-delivery";
 import { createDeliveryLedger } from "../delivery-ledger";
+import { inboundUnavailable } from "../inbound-outage";
 import { registerWithRelay } from "../relay-registration";
 import { createEnvoyClient } from "../transport";
 
@@ -109,10 +110,7 @@ describe.skipIf(!envoyStackEnabled)("a topic only a newer build's stream subject
         relay: delivery,
         ownAgentSubject: own,
         followed: () => [TOPIC],
-        outage: inboundUnavailable(
-          (why) => failures.push(why),
-          () => undefined
-        ),
+        outage: inboundUnavailable(({ why }) => failures.push(why)),
         send: (topics, request) => {
           sent.push([...topics]);
           return client.subscribe({

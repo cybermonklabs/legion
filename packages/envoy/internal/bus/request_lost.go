@@ -70,6 +70,16 @@ func (c *Client) watchConnection() connWatch {
 	return watch
 }
 
+// watchConnectionWithin is watchConnection for a request its caller bounds by ctx. The reconnect
+// count's read waits for nats.go's connection lock (nats.Conn.Stats), which nats.go holds through
+// a reconnect's dial and handshake, so it is made within ctx (readWithin): a read that has not
+// answered when ctx ends reports false, and the request sends nothing and answers as a wait for a
+// reconnecting connection that ctx ended (reconnectWaitEnded), rather than holding its caller
+// until the attempt ends. A ctx that can never end reads it at once on the caller's goroutine.
+func (c *Client) watchConnectionWithin(ctx context.Context) (connWatch, bool) {
+	return readWithin(ctx, c.watchConnection)
+}
+
 // lost reports whether a connection event of the client (ConnectionChanged) has dropped the
 // watched request. An event that left the request's connection the client's current one, open,
 // and with its reconnect count unmoved is none of the request's (lostRequest): it is a disconnect

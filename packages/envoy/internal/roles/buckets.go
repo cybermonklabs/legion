@@ -106,6 +106,12 @@ func (b *Buckets) bucket(ctx context.Context, name string) (bus.KeyValue, error)
 // opens its bucket's handle on that connection itself, bucket). A read that did not answer in
 // time, or was lost with its connection, is named by what. It is a function and not a method only
 // because a method cannot take a type parameter.
+//
+// read starts at once: bus.BoundedOnConnection waits for no connection. A read made while nats.go
+// reconnects that waited for the connection first, during a handshake too, would never begin its
+// bucket's open when its bound ends in that wait. Started at once, a read while nats.go reconnects
+// begins its bucket's open with b.mu released (bucket) and answers at its bound, and a request
+// nats.go refuses meanwhile fails as bus.ErrReconnecting.
 func within[T any](ctx context.Context, b *Buckets, what string, read func() (T, error)) (T, error) {
 	ctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()

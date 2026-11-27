@@ -13,9 +13,10 @@ export const EXCEPTION_TOPIC_PREFIX = "notifications.envoy.exceptions.";
 /**
  * The kinds of topic the notification stream (`ENVOY_NOTIFICATIONS`) stores, in the order of
  * `streamSubjects` in packages/envoy/internal/bus/stream.go (each a `notifications.<kind>.>`
- * prefix, excluding exception and listener-internal prefixes). The subscribe and publish tools
- * list them (`STORED_DELIVERY` in tool-contract.ts), so a kind the stream comes to store reaches
- * those texts from this list alone.
+ * prefix, excluding exception and listener-internal prefixes). The subscribe tool lists them, and
+ * the publish tool lists each of them whose lane its route does not refuse (`STORED_DELIVERY` and
+ * `PUBLISHED_DELIVERY` in tool-contract.ts), so a kind the stream comes to store reaches those
+ * texts from this list alone.
  */
 export const STORED_TOPIC_KINDS: readonly string[] = [
   "agent",

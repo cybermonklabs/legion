@@ -401,7 +401,9 @@ goes on with the 1013's waits, and any other status, an upgrade not answered wit
 listener that cannot be reached and a failed trade are tried again after 1 s doubling to a minute.
 Each cause doubles its own waits, and a socket open a minute starts them all afresh. Every other
 open presents the token in hand, with a fresh proof. A trade that failed is told to the session
-once per outage (`inboundUnavailable`). The socket never ends an outage: the report is the
+once per outage (`inboundUnavailable`), and so is a refusal of the session's own relay subject,
+at once: the host's hold of a registration that found no relay subject is for an open still
+being tried. The socket never ends an outage: the report is the
 host's, shared with its registrations, so only a registration the listener accepted ends it, and
 one follows every open. A repeated
 failure is logged once until its words change. Each reopen takes every live subscription again and
@@ -458,7 +460,16 @@ keeps the listener's `error` as its message, with ` (reason: <reason>)` after it
 names one,
 and keeps the body's `code`, `reason` and `expected`, and the `retry_after_seconds` of a refusal
 for the sender's rate as `retryAfterSeconds`. A 429 is not sent again: the client throws it at
-once, and the caller decides whether to wait `retryAfterSeconds` and send the message again. The
+once, and the caller decides whether to wait `retryAfterSeconds` and send the message again.
+`isBusUnanswered` tells the listener's bus-outage answer apart: an `EnvoyApiError` with status
+503 whose `error` begins with `BUS_UNANSWERED_PREFIX` (`@legion/contracts`), `envoy: the message
+bus did not answer`. Part of the request can have landed before it: an unsubscribe gets it after
+the record was written, when only the update of the consumer's filter met a NATS reconnect. A
+`subscribe` or an `unsubscribe` an attempt of which got that answer fails with it, also where its
+retry got no answer or a 5xx that names no reason: a registration is told as one that is not
+recorded for certain, and a removal is warned as one that may already have landed. A refusal on
+the retry is still the refusal: a 4xx, and a 5xx that names a reason, such as a registration's
+`consumer_limit` 503. Every other call throws what its last attempt got. The
 listener's bearer is the `token` the client is given (`envoySettings`); without one it sends no
 `Authorization` header.
 
@@ -471,6 +482,22 @@ client of its own and answers out of the token it already has. A read of another
 record (`getInterest`, `getRole`, `listSessions`) names no session and is answered the
 credential the client was built with. A bearer is the same header whichever session a call acts
 for.
+
+The client's stop gate (R24 of dispatch://INFRA-3589): a host passes its reading that the
+session's stop has begun as `stopping`, and the client reads it before each attempt and before
+each retry. Once it answers true, a call of the session's registration and role state is refused
+before anything is sent, with `EnvoyStoppingError`, whose `call` names it: `subscribe` (a
+registration and every heartbeat), `unsubscribe`, `getInterest`, `setRole` (a claim, a transfer
+and a re-assertion) and `getRole`. The one list is `STOP_GATE` in `transport.ts`. The stop's own
+calls still go: its DELETE (`unregisterSession`) and, where the host's stop hands its roles back
+(the Envoy entry's does; claude-envoy's does not), the hand-back of each role hold
+(`stopHandBack(client)`). A `send` and a `publish` still go too: they carry a message the
+model asked for before or as the stop began, and losing it is worse than sending it. An attempt
+already sent when the stop begins is not cancelled, and its answer is read as any answer is. A
+retry the gate refuses after an earlier attempt was sent ends the call with that attempt's own
+error, as a call whose retries ran out ends: that attempt may have landed. Only a call none of
+whose attempts was sent throws `EnvoyStoppingError`, and an attempt the listener answered with
+the `503` that says nothing was sent (`EnvoyApiError.notSent`, above) counts as not sent.
 
 `subscribe` sends the host's `plugin` (`{name, version}`, required) as `plugin` and
 `plugin_version` on every registration, and exposes listener warnings, including a topic that has
@@ -557,8 +584,18 @@ which, once, with the reason (`drop`, worded by `refusedTopicsNoticeText`), logs
 them, and registers the rest at once, whichever path registered. The resend names only the topics
 the session still follows (`followed` is read again before it), so one unsubscribed while the
 registration waited is not put back, and the relay forgets only the refused topics
-(`ConsumerDelivery.unfollow`), so one another registration added meanwhile stays followed. Its 503
-`repositories_unknown` and 403 `token_not_admitted` drop nothing.
+(`ConsumerDelivery.unfollow`), so one another registration added meanwhile stays followed. Once the
+host's `stopping` answers true, a project refusal drops nothing, tells nothing and sends nothing
+again, and a registration not yet sent is not sent. Its 503 `repositories_unknown` and 403
+`token_not_admitted` drop nothing. The 503 `repositories_unknown` says that the edge could not
+read the repositories of the session's projects: it withholds the messages of the session's
+GitHub topics. Where the edge already held the session's registration, it keeps that registration
+and the session's consumer, so the session's other messages still reach it; where it held none,
+it creates none, and the session receives nothing until a registration is accepted. The client
+cannot tell which. So `inboundUnavailable` sorts it once into the kind `github_withheld`
+(`InboundOutageKind`) and hands the host that kind beside the message (`InboundOutage`), and
+`inboundUnavailableNoticeText` words it as "Envoy GitHub topics withheld", which says both cases,
+not as a session that receives nothing. Each host looks up the words of its own lines by the kind.
 
 ## envoy.json
 

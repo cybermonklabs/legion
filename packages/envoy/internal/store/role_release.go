@@ -574,7 +574,7 @@ func (r *Registry) releaseAllRoleClaimsByScan(ctx context.Context, sessionID str
 	}
 	defer undecodable.report(r.logger(), sessionID)
 	defer refusedKeys.report(r.logger(), sessionID)
-	claims, answered, err := bus.Bounded(ctx, func() ([]scannedRoleClaim, error) { return r.roleClaimsUntil(ctx) })
+	claims, answered, err := bus.Bounded(ctx, r.roles().Conn(), func() ([]scannedRoleClaim, error) { return r.roleClaimsUntil(ctx) })
 	if !answered || err != nil {
 		return fmt.Errorf("list the role bucket's keys to release %s's claims: %w", sessionID, err)
 	}

@@ -13,6 +13,7 @@ const session: ChannelSession = {
   follow: async () => ({ added: [], warnings: [] }),
   unfollow: async () => ({ removed: [] }),
   rememberRole: async () => undefined,
+  stopping: () => false,
   onRoleRegained: () => undefined,
   capabilitiesChanged: () => undefined,
   observe: () => undefined,

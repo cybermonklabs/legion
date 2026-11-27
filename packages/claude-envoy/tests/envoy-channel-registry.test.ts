@@ -1,10 +1,10 @@
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import {
+  BUS_UNANSWERED_PREFIX,
   canonicalTopic,
   legacyDispatchIssueSubject,
   uncapturedTopicWarning,
 } from "@legion/contracts"
-import { projectRefusal } from "@legion/envoy-client/test/subscribe-answer"
 import { EnvoyApiError, type EnvoyClient } from "@legion/envoy-client/transport"
 import {
   type ChannelSession,
@@ -16,7 +16,6 @@ import {
   directSubject,
   type FakeClient,
   FakeNats,
-  FakeNotifier,
   noInterest,
   recordingClient,
   sessionOptions,
@@ -269,6 +268,67 @@ test("a registry removal that fails is reconciled by the next heartbeat, without
     expect([...entry].sort()).toEqual([directSubject, reFollowed])
   } finally {
     await session.shutdown()
+  }
+})
+
+// The listener answers its bus-outage 503 also after it wrote the entry, when only the update of
+// the consumer's filter met a NATS reconnect, so the line that says the removal could not be
+// dropped from the registry is for every other failure.
+test("a removal's registry write the listener's message bus did not answer is reported as that outage, and any other failure as not dropped", async () => {
+  const stateDirectory = scratchState()
+  const nats = new FakeNats()
+  const outage = `${BUS_UNANSWERED_PREFIX}: set the filter of ses_claude's session consumer: bus: NATS is reconnecting`
+  let failure: unknown
+  const client = recordingClient([], {
+    unsubscribe: async () => {
+      throw failure
+    },
+  })
+  const written: string[] = []
+  const stderr = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+    written.push(String(chunk))
+    return true
+  })
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
+      connection: nats,
+      client,
+    }),
+  )
+  const outageBody = JSON.stringify({ error: outage })
+  const url = "http://listener/v1/interests/unsubscribe"
+  const notDropped = "envoy-channel: could not drop a removed subscription from the registry"
+
+  try {
+    const rows = [
+      {
+        issue: "DSP-31",
+        error: new EnvoyApiError({ method: "POST", url, status: 503, responseBody: outageBody }),
+        line: `envoy-channel: the listener's message bus did not answer a request to drop a removed subscription from the registry — ${outage}; the registry may already be without it, and the next heartbeat reconciles the registry and sets the consumer's filter to the topics it holds\n`,
+      },
+      {
+        issue: "DSP-32",
+        error: new EnvoyApiError({ method: "POST", url, status: 500, responseBody: outageBody }),
+        line: `${notDropped} — ${outage}; the next heartbeat reconciles it\n`,
+      },
+      {
+        issue: "DSP-33",
+        error: new TypeError("fetch failed"),
+        line: `${notDropped} — fetch failed; the next heartbeat reconciles it\n`,
+      },
+    ]
+    const lines = () => written.filter((line) => line.includes("removed subscription"))
+    for (const [index, row] of rows.entries()) {
+      const topic = `notifications.dispatch.issue.${row.issue}`
+      await session.follow([topic])
+      failure = row.error
+      relayRemoval(nats, `remove-${row.issue}`, [topic], index + 1)
+      await waitFor(async () => lines().length > index, `the line about ${row.issue}'s removal`)
+      expect(lines()[index]).toBe(row.line)
+    }
+  } finally {
+    await session.shutdown()
+    stderr.mockRestore()
   }
 })
 
@@ -986,202 +1046,6 @@ test("an unsubscribe of an explicit empty topic list removes nothing, and one wi
     expect(session.topics()).toEqual([directSubject])
   } finally {
     await session.shutdown()
-  }
-})
-
-// An edge listener refuses a whole registration that names a topic of no project of the session's
-// token, naming each refused topic. The session drops exactly those, so its next heartbeat is not
-// refused for them again, and keeps every other topic it follows.
-test("a topic the edge refuses for the session's projects is dropped, and the heartbeats register the rest", async () => {
-  const refusedRoot = "notifications.github.acme.priv"
-  const subscribes: Array<readonly string[]> = []
-  const client = recordingClient([], {
-    subscribe: async (input) => {
-      subscribes.push(input.topics)
-      const refused = input.topics.filter((topic) => topic.startsWith(refusedRoot))
-      if (refused.length > 0) {
-        throw new EnvoyApiError({
-          method: "POST",
-          url: "http://listener.example/v1/interests/subscribe",
-          status: 403,
-          responseBody: JSON.stringify(projectRefusal(refused)),
-        })
-      }
-      return noInterest()
-    },
-  })
-  const session = await startChannelSession(
-    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), scratchState(), {
-      connection: new FakeNats(),
-      heartbeatMs: 25,
-      client,
-    }),
-  )
-
-  try {
-    await session.follow([`${refusedRoot}.>`, "notifications.dispatch.issue.DSP-7.>"])
-    const refusedAt = subscribes.findIndex((topics) =>
-      topics.some((topic) => topic.startsWith(refusedRoot)),
-    )
-    await waitFor(
-      async () => subscribes.length >= refusedAt + 3,
-      "two heartbeats after the refusal",
-    )
-
-    const carriedAgain = subscribes
-      .slice(refusedAt + 1)
-      .filter((topics) => topics.some((topic) => topic.startsWith(refusedRoot)))
-    if (carriedAgain.length > 0) {
-      throw new Error(
-        `a registration carried a refused topic again: ${JSON.stringify(carriedAgain)}`,
-      )
-    }
-    expect(session.topics()).toEqual([
-      directSubject,
-      "notifications.dispatch.issue.DSP-7",
-      "notifications.dispatch.issue.DSP-7.>",
-    ])
-    expect(subscribes.at(-1)).toEqual([
-      directSubject,
-      "notifications.dispatch.issue.DSP-7",
-      "notifications.dispatch.issue.DSP-7.>",
-    ])
-  } finally {
-    await session.shutdown()
-  }
-})
-
-// The edge can start refusing a topic it accepted before, as when the broker's answer for the
-// token's projects stops naming a repository: the heartbeat's registration is refused, the topic
-// is dropped, and the session is told once, naming the topic and the edge's reason, rather than
-// going on believing it follows it.
-test("a topic the edge refuses at a heartbeat is told to the session once, naming it and the reason", async () => {
-  const refusedRoot = "notifications.github.acme.priv"
-  let refusing = false
-  const subscribes: Array<readonly string[]> = []
-  const client = recordingClient([], {
-    subscribe: async (input) => {
-      subscribes.push(input.topics)
-      const refused = input.topics.filter((topic) => topic.startsWith(refusedRoot))
-      if (refusing && refused.length > 0) {
-        throw new EnvoyApiError({
-          method: "POST",
-          url: "http://listener.example/v1/interests/subscribe",
-          status: 403,
-          responseBody: JSON.stringify(projectRefusal(refused)),
-        })
-      }
-      return noInterest()
-    },
-  })
-  const notifier = new FakeNotifier()
-  const session = await startChannelSession(
-    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), scratchState(), {
-      connection: new FakeNats(),
-      heartbeatMs: 25,
-      client,
-      notifier,
-    }),
-  )
-  const told = () =>
-    notifier.notifications
-      .filter((written) => written.eventId === undefined)
-      .map((written) => written.content)
-      .filter((content) => content.includes(refusedRoot))
-
-  try {
-    await session.follow([`${refusedRoot}.>`, "notifications.dispatch.issue.DSP-7.>"])
-    expect(told()).toEqual([])
-    refusing = true
-    const refusedAt = subscribes.length
-    await waitFor(
-      async () => subscribes.length >= refusedAt + 4,
-      "three heartbeats after the refusal",
-    )
-
-    expect(told()).toHaveLength(1)
-    expect(told()[0]).toContain(`${refusedRoot}, ${refusedRoot}.>`)
-    expect(told()[0]).toContain("repository_not_in_project")
-    expect(session.topics()).not.toContain(`${refusedRoot}.>`)
-  } finally {
-    await session.shutdown()
-  }
-})
-
-// The record outlives this process by the live window and the gone horizon after it, so the
-// deregistration is what ends the session for its peers: a registry write this listener has
-// stalled on must delay it, never swallow it (dispatch://INFRA-392).
-test("the shutdown deregistration waits for a stalled registration, then goes out anyway", async () => {
-  const stateDirectory = scratchState()
-  const calls: string[] = []
-  const wedged = Promise.withResolvers<void>()
-  let registrations = 0
-  const session = await startChannelSession(
-    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
-      connection: new FakeNats(),
-      registrationSettleMs: 50,
-      heartbeatMs: 25,
-      client: recordingClient(calls, {
-        subscribe: async (input) => {
-          calls.push(`subscribe ${input.sessionID}`)
-          registrations += 1
-          // The first registration answers; every later one never does.
-          if (registrations > 1) await wedged.promise
-          return noInterest()
-        },
-      }),
-    }),
-  )
-
-  try {
-    await waitFor(async () => registrations > 1, "a registration the listener never answers")
-
-    await session.shutdown()
-
-    expect(calls).toContain("unregister ses_claude")
-  } finally {
-    wedged.resolve()
-  }
-})
-
-// The wait above is the shutdown path's whole budget, not one each: the two five-second waits in
-// a row left ten seconds before the DELETE was sent, and the process group is killed five
-// seconds after SIGTERM, so the record survived for the gone horizon (dispatch://INFRA-392).
-test("the shutdown deregistration spends a quarter second settling, not the whole of both waits", async () => {
-  const stateDirectory = scratchState()
-  const calls: string[] = []
-  const wedged = Promise.withResolvers<void>()
-  let registrations = 0
-  const session = await startChannelSession(
-    // No `registrationSettleMs`: this is the shipped bound, over both the write chain the wedged
-    // registration holds and that registration itself.
-    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
-      connection: new FakeNats(),
-      heartbeatMs: 25,
-      client: recordingClient(calls, {
-        subscribe: async (input) => {
-          calls.push(`subscribe ${input.sessionID}`)
-          registrations += 1
-          if (registrations > 1) await wedged.promise
-          return noInterest()
-        },
-      }),
-    }),
-  )
-
-  try {
-    await waitFor(async () => registrations > 1, "a registration the listener never answers")
-
-    // Real time: the bound is a real timer, and the failure is that the DELETE waits out two
-    // five-second settles the process is never given.
-    const startedAt = Date.now()
-    await session.shutdown()
-    const elapsed = Date.now() - startedAt
-
-    expect(calls).toContain("unregister ses_claude")
-    expect(elapsed).toBeLessThan(2_000)
-  } finally {
-    wedged.resolve()
   }
 })
 

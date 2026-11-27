@@ -199,7 +199,7 @@ func TestATopicTheFilterLeavesOutIsNamedLoggedAndKeptOutOfTheRow(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		before := rig.harness.logs.Len()
-		if _, outcome := rig.deps.consumers.storedFilterStep(ctx, registry, sesB, "left-out test"); outcome != filterWriteLanded {
+		if _, outcome, _ := rig.deps.consumers.storedFilterStep(ctx, registry, sesB, "left-out test"); outcome != filterWriteLanded {
 			t.Errorf("storedFilterStep for %s answered %v, want a write that landed", sesB, outcome)
 		}
 		logged(t, rig.harness.logs.String()[before:], sesB, "stored_row", leftOut...)

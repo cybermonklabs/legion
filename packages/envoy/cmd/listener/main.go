@@ -22,6 +22,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/envconf"
@@ -47,6 +48,15 @@ type listenerDeps struct {
 	client   *bus.Client
 	registry *store.Registry
 	sessions *session.SessionRegistry
+	// clock is what the bounds this listener holds in its own process are measured on: the
+	// budget each /v1 route gives its bus work (sendRequestBudget and the read timeouts beside
+	// it). It is nil in production and in every test that does not drive time, and clk reads it
+	// as clock.Real then; a test that asserts one of those bounds hands a clocktest.Fake here,
+	// reads the bound armed on it (clocktest.Fake.Armed, or SetWhen, which reads and moves under
+	// one hold of the fake's lock) and moves the fake past it, rather than waiting the bound out
+	// on the machine's own clock. What nats.go and the server time for themselves is not here,
+	// nor is /healthz's budget (healthzHandler says why).
+	clock clock.Clock
 	// known is the store of every session that registered in the last 30 days
 	// (session.KnownSessions). It keeps a cache of its own outside caches below, so the
 	// self-health monitor never restarts a listener over it. A listener whose NATS user may not
@@ -72,9 +82,9 @@ type listenerDeps struct {
 	caches []listenerCache
 	// receiver is the durable's receive loop, whose role and lag /healthz reports.
 	receiver *durableReceiver
-	// wakes publishes the wake reports a role send with no holder and an unplaceable agent
-	// message raise, off those paths and under the listener's own lifetime (wakeReporter); nil
-	// in a test that builds the deps without it, which reports no wake.
+	// wakes publishes the wake reports a role send with no holder and a send to a session with no
+	// record raise, off those paths and under the listener's own lifetime (wakeReporter); nil in a
+	// test that builds the deps without it, and in edge mode, either of which reports no wake.
 	wakes      *wakeReporter
 	streamName string
 	streamInfo streamInfoLookup
@@ -113,22 +123,33 @@ type listenerDeps struct {
 	// resolve to (the broker's GET /v1/project-repositories, edge_repositories.go), nil on every
 	// listener but an edge one.
 	repositories *edgeRepositories
-	// registrationBudget is the store work budget of POST /v1/interests/subscribe
-	// (subscribeHandler), timed from the request's arrival: zero is sendRequestBudget, which every
-	// listener main builds runs with. It is a seam for a test whose own work runs inside that
-	// budget, as a session's consumer lock it holds while it writes, or a hook a pass calls: such a
-	// test gives the registration what is left of the test binary's deadline here, so the budget
-	// does not count the test's work, which a loaded machine slows as it slows the bus.
+	// registrationBudget is the budget of POST /v1/interests/subscribe (subscribeHandler): its
+	// store work and every consumer call it makes, the repair after its entry included, timed from
+	// the request's arrival. Zero is sendRequestBudget, which every listener main builds runs with.
+	// It is a seam for a test whose own work runs inside that budget, as a session's consumer lock
+	// it holds while it writes, or a hook a pass calls: such a test gives the registration what is
+	// left of the test binary's deadline here, so the budget does not count the test's work, which
+	// a loaded machine slows as it slows the bus.
 	registrationBudget time.Duration
 }
 
-// registrationBudgetOr is the registration's store work budget (registrationBudget):
-// sendRequestBudget unless a test set one.
+// registrationBudgetOr is the registration's budget (registrationBudget): sendRequestBudget unless
+// a test set one.
 func (d *listenerDeps) registrationBudgetOr() time.Duration {
 	if d.registrationBudget == 0 {
 		return sendRequestBudget
 	}
 	return d.registrationBudget
+}
+
+// clk is the clock d's own bounds are measured on: the one a test gave it, and clock.Real for a
+// deps built without one, which every production build and every test that does not drive time
+// is.
+func (d *listenerDeps) clk() clock.Clock {
+	if d.clock == nil {
+		return clock.Real()
+	}
+	return d.clock
 }
 
 // kvCache is what the listener asks of each KV-backed cache it keeps.
@@ -212,16 +233,17 @@ const defaultSessionReapInterval = time.Minute
 //
 // It is not the session reaper's period, short though that is. A session's record reads gone
 // when the session bucket expires its key as well as when its last registration passes the gone
-// horizon, and the bucket ships with a five-minute maximum age (session.BucketMaxAge), so a
-// stalled session's key is gone five minutes after its last heartbeat and the reaper then finds
-// its holder gone. Judged every minute, a stalled holder would lose its role up to five times
-// sooner than the fixed pass this change replaces, which is the opposite of what this change is
-// for; the raise of that maximum age past the gone horizon is dispatch://INFRA-887's, and it
-// cannot land first. The grace a restored claim gets - and a claim the hand-back marked gets
-// none, since no registration renews a marked claim - is measured from the listener's own start
-// against the live window (store.Registry.releaseReadExpiredRoleClaim, which the reaper's pass
-// hands the claim it read), not counted in passes, so the period does not move it; what the
-// period decides is how long after a holder is gone its role is free.
+// horizon. A bucket this listener creates keeps a record for 2 hours (session.BucketMaxAge, a
+// constant: the default gone horizon plus one hour). A bucket an older build created keeps one
+// five minutes until ENVOY_SESSION_MAX_AGE raises it (dispatch://INFRA-3590), so there a stalled
+// session's key is gone five minutes after its last heartbeat and the reaper then finds its holder
+// gone. Judged every minute, such a stalled holder would lose its role up to five times sooner
+// than at five minutes, the period the deployment keeps for it. The
+// grace a restored claim gets - and a claim the hand-back marked gets none, since no registration
+// renews a marked claim - is measured from the listener's own start against the live window
+// (store.Registry.releaseReadExpiredRoleClaim, which the reaper's pass hands the claim it read),
+// not counted in passes, so the period does not move it; what the period decides is how long
+// after a holder is gone its role is free.
 const defaultRoleClaimReapInterval = 5 * time.Minute
 
 // warnIgnoredEnv writes one WARN naming an environment variable this listener no longer reads,
@@ -353,7 +375,7 @@ func rebuildListenerDependencies(
 	if !client.Connected() {
 		return nats.ErrConnectionClosed
 	}
-	err := rewatchListenerKVWatchers(ctx, client.Conn, caches)
+	err := rewatchListenerKVWatchers(ctx, client.Connection(), caches)
 	if durableProbe == nil {
 		return err
 	}
@@ -390,8 +412,8 @@ const disconnectedFailureThreshold = 20
 // consecutive rebuilds enters the bounded shutdown path so Docker can replace
 // an unrecoverable listener.
 // A probe that lands in a reconnect gap is that transient case: it fails at
-// once with "outbound buffer limit exceeded" while the bus is disconnected (its
-// reconnect buffer is off), or at its deadline when the reconnect lands during
+// once with bus.ErrReconnecting while the bus is disconnected (its reconnect
+// buffer is off), or at its deadline when the reconnect lands during
 // the probe. Either is one WARN, then "self-health recovered" from the next -
 // unless connected reads false for disconnectedFailureThreshold consecutive
 // probes, in which case the bounded shutdown path runs for this too. That
@@ -577,16 +599,21 @@ func sessionHealthFields(sessions *session.SessionRegistry) *listenerwire.Sessio
 	if err := sessions.WatchErr(); err != nil {
 		watchError = err.Error()
 	}
+	_, goneHorizon := sessions.Windows()
 	return &listenerwire.SessionCache{
 		SessionCacheReady: sessions.CacheReady(),
 		SessionCacheSize:  sessions.CacheSize(),
 		SessionWatchError: watchError,
 		// The maximum age in use: the age the session bucket really carries, which the registry
 		// reads back after it writes the deployment's own (ENVOY_SESSION_MAX_AGE) and again on
-		// every pass of the session reaper. With the setting unset it is the registry's default,
-		// so the field is always present once the registry is open, and an operator can see from
-		// here whether a record stands long enough for the gone horizon to be reached.
+		// every pass of the session reaper. With the setting unset it is the age the bucket
+		// already had, or session.BucketMaxAge for a bucket this listener created. The field is
+		// always present once the registry is open.
 		SessionMaxAge: sessions.TTL().String(),
+		// The gone horizon the registry judges a record by, beside the maximum age, so an
+		// operator can see from here whether a record stands long enough for the horizon to be
+		// reached. The listener warns at its start when the age is at or below the horizon.
+		SessionGoneHorizon: goneHorizon.String(),
 	}
 }
 
@@ -600,11 +627,12 @@ type healthAnswer struct {
 	body listenerwire.Health
 }
 
-// healthzHandler is the listener's /healthz, the readiness answer of every pod of a machine id. It
-// answers 503 "starting" until main publishes deps, which it does once NATS is connected, the
-// webhook and /v1 gates are open and the receive loop has started, and until the interest copy has
-// completed its first read of its bucket since the process started (interestCopyRead), which a
-// later read of it does not undo.
+// healthzHandler is the listener's /healthz, the readiness answer of every pod of a machine id,
+// except while the start waits out a refusal of its NATS credential, when natsStart.healthz
+// answers 503 in its place. It answers 503 "starting" until main publishes deps, which it does
+// once NATS is connected, the webhook and /v1 gates are open and the receive loop has started,
+// and until the interest copy has completed its first read of its bucket since the process
+// started (interestCopyRead), which a later read of it does not undo.
 // Then it answers 200 "healthy" once every dependency answers, naming this pod's "role": "active"
 // while it receives the durable (it holds the lease and is subscribed, or it runs without a lease
 // and receives), with the durable's lag (num_pending, num_ack_pending), or "standby" otherwise,
@@ -764,7 +792,7 @@ func listenerHealth(ctx context.Context, d *listenerDeps, interestsRead *atomic.
 		}
 	}
 	for _, c := range d.caches {
-		if answered, err := healthzPing(ctx, c.cache); err != nil {
+		if answered, err := healthzPing(ctx, d.client.Connection(), c.cache); err != nil {
 			return dependencyHealth(c.name+" KV", err, !answered || c.cache.WatchErr() != nil || errors.Is(err, nats.ErrConnectionClosed))
 		}
 	}
@@ -810,6 +838,8 @@ func listenerHealth(ctx context.Context, d *listenerDeps, interestsRead *atomic.
 		return dependencyHealth("durable consumer", err, true)
 	case err != nil && ctx.Err() != nil:
 		// A read ctx ended did not answer, the info read's own form of healthzPing's unanswered.
+		// A read the connection dropped under since the flush is named as the reconnect it is by
+		// the client's JetStream context (bus.Client.JS), and answers degraded below.
 		return dependencyHealth("durable consumer", err, true)
 	case err != nil:
 		response.Status = listenerwire.HealthDegraded
@@ -878,18 +908,26 @@ const healthzBudget = 3 * time.Second
 // core PING its server must answer within ctx. Its failure is what /healthz answers 503 "nats
 // unavailable" for, first of its checks, and what /readyz answers 503 "unavailable" for once /v1
 // is open, since then /v1's routes answer bus-unavailable 503s (readyzHandler).
+//
+// The flush takes nats.go's connection lock before it waits on ctx, and again to forget its PING
+// once ctx ends, and nats.go holds that lock through a reconnect's dial and handshake, up to the
+// client's connect timeout (5 s). Waited for through bus.Bounded, a flush that meets a handshake
+// fails at ctx's end, so each check answers at its budget. The flush left running sends one PING
+// once nats.go lets the lock go, which changes nothing.
 func busAnswers(ctx context.Context, d *listenerDeps) error {
-	return d.client.Conn.FlushWithContext(ctx)
+	conn := d.client.Connection()
+	_, _, err := bus.Bounded(ctx, nil, func() (struct{}, error) { return struct{}{}, conn.FlushWithContext(ctx) })
+	return err
 }
 
-// healthzPing is cache's Ping as a /healthz request holding ctx waits for it (bus.Bounded): nats.go's
-// KV Status takes no context, so a ping that has not answered when ctx ends is answered false, with
-// ctx's error, the "context deadline exceeded" a ping that waited out the JetStream MaxWait failed
-// with. The abandoned ping runs on to its answer or that wait; what it can still do then - record a
-// recreated bucket's error on its watcher, or prune the session cache's last-seen times - is what
-// any later ping would do.
-func healthzPing(ctx context.Context, cache kvCache) (answered bool, err error) {
-	_, answered, err = bus.Bounded(ctx, func() (struct{}, error) { return struct{}{}, cache.Ping() })
+// healthzPing is cache's Ping as a /healthz request holding ctx waits for it (bus.Bounded), on
+// conn, the client's connection the caches' buckets are on: nats.go's KV Status takes no context,
+// so a ping that has not answered when ctx ends is answered false, with ctx's error, the "context
+// deadline exceeded" a ping that waited out the JetStream MaxWait failed with. The abandoned ping
+// runs on to its answer or that wait; what it can still do then - record a recreated bucket's error
+// on its watcher, or prune the session cache's last-seen times - is what any later ping would do.
+func healthzPing(ctx context.Context, conn *nats.Conn, cache kvCache) (answered bool, err error) {
+	_, answered, err = bus.Bounded(ctx, conn, func() (struct{}, error) { return struct{}{}, cache.Ping() })
 	return answered, err
 }
 
@@ -2496,6 +2534,16 @@ func runListener(credentialWait time.Duration) {
 		slog.String("reap_interval", sessionReapInterval.String()),
 		slog.String("role_claim_reap_interval", roleClaimReapInterval.String()))
 
+	// A bucket this listener creates keeps a record for 2 hours (session.BucketMaxAge, a constant:
+	// the default gone horizon plus one hour), which a configured horizon of 2 hours or more
+	// reaches. A bucket an older build created keeps 5 minutes until the deployment sets
+	// ENVOY_SESSION_MAX_AGE. So say it once at each start, naming both values.
+	if maxAge := sessions.TTL(); maxAge <= sessionGoneHorizon {
+		logger.Warn("session store keeps a record no longer than the gone horizon; a stalled session's record ends before it reads gone; raise ENVOY_SESSION_MAX_AGE",
+			slog.String("session_max_age", maxAge.String()),
+			slog.String("session_gone_horizon", sessionGoneHorizon.String()))
+	}
+
 	// Wait for the session cache to finish its initial scan before we accept
 	// traffic, mirroring the interest-cache gate above. Bounded at 30s: a healthy
 	// cluster completes in milliseconds. On timeout we fail open — Put
@@ -2591,19 +2639,18 @@ func runListener(credentialWait time.Duration) {
 
 	ledger := newDeliveryLedger(deliveryLease, cfg.MachineID, deliveryHandlingLimit)
 
-	// The window an agent delivery this listener cannot place is retried within before it is
-	// given up with a record (unplaceable_delivery.go). Zero is a value an operator may mean
-	// here - retry nothing - so it is read through envconf.Duration and not refused.
+	// The one wait a message on the agent subject of a session with no record takes before this
+	// listener reports the session's wake (unplaceable_delivery.go). Zero is a value an operator
+	// may mean here - no wait - so it is read through envconf.Duration and not refused.
 	unplaceableRetryWindow := envconf.Duration(logger.Slog(), os.LookupEnv, "ENVOY_UNPLACEABLE_RETRY_WINDOW", defaultUnplaceableRetryWindow)
 
 	// /healthz handler was registered early (before NATS) — no re-registration needed.
 
-	// Wake reports are published off the paths that raise them, under a lifetime of the
-	// listener's own — the shutdown ends every retry still running — and a cap on how many
-	// retry at once (wakeReporter). It is built here because the delivery handlers below copy
-	// this configuration by value, so every seam of it must be set before they are built. An edge
-	// listener reports none: its grant may not publish the wake topic (natsgrant.Edge), and the
-	// shared listeners report every wake.
+	// Wake reports the send routes raise are published off those routes, under a lifetime of the
+	// listener's own — the shutdown ends every retry still running — and a cap on how many retry
+	// at once (wakeReporter). An edge listener reports none: its grant may not publish the wake
+	// topic (natsgrant.Edge), so its send routes report no wake, and its agent path leaves the
+	// wake to the shared listeners (reportNoRecordWake).
 	wakesCtx, stopWakeReports := context.WithCancel(context.Background())
 	var wakes *wakeReporter
 	if edge == nil {
@@ -2614,7 +2661,6 @@ func runListener(credentialWait time.Duration) {
 	// receive loop.
 	deliveryConfig := listenerDeliveryHandlerConfig{
 		client:            client,
-		wakes:             wakes,
 		edge:              edge,
 		forwardRole:       startRoleForward(client),
 		registry:          registry,
@@ -2643,18 +2689,17 @@ func runListener(credentialWait time.Duration) {
 		fanoutUnresponsiveSkips: fanoutUnresponsiveSkips,
 
 		unplaceableRetryWindow: unplaceableRetryWindow,
-		// One deferral set for the life of the process, shared by construction by every handler
-		// built from this one value below - the role lane's and the durable's,
-		// which the receive loop keeps across every resubscribe and every take-over of the lease -
-		// so no handler opens a second budget beside the first (unplaceableDeferrals,
-		// unplaceable_delivery.go).
-		deferredUnplaceable: newUnplaceableDeferrals(),
+		// One set of agent messages held back for the wait, for the life of the process, shared
+		// by construction by every handler built from this one value below - the role lane's and
+		// the durable's, which the receive loop keeps across every resubscribe and every take-over
+		// of the lease - so no handler opens a second budget beside the first
+		// (unplaceableDeferrals, unplaceable_delivery.go).
+		deferredUnplaceable: newUnplaceableDeferrals(unplaceableRetryWindow),
 		// One guard per role for the life of the process, held for a whole handover of that
 		// role's kept lane, so the handovers the claim route, a keep, a registration that makes a
 		// holder live again and the sweep start never walk the lane together, and the sweep can
 		// tell a lane this listener is draining already (roleKeepGuards, role_keep.go). Every
-		// handler and route built from this one value shares it, as they share the deferral set
-		// above.
+		// handler and route built from this one value shares it, as they share the set above.
 		roleKeepDrains: newRoleKeepGuards(),
 		// The listener's one clock for a kept copy's hour: the keep's answer, and the
 		// handovers the claim route, the keep, the registration and the sweep start

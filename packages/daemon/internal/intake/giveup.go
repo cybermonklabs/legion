@@ -79,14 +79,20 @@ func nakDelay(delivered uint64, spec ConsumerSpec) time.Duration {
 }
 
 // retryDelay is the nak delay of delivery delivered, which failed with err: nakDelay, or the wait
-// a RetryLater in err names when that is longer, whole, with no cap.
-func retryDelay(delivered uint64, spec ConsumerSpec, err error) time.Duration {
-	delay := nakDelay(delivered, spec)
+// a RetryLater in err names when that is longer, whole, with no cap. A RetryLater that is Waiting
+// is no failure, so its delay does not grow with delivered: it is its own wait, or spec.NakDelay
+// when that is longer, at every delivery. waiting is whether err is a RetryLater that is Waiting,
+// which is no failure.
+func retryDelay(delivered uint64, spec ConsumerSpec, err error) (delay time.Duration, waiting bool) {
 	var later *RetryLater
-	if errors.As(err, &later) && later.After > delay {
+	if errors.As(err, &later) && later.Waiting {
+		return max(spec.NakDelay, later.After), true
+	}
+	delay = nakDelay(delivered, spec)
+	if later != nil && later.After > delay {
 		delay = later.After
 	}
-	return delay
+	return delay, false
 }
 
 // giveUpDue says whether a decoded message JetStream has delivered delivered times, whose first
@@ -340,7 +346,8 @@ func (r consumerRun) failed(ctx context.Context, message jetstream.Msg, metadata
 		return false
 	}
 	now := spec.Now()
-	retention := retentionEnds(metadata.Timestamp, now.Add(retryDelay(delivered, spec, outcome.err)), r.maxAge, spec.RetentionMargin)
+	wait, _ := retryDelay(delivered, spec, outcome.err)
+	retention := retentionEnds(metadata.Timestamp, now.Add(wait), r.maxAge, spec.RetentionMargin)
 	stopping := ctx.Err() != nil
 	if stopping {
 		if !retention {

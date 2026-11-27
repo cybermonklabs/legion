@@ -39,12 +39,13 @@ const exceptionPublishFailedLine = "listener exception publish failed"
 
 // exceptionPublishInProcessLine is the line a delivery logs at WARN, in place of
 // exceptionPublishFailedLine, when a clustered stream refused its delivery exception as still in
-// process under an earlier publish under the same message id (bus.ErrDuplicateInProcess):
-// another listener that raised the same exception from its own durable (publishDeliveryException)
-// is storing the one copy the stream keeps, so it is no failure the publish-failure alarm should
-// count, and that filter, matching exceptionPublishFailedLine at ERROR, does not. A failure still
-// clears the attempt where the outcome says so (exceptionFailureClearsAttempt), since that copy is
-// not stored yet.
+// process under an earlier publish under the same message id (bus.ErrDuplicateInProcess): an
+// earlier publish of the same report (one event, recipient and reason, deliveryExceptionID), from
+// this listener or another pod of the machine, is storing the one copy the stream keeps, so it is
+// no failure the publish-failure alarm should count, and that filter, matching
+// exceptionPublishFailedLine at ERROR, does not. It is no stored acknowledgement either: the
+// failure still settles the ledger attempt where the outcome says so
+// (exceptionFailureClearsAttempt), since that copy is not stored yet.
 const exceptionPublishInProcessLine = "listener exception publish in process"
 
 // ledgerUnavailableLine is the WARN a delivery logs when the delivery ledger could not be read or
@@ -52,8 +53,10 @@ const exceptionPublishInProcessLine = "listener exception publish in process"
 // ledger.
 const ledgerUnavailableLine = "delivery ledger unavailable"
 
-// durableRetryDelay is how long the durable waits before it redelivers a message the listener
-// NAKed for a retry.
+// durableRetryDelay is how long the durable waits before it redelivers a message whose delivery
+// asked for a retry: a topic fan-out to a live session that failed (fanoutDelivery), or a ledger
+// that could not be read (ledgerAttempt). A message on an agent subject never asks for it; it
+// waits agentWait at most.
 const durableRetryDelay = 30 * time.Second
 
 func shouldNAKFanoutDelivery(sessionLive bool, err error) bool {
@@ -62,16 +65,13 @@ func shouldNAKFanoutDelivery(sessionLive bool, err error) bool {
 
 type listenerDeliveryHandlerConfig struct {
 	client *bus.Client
-	// wakes publishes the wake reports an unplaceable agent delivery raises, off the delivery
-	// path and under the listener's own lifetime (wakeReporter); nil in a test that builds the
-	// handlers without it, which reports no wake, and in edge mode.
-	wakes *wakeReporter
 	// edge is the edge listener's own grant (edgeGrant, edge_nats.go), nil on every other
 	// listener. The grant publishes no kept role lane (natsgrant.Edge), so an edge listener keeps
 	// no role message for a role's next holder and hands no kept lane over (keepForNextHolder,
 	// drainKeptRole, startKeptRoleSweep): the shared listeners' sweeps hand every lane over, a
-	// role held at the edge among them. And it publishes a delivery exception only on a lane the
-	// grant holds (edgeGrant.publishesException).
+	// role held at the edge among them. It publishes a delivery exception only on a lane the
+	// grant holds (edgeGrant.publishesException). And it publishes no agent wake report, since
+	// the grant may not publish the wake topic (reportNoRecordWake).
 	edge *edgeGrant
 	// forwardRole publishes a role-lane envelope to the holder's agent subject under msgID, its
 	// Nats-Msg-Id when not empty, and returns the wait for its outcome; main.go wires
@@ -101,11 +101,11 @@ type listenerDeliveryHandlerConfig struct {
 	known     *session.KnownSessions
 	machineID string
 	// ledger is the delivery ledger every lane asks before it forwards a role-lane message to a
-	// session, reports a refusal of one, or gives an unplaceable delivery up: the machine's
-	// shared one (dedupe.KV), or, without the listener state bucket, this process's own
+	// session, reports a refusal of one, or reports the wake of a session with no record: the
+	// machine's shared one (dedupe.KV), or, without the listener state bucket, this process's own
 	// (dedupe.Memory). Every pod of the machine reads and writes the shared one, so a pod that
 	// takes delivery over neither forwards again what the pod before it delivered nor reports a
-	// refusal it already reported.
+	// refusal or a wake it already reported.
 	ledger dedupe.Ledger
 	// ledgerReconnected waits, for at most ledgerReconnectWait and while ctx lasts, until the
 	// ledger's own NATS connection is connected, and reports whether it is; nil for a ledger that
@@ -182,18 +182,18 @@ type listenerDeliveryHandlerConfig struct {
 	// every test that builds a config, while a test that stops a walk at the notice - before it, or
 	// after it and before the confirm - replaces it on its copy.
 	publishExpiryNotice func(ctx context.Context, notice bus.KeptCopyExpiry) error
-	// unplaceableRetryWindow is how long an agent delivery this listener cannot place is held
-	// in the stream and redelivered before it is given up with a record of its own
-	// (agentSubjectDelivery). main.go reads it from ENVOY_UNPLACEABLE_RETRY_WINDOW, defaulting
-	// to defaultUnplaceableRetryWindow. It is spent as whole deferrals of unplaceableRetryDelay
-	// each, counted from the message's first delivery, so a window shorter than one delay - a
-	// zero one, what a caller that does not set this field asks for - retries nothing: every
-	// unplaceable delivery is given up on its first attempt.
+	// unplaceableRetryWindow is the one wait a message on the agent subject of a session with no
+	// record takes before this listener reports the session's wake (noRecordAgentDelivery). It is
+	// also the wait a message takes before it comes back after a read of the record that did not
+	// answer, or after a wake report the stream did not store. main.go reads it from
+	// ENVOY_UNPLACEABLE_RETRY_WINDOW, defaulting to defaultUnplaceableRetryWindow. A window at or
+	// below zero - what a caller that does not set this field asks for - is no wait: the wake is
+	// reported at the first delivery (agentWait).
 	unplaceableRetryWindow time.Duration
-	// deferredUnplaceable is the set of agent deliveries this listener is holding deferred right
-	// now, the budget unplaceableDeferralCap bounds. It is required: main.go makes one and sets
-	// it once, in its deliveryConfig, so every handler built from that config - the role lane's
-	// core handler and the durable's, which the receive loop keeps across every
+	// deferredUnplaceable is the set of agent messages this listener holds back for that wait
+	// right now, the budget unplaceableDeferralCap bounds. It is required: main.go makes one and
+	// sets it once, in its deliveryConfig, so every handler built from that config - the role
+	// lane's core handler and the durable's, which the receive loop keeps across every
 	// resubscribe - draws on the one budget. listenerDeliveryHandler refuses a config without one
 	// rather than drawing a private set, since a set per handler would be a second budget beside
 	// the first. A test that builds a config sets its own.
@@ -277,11 +277,12 @@ type deliveryMessage struct {
 	// a shutdown's in-flight grace runs out, which aborts a delivery in flight. Nil on the core lanes.
 	ctx context.Context
 	// metadata is a durable message's JetStream metadata, read once by its handler: its stream
-	// sequence, which says which session consumers hold it (storedSeq) and keys an unplaceable
-	// deferral, and its delivery count, which bounds that retry. It is nil for a core
-	// message, and for a durable one whose metadata will not parse, which can be bounded by
-	// nothing (unplaceableAgentDelivery) and is in no consumer's window as far as this listener
-	// can tell (storedSeq 0).
+	// sequence, which says which session consumers hold it (storedSeq) and keys the slot that a
+	// message held back for the agent wait takes, and its delivery count, which says whether that
+	// wait is spent and whether this is the stream's last delivery. It is nil for a core message,
+	// and for a durable one whose metadata will not parse: such a message has nothing that bounds
+	// a wait, so an agent message reports its wake at once (noRecordAgentDelivery), and it is in
+	// no consumer's window as far as this listener can tell (storedSeq 0).
 	metadata *nats.MsgMetadata
 }
 
@@ -353,12 +354,21 @@ type durableHandler func(ctx context.Context, msg *nats.Msg)
 // says which session consumers hold it. A message no session needs from the durable
 // (durableNeedsDelivery) is acknowledged before it is decoded, each session that takes it another
 // way counted as a skipped delivery, as the delivery paths count it.
+//
+// Right after the metadata is read, every delivery gives back the slot its message took when this
+// listener held it back for the agent wait, before any path decides the message or takes a slot:
+// the delivery itself is what freed the slot, not what this delivery decides to do with the
+// message. So a session that registered during the wait, whose message is acknowledged here, does
+// not leave its slot taken until it expires. The release is keyed on the message, so a delivery
+// this listener never held back - a first one, or a redelivery an expired AckWait produced -
+// gives nothing back.
 func jetStreamDeliveryHandler(cfg listenerDeliveryHandlerConfig) durableHandler {
 	handler := listenerDeliveryHandler(cfg)
 	return func(ctx context.Context, msg *nats.Msg) {
 		message := deliveryMessage{data: msg.Data, mode: durableDelivery, msg: msg, ctx: ctx}
 		if metadata, err := msg.Metadata(); err == nil {
 			message.metadata = metadata
+			cfg.deferredUnplaceable.release(metadata.Sequence.Stream)
 		}
 		needed, skipped := durableNeedsDelivery(cfg, msg.Subject, message.storedSeq())
 		if !needed {
@@ -458,10 +468,10 @@ func ledgerAttempt(cfg listenerDeliveryHandlerConfig, message deliveryMessage, i
 // of the three delivery paths based on its topic: a role lane (arbitrated to whichever session
 // currently holds the role), a direct agent subject, or the general interest fanout.
 //
-// cfg arrives by value, so every handler built from one config shares the deferral set the
-// unplaceable retry bounds itself with, and the guards one role's drains take, only because each
-// field is a pointer; a config without either is a programming error, refused here at
-// construction rather than at the first deferral or the first drain.
+// cfg arrives by value, so every handler built from one config shares the set of agent messages
+// held back for the agent wait, and the guards one role's drains take, only because each field is
+// a pointer; a config without either is a programming error, refused here at construction rather
+// than at the first wait or the first drain.
 func listenerDeliveryHandler(cfg listenerDeliveryHandlerConfig) func(deliveryMessage) {
 	if cfg.deferredUnplaceable == nil {
 		panic("listener delivery handler built without its deferral set (deferredUnplaceable)")
@@ -845,93 +855,68 @@ func finishRoleForward(cfg listenerDeliveryHandlerConfig, forward roleForward, e
 // and the alternative - taking the cache's miss for an answer - ACKs the message away.
 const deliverySessionReadTimeout = 2 * time.Second
 
-// agentSubjectDelivery delivers to the session named by the topic, in either form
+// agentSubjectDelivery decides a message on the agent subject of a session, in either form
 // (notifications.agent.<session> or notifications.agent.<PROJECT or _>.<session>,
-// agentSubjectSession), which takes the message from its own consumer, relayed by the
-// listener that owns the session, as session.HandleAgentMessage decides. A session another
-// listener owns is that listener's to deliver, so this one acknowledges the message silently; a
-// gone session - no record, or a record that reads gone - and one this listener answers for that
-// records no way of receiving at all, is held and retried, then given up with a wake report
-// (unplaceableAgentDelivery).
+// agentSubjectSession). The session's own consumer delivers every such message, relayed
+// by the listener that owns the session, so this path delivers nothing: it reads the session's
+// interest row and record, and it acts on what session.HandleAgentMessage answers. A session
+// another listener's row names is that listener's to decide, so this one acknowledges the message
+// silently. A session with a record is acknowledged as a skip. A session with no record waits
+// once and then gets one wake report (noRecordAgentDelivery). That holds also when the session's
+// row names this listener, as a released Legion role's row does until the reaper deletes it. A
+// read of the record that did not answer sends the message back for the wait
+// (unreadAgentDelivery).
 //
-// A message this listener answers for asks the delivery ledger before it applies its outcome: a
-// redelivery a lost ACK brings, or a copy another pod reads, is skipped rather than reported or
-// given up a second time, on this pod or the one that takes delivery over. The two routes this
-// listener hands nothing to are settled before that ask and cost no ledger write at all: a
-// message the relay of the session's own consumer delivers, and one a session another listener
-// owns. A record of either would say this listener delivered a message it handed to nobody, and
-// the relay, which asks the ledger for nothing, would be judged by it.
+// A message this listener answers for - a session with no record, or one whose record it could
+// not read - asks the delivery ledger before it acts on it: a redelivery a lost ACK brings, or a
+// copy another pod reads, is skipped rather than waited on or reported a second time, on this pod
+// or the one that takes delivery over. The two routes this listener hands nothing to are settled
+// before that ask and cost no ledger write at all: a session with a record, whose consumer's relay
+// delivers the message, and a session another listener owns. A record of either would say
+// this listener delivered a message it handed to nobody, and the relay, which asks the ledger for
+// nothing, would be judged by it.
 func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope) {
 	sessionID := agentSubjectSession(item.Topic)
-	// The JetStream metadata the durable's handler read carries everything unplaceableAgentDelivery
-	// bounds this message by - its delivery count, against the deferrals the window buys and
-	// against unplaceableMaxDeliveries - and its stream sequence, the key of the slot a deferral
-	// of it holds. A core delivery has none, and a durable message whose metadata would not parse
-	// can be bounded by nothing, which unplaceableAgentDelivery gives up on rather than retrying
-	// without end.
-	metadata := message.metadata
-	// A message this listener deferred has left the deferred state by the time it is delivered
-	// again, so its slot goes back before any disposition below takes one: the delivery itself is
-	// what freed it, not what this attempt decides to do with the message. The release is keyed
-	// on the message, so a delivery this listener never deferred - a first one, or a redelivery
-	// another branch's NAK or an expired AckWait produced - gives nothing back.
-	if metadata != nil {
-		cfg.deferredUnplaceable.release(metadata.Sequence.Stream)
-	}
 	interest, err := cfg.registry.Get(context.Background(), sessionID)
 	var interestPtr *store.Interest
 	if err == nil {
 		interestPtr = &interest
 	}
-	// The session record delivery acts on is read from the session bucket itself, as the
-	// send route reads it: this listener's cache trails the bucket it follows, and is still being
-	// refilled after its bus connection came back, so a session registered a moment ago, or one
-	// this listener has not re-read since the reconnect, is in the bucket before it is in the
-	// cache - and a message dropped on that miss is gone, since it is already ACKed away.
-	// nats.ErrKeyNotFound is the bucket's own word that the session is gone: it holds no record
-	// of it, or holds one that reads gone, which liveSessionEntry refuses with the same error
-	// (notGone). Any other error is a read that did not answer, which is no evidence of absence
-	// at all - the bucket was never consulted, so nothing about this session was learned, and an
-	// attempt that learned nothing can never be the ground for giving a message up. Both leave
-	// this delivery with no entry to deliver through, and with no interest naming this listener
-	// an attempt with no entry is held and retried for the whole window before it is given up
-	// (unplaceableAgentDelivery). The interest path tells the two apart (gone): a gone session is
-	// held and given up the same way, with the wake that brings a released session back, while a
-	// read that did not answer fails and is NAKed.
-	entry, _, entryErr := liveSessionEntry(context.Background(), cfg.sessions, sessionID, deliverySessionReadTimeout, notGone, cfg.sessions.Refresh)
-	gone := errors.Is(entryErr, nats.ErrKeyNotFound)
-	// What follows is handed a missing entry and never this read's error, so the hold, the NAK
-	// and the give-up name no cause of their own: the error is logged here. The cache answers a
-	// session it holds with no read and a session the bucket holds no record of is gone, so the
-	// line is a read that did not answer within its bound, never one a healthy bus writes per
-	// message.
-	if entryErr != nil && !gone {
+	// The session record is read from the session bucket itself, as the send route reads it:
+	// this listener's cache trails the bucket it follows, and is still being refilled after its
+	// bus connection came back, so a session registered a moment ago, or one this listener has
+	// not read again since the reconnect, is in the bucket before it is in the cache.
+	// nats.ErrKeyNotFound is the bucket's own word that no record exists, and the answer for a
+	// record past the gone horizon (notGone). Any other error is a read that did not answer: it
+	// says nothing about the session, so it is neither a record nor the lack of one.
+	_, _, readErr := liveSessionEntry(context.Background(), cfg.sessions, sessionID, deliverySessionReadTimeout, notGone, cfg.sessions.Refresh)
+	// A read that did not answer is logged here at WARN, at each delivery that made it, with the
+	// bound it was given and its error: the message's own line of it (unreadAgentDelivery) is
+	// logged once however many deliveries the failing read spans, and a message another
+	// listener's row names writes none. The cache answers a session it holds with no read and a
+	// session the bucket holds no record of is no record, so the line is a read that did not
+	// answer within its bound, never one a healthy bus writes per message.
+	if readErr != nil && !errors.Is(readErr, nats.ErrKeyNotFound) {
 		cfg.logger.Warn("listener agent delivery could not read the session's record within its bound",
 			slog.String("session_id", sessionID),
 			slog.String("event_id", item.EventID),
 			slog.Duration("bound", deliverySessionReadTimeout),
-			slog.String("error", entryErr.Error()))
-	}
-	var entryPtr *session.SessionEntry
-	if entryErr == nil {
-		entryPtr = &entry
+			slog.String("error", readErr.Error()))
 	}
 	deliveryTimer := metrics.NewTimer()
-	// The durable path's message carries the stream sequence that says whether the session's
-	// consumer already holds it, and the core path's message is in no consumer (storedSeq 0). The
-	// capture is the deployed stream's as the listener's client last read it: a topic the stream
-	// stored is in the session's consumer, whose filter holds every topic of the session's row
-	// whatever the deployed stream captures (sessionConsumerFilter). A read of a narrowing that
-	// falls between this message's publish and this judgement judges the stored copy uncaptured,
-	// so this path reports a failure (listener agent delivery failed, a delivery_failed exception
-	// where the stream captures its lane) and NAKs the copy, while the session's consumer still
-	// hands the session the message once.
-	result := session.HandleAgentMessage(item, sessionID, cfg.machineID, interestPtr, entryPtr,
-		gone, message.storedSeq(), cfg.client.DeployedStreamCaptures(item.Topic))
-	if result.Relayed {
-		// The session's own consumer holds this message and the relay of that consumer delivers it
-		// (session.SessionEntry.ConsumerRelaysStored), as on the fan-out path below. Nothing is
-		// recorded: this path handed the message to nobody.
+	outcome := session.HandleAgentMessage(cfg.machineID, interestPtr, readErr)
+	switch outcome {
+	case session.AgentOwnedElsewhere:
+		// Every listener on the bus reads each inbox message from its own durable, and the
+		// listener the row names decides it from its copy: a wake reported here would be one
+		// more report for each listener that does not own the session.
+		cfg.logger.DeliveryLog(slog.LevelDebug, "listener agent session owned by another listener", sessionID, item.Topic, item.EventID, "owned_elsewhere")
+		message.finalize(false)
+		return
+	case session.AgentHasRecord:
+		// The session's own consumer holds this message, or the consumer its next registration
+		// starts will, and the relay of that consumer delivers it. Nothing is recorded: this path
+		// handed the message to nobody.
 		applyDeliveryOutcome(cfg, item, deliveryOutcome{
 			sessionID:    sessionID,
 			metricStatus: "skipped",
@@ -940,66 +925,29 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 		message.finalize(false)
 		return
 	}
-	if result.OwnedElsewhere {
-		// Every listener on the bus reads each inbox message from its own durable, and the owner
-		// delivers it from its copy: a no_holder exception here would report a delivered message
-		// as undeliverable, once per listener that does not own the session.
-		cfg.logger.DeliveryLog(slog.LevelDebug, "listener agent session owned by another listener", sessionID, item.Topic, item.EventID, "owned_elsewhere")
-		message.finalize(false)
-		return
-	}
-	// Every route left reaches the session through this listener or not at all, so the ledger is
-	// asked here, before the outcome below is applied: a redelivery a lost ACK brings, or a copy
-	// another pod reads, is skipped rather than reported or given up a second time. The two
-	// routes this listener hands nothing to are settled above and cost no ledger write at all: a
-	// message the relay of the session's own consumer delivers, and one a session another
-	// listener owns. A record of either would say this listener delivered a message it handed to
-	// nobody, and the relay, which asks the ledger for nothing, would be judged by it.
+	// Every route left reaches the session through this listener's report or not at all, so the
+	// ledger is asked here, before the message is waited on or reported.
 	attempt, deliver, retryIn := ledgerAttempt(cfg, message, item, sessionID)
 	if !deliver {
 		message.finish(cfg, retryIn)
 		return
 	}
 	if message.cancelled() {
-		// The receiver cut this message's handling short on a shutdown: neither a failed delivery
-		// to report nor a session found nowhere, but a retry for whichever pod holds the lease
-		// next. The attempt taken above is given up, so the pod that takes the lease delivers the
-		// message rather than skipping it as one already on its way.
+		// The receiver cut this message's handling short on a shutdown: no wait to start and no
+		// report to make, but a retry for whichever pod holds the lease next. The attempt taken
+		// above is given up, so the pod that takes the lease decides the message rather than
+		// skipping it as one already on its way.
 		cfg.logger.DeliveryLog(slog.LevelWarn, "listener agent delivery cancelled at shutdown", sessionID, item.Topic, item.EventID, "retry")
 		clearLedgerAttempt(cfg, item, attempt)
 		cfg.messagesNAKed.Inc()
 		message.finalize(true)
 		return
 	}
-	if result.Err != nil {
-		// The interest path's resolution failed - a record that names no way of receiving, or no
-		// record from a read that did not answer - which is the one outcome this delivery NAKs:
-		// the message is reported as a delivery exception and redelivered. The attempt taken
-		// above is given up, since the redelivery must not be skipped as one already on its way.
-		applyDeliveryOutcome(cfg, item, deliveryOutcome{
-			sessionID:    sessionID,
-			attempt:      attempt,
-			metricStatus: "failed",
-			duration:     &deliveryTimer,
-			log: func(logger *logging.Logger) {
-				logger.DeliveryLog(slog.LevelError, "listener agent delivery failed", sessionID, item.Topic, item.EventID, "failed", slog.String("error", result.Err.Error()))
-			},
-			exceptionReason: "delivery_failed",
-			origin:          message.exceptionOrigin(),
-			settle:          settleClear,
-		})
-		cfg.messagesNAKed.Inc()
-		message.finalize(true)
+	if outcome == session.AgentNoRecord {
+		noRecordAgentDelivery(cfg, message, item, sessionID, attempt)
 		return
 	}
-	// The resolution found no way the session receives this message and reported no error of
-	// its own: the session is gone, or no interest names its owner and its read did not answer
-	// or its record names no way of receiving. There is nothing to deliver and nothing
-	// to report yet: the message is held and retried for the whole window before it is given
-	// up, with the wake that brings a released session back. A delivery of its own is no
-	// longer an outcome here - a session's own consumer is the one way a message reaches it,
-	// and the relay of that consumer carries it, which the Relayed branch above answers.
-	unplaceableAgentDelivery(cfg, message, item, sessionID, metadata, attempt)
+	unreadAgentDelivery(cfg, message, item, sessionID, readErr, attempt)
 }
 
 // fanoutDelivery delivers a general-topic envelope to every session that registered interest in

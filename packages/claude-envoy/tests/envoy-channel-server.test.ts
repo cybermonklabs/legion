@@ -92,6 +92,7 @@ test("writes each Envoy envelope into the session as the rendered card that name
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    stderr: (line) => void process.stderr.write(line),
   })
 
   await delivery.enqueue({ subject: directSubject, raw: deliveryRaw })
@@ -147,6 +148,7 @@ test("a cut comment's card keeps the part its frame carried and the note, and a 
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    stderr: (line) => void process.stderr.write(line),
   })
   const subject = "notifications.dispatch.issue.CORE-1.comment"
 
@@ -316,6 +318,7 @@ test("a card Envoy sends again is handed over again, under the one event id", as
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    stderr: (line) => void process.stderr.write(line),
   })
 
   expect(await delivery.enqueue({ subject: directSubject, raw: deliveryRaw })).toBe(true)
@@ -414,6 +417,7 @@ test("retains only the latest fifty inbound envelope summaries", async () => {
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    stderr: (line) => void process.stderr.write(line),
   })
 
   for (let index = 0; index < 51; index += 1) {
@@ -454,6 +458,7 @@ test("every frame with no event id is listed, since none of them names a copy", 
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    stderr: (line) => void process.stderr.write(line),
   })
   const unnamed = (summary: string): string =>
     JSON.stringify({
@@ -755,6 +760,7 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
       identity: new SessionIdentity("ses_claude", process.cwd()),
       notifier,
       configFile: sessionConfigFile("claude", process.env),
+      stderr: (line) => void process.stderr.write(line),
     })
 
     // Not handed to Claude Code, so the forwarder releases its claim: Dispatch records the attempt
@@ -801,6 +807,7 @@ test("a rejected frame's report that landed with no answer back is not said to b
       identity: new SessionIdentity("ses_claude", process.cwd()),
       notifier: new FakeNotifier(),
       configFile: sessionConfigFile("claude", process.env),
+      stderr: (line) => void process.stderr.write(line),
     })
 
     expect(await delivery.enqueue({ subject: directSubject, raw: rejectedFrameRaw })).toBe(false)
@@ -913,6 +920,7 @@ test("answers a malformed targeted comment through its supplied comment reply ad
       identity: new SessionIdentity("ses_claude", process.cwd()),
       notifier,
       configFile: sessionConfigFile("claude", process.env),
+      stderr: (line) => void process.stderr.write(line),
     })
 
     await delivery.enqueue({ subject: directSubject, raw: rejectedCommentFrameRaw })
@@ -941,6 +949,7 @@ test("drops a malformed targeted frame that has no reply address", async () => {
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    stderr: (line) => void process.stderr.write(line),
   })
 
   await delivery.enqueue({

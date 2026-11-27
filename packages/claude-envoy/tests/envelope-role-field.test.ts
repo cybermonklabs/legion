@@ -51,6 +51,7 @@ test("createChannelDelivery (envoy-channel-server.ts enqueue: renderInbound, the
       identity: new SessionIdentity(SESSION, "/tmp"),
       notifier,
       configFile: sessionConfigFile("claude", process.env),
+      stderr: (line) => void process.stderr.write(line),
     })
     expect(await delivery.enqueue({ subject: AGENT, raw: JSON.stringify(envelope) })).toBe(true)
     return { notifications: notifier.notifications, inbox: delivery.inbox() }
@@ -130,6 +131,7 @@ const toolSession: ChannelSession = {
   follow: async () => ({ added: [], warnings: [] }),
   unfollow: async () => ({ removed: [] }),
   rememberRole: async () => undefined,
+  stopping: () => false,
   onRoleRegained: () => undefined,
   capabilitiesChanged: () => undefined,
   observe: () => undefined,

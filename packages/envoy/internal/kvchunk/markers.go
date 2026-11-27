@@ -74,7 +74,9 @@ func (m *Markers) Forget(keys []string) {
 // purged first purges nothing and counts too. A purge that failed ends it with that error: a server
 // that refuses it - a NATS user without STREAM.PURGE on the bucket's stream - refuses every one.
 // Each request waits no longer than ctx, and no longer than bus.RequestTimeout for a ctx with no
-// deadline of its own, and ends at the loss of the connection it went out on (bus.BoundedOn).
+// deadline of its own, and ends at the loss of the connection it went out on (bus.BoundedOn). A
+// request nats.go refuses while it reconnects the connection fails as bus.ErrReconnecting
+// (bus.Reconnecting).
 //
 // Each key becomes a purge filter, so each must be in the shape this build writes (wellFormed):
 // one that is not - a key holding a wildcard would purge every chunk subject of the bucket - is
@@ -100,7 +102,7 @@ func PurgeMarkers(ctx context.Context, kv bus.KeyValue, keys []string) (int, err
 	})
 	cancel()
 	if !answered || err != nil {
-		return 0, fmt.Errorf("open the stream of bucket %s to purge its chunk markers: %w", kv.Bucket(), err)
+		return 0, fmt.Errorf("open the stream of bucket %s to purge its chunk markers: %w", kv.Bucket(), bus.Reconnecting(err))
 	}
 	for purged, key := range keys {
 		request, cancel := within()
@@ -109,7 +111,7 @@ func PurgeMarkers(ctx context.Context, kv bus.KeyValue, keys []string) (int, err
 		})
 		cancel()
 		if !answered || err != nil {
-			return purged, fmt.Errorf("purge the marker of chunk %s: %w", key, err)
+			return purged, fmt.Errorf("purge the marker of chunk %s: %w", key, bus.Reconnecting(err))
 		}
 	}
 	return len(keys), nil

@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
+	"github.com/sjawhar/envoy/internal/store"
 )
 
 // swallowNextAck has the pod's relay swallow the next acknowledgement the pod sends the durable
@@ -205,12 +206,12 @@ type mpException struct {
 	id, event, recipient, reason string
 }
 
-// watchExceptions subscribes, over core NATS, to the exception lane of sessionID's inbox, where a
-// listener reports a message to it it could not deliver. Every publish there reaches it, a repeat the
-// stream does not store again included.
-func (p *mpPublisher) watchExceptions(t *testing.T, sessionID string) *natsgo.Subscription {
+// watchExceptions subscribes, over core NATS, to the exception lane of topic, where a listener
+// reports a message on topic it could not deliver to one of the sessions that follow it. Every
+// publish there reaches it, a repeat the stream does not store again included.
+func (p *mpPublisher) watchExceptions(t *testing.T, topic string) *natsgo.Subscription {
 	t.Helper()
-	subject := bus.ExceptionTopicPrefix + contracts.LegacyAgentSubject(sessionID)
+	subject := bus.ExceptionTopicPrefix + topic
 	subscription, err := p.client.Conn.SubscribeSync(subject)
 	if err != nil {
 		t.Fatalf("subscribe to %s: %v", subject, err)
@@ -222,13 +223,10 @@ func (p *mpPublisher) watchExceptions(t *testing.T, sessionID string) *natsgo.Su
 	return subscription
 }
 
-// mpDecodeException reads a delivery exception off the bus.
-func mpDecodeException(t *testing.T, data []byte) mpException {
+// mpExceptionOf reads a delivery exception's own id, and the event, recipient and reason its
+// payload reports.
+func mpExceptionOf(t *testing.T, item contracts.Envelope) mpException {
 	t.Helper()
-	var item contracts.Envelope
-	if err := json.Unmarshal(data, &item); err != nil {
-		t.Fatalf("decode a delivery exception: %v (%s)", err, data)
-	}
 	var payload struct {
 		EventID          string `json:"event_id"`
 		Reason           string `json:"reason"`
@@ -240,13 +238,34 @@ func mpDecodeException(t *testing.T, data []byte) mpException {
 	return mpException{id: item.EventID, event: payload.EventID, recipient: payload.RecipientSession, reason: payload.Reason}
 }
 
-func mpNextException(t *testing.T, subscription *natsgo.Subscription, within time.Duration) mpException {
+// mpDecodeException reads a delivery exception off the bus.
+func mpDecodeException(t *testing.T, data []byte) mpException {
 	t.Helper()
-	msg, err := subscription.NextMsg(within)
-	if err != nil {
-		t.Fatalf("no delivery exception on %s within %s: %v", subscription.Subject, within, err)
+	var item contracts.Envelope
+	if err := json.Unmarshal(data, &item); err != nil {
+		t.Fatalf("decode a delivery exception: %v (%s)", err, data)
 	}
-	return mpDecodeException(t, msg.Data)
+	return mpExceptionOf(t, item)
+}
+
+// mpNextException is the next delivery exception on subscription that reports a delivery to
+// recipient, passing over those reporting a delivery to any other session.
+func mpNextException(t *testing.T, subscription *natsgo.Subscription, recipient string, within time.Duration) mpException {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			t.Fatalf("no delivery exception to %s on %s within %s", recipient, subscription.Subject, within)
+		}
+		msg, err := subscription.NextMsg(remaining)
+		if err != nil {
+			t.Fatalf("no delivery exception to %s on %s within %s: %v", recipient, subscription.Subject, within, err)
+		}
+		if exception := mpDecodeException(t, msg.Data); exception.recipient == recipient {
+			return exception
+		}
+	}
 }
 
 // A frame a pod delivered and was killed before it could acknowledge reaches its session at most
@@ -321,44 +340,108 @@ func TestTwoPodsDeliverWhatAKilledPodOnlyAttempted(t *testing.T) {
 	}
 }
 
-// A message to a session that is not registered is reported no_holder. When the pod that reported
-// it is SIGKILLed before the durable has its acknowledgement, the standby takes the message over
-// and reports it again: both exceptions carry one id, and the stream stores one. Before INFRA-557
-// each report minted an id of its own, and the stream kept both. The pods run with no unplaceable
-// retry window (ENVOY_UNPLACEABLE_RETRY_WINDOW=0), so each gives the message up, with its
-// no_holder, on the delivery it handles rather than deferring it for a minute first.
-func TestTwoPodsReportARedeliveredNoHolderOnceUnderOneID(t *testing.T) {
+// A message on a team topic that a session on consumer delivery cannot be given, since its
+// delivery mode cannot be read, is reported by the fan-out of the pod that holds the machine's
+// durable: one delivery_failed exception for that session, on the topic's exception lane, which
+// the stream stores (TestTheFanoutReportsARefusalOfASessionOnConsumerDelivery). When that pod is
+// SIGKILLed before the durable has its acknowledgement, the standby takes the message over and
+// reports it again: the fan-out asks the shared delivery ledger nothing for a recipient whose own
+// consumer relays the message (fanoutDelivery), so no record of the first report makes the second
+// delivery a dedupe skip. Both reports carry one id, deliveryExceptionID of the event, the
+// recipient and the reason, and the stream, which stores the lane under the Nats-Msg-Id of that
+// id's dedupe key, holds one. Before INFRA-557 each report minted an id of its own, and the stream
+// kept both. A message on an agent subject raises no exception (agentSubjectDelivery), so the row
+// reads a team topic's.
+//
+// The acknowledgement lost is the durable's alone. The active pod stands behind a lane relay,
+// which drops every `$JS.ACK.` frame on the pod's receive connection (mpReceiveConnection), the
+// one the machine's durable is bound and acknowledged on, and passes those on its session-consumer
+// connection (mpSessionConsumerConnection), where the relay of the session's own consumer
+// acknowledges the frame the session took. The row requires the session to have taken that frame
+// and its consumer to hold nothing unacknowledged before the kill, so the message the standby is
+// handed again is the durable's copy.
+//
+// A second interest in the topic, of a session with no entry, keeps the durable path reading it
+// (keepTheDurableReading): with the consumer's interest alone, the durable acknowledges the message
+// before it decodes it (durableNeedsDelivery). The fan-out reports that recipient too, on the same
+// lane, so the row reads only the reports to the session on consumer delivery.
+func TestTwoPodsReportARedeliveredTeamExceptionOnceUnderOneID(t *testing.T) {
 	uri := mpNATS(t)
 	binary := cmdtest.Build(t, "envoy-listener")
-	a, b := mpStartPair(t, binary, uri, "ENVOY_UNPLACEABLE_RETRY_WINDOW=0")
+	a := mpStartPodBehindLanes(t, binary, uri, "pod-a")
+	mpWaitActive(t, a, 30*time.Second)
+	b := mpStartPod(t, binary, uri, "pod-b")
+	mpWaitStandby(t, b, 30*time.Second)
+	serving := mpStartNATSSessions(t, uri)
 	publisher := mpConnectPublisher(t, uri)
-	const nobody = "ses_mp_nobody"
-	exceptions := publisher.watchExceptions(t, nobody)
+	const sessionID, reader, topic, reason = "ses_mp_refused", "ses_mp_durable_reader", "notifications.team.mp-refused", "delivery_failed"
+	a.registerNATS(t, serving, sessionID, topic)
+	registry, err := store.Open(t.Context(), publisher.client.Conn, store.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("open the interest registry: %v", err)
+	}
+	if _, err := registry.Upsert(store.Interest{SessionID: reader, MachineID: mpMachine}, []string{topic}); err != nil {
+		t.Fatalf("register the interest of %s: %v", reader, err)
+	}
+	for _, pod := range []*mpPod{a, b} {
+		mpEventually(t, 10*time.Second, pod.instance+" to hold "+sessionID+"'s entry and both interests in "+topic, func() bool {
+			return pod.cachedSession(sessionID) != nil && slices.Contains(pod.cachedTopics(sessionID), topic) && slices.Contains(pod.cachedTopics(reader), topic)
+		})
+	}
+	lane := bus.ExceptionTopicPrefix + topic
+	exceptions := publisher.watchExceptions(t, topic)
 
-	swallowed := a.swallowNextAck(t)
-	m := publisher.mustPublish(t, nobody)
-	swallowed()
-	first := mpNextException(t, exceptions, 10*time.Second)
+	t.Cleanup(a.lanes.dropRequests(mpReceiveConnection(a.instance), "$JS.ACK."))
+	// The payload's delivery mode is one no session can be shown to advertise (payloadDeliveryMode).
+	const event = "evt-mp-refused"
+	item := contracts.Envelope{
+		EventID:        event,
+		Source:         "agent",
+		SourceEventID:  event,
+		Topic:          topic,
+		DedupeKey:      "multiprocess." + event,
+		IssuedAt:       contracts.NowMillis(),
+		PayloadSummary: "multiprocess message mp-event=" + event,
+		Payload:        `{"delivery":{"mode":"bogus"}}`,
+		TraceID:        "trace-" + event,
+	}
+	ack, err := publisher.client.JS().Publish(topic, marshalListenerEnvelope(t, item))
+	if err != nil {
+		t.Fatalf("store %s on %s: %v", event, topic, err)
+	}
+	first := mpNextException(t, exceptions, sessionID, 10*time.Second)
+	mpEventually(t, 10*time.Second, sessionID+" to have taken "+event+" from its own consumer's relay, acknowledged", func() bool {
+		return serving.framesTo(sessionID) == 1 && publisher.sessionAckPending(sessionID) == 0
+	})
 	killed := a.kill(t)
+	// The standby's restart at the ack floor after the kill recreates this consumer.
+	awaitSessionConsumerStored(t, publisher.client.Conn, sessionID)
 	// Long enough for a build before INFRA-557 to take the message back, after its 60 s ack wait.
-	second := mpNextException(t, exceptions, 90*time.Second)
-	t.Logf("%s reported %s again %s after %s was killed", b.instance, m.event, time.Since(killed).Round(time.Millisecond), a.instance)
+	second := mpNextException(t, exceptions, sessionID, 90*time.Second)
+	t.Logf("%s reported %s to %s again %s after %s was killed", b.instance, event, sessionID, time.Since(killed).Round(time.Millisecond), a.instance)
+	mpEventually(t, 10*time.Second, b.instance+" to log its own refusal of "+event+" to "+sessionID, func() bool {
+		return lineWith(b.Output.String(), `"msg":"listener delivery mode cannot be read unambiguously"`, `"session_id":"`+sessionID+`"`, `"event_id":"`+event+`"`) != ""
+	})
 
 	for _, exception := range []mpException{first, second} {
-		if exception.event != m.event || exception.recipient != nobody || exception.reason != "no_holder" {
-			t.Fatalf("exception %+v, want no_holder for %s to %s", exception, m.event, nobody)
+		if exception.event != event || exception.recipient != sessionID || exception.reason != reason {
+			t.Fatalf("exception %+v, want %s for %s to %s", exception, reason, event, sessionID)
 		}
 	}
 	if first.id != second.id {
-		t.Fatalf("the two reports of %s's no_holder carry the ids %s and %s, want one", m.event, first.id, second.id)
+		t.Fatalf("the two reports of %s's %s to %s carry the ids %s and %s, want one", event, reason, sessionID, first.id, second.id)
 	}
-	subject := bus.ExceptionTopicPrefix + contracts.LegacyAgentSubject(nobody)
-	info, err := publisher.client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: subject})
-	if err != nil {
-		t.Fatalf("read the stream's messages on %s: %v", subject, err)
+	// Once the successor has acknowledged the message, the stream has answered each publish of
+	// its reports, so a second copy would be stored by now.
+	awaitDurableState(t, publisher.client, publisher.consumer, 0, ack.Sequence)
+	var stored []string
+	for _, held := range storedEnvelopes(t, publisher.client, lane) {
+		if exception := mpExceptionOf(t, held.item); exception.event == event && exception.recipient == sessionID && exception.reason == reason {
+			stored = append(stored, exception.id)
+		}
 	}
-	if stored := info.State.Subjects[subject]; stored != 1 {
-		t.Fatalf("the stream holds %d exceptions on %s, want 1", stored, subject)
+	if len(stored) != 1 || stored[0] != first.id {
+		t.Fatalf("the stream holds the reports %v of %s's %s to %s on %s, want the one under %s", stored, event, reason, sessionID, lane, first.id)
 	}
 }
 

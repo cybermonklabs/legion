@@ -48,7 +48,7 @@ glob or the path instead, which a grep resolves. at()'s third argument, and a ga
 is the workflow file
 that holds the job's steps, and it is the job's own called file (job_file): ci.yaml's job of
 each gated id keeps the gate and calls .github/workflows/ci-job-<id>.yaml, which holds the
-steps, or, for a job SHARED_FILE names, the file of the job it shares one with. The one
+steps, or, for a job SHARED_FILE names, the file of the job it maps to. The one
 gate whose steps are elsewhere names its file itself: ci.yaml's docs job calls
 docs-site.yaml, whose job carries an id of its own, so that gate stays on ci.yaml, the file its
 own job id is in, and cites docs-site.yaml's build job (at_docs). The Read lists of the jobs
@@ -95,8 +95,9 @@ BUILD_TAGS = ".github/scripts/go_build_tags.py"
 
 # Each job whose steps are in another job's called file, mapped to that other job: the halves of
 # a job that was split so a pull request runs one and the merge queue the other, and a job that
-# came after ci.yaml reached its limit. Two jobs share one file because ci.yaml already calls as
-# many reusable workflows as .github/scripts/check-workflow-files.sh allows it
+# came after ci.yaml reached its limit: listener-multiprocess, which shares broker-multiprocess's
+# file, and envoy-refill, which shares envoy-e2e-local's. Two jobs share one file because ci.yaml
+# already calls as many reusable workflows as .github/scripts/check-workflow-files.sh allows it
 # (.github/ci-notes/ci.md#two-jobs-that-call-one-file), and each job
 # of the file runs under its own caller alone (ci_filter_coverage.check_called_jobs).
 SHARED_FILE = {
@@ -104,6 +105,7 @@ SHARED_FILE = {
     "pi-legion-build": "pi-legion",
     "envoy-infra-build": "envoy-infra-go",
     "listener-multiprocess": "broker-multiprocess",
+    "envoy-refill": "envoy-e2e-local",
 }
 
 

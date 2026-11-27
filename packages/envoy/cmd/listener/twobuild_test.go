@@ -218,7 +218,8 @@ func TestTwoBuildsSkipOrDoubleNoMessage(t *testing.T) {
 // The row waits for this build's pod to wait on the binding or to be active. The !waiting check
 // after tbRequireEachOnce is what fails a build that did not wait out the old build's binding:
 // every session here is on consumer delivery (tbRegister), whose messages the durable's handler,
-// in this build and at 15338e75, leaves to the relay of the session's consumer (delivery.go's
+// in this build and at 15338e75, leaves to the relay of the session's consumer (delivery.go: here
+// agentSubjectDelivery's session.AgentHasRecord and fanoutDelivery's relayed; at 15338e75
 // result.Relayed and relayed), and two pods' relays pulling one session consumer split its
 // messages rather than copy them, so a build that subscribed beside the binding doubles no
 // message here. tbRequireEachOnce catches any message missing or doubled.

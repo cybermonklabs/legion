@@ -147,7 +147,7 @@ func requireStillPending(t *testing.T, consumers *bus.SessionConsumers, sessionI
 }
 
 // clientResendPause is how long the client a session runs pauses before it sends a refused call
-// again: envoy-client's LISTENER_CALL_RETRY_DELAY_MS (packages/contracts/src/envoy-session.ts:64).
+// again: envoy-client's LISTENER_CALL_RETRY_DELAY_MS (packages/contracts/src/envoy-session.ts:67).
 const clientResendPause = 250 * time.Millisecond
 
 // registrationSpare is what registerAsTheClientDoes leaves of the test binary's deadline for the
@@ -158,7 +158,7 @@ const registrationSpare = 30 * time.Second
 // shared-token caller and returns once the listener takes it (200), sending a 5xx again as the
 // client a session runs does. envoy-client sends a 5xx once more after 250 ms (the 5xx branch of
 // createEnvoyClient's request, packages/envoy-client/src/transport.ts; LISTENER_CALL_RETRY_DELAY_MS
-// and LISTENER_CALL_ATTEMPTS, packages/contracts/src/envoy-session.ts:64 and :72), and pi-envoy
+// and LISTENER_CALL_ATTEMPTS, packages/contracts/src/envoy-session.ts:67 and :75), and pi-envoy
 // and claude-envoy register again 20 to 40 s after a failed registration and then at every
 // heartbeat (each plugin's heartbeat and its armRetry, whose delay is heartbeatRetryDelayMs of
 // packages/envoy-client/src/envoy-settings.ts: ensureHeartbeat in
@@ -372,6 +372,10 @@ func TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt(t *testi
 // On main, under this grant, the server refused all three replies - the frame's received and done
 // on _INBOX.<inbox>.1 and the probe's done on a plain _INBOX.<id> - so the frame was never
 // acknowledged and the send answered connected only after the probe's one-second silence.
+//
+// The session registers the three delivery modes, as a plugin whose conversation takes messages
+// does: a probed session that advertises none answers a plain send no_receiver (sendHandler), and
+// this row reads connected.
 func TestASessionOnItsOwnGrantAnswersItsFramesAndTheConnectionProbe(t *testing.T) {
 	t.Parallel()
 	s1 := newSessionUser(t, "ses_own_grant_")
@@ -379,7 +383,8 @@ func TestASessionOnItsOwnGrantAnswersItsFramesAndTheConnectionProbe(t *testing.T
 	consumers := observeConsumers(t, listenerURI)
 	publisher := connectPublisher(t, listenerURI)
 	one := startSessionStandInOn(t, s1.connect(t, uri), s1.id, answerDone)
-	registerAsTheClientDoes(t, listener.port, consumerRegistration(s1.id, "epoch-1"))
+	registerAsTheClientDoes(t, listener.port, fmt.Sprintf(
+		`{"session_id":%q,"topics":[],"self_subscribed":true,"delivery":{"consumer":true,"epoch":"epoch-1"},"capabilities":["aside","btw","steer"]}`, s1.id))
 
 	item := newEnvelope("agent", contracts.LegacyAgentSubject(s1.id), "for the session")
 	publish(t, publisher, item)

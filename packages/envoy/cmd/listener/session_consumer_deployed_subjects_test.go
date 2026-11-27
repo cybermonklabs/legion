@@ -117,26 +117,35 @@ func TestFanoutLeavesATopicOnlyTheDeployedStreamCapturesToTheSessionsConsumer(t 
 	}
 }
 
-// A delivery exception on a lane only the deployed stream captures is stored under its one-copy
-// message id (exception.<reason>.<origin>), so the stream keeps one copy however many listeners
-// raise it for the same stored message. Judged on the subjects this build compiles, the lane would
-// be published under each exception's own dedupe key, and every listener's report would be kept.
+// exceptionReportMsgID is the Nats-Msg-Id the stream stores the delivery exception reporting that
+// item's delivery to recipient ended in reason under, on a lane its publish takes JetStream for:
+// the report's own dedupe key (deliveryExceptionID, bus.DeliveryExceptionDedupePrefix) and the
+// lane together (bus.ForwardMsgID, the id bus.Client.Publish gives an envelope that earns one).
+func exceptionReportMsgID(item contracts.Envelope, recipient, reason string) string {
+	return bus.ForwardMsgID(bus.DeliveryExceptionDedupePrefix+deliveryExceptionID(item.EventID, recipient, reason), bus.ExceptionTopicPrefix+item.Topic)
+}
+
+// A delivery exception on a lane only the deployed stream captures is stored under its report's
+// one id (exceptionReportMsgID), so the stream keeps one copy however many times one report is
+// raised for the same event and recipient: a redelivery, or another pod reading the same message
+// after a take-over. Judged on the subjects this build compiles, the lane would go over core NATS,
+// under no message id, and every raise would be kept.
 func TestADeliveryExceptionOnALaneOnlyTheDeployedStreamCapturesIsStoredOnce(t *testing.T) {
 	t.Parallel()
 	const (
-		topic  = "notifications.x.y"
-		lane   = bus.ExceptionTopicPrefix + topic
-		reason = "delivery_failed"
-		origin = "origin-1"
+		topic     = "notifications.x.y"
+		lane      = bus.ExceptionTopicPrefix + topic
+		reason    = "delivery_failed"
+		recipient = "ses_deployed_exception"
 	)
 	if bus.StreamCaptures(lane) {
 		t.Fatalf("this build compiles a subject capturing %s; the test needs one it does not", lane)
 	}
 	client := connectToNewerBuildsStream(t, bus.ExceptionTopicPrefix+"notifications.x.>")
 	item := listenerTestEnvelope(topic, "exception-deployed-lane")
-	// Two listeners raise the exception for the one stored message, each from its own durable.
+	// The one report raised twice, as a redelivery or a successor pod raises it again.
 	for range 2 {
-		if err := publishDeliveryException(client, item, reason, "ses_deployed_exception", origin); err != nil {
+		if err := publishDeliveryException(client, item, reason, recipient); err != nil {
 			t.Fatalf("publish the delivery exception: %v", err)
 		}
 	}
@@ -152,34 +161,32 @@ func TestADeliveryExceptionOnALaneOnlyTheDeployedStreamCapturesIsStoredOnce(t *t
 	if err != nil {
 		t.Fatalf("read the exception on %s: %v", lane, err)
 	}
-	if got, want := stored.Header.Get(natsgo.MsgIdHdr), "exception."+reason+"."+origin; got != want {
+	if got, want := stored.Header.Get(natsgo.MsgIdHdr), exceptionReportMsgID(item, recipient, reason); got != want {
 		t.Fatalf("stored message id = %q, want %q", got, want)
 	}
 }
 
 // A delivery exception on a lane only a subject added since the listener last read the deployed
 // stream's subjects captures - a newer build's start adding its own during a roll - is stored under
-// its one-copy message id too: publishDeliveryException judges the lane as its publish's transport
-// does (bus.Client.PublishTakesJetStream): on a read of the subjects again where the client's own
-// leave the lane uncaptured, made here because no read of them has ended in the last 250 ms and
-// none is in flight, and not on the subjects its client holds, which the row proves stale before
-// the exception. Inside that gap, or while a read younger than 2 s is in flight, the transport
-// reads nothing and answers on the subjects held. The same exception handed twice, as two
-// listeners each raise it for one stored message from their own durables, is stored once, under
-// exception.<reason>.<origin>.
+// its report's one id too: publishDeliveryException publishes through bus.Client.Publish, which
+// judges the lane as its transport does (bus.Client.PublishTakesJetStream): on a read of the
+// subjects again where the client's own leave the lane uncaptured, made here because no read of
+// them has ended in the last 250 ms and none is in flight, and not on the subjects its client
+// holds, which the row proves stale before the exception. Inside that gap, or while a read younger
+// than 2 s is in flight, the transport reads nothing and answers on the subjects held. The same
+// report raised twice is stored once, under exceptionReportMsgID.
 //
-// Judged on the subjects the client held, the first exception went over core NATS
-// (bus.Client.PublishAckOn, which reads no subjects), and the stream stored it under no message
-// id; no read was made, so the second was judged on the same subjects and stored the same way:
-// two copies.
+// Judged on the subjects the client held, the first exception went over core NATS, and the stream
+// stored it under no message id; no read was made, so the second was judged on the same subjects
+// and stored the same way: two copies.
 func TestADeliveryExceptionOnALaneAddedSinceTheLastReadIsStoredOnce(t *testing.T) {
 	t.Parallel()
 	const (
-		topic  = "notifications.x.z"
-		lane   = bus.ExceptionTopicPrefix + topic
-		added  = bus.ExceptionTopicPrefix + "notifications.x.>"
-		reason = "delivery_failed"
-		origin = "origin-added"
+		topic     = "notifications.x.z"
+		lane      = bus.ExceptionTopicPrefix + topic
+		added     = bus.ExceptionTopicPrefix + "notifications.x.>"
+		reason    = "delivery_failed"
+		recipient = "ses_added_exception"
 	)
 	if bus.StreamCaptures(lane) {
 		t.Fatalf("this build compiles a subject capturing %s; the test needs one it does not", lane)
@@ -193,7 +200,7 @@ func TestADeliveryExceptionOnALaneAddedSinceTheLastReadIsStoredOnce(t *testing.T
 
 	item := listenerTestEnvelope(topic, "exception-added-lane")
 	for range 2 {
-		if err := publishDeliveryException(client, item, reason, "ses_added_exception", origin); err != nil {
+		if err := publishDeliveryException(client, item, reason, recipient); err != nil {
 			t.Fatalf("publish the delivery exception: %v", err)
 		}
 	}
@@ -202,44 +209,48 @@ func TestADeliveryExceptionOnALaneAddedSinceTheLastReadIsStoredOnce(t *testing.T
 		t.Fatalf("read %s: %v", bus.Stream, err)
 	}
 	if got := info.State.Subjects[lane]; got != 1 {
-		t.Fatalf("the stream holds %d exceptions on %s after the same exception was raised twice, want 1: they were stored under two message ids", got, lane)
+		t.Fatalf("the stream holds %d exceptions on %s after the same report was raised twice, want 1: they were stored under two message ids, or none", got, lane)
 	}
 	stored, err := js.GetLastMsg(bus.Stream, lane)
 	if err != nil {
 		t.Fatalf("read the exception on %s: %v", lane, err)
 	}
-	if got, want := stored.Header.Get(natsgo.MsgIdHdr), "exception."+reason+"."+origin; got != want {
+	if got, want := stored.Header.Get(natsgo.MsgIdHdr), exceptionReportMsgID(item, recipient, reason); got != want {
 		t.Fatalf("stored message id = %q, want %q", got, want)
 	}
 }
 
-// A delivery exception about a stored message is published on the one judgement of its lane that
-// publishDeliveryException makes (exceptionTakesJetStream): a judgement that answers core NATS has
-// it sent over core NATS (bus.Client.PublishAckOn), even where the client's subjects come to
-// capture the lane between that judgement and the publish. Here a newer build's subject that
-// captures the lane is added after the client read the stream's subjects, and the client's read of
-// them again is in flight past 2 s: another publish of the lane started it while the client's own
-// lock was held (its CoreSubOK waits for nats.go's connection lock, which
-// testnats.HandshakeHold.HoldWriteLock holds), and the read waits for that lock before its request
-// goes out, so its own 2 s bound has not begun. The exception's judgement joins that read and,
-// when exceptionLaneJudgement (2 s) ends, answers core on the subjects the client holds. The locks
-// are let go after that, and the read lands and is kept: the client's subjects capture the lane. The
-// stream stores the exception, which it captures, under no Nats-Msg-Id, as it stores every core
-// publish.
+// subjectsReadJoined is how long a read of the deployed stream's subjects must have been in flight
+// before a publish's transport joins it rather than answering on the subjects the client holds
+// (bus.Client.PublishTakesJetStream, firstStreamSubjectsRead: 2 s).
+const subjectsReadJoined = 2 * time.Second
+
+// A delivery exception is published on the one judgement of its lane that its publish makes
+// (bus.Client.Publish: PublishTakesJetStream, then PublishAckOn on that answer), and that judgement
+// waits, within the publish's own bound, for a read of the deployed stream's subjects already in
+// flight. Here a newer build's subject that captures the lane is added after the client read the
+// stream's subjects, and the client's read of them again is in flight past 2 s: another publish of
+// the lane started it while the client's own lock was held (its CoreSubOK waits for nats.go's
+// connection lock, which testnats.HandshakeHold.HoldWriteLock holds), and the read waits for that
+// lock before its request goes out, so its own 2 s bound has not begun. The exception's judgement
+// joins that read. The locks are let go 3 s after the exception began, inside the publish's 5 s
+// bound, and the read lands and is kept: the client's subjects capture the lane, the judgement
+// answers JetStream, and the stream stores the exception under its report's one id
+// (exceptionReportMsgID).
 //
-// Control: with client.Publish(exception) in place of the core publish, Publish judges the lane
-// again (bus.Client.PublishTakesJetStream), joins the same read, takes JetStream once it lands, and
-// the stream stores the exception under a message id of its own dedupe key
-// (bus.DeliveryExceptionDedupePrefix): neither the core publish the one judgement chose nor the
-// one-copy exception.<reason>.<origin> another listener's JetStream judgement stores it under.
-// It must not run in parallel: its 2 s judgement must end before the locks go, 3 s after it began.
+// Control: a judgement made on the subjects the client held - a publish that read nothing, or
+// whose bound ended before the read landed - answers core NATS, and the stream stores the
+// exception under no Nats-Msg-Id. Every report publishDeliveryException raises takes Publish's
+// one judgement: no agent-subject exception is raised any more (isControlTopic), so none is
+// judged apart under a bound of its own.
+// It must not run in parallel: the locks must be held for 3 s of the exception's publish.
 func TestADeliveryExceptionIsPublishedOnTheOneJudgementOfItsLane(t *testing.T) {
 	const (
-		topic  = "notifications.x.judged"
-		lane   = bus.ExceptionTopicPrefix + topic
-		added  = bus.ExceptionTopicPrefix + "notifications.x.>"
-		reason = "delivery_failed"
-		origin = "origin-judged"
+		topic     = "notifications.x.judged"
+		lane      = bus.ExceptionTopicPrefix + topic
+		added     = bus.ExceptionTopicPrefix + "notifications.x.>"
+		reason    = "delivery_failed"
+		recipient = "ses_judged_exception"
 	)
 	if bus.StreamCaptures(lane) {
 		t.Fatalf("this build compiles a subject capturing %s; the test needs one it does not", lane)
@@ -283,15 +294,16 @@ func TestADeliveryExceptionIsPublishedOnTheOneJudgementOfItsLane(t *testing.T) {
 		t.Fatal("the first publish's transport answered within its 50 ms deadline: it started no read of the subjects, or the read it started was answered under the held locks")
 	}
 	testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "the read of the stream's subjects in flight to outlast 2 s", func() bool {
-		return time.Since(read) > exceptionLaneJudgement && waits()
+		return time.Since(read) > subjectsReadJoined && waits()
 	})
 
 	item := listenerTestEnvelope(topic, "exception-judged-lane")
 	published := make(chan error, 1)
 	began := time.Now()
-	go func() { published <- publishDeliveryException(client, item, reason, "ses_judged_exception", origin) }()
-	// The judgement's 2 s end first; then the locks are let go, and the read lands.
-	time.Sleep(time.Until(began.Add(exceptionLaneJudgement + time.Second)))
+	go func() { published <- publishDeliveryException(client, item, reason, recipient) }()
+	// The judgement joins the read in flight; the locks are let go 3 s on, inside the publish's
+	// bound, and the read lands.
+	time.Sleep(time.Until(began.Add(subjectsReadJoined + time.Second)))
 	release()
 	select {
 	case err := <-published:
@@ -301,7 +313,7 @@ func TestADeliveryExceptionIsPublishedOnTheOneJudgementOfItsLane(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatalf("the delivery exception was not published within 10 s of the locks' release")
 	}
-	testwait.Eventually(t, "the listener to keep the read of the subjects that landed after the judgement, capturing "+lane, func() bool {
+	testwait.Eventually(t, "the listener to keep the read of the subjects that landed during the judgement, capturing "+lane, func() bool {
 		return client.DeployedStreamCaptures(lane)
 	})
 	requireStored(t, js, lane)
@@ -309,9 +321,9 @@ func TestADeliveryExceptionIsPublishedOnTheOneJudgementOfItsLane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the exception on %s: %v", lane, err)
 	}
-	if got := stored.Header.Get(natsgo.MsgIdHdr); got != "" {
-		t.Fatalf("the stream stored the exception on %s under Nats-Msg-Id %q, want none: the publish took JetStream, not the core NATS its lane's one judgement answered (exception.%s.%s is that judgement's JetStream id, %s<id>:%s a second judgement's in Publish)",
-			lane, got, reason, origin, bus.DeliveryExceptionDedupePrefix, lane)
+	if got, want := stored.Header.Get(natsgo.MsgIdHdr), exceptionReportMsgID(item, recipient, reason); got != want {
+		t.Fatalf("the stream stored the exception on %s under Nats-Msg-Id %q, want %q: the publish's one judgement did not take the read of the deployed subjects it joined (no id is a core publish judged on the subjects held)",
+			lane, got, want)
 	}
 }
 

@@ -132,8 +132,10 @@ type edgeGrant struct {
 }
 
 // newEdgeGrant is the grant of the edge listener of machineID serving projects, counting what it
-// withholds on met. It refuses what natsgrant.Edge refuses: a machine id that is not one subject
-// token, and a project list config.Load would not have read.
+// withholds on met. It refuses what natsgrant.Edge refuses: a machine id holding a space, a
+// wildcard, a control character or '%', and a project list config.Load would not have read. It
+// takes a dotted machine id, such as a fully qualified host name: its inbox prefix spells the id as
+// its durable does (natsgrant.EdgeInboxPrefix, bus.ListenerSpelling), so the prefix is one token.
 func newEdgeGrant(machineID string, projects []string, met *metrics.Registry) (*edgeGrant, error) {
 	grant, err := natsgrant.Edge(machineID, projects)
 	if err != nil {

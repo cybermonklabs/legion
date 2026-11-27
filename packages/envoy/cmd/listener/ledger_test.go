@@ -414,16 +414,21 @@ func TestADeliveryExceptionsIDIsItsEventRecipientAndReason(t *testing.T) {
 	}
 }
 
-// A delivery that ends in no_holder again, once the first one's record has aged out, publishes
-// the same exception: one id, and one message in the stream. Inside the attempt window the give-up
-// keeps its ledger attempt and the second delivery is an attempt-dedupe skip instead
-// (TestAGiveUpWhoseNoticeCanNeverBePublishedIsStillTerminal), so the record is aged out between
-// the two, which is what dedupe.AttemptedAge does on its own.
+// A delivery exception raised again - by a redelivery that ends the same way, on this pod or on the
+// pod that takes the machine's durable over - is the one report: publishDeliveryException publishes
+// it under the same id, deliveryExceptionID of the event, the recipient and the reason, and the
+// stream, which stores a team topic's exception lane under the Nats-Msg-Id of that id's dedupe key,
+// holds one copy. The report of another event to the same recipient for the same reason is a
+// report of its own, which the stream stores beside it, so the one copy is the repeat the stream
+// took as a duplicate, not a lane it holds nothing of. No message on an agent subject raises an
+// exception (agentSubjectDelivery), so the lane is a team topic's. The take-over across two pods
+// is TestTwoPodsReportARedeliveredTeamExceptionOnceUnderOneID (multiprocess_state_test.go).
 func TestARepeatedDeliveryExceptionCarriesOneIDAndIsStoredOnce(t *testing.T) {
 	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
-	item := listenerTestEnvelope(contracts.LegacyAgentSubject("ses_nowhere"), "agent.ses_nowhere.0123456789abcdef0123456789abcdef")
-	exceptionTopic := bus.ExceptionTopicPrefix + item.Topic
+	const recipient, reason = "ses_refused", "delivery_failed"
+	topic := "notifications.team.repeated-exception-" + id.New()
+	exceptionTopic := bus.ExceptionTopicPrefix + topic
 	probe, err := harness.client.Conn.SubscribeSync(exceptionTopic)
 	if err != nil {
 		t.Fatalf("subscribe exception probe: %v", err)
@@ -433,23 +438,30 @@ func TestARepeatedDeliveryExceptionCarriesOneIDAndIsStoredOnce(t *testing.T) {
 		t.Fatalf("flush exception probe: %v", err)
 	}
 
-	data := marshalListenerEnvelope(t, item)
-	harness.handler(&natsgo.Msg{Data: data})
-	forgetLedgerRecord(t, harness, item.DedupeKey, "ses_nowhere")
-	harness.handler(&natsgo.Msg{Data: data})
-	first := assertDeliveryException(t, probe, item, "no_holder")
-	second := assertDeliveryException(t, probe, item, "no_holder")
+	item := listenerTestEnvelope(topic, "team.repeated-exception."+id.New())
+	another := listenerTestEnvelope(topic, "team.repeated-exception."+id.New())
+	for _, report := range []contracts.Envelope{item, item, another} {
+		if err := publishDeliveryException(harness.client, report, reason, recipient); err != nil {
+			t.Fatalf("publish the delivery exception of %s: %v", report.EventID, err)
+		}
+	}
+	first := assertDeliveryException(t, probe, item, reason)
+	second := assertDeliveryException(t, probe, item, reason)
+	other := assertDeliveryException(t, probe, another, reason)
 	if first.EventID != second.EventID || first.DedupeKey != second.DedupeKey {
 		t.Fatalf("the two exceptions carry ids %q and %q, keys %q and %q; want one", first.EventID, second.EventID, first.DedupeKey, second.DedupeKey)
 	}
-	if want := deliveryExceptionID(item.EventID, "ses_nowhere", "no_holder"); first.EventID != want || first.DedupeKey != bus.DeliveryExceptionDedupePrefix+want {
+	if want := deliveryExceptionID(item.EventID, recipient, reason); first.EventID != want || first.DedupeKey != bus.DeliveryExceptionDedupePrefix+want {
 		t.Fatalf("exception id %q key %q, want %q", first.EventID, first.DedupeKey, want)
 	}
-	info, err := harness.client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: exceptionTopic})
-	if err != nil {
-		t.Fatalf("stream info: %v", err)
+	if other.EventID == first.EventID {
+		t.Fatalf("the exceptions of %s and %s carry one id %q, want one each", item.EventID, another.EventID, first.EventID)
 	}
-	if got := info.State.Subjects[exceptionTopic]; got != 1 {
-		t.Fatalf("the stream holds %d exceptions on %s, want 1", got, exceptionTopic)
+	held := storedEnvelopes(t, harness.client, exceptionTopic)
+	if got := copiesOf(held, first.EventID); got != 1 {
+		t.Fatalf("the stream holds %d copies of the exception %s on %s, want 1", got, first.EventID, exceptionTopic)
+	}
+	if got := copiesOf(held, other.EventID); got != 1 || len(held) != 2 {
+		t.Fatalf("the stream holds %d exceptions on %s, %d of them %s's; want 2, one of each event", len(held), exceptionTopic, got, another.EventID)
 	}
 }

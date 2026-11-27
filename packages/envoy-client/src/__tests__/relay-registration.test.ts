@@ -18,15 +18,16 @@ import {
 import { startRelaySocketStandIn } from "../../test/relay-socket-stand-in";
 import { consumerDelivery, projectRefusal } from "../../test/subscribe-answer";
 import { brokerCredential } from "../broker-credential";
+import { createConsumerDelivery } from "../consumer-delivery";
 import {
-  createConsumerDelivery,
   type InboundUnavailable,
   inboundRestoredNoticeText,
   inboundUnavailable,
-} from "../consumer-delivery";
+} from "../inbound-outage";
 import {
   NoRelaySubjectError,
   type RegisteringRelay,
+  RegistrationStoppingError,
   registerWithRelay,
 } from "../relay-registration";
 import { createEnvoyClient, EnvoyApiError, expandSubscriptionTopics } from "../transport";
@@ -86,10 +87,7 @@ describe("one registration", () => {
         relay,
         ownAgentSubject: AGENT,
         followed: () => followed,
-        outage: inboundUnavailable(
-          () => undefined,
-          () => undefined
-        ),
+        outage: inboundUnavailable(() => undefined),
         send: (topics) => {
           sent.push(topics);
           return answer(topics);
@@ -128,10 +126,9 @@ describe("one registration", () => {
       // The bare base a stored row or a transcript brings back goes too: no stream subject this
       // build compiles captures it, and the listener, which reads the deployed stream's, judges it.
       followed: () => [TEAM, UNCAPTURED, "notifications.agent.ses_b"],
-      outage: inboundUnavailable(
-        (why) => told.push(why),
-        () => told.push("restored")
-      ),
+      outage: inboundUnavailable(({ why }) => told.push(why), {
+        restored: () => told.push("restored"),
+      }),
       send: (topics, delivery) => {
         sent.push({ topics, epoch: delivery.epoch });
         return Promise.resolve("registered");
@@ -145,36 +142,6 @@ describe("one registration", () => {
     expect([result, answers, told]).toEqual(["registered", ["registered"], []]);
   });
 
-  test("a session holding no relay subject registers nothing and is told once", async () => {
-    const told: string[] = [];
-    const outage = inboundUnavailable(
-      (why) => told.push(why),
-      () => told.push("restored")
-    );
-    const sent: unknown[] = [];
-    const register = () =>
-      registerWithRelay({
-        relay: undefined,
-        ownAgentSubject: AGENT,
-        followed: () => [TEAM],
-        outage,
-        send: (topics) => {
-          sent.push(topics);
-          return Promise.resolve("registered");
-        },
-        answered: () => undefined,
-        ...quiet,
-      });
-
-    await expect(register()).rejects.toThrow("holds no relay subject");
-    // The second outage tick says nothing more: the session was told once.
-    await expect(register()).rejects.toThrow("holds no relay subject");
-    expect(sent).toEqual([]);
-    expect(told).toEqual([
-      "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing",
-    ]);
-  });
-
   test("a session whose relay could not be opened says why in the refusal and in the one outage notice", async () => {
     const told: string[] = [];
     const refusal = await registerWithRelay({
@@ -182,10 +149,11 @@ describe("one registration", () => {
       relayMissing: "Authentication Timeout",
       ownAgentSubject: AGENT,
       followed: () => [TEAM],
-      outage: inboundUnavailable(
-        (why) => told.push(why),
-        () => told.push("restored")
-      ),
+      // With no bound the start race is told at once, so this row reads the one notice it tells.
+      outage: inboundUnavailable(({ why }) => told.push(why), {
+        firstOpenBoundMs: 0,
+        restored: () => told.push("restored"),
+      }),
       send: () => Promise.resolve("registered"),
       answered: () => undefined,
       ...quiet,
@@ -209,10 +177,9 @@ describe("one registration", () => {
         relay,
         ownAgentSubject: AGENT,
         followed: () => [TEAM],
-        outage: inboundUnavailable(
-          (why) => told.push(why),
-          () => told.push("restored")
-        ),
+        outage: inboundUnavailable(({ why }) => told.push(why), {
+          restored: () => told.push("restored"),
+        }),
         send: () => Promise.reject(new Error("no_grant")),
         answered: (answer: string) => answers.push(answer),
         ...quiet,
@@ -225,10 +192,9 @@ describe("one registration", () => {
 
   test("a registration accepted after an outage tells the session once that it receives again", async () => {
     const told: string[] = [];
-    const outage = inboundUnavailable(
-      (why) => told.push(why),
-      () => told.push("restored")
-    );
+    const outage = inboundUnavailable(({ why }) => told.push(why), {
+      restored: () => told.push("restored"),
+    });
     let refuse = true;
     const register = () =>
       registerWithRelay({
@@ -255,7 +221,7 @@ describe("one registration", () => {
     refuse = false;
     await register();
     expect(told).toEqual(["no_grant", "restored", "no_grant", "restored"]);
-    expect(inboundRestoredNoticeText()).toContain("Envoy inbound restored");
+    expect(inboundRestoredNoticeText("refused")).toContain("Envoy inbound restored");
   });
 
   test("any other refusal is a refusal as before: nothing dropped, nothing sent again", async () => {
@@ -282,10 +248,9 @@ describe("one registration", () => {
         relay: fakeRelay(),
         ownAgentSubject: AGENT,
         followed: () => [TEAM],
-        outage: inboundUnavailable(
-          (why) => told.push(why),
-          () => told.push("restored")
-        ),
+        outage: inboundUnavailable(({ why }) => told.push(why), {
+          restored: () => told.push("restored"),
+        }),
         send: (topics) => {
           sent.push(topics);
           return Promise.reject(refused);
@@ -322,10 +287,9 @@ describe("one registration", () => {
       relay: fakeRelay(),
       ownAgentSubject: AGENT,
       followed: () => [TEAM],
-      outage: inboundUnavailable(
-        (why) => told.push(why),
-        () => told.push("restored")
-      ),
+      outage: inboundUnavailable(({ why }) => told.push(why), {
+        restored: () => told.push("restored"),
+      }),
       send: (topics) => {
         sent.push(topics);
         return Promise.reject(refused);
@@ -355,10 +319,9 @@ describe("one registration", () => {
       relay,
       ownAgentSubject: AGENT,
       followed: () => [ISSUE_TOPIC, SLACK],
-      outage: inboundUnavailable(
-        (why) => told.push(why),
-        () => told.push("restored")
-      ),
+      outage: inboundUnavailable(({ why }) => told.push(why), {
+        restored: () => told.push("restored"),
+      }),
       send: (topics) => {
         sent.push(topics);
         return topics.includes(SLACK)
@@ -457,16 +420,174 @@ describe("one registration", () => {
       [AGENT, kept],
     ]);
   });
+
+  /**
+   * One registration following ISSUE_TOPIC and SLACK whose first send the listener answers 403
+   * `topic_not_in_project` naming SLACK, and every later send accepts. When `stopsMeanwhile`, the
+   * host's stop begins while that first send waits. The host has one reading of its stop, which
+   * its outage report reads too. Answers the refusal and what the registration came to.
+   */
+  async function refusedWhileStopping(stopsMeanwhile: boolean) {
+    const SLACK = "notifications.slack.alerts";
+    let stopping = false;
+    const told: string[] = [];
+    const sent: (readonly string[])[] = [];
+    const dropped: (readonly string[])[] = [];
+    const logs: string[] = [];
+    const relay = fakeRelay();
+    const refused = refusal(403, projectRefusal([SLACK], "topic_not_in_project"));
+    const firstAnswer = Promise.withResolvers<string>();
+    const registering = registerWithRelay({
+      relay,
+      ownAgentSubject: AGENT,
+      followed: () => [ISSUE_TOPIC, SLACK],
+      outage: inboundUnavailable(({ why }) => told.push(why), {
+        restored: () => told.push("restored"),
+        stopping: () => stopping,
+      }),
+      send: (topics) => {
+        sent.push(topics);
+        return sent.length === 1 ? firstAnswer.promise : Promise.resolve("registered");
+      },
+      answered: () => undefined,
+      drop: (topics) => dropped.push(topics),
+      log: (line) => logs.push(line),
+      stopping: () => stopping,
+    }).catch((error: unknown) => error);
+    // The first send is on the wire. The stop begins, then the listener answers it.
+    stopping = stopsMeanwhile;
+    firstAnswer.reject(refused);
+    const outcome = await registering;
+    return { SLACK, refused, outcome, sent, dropped, logs, told, unfollowed: relay.unfollowed };
+  }
+
+  test("a project refusal answered once the host began stopping drops nothing, sends nothing again and tells nothing", async () => {
+    // R24 of dispatch://INFRA-3589: a stopping session registers nothing and is told nothing. The
+    // refusal is then a refusal as any other: the registration fails with it, and the topic it
+    // names stays followed, since the session's record is deleted next.
+    const { SLACK, refused, outcome, sent, dropped, logs, told, unfollowed } =
+      await refusedWhileStopping(true);
+
+    expect({ sent, dropped, logs, told, unfollowed }).toEqual({
+      sent: [[AGENT, ISSUE_TOPIC, SLACK]],
+      dropped: [],
+      logs: [],
+      told: [],
+      unfollowed: [],
+    });
+    expect(outcome).toBe(refused);
+  });
+
+  test("the same project refusal answered while the host is not stopping drops the topic and registers the rest", async () => {
+    // The control of the row above: only the stop differs.
+    const { SLACK, outcome, sent, dropped, logs, told, unfollowed } =
+      await refusedWhileStopping(false);
+
+    expect({ outcome, sent, dropped, logs: logs.length, told, unfollowed }).toEqual({
+      outcome: "registered",
+      sent: [
+        [AGENT, ISSUE_TOPIC, SLACK],
+        [AGENT, ISSUE_TOPIC],
+      ],
+      dropped: [[SLACK]],
+      logs: 1,
+      told: [],
+      unfollowed: [[SLACK]],
+    });
+  });
+
+  test("a registration whose host began stopping before it was sent sends nothing and tells nothing", async () => {
+    // This outage report reads no stop of its own, so it tells whatever it is handed: it tells
+    // nothing only because the registration hands it nothing.
+    const relay = fakeRelay();
+    const told: string[] = [];
+    const sent: (readonly string[])[] = [];
+    const dropped: (readonly string[])[] = [];
+    const logs: string[] = [];
+
+    const outcome = await registerWithRelay({
+      relay,
+      ownAgentSubject: AGENT,
+      followed: () => [TEAM],
+      outage: inboundUnavailable(({ why }) => told.push(why), {
+        restored: () => told.push("restored"),
+      }),
+      send: (topics) => {
+        sent.push(topics);
+        return Promise.resolve("registered");
+      },
+      answered: () => undefined,
+      drop: (topics) => dropped.push(topics),
+      log: (line) => logs.push(line),
+      stopping: () => true,
+    }).catch((error: unknown) => error);
+
+    expect({ sent, dropped, logs, told, followed: relay.followed }).toEqual({
+      sent: [],
+      dropped: [],
+      logs: [],
+      told: [],
+      followed: [],
+    });
+    if (!(outcome instanceof Error)) throw new Error(`no refusal: ${String(outcome)}`);
+    expect(outcome.message).toBe("this session is stopping, so it registers nothing");
+  });
+
+  /**
+   * One registration of a session that holds no relay subject, whose relay could not be opened,
+   * with `stopping` as its host's stop reading. Its outage report is a stand-in that records each
+   * call it is handed. Answers what the registration threw, the calls the report was handed, and
+   * what was sent.
+   */
+  async function withoutRelayWhile(stopping: boolean) {
+    const reported: unknown[][] = [];
+    const sent: (readonly string[])[] = [];
+    const outcome = await registerWithRelay({
+      relay: undefined,
+      relayMissing: "Authentication Timeout",
+      ownAgentSubject: AGENT,
+      followed: () => [TEAM],
+      outage: {
+        noRelay: (_error, relayMissing) => reported.push(["noRelay", relayMissing]),
+        refused: () => reported.push(["refused"]),
+        accepted: () => reported.push(["accepted"]),
+      },
+      send: (topics) => {
+        sent.push(topics);
+        return Promise.resolve("registered");
+      },
+      answered: () => undefined,
+      ...quiet,
+      stopping: () => stopping,
+    }).catch((error: unknown) => error);
+    return { outcome, reported, sent };
+  }
+
+  test("a session with no relay subject whose host began stopping is refused for the stop, and its outage report is handed nothing", async () => {
+    const { outcome, reported, sent } = await withoutRelayWhile(true);
+
+    expect(outcome).toBeInstanceOf(RegistrationStoppingError);
+    expect({ reported, sent }).toEqual({ reported: [], sent: [] });
+  });
+
+  test("control: a session with no relay subject and no stop begun is refused for the missing relay subject, and its outage report is handed why", async () => {
+    const { outcome, reported, sent } = await withoutRelayWhile(false);
+
+    expect(outcome).toBeInstanceOf(NoRelaySubjectError);
+    expect({ reported, sent }).toEqual({
+      reported: [["noRelay", "Authentication Timeout"]],
+      sent: [],
+    });
+  });
 });
 
 describe("a relay socket", () => {
   /** The host's outage report, shared by the socket and the registrations, and what it told. */
   const sharedOutage = () => {
     const told: string[] = [];
-    const outage = inboundUnavailable(
-      (why) => told.push(why),
-      () => told.push("restored")
-    );
+    const outage = inboundUnavailable(({ why }) => told.push(why), {
+      restored: () => told.push("restored"),
+    });
     return { told, outage };
   };
 
@@ -495,7 +616,7 @@ describe("a relay socket", () => {
     const tradeFails = { count: 0 };
     const relay = await opened(server, "ses_a", { outage, tradeFails });
     await registerOnce(outage, () => true);
-    expect(told).toEqual([expect.stringContaining("repositories_unknown")]);
+    expect(told).toEqual([expect.stringContaining("consumer_error")]);
 
     tradeFails.count = 1;
     server.close(4401, "credential_expired");
@@ -596,10 +717,9 @@ describe("a relay socket", () => {
     const followed = new Set(expandSubscriptionTopics([kept, `${refusedRoot}.>`]));
     const logs: string[] = [];
     const told: string[] = [];
-    const outage = inboundUnavailable(
-      (why) => told.push(why),
-      () => told.push("restored")
-    );
+    const outage = inboundUnavailable(({ why }) => told.push(why), {
+      restored: () => told.push("restored"),
+    });
     const heartbeat = () =>
       registerWithRelay({
         relay: delivery,

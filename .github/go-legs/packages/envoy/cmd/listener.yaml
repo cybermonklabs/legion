@@ -25,7 +25,6 @@
   - TestADeleteRestoresTheConsumerWithTheTopicItsCacheHasNotHeardOf  # 0.6 s
   - TestADeleteThatRacesARegistrationLeavesTheConsumerWithTheTopicItAnswered  # 0.3 s
   - TestADeletedSessionsConsumerIsNotBroughtBackByTheRelaysRetry  # 1.5 s
-  - TestADeliveryExceptionStillInProcessIsNotLoggedAsAFailedPublish  # 1.0 s
   - TestADeregistrationAnswersWhileItsConsumerDeleteWaits  # 0.3 s
   - TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages  # 5.2 s
   - TestADispatchRoleRoutedEventToAnUnheldRoleReachesTheNextHolder  # 0.3 s

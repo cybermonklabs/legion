@@ -23,8 +23,8 @@ import (
 // and no -NAK may reach the server after the creation. A sever that waited for nats.go's lock
 // would wait behind the held write, and the standby would create the durable with the connection
 // still open. A sever behind a caller that holds the client's lock while it waits for nats.go's
-// (bus.Client.SubOK) is internal/bus's row, TestASeverDoesNotWaitForACallerHoldingTheClientsLock
-// in sever_lock_test.go.
+// (bus.Client.ResendRefusedCore) is internal/bus's row,
+// TestASeverDoesNotWaitForACallerHoldingTheClientsLock in sever_lock_test.go.
 func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 	testnats.RequireSocketQueues(t)
 	shrinkIntakeFlowControl(t)

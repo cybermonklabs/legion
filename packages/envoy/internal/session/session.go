@@ -11,11 +11,9 @@ import (
 // through: no session entry was resolved at all, or the entry resolved records no way the session
 // receives a message - no consumer of its own, and no subscription it holds itself, which is what
 // a session registered through a plugin older than both leaves behind. Neither cause says the
-// session is gone. A caller that resolved the entry from a cache alone cannot conclude that - the
-// cache trails the bucket it follows - and an entry that records neither way is rewritten by the
-// session's next registration, so a caller may wait rather than give the message up, and the
-// listener's delivery does, deferring such a message for its whole retry window
-// (cmd/listener/unplaceable_delivery.go).
+// session is gone. The topic fan-out (cmd/listener's fanoutDelivery) is the one caller: it counts
+// such a delivery failed. A message on a session's agent subject never comes here, since the
+// session's own consumer delivers it (HandleAgentMessage).
 var ErrNoSessionRecord = errors.New("no session record")
 
 // ConsumerRelaysStored reports whether the session's own consumer holds the stored message of
@@ -35,19 +33,20 @@ func (e SessionEntry) ConsumerRelaysStored(captured bool, storedSeq uint64) bool
 	return captured && e.ConsumerHoldsStored(storedSeq)
 }
 
-// Resolve decides what a delivery of item to sessionID's session at entry comes to, and there are
-// two answers left, which its error alone carries: a nil error is the session's own consumer
-// relaying the message, so this delivery has nothing left to do - the relay of that consumer is
-// what delivers it - and ErrNoSessionRecord is an entry that records no way of receiving at all.
-// No session takes a message off a NATS subscription of its own any more (dispatch://INFRA-771),
-// so there is no third outcome for a result to describe. A nil entry produces ErrNoSessionRecord,
-// the same answer a failed lookup produces, so a caller can avoid a second registry read.
+// Resolve decides what a fan-out delivery of item to sessionID's session at entry comes to, and
+// there are two answers, which its error alone carries: a nil error is the session's own
+// consumer relaying the message, so this delivery has nothing left to do - the relay of that
+// consumer is what delivers it - and ErrNoSessionRecord is an entry that records no way of
+// receiving at all. No session takes a message off a NATS subscription of its own
+// (dispatch://INFRA-771), so there is no third outcome for a result to describe. A nil entry
+// produces ErrNoSessionRecord, the same answer a failed lookup produces, so a caller can avoid a
+// second registry read.
 //
 // It is a package function because the decision holds no state at all: every caller resolves the
 // entry it decides on and hands it over, so the record the decision acts on is the one that
 // caller read, and nothing of the listener it runs in enters the decision.
 //
-// storedSeq is the stream sequence of the durable path's copy of a stored message, 0 for any
+// storedSeq is the stream sequence of the listener durable's copy of a stored message, 0 for any
 // other delivery, and captured is whether the deployed stream captures item's topic
 // (bus.Client.DeployedStreamCaptures), which the caller reads from its own bus client's last read
 // of the deployed subjects, since the session's consumer holds only what that stream stores. The
@@ -74,8 +73,8 @@ func Resolve(item contracts.Envelope, sessionID string, entry *SessionEntry, sto
 	// The entry records no way of receiving this message: a session receives what its own
 	// consumer delivers and nothing else, so an entry the previous build left on the core receive
 	// path, and one whose consumer cannot carry this message, are both out of reach until the
-	// session registers again. The error is the honest answer, raising one delivery exception per
-	// stored message: a silent skip would hide a session that receives nothing
+	// session registers again. The error is the honest answer, which the fan-out counts as a
+	// failed delivery: a silent skip would hide a session that receives nothing
 	// (dispatch://INFRA-771).
 	return fmt.Errorf("%w for session %s", ErrNoSessionRecord, sessionID)
 }

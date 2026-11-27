@@ -116,7 +116,8 @@ func (c *Client) keep(done chan struct{}, cfg nats.StreamConfig, interval time.D
 // own. A pass whose connection reports no version until the client stops or
 // natsversion.VersionWait passes keeps nothing of the stream that pass and logs why, since an
 // empty version is no reading of the server; a pass runs only while the client is connected
-// (keep).
+// (keep). Its requests go through the client's JetStream context (Client.JS), so a pass the
+// connection dropped under logs `bus: NATS is reconnecting`, not nats.go's own refusal.
 func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string) {
 	ctx, cancel := c.untilStopped()
 	defer cancel()

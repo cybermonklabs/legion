@@ -21,10 +21,12 @@ import (
 // (bus.KeyValue.DeleteAtRead, whose read is never a copy's: a copy that has not applied the
 // registration made a moment ago answers that the entry is absent, and the stop would delete
 // nothing), each bucket call waiting no longer than ctx (bus.BoundedOn): DELETE
-// /v1/sessions/<session_id> passes its request's own context. A delete ctx abandoned may still land
-// after this answer, and that is safe: it deletes only the revision it read, so a registration
-// that landed since is kept, and an entry the read found absent is left alone rather than deleted
-// at no revision, which would take the entry a registration wrote between that read and the delete.
+// /v1/sessions/<session_id> passes its request's own context. A delete ctx abandoned once sent may
+// still land after this answer, and that is safe: it deletes only the revision it read, so a
+// registration that landed since is kept, and an entry the read found absent is left alone rather
+// than deleted at no revision, which would take the entry a registration wrote between that read
+// and the delete. One still waiting for a connection nats.go is reconnecting when ctx ends is
+// never sent.
 func (r *SessionRegistry) Delete(ctx context.Context, sessionID string) error {
 	// The fence read before the delete is the bucket's this handle reaches only when the read under
 	// way began in its epoch (kvwatch.Copy.FenceFor).
