@@ -107,7 +107,7 @@ import { BodySlot } from "./slots/body";
 import { FAILED_READ_RETRY } from "./slots/failed-read-line";
 import { ProvidersSlot } from "./slots/providers";
 import { SLOT_FILLED, StageSlot, VIEW_SLOTS, type ViewSlots } from "./slots/stage";
-import { answerCommentReads } from "./slots/stage-fixtures";
+import { answerCommentReads, spyOnBoxes } from "./slots/stage-fixtures";
 import { TAB_STOP_ROW } from "./tree-focus";
 import { markedCommentNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import {
@@ -673,18 +673,6 @@ function sizesByHand(): {
       globalThis.ResizeObserver = RealResizeObserver;
     },
   };
-}
-
-/** Answers each HTML element's box with `box`, called on that element as the DOM's own read is;
- *  any other element keeps the empty box the DOM gives it. On Element, which owns the method: a
- *  spy on HTMLElement leaves an own property behind once restored, which hides every later spy on
- *  Element (Margin.landing.test.tsx's `stubRects`). */
-function spyOnBoxes(box: (this: HTMLElement) => DOMRect) {
-  return spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: Element
-  ) {
-    return this instanceof HTMLElement ? box.call(this) : new DOMRect();
-  });
 }
 
 test("the whole tree is one tab stop, and the focused row's keys work its controls", async () => {

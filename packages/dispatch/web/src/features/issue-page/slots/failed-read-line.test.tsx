@@ -11,6 +11,7 @@ import { TAB_STOP_ROW } from "../tree-focus";
 import { useIssueKeymap } from "../useIssueKeymap";
 import { FAILED_READ_RETRY, FailedReadLine } from "./failed-read-line";
 import { ViewStage } from "./stage";
+import { spyOnBoxes } from "./stage-fixtures";
 
 // A failed read's line, as each view drawn in the stage is to draw it. The views here are
 // stand-ins that draw the lines over a tree the way a view is to: each view's own slot is to be
@@ -578,13 +579,7 @@ test("the chord that opens a view with no row reaches its failed read's Retry fr
 // box is given, 100 px above the screen, and every other box is empty.
 test("the chord that opens a view with no row brings its failed read's Retry on screen in the next frame", async () => {
   const user = userEvent.setup();
-  // On Element, which owns the method: a spy on HTMLElement leaves an own property behind once
-  // restored, which hides every later spy on Element (Margin.landing.test.tsx's `stubRects`). Any
-  // element that is no HTML element keeps the empty box.
-  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: Element
-  ) {
-    if (!(this instanceof HTMLElement)) return new DOMRect();
+  const boxes = spyOnBoxes(function (this: HTMLElement) {
     return this.matches(FAILED_READ_RETRY) ? new DOMRect(0, -100, 80, 24) : new DOMRect();
   });
   const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});

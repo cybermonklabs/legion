@@ -159,7 +159,7 @@ export function useDecisionsEntries({
   // The comments of the tree read's answer, which hold the changes a person asked of a decision
   // (`decision-review.ts`): a decision node's are the ones the read hangs under it, as the
   // outline reads them.
-  const answer = useTreeRead(issue).answer;
+  const tree = useTreeRead(issue).answer;
   // The blocks of the spec, the plan and the Verification document, in that order and each once,
   // that a decision's block stands in, which name the decision whose block holds each Change's
   // anchor and so the decision it changes, under the key the page reads them by
@@ -226,15 +226,15 @@ export function useDecisionsEntries({
     [refetchAsks, refetchDecisions]
   );
   const changes = useMemo(() => {
-    const comments = treeComments(answer);
-    const placed = decisionChangeComments(decisions, comments, issue, documents, answer);
+    const comments = treeComments(tree);
+    const placed = decisionChangeComments(decisions, comments, issue, documents, tree);
     return decisionChanges(decisions, comments, issue, documents, placed);
-  }, [answer, decisions, documents, issue]);
+  }, [decisions, documents, issue, tree]);
   // Whether a decision carries the outline's mark of a Change on a comment page not read yet
   // (`changeUnread`): while one does, the older comment pages are read for it.
   const unread = useMemo(
-    () => (decisions?.entries ?? []).some((row) => changeUnread(row, changes.has(row.ref), answer)),
-    [answer, changes, decisions]
+    () => (decisions?.entries ?? []).some((row) => changeUnread(row, changes.has(row.ref), tree)),
+    [changes, decisions, tree]
   );
   useReadOlderComments(issue, () => unread);
   // How this issue addresses a node, which is the one rule the tree was built with, so a

@@ -12,7 +12,7 @@ import {
   PLAN_WORDS,
 } from "../web/src/features/issue-page/page-words";
 import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
-import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { treeIdOfNode } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { buildIssuePath } from "../web/src/features/refs/routes";
 import { getArtifact } from "./api";
 import { gotoIssue, phase } from "./issue-page";
@@ -25,7 +25,7 @@ import {
   PLAN_SIZES_WORDS,
   seedPlanSizes,
 } from "./issue-page-t-plan";
-import { awaitIndexedCoverage, idReadsOf, ROW_MS } from "./issue-page-t-rows";
+import { awaitIndexedCoverage, ROW_MS } from "./issue-page-t-rows";
 import { heldAnswer, owedUnless, treeReadGate, viewAnswerOf } from "./issue-page-t-tree";
 import { expect, test } from "./test";
 
@@ -49,6 +49,11 @@ interface KeyLink {
   readonly key: string;
 }
 
+/** The one key link a task of issue `key` is marked with: its key, linking that issue's page. */
+function keyLinkOf(key: string): readonly KeyLink[] {
+  return [{ href: buildIssuePath({ key, kind: "issue" }), key }];
+}
+
 /** One step of the chart as the row reads it: its bar's left edge, width and border, how far
  *  apart two lines of the axis stand in its own track (0 where the track draws no axis, at 760
  *  px and below), the issue keys it links, the tasks it names after "needs" by their words, the
@@ -65,12 +70,10 @@ interface ChartStep {
 
 /** Every step of the chart, in the order it is drawn. */
 function chartSteps(page: Page): Promise<ChartStep[]> {
-  return page.evaluate(() => {
+  return page.evaluate((selector) => {
     const text = (element: Element | null) =>
       (element?.textContent ?? "").replace(/\s+/g, " ").trim();
-    return [
-      ...document.querySelectorAll("[data-issue-page] [data-plan-chart] [data-plan-bar-row]"),
-    ].map((row) => {
+    return [...document.querySelectorAll(selector)].map((row) => {
       const bar = row.querySelector("[data-plan-bar]");
       const box = bar?.getBoundingClientRect();
       const lines = [...row.querySelectorAll("[data-plan-axis] > i")].map(
@@ -96,7 +99,7 @@ function chartSteps(page: Page): Promise<ChartStep[]> {
         size: text(row.querySelector("[data-plan-size], [data-plan-no-size]")),
       };
     });
-  });
+  }, CHART_ROWS);
 }
 
 /** One step under Steps as the row reads it: the facts its body draws whose label is one of the
@@ -116,14 +119,10 @@ const STEP_FACT_LABELS = { issue: nodeFactLabel("issue"), size: nodeFactLabel("s
 /** Every step under Steps, in the order it is drawn. */
 function stepRows(page: Page): Promise<StepRow[]> {
   return page.evaluate(
-    ({ labels, needsLabel, noSize }) => {
+    ({ labels, needsLabel, noSize, selector }) => {
       const text = (element: Element | null) =>
         (element?.textContent ?? "").replace(/\s+/g, " ").trim();
-      return [
-        ...document.querySelectorAll(
-          '[data-issue-page] [data-plan-body] [data-node-row][data-node-type="plan_task"]'
-        ),
-      ].map((row) => ({
+      return [...document.querySelectorAll(selector)].map((row) => ({
         facts: [...row.querySelectorAll("[data-node-body] dt")]
           .map((label) => [text(label), text(label.nextElementSibling)])
           .filter(([label]) => labels.includes(label ?? "")),
@@ -144,6 +143,7 @@ function stepRows(page: Page): Promise<StepRow[]> {
       labels: [STEP_FACT_LABELS.issue, STEP_FACT_LABELS.size],
       needsLabel: BLOCK_ATTRIBUTE_LABELS.needs,
       noSize: PLAN_WORDS.no_size,
+      selector: STEP_ROWS,
     }
   );
 }
@@ -204,9 +204,13 @@ test("Plan draws each task's size, and a parent's plan holds the steps of the is
   test.setTimeout(ROW_MS);
   await phase(browser, seedPlanSizes, async (page, seeded) => {
     owedUnless(await treeReadGate(page, seeded.key));
-    await awaitIndexedCoverage(seeded.key);
-    await awaitIndexedCoverage(seeded.child);
-    for (const key of [seeded.twins.key, seeded.twins.first, seeded.twins.second]) {
+    for (const key of [
+      seeded.key,
+      seeded.child,
+      seeded.twins.key,
+      seeded.twins.first,
+      seeded.twins.second,
+    ]) {
       await awaitIndexedCoverage(key);
     }
     const W = PLAN_SIZES_WORDS;
@@ -216,10 +220,17 @@ test("Plan draws each task's size, and a parent's plan holds the steps of the is
     const [a, b, c] = [OWN_TASKS.a, OWN_TASKS.b, OWN_TASKS.c].map((id) =>
       blockNodeId(planSlug, id)
     );
-    const idReads = await idReadsOf(seeded.key);
-    const childKey: readonly KeyLink[] = [
-      { href: buildIssuePath({ key: seeded.child, kind: "issue" }), key: seeded.child },
-    ];
+    const childKey = keyLinkOf(seeded.child);
+    // The rows of the second issue's plan that are tasks of the two issues under it, each by its
+    // words and its key (`linkedByWords`).
+    const twinRows = linkedByWords(
+      (
+        [
+          [seeded.twins.first, W.twinFirst],
+          [seeded.twins.second, W.twinSecond],
+        ] as const
+      ).map(([key, words]) => ({ keys: keyLinkOf(key), words }))
+    );
     for (const size of [DESKTOP, PHONE]) {
       const where = `at ${size.width} px`;
       await page.setViewportSize(size);
@@ -236,7 +247,6 @@ test("Plan draws each task's size, and a parent's plan holds the steps of the is
       // The parent's plan draws a task of the issue under it by the id the tree draws every node
       // of another issue by (`tree-read/tree-nodes.ts`' `treeIdOfNode`), read off the node the
       // Plan read answers for it.
-      const idOf = treeIdOf(answer, idReads);
       const childTask = (blockId: string): string => {
         const read = (answer.nodes ?? []).find(
           (node) =>
@@ -244,7 +254,9 @@ test("Plan draws each task's size, and a parent's plan holds the steps of the is
             node.issue === seeded.child &&
             node.block_id === blockId
         );
-        return read === undefined ? `no ${blockId} of ${seeded.child} in the read` : idOf(read.id);
+        return read === undefined
+          ? `no ${blockId} of ${seeded.child} in the read`
+          : treeIdOfNode(read, seeded.key);
       };
       const [xa, xb] = [childTask(CHILD_TASKS.first), childTask(CHILD_TASKS.second)];
       console.log(
@@ -477,17 +489,6 @@ test("Plan draws each task's size, and a parent's plan holds the steps of the is
       // The second issue's plan: its own `t1` and the `t1` of each of the two issues under it
       // (R19 (2)). Each of the two of another issue is a row of its own, which draws its own
       // issue's words and is marked with that issue's key, on the chart and under Steps.
-      const twinRows = linkedByWords(
-        (
-          [
-            [seeded.twins.first, W.twinFirst],
-            [seeded.twins.second, W.twinSecond],
-          ] as const
-        ).map(([key, words]) => ({
-          keys: [{ href: buildIssuePath({ key, kind: "issue" }), key }],
-          words,
-        }))
-      );
       await gotoIssue(page, presetPath(seeded.twins.key, "plan"));
       await expect(
         planView(page, "chart"),

@@ -48,7 +48,7 @@ export type TreeView = Filter;
 export const TREE_PATH = /^\/api\/v1\/issues\/[^/]+\/tree$/;
 
 /** The path of issue `key`'s tree read. */
-function treePath(key: string): string {
+export function treePath(key: string): string {
   return `/api/v1/issues/${encodeURIComponent(key)}/tree`;
 }
 
@@ -558,18 +558,19 @@ export function decisionNodesGate(answer: IssueTreeRead, read: DecisionsRead | u
  *  path in this package. */
 const DECISION_NODES_MODULE = "web/src/features/issue-page/decision-nodes/decision-nodes.ts";
 
-/** That module in the tree this process runs from, which the build is made from. */
-const decisionNodesModule = new URL(`../${DECISION_NODES_MODULE}`, import.meta.url);
+/** Whether a file of the page, by its path under `packages/dispatch`, holds `pattern`. */
+function pageSourceHolds(path: string, pattern: RegExp): boolean {
+  const file = new URL(`../${path}`, import.meta.url);
+  return existsSync(file) && pattern.test(readFileSync(file, "utf8"));
+}
 
 /** The page drawing the decisions from the tree read's nodes: the tree under test holds
  *  `DECISION_NODES_MODULE`, and it exports `restatesAnswer`, the page's rule that a section
  *  restating a person's answer is no decision. It reads the files the build is made from, as
- *  `dashboardPartGate` reads a list the page's code exports, since the model's answer says
- *  nothing of whether the page draws it so. */
+ *  `dashboardPartGate` reads Dashboard's folder and the outline's row, since the model's answer
+ *  says nothing of whether the page draws it so. */
 export const partUGate: Gate = {
-  met:
-    existsSync(decisionNodesModule) &&
-    /^export function restatesAnswer\(/m.test(readFileSync(decisionNodesModule, "utf8")),
+  met: pageSourceHolds(DECISION_NODES_MODULE, /^export function restatesAnswer\(/m),
   owed:
     "owed until the page's drawing of the decisions from the tree read's nodes is on this " +
     `branch: ${DECISION_NODES_MODULE} exports no restatesAnswer here; ${OWED_BY}`,
@@ -601,14 +602,26 @@ export const coverageIndexEventGate: Gate = {
  *  (`PRESET_ORDER`) with that view (spec R12). */
 const DASHBOARD_VIEW = "dashboard";
 
-/** Whether a file of the page, by its path under `packages/dispatch`, holds `pattern`. */
-function pageSourceHolds(path: string, pattern: RegExp): boolean {
-  const file = new URL(`../${path}`, import.meta.url);
-  return existsSync(file) && pattern.test(readFileSync(file, "utf8"));
-}
+/** Dashboard's own folder, whose files Dashboard's part brings (INFRA-5702), in the tree this
+ *  process runs from; its URL ends in `/`, so a file's name resolves inside it. */
+const DASHBOARD_FOLDER = new URL("../web/src/features/dashboard/", import.meta.url);
 
-/** Dashboard's own folder, whose files Dashboard's part brings (INFRA-5702). */
-const DASHBOARD_FOLDER = "web/src/features/dashboard";
+/** Whether a file of Dashboard's folder reads the tree read (R16): false where the folder is not
+ *  there. */
+function dashboardReadsTree(): boolean {
+  try {
+    return readdirSync(DASHBOARD_FOLDER, { withFileTypes: true }).some(
+      (entry) =>
+        entry.isFile() &&
+        /from "\.\.\/issue-page\/tree-read\/tree-read"/.test(
+          readFileSync(new URL(entry.name, DASHBOARD_FOLDER), "utf8")
+        )
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
 
 /** Dashboard's part on this branch's base, and part T's R16 and R17 built on it (decision 558,
  *  amended): the view row's one list holds Dashboard's view, a file of Dashboard's folder reads
@@ -619,16 +632,8 @@ const DASHBOARD_FOLDER = "web/src/features/dashboard";
 export const dashboardPartGate: Gate = {
   met:
     (PRESET_ORDER as readonly string[]).includes(DASHBOARD_VIEW) &&
-    existsSync(new URL(`../${DASHBOARD_FOLDER}`, import.meta.url)) &&
-    readdirSync(new URL(`../${DASHBOARD_FOLDER}`, import.meta.url), { withFileTypes: true }).some(
-      (entry) =>
-        entry.isFile() &&
-        pageSourceHolds(
-          `${DASHBOARD_FOLDER}/${entry.name}`,
-          /from "\.\.\/issue-page\/tree-read\/tree-read"/
-        )
-    ) &&
-    pageSourceHolds("web/src/features/issue-page/NodeRow.tsx", /from "\.\.\/ask-body\/AskBody"/),
+    pageSourceHolds("web/src/features/issue-page/NodeRow.tsx", /from "\.\.\/ask-body\/AskBody"/) &&
+    dashboardReadsTree(),
   owed:
     "owed until INFRA-5702, Dashboard's part with the ask body and the decision card, is on " +
     "this branch's base and part T's R16 and R17 are built on it: Dashboard reads no tree read " +

@@ -2272,6 +2272,12 @@ test("a plain block of the room's fragment is drafted and named as prose in Grap
   }
 });
 
+/** A plan task's `plan` in the Plan view's answer: its place in the order the read answers, and
+ *  its size in whole minutes, none where `size` is not given. */
+function place(position: number, size: string | null = null) {
+  return { cycle: false, docs: null, needs: [], position, size, skills: null };
+}
+
 // R19: on an issue with issues under it the Plan view's read answers each plan task of an issue
 // under it, as context marked with its issue, with its place in the order the read answers
 // (`plan.position`) and its size in whole minutes. Built from that answer, the tree drafts the
@@ -2281,14 +2287,6 @@ test("a plain block of the room's fragment is drafted and named as prose in Grap
 // places leave room for each issue's start, which the read places too. The outline's answer,
 // which carries no `plan`, drafts no task of another issue.
 test("a plan task's size and issue come from the plan view's answer", () => {
-  const place = (position: number, size: string | null) => ({
-    cycle: false,
-    docs: null,
-    needs: [],
-    position,
-    size,
-    skills: null,
-  });
   const childPlan = { artifact_id: "artifact-child-plan", slug: "plan-md" };
   const child = (id: string, position: number, at: number, size: string | null) =>
     node(id, "plan_task", "CORE-2", {
@@ -2338,14 +2336,6 @@ test("a plan task's size and issue come from the plan view's answer", () => {
 // the Plan view draws two rows, each with its own issue's words, and the `t1` CORE-3's `t2` needs
 // is CORE-3's.
 test("two children's plan tasks of one block id are two rows, each with its own words", () => {
-  const place = (position: number) => ({
-    cycle: false,
-    docs: null,
-    needs: [],
-    position,
-    size: null,
-    skills: null,
-  });
   const childTask = (issue: string, id: string, position: number, at: number) => {
     const words = `Task ${id} of ${issue}.`;
     return node(id, "plan_task", issue, {

@@ -77,7 +77,7 @@ export function viewKey(
 /** Resets every view of issue `key` the cache holds (`resetQueries`) for a load of the issue
  *  (`ViewReadProvider`), so a view a past load held is gone and each is read once: the open one at
  *  the load, at once, whether a write of the issue is out or not, and another when its filter is
- *  next on. It marks none: after a load the view is a load's first read. `subscribeTreeFreshness`
+ *  next on. After a load the view is a load's first read. `subscribeTreeFreshness`
  *  resets none: it refreshes each held view through `refreshQueries`, and the view keeps what it
  *  draws until its new answer lands. */
 export function resetViews(queryClient: QueryClient, key: string): void {
