@@ -11,6 +11,7 @@ import { DashboardAskBody } from "../../dashboard/DashboardAskBody";
 import { isViewer } from "../../refs/actor";
 import { postDeletion } from "../../refs/post-marks";
 import { EVENT_FRESH } from "../../refs/reference-target";
+import { takesTypedText } from "../../shell/keymap";
 import { useMarkThreadRead } from "../../threads/useMarkThreadRead";
 import { authorText, pageChrome } from "../page-structure";
 import { CONTROL_LABELS } from "../page-words";
@@ -81,24 +82,6 @@ function messageThread(
 /** The box a reader opened in the record: a reply under an entry, or the reader's own comment
  *  open to edit. One stands open at a time (R9). */
 type OpenBox = { readonly kind: "reply" | "edit"; readonly id: string };
-
-/** The types of an `input` that take no typed words, so hold no caret. */
-const UNTYPED_INPUTS: Readonly<Record<string, true>> = {
-  button: true,
-  checkbox: true,
-  radio: true,
-  reset: true,
-  submit: true,
-};
-
-/** Whether `target` holds the reader's caret: a box's field, or the ask body's answer in words. */
-function holdsCaret(target: EventTarget): target is HTMLElement {
-  return (
-    target instanceof HTMLTextAreaElement ||
-    (target instanceof HTMLInputElement && UNTYPED_INPUTS[target.type] !== true) ||
-    (target instanceof HTMLElement && target.isContentEditable)
-  );
-}
 
 /**
  * The opened record (dispatch://INFRA-5704/spec#b-r-open, R9), in the main column: its kind as
@@ -268,9 +251,11 @@ export function OpenedRecord({
       onKeyDown={(event) => {
         // A `MentionComposer` box takes Escape on its own form and marks it handled, so the
         // page's keys never hear it: the record takes the caret out here, and marks the press
-        // handled so the page's Escape does not close the record on it as well.
+        // handled so the page's Escape does not close the record on it as well. A field holds
+        // the caret where it takes typed text as the page's keys read it (`takesTypedText`), so
+        // Escape on a checkbox or a button is the page's.
         if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
-        if (!holdsCaret(event.target)) return;
+        if (!(event.target instanceof HTMLElement) || !takesTypedText(event.target)) return;
         event.preventDefault();
         event.target.blur();
       }}
