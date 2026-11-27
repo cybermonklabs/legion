@@ -637,6 +637,92 @@ func TestAFailurePostedToOneProjectCannotBlameAPublicProjectsDeploy(t *testing.T
 	}
 }
 
+// TestAFailurePostedByACommitBlamesTheEarliestDeployOfTheRoutesProject: one commit reached
+// production first in OTH's deploys, a GitHub deploy of OTH's source repository and then a deploy
+// posted to OTH, and later in PRD's, a GitHub deploy of PRD's source repository and then a deploy
+// posted to PRD. A failure posted to PRD's route by that commit is taken, 201, and blames PRD's
+// GitHub deploy, the earliest of the deploys that count for PRD: OTH's earlier ones count for OTH
+// alone, so they neither turn the post into a refusal nor take its blame, and PRD's later one is
+// not the first. A repeat of the post answers that row, 200, and a person's flag by the commit is
+// keyed by that deploy. The automatic signals still blame the first deploy of any project to ship
+// the commit, OTH's (prodevents.DeployForCommit). A commit that OTH's deploys alone hold is
+// answered at PRD's route word for word as a commit no deploy holds, naming none of them, and
+// writes nothing.
+func TestAFailurePostedByACommitBlamesTheEarliestDeployOfTheRoutesProject(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "PRD", "OTH")
+	now := time.Now().UTC().Truncate(time.Second)
+	const shared, theirs, nobodys = "4444444444444444444444444444444444444444", "7777777777777777777777777777777777777777",
+		"3333333333333333333333333333333333333333"
+	first := now.Add(-4 * time.Hour)
+	foreign := writeProductionEvent(t, database.Pool, prodevents.Event{
+		ProjectKey: "OTH", Kind: prodevents.KindDeploy, Source: prodevents.SourceGitHub, SourceRef: prodevents.GitHubSourceRef(41),
+		StartedAt: &first, FinishedAt: &first, Repo: "acme/other", Commits: []string{shared, theirs},
+	})
+	publishDeployRepo(t, database, "OTH", deployRule("acme/other", "production / apply"), first)
+	foreignPosted := writeProductionEvent(t, database.Pool, prodevents.Event{
+		ProjectKey: "OTH", Kind: prodevents.KindDeploy, Source: prodevents.SourceAPI, SourceRef: "ci:oth-deploy",
+		FinishedAt: new(now.Add(-3 * time.Hour)), Commits: []string{shared, theirs},
+	})
+	local := writeProductionDeploy(t, database, "PRD", 42, now.Add(-2*time.Hour), shared)
+	writeProductionEvent(t, database.Pool, prodevents.Event{
+		ProjectKey: "PRD", Kind: prodevents.KindDeploy, Source: prodevents.SourceAPI, SourceRef: "ci:prd-deploy",
+		FinishedAt: new(now.Add(-time.Hour)), Commits: []string{shared},
+	})
+	if automatic, held, err := prodevents.DeployForCommit(t.Context(), database.Pool, shared); err != nil || !held || automatic.ID != foreign.ID {
+		t.Fatalf("the automatic signals' deploy of the commit is %q (held %v, err %v), want OTH's first deploy %s", automatic.ID, held, err, foreign.ID)
+	}
+	post := func(ref, commit string) *httptest.ResponseRecorder {
+		t.Helper()
+		return bearerRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), map[string]any{
+			"kind": "failure", "source_ref": ref, "commit_sha": commit, "actor": map[string]any{"kind": "session", "id": "ses-ci"},
+		})
+	}
+
+	posted := post("alerts:shared commit", shared)
+	if posted.Code != http.StatusCreated {
+		t.Fatalf("PRD's failure by the shared commit: status=%d body=%s, want 201", posted.Code, posted.Body.String())
+	}
+	failure := decodeBody[prodevents.Event](t, posted)
+	if failure.ProjectKey != "PRD" || failure.DeployID == nil || *failure.DeployID != local.ID {
+		t.Fatalf("PRD's failure by the shared commit is a row of %s blaming %q, want PRD's blaming its first deploy %s",
+			failure.ProjectKey, deref(failure.DeployID), local.ID)
+	}
+	if repeat := post("alerts:shared commit", shared); repeat.Code != http.StatusOK || decodeBody[prodevents.Event](t, repeat).ID != failure.ID {
+		t.Fatalf("a repeat of PRD's failure: status=%d body=%s, want 200 and row %s", repeat.Code, repeat.Body.String(), failure.ID)
+	}
+	key := prodevents.PersonSourceRef(local.ID, "alice")
+	flagged := dispatchRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), map[string]any{"kind": "failure", "commit_sha": shared}, "alice")
+	if flagged.Code != http.StatusCreated {
+		t.Fatalf("alice's flag by the shared commit: status=%d body=%s, want 201", flagged.Code, flagged.Body.String())
+	}
+	if flag := decodeBody[prodevents.Event](t, flagged); flag.DeployID == nil || *flag.DeployID != local.ID || flag.SourceRef != key {
+		t.Fatalf("alice's flag by the shared commit blames %q under %q, want %s under %s", deref(flag.DeployID), flag.SourceRef, local.ID, key)
+	}
+
+	rows := countRows(t, database, `select count(*) from production_events`)
+	missing := post("alerts:nobody's commit", nobodys)
+	want := decodeBody[apiErrorBody](t, missing)
+	if missing.Code != http.StatusConflict || want.Code != prodevents.CodeNoDeploy {
+		t.Fatalf("a failure by a commit no deploy holds: status=%d body=%s, want 409 %s", missing.Code, missing.Body.String(), prodevents.CodeNoDeploy)
+	}
+	refused := post("alerts:OTH's commit", theirs)
+	got, words := decodeBody[apiErrorBody](t, refused), strings.ReplaceAll(want.Error, nobodys, theirs)
+	if refused.Code != missing.Code || got.Code != want.Code || got.Error != words {
+		t.Errorf("a failure by a commit OTH's deploys alone hold: status=%d body=%s, want %d %s %q, as for a commit no deploy holds",
+			refused.Code, refused.Body.String(), missing.Code, want.Code, words)
+	}
+	for _, id := range []string{foreign.ID, foreignPosted.ID} {
+		if strings.Contains(refused.Body.String(), id) {
+			t.Errorf("the refusal of OTH's commit names OTH's deploy %s: %s", id, refused.Body.String())
+		}
+	}
+	if after := countRows(t, database, `select count(*) from production_events`); after != rows {
+		t.Fatalf("the refused posts left %d rows, want the %d there were", after, rows)
+	}
+}
+
 // TestARestoreCannotNameAnotherProjectsDeploy: Mark restored naming, as the restoring deploy, a
 // deploy posted to PUB, which counts for PUB alone and finished after the failed deploy, is
 // answered as a restoring deploy no row holds is, word for word but the id, and leaves the failure

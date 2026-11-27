@@ -335,10 +335,8 @@ func requireDeploy(ctx context.Context, tx pgx.Tx, id string, details bool) (Eve
 	}
 	var deploy Event
 	if details {
-		err = tx.QueryRow(ctx, `select id::text, project_key, kind, source, status, repo, pull_requests, finished_at
-			from production_events where id = $1 and kind = 'deploy' for key share`, parsed.String()).
-			Scan(&deploy.ID, &deploy.ProjectKey, &deploy.Kind, &deploy.Source, &deploy.Status,
-				&deploy.Repo, &deploy.PullRequests, &deploy.FinishedAt)
+		deploy, err = scanDeployOwnership(tx.QueryRow(ctx, `select `+deployOwnership+`
+			from production_events where id = $1 and kind = 'deploy' for key share`, parsed.String()))
 	} else {
 		err = tx.QueryRow(ctx, `select kind from production_events where id = $1 and kind = 'deploy' for key share`,
 			parsed.String()).Scan(&deploy.Kind)
@@ -350,6 +348,19 @@ func requireDeploy(ctx context.Context, tx pgx.Tx, id string, details bool) (Eve
 		return Event{}, fmt.Errorf("read deploy %s: %w", id, err)
 	}
 	return deploy, nil
+}
+
+// deployOwnership is the columns of a deploy row its attribution and its finish are read by
+// (evals.DeployCountsFor, restorable), in the order scanDeployOwnership reads them: the narrow
+// read of a deploy a route names or may name, which leaves its actor, note and commits unread.
+const deployOwnership = `id::text, project_key, kind, source, status, repo, pull_requests, finished_at`
+
+// scanDeployOwnership reads one row of deployOwnership.
+func scanDeployOwnership(row pgx.Row) (Event, error) {
+	var deploy Event
+	err := row.Scan(&deploy.ID, &deploy.ProjectKey, &deploy.Kind, &deploy.Source, &deploy.Status,
+		&deploy.Repo, &deploy.PullRequests, &deploy.FinishedAt)
+	return deploy, err
 }
 
 // StateChange is one write of the state route (R8, R10): a reject, a re-count, or a restore.
@@ -586,6 +597,29 @@ func DeployForCommit(ctx context.Context, q delivery.Querier, sha string) (Event
 		return Event{}, false, fmt.Errorf("read the deploy of commit %s: %w", sha, err)
 	}
 	return event, true, nil
+}
+
+// DeploysForCommit reads, in q, the deploy rows whose commits hold sha that may count for project,
+// earliest to reach production first (ties by id), as DeployForCommit orders them: a dropped
+// GitHub deploy (StatusDropped) holds none, and a deploy another project posted (SourceAPI), which
+// counts for its own project alone, is left out at once. Each row carries deployOwnership alone.
+// The read collects its rows before it answers, so a caller may ask of each in turn, in the same q,
+// whether it counts for project (evals.DeployCountsFor): the post of a failure that names its
+// deploy by a commit blames the first that does (api's production events), where the automatic
+// signals blame DeployForCommit's. The read is a probe of production_events_commits.
+func DeploysForCommit(ctx context.Context, q delivery.Querier, project, sha string) ([]Event, error) {
+	rows, err := q.Query(ctx, `select `+deployOwnership+` from production_events
+		where kind = 'deploy' and commits @> array[$1::text] and not `+droppedDeploy+`
+		  and (source <> '`+SourceAPI+`' or project_key = $2)
+		order by finished_at, id`, strings.ToLower(sha), project)
+	if err != nil {
+		return nil, fmt.Errorf("read the deploys of commit %s for %s: %w", sha, project, err)
+	}
+	deploys, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Event, error) { return scanDeployOwnership(row) })
+	if err != nil {
+		return nil, fmt.Errorf("read the deploys of commit %s for %s: %w", sha, project, err)
+	}
+	return deploys, nil
 }
 
 // DeployForRun is the deploy row the GitHub adapter wrote for run runID of repo, of any project,

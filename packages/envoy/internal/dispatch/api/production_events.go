@@ -127,8 +127,8 @@ type productionEventInput struct {
 	// DeployID names a failure's deploy by its row's id: the uuid of a deploy row that counts for
 	// the route's project, whichever project's row it is.
 	DeployID *string `json:"deploy_id"`
-	// CommitSHA names a failure's deploy by a commit: the first deploy of any project that
-	// shipped it, which must count for the route's project.
+	// CommitSHA names a failure's deploy by a commit: the earliest deploy that shipped it among
+	// those that count for the route's project, whichever project's row it is.
 	CommitSHA string `json:"commit_sha"`
 	// Actor is a bearer's own session, as every bearer write names it (bearerSessionActor).
 	Actor *model.Actor `json:"actor"`
@@ -262,7 +262,7 @@ func (s *server) postProductionEvent(w http.ResponseWriter, r *http.Request) {
 	var blamed blame
 	var check prodevents.DeployCheck
 	if event.Kind == prodevents.KindFailure {
-		if blamed, err = s.blamedDeploy(r.Context(), input); err != nil {
+		if blamed, err = s.blamedDeploy(r.Context(), event.ProjectKey, input); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -436,15 +436,20 @@ type blame struct {
 	none error
 }
 
-// blamedDeploy is the deploy a failure blames, named exactly one way: its row's id, in its
-// canonical spelling where it is a uuid, so a person's flag keys one deploy one way
+// blamedDeploy is the deploy a failure posted to project blames, named exactly one way: its row's
+// id, in its canonical spelling where it is a uuid, so a person's flag keys one deploy one way
 // (person:<deploy id>:<login>) however the body spells it, and which the store holds to a deploy
 // row as it writes (a body's id that is no uuid included); the GitHub run it was
-// (prodevents.DeployForRun); or a commit it shipped (prodevents.DeployForCommit), the first deploy
-// of any project to ship it. A run or a commit no deploy row holds is refused none at once, 409
-// PRODUCTION_EVENT_NO_DEPLOY, and the route refuses none as well a deploy found that does not count
-// for its project (postProductionEvent).
-func (s *server) blamedDeploy(ctx context.Context, input productionEventInput) (blame, error) {
+// (prodevents.DeployForRun); or a commit it shipped: the earliest deploy holding it
+// (prodevents.DeploysForCommit) that counts for project (evals.DeployCountsFor), so a deploy of
+// another project that shipped the commit first neither hides project's own nor turns the post
+// into a refusal, where the automatic signals blame the first deploy of any project
+// (prodevents.DeployForCommit). A run no deploy row holds, or a commit no deploy that counts for
+// project holds, is refused none at once, 409 PRODUCTION_EVENT_NO_DEPLOY, and the route refuses
+// none as well a deploy that does not count for its project once its write holds the row
+// (postProductionEvent): a commit's deploy dropped or no longer counted since this lookup is
+// refused so, never swapped for a later one.
+func (s *server) blamedDeploy(ctx context.Context, project string, input productionEventInput) (blame, error) {
 	named := 0
 	for _, set := range []bool{input.DeployID != nil, input.PipelineRunID != "", input.CommitSHA != ""} {
 		if set {
@@ -481,14 +486,20 @@ func (s *server) blamedDeploy(ctx context.Context, input productionEventInput) (
 		return blame{id: deploy.ID, none: none}, nil
 	}
 	none := errorf(http.StatusConflict, prodevents.CodeNoDeploy, "no deploy row holds commit %s", input.CommitSHA)
-	deploy, found, err := prodevents.DeployForCommit(ctx, s.deps.Store.Pool, input.CommitSHA)
+	candidates, err := prodevents.DeploysForCommit(ctx, s.deps.Store.Pool, project, input.CommitSHA)
 	if err != nil {
 		return blame{}, err
 	}
-	if !found {
-		return blame{}, none
+	for _, deploy := range candidates {
+		counts, err := evals.DeployCountsFor(ctx, s.deps.Store.Pool, s.deps.Attributor, project, deploy)
+		if err != nil {
+			return blame{}, err
+		}
+		if counts {
+			return blame{id: deploy.ID, none: none}, nil
+		}
 	}
-	return blame{id: deploy.ID, none: none}, nil
+	return blame{}, none
 }
 
 // productionEventInputError is the 400 PRODUCTION_EVENT_INPUT of a body no row can hold, naming
