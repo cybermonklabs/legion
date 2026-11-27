@@ -876,8 +876,9 @@ func TestALegOfAMatrixJobWritesItsJobsCheck(t *testing.T) {
 	})
 }
 
-// job is one job of a workflow file, as the rows below write one: its id, whatever body the row
-// gives it (a name, a matrix, or neither), and the runner and the one step every such job has.
+// job is one job of a workflow file, as the rows of this file write one: its id, whatever body
+// the row gives it (a name, a matrix, or neither), and the runner and the one step every such
+// job has.
 func job(id, body string) string {
 	return "  " + id + ":\n" + body + "    runs-on: ubuntu-latest\n    steps:\n      - run: go test ./...\n"
 }

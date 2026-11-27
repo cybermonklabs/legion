@@ -1343,11 +1343,11 @@ const PROXY_TUNNEL_REFUSED = /: (\d{3}) ?(.*)$/;
  * since a refusal at the CONNECT reaches the caller as its status and headers and no body. `status`
  * is that status, 0 where the message names none, `reason` its reason phrase, and `proxyCode` the
  * answer's `Cipher-Proxy-Code` where it is of the proxy's form (`PROXY_CODE_FORM`). The write reads
- * it as every answer the proxy wrote before anything left it (`proxyEvent`): a 5xx, a grant it could
- * not read among them, is a connection that never opened and is asked again within the write's
- * bound; every other status ends the write at once, a 407 among them, which names a grant that
- * ended or a proxy password that names none. A review sent through the proxy (`via`) ends with
- * `DispatchProxyRefusalError` in its place (`#endWrite`).
+ * it by the rule `proxyEvent` states for every answer the proxy wrote before anything left it:
+ * which statuses are asked again within the write's bound and which end the write at once are
+ * that function's, not this comment's.
+ * A review sent through the proxy (`via`) ends with `DispatchProxyRefusalError` in its place
+ * (`#endWrite`).
  */
 export class AirlockTunnelRefusedError extends Error {
   override readonly name = "AirlockTunnelRefusedError";
@@ -1390,8 +1390,8 @@ function tunnelRefusal(error: unknown): AirlockTunnelRefusedError | undefined {
  * review (`via`): a refusal of the request, a grant it could not read, or a dial to Dispatch that
  * failed, each before any byte of the request left it, so the request reached no service and
  * stored nothing. `code` is its `Cipher-Proxy-Code`, or `HTTP_<status>` where it names none, and
- * `body` its text as the client's excerpt quotes it (`#airlockAnswer`). A 5xx is asked again
- * within the write's bound before the write ends with it (`proxyEvent`). It is no
+ * `body` its text as the client's excerpt quotes it (`#airlockAnswer`). `proxyEvent` states which
+ * of these answers is asked again within the write's bound and which ends the write. It is no
  * `DispatchServiceError`, which a caller reads as a refusal Dispatch decided, and no rule reads it
  * as a write whose outcome is unknown (`writeOutcomeUnknown`). The proxy's answer after the write
  * may have left it is `AirlockOutcomeUnknownError`.

@@ -851,6 +851,7 @@ describe("AskGate at the dispatch entry, across processes", () => {
   // whole-suite run and 56.71 s with this file alone, which left its old 60 s limit 1.03x in hand.
   // It fires only if a child never exits.
   test("a gated write from xargs, python3 -c, node -e, bun -e, an alias or a script is refused; with no record it posts", async () => {
+    requireHostTools("node", "python3");
     const bin = join(stateDir, "bin");
     mkdirSync(bin);
     writeFileSync(
@@ -861,7 +862,6 @@ describe("AskGate at the dispatch entry, across processes", () => {
     const script = join(stateDir, "post.sh");
     writeFileSync(script, "dispatch message --issue DSP-1 --body 'from a script'\n");
     const argv = '"message", "--issue", "DSP-1", "--body", "hi"';
-    requireHostTools("node", "python3");
     const forms: Array<[string, string[]]> = [
       ["xargs", ["bash", "-c", "printf '%s\\n' message --issue DSP-1 --body hi | xargs dispatch"]],
       ["python3 -c", [python3, "-c", `import subprocess; subprocess.run(["dispatch", ${argv}])`]],
