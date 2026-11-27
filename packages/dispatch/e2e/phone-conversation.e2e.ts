@@ -1363,6 +1363,17 @@ test("on a phone, the newest conversation's read mark moves nothing under a pres
   }
 });
 
+/** What the sweep did at one scroll position: how many of the issue's tabs, and of the other
+ *  controls above the turns, it tapped, and how many of each it skipped behind the docked
+ *  composer. */
+type SweepStep = {
+  scrolledTo: number;
+  tabsTapped: number;
+  tabsBehindComposer: number;
+  aboveTapped: number;
+  aboveBehindComposer: number;
+};
+
 /** Sweeps the band from the top of the page down to `end` in the page: at every 4 px step it
  *  scrolls, lets two frames pass so the pill's own scroll listener and the render React queues
  *  for it have both landed, and records where a tap at the centre of a control does not reach
@@ -1377,12 +1388,13 @@ test("on a phone, the newest conversation's read mark moves nothing under a pres
  *  newest card never does: the pill is drawn only past the place the page settled and only when
  *  no part of that card is on screen (`belongs`, the rule `use-follow-latest.ts` carries). The
  *  sweep records both a missing pill where one belongs and an unexpected pill anywhere else.
- *  Controls whose centre is off screen, or clipped out of view by a scrolling ancestor, are not
- *  tapped either. */
+ *  Controls whose centre is off the visible band (the screen less the docked composer), or
+ *  clipped out of view by a scrolling ancestor, are not tapped either. Beside the lost taps it
+ *  returns, for every step, the counts `SweepStep` names, so a sweep that tapped nothing shows. */
 async function tapsLostAcrossBand(
   page: Page,
   band: { end: number; settled: number }
-): Promise<string[]> {
+): Promise<{ lost: string[]; steps: SweepStep[] }> {
   return page.evaluate(async ({ end, settled }) => {
     const turns = document.querySelector('[aria-label="Conversation turns"]');
     if (turns === null) throw new Error("expected the Conversation's turns");
@@ -1392,6 +1404,19 @@ async function tapsLostAcrossBand(
       });
     const pillBox = () =>
       document.querySelector('[data-testid="jump-to-latest"]')?.getBoundingClientRect();
+    // The visible band: the screen less the docked composer's band, below a sticky composer and
+    // above a fixed one.
+    const screenBand = (): { screenTop: number; screenBottom: number } => {
+      const composer = document.querySelector<HTMLElement>('[aria-label="Comment composer"]');
+      const docked = composer === null ? "" : getComputedStyle(composer).position;
+      const screenTop =
+        composer !== null && docked === "sticky" ? composer.getBoundingClientRect().bottom : 0;
+      const screenBottom =
+        composer !== null && docked === "fixed"
+          ? composer.getBoundingClientRect().top
+          : window.innerHeight;
+      return { screenTop, screenBottom };
+    };
     // The pill is drawn only past the place the page settled, and only when no part of the newest
     // card is on the screen, the docked composer's band being no part of it. While any of that card
     // is on screen there is nothing to jump to, and the pill would cover the card it points at
@@ -1403,21 +1428,23 @@ async function tapsLostAcrossBand(
     const belongs = (top: number): boolean | undefined => {
       const card = document.querySelector("[data-turn]")?.getBoundingClientRect();
       if (card === undefined || top <= settled + 1) return false;
-      const composer = document.querySelector<HTMLElement>('[aria-label="Comment composer"]');
-      const docked = composer === null ? "" : getComputedStyle(composer).position;
-      const screenTop =
-        composer !== null && docked === "sticky" ? composer.getBoundingClientRect().bottom : 0;
-      const screenBottom =
-        composer !== null && docked === "fixed"
-          ? composer.getBoundingClientRect().top
-          : window.innerHeight;
+      const { screenTop, screenBottom } = screenBand();
       if (Math.abs(card.bottom - screenTop) <= 8 || Math.abs(card.top - screenBottom) <= 8) {
         return undefined;
       }
       return !(card.bottom > screenTop && card.top < screenBottom);
     };
     const lost: string[] = [];
+    const steps: SweepStep[] = [];
     for (let top = 1; top <= end; top += 4) {
+      const step: SweepStep = {
+        scrolledTo: top,
+        tabsTapped: 0,
+        tabsBehindComposer: 0,
+        aboveTapped: 0,
+        aboveBehindComposer: 0,
+      };
+      steps.push(step);
       window.scrollTo(0, top);
       // One frame carries the scroll into layout and runs the pill's listener; a step that
       // changes whether the pill shows takes one more for the render React queued for it.
@@ -1434,6 +1461,7 @@ async function tapsLostAcrossBand(
         continue;
       }
       const turnsTopNow = turns.getBoundingClientRect().top;
+      const { screenTop, screenBottom } = screenBand();
       for (const control of document.querySelectorAll<HTMLElement>(
         '[role="tab"], button, a[href], input'
       )) {
@@ -1450,6 +1478,15 @@ async function tapsLostAcrossBand(
         if (pill?.contains(control) || box.width === 0) continue;
         if (box.bottom > turnsTopNow && (!decides || inBand)) continue;
         if (x < 0 || x >= window.innerWidth || y < 0 || y >= window.innerHeight) continue;
+        // Content scrolls under the docked composer by design, so a control the composer covers
+        // is no tap the pill can take: it is counted and not tapped.
+        const tab = control.getAttribute("role") === "tab";
+        const above = !tab && box.bottom <= turnsTopNow;
+        if (y < screenTop || y >= screenBottom) {
+          if (tab) step.tabsBehindComposer += 1;
+          if (above) step.aboveBehindComposer += 1;
+          continue;
+        }
         let clipped = false;
         for (
           let ancestor = control.parentElement;
@@ -1462,17 +1499,19 @@ async function tapsLostAcrossBand(
           clipped = x < bounds.left || x > bounds.right || y < bounds.top || y > bounds.bottom;
         }
         if (clipped) continue;
+        if (tab) step.tabsTapped += 1;
+        if (above) step.aboveTapped += 1;
         const hit = document.elementFromPoint(x, y);
         const reached = hit !== null && (control.contains(hit) || hit.contains(control));
         const lostToPill = hit !== null && pill?.contains(hit) === true;
-        if (reached || (control.getAttribute("role") !== "tab" && !lostToPill)) continue;
+        if (reached || (!tab && !lostToPill)) continue;
         const name = label ?? (control.closest("label") ?? control).textContent?.trim() ?? "";
         lost.push(
           `scrolled to ${top}: ${name} at ${Math.round(x)},${Math.round(y)} reached ${hit?.outerHTML.slice(0, 80)}`
         );
       }
     }
-    return lost;
+    return { lost, steps };
   }, band);
 }
 
@@ -1512,6 +1551,12 @@ async function expectPill(page: Page, pill: Locator, settled: number): Promise<v
 // keep their taps. Past that place the pill still stays off while any part of the newest card is
 // on screen, so it cannot take that card's Accept and Reject (dispatch://INFRA-5200). An older card
 // passing behind the pill can still lose its quiet taps (Copy reference, Reply, Pin) while covered.
+// The sweep skips a control whose centre is behind the docked composer: content scrolls under
+// that composer by design, so a control it covers is no tap the pill can take. The band it reads
+// is the screen less the composer's box, read at each step: above a fixed composer's top, below a
+// sticky one's bottom. So the skip cannot pass by sweeping nothing, the sweep counts at each step
+// the tabs and the other controls above the turns it tapped and those it skipped behind the
+// composer, the row attaches them as `sweep`, and it fails unless the sweep tapped some of each.
 // SLOW(>=2s): the band is swept 4 px at a time, a frame per step, and every control above the
 // turns, with the suggestion's decisions under it, is hit-tested at each one.
 test("on a phone, Jump to latest covers none of the issue's tabs, the controls above the turns, or the newest card's Accept and Reject above the foot band @phone", async ({
@@ -1578,10 +1623,31 @@ test("on a phone, Jump to latest covers none of the issue's tabs, the controls a
     // place, with the newest card off screen, so each end is read against both conditions.
     await page.evaluate(() => window.scrollTo(0, 1));
     await expectPill(page, jump, settled);
-    const lost = await tapsLostAcrossBand(page, { end, settled });
+    const sweep = await tapsLostAcrossBand(page, { end, settled });
+    const totals = {
+      tabsTapped: 0,
+      tabsBehindComposer: 0,
+      aboveTapped: 0,
+      aboveBehindComposer: 0,
+    };
+    for (const step of sweep.steps) {
+      totals.tabsTapped += step.tabsTapped;
+      totals.tabsBehindComposer += step.tabsBehindComposer;
+      totals.aboveTapped += step.aboveTapped;
+      totals.aboveBehindComposer += step.aboveBehindComposer;
+    }
+    await test.info().attach("sweep", {
+      body: JSON.stringify({ steps: sweep.steps, totals }),
+      contentType: "application/json",
+    });
     await page.evaluate((y) => window.scrollTo(0, y), end);
     await expectPill(page, jump, settled);
-    expect(lost).toEqual([]);
+    expect(sweep.lost).toEqual([]);
+    expect(totals.tabsTapped, "the sweep tapped some of the issue's tabs").toBeGreaterThan(0);
+    expect(
+      totals.aboveTapped,
+      "the sweep tapped some of the controls above the turns"
+    ).toBeGreaterThan(0);
   } finally {
     await alice.close();
   }
