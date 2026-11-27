@@ -1623,6 +1623,7 @@ test("on a phone, Jump to latest covers none of the issue's tabs, the controls a
     // place, with the newest card off screen, so each end is read against both conditions.
     await page.evaluate(() => window.scrollTo(0, 1));
     await expectPill(page, jump, settled);
+    // The sweep's answer is its whole record: it scrolled and read the page itself at each step.
     const sweep = await tapsLostAcrossBand(page, { end, settled });
     const totals = {
       tabsTapped: 0,
