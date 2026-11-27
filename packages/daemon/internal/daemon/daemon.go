@@ -244,7 +244,7 @@ type overrides struct {
 	// over a listener it holds.
 	listen func(network, address string) (net.Listener, error)
 	// release is the build `legion start` names this daemon by (cmd/legion's release, else its
-	// revision): what the daemon's Dispatch client names itself with (dispatch.New). Empty, in a
+	// revision): what the daemon's Dispatch client names itself with (dispatch.Release). Empty, in a
 	// test, names none, which the client sends as `legion-daemon/(devel)`.
 	release string
 	// paneLegion is the legion executable a tmux daemon's boot hands workerbin.Install, which every

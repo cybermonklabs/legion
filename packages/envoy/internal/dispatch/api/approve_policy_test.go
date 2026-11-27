@@ -8,30 +8,36 @@ import (
 )
 
 // policyRow is one row of a hand-made table: name is "<method> <pattern>", and next is the
-// /api/v2 route an /api/v1 row names as its successor.
+// /api/v2 route an /api/v1 row names as its successor. A /api/v2 row is the mount of a routeRow,
+// which the decoder reads (apiRoute.decoded), as every /api/v2 row of the table is but the
+// INFRA-979 tree's.
 func policyRow(name string, version apiVersion, next successor, body requestBody) apiRoute {
 	method, pattern, _ := strings.Cut(name, " ")
-	return apiRoute{routeRow: routeRow{Method: method, Pattern: pattern, Body: body}, Version: version, Successor: next}
+	return apiRoute{routeRow: routeRow{Method: method, Pattern: pattern, Body: body}, Version: version, Successor: next, columns: version == apiV2}
 }
 
 // policyTable is a table the approve list is compiled against in the tests below: /api/v1 routes
 // with each kind of successor the list may meet, a successor taken whole, one taken by state, one
-// that is deleted, one that is unmounted and one that is none, and the /api/v2 routes that answer
-// for them.
+// taken by state that the decoder does not read (a row of the INFRA-979 tree), one that is
+// deleted, one that is unmounted and one that is none, and the /api/v2 routes that answer for them.
 func policyTable() []apiRoute {
 	states := requestBody{Kind: bodyStateUnion, Arms: map[string]any{"approved": struct{}{}, "denied": struct{}{}, "dismissed": struct{}{}}}
+	undecoded := policyRow("PUT /api/v2/old/{id}/state", apiV2, successor{}, states)
+	undecoded.OfINFRA979 = true
 	return []apiRoute{
 		policyRow("POST /api/v1/things/{id}/review", apiV1, successorIs(http.MethodPost, "/things/{id}/reviews"), requestBody{}),
 		policyRow("POST /api/v1/things/{id}/approve", apiV1, successorIs(http.MethodPut, "/things/{id}/state"), requestBody{}),
 		policyRow("POST /api/v1/things/{id}/deny", apiV1, successorIs(http.MethodPut, "/things/{id}/state"), requestBody{}),
 		policyRow("POST /api/v1/things/{id}/dismiss", apiV1, successorIs(http.MethodPut, "/things/{id}/state"), requestBody{}),
 		policyRow("DELETE /api/v1/plain", apiV1, successorIs(http.MethodDelete, "/plain"), requestBody{}),
+		policyRow("POST /api/v1/old/{id}/approve", apiV1, successorIs(http.MethodPut, "/old/{id}/state"), requestBody{}),
 		policyRow("POST /api/v1/gone", apiV1, deletedFor(http.MethodPost, "/things/{id}/reviews"), requestBody{}),
 		policyRow("POST /api/v1/elsewhere", apiV1, successorIs(http.MethodPost, "/missing"), requestBody{}),
 		policyRow("POST /api/v1/unrelated", apiV1, successor{}, requestBody{}),
 		policyRow("POST /api/v2/things/{id}/reviews", apiV2, successor{}, requestBody{Kind: bodyJSON}),
 		policyRow("PUT /api/v2/things/{id}/state", apiV2, successor{}, states),
 		policyRow("DELETE /api/v2/plain", apiV2, successor{}, requestBody{}),
+		undecoded,
 	}
 }
 
@@ -79,8 +85,9 @@ func TestTheApprovePolicyStampsTheRowsTheListNames(t *testing.T) {
 // less or more than it names is a fault the compile reports, naming the route it concerns, and a
 // table with any fault is left unstamped: a route the table does not mount, one that is no
 // /api/v1 route, one listed twice; a route with no successor, a deleted one, or one the table does
-// not mount; a state for a successor that takes none, a state it does not declare, and no state
-// for a successor that takes several operations by state. Every fault is reported, sorted.
+// not mount; a state for a successor that takes none or one the decoder does not read, a state it
+// does not declare, and no state for a successor that takes several operations by state. Every
+// fault is reported, sorted.
 func TestTheApprovePolicyRefusesAListThatDoesNotMapOntoTheTable(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -96,6 +103,7 @@ func TestTheApprovePolicyRefusesAListThatDoesNotMapOntoTheTable(t *testing.T) {
 		{"a route whose successor is deleted", []approveRoute{{v1: "POST /api/v1/gone"}}, []string{"POST /api/v1/gone"}},
 		{"a route whose successor the table does not mount", []approveRoute{{v1: "POST /api/v1/elsewhere"}}, []string{"POST /api/v1/elsewhere"}},
 		{"a state for a successor that takes none", []approveRoute{{v1: "POST /api/v1/things/{id}/review", state: "approved"}}, []string{"POST /api/v1/things/{id}/review"}},
+		{"a state for a successor the decoder does not read", []approveRoute{{v1: "POST /api/v1/old/{id}/approve", state: "approved"}}, []string{"POST /api/v1/old/{id}/approve"}},
 		{"a state the successor does not declare", []approveRoute{{v1: "POST /api/v1/things/{id}/approve", state: "settled"}}, []string{"POST /api/v1/things/{id}/approve"}},
 		{"no state for a successor that takes several", []approveRoute{{v1: "POST /api/v1/things/{id}/approve"}}, []string{"POST /api/v1/things/{id}/approve"}},
 		{

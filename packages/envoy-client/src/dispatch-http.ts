@@ -552,7 +552,7 @@ export class DispatchNoRouteError extends DispatchServiceError {
  * A request that got no answer from Dispatch at the transport, named by the Dispatch URL as
  * `urlForText` names it and the failure's class (`DispatchClient`'s `#fetch`), with the advice for
  * a moved URL. A read throws it as it stands; a write it ends after the request went out quotes it
- * (`noAnswer`). `reachedNothing` says the failure sent nothing to any server (a refused
+ * (`unansweredClause`). `reachedNothing` says the failure sent nothing to any server (a refused
  * connection, a name that did not resolve): a write attempt that failed so cannot have landed,
  * where one that failed otherwise (a reset after Dispatch read the request) may have, since
  * Dispatch runs a keyed write it received to its end.
@@ -850,23 +850,32 @@ class WriteAttemptSilent extends Error {
 }
 
 /**
- * The first clause of the `DispatchWriteUnsettledError` of a write whose last attempt failed on
- * the network after it went out, a keyed write's (`#endWrite`) and one of `#send`'s
- * (`#sendOnce`) alike: the request, and the failure's own message, which for a transport failure
- * (`DispatchUnreachableError`) names the server, the failure's class and the advice for a moved
- * URL.
+ * The first clause of the `DispatchWriteUnsettledError` of a write that got no answer, by the
+ * `event` that ended it: the one place each ending's words are chosen, for a keyed write
+ * (`#endWrite`) and for one of `#send`'s (`#sendOnce`, before its answer came or while its body was
+ * read) alike. `last` is the failure the write ended on. A body that broke off is `last`'s own
+ * message, which names the request (`bodyInterruption`). A transport failure after the attempt went
+ * out names the request and the failure's own message, which for `DispatchUnreachableError` names
+ * the server, the failure's class and the advice for a moved URL.
  */
-function noAnswer(request: string, failure: Error): string {
-  return `${request} failed on its last attempt (${failure.message})`;
-}
-
-/**
- * The first clause of the `DispatchWriteUnsettledError` of a write the deadline ended with no
- * definitive answer, a keyed write's (`#endWrite`) and one of `#send`'s (`#sendOnce`, before its
- * answer came or while its body was read) alike.
- */
-function deadlineEnded(request: string): string {
-  return `${request} had no definitive answer when its deadline ended it`;
+function unansweredClause(event: WriteEvent, request: string, last: Error): string {
+  switch (event) {
+    case "silence":
+      return `${request} ${last.message}`;
+    case "body-broken":
+      return last.message;
+    case "no-credential":
+    case "no-credential-final":
+      return `${request} could not present its credential for another attempt (${last.message})`;
+    case "deadline":
+    case "deadline-in-flight":
+      return `${request} had no definitive answer when its deadline ended it`;
+    case "cancelled":
+    case "cancelled-in-flight":
+      return `${request} was stopped by its caller with no definitive answer`;
+    default:
+      return `${request} failed on its last attempt (${last.message})`;
+  }
 }
 
 /** What a write's attempts have shown, apart from its table state (`WriteState`): what the
@@ -1170,7 +1179,8 @@ function stoppedEvent(
  * request reached whatever answered, and whether the write ran was the body's to say. A deadline
  * or a stop that ended the read is that stop (`stoppedEvent`), with the read's own error; any other
  * failure is the body breaking off (`body-broken`), an error naming `request`, the answer's
- * `status` and the failure's class, which is also the unsettled write's first clause.
+ * `status` and the failure's class, which `unansweredClause` makes the unsettled write's first
+ * clause.
  */
 function bodyInterruption(
   limit: AbortSignal,
@@ -2972,7 +2982,7 @@ export class DispatchClient {
         last,
         1,
         undefined,
-        stop === "deadline-in-flight" ? deadlineEnded(request()) : noAnswer(request(), last)
+        unansweredClause(stop ?? "reset", request(), last)
       );
     }
     // A read's body is its caller's to read, a file version's bytes among them. A status that
@@ -2997,7 +3007,7 @@ export class DispatchClient {
         last,
         1,
         undefined,
-        event === "deadline-in-flight" ? deadlineEnded(request()) : last.message
+        unansweredClause(event, request(), last)
       );
     }
     return {
@@ -3354,8 +3364,8 @@ export class DispatchClient {
    * for silence. A write Dispatch made whose answer is gone (`DispatchWriteLandedError`) is
    * definite in either state. In `nothing-sent` that reading is what the write throws. In
    * `may-have-landed` the write is `DispatchWriteUnsettledError` carrying its key, with that
-   * reading as `last`, and, for a write that ended with no answer, what ended it: a transport
-   * failure in its own message (`noAnswer`). On a write sent through Cipher's proxy (`via`), every
+   * reading as `last`, and, for a write that ended with no answer, what ended it, in the words
+   * `unansweredClause` chooses for its event. On a write sent through Cipher's proxy (`via`), every
    * text is made here, from `state` and `event`: an answer the proxy wrote itself is
    * `DispatchProxyRefusalError` (`#proxyRefusal`), never Dispatch's or a gateway's; a write that
    * got no answer names the proxy (`#proxyUnreachable`); and only a write no attempt of which may
@@ -3399,31 +3409,7 @@ export class DispatchClient {
     }
     if (own instanceof DispatchWriteLandedError || state === "nothing-sent") return own;
     const last = own instanceof Error ? own : new Error(String(own));
-    let unanswered: string | undefined;
-    if (answer === undefined) {
-      switch (event) {
-        case "silence":
-          unanswered = `${request} ${last.message}`;
-          break;
-        case "body-broken":
-          unanswered = last.message;
-          break;
-        case "no-credential":
-        case "no-credential-final":
-          unanswered = `${request} could not present its credential for another attempt (${last.message})`;
-          break;
-        case "deadline":
-        case "deadline-in-flight":
-          unanswered = deadlineEnded(request);
-          break;
-        case "cancelled":
-        case "cancelled-in-flight":
-          unanswered = `${request} was stopped by its caller with no definitive answer`;
-          break;
-        default:
-          unanswered = noAnswer(request, last);
-      }
-    }
+    const unanswered = answer === undefined ? unansweredClause(event, request, last) : undefined;
     return new DispatchWriteUnsettledError(last, progress.sent, write.key, unanswered);
   }
 

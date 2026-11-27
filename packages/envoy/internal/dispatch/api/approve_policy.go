@@ -13,8 +13,9 @@ package api
 // The checks sit at three places in a route's chain (routeHandler), each before the layers that
 // look a key up, claim it or replay what it holds:
 //
-//   - the route, outside every other layer (refuseApproveOnlyToken): a route the list does not
-//     name is 403 APPROVE_ONLY_TOKEN;
+//   - the route, outside every other check of the route, beside the read-only gate and inside
+//     decideBrokerToken, which resolves the credential it reads (refuseApproveOnlyToken): a route
+//     the list does not name is 403 APPROVE_ONLY_TOKEN;
 //   - the state, once the decoder has read the body within the row's bound and before the
 //     authority rules (gateApproveOnlyStates): PUT /api/v2/credential-requests/{id}/state takes
 //     the token for the states approved and denied, PUT /api/v2/asks/{id}/state for answered and
@@ -102,6 +103,9 @@ var approveScopeRoutes = []approveRoute{
 //     would admit every one of them, and an entry that names a state of a successor that takes
 //     none, which would admit the whole route for one state of it: the privileges of the two
 //     versions would differ from what the list says;
+//   - an entry that names a state of a successor the decoder does not read (apiRoute.decoded),
+//     where no state check is mounted (gateApproveOnlyStates), so the token could send it every
+//     state;
 //   - an entry that names a state its successor does not declare.
 //
 // An approve list that opens nothing, or opens more than it names, reads as though it did not, so
@@ -111,16 +115,16 @@ func applyApprovePolicy(table []apiRoute, list []approveRoute) []string {
 	for at, route := range table {
 		position[route.Method+" "+route.Pattern] = at
 	}
-	// admission is what the list gives one /api/v2 row: the states it takes of the token, none for
-	// a row it takes whole, and whether the row answers asks of every kind.
+	// admission is what the list gives one row, of either version: the states it takes of the
+	// token, none for a row it takes whole and for every /api/v1 row, and whether the row answers
+	// asks of every kind.
 	type admission struct {
 		states []string
 		asks   bool
 	}
 	var faults []string
 	listed := map[string]bool{}
-	v1Asks := map[int]bool{}
-	v2 := map[int]*admission{}
+	admitted := map[int]*admission{}
 	for _, entry := range list {
 		at, mounted := position[entry.v1]
 		switch {
@@ -147,31 +151,33 @@ func applyApprovePolicy(table []apiRoute, list []approveRoute) []string {
 		case entry.state != "" && body.Kind != bodyStateUnion:
 			faults = append(faults, fmt.Sprintf("%s names the state %s, and its successor %s takes no state", entry.v1, entry.state, target))
 			continue
+		case entry.state != "" && !table[row].decoded():
+			faults = append(faults, fmt.Sprintf("%s names the state %s, and the decoder does not read its successor %s, so no state check would hold the token to that state", entry.v1, entry.state, target))
+			continue
 		case entry.state != "" && body.Arms[entry.state] == nil:
 			faults = append(faults, fmt.Sprintf("%s names the state %s, which its successor %s does not declare", entry.v1, entry.state, target))
 			continue
 		}
-		v1Asks[at] = entry.approvalsOnly
-		if v2[row] == nil {
-			v2[row] = &admission{}
+		// The /api/v1 route and its successor take the same admission, but for the state: the
+		// /api/v1 route takes none, so its states stay nil.
+		for _, stamped := range [...]int{at, row} {
+			if admitted[stamped] == nil {
+				admitted[stamped] = &admission{}
+			}
+			admitted[stamped].asks = admitted[stamped].asks || entry.approvalsOnly
 		}
-		admitted := v2[row]
-		admitted.asks = admitted.asks || entry.approvalsOnly
 		if entry.state != "" {
-			admitted.states = append(admitted.states, entry.state)
+			admitted[row].states = append(admitted[row].states, entry.state)
 		}
 	}
 	if len(faults) > 0 {
 		slices.Sort(faults)
 		return slices.Compact(faults)
 	}
-	for at, asks := range v1Asks {
-		table[at].ApproveOnly, table[at].ApproveApprovalAsks = true, asks
-	}
-	for row, admitted := range v2 {
-		slices.Sort(admitted.states)
-		table[row].ApproveOnly, table[row].ApproveApprovalAsks = true, admitted.asks
-		table[row].ApproveStates = slices.Compact(admitted.states)
+	for row, granted := range admitted {
+		slices.Sort(granted.states)
+		table[row].ApproveOnly, table[row].ApproveApprovalAsks = true, granted.asks
+		table[row].ApproveStates = slices.Compact(granted.states)
 	}
 	return nil
 }
@@ -229,11 +235,13 @@ func (s *server) refuseApproveOnlyToken(listed bool, next http.HandlerFunc) http
 // gateApproveOnlyStates is the state check of a /api/v2 row the list names by state
 // (apiRoute.ApproveStates): an approve-only token that sends such a row a state outside those, or a
 // body that names none, is answered 403 APPROVE_ONLY_TOKEN and nothing runs. register wraps it just
-// outside gateV2Authorities, so it runs on the body the decoder read within the row's bound, before
-// any scope rule or session check, as that check always ran, and before the keyed layer, so a
-// refused request claims no idempotency key. A request of any other credential passes untouched,
-// and so does a row the list names whole or not at all, which is returned unwrapped. A state the
-// row does not declare never reaches it: the decoder refused that 400 STATE_INVALID.
+// outside gateV2Authorities, so it runs on the body the decoder read within the row's bound: after
+// the route's scope, login, project and session checks, and before the authority gate's rules and
+// the keyed layer, so a refused request claims no idempotency key. register mounts it only on a row
+// the decoder reads, and applyApprovePolicy refuses a list that names a state of any other row. A
+// request of any other credential passes untouched, and so does a row the list names whole or not
+// at all, which is returned unwrapped. A state the row does not declare never reaches it: the
+// decoder refused that 400 STATE_INVALID.
 func (s *server) gateApproveOnlyStates(route apiRoute, next http.HandlerFunc) http.HandlerFunc {
 	if len(route.ApproveStates) == 0 {
 		return next
@@ -307,47 +315,45 @@ func (s *server) gateApproveOnlyAskAnswer(route apiRoute, next http.HandlerFunc)
 			return
 		}
 		id := r.PathValue("id")
-		missing, message := apicode.NotFound, "not found"
-		if route.Version == apiV2 {
-			missing, message = apicode.AskNotFound, "no ask has the id "+id
-		} else if !requireUUIDPath(w, r, "ask", apicode.AskIDInput) {
+		if route.Version != apiV2 && !requireUUIDPath(w, r, "ask", apicode.AskIDInput) {
 			return
 		}
-		kind, found, err := s.askKind(r.Context(), id)
+		kind, err := s.askKind(r.Context(), id)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows) && route.Version == apiV2:
+			// The route's own 404, as the handler answers it. On /api/v1 writeHandlerError answers
+			// pgx.ErrNoRows as the handler does.
+			err = askNotFoundV2(id)
+		case err == nil:
+			err = approveOnlyAnswerRefusal(true, kind)
+		}
 		if err != nil {
 			s.writeHandlerError(w, r, err)
-			return
-		}
-		if !found {
-			writeError(w, r, missing, message)
-			return
-		}
-		if refusal := approveOnlyAnswerRefusal(true, kind); refusal != nil {
-			s.writeHandlerError(w, r, refusal)
 			return
 		}
 		next(w, r)
 	}
 }
 
-// askKind reads the kind of the ask id names, and false where no ask has that id: the kind alone,
-// so a check that needs no more loads neither the ask's answer nor its content. An id that is no
-// uuid names no ask and is not read.
-func (s *server) askKind(ctx context.Context, id string) (kind string, found bool, err error) {
+// askKind reads the kind of the ask id names, and pgx.ErrNoRows where no ask has that id: the kind
+// alone, so a check that needs no more loads neither the ask's answer nor its content. An id that
+// is no uuid names no ask and is not read.
+func (s *server) askKind(ctx context.Context, id string) (string, error) {
 	if _, err := uuid.Parse(id); err != nil {
-		return "", false, nil
+		return "", pgx.ErrNoRows
 	}
 	pool, err := s.readyPool()
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
+	var kind string
 	switch err := pool.QueryRow(ctx, `select kind from asks where id = $1`, id).Scan(&kind); {
 	case errors.Is(err, pgx.ErrNoRows):
-		return "", false, nil
+		return "", err
 	case err != nil:
-		return "", false, fmt.Errorf("read the kind of ask %s: %w", id, err)
+		return "", fmt.Errorf("read the kind of ask %s: %w", id, err)
 	}
-	return kind, true, nil
+	return kind, nil
 }
 
 // approveOnlyRequest reports whether decideBrokerToken resolved r's caller to an approve-only

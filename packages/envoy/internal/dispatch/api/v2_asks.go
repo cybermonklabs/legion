@@ -661,9 +661,16 @@ func (s *server) askV2ByID(ctx context.Context, q queryer, id, markOf string) ([
 		return nil, err
 	}
 	if len(rows) == 0 {
-		return nil, errorf(apicode.AskNotFound, "no ask has the id %s", id)
+		return nil, askNotFoundV2(id)
 	}
 	return rows, nil
+}
+
+// askNotFoundV2 is the 404 ASK_NOT_FOUND a /api/v2 route answers for an id no ask has, written
+// once for each place that answers it: the read of the ask (askV2ByID), the check that it exists
+// (requireAskV2) and the approve-only check of a keyed answer (gateApproveOnlyAskAnswer).
+func askNotFoundV2(id string) *apiError {
+	return &apiError{code: apicode.AskNotFound, message: "no ask has the id " + id}
 }
 
 // readAskV2 reads the ask id names as GET /api/v2/asks/{id} answers it, with include's members.
@@ -751,10 +758,11 @@ func (written *writtenAskV2) writeUnchanged(w http.ResponseWriter, r *http.Reque
 }
 
 // requireAskV2 answers whether the ask id names exists, and where it does not writes 404
-// ASK_NOT_FOUND (requireHeldV2).
+// ASK_NOT_FOUND (askNotFoundV2, requireHeldV2).
 func (s *server) requireAskV2(w http.ResponseWriter, r *http.Request, id string) bool {
+	missing := askNotFoundV2(id)
 	return s.requireHeldV2(w, r, id, "ask", `select exists (select 1 from asks where id = $1)`,
-		apicode.AskNotFound, "no ask has the id "+id)
+		missing.code, missing.message)
 }
 
 // requireIssueV2 answers whether the issue key names exists, and where it does not writes 404

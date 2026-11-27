@@ -686,8 +686,9 @@ func goingCatalogueDescription() string {
 // (apiRoute.decoded); one that answers for v1Rows which keep their own answer at /api/v1 is served
 // at /api/v2 alone (Versions: onlyV2). register mounts what this answers and refuses a table whose
 // facts it cannot decide (undecidableWrites, shapelessRoutes, undecidedIDRoutes,
-// undecodableRoutes). It refuses an approve list that maps onto no row of the table itself
-// (applyApprovePolicy), by panic as it builds the table, so no reader of the table meets one.
+// undecodableRoutes). It refuses an approve list that does not map onto the table itself
+// (applyApprovePolicy), by panic as it builds the table, with each fault, which names its kind and
+// its route, so no reader of the table meets one.
 func (s *server) routes() []apiRoute {
 	replays := s.keyedReplays()
 	var routes []apiRoute
@@ -712,7 +713,7 @@ func (s *server) routes() []apiRoute {
 	// The approve-only token's admission is compiled here, once, and the rows carry the result
 	// every layer that reads it uses: the three checks and the refusal's wording (approve_policy.go).
 	if faults := applyApprovePolicy(routes, approveScopeRoutes); len(faults) > 0 {
-		panic("api: the route table's approve list is an invalid mapping (a route or a successor the table does not mount, a state the successor does not declare or a state for a successor that takes none, or no state for a successor that takes several): " + strings.Join(faults, "; "))
+		panic("api: the route table's approve list is an invalid mapping: " + strings.Join(faults, "; "))
 	}
 	return routes
 }
