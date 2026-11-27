@@ -193,6 +193,49 @@ func TestABeforeMergeResultAtALinkedCommitIsReadThroughThatRepository(t *testing
 	}
 }
 
+// TestABeforeMergeResultAtALinkedCommitIsReadThroughThatRepository with the push inside the
+// GitHub second of the answer before it: GitHub's updated_at counts whole seconds, so the
+// read-through's answer at the new head carries the time the stored row carries. Two answers of
+// one second that differ owe the pull request a read (pull_request_heads_older_read), so its head
+// is one Dispatch has not read, and a result there is not known (model.ReasonHeadNotRead) until
+// the reconcile reads it: never another commit.
+func TestALinkedPushInsideOneGitHubSecondLeavesTheResultNotKnown(t *testing.T) {
+	t.Parallel()
+	const (
+		pushedCommit  = "9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c"
+		earlierCommit = "9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d"
+	)
+	linked := &linkedGitHub{
+		held:           map[string][]string{"acme/widgets": {headCommit}, "acme/tools": {pushedCommit, earlierCommit}},
+		pulls:          map[string]string{"acme/tools#7": "open"},
+		heads:          map[string]int{"acme/tools@" + earlierCommit: 7},
+		samePushSecond: true,
+	}
+	handler, database := linkedRepositoriesGitHub(t, linked)
+	issue := issueInRepository(t, handler, "RELP", "acme/widgets", "A push inside one GitHub second").Key
+	uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
+	linkPullRequests(t, handler, issue, "https://github.com/acme/tools/pull/7")
+	writeHead(t, database, "acme/widgets", 5, headCommit, "open", issue)
+	readResults(t, handler, issue)
+	result := recordStored(t, handler, issue, "k1", pushedCommit)
+	linked.mu.Lock()
+	delete(linked.heads, "acme/tools@"+earlierCommit)
+	linked.heads["acme/tools@"+pushedCommit] = 7
+	linked.mu.Unlock()
+
+	read := readResults(t, handler, issue)
+	check := checkOf(t, read, "k1")
+	stands := resultRead(t, read, "k1", result.ID).CommitStands
+	t.Logf("the result %+v; compared with %d bases; heads not read %+v; owed reads of #7 %d; pass_stands %q",
+		stands, len(check.ComparedWith), check.HeadsNotRead, owedReadsOf(t, database, "acme/tools", 7), check.PassStands.Answer)
+	if stands == nil || stands.Answer != model.CommitUnknown || stands.Reason != model.ReasonHeadNotRead || stands.Repo != "acme/tools" ||
+		check.PassStands.Answer != model.PassStandsUnknown {
+		t.Fatalf("the result at the head acme/tools#7 moved to inside one GitHub second stands %+v with pass_stands %q, "+
+			"want unknown for head_not_read in acme/tools and pass_stands unknown: Dispatch owes #7 a read, so its head is one it has not read",
+			stands, check.PassStands.Answer)
+	}
+}
+
 // A `before_merge` result whose commit a linked repository holds is decided by that repository
 // when it heads none of the pull requests compared with, as its record and its read-through are:
 // the read asked acme/tools for the commit's pull requests and GitHub named none, so the result
