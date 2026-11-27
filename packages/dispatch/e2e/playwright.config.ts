@@ -363,18 +363,16 @@ const parallelProjects = [
   // the Delivery page nothing, whose button the cleared brush takes away and whose landing each
   // engine scrolls into view its own way, its row that a bulk Dismiss deep in the Inbox's list
   // hands the focus to the row now at the marked row's place in sight, whose bar and rows the
-  // Dismiss takes away, its row that a bulk action that takes the marked rows out of the project
-  // List's view hands the focus to the row now at their place, whose bar and rows the action
-  // takes away, its row that Unpin on a pinned agent keeps the keyboard focus on a control in
-  // sight, whose row the unpin moves to its new place, its row that a thread's Dismiss in the
+  // Dismiss takes away, its row that Unpin on a pinned agent keeps the keyboard focus on a control
+  // in sight, whose row the unpin moves to its new place, its row that a thread's Dismiss in the
   // Inbox's list scrolls nothing, and its row that the same Dismiss at 1440 leaves a reading
   // column that can scroll where it stood, whose row the Dismiss takes away, its five rows that a control
   // held under the reader's press keeps the keyboard focus - the Inbox's Decline dialog, a
   // references Retry on the Artifacts tab, the Inbox card's Referenced by Retry, Unfollow and
   // Unsubscribe on an Inbox card's recipients, and a group card's Rename in the Session groups
-  // dialog - which a native `disabled` takes the focus from, and its row that offline, Take out
-  // of epic hands the focus to the marked row's checkbox in the render the bar goes, whose bar
-  // and rows the action takes away and whose frames each engine paces its own way.
+  // dialog - which a native `disabled` takes the focus from, and its row that offline, the bar's
+  // Start next hands the focus to the marked row's checkbox in the render the bar goes, whose bar
+  // the action takes away and whose frames each engine paces its own way.
   // Measured in WebKit as well as Firefox:
   // neither fires a `focusout` for it. And a table scrolled while one of its rows holds the
   // focus, whose row the virtual list takes away out of sight: `table-controls`'s
@@ -400,35 +398,33 @@ const parallelProjects = [
   // rows that the issue header's Status list keeps the option its arrows mark active inside its
   // box, that a second Enter on the held Snooze selected asks leaves the focus where the pick
   // alone puts it, that the Delivery page's Filter panel and the Inbox's Type list draw no count
-  // before the read they count answers, that a Move with only closed issues marked keeps no
-  // press live, that each chip Tab reaches in the Inbox's +N more panel stands wholly inside it,
-  // and that taking off the Inbox's only narrowing at 390 leaves the focus on a control in sight.
+  // before the read they count answers, that each chip Tab reaches in the Inbox's +N more panel
+  // stands wholly inside it, and that taking off the Inbox's only narrowing at 390 leaves the
+  // focus on a control in sight.
   // The rows INFRA-3135's round-26 tester pinned, each measured in this engine: `table-controls`'s
   // rows that the shared list keeps the option it marks active inside its box when a typed word
   // narrows it and when Enter ticks a value, that the Delivery page's session-groups editor, the
   // project List's Claimed by and header filters and an Inbox card's Reaches draw no count before
-  // the read they count answers, that a double click on a marked row's held control and the List
-  // bar's partly cut landing leave the focus where it belongs, and that a Board move whose dry run
+  // the read they count answers, that a double click on a marked row's held control leaves the
+  // focus where it belongs, and that a Board move whose dry run
   // is out leaves the focus where the reader's click put it.
   // The rows INFRA-3135's round-27 tester pinned, each measured in this engine: `table-controls`'s
   // rows that with the agent list refused the project List's header filters draw each count the
   // list does not decide, that a Tab onto the moving card's link while a Board move's dry run is
   // out leaves the focus on the moved card, and that the selection bar's return shows its landing
-  // whole by the least scroll: to a row the table has not drawn, to a row at the place cut by 70%,
-  // and at 390 to a checkbox cut by the window's bottom edge.
+  // whole by the least scroll: to a row the table has not drawn, and at 390 to a checkbox cut by
+  // the window's bottom edge.
   // The rows INFRA-3135's round-28 tester pinned, each measured in this engine: `table-controls`'s
   // rows that with the agent list refused the project List's header filters keep each count the
   // list does not decide while a later poll of the list is out, and that the selection bar's
   // return shows its landing whole by the least scroll: on the Inbox after Dismiss with the row
-  // marked last cut by 30%, after Dismiss with it cut by 70% and after Snooze with it cut by 70%,
-  // and at 390 on the List after Take out of epic with the rows marked last far below the view.
+  // marked last cut by 30%, after Dismiss with it cut by 70% and after Snooze with it cut by 70%.
   // The rows INFRA-3135's round-29 tester pinned, each measured in this engine: `table-controls`'s
   // rows that with the agent list refilling from the start the project List still says the list is
   // refilling while a poll is out five minutes on; that a `j` while the selection bar's landing is
-  // owed leaves the focus on a control of the Inbox list once the rows the bar took have gone; that
-  // after the Inbox bar's Snooze lands with the pointer travelling the list's box scrolls by
-  // nothing; that the project List's box keeps its frame after Take out of epic lands; and that with
-  // Take out of epic's writes held and both marks unticked the List keeps the focus on the list.
+  // owed leaves the focus on a control of the Inbox list once the rows the bar took have gone; and
+  // that after the Inbox bar's Snooze lands with the pointer travelling the list's box scrolls by
+  // nothing.
   // The Inbox's reading view (INFRA-5200): `table-controls` covers Clear selection at 390 with
   // one row marked and another row's reading view open. Focus lands on the view's own checkbox.
   // HTML drag and drop, which the engine dispatches to the element under the pointer by its own
@@ -508,8 +504,8 @@ const parallelProjects = [
   // The reload line a read-only admission names: `doc-reload-line`'s one row.
   // A focused control taken away, itself or with a parent, for which this engine fires no
   // `focusout`, as measured above `webkit`: every `table-controls` row the `webkit` clause names
-  // for it, from its page-own focus row to its row that offline, Take out of epic hands the focus
-  // to the marked row's checkbox, and its scrolling-table row, whose focused row a scroll takes
+  // for it, from its page-own focus row to its row that offline, the bar's Start next hands the
+  // focus to the marked row's checkbox, and its scrolling-table row, whose focused row a scroll takes
   // away. Each of those rows carries `@firefox` as well as `@webkit`, and its own comment names
   // this clause.
   // The order in which the engine fires a text box's blur and lets React commit the save the blur
@@ -529,34 +525,32 @@ const parallelProjects = [
   // rows that the issue header's Status list keeps the option its arrows mark active inside its
   // box, that a second Enter on the held Snooze selected asks leaves the focus where the pick
   // alone puts it, that the Delivery page's Filter panel and the Inbox's Type list draw no count
-  // before the read they count answers, that a Move with only closed issues marked keeps no
-  // press live, that each chip Tab reaches in the Inbox's +N more panel stands wholly inside it,
-  // and that taking off the Inbox's only narrowing at 390 leaves the focus on a control in sight.
+  // before the read they count answers, that each chip Tab reaches in the Inbox's +N more panel
+  // stands wholly inside it, and that taking off the Inbox's only narrowing at 390 leaves the
+  // focus on a control in sight.
   // The rows INFRA-3135's round-26 tester pinned, each measured in this engine: `table-controls`'s
   // rows that the shared list keeps the option it marks active inside its box when a typed word
   // narrows it and when Enter ticks a value, that the Delivery page's session-groups editor, the
   // project List's Claimed by and header filters and an Inbox card's Reaches draw no count before
-  // the read they count answers, and that a double click on a marked row's held control and the
-  // List bar's partly cut landing leave the focus where it belongs.
+  // the read they count answers, and that a double click on a marked row's held control leaves the
+  // focus where it belongs.
   // The rows INFRA-3135's round-27 tester pinned, each measured in this engine: `table-controls`'s
   // rows that with the agent list refused the project List's header filters draw each count the
   // list does not decide, that a Tab onto the moving card's link while a Board move's dry run is
   // out leaves the focus on the moved card, and that the selection bar's return shows its landing
-  // whole by the least scroll: to a row the table has not drawn, to a row at the place cut by 70%,
-  // and at 390 to a checkbox cut by the window's bottom edge.
+  // whole by the least scroll: to a row the table has not drawn, and at 390 to a checkbox cut by
+  // the window's bottom edge.
   // The rows INFRA-3135's round-28 tester pinned, each measured in this engine: `table-controls`'s
   // rows that with the agent list refused the project List's header filters keep each count the
   // list does not decide while a later poll of the list is out, and that the selection bar's
   // return shows its landing whole by the least scroll: on the Inbox after Dismiss with the row
-  // marked last cut by 30%, after Dismiss with it cut by 70% and after Snooze with it cut by 70%,
-  // and at 390 on the List after Take out of epic with the rows marked last far below the view.
+  // marked last cut by 30%, after Dismiss with it cut by 70% and after Snooze with it cut by 70%.
   // The rows INFRA-3135's round-29 tester pinned, each measured in this engine: `table-controls`'s
   // rows that with the agent list refilling from the start the project List still says the list is
   // refilling while a poll is out five minutes on; that a `j` while the selection bar's landing is
-  // owed leaves the focus on a control of the Inbox list once the rows the bar took have gone; that
-  // after the Inbox bar's Snooze lands with the pointer travelling the list's box scrolls by
-  // nothing; that the project List's box keeps its frame after Take out of epic lands; and that with
-  // Take out of epic's writes held and both marks unticked the List keeps the focus on the list.
+  // owed leaves the focus on a control of the Inbox list once the rows the bar took have gone; and
+  // that after the Inbox bar's Snooze lands with the pointer travelling the list's box scrolls by
+  // nothing.
   // The Inbox's reading view (INFRA-5200): `table-controls` covers Clear selection at 390 with
   // one row marked and another row's reading view open. Focus lands on the view's own checkbox.
   // HTML drag and drop, where Firefox starts no drag whose `dragstart` carries no data, so the

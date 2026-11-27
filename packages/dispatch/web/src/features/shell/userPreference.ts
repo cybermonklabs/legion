@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { whoAmIQuery } from "../../api/queries";
 
@@ -9,7 +9,10 @@ import { whoAmIQuery } from "../../api/queries";
  *  ordered, how wide the reading pane is, and which bands they folded shut
  *  (`inbox.folded-groups`, one set per grouping). Its filters, sort, grouping and the switch
  *  between the Inbox and what they have dismissed out of it are in the address instead, so a
- *  link carries them. */
+ *  link carries them. The Issues tab keeps the views the person saved, each project's under its
+ *  key (`project.saved-views`, read by `readSavedViews` in `features/project/issues-views.ts`),
+ *  and whether Time per phase draws each phase's share or its hours (`project.phase-hours`:
+ *  `share` or `hours`). */
 export type UserPreference =
   | "inbox.folded-groups"
   | "inbox.pane-width"
@@ -23,6 +26,8 @@ export type UserPreference =
   | "project.board-lanes"
   | "project.issue-filters"
   | "project.issue-view"
+  | "project.phase-hours"
+  | "project.saved-views"
   | "search.recents"
   | "shell.margin"
   | "shell.margin-width"
@@ -73,7 +78,8 @@ function preferenceValue<T>(
  * at no other time: a `read` that consults other state sees that state as it was then. A write
  * whose value is the one already stored is not made, so a caller whose `read` folds several
  * stored values into one (the Board's panel, shut while no filter is on whatever is stored)
- * never writes a value over itself.
+ * never writes a value over itself. A value that two tabs of the browser each change a part of
+ * is `useStoredUserPreference`'s instead.
  */
 export function useUserPreference<T>(
   preference: UserPreference,
@@ -106,4 +112,67 @@ export function useUserPreference<T>(
     [login, preference, write]
   );
   return [value, setAndPersist];
+}
+
+/** Every caller of `useStoredUserPreference` mounted now, each told when what is stored may have
+ *  changed. */
+const storeListeners = new Set<() => void>();
+
+function notifyStore(): void {
+  for (const listener of storeListeners) listener();
+}
+
+/** Adds a caller. While any caller is mounted the window's `storage` event tells them all, which
+ *  is how a write in another tab of this browser reaches this one: the browser tells every tab
+ *  but the one that wrote. */
+function subscribeStore(listener: () => void): () => void {
+  if (storeListeners.size === 0) window.addEventListener("storage", notifyStore);
+  storeListeners.add(listener);
+  return () => {
+    storeListeners.delete(listener);
+    if (storeListeners.size === 0) window.removeEventListener("storage", notifyStore);
+  };
+}
+
+/**
+ * A browser preference for the signed-in login that every caller reads as it is stored now: a
+ * value that two tabs of the browser each change a part of, such as `project.saved-views`, which
+ * holds the views the reader saves in whichever tab they are on. `useUserPreference` keeps a copy
+ * of its own in each caller, read once, so a write there puts back that copy whole and drops what
+ * another tab wrote since. Here every caller reads the store on each render, a write tells every
+ * caller in this tab at once, and the window's `storage` event brings another tab's write. A
+ * change is handed the value as it is stored at the moment it writes, so it changes only its own
+ * part. A write whose value is the one already stored is not made, and a write the browser refuses
+ * (private mode, a full quota) changes nothing, as `recordRecent` in `features/search/recents.ts`
+ * does. With no signed-in login the value is `read(null)` and a change writes nothing. Pass a
+ * module-level `read`: the value is read again each time `read` is a new function.
+ */
+export function useStoredUserPreference<T>(
+  preference: UserPreference,
+  read: (stored: string | null) => T,
+  write: (value: T) => string
+): [T, (change: (stored: T) => T) => void] {
+  const login = useQuery(whoAmIQuery()).data?.login;
+  const key = login === undefined ? undefined : userPreferenceStorageKey(login, preference);
+  const stored = useSyncExternalStore(subscribeStore, () =>
+    key === undefined ? null : window.localStorage.getItem(key)
+  );
+  const value = useMemo(() => read(stored), [read, stored]);
+  const change = useCallback(
+    (next: (stored: T) => T) => {
+      if (key === undefined) return;
+      const now = window.localStorage.getItem(key);
+      const written = write(next(read(now)));
+      if (written === now) return;
+      try {
+        window.localStorage.setItem(key, written);
+      } catch {
+        // The browser kept nothing, so every caller keeps the value it has.
+        return;
+      }
+      notifyStore();
+    },
+    [key, read, write]
+  );
+  return [value, change];
 }

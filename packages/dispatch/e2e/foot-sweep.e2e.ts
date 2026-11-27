@@ -51,12 +51,14 @@ import {
   createIssue,
   createMessage,
   listIssues,
+  patchIssue,
   seedAgentStreamConversations,
 } from "./api";
 import { expectTimeout } from "./expect-timeout";
 import {
   discardPending,
   dismissBanner,
+  dismissRefusedStartNext,
   openWithFloats,
   refuseChanges,
   reloadWithBanner,
@@ -223,9 +225,27 @@ async function readEverySize(
 const ROUTES_PER_ROW = 2;
 
 /** The open issue of the review corpus whose change the rows by route group refuse
- *  (`e2e/workspace.ts` writes it): it stands under no epic, so taking it out of one changes
- *  nothing a reviewed page draws. */
+ *  (`e2e/workspace.ts` writes it), and the open issue the corpus makes before it. Neither stands
+ *  in Start next's queue, the Todo issues labelled legion, so `queueTheRefusedIssue` puts both
+ *  there, the refused one second, for the selection bar's Start next to send a move up for it. */
 const REFUSED_TITLE = "Snooze an Inbox row until tomorrow";
+const QUEUED_FIRST_TITLE = "Seed the local corpus";
+
+/** Puts the corpus's `QUEUED_FIRST_TITLE` issue and then its `REFUSED_TITLE` issue into Start
+ *  next's queue, in that order, which is the order the corpus made them in, and answers the
+ *  second: the move up that the rows refuse is its move ahead of the first. */
+async function queueTheRefusedIssue() {
+  const issues = await listIssues("CORE");
+  const first = issues.find((issue) => issue.title === QUEUED_FIRST_TITLE);
+  const refused = issues.find((issue) => issue.title === REFUSED_TITLE);
+  if (first === undefined || refused === undefined) {
+    throw new Error(`The review corpus holds no "${QUEUED_FIRST_TITLE}" or "${REFUSED_TITLE}"`);
+  }
+  for (const issue of [first, refused]) {
+    await patchIssue(issue.key, { labels: ["legion"], status: "todo" });
+  }
+  return refused;
+}
 
 /** The route group of `route`: the first segment of the router path it stands for, so the
  *  pages of one part of the dashboard share a row; the catch-all route `*` is a group of its own. */
@@ -267,10 +287,10 @@ for (const routes of routeRows()) {
   test(`both floats leave the foot clear on ${names} at three desktop sizes, and no end room once closed @foot`, async ({
     browser,
   }) => {
-    // The seed's waits give up at the bound this row's own assertions use, inside the row's clock.
+    // The review corpus, and in it the issue whose change the row refuses, put into Start next's
+    // queue behind the other.
     const seed = await seedReviewRoutes({ boundMs: expectTimeout });
-    const refused = (await listIssues("CORE")).find((issue) => issue.title === REFUSED_TITLE);
-    if (refused === undefined) throw new Error(`The review corpus holds no "${REFUSED_TITLE}"`);
+    const refused = await queueTheRefusedIssue();
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -437,7 +457,9 @@ test("the floats leave the foot of the issues table clear with the selection bar
     await readEverySize(page, "issues-table", ["banner"]);
     await toStart();
     await select(refused).check();
-    await toolbar.getByRole("button", { name: "Take out of epic" }).click({ timeout: 5_000 });
+    await toolbar
+      .getByRole("button", { name: "Start next", exact: true })
+      .click({ timeout: 5_000 });
     await expect(pendingWrites(page)).toContainText(refused);
     await toolbar.getByRole("button", { name: "Clear selection" }).click({ timeout: 5_000 });
     await expect(toolbar).toHaveCount(0);
@@ -463,7 +485,9 @@ test("the floats leave the foot of the issues table clear with the selection bar
     await select(refused).check();
     await readEverySize(page, "issues-table", ["banner", "bar"]);
     await toStart();
-    await toolbar.getByRole("button", { name: "Take out of epic" }).click({ timeout: 5_000 });
+    await toolbar
+      .getByRole("button", { name: "Start next", exact: true })
+      .click({ timeout: 5_000 });
     await expect(pendingWrites(page)).toContainText(refused);
     await select(refused).setChecked(false);
     await select(other).check();
@@ -482,7 +506,9 @@ test("the floats leave the foot of the issues table clear with the selection bar
     const { select, toolbar } = tableControls(page);
     await dismissBanner(page);
     await select(refused).check();
-    await toolbar.getByRole("button", { name: "Take out of epic" }).click({ timeout: 5_000 });
+    await toolbar
+      .getByRole("button", { name: "Start next", exact: true })
+      .click({ timeout: 5_000 });
     await expect(pendingWrites(page)).toContainText(refused);
     await select(refused).setChecked(false);
     await select(other).check();
@@ -1293,10 +1319,14 @@ test("a float that shows for a moment moves no content when it goes @foot", asyn
       }
       await toStart();
       await select(refused.key).check();
-      await toolbar.getByRole("button", { name: "Take out of epic" }).click({ timeout: 5_000 });
+      await toolbar
+        .getByRole("button", { name: "Start next", exact: true })
+        .click({ timeout: 5_000 });
       await expect(pendingWrites(page)).toContainText(refused.key);
       await toolbar.getByRole("button", { name: "Clear selection" }).click({ timeout: 5_000 });
       await expect(toolbar).toHaveCount(0);
+      // The next size presses Start next again, which a record left behind would refuse.
+      await dismissRefusedStartNext(page);
       await expectStillWhenItGoes(
         page,
         `issues-table ${at} pending-discarded`,

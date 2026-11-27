@@ -38,9 +38,9 @@ function patchOf(page: Page, key: string) {
 }
 
 // SLOW(>=2s): four whole-card drags, each paying dnd-kit's own 200 ms landing, plus the board's
-// two fresh renders.
-// @pr: Create through answer to close: the board is where a person moves an issue's status, and the drag has to order List and Board alike.
-test("the board is the kanban: whole-card drag orders List and Board alike, Icebox and Done collapse behind a toggle @pr", async ({
+// fresh renders after two reloads and two loads of another view.
+// @pr: Create through answer to close: the board is where a person moves an issue's status, and the drag has to order Table and Board alike.
+test("the board is the kanban: whole-card drag orders Table and Board alike, Icebox collapses behind a toggle, and Done opens where the view lists done issues @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -59,7 +59,7 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
   await page.setViewportSize({ width: 1920, height: 900 });
   try {
     await page.goto("/projects/CORE");
-    await page.getByRole("button", { name: "Board" }).click();
+    await page.getByRole("button", { name: "Board", exact: true }).click();
     const board = page.getByRole("region", { name: "Project board" });
     const triage = page.getByRole("region", { name: "Triage" });
     await expect(triage.getByRole("article")).toHaveText([/Second card/, /Third card/]);
@@ -86,7 +86,7 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
 
     await page.reload();
     await expect(triage.getByRole("article")).toHaveText([/Third card/, /Second card/]);
-    await page.getByRole("button", { name: "List" }).click();
+    await page.getByRole("button", { name: "Table", exact: true }).click();
     await page.getByRole("button", { name: "Triage 2", exact: true }).click();
     await expect(page.locator("[data-issue-row]")).toHaveText([/Third card/, /Second card/]);
     expect((await listIssues("CORE")).map((issue) => issue.key)).toEqual([
@@ -95,8 +95,12 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
       first.key,
     ]);
 
-    // K2: a whole-card drag into another column changes the status.
-    await page.getByRole("button", { name: "Board" }).click();
+    // K2: a whole-card drag into another column changes the status. The Board draws the view as
+    // it stands, so a second press of the bar's Triage entry first gives Open its own statuses
+    // back.
+    await page.getByRole("button", { name: "Triage 2", exact: true }).click();
+    await expect(page.locator("[data-issue-row]")).toHaveCount(3);
+    await page.getByRole("button", { name: "Board", exact: true }).click();
     const todoColumn = page.getByRole("region", { name: "Todo" });
     const inProgressColumn = page.getByRole("region", { name: "In progress" });
     const movePatch = patchOf(page, first.key);
@@ -110,7 +114,9 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
     await expect(inProgressColumn).toContainText("First card");
     await expect.poll(() => getIssue(first.key)).toMatchObject({ status: "in_progress" });
 
-    // K3: a Retro card dropped on the collapsed Done rail closes it.
+    // K3: a Retro card dropped on the collapsed Done rail closes it. Open lists no done issue, so
+    // the card leaves the Board, and the rail, which stands for done issues the view does not
+    // list, carries no count.
     await patchIssue(third.key, { status: "retro" });
     const retroColumn = page.getByRole("region", { name: "Retro" });
     const retroCard = retroColumn.getByRole("article", { name: `${third.key} Third card` });
@@ -119,27 +125,31 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
     await mouseDrag(page, retroCard, doneRail);
     const closeResponse = await closePatch;
     expect(closeResponse.status()).toBe(200);
-    expect(closeResponse.request().postDataJSON()).toEqual({ status: "done", rank: {} });
+    expect(closeResponse.request().postDataJSON()).toEqual({ status: "done" });
     await expect(retroColumn).not.toContainText("Third card");
-    await expect(doneRail).toContainText("1");
+    await expect(board.getByRole("article", { name: `${third.key} Third card` })).toHaveCount(0);
+    await expect(doneRail.getByTestId("board-column-rail")).toHaveText("Done");
     await expect.poll(() => getIssue(third.key)).toMatchObject({ status: "done" });
     expect((await getIssue(third.key)).closed_at).not.toBeNull();
 
-    // The toggle expands both edges, persists per login across a reload...
-    const showEdges = page.getByRole("button", { name: "Show Icebox & Done" });
-    await expect(showEdges).toHaveAttribute("aria-pressed", "false");
-    await showEdges.click();
-    const hideEdges = page.getByRole("button", { name: "Hide Icebox & Done" });
-    await expect(hideEdges).toHaveAttribute("aria-pressed", "true");
-    await expect(board.getByTestId("board-column-header")).toHaveCount(9);
-    await expect(board.getByTestId("board-column-rail")).toHaveCount(0);
-    const doneColumn = page.getByRole("region", { name: "Done" });
-    await expect(doneColumn.getByRole("article")).toHaveText(/Third card/);
+    // Show Icebox opens the Icebox rail into a column, and persists per login across a reload...
+    const showIcebox = page.getByRole("button", { name: "Show Icebox", exact: true });
+    await expect(showIcebox).toHaveAttribute("aria-pressed", "false");
+    await showIcebox.click();
+    await expect(showIcebox).toHaveAttribute("aria-pressed", "true");
+    await expect(board.getByTestId("board-column-header")).toHaveCount(8);
+    await expect(board.getByTestId("board-column-rail")).toHaveCount(1);
+    const iceboxColumn = page.getByRole("region", { name: "Icebox", exact: true });
+    await expect(iceboxColumn).toBeVisible();
     await page.reload();
-    await expect(hideEdges).toHaveAttribute("aria-pressed", "true");
-    await expect(doneColumn.getByRole("article")).toHaveText(/Third card/);
+    await expect(showIcebox).toHaveAttribute("aria-pressed", "true");
+    await expect(iceboxColumn).toBeVisible();
 
-    // ...and dragging a Done card out reopens it.
+    // ...a view that lists done issues opens the Done rail into the Done column with their
+    // cards, and dragging a Done card out reopens it.
+    await page.goto("/projects/CORE/issues?status=backlog&status=done");
+    const doneColumn = page.getByRole("region", { name: "Done", exact: true });
+    await expect(doneColumn.getByRole("article")).toHaveText(/Third card/);
     const backlogColumn = page.getByRole("region", { name: "Backlog" });
     const reopenPatch = patchOf(page, third.key);
     await mouseDrag(
@@ -147,19 +157,27 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
       doneColumn.getByRole("article", { name: `${third.key} Third card` }),
       backlogColumn
     );
-    expect((await reopenPatch).status()).toBe(200);
+    const reopenResponse = await reopenPatch;
+    expect(reopenResponse.status()).toBe(200);
+    expect(reopenResponse.request().postDataJSON()).toEqual({ status: "backlog" });
     await expect(backlogColumn.getByRole("article")).toHaveText(/Third card/);
     await expect.poll(() => getIssue(third.key)).toMatchObject({ closed_at: null });
 
-    await hideEdges.click();
+    await page.goto("/projects/CORE/issues");
+    await showIcebox.click();
+    await expect(showIcebox).toHaveAttribute("aria-pressed", "false");
     await expect(board.getByTestId("board-column-rail")).toHaveCount(2);
-    await expect(page.getByRole("region", { name: "Done (collapsed)" })).toContainText("0");
+    await expect(
+      page.getByRole("region", { name: "Done (collapsed)" }).getByTestId("board-column-rail")
+    ).toHaveText("Done");
   } finally {
     await context.close();
   }
 });
 
-test("v toggles List and Board; Shift+J/K rank a focused card through the one move path; o, Enter, p and Escape work the card; Space lifts nothing", async ({
+// SLOW(>=2s): v pressed on two tabs, four key moves each waiting on its write, and an issue
+// opened and left twice.
+test("v toggles Table and Board; Shift+J/K rank a focused card through the one move path; o, Enter, p and Escape work the card; Space lifts nothing", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -184,28 +202,36 @@ test("v toggles List and Board; Shift+J/K rank a focused card through the one mo
         patches.push(request.url());
       }
     });
+    // Open keeps its layout in the browser beside the project table's own layout.
     const viewPreference = () =>
-      page.evaluate(() => window.localStorage.getItem("dispatch.project.issue-view:alice"));
+      page.evaluate(() => {
+        const stored: unknown = JSON.parse(
+          window.localStorage.getItem("dispatch.project-table.CORE") ?? "{}"
+        );
+        return stored !== null && typeof stored === "object" && "layout" in stored
+          ? stored.layout
+          : null;
+      });
 
-    // B5: `v` flips List and Board from the keyboard and persists the choice; on the Documents
+    // B5: `v` flips Table and Board from the keyboard and persists the choice; on the Documents
     // tab there is no view to flip and it is inert.
     await page.goto("/projects/CORE");
-    const listButton = page.getByRole("button", { name: "List" });
-    const boardButton = page.getByRole("button", { name: "Board" });
-    await expect(listButton).toHaveAttribute("aria-pressed", "true");
+    const tableButton = page.getByRole("button", { name: "Table", exact: true });
+    const boardButton = page.getByRole("button", { name: "Board", exact: true });
+    await expect(tableButton).toHaveAttribute("aria-pressed", "true");
     await page.locator("body").focus();
     await page.keyboard.press("v");
     await expect(boardButton).toHaveAttribute("aria-pressed", "true");
     expect(await viewPreference()).toBe("board");
     await page.keyboard.press("v");
-    await expect(listButton).toHaveAttribute("aria-pressed", "true");
-    expect(await viewPreference()).toBe("list");
+    await expect(tableButton).toHaveAttribute("aria-pressed", "true");
+    expect(await viewPreference()).toBe("table");
     await page.getByRole("tab", { name: "Documents" }).click();
     await expect(page).toHaveURL(/\/projects\/CORE\/documents$/);
     await page.locator("body").focus();
     await page.keyboard.press("v");
     await nextFrames(page);
-    expect(await viewPreference()).toBe("list");
+    expect(await viewPreference()).toBe("table");
     await expect(page.getByRole("button", { name: "Board" })).toHaveCount(0);
     await page.getByRole("tab", { name: "Issues" }).click();
     await page.locator("body").focus();
@@ -219,17 +245,15 @@ test("v toggles List and Board; Shift+J/K rank a focused card through the one mo
     // dnd-kit renders its own unnamed `role=status` region; the board's is the named one.
     const live = page.getByRole("status", { name: "Board announcements" });
 
-    // B2: Shift+J sends the same PATCH a drop would, names the visible neighbours, and the
-    // card keeps focus in its new place while the live region says where it went.
+    // B2: Shift+J sends the same PATCH a drop would, names the card it lands above, and the card
+    // keeps focus in its new place while the live region says where it went.
     await alphaCard.focus();
     await expect(alphaCard).toBeFocused();
     const movePatch = patchOf(page, alpha.key);
     await page.keyboard.press("Shift+J");
     const moveResponse = await movePatch;
     expect(moveResponse.status()).toBe(200);
-    expect(moveResponse.request().postDataJSON()).toEqual({
-      rank: { after: bravo.key, before: charlie.key },
-    });
+    expect(moveResponse.request().postDataJSON()).toEqual({ rank: { before: charlie.key } });
     await expect(todo.getByRole("article")).toHaveText([/Bravo/, /Alpha/, /Charlie/]);
     await expect(alphaCard).toBeFocused();
     await expect(live).toHaveText(`${alpha.key} → Todo, position 2 of 3`);
@@ -324,7 +348,13 @@ test("v toggles List and Board; Shift+J/K rank a focused card through the one mo
   }
 });
 
-test("a stale board refreshes and says so when the server rejects the rank", async ({
+// A drop names one neighbour: the card it lands above, or the card above it where it lands last.
+// The server takes that rank whatever moved under the drag, so a drop on a board that has not
+// seen another reader's move lands by the card it was dropped on, and the Board reads the
+// server's order with no alert. A drop the server refuses for another reason - here a close of an
+// issue someone else closed - says the server's reason and reads the Board again.
+// SLOW(>=2s): three whole-card drags on a board whose live socket is closed, each read again.
+test("a drop on a stale board lands by the card it was dropped on, and a refused drop says why and reads the board again", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -342,7 +372,7 @@ test("a stale board refreshes and says so when the server rejects the rank", asy
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
-    // Without the event subscription the board does not learn about the API move below.
+    // Without the event subscription the board does not learn about the API writes below.
     await page.routeWebSocket(/\/ws\/live$/u, (route) =>
       route.close({ code: 1011, reason: "test network drop" })
     );
@@ -350,6 +380,8 @@ test("a stale board refreshes and says so when the server rejects the rank", asy
     await page.goto("/projects/CORE");
     await page.getByRole("button", { name: "Board" }).click();
     const todo = page.getByRole("region", { name: "Todo" });
+    const card = (key: string, title: string) =>
+      todo.getByRole("article", { name: `${key} ${title}` });
     await expect(todo.getByRole("article")).toHaveText([/Alpha/, /Bravo/, /Charlie/]);
 
     await patchIssue(alpha.key, { rank: { after: charlie.key } });
@@ -360,40 +392,51 @@ test("a stale board refreshes and says so when the server rejects the rank", asy
     ]);
     await expect(todo.getByRole("article")).toHaveText([/Alpha/, /Bravo/, /Charlie/]);
 
-    // Charlie between Alpha and Bravo names neighbours the server now has in the other order.
-    const stalePatch = patchOf(page, charlie.key);
-    await mouseDrag(
-      page,
-      todo.getByRole("article", { name: `${charlie.key} Charlie` }),
-      todo.getByRole("article", { name: `${bravo.key} Bravo` }),
-      4
-    );
-    const staleResponse = await stalePatch;
-    expect(staleResponse.status()).toBe(400);
-    expect(staleResponse.request().postDataJSON()).toEqual({
-      rank: { after: alpha.key, before: bravo.key },
-    });
-    await expect(page.getByRole("alert")).toHaveText(
-      "The board changed while you were moving this card - refreshed, try again."
-    );
-    await expect(todo.getByRole("article")).toHaveText([/Bravo/, /Charlie/, /Alpha/]);
+    // Charlie dropped above Bravo on the board that still draws Alpha first: the write names
+    // Bravo alone, and Charlie stands above Bravo, first now that Alpha has moved last.
+    const abovePatch = patchOf(page, charlie.key);
+    await mouseDrag(page, card(charlie.key, "Charlie"), card(bravo.key, "Bravo"), 4);
+    const aboveResponse = await abovePatch;
+    expect(aboveResponse.status()).toBe(200);
+    expect(aboveResponse.request().postDataJSON()).toEqual({ rank: { before: bravo.key } });
     expect((await listIssues("CORE")).map((issue) => issue.key)).toEqual([
-      bravo.key,
       charlie.key,
+      bravo.key,
       alpha.key,
     ]);
-
-    // Trying again from the refreshed board succeeds and clears the alert.
-    const retryPatch = patchOf(page, charlie.key);
-    await mouseDrag(
-      page,
-      todo.getByRole("article", { name: `${charlie.key} Charlie` }),
-      todo.getByRole("article", { name: `${bravo.key} Bravo` }),
-      4
-    );
-    expect((await retryPatch).status()).toBe(200);
     await expect(todo.getByRole("article")).toHaveText([/Charlie/, /Bravo/, /Alpha/]);
     await expect(page.getByRole("alert")).toHaveCount(0);
+
+    // Bravo moves after Alpha unseen; Charlie dropped last, below Alpha, names Alpha alone and
+    // stands right after it, with Bravo after them both.
+    await patchIssue(bravo.key, { rank: { after: alpha.key } });
+    const lastPatch = patchOf(page, charlie.key);
+    await mouseDrag(page, card(charlie.key, "Charlie"), card(alpha.key, "Alpha"));
+    const lastResponse = await lastPatch;
+    expect(lastResponse.status()).toBe(200);
+    expect(lastResponse.request().postDataJSON()).toEqual({ rank: { after: alpha.key } });
+    expect((await listIssues("CORE")).map((issue) => issue.key)).toEqual([
+      alpha.key,
+      charlie.key,
+      bravo.key,
+    ]);
+    await expect(todo.getByRole("article")).toHaveText([/Alpha/, /Charlie/, /Bravo/]);
+    await expect(page.getByRole("alert")).toHaveCount(0);
+
+    // Alpha closed unseen, then dropped on the Done rail: the server refuses to close it again,
+    // the Board says the server's reason, and its next read takes the closed Alpha off Open.
+    await patchIssue(alpha.key, { status: "done" });
+    const closePatch = patchOf(page, alpha.key);
+    await mouseDrag(
+      page,
+      card(alpha.key, "Alpha"),
+      page.getByRole("region", { name: "Done (collapsed)" })
+    );
+    const closeResponse = await closePatch;
+    expect(closeResponse.status()).toBe(409);
+    expect(closeResponse.request().postDataJSON()).toEqual({ status: "done" });
+    await expect(page.getByRole("alert")).toHaveText("issue is closed");
+    await expect(todo.getByRole("article")).toHaveText([/Charlie/, /Bravo/]);
   } finally {
     await context.close();
   }
@@ -818,10 +861,7 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     await finger.lift();
     const moveResponse = await movePatch;
     expect(moveResponse.status()).toBe(200);
-    expect(moveResponse.request().postDataJSON()).toEqual({
-      status: "in_progress",
-      rank: {},
-    });
+    expect(moveResponse.request().postDataJSON()).toEqual({ status: "in_progress" });
     await expect(inProgress).toContainText("Bravo");
     await expect(todo).not.toContainText("Bravo");
   } finally {
@@ -869,7 +909,7 @@ test("URL-backed labels drive the List table and Board strip and survive a reloa
   }
 });
 
-test("a filtered drag names the visible neighbours and the hidden card interleaves without error", async ({
+test("a filtered drag names the visible card it lands above and the hidden card interleaves without error", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -883,7 +923,7 @@ test("a filtered drag names the visible neighbours and the hidden card interleav
     );
     return card;
   };
-  const alpha = await seedCard("Alpha", ["keep"]);
+  await seedCard("Alpha", ["keep"]);
   const bravo = await seedCard("Bravo");
   const charlie = await seedCard("Charlie", ["keep"]);
   const delta = await seedCard("Delta", ["keep"]);
@@ -897,17 +937,15 @@ test("a filtered drag names the visible neighbours and the hidden card interleav
     const todo = page.getByRole("region", { name: "Todo" });
     await expect(todo.getByRole("article")).toHaveText([/Alpha/, /Charlie/, /Delta/]);
 
-    // Delta dropped above Charlie: the visible neighbours are Alpha and Charlie - the hidden
-    // Bravo, ranked between them, is never named.
+    // Delta dropped above Charlie: the write names Charlie, the visible card it lands above -
+    // the hidden Bravo, ranked between Alpha and Charlie, is never named.
     const deltaCard = todo.getByRole("article", { name: `${delta.key} Delta` });
     const charlieCard = todo.getByRole("article", { name: `${charlie.key} Charlie` });
     const movePatch = patchOf(page, delta.key);
     await mouseDrag(page, deltaCard, charlieCard, 4);
     const moveResponse = await movePatch;
     expect(moveResponse.status()).toBe(200);
-    expect(moveResponse.request().postDataJSON()).toEqual({
-      rank: { after: alpha.key, before: charlie.key },
-    });
+    expect(moveResponse.request().postDataJSON()).toEqual({ rank: { before: charlie.key } });
     await expect(todo.getByRole("article")).toHaveText([/Alpha/, /Delta/, /Charlie/]);
 
     // Lifting the filter shows the hidden card interleaved among the moved ones - no alert,
@@ -923,6 +961,7 @@ test("a filtered drag names the visible neighbours and the hidden card interleav
   }
 });
 
+// SLOW(>=2s): lanes turned on, a reload, a drag across lanes, and lanes turned off.
 test("the board groups into priority swimlanes on a toggle that persists per signed-in user, and dragging across lanes reassigns priority", async ({
   browser,
 }) => {
@@ -942,19 +981,16 @@ test("the board groups into priority swimlanes on a toggle that persists per sig
   await page.setViewportSize({ width: 1920, height: 900 });
   try {
     await page.goto("/projects/CORE");
-    await page.getByRole("button", { name: "Board" }).click();
+    await page.getByRole("button", { name: "Board", exact: true }).click();
 
     // Off by default: one flat Todo column holding every card.
-    const lanesToggle = page.getByRole("button", { name: "Show lanes" });
+    const lanesToggle = page.getByRole("button", { name: "Lanes", exact: true });
     await expect(lanesToggle).toHaveAttribute("aria-pressed", "false");
     const flatTodo = page.getByRole("region", { name: "Todo" });
     await expect(flatTodo.getByRole("article")).toHaveCount(3);
 
     await lanesToggle.click();
-    await expect(page.getByRole("button", { name: "Hide lanes" })).toHaveAttribute(
-      "aria-pressed",
-      "true"
-    );
+    await expect(lanesToggle).toHaveAttribute("aria-pressed", "true");
 
     const p0Lane = page.getByRole("region", { name: "P0 lane" });
     const p3Lane = page.getByRole("region", { name: "P3 lane" });
@@ -971,10 +1007,7 @@ test("the board groups into priority swimlanes on a toggle that persists per sig
 
     // The choice persists per signed-in user, not the URL: a reload keeps it.
     await page.reload();
-    await expect(page.getByRole("button", { name: "Hide lanes" })).toHaveAttribute(
-      "aria-pressed",
-      "true"
-    );
+    await expect(lanesToggle).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByRole("region", { name: "P0 lane" })).toBeVisible();
 
     // Dragging the no-priority card into the P0 lane's Todo column reassigns its priority -
@@ -1001,7 +1034,8 @@ test("the board groups into priority swimlanes on a toggle that persists per sig
 
     // Turning lanes off restores the flat board - the toggle state, not the data, decides the
     // layout.
-    await page.getByRole("button", { name: "Hide lanes" }).click();
+    await lanesToggle.click();
+    await expect(lanesToggle).toHaveAttribute("aria-pressed", "false");
     await expect(page.getByRole("region", { name: "P0 lane" })).toHaveCount(0);
   } finally {
     await context.close();
@@ -1020,11 +1054,11 @@ test("the board's view, lanes and edge toggles keep touch-sized targets @phone @
   try {
     const page = await context.newPage();
     await page.goto("/projects/CORE");
-    const boardToggle = page.getByRole("button", { name: "Board" });
+    const boardToggle = page.getByRole("button", { name: "Board", exact: true });
     await expect(boardToggle).toHaveCSS("min-height", "44px");
     await boardToggle.click();
-    for (const name of ["Show lanes", "Show Icebox & Done"]) {
-      await expect(page.getByRole("button", { name })).toHaveCSS("min-height", "44px");
+    for (const name of ["Lanes", "Show Icebox"]) {
+      await expect(page.getByRole("button", { name, exact: true })).toHaveCSS("min-height", "44px");
     }
   } finally {
     await context.close();
@@ -1122,7 +1156,9 @@ test("picker keeps a pick on screen: a card dragged to another priority lane whi
     const held = await holdIssuePatches(page, issue.key);
     await page.goto("/projects/CORE");
     await openBoard(page);
-    await page.getByRole("button", { name: "Show lanes" }).click();
+    const lanesToggle = page.getByRole("button", { name: "Lanes", exact: true });
+    await lanesToggle.click();
+    await expect(lanesToggle).toHaveAttribute("aria-pressed", "true");
     const card = page.getByRole("article", { name: `${issue.key} Picked card` });
     const picker = listTrigger(card, `Priority of ${issue.key}`);
     await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P3`);

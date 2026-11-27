@@ -61,6 +61,7 @@ test("database reset clears fake Envoy subscribers before the next issue", async
   }
 });
 
+// SLOW(>=2s): a close and a reopen from the header, each read back on the Board.
 // @pr: Create through answer to close: the header's own Close, and the Reopen that puts the issue back into Backlog.
 test("issue header closes an issue and reopens it into Backlog @pr", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -90,11 +91,18 @@ test("issue header closes an issue and reopens it into Backlog @pr", async ({ br
       });
 
     await page.goto("/projects/CORE");
-    await page.getByRole("button", { name: "Board" }).click();
-    // Done is a collapsed rail by default: it counts the closed card until the edges are shown.
-    await expect(page.getByRole("region", { name: "Done (collapsed)" })).toContainText("1");
-    await page.getByRole("button", { name: "Show Icebox & Done" }).click();
-    const done = page.getByRole("region", { name: "Done" });
+    await page.getByRole("button", { name: "Board", exact: true }).click();
+    // Open lists no done issue: the closed card is off its Board, whose Done rail, which stands
+    // for the done issues the view does not list, carries no count.
+    const doneRail = page.getByRole("region", { name: "Done (collapsed)" });
+    await expect(doneRail.getByTestId("board-column-rail")).toHaveText("Done");
+    await expect(
+      page.getByRole("article", { name: `${issue.key} Close from the header` })
+    ).toHaveCount(0);
+    // Done lists it, on its own Board, in the Done column.
+    await page.getByRole("tab", { name: /^Done\b/ }).click();
+    await page.getByRole("button", { name: "Board", exact: true }).click();
+    const done = page.getByRole("region", { name: "Done", exact: true });
     await expect(
       done.getByRole("article", { name: `${issue.key} Close from the header` })
     ).toBeVisible();
@@ -113,7 +121,7 @@ test("issue header closes an issue and reopens it into Backlog @pr", async ({ br
       .toMatchObject({ closed_at: null, status: "backlog" });
 
     await page.goto("/projects/CORE");
-    await page.getByRole("button", { name: "Board" }).click();
+    await page.getByRole("button", { name: "Board", exact: true }).click();
     const backlog = page.getByRole("region", { name: "Backlog" });
     await expect(
       backlog.getByRole("article", { name: `${issue.key} Close from the header` })
@@ -132,6 +140,7 @@ const session = {
   as: "agent" as const,
 };
 
+// SLOW(>=2s): three issue pages loaded in turn, each header waited on and screenshotted.
 test("issue header identifies session and human creators", async ({ browser }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
   await setLiveSessions([
@@ -195,6 +204,8 @@ test("issue header identifies session and human creators", async ({ browser }, t
   }
 });
 
+// SLOW(>=2s): two copies read off the clipboard, a screenshot, then four header writes, each
+// polled until the server holds it.
 test("issue header copies its key and persists its title, status, and route", async ({
   browser,
 }, testInfo) => {
@@ -511,6 +522,8 @@ test("a quote-anchored ask identifies its document in the margin and Conversatio
   }
 });
 
+// SLOW(>=2s): two pages of alice's and one of bob's loaded, a close and a pin each read back,
+// and a reload.
 // @pr: Create through answer to close: a close has to take the issue's asks out of the Inbox, and a pin stays the pinner's own.
 test("closing an issue removes its asks from the inbox and pinning stays private @pr", async ({
   browser,
@@ -921,6 +934,8 @@ test("issue header keeps the title at least half the card beside busy State and 
   }
 });
 
+// SLOW(>=2s): the page loaded at two widths, and three presses made out of a title edit at each,
+// each waiting on its write.
 test("issue header delivers the click that ends a title edit to the control under the pointer", async ({
   browser,
 }, testInfo) => {
@@ -1152,6 +1167,8 @@ test("issue header reassigns through the Assignee picker; a personal token's iss
   }
 });
 
+// SLOW(>=2s): two default repositories and three issues seeded, two writes from the header each
+// polled until the server holds it, a reload, and a second issue's page.
 test("issue header suggests its project's default repository, and a child resolves to the repository the issue takes", async ({
   browser,
 }, testInfo) => {

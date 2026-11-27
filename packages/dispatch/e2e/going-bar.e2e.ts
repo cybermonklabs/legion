@@ -240,7 +240,7 @@ test("the bar acts on the issues the table has selected, and leaving the table c
     await closeBar(page);
 
     // Back on the table, the rows come back unselected rather than carrying a hidden mark.
-    await page.getByRole("button", { name: "List", exact: true }).click();
+    await page.getByRole("button", { name: "Table", exact: true }).click();
     await expect(
       page.getByRole("checkbox", { name: `Select ${fixture.firstKey}` })
     ).not.toBeChecked();

@@ -2281,13 +2281,31 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "failed",
   },
   {
+    file: `${FEATURES}/project/IssueBoard.tsx`,
+    holds:
+      "the Board's own `aria-live` announcement of a moved card, a refused move or a copied key or reference",
+    written: "announcement.text",
+  },
+  {
     file: `${FEATURES}/project/issues-table-actions.ts`,
     holds:
-      "the notice `IssuesTable.tsx` draws for what a table action did: the List's own line, which names the epic the action moved rows into or out of by its title, joined to the List's words for a list read that has not settled (`ISSUES_NOT_LOADED`) and the server's own reason for it",
+      "the notice `issues-table-frame.tsx` draws for what a table action did: the List's own line, which names the epic the action moved rows into or out of by its title, joined to the List's words for a list read that has not settled (`ISSUES_NOT_LOADED`) and the server's own reason for it",
     written: "notice.text",
   },
   {
-    file: `${FEATURES}/project/IssuesTable.tsx`,
+    file: `${FEATURES}/project/issues-table-columns.tsx`,
+    holds:
+      "the table's own words for the Legion daemon's waiting reason code (`waitingReasonWords`), or the code as given when new",
+    written: "waitingReasonWords(waiting.reason)",
+  },
+  {
+    file: `${FEATURES}/project/issues-table-frame.tsx`,
+    holds:
+      "the table's own words for a failed listing read (`ISSUES_NOT_LOADED`, `UNSORTED_DONE_PAGE`)",
+    written: "failure.text",
+  },
+  {
+    file: `${FEATURES}/project/issues-table-frame.tsx`,
     holds: "the table's own notice of what a table action did",
     written: "notice?.text",
   },

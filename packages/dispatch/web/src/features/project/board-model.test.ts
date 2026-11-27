@@ -1,22 +1,28 @@
 import { expect, test } from "bun:test";
 
-import type { IssueSummary } from "../../api/types";
+import type { IssueSummary, LegionBoardResponse } from "../../api/types";
 import {
-  dropTarget,
-  groupIssuesByLane,
-  groupIssuesByStatus,
-  laneColumnId,
-  laneDropTarget,
-  laneFromKey,
+  type BoardBy,
+  boardColumns,
+  boardLines,
+  cardDropId,
+  cellId,
+  DAEMON_SETS_PHASE,
+  dropPlace,
+  keyRefusal,
   laneKey,
   laneLabel,
-  moveIssue,
-  moveIssueToLane,
+  type MoveRules,
+  openIssueStatuses,
+  planMove,
   priorityLanes,
-  rankInputForInsertion,
+  rankAfter,
+  rankRefusal,
 } from "./board-model";
+import { LEGION_PHASES } from "./issues-legion";
+import { buildItems, type Item } from "./issues-table-model";
 
-function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
+function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
     advances: [],
     advances_revision: 0,
@@ -26,11 +32,11 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     route_status: null,
     route_holder: null,
     route_status_reason: null,
-    key: "CORE-1",
-    title: "Core work",
+    key,
+    title: `Work ${key}`,
     status: "todo",
     priority: null,
-    rank: "U",
+    rank: key,
     labels: [],
     parent: null,
     blocked_by: [],
@@ -49,302 +55,461 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
   };
 }
 
-test("groups issues by lifecycle, keeping each column in the list's (rank) order", () => {
-  const columns = groupIssuesByStatus([
-    issue({ key: "CORE-1", status: "triage", rank: "U" }),
-    issue({ key: "CORE-2", status: "todo", rank: "f" }),
-    issue({ key: "CORE-3", status: "todo", rank: "k" }),
-  ]);
+/** The rows a view lists, as the table builds them; with `board`, a project with a daemon. */
+function rows(issues: IssueSummary[], board?: LegionBoardResponse): Item[] {
+  return buildItems(
+    issues,
+    () => "someone",
+    () => true,
+    board === undefined
+      ? {}
+      : {
+          legion: { board, boardStatus: "success", items: undefined, itemsStatus: "success" },
+        }
+  );
+}
 
-  expect(columns.map((column) => column.status)).toEqual([
+/** A board whose columns hold `cards`, each by its key, with the place it names. */
+function legionBoard(
+  cards: Partial<Record<string, readonly { key: string; place?: number }[]>>
+): LegionBoardResponse {
+  return {
+    columns: LEGION_PHASES.map((phase) => ({
+      id: phase.id,
+      label: phase.title,
+      cards: (cards[phase.id] ?? []).map(({ key, place }) => ({
+        blocked_by: null,
+        children: 0,
+        key,
+        phase: phase.id,
+        phase_since: null,
+        priority: null,
+        roles: null,
+        slot: null,
+        slot_since: null,
+        slot_use: null,
+        title: key,
+        tree: key,
+        tree_slot: null,
+        waiting: null,
+        waiting_on: null,
+        waiting_place: place ?? null,
+      })),
+    })),
+    computed_at: "2026-11-17T08:00:00Z",
+    header: {
+      facts_cursor_age_seconds: null,
+      facts_updated_at: null,
+      p0_holders: null,
+      queue_length: 0,
+      read_at: null,
+      read_error: null,
+      read_ok: true,
+      slot_cap: null,
+      slots_in_use: 0,
+      trees: 0,
+    },
+    issues: {},
+    project: "CORE",
+    settings: null,
+  };
+}
+
+/** The Board's lines over `items`, by Status with Open's statuses unless `by` says otherwise. */
+function lines(
+  items: readonly Item[],
+  { by = "status", lanes = false }: { by?: BoardBy; lanes?: boolean } = {}
+) {
+  const columns = boardColumns({
+    by,
+    listsDone: false,
+    phaseFilterPicks: [],
+    phases: LEGION_PHASES,
+    rows: items,
+    showIcebox: true,
+    statusPicks: by === "status" ? openIssueStatuses : [],
+  });
+  return boardLines(items, columns, by, lanes);
+}
+
+const PLACE: MoveRules = { by: "status", lanes: false, rankRefusal: undefined };
+const SORTED: MoveRules = {
+  by: "status",
+  lanes: false,
+  rankRefusal: rankRefusal({ id: "created", desc: true }, "Created"),
+};
+
+const ids = (columns: readonly { id: string; rail: boolean }[]) =>
+  columns.map(({ id, rail }) => (rail ? `${id} rail` : id));
+
+test("by Status the columns are the picked statuses in order, Icebox a rail until shown, and Done last", () => {
+  const items = rows([issue("CORE-1", { status: "todo" })]);
+  const statusColumns = (statusPicks: readonly string[], showIcebox: boolean, listsDone: boolean) =>
+    ids(
+      boardColumns({
+        by: "status",
+        listsDone,
+        phaseFilterPicks: [],
+        phases: LEGION_PHASES,
+        rows: items,
+        showIcebox,
+        statusPicks,
+      })
+    );
+  expect(statusColumns(openIssueStatuses, false, false)).toEqual([
     "triage",
-    "icebox",
+    "icebox rail",
     "backlog",
     "todo",
     "in_progress",
     "testing",
     "needs_review",
     "retro",
-    "done",
+    "done rail",
   ]);
+  expect(statusColumns(openIssueStatuses, true, false)[1]).toBe("icebox");
+  expect(statusColumns(["triage"], false, false)).toEqual(["triage", "done rail"]);
+  // No pick: each status a row is in, and Done a column, since such a view lists done issues.
+  expect(statusColumns([], false, true)).toEqual(["todo", "done"]);
+  expect(statusColumns(["done"], false, true)).toEqual(["done"]);
+});
+
+test("by Legion phase the columns are the twelve phases in the board's order and the None rail, kept by the filter's picks", () => {
+  const phaseColumns = (phaseFilterPicks: readonly string[]) =>
+    ids(
+      boardColumns({
+        by: "legion_phase",
+        listsDone: true,
+        phaseFilterPicks,
+        phases: LEGION_PHASES,
+        rows: [],
+        showIcebox: true,
+        statusPicks: ["todo"],
+      })
+    );
+  expect(phaseColumns([])).toEqual([...LEGION_PHASES.map((phase) => phase.id), "none rail"]);
+  expect(phaseColumns(["implementing"])).toEqual(["implementing"]);
+  expect(phaseColumns(["queue", "none"])).toEqual(["queue", "none rail"]);
+});
+
+test("the lines keep the view's order in each cell, and lanes split them by priority", () => {
+  const items = rows([
+    issue("CORE-3", { status: "todo", priority: 0 }),
+    issue("CORE-1", { status: "todo" }),
+    issue("CORE-2", { status: "in_progress", priority: 0 }),
+    issue("CORE-9", { status: "done" }),
+  ]);
+  const flat = lines(items);
+  expect(flat).toHaveLength(1);
+  const cells = flat[0]?.cells ?? [];
+  const keysOf = (column: string) =>
+    cells.find((cell) => cell.column.id === column)?.items.map((item) => item.issue.key);
+  expect(keysOf("todo")).toEqual(["CORE-3", "CORE-1"]);
+  expect(keysOf("in_progress")).toEqual(["CORE-2"]);
+  // Open lists no done issue: Done is a rail, and holds what the view gives it.
+  expect(keysOf("done")).toEqual(["CORE-9"]);
+
+  const laned = lines(items, { lanes: true });
+  expect(laned.map((line) => line.lane)).toEqual([...priorityLanes]);
+  const todoIn = (lane: number | null) =>
+    laned
+      .find((line) => line.lane === lane)
+      ?.cells.find((cell) => cell.column.id === "todo")
+      ?.items.map((item) => item.issue.key);
+  expect(todoIn(0)).toEqual(["CORE-3"]);
+  expect(todoIn(null)).toEqual(["CORE-1"]);
+});
+
+test("by Legion phase a row stands in its card's column, and a row with no card in None", () => {
+  const board = legionBoard({
+    queue: [{ key: "CORE-1", place: 1 }],
+    implementing: [{ key: "CORE-2" }],
+  });
+  const items = rows([issue("CORE-1"), issue("CORE-2"), issue("CORE-3")], board);
+  const cells = lines(items, { by: "legion_phase" })[0]?.cells ?? [];
+  const keysOf = (column: string) =>
+    cells.find((cell) => cell.column.id === column)?.items.map((item) => item.issue.key);
+  expect(keysOf("queue")).toEqual(["CORE-1"]);
+  expect(keysOf("implementing")).toEqual(["CORE-2"]);
+  expect(keysOf("none")).toEqual(["CORE-3"]);
+});
+
+const TODO = () =>
+  rows([
+    issue("CORE-1", { rank: "a" }),
+    issue("CORE-2", { rank: "b" }),
+    issue("CORE-3", { rank: "c" }),
+    issue("CORE-4", { rank: "d", status: "in_progress" }),
+  ]);
+
+test("a drop onto a card lands at its place, one step down below it and one step up above it; onto a column, at its end", () => {
+  const board = lines(TODO());
+  expect(dropPlace(board, "CORE-1", cardDropId("CORE-2"))).toEqual({
+    column: "todo",
+    lane: undefined,
+    index: 1,
+  });
+  expect(dropPlace(board, "CORE-3", cardDropId("CORE-2"))).toEqual({
+    column: "todo",
+    lane: undefined,
+    index: 1,
+  });
+  expect(dropPlace(board, "CORE-1", cardDropId("CORE-4"))).toEqual({
+    column: "in_progress",
+    lane: undefined,
+    index: 0,
+  });
+  expect(dropPlace(board, "CORE-4", cellId("todo", undefined))).toEqual({
+    column: "todo",
+    lane: undefined,
+    index: 3,
+  });
+  expect(dropPlace(board, "CORE-1", cellId("todo", undefined))).toEqual({
+    column: "todo",
+    lane: undefined,
+    index: 2,
+  });
+  expect(dropPlace(board, "CORE-1", cardDropId("CORE-1"))).toBeUndefined();
+  expect(dropPlace(board, "CORE-1", "column:nowhere")).toBeUndefined();
+  expect(dropPlace(board, "CORE-1", cardDropId("CORE-99"))).toBeUndefined();
+});
+
+// By Status, under the Place sort: a move within a column writes the rank before the card it
+// lands above, and the card shows a rank between its new neighbours until the server answers.
+test("under the Place sort a move within a column writes the rank and names where the card lands", () => {
+  const board = lines(TODO());
+  expect(planMove(board, PLACE, "CORE-1", { column: "todo", lane: undefined, index: 1 })).toEqual({
+    kind: "move",
+    key: "CORE-1",
+    change: { input: { rank: { before: "CORE-3" } }, rank: rankAfter("b") },
+    position: { at: 2, of: 3 },
+  });
+  // Last in the column: after the card above it.
   expect(
-    columns.find((column) => column.status === "todo")?.issues.map((item) => item.key)
-  ).toEqual(["CORE-2", "CORE-3"]);
-});
-
-test("keeps an optimistic reorder in place instead of re-sorting the column by stale rank", () => {
-  // After a drag the moved card still carries its old rank until the server answers; the
-  // column must show it where it was dropped, not snap it back until the refetch.
-  const columns = groupIssuesByStatus([
-    issue({ key: "CORE-2", rank: "k" }),
-    issue({ key: "CORE-1", rank: "U" }),
-  ]);
-
+    planMove(board, PLACE, "CORE-1", { column: "todo", lane: undefined, index: 2 })
+  ).toMatchObject({
+    kind: "move",
+    change: { input: { rank: { after: "CORE-3" } }, rank: rankAfter("c") },
+    position: { at: 3, of: 3 },
+  });
+  // A move that leaves the card where it is changes nothing.
   expect(
-    columns.find((column) => column.status === "todo")?.issues.map((item) => item.key)
-  ).toEqual(["CORE-2", "CORE-1"]);
+    planMove(board, PLACE, "CORE-1", { column: "todo", lane: undefined, index: 0 })
+  ).toBeUndefined();
 });
 
-test("derives before and after keys from the final insertion position", () => {
-  const issues = [
-    issue({ key: "CORE-1", rank: "F" }),
-    issue({ key: "CORE-2", rank: "U" }),
-    issue({ key: "CORE-3", rank: "k" }),
-  ];
-
-  expect(rankInputForInsertion(issues, 0)).toEqual({ before: "CORE-1" });
-  expect(rankInputForInsertion(issues, 1)).toEqual({ after: "CORE-1", before: "CORE-2" });
-  expect(rankInputForInsertion(issues, 3)).toEqual({ after: "CORE-3" });
-  expect(rankInputForInsertion([], 0)).toEqual({});
-});
-
-const board = [
-  issue({ key: "CORE-1", status: "todo", rank: "F" }),
-  issue({ key: "CORE-2", status: "todo", rank: "U" }),
-  issue({ key: "CORE-3", status: "todo", rank: "k" }),
-  issue({ key: "CORE-4", status: "in_progress", rank: "p" }),
-  issue({ key: "CORE-5", status: "done", rank: "z" }),
-];
-
-test("a drop onto a card in the same column lands on that card's position in either direction", () => {
-  // Down one card: CORE-1 over CORE-2 ends up below CORE-2 (dnd-kit's arrayMove semantics).
-  expect(dropTarget(board, "CORE-1", "CORE-2")).toEqual({ status: "todo", insertionIndex: 1 });
-  // Down two cards lands at the bottom.
-  expect(dropTarget(board, "CORE-1", "CORE-3")).toEqual({ status: "todo", insertionIndex: 2 });
-  // Up: CORE-3 over CORE-1 lands on top.
-  expect(dropTarget(board, "CORE-3", "CORE-1")).toEqual({ status: "todo", insertionIndex: 0 });
-});
-
-test("a drop onto another column's card lands above it; onto the column itself appends", () => {
-  expect(dropTarget(board, "CORE-1", "CORE-4")).toEqual({
-    status: "in_progress",
-    insertionIndex: 0,
+// INFRA-3221's tester: the daemon gives Places in an order of its own, so two cards next to each
+// other by Place need not be in rank order, and the server refuses a rank between two that are
+// not. A drop between them names one neighbour, the card it lands above, by Status and in Queue.
+test("a drop between two placed cards whose ranks run against their Places names only the card it lands above", () => {
+  const board = legionBoard({
+    queue: [
+      { key: "CORE-4", place: 1 },
+      { key: "CORE-3", place: 2 },
+      { key: "CORE-5", place: 3 },
+    ],
   });
-  expect(dropTarget(board, "CORE-1", "status:in_progress")).toEqual({
-    status: "in_progress",
-    insertionIndex: 1,
-  });
-  // A collapsed Done rail is the `status:done` droppable: the card is appended after the
-  // column's existing cards.
-  expect(dropTarget(board, "CORE-4", "status:done")).toEqual({ status: "done", insertionIndex: 1 });
-  expect(dropTarget(board, "CORE-4", "status:icebox")).toEqual({
-    status: "icebox",
-    insertionIndex: 0,
-  });
-});
-
-test("a drop onto itself, an unknown target or an unknown card is not a move", () => {
-  expect(dropTarget(board, "CORE-1", "CORE-1")).toBeUndefined();
-  expect(dropTarget(board, "CORE-1", "status:nowhere")).toBeUndefined();
-  expect(dropTarget(board, "CORE-9", "CORE-1")).toBeUndefined();
-});
-
-test("moveIssue places the card optimistically and names the visible neighbours", () => {
-  const down = moveIssue(board, "CORE-1", "todo", 2);
-  expect(down?.issues.map((item) => item.key)).toEqual([
-    "CORE-2",
-    "CORE-3",
-    "CORE-1",
-    "CORE-4",
-    "CORE-5",
-  ]);
-  expect(down?.input).toEqual({ rank: { after: "CORE-3" } });
-
-  const across = moveIssue(board, "CORE-3", "in_progress", 0);
-  expect(across?.issues.map((item) => `${item.key}:${item.status}`)).toEqual([
-    "CORE-1:todo",
-    "CORE-2:todo",
-    "CORE-3:in_progress",
-    "CORE-4:in_progress",
-    "CORE-5:done",
-  ]);
-  expect(across?.input).toEqual({ status: "in_progress", rank: { before: "CORE-4" } });
-
-  // Into an empty column: no neighbours, the server appends at the project's last rank.
-  expect(moveIssue(board, "CORE-5", "icebox", 0)?.input).toEqual({
-    status: "icebox",
-    rank: {},
-  });
-});
-
-test("moveIssue is a no-op when the card would stay where it is", () => {
-  expect(moveIssue(board, "CORE-1", "todo", 0)).toBeUndefined();
-  expect(moveIssue(board, "CORE-3", "todo", 2)).toBeUndefined();
-  expect(moveIssue(board, "CORE-9", "todo", 0)).toBeUndefined();
-});
-
-// Todo holds Alpha < Bravo < Charlie < Delta by rank; the filter hides Bravo.
-const filteredBoard = [
-  issue({ key: "CORE-1", status: "todo", rank: "a" }),
-  issue({ key: "CORE-2", status: "todo", rank: "b" }),
-  issue({ key: "CORE-3", status: "todo", rank: "c" }),
-  issue({ key: "CORE-4", status: "todo", rank: "d" }),
-  issue({ key: "CORE-5", status: "in_progress", rank: "e" }),
-];
-const hidesBravo = (candidate: IssueSummary) => candidate.key !== "CORE-2";
-
-test("moveIssue under a filter names visible neighbours and keeps hidden issues in the cache", () => {
-  // Visible Todo is [CORE-1, CORE-3, CORE-4]; CORE-4 dropped above CORE-3 is visible index 1.
-  const moved = moveIssue(filteredBoard, "CORE-4", "todo", 1, hidesBravo);
-  // The PATCH names the visible cards around the drop, not the hidden CORE-2.
-  expect(moved?.input).toEqual({ rank: { after: "CORE-1", before: "CORE-3" } });
-  // The optimistic list keeps the hidden card: visible order is 1, 4, 3 and CORE-2 stays put.
-  expect(moved?.issues.map((item) => item.key)).toEqual([
-    "CORE-1",
-    "CORE-2",
-    "CORE-4",
-    "CORE-3",
-    "CORE-5",
-  ]);
-});
-
-test("moveIssue appended after the last visible card lands before nothing and after it", () => {
-  // Visible Todo without CORE-1 is [CORE-3, CORE-4]; index 2 appends after CORE-4.
-  const moved = moveIssue(filteredBoard, "CORE-1", "todo", 2, hidesBravo);
-  expect(moved?.input).toEqual({ rank: { after: "CORE-4" } });
-  expect(moved?.issues.map((item) => item.key)).toEqual([
-    "CORE-2",
-    "CORE-3",
-    "CORE-4",
-    "CORE-1",
-    "CORE-5",
-  ]);
-});
-
-test("moveIssue into a column whose only cards are hidden appends with no neighbours", () => {
-  const moved = moveIssue(
-    filteredBoard,
-    "CORE-5",
-    "todo",
-    0,
-    (candidate) => candidate.key === "CORE-5"
+  // In the view's order, by Place: CORE-4 holds Place 1 and ranks after CORE-3.
+  const items = rows(
+    [
+      issue("CORE-4", { rank: "x" }),
+      issue("CORE-3", { rank: "w" }),
+      issue("CORE-5", { rank: "y" }),
+    ],
+    board
   );
-  expect(moved?.input).toEqual({ status: "todo", rank: {} });
-  // The hidden column keeps its order; the moved card lands at its end.
-  expect(moved?.issues.map((item) => item.key)).toEqual([
-    "CORE-1",
-    "CORE-2",
-    "CORE-3",
-    "CORE-4",
-    "CORE-5",
-  ]);
-});
-
-test("groupIssuesByLane splits by priority (P0-P3, then no priority), each lane split by status", () => {
-  const lanes = groupIssuesByLane([
-    issue({ key: "CORE-1", priority: 0, status: "todo", rank: "a" }),
-    issue({ key: "CORE-2", priority: null, status: "todo", rank: "b" }),
-    issue({ key: "CORE-3", priority: 0, status: "in_progress", rank: "c" }),
-    issue({ key: "CORE-4", priority: 3, status: "todo", rank: "d" }),
-  ]);
-  expect(lanes.map((entry) => entry.lane)).toEqual([0, 1, 2, 3, null]);
-  const p0 = lanes.find((entry) => entry.lane === 0);
-  expect(p0?.columns.find((column) => column.status === "todo")?.issues.map((i) => i.key)).toEqual([
-    "CORE-1",
-  ]);
-  expect(
-    p0?.columns.find((column) => column.status === "in_progress")?.issues.map((i) => i.key)
-  ).toEqual(["CORE-3"]);
-  const noPriority = lanes.find((entry) => entry.lane === null);
-  expect(
-    noPriority?.columns.find((column) => column.status === "todo")?.issues.map((i) => i.key)
-  ).toEqual(["CORE-2"]);
-});
-
-test("laneLabel, laneKey and laneFromKey round-trip every priority lane", () => {
-  expect(priorityLanes.map(laneLabel)).toEqual(["P0", "P1", "P2", "P3", "No priority"]);
-  for (const lane of priorityLanes) {
-    expect(laneFromKey(laneKey(lane))).toBe(lane);
+  const queue: MoveRules = { by: "legion_phase", lanes: false, rankRefusal: undefined };
+  for (const [rules, column, by] of [
+    [PLACE, "todo", "status"],
+    [queue, "queue", "legion_phase"],
+  ] as const) {
+    const drawn = lines(items, { by });
+    const cell = drawn[0]?.cells.find((candidate) => candidate.column.id === column);
+    expect(cell?.items.map((item) => item.issue.key)).toEqual(["CORE-4", "CORE-3", "CORE-5"]);
+    expect(planMove(drawn, rules, "CORE-5", { column, lane: undefined, index: 1 })).toMatchObject({
+      kind: "move",
+      change: { input: { rank: { before: "CORE-3" } } },
+      position: { at: 2, of: 3 },
+    });
   }
-  expect(laneFromKey("nonsense")).toBeUndefined();
 });
 
-test("laneColumnId round-trips through laneDropTarget as a cell id", () => {
-  const cell = [
-    issue({ key: "CORE-1", priority: 0, status: "todo", rank: "a" }),
-    issue({ key: "CORE-2", priority: 0, status: "todo", rank: "b" }),
-    issue({ key: "CORE-3", priority: null, status: "todo", rank: "c" }),
-  ];
-  // Appending onto an empty P3/todo cell: no neighbours in that cell even though todo has cards
-  // in other lanes.
-  expect(laneDropTarget(cell, "CORE-3", laneColumnId("todo", 3))).toEqual({
-    status: "todo",
-    lane: 3,
-    insertionIndex: 0,
+test("a move into another column sets its status, with the rank under the Place sort and none under another", () => {
+  const board = lines(TODO());
+  expect(
+    planMove(board, PLACE, "CORE-2", { column: "in_progress", lane: undefined, index: 0 })
+  ).toMatchObject({
+    kind: "move",
+    change: { input: { status: "in_progress", rank: { before: "CORE-4" } }, rank: "" },
+    position: { at: 1, of: 2 },
   });
-  // Onto the P0/todo cell's own id: appends after its two cards.
-  expect(laneDropTarget(cell, "CORE-3", laneColumnId("todo", 0))).toEqual({
-    status: "todo",
-    lane: 0,
-    insertionIndex: 2,
+  const sorted = planMove(board, SORTED, "CORE-2", {
+    column: "in_progress",
+    lane: undefined,
+    index: 0,
   });
-});
-
-test("laneDropTarget onto a card takes that card's own status and priority as the target cell", () => {
-  const cell = [
-    issue({ key: "CORE-1", priority: 0, status: "todo", rank: "a" }),
-    issue({ key: "CORE-2", priority: 0, status: "todo", rank: "b" }),
-    issue({ key: "CORE-3", priority: 3, status: "todo", rank: "c" }),
-  ];
-  // CORE-3 (P3) dropped onto CORE-2 (P0) lands in the P0 lane at CORE-2's position.
-  expect(laneDropTarget(cell, "CORE-3", "CORE-2")).toEqual({
-    status: "todo",
-    lane: 0,
-    insertionIndex: 1,
+  expect(sorted).toMatchObject({ kind: "move", change: { input: { status: "in_progress" } } });
+  expect(sorted?.kind === "move" ? sorted.position : "refused").toBeUndefined();
+  // Onto the Done rail of a view that lists no done issue: the status, which closes it, alone.
+  expect(
+    planMove(board, PLACE, "CORE-2", { column: "done", lane: undefined, index: 0 })
+  ).toMatchObject({
+    kind: "move",
+    change: { input: { status: "done" } },
   });
 });
 
-test("laneDropTarget onto itself, an unknown cell id or an unknown card is not a move", () => {
-  const cell = [issue({ key: "CORE-1", priority: 0, status: "todo" })];
-  expect(laneDropTarget(cell, "CORE-1", "CORE-1")).toBeUndefined();
-  expect(laneDropTarget(cell, "CORE-1", "status:todo")).toBeUndefined();
-  expect(laneDropTarget(cell, "CORE-1", laneColumnId("nowhere" as never, 0))).toBeUndefined();
-  expect(laneDropTarget(cell, "CORE-9", "CORE-1")).toBeUndefined();
-});
-
-const laneBoard = [
-  issue({ key: "CORE-1", priority: 0, status: "todo", rank: "a" }),
-  issue({ key: "CORE-2", priority: 0, status: "todo", rank: "b" }),
-  issue({ key: "CORE-3", priority: 3, status: "todo", rank: "c" }),
-  issue({ key: "CORE-4", priority: null, status: "in_progress", rank: "d" }),
-];
-
-test("moveIssueToLane within one lane+status cell only sets rank", () => {
-  const moved = moveIssueToLane(laneBoard, "CORE-1", "todo", 0, 1);
-  expect(moved?.issues.map((item) => `${item.key}:${item.priority ?? "none"}`)).toEqual([
-    "CORE-2:0",
-    "CORE-1:0",
-    "CORE-3:3",
-    "CORE-4:none",
-  ]);
-  expect(moved?.input).toEqual({ rank: { after: "CORE-2" } });
-});
-
-test("moveIssueToLane into a different lane reassigns priority alongside status and rank", () => {
-  // CORE-3 (P3, todo) dragged into the P0/in_progress cell, after CORE-4 (no priority) does not
-  // match the P0 cell, so it lands with no neighbours.
-  const moved = moveIssueToLane(laneBoard, "CORE-3", "in_progress", 0, 0);
-  expect(moved?.input).toEqual({ status: "in_progress", priority: 0, rank: {} });
-  expect(moved?.issues.find((item) => item.key === "CORE-3")).toMatchObject({
-    priority: 0,
-    status: "in_progress",
+test("under another sort a move within a column is refused with a text that names the sort", () => {
+  const board = lines(TODO());
+  expect(planMove(board, SORTED, "CORE-1", { column: "todo", lane: undefined, index: 2 })).toEqual({
+    kind: "refused",
+    text: "The view sorts by Created. Sort by Queue to move cards in a column.",
   });
 });
 
-test("moveIssueToLane is a no-op when the card would stay in the same lane and cell position", () => {
-  expect(moveIssueToLane(laneBoard, "CORE-1", "todo", 0, 0)).toBeUndefined();
-  expect(moveIssueToLane(laneBoard, "CORE-9", "todo", 0, 0)).toBeUndefined();
+// The Place sort puts every card with a place in the Legion queue first, so the rank decides a
+// move only between cards that all have a place or all have none.
+test("a move between cards with a place and cards with none is refused with why", () => {
+  const board = lines(
+    rows([
+      issue("CORE-1", { rank: "a", labels: ["legion"] }),
+      issue("CORE-2", { rank: "b", labels: ["legion"] }),
+      issue("CORE-3", { rank: "c" }),
+    ])
+  );
+  expect(planMove(board, PLACE, "CORE-3", { column: "todo", lane: undefined, index: 1 })).toEqual({
+    kind: "refused",
+    text: "A card with no place in the Legion queue stays after the cards with a place.",
+  });
+  expect(planMove(board, PLACE, "CORE-1", { column: "todo", lane: undefined, index: 1 })).toEqual({
+    kind: "refused",
+    text: "A card with a place in the Legion queue stays before the cards with no place.",
+  });
+  expect(
+    planMove(board, PLACE, "CORE-2", { column: "todo", lane: undefined, index: 0 })
+  ).toMatchObject({
+    kind: "move",
+    change: { input: { rank: { before: "CORE-1" } } },
+  });
 });
 
-test("moveIssueToLane under a filter names visible neighbours within the lane+status cell", () => {
-  const filtered = [
-    issue({ key: "CORE-1", priority: 0, status: "todo", rank: "a" }),
-    issue({ key: "CORE-2", priority: 0, status: "todo", rank: "b" }),
-    issue({ key: "CORE-3", priority: 0, status: "todo", rank: "c" }),
-  ];
-  const hidesTwo = (candidate: IssueSummary) => candidate.key !== "CORE-2";
-  const moved = moveIssueToLane(filtered, "CORE-3", "todo", 0, 1, hidesTwo);
-  expect(moved?.input).toEqual({ rank: { after: "CORE-1" } });
-  // CORE-2 stays in place even though it is invisible to the filter.
-  expect(moved?.issues.map((item) => item.key)).toEqual(["CORE-1", "CORE-3", "CORE-2"]);
+test("a drop into another lane writes that lane's priority under any sort", () => {
+  const board = lines(
+    rows([
+      issue("CORE-1", { rank: "a", priority: 0 }),
+      issue("CORE-2", { rank: "b", priority: 1 }),
+    ]),
+    { lanes: true }
+  );
+  const lanes: MoveRules = { ...SORTED, lanes: true };
+  expect(planMove(board, lanes, "CORE-1", { column: "todo", lane: 1, index: 0 })).toMatchObject({
+    kind: "move",
+    change: { input: { priority: 1 } },
+  });
+  expect(planMove(board, lanes, "CORE-1", { column: "todo", lane: null, index: 0 })).toMatchObject({
+    kind: "move",
+    change: { input: { priority: null } },
+  });
+  expect(planMove(board, lanes, "CORE-1", { column: "backlog", lane: 1, index: 0 })).toMatchObject({
+    kind: "move",
+    change: { input: { status: "backlog", priority: 1 } },
+  });
+  // Under the Place sort it writes the rank too, beside the lane's cards.
+  expect(
+    planMove(board, { ...PLACE, lanes: true }, "CORE-1", { column: "todo", lane: 1, index: 1 })
+  ).toMatchObject({
+    kind: "move",
+    change: { input: { priority: 1, rank: { after: "CORE-2" } } },
+  });
+});
+
+// By Legion phase the daemon sets each card's column: only a move within Queue is taken.
+test("by Legion phase only a move within Queue is taken, and every other drop is refused", () => {
+  const board = legionBoard({
+    queue: [
+      { key: "CORE-1", place: 1 },
+      { key: "CORE-2", place: 2 },
+    ],
+    implementing: [{ key: "CORE-3" }, { key: "CORE-4" }],
+  });
+  const items = rows(
+    [
+      issue("CORE-1", { priority: 0 }),
+      issue("CORE-2", { priority: 0 }),
+      issue("CORE-3"),
+      issue("CORE-4"),
+      issue("CORE-5"),
+    ],
+    board
+  );
+  const rules: MoveRules = { by: "legion_phase", lanes: false, rankRefusal: undefined };
+  const phases = lines(items, { by: "legion_phase" });
+  expect(
+    planMove(phases, rules, "CORE-1", { column: "queue", lane: undefined, index: 1 })
+  ).toMatchObject({
+    kind: "move",
+    change: { input: { rank: { after: "CORE-2" } } },
+    position: { at: 2, of: 2 },
+  });
+  const refused = { kind: "refused", text: DAEMON_SETS_PHASE } as const;
+  expect(
+    planMove(phases, rules, "CORE-3", { column: "implementing", lane: undefined, index: 1 })
+  ).toEqual(refused);
+  expect(
+    planMove(phases, rules, "CORE-1", { column: "design", lane: undefined, index: 0 })
+  ).toEqual(refused);
+  expect(planMove(phases, rules, "CORE-3", { column: "queue", lane: undefined, index: 0 })).toEqual(
+    refused
+  );
+  expect(planMove(phases, rules, "CORE-1", { column: "none", lane: undefined, index: 0 })).toEqual(
+    refused
+  );
+  // Within Queue under another sort, the sort's refusal.
+  expect(
+    planMove(phases, { ...rules, rankRefusal: "Sorted." }, "CORE-1", {
+      column: "queue",
+      lane: undefined,
+      index: 1,
+    })
+  ).toEqual({ kind: "refused", text: "Sorted." });
+  // Into another lane of Queue.
+  const laned = lines(items, { by: "legion_phase", lanes: true });
+  expect(
+    planMove(laned, { ...rules, lanes: true }, "CORE-1", { column: "queue", lane: 1, index: 0 })
+  ).toEqual(refused);
+});
+
+test("a key move is refused before its place is looked at, by Legion phase but within Queue", () => {
+  const phase: MoveRules = { by: "legion_phase", lanes: false, rankRefusal: undefined };
+  expect(keyRefusal(phase, "implementing", "within")).toBe(DAEMON_SETS_PHASE);
+  expect(keyRefusal(phase, "queue", "across")).toBe(DAEMON_SETS_PHASE);
+  expect(keyRefusal(phase, "queue", "within")).toBeUndefined();
+  expect(keyRefusal(SORTED, "todo", "within")).toBe(SORTED.rankRefusal);
+  expect(keyRefusal(SORTED, "todo", "across")).toBeUndefined();
+});
+
+test("the rank decides a move only under the Place sort, first to last", () => {
+  expect(rankRefusal({ id: "queue", desc: false }, "Queue")).toBeUndefined();
+  expect(rankRefusal({ id: "queue", desc: true }, "Queue")).toBe(
+    "The view sorts by Queue from last to first. Sort from first to last to move cards in a column."
+  );
+  expect(rankRefusal({ id: "priority", desc: false }, "Priority")).toBe(
+    "The view sorts by Priority. Sort by Queue to move cards in a column."
+  );
+  expect(rankRefusal(undefined, "")).toBe(
+    "The view has no sort. Sort by Queue to move cards in a column."
+  );
+});
+
+test("the rank a moved card shows sorts just after the card above it, or first", () => {
+  expect(rankAfter("b") > "b" && rankAfter("b") < "c").toBe(true);
+  expect(rankAfter("b") < "ba").toBe(true);
+  expect(rankAfter(undefined) < "0").toBe(true);
+});
+
+test("laneLabel and laneKey name every priority lane", () => {
+  expect(priorityLanes.map(laneLabel)).toEqual(["P0", "P1", "P2", "P3", "No priority"]);
+  expect(priorityLanes.map(laneKey)).toEqual(["0", "1", "2", "3", "none"]);
+  expect(cellId("todo", 0)).toBe("lane:0|column:todo");
+  expect(cellId("todo", null)).toBe("lane:none|column:todo");
 });

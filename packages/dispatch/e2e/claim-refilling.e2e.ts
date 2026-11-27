@@ -38,6 +38,8 @@ async function seedSessionClaim(): Promise<string> {
   return issue.key;
 }
 
+// SLOW(>=2s): the chip read before and after the agent list starts refilling, each a page load
+// that waits on the list's state, then the issues table under the Claimed by filter.
 // @pr: A refilling agent list must never lapse a claim: the chip and the Claimed by filter both read the live list, and both are wrong if this breaks.
 test("a refilling agent list never lapses a session's claim on the chip or in the Claimed by filter @pr", async ({
   browser,
@@ -49,8 +51,11 @@ test("a refilling agent list never lapses a session's claim on the chip or in th
     const page = await alice.newPage();
     await page.goto(`/issues/${key}`);
     const chip = page.getByTestId("issue-claim");
-    await expect(chip).toHaveAttribute("title", /Claimed /);
-    await expect(chip).not.toHaveAttribute("title", /no longer running/);
+    // The chip's help is its tooltip, which the keyboard focus opens and holds open.
+    const help = page.getByRole("tooltip");
+    await chip.focus();
+    await expect(help).toContainText(/^Claimed /);
+    await expect(help).not.toContainText("no longer running");
 
     await setListsState("refilling", { retryAfterSeconds: ROW_RETRY_AFTER_SECONDS });
     await page.reload();
@@ -58,12 +63,12 @@ test("a refilling agent list never lapses a session's claim on the chip or in th
       REFILLING,
       { timeout: REFILL_TIMEOUT }
     );
-    await expect(chip).toHaveAttribute(
-      "title",
+    await chip.focus();
+    await expect(help).toContainText(
       /Couldn't check whether that session is still running: The agent list is refilling\. Try again in a moment\.$/,
       { timeout: REFILL_TIMEOUT }
     );
-    await expect(chip).not.toHaveAttribute("title", /no longer running/);
+    await expect(help).not.toContainText("no longer running");
 
     await page.goto("/projects/CORE/issues?unclaimed=1");
     await expect(page.getByTestId("unclaimed-unchecked")).toHaveText(
@@ -87,7 +92,8 @@ test("a complete agent list without the holder lapses its claim on the chip and 
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${key}`);
-    await expect(page.getByTestId("issue-claim")).toHaveAttribute("title", /no longer running/);
+    await page.getByTestId("issue-claim").focus();
+    await expect(page.getByRole("tooltip")).toContainText("no longer running");
     // Picked in the column, not through the link's parameter: the same rule, one place.
     await page.goto("/projects/CORE/issues");
     await pickFilterOption(page, "Claimed by", "Nobody or lapsed");

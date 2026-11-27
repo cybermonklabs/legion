@@ -162,9 +162,10 @@ export interface MarkedList {
  * its listeners, even if the keyup never comes.
  *
  * So a reader deep in a long list keeps their place, and the focus goes neither to the list's first
- * row nor to the page's body. One case is not answered yet: a bar action that a dialog confirms,
- * as the parent-status confirmation dialog for Move to epic does, ends on the body, because the
- * dialog's confirm is then the armed press and the bar's own gate is not.
+ * row nor to the page's body. One case is not answered yet: a bar action that a dialog confirms
+ * ends on the body. The project List's Start next is one, where it asks `Start these next?` first
+ * (`issues-table-actions.ts`). The dialog's confirm is then the armed press, and the bar's own
+ * gate is not.
  */
 export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   // The ids of the list's rows, in order, as the last commit that drew the bar with the row
@@ -614,12 +615,13 @@ function markShown(mark: HTMLElement, clips: Map<Element, boolean>, head: Elemen
  * again from the page's first link. So does a bar its own press takes away after the reader's
  * press on a control outside it that the press holds while its write is out took the focus from
  * it, if that control goes too or stays and the focus is on the body (`focusOnDocument`).
- * Take out of epic's writes hold every row's Start next, and a click or a tap on a marked row's
- * one puts the focus on that Start next, on the row around it or on the body, and leaves the
- * press the cause (`repeatTookFocusFrom`). So does a bar that stays while the control holding
- * the focus goes from it: **Select all**, which the bar stops offering once it has run. The focus
- * goes to the first of these that applies, which the page's own hand-off focuses
- * (`useLastMarkedPlace`). The checkbox of the row the reader marked last, while the list holds it
+ * On the project List, the bar's Start next holds every row's Start next while its writes are out
+ * (`issues-table-actions.ts`'s `perform`). A click or a tap on a marked row's Start next then puts
+ * the focus on it, on the row around it or on the body, and leaves the press the cause
+ * (`repeatTookFocusFrom`). So does a bar that stays while the control holding the focus goes from
+ * it: **Select all**, which the bar stops offering once it has run. The focus goes to the first of
+ * these that applies, which the page's own hand-off focuses (`useLastMarkedPlace`). The checkbox
+ * of the row the reader marked last, while the list holds it
  * and no press is taking it away, out of sight or not. Else a row the reader can see: after a
  * press that took that row away, the row at its place, else the nearest before it, else the
  * nearest after it, read once those rows have gone and the list stands as the reader sees it;
@@ -666,12 +668,12 @@ export function SelectionBar({ returnFocus, ...bar }: SelectionBarProps): ReactN
  *  where it must, and each control keeps its own text on one line and its own size at every size.
  *  The compact line, the project List's bar, wraps onto more lines from `sm` up, where the bar
  *  stands at the foot of the screen and the foot inset gives the list the room the bar takes
- *  (`hooks/useFootInset.ts`): its actions hold more room than its box at 900 px, and main's layout
- *  rule reads a box that scrolls sideways as a breach (builds Job
- *  `infra-3135-infra-3135-r29m-lay-z5wrh`, and cybermonklabs/legion#4304). Below `sm` the bar stands
- *  under the header, over the list's top rows, with no room given for it, so it keeps one line
- *  there: wrapped at 390x664 it stood 210 px tall over the rows it acts on, and a double click on a
- *  marked row's held Start next landed on the bar instead (builds Jobs
+ *  (`hooks/useFootInset.ts`). An earlier build's bar held more actions, which took more room than
+ *  its box at 900 px, and main's layout rule reads a box that scrolls sideways as a breach (builds
+ *  Job `infra-3135-infra-3135-r29m-lay-z5wrh`, and cybermonklabs/legion#4304). Below `sm` the bar
+ *  stands under the header, over the list's top rows, with no room given for it, so it keeps one
+ *  line there. Wrapped at 390x664, that earlier bar stood 210 px tall over the rows it acts on,
+ *  and a double click on a marked row's held Start next landed on the bar instead (builds Jobs
  *  `infra-3135-infra-3135-r30j-dblp` and `-r30k-dblp`). `e2e/layout-breaches.ts` holds the
  *  sideways scroll that one line leaves at 360. */
 const BAR_LINE: Record<ControlSize, string> = {
@@ -740,14 +742,14 @@ function DrawnBar({
   // can still be read inside it: the removal itself drops it onto the body. A focus that the
   // reader's press on a control outside the bar took from it, where the bar's press holds that
   // control while its write is out - a click or a tap on a marked row's Start next, held while
-  // Take out of epic's writes are out - is the bar's to hand on too: that press takes nothing but
-  // the hold, and the bar's press stays the cause (`armHandOff`). The armed press says so from
-  // its own events, whatever renders came between (`repeatTookFocusFrom`): the focus was in the
-  // bar as that press came, and has stayed since on that control, on the row around it, or on
-  // the body, where WebKit can leave it. The commit that takes the bar away can take that control
-  // away first, with its row - the List draws its table before its bar - and the focus with it.
-  // The bar's own element is what it went holding then, the element that holds the press, unless
-  // the reader had scrolled the element the focus was last on out of their sight
+  // the bar's own Start next has its writes out - is the bar's to hand on too: that press takes
+  // nothing but the hold, and the bar's press stays the cause (`armHandOff`). The armed press says
+  // so from its own events, whatever renders came between (`repeatTookFocusFrom`): the focus was
+  // in the bar as that press came, and has stayed since on that control, on the row around it, or
+  // on the body, where WebKit can leave it. The commit that takes the bar away can take that
+  // control away first, alone or with its row - the List draws its table before its bar - and the
+  // focus with it. The bar's own element is what it went holding then, the element that holds the
+  // press, unless the reader had scrolled the element the focus was last on out of their sight
   // (`focusedOutOfSight`).
   useLayoutEffect(() => {
     const node = ref.current;

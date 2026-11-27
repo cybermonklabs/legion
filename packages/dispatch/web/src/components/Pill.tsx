@@ -46,6 +46,14 @@ const pagePillTones: Record<PillTone, string> = {
 export const pillShapeClassName =
   "inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap";
 
+/** A pill's colours alone, for a host that keeps the tone but not the one-line shape: a claim
+ *  chip stacked on a Board card, and a claim chip whose age and state stand under its holder.
+ *  `onPage` is a host's inside `NoTooltips`, which draws the tone in the new issue page's
+ *  colours, as `pillClassName`'s does. */
+export function pillToneClassName(tone: PillTone, onPage = false): string {
+  return onPage ? pagePillTones[tone] : pillTones[tone];
+}
+
 /** The pill's full class string, for a host that must stay one interactive element (a parent
  *  link with a border) while looking identical - a border on a wrapper around a `Pill` would
  *  outline a bigger shape than the fill. `onPage` is a host's inside `NoTooltips`, which draws
@@ -56,7 +64,8 @@ export const pillShapeClassName =
  *  whole (a label, a claim's holder): it keeps `max-w-full`, wraps and breaks anywhere, and
  *  neither keeps its width nor holds its line. Every pill inside `NoTooltips` (the new issue
  *  page) is drawn so, and so is a claim in a table that wraps its titles (`ClaimChip`'s
- *  `wraps`). On one line it is a pill, its corners the full radius; on more than one (`wrapped`,
+ *  `wraps`) and a label in an issue table's Labels column (`LabelPill`'s `wraps`). On one line
+ *  it is a pill, its corners the full radius; on more than one (`wrapped`,
  *  `usePillWrapped`) its corners are 8 px (`rounded-lg`), since the full radius of a box several
  *  lines tall draws an oval, which leaves the words of its first and last lines outside its
  *  fill. */
@@ -69,7 +78,7 @@ export function pillClassName(
   const shape = wraps
     ? `inline-flex min-w-0 max-w-full flex-wrap items-center ${wrapped ? "rounded-lg" : "rounded-full"} px-2 py-1 text-xs font-medium [overflow-wrap:anywhere]`
     : pillShapeClassName;
-  return `${shape} ${onPage ? pagePillTones[tone] : pillTones[tone]}`;
+  return `${shape} ${pillToneClassName(tone, onPage)}`;
 }
 
 /**
@@ -113,20 +122,26 @@ export function usePillWrapped(wraps: boolean): {
   return { ref, wrapped: wraps && wrapped };
 }
 
+/** A pill. Inside `NoTooltips` it takes the shape that wraps (`pillClassName`), and so does one
+ *  whose host asks for it (`wraps`), in this page's colours: a value read whole in a column
+ *  narrower than its words, as a label in an issue table's Labels column. */
 export function Pill({
   children,
   className,
   tone = "label",
+  wraps = false,
 }: {
   children: ReactNode;
   className?: string;
   tone?: PillTone;
+  wraps?: boolean;
 }): ReactNode {
   const page = usePageWords();
-  const { ref, wrapped } = usePillWrapped(page !== null);
+  const wrapping = page !== null || wraps;
+  const { ref, wrapped } = usePillWrapped(wrapping);
   return (
     <span
-      className={`${pillClassName(tone, page !== null, page !== null, wrapped)} ${className ?? ""}`}
+      className={`${pillClassName(tone, page !== null, wrapping, wrapped)} ${className ?? ""}`}
       ref={ref}
     >
       {children}
@@ -137,11 +152,18 @@ export function Pill({
 export function LabelPill({
   children,
   selected = false,
+  wraps = false,
 }: {
   children: ReactNode;
   selected?: boolean;
+  /** Draw the label in the shape that wraps (`Pill`'s `wraps`). */
+  wraps?: boolean;
 }): ReactNode {
-  return <Pill tone={selected ? "selected-label" : "label"}>{children}</Pill>;
+  return (
+    <Pill tone={selected ? "selected-label" : "label"} wraps={wraps}>
+      {children}
+    </Pill>
+  );
 }
 
 export function StatusPill({ children }: { children: ReactNode }): ReactNode {

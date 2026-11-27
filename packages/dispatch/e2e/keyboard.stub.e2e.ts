@@ -251,7 +251,7 @@ boardTest(
       boardSection.getByRole("listitem").filter({ hasText: "Move card down" }).locator("kbd")
     ).toHaveText(["Shift+J"]);
     await expect(dialog.getByRole("region", { name: "Project", exact: true })).toContainText(
-      "Toggle List / Board"
+      "Toggle Table / Board"
     );
     await page.screenshot({
       path: testInfo.outputPath(`board-shortcut-help-${testInfo.project.name}.png`),

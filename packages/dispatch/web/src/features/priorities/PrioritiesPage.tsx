@@ -14,9 +14,9 @@ import {
   usePageAddress,
 } from "../../lib/page-address";
 import { textPrimaryOnCanvas } from "../../theme/classes";
-import { IssuesTable } from "../project/IssuesTable";
-import type { IssueListing } from "../project/issues-table-data";
+import type { AdvancesListing } from "../project/issues-table-data";
 import { runningIssueStatuses } from "../project/issues-table-model";
+import { ListingTable } from "../project/ListingTable";
 import { useKeymapScope } from "../shell/keymap";
 import { NewPriority } from "./NewPriority";
 import { PrioritiesTable } from "./PrioritiesTable";
@@ -32,8 +32,8 @@ const TABS_ID = "priorities";
  *  in the statuses an issue is worked in, and the work whose own row names a priority standing
  *  in backlog or icebox, with the move that put it there - the read that answers the count of
  *  priority work in either (`advances=any&own=true&status=backlog&status=icebox&moved=true`). */
-const NO_PRIORITY: IssueListing = { advances: "none", statuses: runningIssueStatuses };
-const BACKLOG: IssueListing = {
+const NO_PRIORITY: AdvancesListing = { advances: "none", statuses: runningIssueStatuses };
+const BACKLOG: AdvancesListing = {
   advances: "any",
   own: true,
   statuses: BACKLOG_STATUSES,
@@ -65,14 +65,14 @@ const FAULT_WIDTHS = {
   updated: { fit: true },
 } as const;
 
-/** The columns each fault list pins at the left of a desktop's box (`IssuesTable`'s `pins`), as
+/** The columns each fault list pins at the left of a desktop's box (`ListingTable`'s `pins`), as
  *  a priority's work table does: the checkbox, the key and Title. The registry's pins name the
  *  Priority column besides, which these lists open hidden, and a pinned column's visibility is
  *  not the reader's to keep (`readLayout`), so a Priority column a reader showed on a fault list
  *  went hidden again once they left the tab or read the page again. */
 const FAULT_PINS = ["select", "key", "title"] as const;
 
-/** Each fault list's own stored layout and the columns it opens with (`IssuesTable`). The list
+/** Each fault list's own stored layout and the columns it opens with (`ListingTable`). The list
  *  of work in backlog or icebox names besides the priority each issue stands under, and when
  *  the work was moved there and by whom; it names no reason, since nothing records one until
  *  dispatch://INFRA-2934 does. Each draws its titles wrapped (`wrapTitles`), in up to eight
@@ -157,8 +157,9 @@ const isTab = (value: string): value is PrioritiesTab => Object.hasOwn(TAB_LABEL
  * tab of its own that reads its name and its one count, so whichever table is chosen is the one
  * table on the page, with nothing between the tab and it, and fills the window. A priority
  * belongs to no project, so this page names none: every count, every row and both fault lists
- * are the whole deployment's. Each fault list is the one Issues table, over the issue listing
- * the server narrows for it, under its own prefix in the address.
+ * are the whole deployment's. Each fault list is the issue table without view tabs
+ * (`ListingTable`), over the issue listing the server narrows for it, under its own prefix in
+ * the address.
  */
 export function PrioritiesPage(): ReactNode {
   const priorities = useQuery(prioritiesQuery());
@@ -275,7 +276,7 @@ export function PrioritiesPage(): ReactNode {
       )}
       {panel(
         "none",
-        <IssuesTable
+        <ListingTable
           empty="No issue is in flight under no priority."
           label={TAB_LABELS.none}
           layout={NO_PRIORITY_LAYOUT}
@@ -285,7 +286,7 @@ export function PrioritiesPage(): ReactNode {
       )}
       {panel(
         "backlog",
-        <IssuesTable
+        <ListingTable
           empty="No priority work is in backlog or icebox."
           label={TAB_LABELS.backlog}
           layout={BACKLOG_LAYOUT}

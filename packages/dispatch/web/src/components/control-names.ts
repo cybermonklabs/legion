@@ -17,9 +17,12 @@ export const CONTROL = Object.freeze({
   searchBox: "search-box",
   selectionBar: "selection-bar",
   tableShell: "table-shell",
+  /** The trigger of a page's own panel that narrows nothing: the Issues tab's Save view and its
+   *  (i) hint, so the row keeps one `panel-trigger`, the one over the narrowings. */
+  viewPanel: "view-panel",
 } as const);
 
-/** What a `data-control` attribute carries: no page invents a twelfth. */
+/** What a `data-control` attribute carries: no page invents a thirteenth. */
 export type ControlName = (typeof CONTROL)[keyof typeof CONTROL];
 
 /** The control `root` holds under the name `name` writes into its `data-control`, or null. */

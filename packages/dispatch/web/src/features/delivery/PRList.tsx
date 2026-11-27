@@ -216,6 +216,9 @@ const PR_NOUN: RowNoun = {
 const NO_GROUPING: GroupingState = [];
 const ONE_PAGE: PaginationState = { pageIndex: 0, pageSize: Number.MAX_SAFE_INTEGER };
 
+/** The header that stacks its sort over its filter in a box under 640 px. */
+const STACKED_HEADERS: readonly string[] = ["title"];
+
 const DEPLOYED_TONE: Record<DeliveryPR["deployed_status"], string> = {
   deployed: successText,
   waiting: inlineWarningText,
@@ -511,7 +514,7 @@ export function PRList({
   // The list's own keys are answered while the list is drawn and nowhere else, so the List
   // view's arrows do not reach a reader on the Timeline.
   useKeymapScope("delivery");
-  const layout = useTableLayout(PR_LAYOUT_KEY, PR_LAYOUT_COLUMNS);
+  const layout = useTableLayout(PR_LAYOUT_KEY, PR_LAYOUT_COLUMNS, sorting);
   const [openFilter, setOpenFilter] = useState<string>();
   const rows = useMemo(
     () => buildPRListRows(prs, allRepos, sessionGroups),
@@ -620,7 +623,7 @@ export function PRList({
       )}
       scrollTestId="delivery-pr-list"
       size="compact"
-      stackColumn="title"
+      stackColumns={STACKED_HEADERS}
     />
   );
 }

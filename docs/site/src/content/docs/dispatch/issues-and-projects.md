@@ -1,6 +1,6 @@
 ---
 title: Issues and projects
-description: Projects, the List and the Board, priority, assignees, labels, filters, the issue page, and pins.
+description: Projects, the Issues tab's views, the table and the Board, priority, assignees, labels, filters, the issue page, and pins.
 sidebar:
   order: 2
 ---
@@ -19,7 +19,7 @@ A key that is already taken is refused, whoever asks.
 
 A project page has up to three tabs:
 
-- **Issues**: the project's issues, as a List or a Board.
+- **Issues**: the project's issues in views, each as a table or a Board.
 - **Documents**: the project's documents that belong to no single issue. Pick or drop a file here to
   upload it.
 - **Architecture**: the project's components and how much tracked work each has. This tab appears
@@ -86,66 +86,108 @@ Each choice lists the changes it makes before you choose it. Dispatch leaves a c
 other issue a choice changes. When a choice changed at least one other issue, the issue you moved
 gets one more comment that lists those changes.
 
-## The List and the Board
+## Views, the table and the Board
 
-The **List** and **Board** buttons switch between two views of the same issues. Press `v` to
-toggle. Dispatch remembers your choice.
+The Issues tab lists the project's issues in views.
+Each view is a tab above the list.
+A tab shows how many issues its view lists where the page can count them:
 
-The **List** is a sortable table, initially ordered by **Queue**, with Done excluded.
-Queue numbers are the waiting order of Todo issues labelled `legion`, using the Board's rank order.
-Click a column heading to sort; hold Shift to add another sort column.
-Use **Group by** for status, priority, epic, assignee, created by, claimed by, or an age band.
-An epic is an open root issue labelled `epic`.
-It is an ordinary row of the table — searchable, filterable, selectable, editable — except while you group by epic, where it is its group's linked heading rather than a row inside it.
+- **Open** lists the open issues in the order of the **Queue** column.
+  An address that names no view opens Open.
+
+- **Done** lists the done issues, the newest close first.
+  Its tab shows a count once you have opened Done in the page.
+
+- A view you saved follows them.
+  On Done its tab shows no count.
+  A saved view that lists closed issues shows its count only while it is the open tab.
+
+Every other list is a filter of a view, such as the Legion queue, the Triage issues or the issues you created.
+Change a view's filters, search, sort or grouping, and its tab shows a dot.
+**Save view** then saves the view under a name of at most 14 characters, as a tab of its own.
+A saved view keeps its filters, sort, grouping, columns and layout, in your browser, for your sign-in.
+A name that a saved view of the project already has asks you to replace that view, and the name of a built-in view is refused.
+While a saved view is open, a ✕ after the tabs deletes it.
+A link to a view's address opens the same view for any reader, and **Me** and **Unread** mean the reader who opens it.
+**Clear filters** gives the view its own filters back and keeps its sort and grouping.
+
+The **Table** and **Board** switch shows the same view as a table or as a Board.
+Press `v` to toggle.
+Open and Done each keep their layout in your browser, and a saved view keeps its layout in its address.
+The List or Board choice you made before the views is Open's layout until you change it.
+
+In a project with a Legion daemon, the (i) button after Save view, named **Legion daemon**, shows the daemon's **Capacity**, its **Trees** and when Dispatch last read it.
+Under the tabs, the page says when it could not read the project's daemon setting, the Legion board or the Legion columns of the closed issues, each with **Retry**.
+It says also when the daemon's last read failed.
+
+### The table
+
+The table sorts by any column: click a column heading, and hold Shift to add another sort column.
+Each view's sort ends with the listing's own order: status, rank, creation time, key.
+**Queue** shows an issue's place in the Legion queue, the number that the Legion board gives its card.
+An issue in the board's Queue column with no number reads **In Legion queue** and sorts after the numbered ones.
+In a project with no Legion daemon, Queue numbers the Todo issues labelled `legion` in rank order.
+
+In a project with a Legion daemon the table has the Legion columns: **Legion phase**, **Workers**, **Worker state**, **Time waiting**, **Why it waits**, **Time in Legion phase**, **Work time**, **Review rounds**, **Legion tree** and **Time per phase**.
+They come from the Legion board, and the facts of a closed issue the board does not show come from the `legion-work-time` eval.
+A measure that Dispatch does not have is an empty cell, never 0.
+The tooltip of each measure's header gives how Dispatch takes it, and the **Columns** menu gives the same line under it.
+**Time per phase** opens on **Share**, where each bar is the row's own total, and **Hours** draws each bar against the longest total of the page.
+Its tooltip gives each phase's hours and share.
+
+Use **Group by** for priority, status, Legion phase (in a project with a Legion daemon), assignee, created by, claimed by, or an age band.
 
 The table scrolls vertically and horizontally inside its own box.
-Its header stays visible. On phones Select, Key and Title stay pinned within 85% of the box, so a title reads as words; Priority and the other columns scroll sideways.
-Title narrows and keeps its two-line clamp, even with saved desktop widths.
+Its header stays visible.
+On phones Select and Key stay pinned, and Title follows them and fills the rest of the row; the other columns scroll sideways.
 The box has room for at least three full issue rows; on compact windows, scroll the page to reach the table and its pager.
 Drag a header edge to resize a column, double-click it to reset its width, or drag a header to reorder columns.
-**Columns** hides or shows optional columns; widths, order and visibility are remembered per project.
+On desktop, a Title width you drag is the width the table draws.
+**Columns** hides or shows optional columns.
+Open and Done each keep their widths, order and visibility in your browser, per project, and a saved view keeps its columns in its address.
 Choose 25, 50, 100, 250 or All rows per page.
 A page starting inside a group repeats that group's heading.
 
-The horizontally scrollable status strip above the table shows full lifecycle labels and counts; every segment is a touch-sized button. Click a segment to filter to that status.
-It counts what is loaded, so with closed issues unloaded it shows no Done segment at all.
+On Open and on a view saved from it, a bar under the tabs counts the listed issues by status, Triage first, each part as wide as its share.
+Its legend has an entry for each status, and a press on an entry shows that status alone; a second press gives the view its own statuses back.
+Done and the Board draw no bar.
 Open issues load first; Done loads when the Status filter includes it or is cleared.
 The open rows and filters stay usable while Done loads, or if that read fails; **Retry** asks again.
 Until Done has loaded, its filter option says so instead of claiming there are no closed issues.
 **Clear filters** also clears Needs you and Unread.
-Tick rows to open a floating action bar: **Start next**, **Move to epic…**, **Take out of epic**, or **New epic from these**.
+
+Tick rows to open a floating action bar: **Select all N matching**, **Start next** and **Clear selection**.
 Press `x` to select or deselect the row your keys are on; the search bar then acts on what you have selected, and leaving the table clears it.
 An issue the table stops listing drops out of the selection, so a row listed again comes back unselected.
 On phones the bar stays in one horizontally scrollable row above the project content, so it cannot cover the table or pager.
 **Select all N matching** includes rows beyond the current page.
-Start next moves queued selections ahead of the rest of Legion's waiting line, keeping their queue order.
+Start next moves the selected Todo issues labelled `legion` ahead of the other Todo issues labelled `legion`, and keeps their order.
+The Legion daemon's line follows that rank order for root issues, and their places in the Legion queue move at its next read.
+A selection with no such issue is refused, and a selection that holds other issues, or rows beyond the page, asks you first.
 Each rank change waits for the previous one. A refusal stops the later changes, and the notice identifies every issue that did not move up.
 Selecting every queued row says they already start next rather than doing nothing.
-An epic group's **Epic actions** can rename it, merge its open work into another epic and close it with a reason, or start all its queued issues next, including those hidden by filters.
-Merge moves open direct children and open descendants reached through only closed intermediates. It posts the reason and closes the source only after every move succeeds; otherwise the source stays open and the notice identifies the failed moves.
-Closed issues keep their original parent and history.
-Move, Take out and New epic skip selected closed issues and report how many were skipped; New epic requires at least one open selection.
-Move, New epic and Merge keep a parent's status in line with its children's.
-When an issue you move is in work and the epic is not, the table asks first. **Move into work too** moves the epic, and each parent above it that is not in work, to In progress, and then makes the move.
-When the epic is done, the table asks to reopen it into In progress the same way (**Reopen it too**).
-The question lists each change it makes. **Cancel** changes nothing.
-**Finish** of an interrupted New epic or Merge asks the same question before it moves the epic, and refuses to move issues under an epic that has closed since.
-A new epic is not in work, so New epic asks before it makes the epic.
-Naming and renaming an epic happen in a dialog in the page, like creating an issue.
-If a new epic may duplicate another issue, **Create anyway** is an explicit choice.
-If Dispatch created the epic but lost its answer, the table says so and leaves the selected issues in place rather than guessing the new epic's key.
-Independent bulk changes register together and finish independently, at most eight requests at a time. Each refused request stays in the shell's pending-writes indicator and has its own **Retry**; it does not hold the others.
-Reload restores requests already registered. New epic registers its parent changes only after the create answers; merge registers its reason and close only after its moves succeed.
+A reload in the middle of a Start next leaves a notice with **Finish** and **Dismiss**.
+While another tab has not finished a Start next on the same project, a new one is refused.
 
 Changes made in another tab or by another person appear live without reloading.
 Selection and the row being read stay in place when a live update inserts rows above it.
-The Board keeps its own rank order within each status; sorting the table does not reorder the Board.
+
+### The Board
+
+The Board shows the view's issues in columns, each card in the view's sort.
+In a project with a Legion daemon, its **Group by** menu picks the columns: **Status** or **Legion phase**.
+By Status the Board has a column for each status the view's Status filter picks, empty ones included, or, with no status picked, for each status an issue of the view is in.
+Icebox is a narrow rail after Triage until you turn on **Show Icebox**.
+Done is a rail on every Board by Status, and a column of the done issues where the view lists them.
+By Legion phase the Board has a column for each Legion phase, and a **None** rail counts the issues with no Legion phase.
+Each column carries its count.
+A card shows its place in the Legion queue beside its key and, from the Legion board, its time in its Legion phase, its work time, its workers, what blocks it, what it waits on from a person, and how many issues of its tree have not started.
 
 ![The Board, with a column per status and cards showing priority, labels, and open asks](/legion/media/dispatch/board.png)
 
 ### Moving cards
 
-The Board has a column per status. Drag a card to reorder it or to change its status:
+Drag a card to move it to another place or column:
 
 - With a mouse, press and move the card.
 - On a touch screen, hold the card briefly, then drag. A quick tap opens the issue, and a swipe
@@ -153,10 +195,11 @@ The Board has a column per status. Drag a card to reorder it or to change its st
 - With the keyboard, focus a card and press `Shift+J` or `Shift+K` to move it down or up, and
   `Shift+L` or `Shift+H` to move it to the next or previous status.
 
-Dropping a card in Done closes the issue. Moving it out of Done reopens it.
-
-Icebox and Done start as narrow folded columns. They still take drops. **Show Icebox & Done**
-opens them in full, and Dispatch remembers that choice.
+By Status, a card dropped in another column takes that status.
+Dropping a card on the Done rail or in Done closes the issue. Moving it out of Done reopens it.
+A move within a column changes the card's rank only while the view sorts by Queue, first to last.
+Under any other sort the Board refuses it, and says which sort to choose.
+By Legion phase, the Legion daemon sets each card's column, so the Board takes only a move within Queue.
 
 A card with a parent or an open child stays where it is while Dispatch checks the move. When the
 move would break the parent-status rule, the Board asks the same question as the issue page (see
@@ -169,10 +212,10 @@ you were moving this card - refreshed, try again." The Board shows the fresh ord
 
 ### Lanes
 
-**Show lanes**, beside **Show Icebox & Done**, splits the Board into horizontal bands, one per
-priority: P0 down to P3, then a band for issues with no priority. Cards keep their rank order
+**Lanes** splits the Board into horizontal bands, one per
+priority: P0 down to P3, then a band for issues with no priority. Cards keep the view's sort
 within each band. The choice persists per signed-in user, not in the page address, so it survives
-a reload.
+a reload. So does **Show Icebox**.
 
 Dragging a card across lanes sets its priority, in the same drop that a drag across columns sets
 its status. Keyboard roving (`j`/`k`, the arrow keys) stays within the focused lane.
@@ -180,7 +223,7 @@ its status. Keyboard roving (`j`/`k`, the arrow keys) stays within the focused l
 ### Priority
 
 Priority runs from P0, the highest, to P3. An issue with no priority shows a muted **Priority**
-tag. The badge is a picker wherever it appears: the issue header, a Board card, a List row, and an
+tag. The badge is a picker wherever it appears: the issue header, a Board card, a table row, and an
 Inbox row. Choose it and pick a value. Closed issues cannot change priority.
 
 ### Assignee
@@ -204,18 +247,19 @@ closes.
 
 ### Filters
 
-In the List, each column's filter button opens a searchable list of values and their matching counts.
-Title instead takes a typed, case-insensitive text filter.
-Values selected in one column match any of them, except Labels, which uses all-of matching: an issue must carry every picked label, compared case-insensitively in both List and Board.
+In the table, each column's filter button opens a searchable list of values and their matching counts.
+Key and Title instead take a typed, case-insensitive text filter, and Closed takes a window: 1, 7, 28 or 90 days, all, or a from and a to date in UTC.
+Time waiting, Time in Legion phase and Work time filter by Under 1 hour, 1 hour to 1 day, 1 to 7 days, Over 7 days and None.
+Values selected in one column match any of them, except Labels, which uses all-of matching: an issue must carry every picked label, compared case-insensitively in the table and on the Board.
 Different columns narrow one another.
 Each option count applies the search and every other column's filter, not its own column's picks.
-The **Search issues** box matches every word across keys, titles, epics, assignees, creators, claim holders and labels.
+The **Search issues** box matches every word across keys, titles, assignees, creators, claim holders and labels, in both layouts.
 A word of five or more characters can be one edit away.
 
-The Board keeps the **Filters** strip: Labels requires every selected label, and Search matches keys and titles.
-The List and Board share **Needs you** (open asks) and **Unread** (unseen activity).
-The List folds unclaimed work into its **Claimed by** column: its **Nobody or lapsed** value lists the issues nobody holds plus those whose claim the server would hand over. The Board keeps its **Unclaimed** chip, and both read the same `unclaimed=1` address parameter.
-The Board's active-filter chips remove individual picks.
+The **Filters** panel holds **Needs you** (open asks), **Unread** (unseen activity) and **Unclaimed**, and on the Board the **Labels** picker too.
+The table folds unclaimed work into its **Claimed by** column: its **Nobody or lapsed** value lists the issues nobody holds plus those whose claim the server would hand over. **Unclaimed** is that same pick, and both read the same `unclaimed=1` address parameter.
+Each narrowing that differs from the view's own is a chip in the row of controls, and pressing a chip removes it.
+On the Board, which has no column headers, the chips are where the column filters show.
 Filters, table sort, grouping, search and page live in the address, so a reload or shared link restores them.
 
 An issue an agent is implementing shows **Claimed by** and the agent's name, which opens its
@@ -225,8 +269,8 @@ unresponsive session has missed its registration window but is still working, an
 claimed. The chip then reads **unresponsive since** the moment the session was last seen, and
 names the moment the issue becomes takeable, 20 minutes after that one. Another agent's take is
 refused until then, naming the same moment; you can take it yourself at any time. From that
-moment the chip reads **takeable now** in the tone of a free issue, and the List's **Nobody or
-lapsed** value (the Board's **Unclaimed** chip) lists the issue, while the session is still drawn
+moment the chip reads **takeable now** in the tone of a free issue, and the table's **Nobody or
+lapsed** value (the **Unclaimed** filter) lists the issue, while the session is still drawn
 as unresponsive, because it has not ended and
 may yet answer. A session that reads `gone` is unclaimed at once: its
 [running mark](/legion/dispatch/agents/#how-dispatch-shows-an-agent) is a hollow ring and the chip

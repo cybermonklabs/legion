@@ -138,7 +138,7 @@ export function IssueLabels({
   const [inputError, setInputError] = useState<string | null>(null);
   // The same list the project's issues table and IssueBoard load for this project, so opening
   // the popover on a page that already has it fetches nothing.
-  const issues = useQuery({ ...projectIssuesQuery(project, []), enabled: open });
+  const issues = useQuery({ ...projectIssuesQuery(project), enabled: open });
   const options = useMemo(
     () =>
       uniqueLabels([

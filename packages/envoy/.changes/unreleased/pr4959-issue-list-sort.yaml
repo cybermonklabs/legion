@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  `GET /api/v1/issues` takes `sort=closed_at` and `sort=-closed_at`, which order the listing by
+  `closed_at`, oldest or newest close first, with the issues that have no `closed_at` last in
+  both, then in the listing's own order (status, rank, creation time, key), paged or not. A
+  blank, repeated or other `sort` is `400 INVALID_QUERY` naming the parameter, and with no
+  `sort` the order is the listing's own. A paged answer names the sort it applied in `sort`,
+  and names none without one, so a caller can tell it from the page of a server that ignores
+  `sort`. Dispatch's Issues tab reads its Done view with it.
+time: 2026-11-22T05:34:24Z
+custom:
+    Issue: pr4959

@@ -24,7 +24,7 @@ import {
   type Row as TableRow,
   useReactTable,
 } from "@tanstack/react-table";
-import { useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
+import { measureElement, useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
 import { Fragment, type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { ViewportAnchor } from "../features/shell/ViewportAnchor";
 import {
@@ -34,6 +34,7 @@ import {
   tableResizeActive,
   tableResizeHover,
   textMutedOnCanvas,
+  textMutedOnSurface,
   textMutedOnSurfaceMuted,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
@@ -42,13 +43,15 @@ import { ColumnFilter } from "./ColumnFilter";
 import { CONTROL, type ControlSize } from "./control-names";
 import { ARM_ON_PRESS, landNearest, useFocusPlace } from "./focus-place";
 import { Pager, type PagerOptions } from "./Pager";
+import { Tooltip, useTooltip } from "./Tooltip";
 import { type FocusRow, type RowKeymap, useRowKeymap } from "./table-keys";
 import { reorder, type TableLayoutModel } from "./table-layout";
 
-/** TanStack's own renderer for a header or a cell, re-exported: the core is the one place the
- *  table library is imported as a value, and a page that draws its own rows needs this to turn
- *  a column's definition into what the row shows. */
-export { flexRender };
+/** TanStack's own renderer for a header or a cell, and its reading of a state change that is a
+ *  value or a function of the state, re-exported: the core is the one place the table library is
+ *  imported as a value, and a page that draws its own rows needs the renderer to turn a column's
+ *  definition into what the row shows. */
+export { flexRender, functionalUpdate };
 
 const EMPTY_COUNTS: ReadonlyMap<string, number> = new Map();
 const NO_SELECTION: RowSelectionState = {};
@@ -103,8 +106,10 @@ export interface DataTableOptions<Row> {
   readonly onColumnFiltersChange: OnChangeFn<ColumnFiltersState>;
   readonly onGlobalFilterChange: (search: string) => void;
   readonly onPaginationChange: OnChangeFn<PaginationState>;
-  /** Names the view the reader chose. Where it changes, the box goes back to its top and
-   *  `ViewportAnchor` does not hold the row in hand: the reader moved, not the rows. */
+  /** Names the view the reader chose, and whether its first draw is whole (the Issues tab's
+   *  key changes once more when the Legion board first answers). Where it changes, the box goes
+   *  back to its top and `ViewportAnchor` holds nothing for the commit: the reader moved, or the
+   *  view drew for the first time, not the rows. */
   readonly viewKey: string;
   /** How tall the caller draws each of its rows, where it draws every row at one height: what
    *  the virtualizer counts a row it has not measured yet at, so the box scrolls the page's whole
@@ -127,12 +132,22 @@ export interface DataTableOptions<Row> {
   /** Where the group headings go. Read once, when the table is made, as TanStack reads its row
    *  models once; without it the headings keep TanStack's own order. */
   readonly groupOrder?: GroupOrder<Row>;
+  /** The rows are one page a server answered, of `rowCount` rows in all: the table counts its
+   *  pages by that count and slices nothing, and a step of the pager asks the caller for the
+   *  next page (`onPaginationChange`). Without it the table pages the rows it holds. */
+  readonly serverPage?: { readonly rowCount: number };
+  /** Whether the table's row keys (`names.keymap`) are registered: false while the page draws
+   *  another layout of the same rows in the table's place, such as the Issues tab's Board,
+   *  whose own keys answer then and whose shortcut help lists no key of a table it hides. True
+   *  where unset. */
+  readonly keys?: boolean;
 }
 
 /** One line the table draws: a row, or a group's heading. */
 export interface DisplayRow<Row> {
   readonly row: TableRow<Row>;
-  /** The heading of a group that began on an earlier page, repeated at this page's top. */
+  /** The heading of a group whose rows began on an earlier page, repeated at this page's top. A
+   *  heading drawn there for a group whose first row opens this page is not continued. */
   readonly continued?: boolean;
   /** How many of the group's rows this page shows. */
   readonly shown?: number;
@@ -143,7 +158,8 @@ export interface DataTableModel<Row> {
   readonly layout: TableLayoutModel;
   readonly displayRows: readonly DisplayRow<Row>[];
   readonly virtualizer: Virtualizer<HTMLDivElement, Element>;
-  /** Whether `ViewportAnchor` may hold the row in hand across this commit. */
+  /** Whether `ViewportAnchor` may hold the reader's place across this commit: every commit of
+   *  the view the reader is in but one that only scrolls. */
   readonly anchorEnabled: () => boolean;
   /** Focuses a row or a control inside it, scrolling an undrawn row in first and focusing it once
    *  it lands. A `"nearest"` hand-off places the control whole, measured once drawn, rather than
@@ -194,6 +210,7 @@ export function useDataTable<Row>({
   columns,
   getRowId,
   groupOrder,
+  keys = true,
   layout,
   names,
   onColumnFiltersChange,
@@ -205,6 +222,7 @@ export function useDataTable<Row>({
   rows,
   search,
   selection,
+  serverPage,
   state,
   viewKey,
 }: DataTableOptions<Row>): DataTableModel<Row> {
@@ -243,6 +261,8 @@ export function useDataTable<Row>({
     getColumnCanGlobalFilter: (column) => column.id === search?.column,
     enableRowSelection: selection === undefined ? false : (row) => !row.getIsGrouped(),
     autoResetPageIndex: false,
+    manualPagination: serverPage !== undefined,
+    rowCount: serverPage?.rowCount,
     // A page holds leaf rows, so a big group spans pages instead of making one page huge.
     paginateExpandedRows: true,
     autoResetExpanded: false,
@@ -256,10 +276,19 @@ export function useDataTable<Row>({
   });
 
   const pageRows = table.getRowModel().rows;
+  // A page that starts with a leaf draws its group's heading first. The heading reads continued
+  // only when the page before held a leaf of that group: one that was the page before's last
+  // row, with none of its rows there, is dropped there (below) and opens its group here.
+  const first = pageRows[0];
+  const lead = first !== undefined && !first.getIsGrouped() ? first.getParentRow() : undefined;
+  const { pageIndex, pageSize } = table.getState().pagination;
+  // A server's page holds every row it is given, so no page before it is held here.
+  const previous =
+    lead === undefined || serverPage !== undefined
+      ? undefined
+      : table.getPrePaginationRowModel().rows[pageIndex * pageSize - 1];
   const continued =
-    pageRows[0] !== undefined && !pageRows[0].getIsGrouped()
-      ? pageRows[0].getParentRow()
-      : undefined;
+    previous !== undefined && !previous.getIsGrouped() && previous.getParentRow()?.id === lead?.id;
   // A page is a flat slice of leaves, so its last heading can be one whose rows all start on
   // the next page. A heading with nothing under it here is left for the page that holds its
   // rows; the ones that stay say how many of their rows this page shows. A collapsed group
@@ -273,9 +302,7 @@ export function useDataTable<Row>({
       if (group !== undefined) onThisPage.set(group, (onThisPage.get(group) ?? 0) + 1);
     }
   const displayRows: DisplayRow<Row>[] = [
-    ...(continued === undefined
-      ? []
-      : [{ row: continued, continued: true, shown: onThisPage.get(continued.id) }]),
+    ...(lead === undefined ? [] : [{ row: lead, continued, shown: onThisPage.get(lead.id) }]),
     ...pageRows.flatMap((row) => {
       if (!row.getIsGrouped()) return [{ row }];
       if (!row.getIsExpanded()) return [{ row }];
@@ -293,6 +320,17 @@ export function useDataTable<Row>({
   useLayoutEffect(() => {
     setPageRows(pageRowIds === "" ? [] : pageRowIds.split("\n"));
   }, [pageRowIds, setPageRows]);
+  //
+  // A drawn line that changes height is the anchor's (`ViewportAnchor` below): a row another
+  // reader changed is redrawn in a commit, which the anchor answers by moving the box. So the
+  // virtualizer moves it only for a line it measures for the first time - one drawn as the
+  // reader scrolls, whose height it had guessed - and never for a line it had measured; the two
+  // together moved the box twice for one change. The virtualizer measures a line from its node
+  // just before it asks, so the node it has met before is the line it measured before; a line
+  // drawn again after it left the box is a new node, measured from its first draw again. Its own
+  // record of sizes cannot say this: it records a size only where it differs from the guess.
+  const measured = useRef(new WeakSet<Element>());
+  const measuredBefore = useRef(false);
   const virtualizer = useVirtualizer({
     count: displayRows.length,
     getScrollElement: () => layout.scrollRef.current,
@@ -301,11 +339,20 @@ export function useDataTable<Row>({
       `${displayRows[index]?.continued ? "continued-" : ""}${displayRows[index]?.row.id}`,
     initialRect: { width: 1000, height: 600 },
     overscan: 12,
+    measureElement: (element, entry, instance) => {
+      measuredBefore.current = measured.current.has(element);
+      measured.current.add(element);
+      return measureElement(element, entry, instance);
+    },
   });
+  // A field of the instance, not an option: the virtualizer reads it on each measurement.
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) =>
+    !measuredBefore.current && item.start < (instance.scrollOffset ?? 0);
 
   const focusRow = useRowKeymap({
     displayRows,
     keymap: names.keymap,
+    keys,
     landNearest: (element, from) => {
       const box = layout.scrollRef.current;
       if (box === null) return;
@@ -330,9 +377,33 @@ export function useDataTable<Row>({
     if (previousView.current !== viewKey) layout.scrollRef.current?.scrollTo({ top: 0 });
     previousView.current = viewKey;
   }, [viewKey, layout.scrollRef]);
+  // What the last commit drew: its rows and the virtualizer's scroll as it stood. A commit that
+  // only scrolls - the same rows, the virtualizer's offset or its scrolling flag moved - is the
+  // reader's own move, which the anchor leaves alone, and so a scroll alone reads no layout.
+  // Every other commit is anchored: rows another reader changed, and anything above the rows
+  // that changed height while they stayed (a notice, a failed read's alert). The same rows are
+  // the same ids holding the same data, in the same order.
+  const scroll = { offset: virtualizer.scrollOffset, scrolling: virtualizer.isScrolling };
+  const drawn = useRef({ rows: pageRows, scroll });
+  useLayoutEffect(() => {
+    drawn.current = { rows: pageRows, scroll };
+  });
+  const onlyScrolled = () => {
+    const last = drawn.current;
+    const scrolled =
+      last.scroll.offset !== scroll.offset || last.scroll.scrolling !== scroll.scrolling;
+    return (
+      scrolled &&
+      last.rows.length === pageRows.length &&
+      pageRows.every(
+        (row, index) =>
+          row.id === last.rows[index]?.id && row.original === last.rows[index]?.original
+      )
+    );
+  };
 
   return {
-    anchorEnabled: () => previousView.current === viewKey,
+    anchorEnabled: () => previousView.current === viewKey && !onlyScrolled(),
     displayRows,
     focusRow,
     layout,
@@ -447,11 +518,13 @@ export interface DataTableProps<Row> {
    *  they were drawn here. A caller that names none, or names a column that is hidden or
    *  pinned, draws every column at its own width. */
   readonly fillColumn?: string;
-  /** The column whose header stacks its sort and its filter one above the other in a phone's box
-   *  (`useTableLayout`'s `compact`), where the two side by side leave the name of a narrow column
-   *  unreadable. The List and the Delivery list each name their `title`; a caller that names none
-   *  stacks none, and every header keeps the two side by side at every width. */
-  readonly stackColumn?: string;
+  /** The columns whose headers stack their sort over their filter, and over a control of their
+   *  own (`meta.headerControl`), in a phone's box (`useTableLayout`'s `compact`), where side by
+   *  side they leave the name of a narrow column unreadable or push the control out of the
+   *  window. The List and the Delivery list each name their `title`, and the Issues tab's List
+   *  its Time per phase too; a caller that names none stacks none, and every header keeps them
+   *  side by side at every width. */
+  readonly stackColumns?: readonly string[];
   /** The column whose header offers its sort and no filter in a phone's box: the priorities
    *  table's `#`, which a phone draws beside the one cell that holds the rest of the row, too
    *  narrow for a filter's 44 px target beside its sort's without covering the next header's. A
@@ -470,15 +543,26 @@ export interface DataTableProps<Row> {
    *  hold the row in hand where it stood. A row no press names, taken away by a live update, is
    *  made up for, so the rows in view stay where they were. A table given none names no row. */
   readonly leaving?: (id: string) => boolean;
+  /** Hold a reader at the top too (`ViewportAnchor`'s `holdAtTop`): a row another reader adds
+   *  above the first row on screen lands out of view above, under the header. Off unless the
+   *  table asks: the Issues table and the priorities table take it, and a list whose reader at
+   *  the top waits for arrivals (the Delivery page's list of merged pull requests) leaves it off
+   *  and sees them land. */
+  readonly holdAtTop?: boolean;
 }
 
+/** What every sortable header's tooltip says of its sort button, `main`'s native title of it. */
+const SORT_HINT = "Sort (shift-click to add a second sort)";
+
 /** One header cell: its sort control, which doubles as the handle that drags the column
- *  elsewhere, its filter, and the edge that resizes it. */
+ *  elsewhere, a control of the column's own (`meta.headerControl`), its filter, and the edge
+ *  that resizes it. */
 function TableHeaderCell<TData>({
   compact,
   divider,
   dragColumn,
   fills,
+  fixed,
   header,
   openFilter,
   order,
@@ -490,7 +574,7 @@ function TableHeaderCell<TData>({
   stacked,
 }: {
   /** A phone's box (`useTableLayout`'s `compact`), where every header stands on one line at its
-   *  column's left edge but the stacked one. */
+   *  column's left edge but the ones the table stacks (`stackColumns`). */
   compact: boolean;
   /** Whether it draws the pinned columns' divider at its right (`drawsPinnedDivider`). */
   divider: boolean;
@@ -498,6 +582,8 @@ function TableHeaderCell<TData>({
   /** Whether this column takes what the table has over the other columns' widths: the caller's
    *  `fillColumn`. Its header names no width, and a fixed table gives such a column the rest. */
   fills: boolean;
+  /** Whether the caller's order keeps this column in its place (`layout.fixedColumns`). */
+  fixed: boolean;
   header: Header<TData, unknown>;
   openFilter: string | undefined;
   /** The columns in the order they are shown, which a drop rewrites. */
@@ -509,12 +595,25 @@ function TableHeaderCell<TData>({
   setOrder: (next: string[]) => void;
   /** Whether this header offers its sort and no filter (`DataTableProps.sortOnlyOnPhone`). */
   sortOnly: boolean;
-  /** Whether this header stacks its sort and its filter one above the other: the caller's
-   *  `stackColumn`, in a phone's box. */
+  /** Whether this header stacks its sort over its filter and its own control: one of the
+   *  caller's `stackColumns`, in a phone's box. */
   stacked: boolean;
 }): ReactNode {
   const column = header.column;
   const pinned = column.getIsPinned() === "left";
+  // A pinned column is not dragged and takes no drop. One the caller's order keeps in its place
+  // is not dragged either, since no drag would move it, but a column may be dropped onto it.
+  const movable = !pinned && !fixed;
+  // Every sortable header says how it sorts in the shared tooltip, on hover and on keyboard
+  // focus, and a column that says how its value is taken (`meta.describe`, a measure's method)
+  // says that first, with the sort hint as a second, muted line. The button carries no native
+  // title, so two tooltips never show at once. A drag of any column closes it, and no hover
+  // opens it until the drop.
+  const describe = column.columnDef.meta?.describe;
+  const sortHint = movable ? `${SORT_HINT}; drag to move the column` : SORT_HINT;
+  const sortRef = useRef<HTMLButtonElement>(null);
+  const tooltip = useTooltip({ paused: dragColumn !== undefined });
+  const control = column.columnDef.meta?.headerControl;
   // On a desktop a column of counts is as narrow as its numbers: its words stand at its right
   // edge, over the numbers, after the sort arrow. Its words, and those of a header that wraps
   // (`wrap`), take a second line rather than be cut, and such a header draws no sort arrow's
@@ -523,10 +622,20 @@ function TableHeaderCell<TData>({
   // every other header: the column scrolls inside the box, as wide as its header needs there.
   const { numeric = false, wrap = numeric } = (compact ? undefined : column.columnDef.meta) ?? {};
   const sorted = column.getIsSorted();
+  // The mark of every column the table is sorted by, no wider than `SORT_MARK_WIDTH`, which the
+  // layout adds to that column's minimum while the sort holds (`useTableLayout`).
   const mark =
     wrap && sorted === false ? null : (
       <span className={textMutedOnCanvas}>{{ asc: "▲", desc: "▼" }[sorted as string] ?? ""}</span>
     );
+  const filter =
+    column.getCanFilter() && !sortOnly
+      ? renderFilter({
+          column,
+          onOpenChange: (open) => setOpenFilter(open ? column.id : undefined),
+          open: openFilter === column.id,
+        })
+      : null;
   return (
     <th
       aria-sort={sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : undefined}
@@ -549,33 +658,39 @@ function TableHeaderCell<TData>({
         className={`flex ${numeric ? "justify-end" : "justify-between"} ${stacked ? "flex-col items-center" : "items-center gap-0 md:gap-1"}`}
       >
         {column.getCanSort() ? (
-          <button
-            className={`flex min-w-0 items-center gap-1 ${numeric ? "text-right" : wrap ? "text-left" : "truncate whitespace-nowrap"}`}
-            draggable={!pinned}
-            onClick={column.getToggleSortingHandler()}
-            onDragEnd={() => setDragColumn(undefined)}
-            onDragStart={() => setDragColumn(column.id)}
-            title={
-              pinned
-                ? "Sort (shift-click to add a second sort)"
-                : "Sort (shift-click to add a second sort); drag to move the column"
-            }
-            type="button"
-          >
-            {numeric ? mark : null}
-            {flexRender(column.columnDef.header, header.getContext())}
-            {numeric ? null : mark}
-          </button>
+          <>
+            <button
+              {...tooltip.props}
+              className={`flex min-w-0 items-center gap-1 ${numeric ? "text-right" : wrap ? "text-left" : "truncate whitespace-nowrap"}`}
+              draggable={movable}
+              onClick={column.getToggleSortingHandler()}
+              onDragEnd={() => setDragColumn(undefined)}
+              onDragStart={() => setDragColumn(column.id)}
+              ref={sortRef}
+              type="button"
+            >
+              {numeric ? mark : null}
+              {flexRender(column.columnDef.header, header.getContext())}
+              {numeric ? null : mark}
+            </button>
+            <Tooltip anchorRef={sortRef} trigger={tooltip}>
+              {describe === undefined ? null : <p>{describe}</p>}
+              <p className={describe === undefined ? undefined : `mt-1 ${textMutedOnSurface}`}>
+                {sortHint}
+              </p>
+            </Tooltip>
+          </>
         ) : (
           flexRender(column.columnDef.header, header.getContext())
         )}
-        {column.getCanFilter() && !sortOnly
-          ? renderFilter({
-              column,
-              onOpenChange: (open) => setOpenFilter(open ? column.id : undefined),
-              open: openFilter === column.id,
-            })
-          : null}
+        {control === undefined ? (
+          filter
+        ) : (
+          <span className="flex shrink-0 items-center gap-1">
+            {control}
+            {filter}
+          </span>
+        )}
       </span>
       {column.getCanResize() ? (
         <span
@@ -616,6 +731,7 @@ export function DataTable<Row>({
   filterCounts,
   filterUnloaded,
   fitRows = false,
+  holdAtTop = false,
   label,
   leaving,
   model,
@@ -629,7 +745,7 @@ export function DataTable<Row>({
   scrollTestId,
   size = "comfortable",
   sortOnlyOnPhone,
-  stackColumn,
+  stackColumns,
   trailingWidth = 0,
 }: DataTableProps<Row>): ReactNode {
   const { displayRows, layout, names, table, virtualizer } = model;
@@ -703,10 +819,12 @@ export function DataTable<Row>({
           scrollPaddingTop: 64,
         }}
       >
+        {/* The reader's place; at the top too where the caller asks (`holdAtTop`). */}
         <ViewportAnchor
           item={names.rowAttribute}
           className="w-max min-w-full"
           group={names.groupAttribute}
+          holdAtTop={holdAtTop}
           leaving={leaving}
           scroller={layout.scrollRef}
           enabled={model.anchorEnabled}
@@ -731,6 +849,7 @@ export function DataTable<Row>({
                       divider={drawsPinnedDivider(header.column, trailingWidth > 0)}
                       dragColumn={dragColumn}
                       fills={filled && header.column.id === fillColumn}
+                      fixed={layout.fixedColumns?.includes(header.column.id) ?? false}
                       header={header}
                       key={header.id}
                       openFilter={openFilter}
@@ -740,7 +859,10 @@ export function DataTable<Row>({
                       setOpenFilter={onOpenFilterChange}
                       setOrder={layout.setOrder}
                       sortOnly={layout.responsive.compact && header.column.id === sortOnlyOnPhone}
-                      stacked={layout.responsive.compact && header.column.id === stackColumn}
+                      stacked={
+                        layout.responsive.compact &&
+                        (stackColumns?.includes(header.column.id) ?? false)
+                      }
                     />
                   ))}
                   {trailingWidth === 0 ? null : (

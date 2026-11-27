@@ -6,7 +6,11 @@ import userEvent from "@testing-library/user-event";
 import { installCountingStorage } from "../../__tests__/counting-storage";
 import { api } from "../../api/client";
 import type { AuthenticatedUser } from "../../api/types";
-import { userPreferenceStorageKey, useUserPreference } from "./userPreference";
+import {
+  userPreferenceStorageKey,
+  useStoredUserPreference,
+  useUserPreference,
+} from "./userPreference";
 
 function PreferenceProbe() {
   const [view, setView] = useUserPreference(
@@ -111,6 +115,60 @@ test("a preference write whose value is already stored is not made", async () =>
     // Closing it changes what is stored, so that write is made.
     await user.click(screen.getByRole("button", { name: "open" }));
     expect(storage.writes).toEqual([[key, "collapsed"]]);
+  } finally {
+    view.unmount();
+    whoAmI.mockRestore();
+    storage.restore();
+  }
+});
+
+/** The stored text as it is, module-level since the hook reads again whenever its `read`
+ *  changes. */
+const storedText = (stored: string | null) => stored ?? "";
+const textToStore = (value: string) => value;
+
+/** A preference two tabs each change a part of: a press adds `!` to what is stored. */
+function StoredProbe() {
+  const [text, change] = useStoredUserPreference("project.saved-views", storedText, textToStore);
+  return (
+    <button onClick={() => change((stored) => `${stored}!`)} type="button">
+      {text}
+    </button>
+  );
+}
+
+// A value that two tabs of one browser each change: another tab's write reaches this tab through
+// the window's `storage` event, which the test sends as the browser would, and a change here is
+// made to what is stored at the moment it writes, not to the copy this tab drew last.
+test("a stored preference draws another tab's write, and a change keeps what is stored now", async () => {
+  const user = userEvent.setup();
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const key = userPreferenceStorageKey("alice", "project.saved-views");
+  const storage = installCountingStorage({ [key]: "one" });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <StoredProbe />
+    </QueryClientProvider>
+  );
+
+  try {
+    await waitFor(() => expect(screen.getByRole("button").textContent).toBe("one"));
+    // Another tab writes: the storage holds the value at once, and its event follows.
+    window.localStorage.setItem(key, "two");
+    act(() => {
+      window.dispatchEvent(new StorageEvent("storage", { key, newValue: "two" }));
+    });
+    expect(screen.getByRole("button").textContent).toBe("two");
+    // A write of another tab whose event has not come yet stays under a change made here.
+    window.localStorage.setItem(key, "three");
+    await user.click(screen.getByRole("button"));
+    expect(window.localStorage.getItem(key)).toBe("three!");
+    expect(screen.getByRole("button").textContent).toBe("three!");
   } finally {
     view.unmount();
     whoAmI.mockRestore();

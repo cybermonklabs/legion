@@ -79,9 +79,9 @@ reference, so `y` does nothing on one either.
 
 | Keys | Action |
 | --- | --- |
-| `v` | Toggle List / Board (on the Issues tab) |
+| `v` | Toggle Table / Board (on the Issues tab) |
 
-On the List table, `j` and `k` follow the current sorted, filtered page, skip collapsed groups, and scroll virtual rows into view:
+In the table, `j` and `k` follow the current sorted, filtered page, skip collapsed groups, and scroll virtual rows into view:
 
 | Keys | Action |
 | --- | --- |
@@ -106,6 +106,9 @@ On the List table, `j` and `k` follow the current sorted, filtered page, skip co
 | `y` | Copy the card's issue reference |
 | `Shift+Y` | Copy the card's issue key |
 | `Escape` | Back to the card, then off it |
+
+A move follows the Board's rules, which [Issues and projects](/legion/dispatch/issues-and-projects/#moving-cards) gives.
+On a Board grouped by Legion phase, `Shift+L` and `Shift+H` move no card.
 
 ## Architecture
 

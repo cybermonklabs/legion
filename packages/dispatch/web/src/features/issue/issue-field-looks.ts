@@ -7,7 +7,12 @@
  */
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
 
-import { inboxQuery, projectDefaultAssigneesQuery } from "../../api/queries";
+import {
+  inboxQuery,
+  issueListRows,
+  projectDefaultAssigneesQuery,
+  readIssueList,
+} from "../../api/queries";
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
 import type { IssueField, IssueFieldPick } from "./issue-field-writes";
@@ -145,8 +150,8 @@ function lookOf(
 /** The row of `issueKey` in the first list of issues the client holds that has one. */
 function listedIssue(client: QueryClient, issueKey: string): IssueSummary | undefined {
   for (const query of client.getQueryCache().getAll()) {
-    if (cacheOf(query.queryKey) !== "list" || !Array.isArray(query.state.data)) continue;
-    const row = (query.state.data as IssueSummary[]).find((each) => each.key === issueKey);
+    if (cacheOf(query.queryKey) !== "list") continue;
+    const row = issueListRows(query.state.data)?.find((each) => each.key === issueKey);
     if (row !== undefined) return row;
   }
   return undefined;
@@ -182,13 +187,13 @@ export function answeredLooks(queryKey: QueryKey, data: unknown): Map<string, Lo
     }
     return looks;
   }
-  if (!Array.isArray(data)) return looks;
   if (cache === "list") {
-    for (const row of data as IssueSummary[]) {
+    for (const row of issueListRows(data) ?? []) {
       if (!looks.has(row.key)) looks.set(row.key, { fields: pickedFields(row) });
     }
     return looks;
   }
+  if (!Array.isArray(data)) return looks;
   if (cache !== "inbox") return looks;
   const rows = new Map<string, InboxRow[]>();
   for (const row of data as InboxRow[]) {
@@ -270,7 +275,7 @@ export function cacheOf(queryKey: QueryKey): "detail" | "inbox" | "list" | undef
 
 /** `data`, which the query under `queryKey` holds, with every one of `showings` over it: the
  *  same value where it shows them all already, or where the query is none of the three a pick
- *  shows on. */
+ *  shows on. A page of a list of issues keeps every field but its rows (`readIssueList`). */
 export function shownOn(
   client: QueryClient,
   queryKey: QueryKey,
@@ -286,16 +291,20 @@ export function shownOn(
       data as IssueDetails
     );
   }
-  if (!Array.isArray(data)) return data;
   if (cache === "list") {
-    return mapRows(data as IssueSummary[], (row) =>
+    const read = readIssueList(data);
+    if (read === undefined) return data;
+    const shown = mapRows(read.issues, (row) =>
       showings.reduce(
         (issue, showing) =>
           showing.issueKey === issue.key ? withFields(issue, showing.look.fields) : issue,
         row
       )
     );
+    if (shown === read.issues) return data;
+    return read.kind === "page" ? { ...read.page, issues: shown } : shown;
   }
+  if (!Array.isArray(data)) return data;
   if (cache === "inbox") {
     // Looked up once for each assignee shown on this cache, not once a row.
     const fallbacks = showings.map((showing) =>

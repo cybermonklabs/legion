@@ -76,6 +76,8 @@ function patchOf(page: Page, key: string) {
   );
 }
 
+// SLOW(>=2s): three key moves, each waiting on its write, a load of a view that lists done
+// issues, and a 300 ms window that proves Shift+H at Triage sends nothing.
 test("Shift+L/H move a focused card to the top of the adjacent status through the one move path: into Done closes, out of Done reopens, Triage has no previous", async ({
   browser,
 }) => {
@@ -107,21 +109,23 @@ test("Shift+L/H move a focused card to the top of the adjacent status through th
     await expect(live).toHaveText(`${bravo.key} → In progress, position 1 of 2`);
 
     // Into the collapsed Done rail: the same PATCH a drop on the rail sends, the issue closes,
-    // and focus lands on the rail since it renders no card.
+    // and focus lands on the rail since it renders no card. Open lists no done issue, so the
+    // rail carries no count.
     const echoCard = page.getByRole("article", { name: `${echo.key} Echo` });
     await echoCard.focus();
     const closePatch = patchOf(page, echo.key);
     await page.keyboard.press("Shift+L");
-    expect((await closePatch).request().postDataJSON()).toEqual({ status: "done", rank: {} });
+    expect((await closePatch).request().postDataJSON()).toEqual({ status: "done" });
     const doneRail = page.getByRole("region", { name: "Done (collapsed)" });
-    await expect(doneRail).toContainText("1");
     await expect(doneRail).toBeFocused();
+    await expect(doneRail.getByTestId("board-column-rail")).toHaveText("Done");
     await expect(live).toHaveText(`${echo.key} → Done, closed`);
     await expect.poll(() => getIssue(echo.key)).toMatchObject({ status: "done" });
     expect((await getIssue(echo.key)).closed_at).not.toBeNull();
 
-    // Out of Done reopens: with the edges shown, Shift+H from the Done column.
-    await page.getByRole("button", { name: "Show Icebox & Done" }).click();
+    // Out of Done reopens: on a view that lists done issues, which draws the Done column, and
+    // with no Status filter the statuses its rows are in, Shift+H from the Done column.
+    await page.goto("/projects/CORE/issues?nofilter=1");
     const doneColumn = page.getByRole("region", { name: "Done", exact: true });
     const echoInDone = doneColumn.getByRole("article", { name: `${echo.key} Echo` });
     await expect(echoInDone).toBeVisible();

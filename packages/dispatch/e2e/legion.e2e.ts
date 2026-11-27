@@ -1,5 +1,6 @@
-// The Settings page's Legion daemon field (dispatch://INFRA-1077). No dashboard page draws a
-// daemon's board, so the one Legion surface a browser drives is the Settings section where a
+// The Settings page's Legion daemon field (dispatch://INFRA-1077). A project whose setting names
+// a daemon gets that daemon's board on its Issues tab, which reads the board route's live view
+// (the `legion` kind). This file drives the other Legion surface, the Settings section where a
 // project's daemon is named, listed, refused a bad URL, and removed.
 // Every spec is tagged `@legion`, so `--grep @legion` runs this file's work and nothing else.
 //
@@ -26,9 +27,9 @@ async function pickLegionProject(page: Page): Promise<void> {
     .click();
 }
 
-// A1/A4: naming a project's daemon on the Settings page, beside the Delivery settings. No Legion
-// view exists for it to bring, so the row is the naming itself: a project that named no daemon is
-// given one, and the section lists it once the page is read again from the server.
+// A1/A4: naming a project's daemon on the Settings page, beside the Delivery settings. The row is
+// the naming itself: a project that named no daemon is given one, and the section lists it once
+// the page is read again from the server.
 test("the Settings page names a project's Legion daemon @legion", async ({ browser }) => {
   await seedLegionProject();
   const context = await asUser(browser, "alice");

@@ -24,10 +24,10 @@ const BLOCK_TEXT_MAX = 60;
 const NAMED_SELECTION_MAX = 3;
 
 /**
- * The issues the reader has selected on the issue list (`features/project/IssuesTable.tsx`), which
- * is the one page with a selection of its own. The table writes it while it is mounted and clears
- * it as it goes; the bar reads it once, as it opens, so no render of the table moves a chip the
- * reader is looking at.
+ * The issues the reader has selected on the issue list (`useIssueTable` in
+ * `features/project/issues-table-state.ts`), which is the one page with a selection of its own.
+ * The table writes it while it is mounted and clears it as it goes; the bar reads it once, as it
+ * opens, so no render of the table moves a chip the reader is looking at.
  */
 let selectedIssues: readonly string[] = [];
 

@@ -25,7 +25,9 @@ import {
   prioritySummaryQuery,
   projectArchitectureSourcesQuery,
   projectDefaultAssigneesQuery,
+  projectDonePageQuery,
   projectIssuesQuery,
+  projectOpenCountQuery,
   projectsQuery,
   userStateQuery,
 } from "../api/queries";
@@ -64,7 +66,7 @@ const READS = {
       true
     ).queryKey,
   },
-  // The other fault list: the work in flight under no priority, which a delete can add to.
+  // The other fault list: the work active under no priority, which a delete can add to.
   noPriorityWork: {
     key: advancesIssuesQuery(
       { advances: "none", statuses: ["in_progress", "testing", "needs_review", "retro"] },
@@ -134,7 +136,6 @@ const READS = {
     data: { edges: [], node: { id: "CORE-1", kind: "issue" } },
     key: ["references", "to", "dispatch://CORE-1"],
   },
-  labelledProjectList: { key: projectIssuesQuery("CORE", ["ui"]).queryKey },
   log: { key: ["events", "CORE-1"] },
   message: { key: messageQuery("CORE-1", "message-1").queryKey },
   messageBlock: {
@@ -158,7 +159,7 @@ const READS = {
   otherHandoffs: { key: ["handoffs", "CORE-9"] },
   otherIssueMessage: { key: messageQuery("CORE-9", "message-9").queryKey },
   otherProjectAsks: { key: ["asks", "OTHER-1"] },
-  otherProjectList: { key: projectIssuesQuery("OTHER", []).queryKey },
+  otherProjectList: { key: projectIssuesQuery("OTHER").queryKey },
   // Another block of CORE-1's spec, which a link elsewhere on the page names.
   otherSpecBlock: {
     data: { edges: [], node: { id: "CORE-1/spec#outro", kind: "block" } },
@@ -185,7 +186,7 @@ const READS = {
   prioritySummary: { key: prioritySummaryQuery().queryKey },
   projectDefaultAssignees: { key: projectDefaultAssigneesQuery().queryKey },
   projectInbox: { key: ["inbox", "CORE"] },
-  projectList: { key: projectIssuesQuery("CORE", []).queryKey },
+  projectList: { key: projectIssuesQuery("CORE").queryKey },
   projects: { key: projectsQuery().queryKey },
   // The names `referenceTargetsQuery` keeps under the set of references it was asked for.
   referenceTargets: {
@@ -425,7 +426,6 @@ const rules: Record<string, Rule> = {
         "detail",
         "log",
         "projectList",
-        "labelledProjectList",
         "summary",
         "agentsPicker",
         "pinned",
@@ -1494,7 +1494,6 @@ const rules: Record<string, Rule> = {
         "projects",
         "projectList",
         "otherProjectList",
-        "labelledProjectList",
         "pinned",
         "detail",
         "unrelatedDetail",
@@ -1885,6 +1884,29 @@ test("a priority.updated of a deleted priority refetches no issue read that does
     "priorityHistory",
     "prioritySummary",
   ]);
+});
+
+// The project listing's prefix also holds a page of done issues (`projectDonePageQuery`) and
+// Open's count, a number (`projectOpenCountQuery`). A delete reads again a page whose `issues` hold
+// an issue advancing the priority, and leaves a page that holds none, and the count, as they are.
+test("a priority.updated of a deleted priority reads again a page of Done that holds an issue advancing it", () => {
+  const queryClient = new QueryClient();
+  const page = (id: string, offset: number) => ({
+    issues: [{ advances: [{ id, inherited: false }], key: `CORE-${offset + 1}` }],
+    limit: 50,
+    offset,
+    total: 51,
+  });
+  const holding: QueryKey = projectDonePageQuery("CORE", { offset: 0, size: 50 }).queryKey;
+  const other: QueryKey = projectDonePageQuery("CORE", { offset: 50, size: 50 }).queryKey;
+  const count: QueryKey = projectOpenCountQuery("CORE").queryKey;
+  queryClient.setQueryData(holding, page("linkage-closure", 0));
+  queryClient.setQueryData(other, page("oss-verify", 50));
+  queryClient.setQueryData(count, 47);
+  refreshQueries(queryClient, eventRefreshTargets(priorityWrite("deleted"), "alice"));
+  expect(queryClient.getQueryState(holding)?.isInvalidated).toBe(true);
+  expect(queryClient.getQueryState(other)?.isInvalidated).toBe(false);
+  expect(queryClient.getQueryState(count)?.isInvalidated).toBe(false);
 });
 
 // No read of the dashboard carries a project's owner, visibility or access list yet, so a change of

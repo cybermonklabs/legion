@@ -129,12 +129,13 @@ test("the Collaborators tab splits Legion agents into role sections and keeps th
     ).toEqual(["planner", "tester", "reviewer"]);
     expect(sessionsIn(legion)).toEqual(["planner", "tester", "new-reviewer", "old-reviewer"]);
     const replaced = legion.querySelector('[data-replaced-by="new-reviewer"]');
-    expect(replaced?.textContent).toBe("replaced by Legion reviewer · new-reviewer");
+    // `AgentName` draws a no-break space before a title's "·", so no line starts with the dot.
+    expect(replaced?.textContent).toBe("replaced by Legion reviewer\u00a0· new-reviewer");
     expect(replaced?.querySelector("a")?.getAttribute("href")).toBe("/agents/new-reviewer/live");
     // Each agent is the live link, with the registry's state: the tester runs, the rest do not.
     expect(
       within(legion)
-        .getByRole("link", { name: "Legion reviewer · old-reviewer" })
+        .getByRole("link", { name: "Legion reviewer\u00a0· old-reviewer" })
         .getAttribute("href")
     ).toBe("/agents/old-reviewer/live");
     await waitFor(() =>

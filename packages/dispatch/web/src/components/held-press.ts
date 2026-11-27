@@ -1,8 +1,8 @@
 /**
  * The hold on a control that cannot be pressed now: while the write or the read its press started
  * is out, while its step has no page to go to, or while it has nothing to do, as Rename with no
- * new name (`SessionGroupsEditor`) and Move with no epic staged (`IssueTableSelection`). It holds
- * by `aria-disabled` and a press that does nothing (`heldPress`), by a read-only text field
+ * new name and Add selected with no session to add (`SessionGroupsEditor`). It holds by
+ * `aria-disabled` and a press that does nothing (`heldPress`), by a read-only text field
  * (`heldField`), and through the commit after the write's answer (`useHeldThroughAnswer`).
  * `StepButton`, `PanelTrigger`, `QueryError`'s Retry and the pages' own pressed controls use it,
  * and `RefusableButton`'s `busy` holds by the same rule. The hold through a write's answer keeps

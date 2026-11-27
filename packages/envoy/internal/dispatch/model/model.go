@@ -1088,11 +1088,16 @@ type IssueSummary struct {
 
 // IssueSummaryPage is one page of GET /api/v1/issues?limit=&offset=: the issues at [offset,
 // offset+limit) of the filtered listing, in its order, and Total, how many the filters matched.
+// Sort is the sort the route applied ahead of its own order, the caller's sort as it sent it
+// (closed_at or -closed_at), and absent where the caller sent none. A server older than the
+// sort parameter ignores it and answers no Sort, so a caller that sent one reads a page without
+// it as rows in the route's own order.
 type IssueSummaryPage struct {
 	Issues []IssueSummary `json:"issues"`
 	Total  int            `json:"total"`
 	Limit  int            `json:"limit"`
 	Offset int            `json:"offset"`
+	Sort   string         `json:"sort,omitempty" enum:"closed_at,-closed_at"`
 }
 
 // SearchOwner identifies the issue or standalone project document that owns a search result.

@@ -240,6 +240,29 @@ for (const [status, [, background, foreground]] of Object.entries(ISSUE_STATUS_S
     pair(foreground, foreground),
     pair(background, background)
   );
+/**
+ * One fixed fill for each phase Time per phase draws (`WORK_PHASES` in
+ * `features/project/issues-legion.ts`), in the board's order with Other last: eight from
+ * the Okabe-Ito palette, which readers with each common colour-vision deficiency can tell apart
+ * (https://jfly.uni-koeln.de/color/#pallet), and three grays, Retro, Held and Other. No two
+ * phases share a fill. Each is the same in both colour schemes but Waiting on a person's, black
+ * on a light page and white on a dark one. Queue holds no hours, so it has no fill. No text is
+ * drawn on these fills - every name stands beside its swatch - so no contrast pair is registered
+ * for them.
+ */
+export const legionPhaseFill = {
+  design: "bg-[#E69F00]",
+  planning: "bg-[#56B4E9]",
+  implementing: "bg-[#009E73]",
+  testing: "bg-[#F0E442]",
+  reviewing: "bg-[#0072B2]",
+  accepting: "bg-[#D55E00]",
+  retro: "bg-[#666666]",
+  merging: "bg-[#CC79A7]",
+  awaiting_person: "bg-[#000000] dark:bg-[#FFFFFF]",
+  held: "bg-[#999999]",
+  other: "bg-[#D9D9D9]",
+} as const;
 export const tableFilterActive = "bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300";
 registerText("active table filter", pair(P.SKY_700, P.SKY_300), pair(P.SKY_100, P.SKY_900));
 export const tableResizeActive = "bg-sky-500 dark:bg-sky-400";

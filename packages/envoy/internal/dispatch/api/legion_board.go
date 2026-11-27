@@ -1,7 +1,7 @@
 // legion_board.go serves GET /api/v1/projects/{key}/legion/board, one project's Legion board from
 // what the sampler recorded (dispatch://INFRA-1077), and the body the `legion` live view kind
-// sends (live_frames.go's legionBoardView). No dashboard page draws it: the route and the live
-// view kind are all there is of it.
+// sends (live_frames.go's legionBoardView). The project's Issues tab of the web app draws it: its
+// Legion columns, its Board by Legion phase and its (i) hint read the route and the live view.
 //
 // The answer is read from what Dispatch holds, never from the daemon: the sampler reads each
 // daemon once a minute under a lease (internal/dispatch/legion) and records what moved, and this

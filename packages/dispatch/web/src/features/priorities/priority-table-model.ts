@@ -1,4 +1,5 @@
 import type { ColumnDef, ColumnFiltersState, VisibilityState } from "@tanstack/react-table";
+import { fold } from "../../components/MultiSelect";
 import type { LayoutColumns } from "../../components/table-layout";
 
 /**
@@ -17,6 +18,8 @@ export interface TableColumn<Row> {
    *  control and the group-by, which read it as text. */
   readonly header: string;
   readonly size: number;
+  /** The narrowest the column is drawn at, sorted or not: what its header's words, its sort
+   *  arrow and its filter control need, or what its cell holds. */
   readonly min: number;
   /** Kept at the left edge while the table scrolls sideways. */
   readonly pinned?: boolean;
@@ -69,8 +72,14 @@ function matchesFilters<Row>(
         .toLowerCase();
       return typed === "" || column.text(row).toLowerCase().includes(typed);
     }
-    const picked = Array.isArray(filter.value) ? filter.value.map(String) : [];
-    return picked.length === 0 || (column.values?.(row) ?? []).some((v) => picked.includes(v));
+    // A pick matches a value by its `fold`, as its filter ticks it (`MultiSelect`), so a ticked
+    // pick in another case than its option's own lists that option's rows.
+    const picked = new Set(
+      Array.isArray(filter.value) ? filter.value.map((value) => fold(String(value))) : []
+    );
+    return (
+      picked.size === 0 || (column.values?.(row) ?? []).some((value) => picked.has(fold(value)))
+    );
   });
 }
 
@@ -122,10 +131,10 @@ export function headingOf<Row>(
 }
 
 /** The layout rules `useTableLayout` takes for these columns: each at its own width, never
- *  below its minimum, with the pinned ones kept at the left edge and the first of them that
- *  may narrow giving up width so the rest fit. On a phone the pinned ones take the whole of the
- *  box, and they are all the table draws there (`phoneHidden`). `rowAttribute` is the attribute
- *  the table's rows carry, which the box measures its first rows by. */
+ *  below its minimum, sorted or not, with the pinned ones kept at the left edge and the first of
+ *  them that may narrow giving up width so the rest fit. On a phone the pinned ones take the
+ *  whole of the box, and they are all the table draws there (`phoneHidden`). `rowAttribute` is
+ *  the attribute the table's rows carry, which the box measures its first rows by. */
 export function tableLayout<Row>(
   columns: readonly TableColumn<Row>[],
   flexible: string,
@@ -143,6 +152,9 @@ export function tableLayout<Row>(
     ),
     sizes: Object.fromEntries(columns.map((column) => [column.id, column.size])),
     minimums,
+    // A sort adds no fixed width for its mark (`SORT_MARK_WIDTH`): each minimum already holds
+    // the sort arrow (`min`), and a header that wraps is measured as drawn (`wrappedHeaders`).
+    sortedMinimums: minimums,
     pins: {
       wide: { columns: pinned, share: 0.6 },
       phone: { columns: pinned, share: 1, widths: {}, flexibleMin: minimums[flexible] ?? 0 },

@@ -112,7 +112,7 @@ function useDeploys(): DataTableModel<Deploy> {
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [globalFilter, setGlobalFilter] = useState("");
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 2 });
-  const layout = useTableLayout("sized-controls", LAYOUT_COLUMNS);
+  const layout = useTableLayout("sized-controls", LAYOUT_COLUMNS, sorting);
   const state = { columnFilters, globalFilter, grouping, pagination, sorting };
   return useDataTable<Deploy>({
     columns: COLUMNS,

@@ -1393,21 +1393,19 @@ function titlesOf(elements: readonly Element[]): string[] {
 }
 
 /** What `main`'s `title`s say again and again: a running and an unresponsive session's state
- *  mark three minutes after its heartbeat (`listed`), what a claim is, and why a route's
- *  vacancy may pass. */
+ *  mark three minutes after its heartbeat (`listed`), and why a route's vacancy may pass. */
 const RUNNING_READING = "Running · seen 3 minutes ago";
 const UNRESPONSIVE_READING =
   "Unresponsive · seen 3 minutes ago · it has missed its heartbeats without ending: it keeps its roles and claims, and messages are stored for it";
-const CLAIM_EXPLAINS =
-  "A claim marks who is implementing this issue, so two agents never take the same work.";
 const VACANCY =
   ", so this issue's messages reach nobody at the moment. A session that is restarting or moving between boxes drops out of the listener for minutes and comes back under the same id, so this is a vacancy only when it is still true on a read ten minutes later; then staff the role, re-route it to a live holder, or clear the route and assign it.";
 
 /**
  * Every `title` each mount carries on `main`, in document order, as `main`'s files write them
- * (read at the merge-base), and none for a mount whose files set none. The three mounts of
- * `MOUNTS` whose instants move with the clock are read here through their twins at fixed
- * instants.
+ * (read at the merge-base), and none for a mount whose files set none. The claim chip carries
+ * none: INFRA-3221's R9 moved its help into the shared tooltip (`components/Tooltip.tsx`). The
+ * three mounts of `MOUNTS` whose instants move with the clock are read here through their twins
+ * at fixed instants.
  */
 const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   [
@@ -1511,7 +1509,6 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
     [
       LIVE_SESSION,
       "Running state unknown",
-      `Claimed by ${UNNAMED_SESSION} · since ${localTime(CLAIMED_AT)}. ${CLAIM_EXPLAINS} Couldn't check whether that session is still running: Envoy listener unreachable.`,
       LIVE_SESSION,
       "Running state unknown",
       localTime(CLAIMED_AT),
@@ -1525,19 +1522,15 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   [
     claimsAtFixedInstants,
     [
-      `Claimed by Implementer · since ${localTime(CLAIMED_AT)}. ${CLAIM_EXPLAINS}`,
       RUNNING_READING,
       localTime(CLAIMED_AT),
-      `Claimed by ${UNNAMED_SESSION} · since ${localTime(CLAIMED_AT)}. ${CLAIM_EXPLAINS} That session is no longer running, so anyone may claim it.`,
       GONE_SESSION,
       "Not running",
       localTime(CLAIMED_AT),
-      `Claimed by Reviewer · since ${localTime(CLAIMED_AT)}. ${CLAIM_EXPLAINS} That session has missed its heartbeats without ending, last seen ${localTime(HEARD_AT)}. It keeps this issue until ${localTime(FREE_FROM)}, when another agent may take it.`,
       UNRESPONSIVE_READING,
       localTime(CLAIMED_AT),
       localTime(HEARD_AT),
       localTime(FREE_FROM),
-      `Claimed by Reviewer · since ${localTime(CLAIMED_AT)}. ${CLAIM_EXPLAINS} That session has missed its heartbeats without ending, last seen ${localTime(HEARD_AT)}. It kept this issue until ${localTime(FREED_AT)}, so another agent may take it now. It has not ended, and may yet answer.`,
       UNRESPONSIVE_READING,
       localTime(CLAIMED_AT),
       localTime(HEARD_AT),

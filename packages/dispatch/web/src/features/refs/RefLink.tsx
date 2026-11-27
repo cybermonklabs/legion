@@ -173,8 +173,8 @@ export function RefLink({
 
 /** The name a reference standing as its own words draws in place of them once its label
  *  resolved: an issue as its key then its title, as the project's issues table writes a key
- *  beside one (`project/IssuesTable.tsx`), so the link's accessible name is `CORE-12 Fix the
- *  thing`; a deleted post's line in the deleted line's italic (`DeletedBody`), inside the
+ *  beside one (`project/issues-table-rows.tsx`), so the link's accessible name is `CORE-12 Fix
+ *  the thing`; a deleted post's line in the deleted line's italic (`DeletedBody`), inside the
  *  anchor, so the link stays visible, hoverable and clickable; anything else as its label. */
 function drawnName(route: DispatchReferenceRoute, label: string, deleted: boolean): ReactNode {
   return deleted ? (

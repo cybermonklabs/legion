@@ -10,7 +10,7 @@ import {
   patchIssue,
 } from "./api";
 import { mouseDrag } from "./board-drag";
-import { listTrigger, pickFromList } from "./filters";
+import { pickFromList } from "./filters";
 import { type KeyedWrite, watchWrites } from "./keyed-writes";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -141,11 +141,12 @@ async function expectQuestion(
 }
 
 // R24 (INFRA-4731, k40): a status write that Dispatch's rule would refuse asks first, on the issue
-// page, on the board and on the issues table. The e2e server keeps DISPATCH_PARENT_STATUS_RULE off
-// (run-server.sh), which is the case D8 makes the page ask in: the dry run answers as the rule is
-// on whatever the setting, so every write below would land unasked if the page did not ask.
-// SLOW(>=2s): sixteen seeded issues, two issue pages, the board with two whole-card drags and the
-// issues table, and nine questions, each with the page's dry runs and the row's own.
+// page and on the board. The e2e server keeps DISPATCH_PARENT_STATUS_RULE off (run-server.sh),
+// which is the case D8 makes the page ask in: the dry run answers as the rule is on whatever the
+// setting, so every write below would land unasked if the page did not ask. The issues table's
+// question, which Move to epic asked, went with the epic tools (dispatch://INFRA-3221).
+// SLOW(>=2s): fourteen seeded issues, two issue pages and the board with two whole-card drags, and
+// seven questions, each with the page's dry runs and the row's own.
 test("parent-status-choice: a parent's move asks which way its open issues go", async ({
   browser,
 }) => {
@@ -162,17 +163,9 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
     project: "CORE",
     title: "Child on the backlog",
   });
-  const loose = await createIssue({ project: "CORE", title: "Work under no epic" });
-  const epic = await createIssue({
-    labels: ["epic"],
-    project: "CORE",
-    title: "Epic on the backlog",
-  });
   await Promise.all([
     patchIssue(shelved.key, { status: "backlog" }),
     patchIssue(child.key, { status: "backlog" }),
-    patchIssue(loose.key, { status: "in_progress" }),
-    patchIssue(epic.key, { status: "backlog" }),
   ]);
   const seeded = await standing();
   // The seed is what each question below is about, read back from Dispatch.
@@ -182,8 +175,6 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
     ...third.seeded,
     [shelved.key]: { parent: null, status: "backlog" },
     [child.key]: { parent: shelved.key, status: "backlog" },
-    [loose.key]: { parent: null, status: "in_progress" },
-    [epic.key]: { parent: null, status: "backlog" },
   });
 
   const context = await asUser(browser, "alice");
@@ -372,65 +363,6 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
       .toEqual({
         [shelved.key]: { parent: null, status: "in_progress" },
         [child.key]: { parent: shelved.key, status: "in_progress" },
-      });
-
-    // The project's issues table: Move to epic of `loose`, in work, to `epic`, on the backlog,
-    // asks whether `epic` moves into work too and lists that change as the dry run answers it.
-    const epicPosts = watchWrites(
-      page,
-      "POST",
-      `/api/v1/issues/${epic.key}/status-change`,
-      isStatusChange
-    );
-    const loosePatches = watchWrites(page, "PATCH", `/api/v1/issues/${loose.key}`);
-    await page.goto("/projects/CORE/issues");
-    // The board above left Board as alice's view of the project; the issues table is its List.
-    await page.getByRole("button", { name: "List", exact: true }).click();
-    const looseSelect = page.getByRole("checkbox", { name: `Select ${loose.key}`, exact: true });
-    // The selection bar's Move to epic is the shared single pick, which names each epic by its
-    // title (INFRA-3135's R3).
-    const epicPick = listTrigger(page, "Move to epic");
-    const moveButton = page.getByRole("button", { name: "Move", exact: true });
-    await looseSelect.check();
-    await pickFromList(epicPick, epic.title);
-    await moveButton.click();
-    const intoWork = page.getByRole("dialog", { name: `Move ${epic.key} into work too?` });
-    const intoWorkChanges = intoWork.getByRole("list", { name: "Changes" }).getByRole("listitem");
-    const dryRun = await changeIssueStatus(epic.key, {
-      dry_run: true,
-      include_parent: true,
-      status: "in_progress",
-    });
-    const changed = dryRun.changed ?? [];
-    expect(changed.map(entryLine)).toEqual([
-      entryLine({ key: epic.key, parent: null, status: "in_progress" }),
-    ]);
-    // The one change is the epic's own, so its line names the epic's title, which the seed holds.
-    const changeLines = [`${epic.key} “${epic.title}” moves to ${statusText("in_progress")}`];
-    await expect(intoWorkChanges).toHaveText(changeLines);
-
-    // Cancel writes nothing.
-    await intoWork.getByRole("button", { name: "Cancel", exact: true }).click();
-    await expect(intoWork).toBeHidden();
-    expect(madeChanges(epicPosts)).toEqual([]);
-    expect(loosePatches).toEqual([]);
-    expect(await standing([loose.key, epic.key])).toEqual({
-      [loose.key]: { parent: null, status: "in_progress" },
-      [epic.key]: { parent: null, status: "backlog" },
-    });
-
-    // Again, and confirmed: `epic` is in progress with `loose` under it.
-    await expect(looseSelect).toBeChecked();
-    await pickFromList(epicPick, epic.title);
-    await moveButton.click();
-    await expect(intoWorkChanges).toHaveText(changeLines);
-    await intoWork.getByRole("button", { name: "Move into work too", exact: true }).click();
-    await expect(intoWork).toBeHidden();
-    await expect
-      .poll(() => standing([loose.key, epic.key]))
-      .toEqual({
-        [loose.key]: { parent: epic.key, status: "in_progress" },
-        [epic.key]: { parent: null, status: "in_progress" },
       });
   } finally {
     await context.close();

@@ -1,8 +1,9 @@
 // The Settings page's Legion section (dispatch://INFRA-1077): which project's state Dispatch
 // reads from which daemon. Naming a project's daemon here is what makes Dispatch's sampler read
 // that daemon's `GET /legion/v1/state` once a minute and record what changed, and removing one
-// stops the reading while everything already read stays. No page draws what the sampler records:
-// nothing in the dashboard reads the board it feeds (`GET /api/v1/projects/{key}/legion/board`).
+// stops the reading while everything already read stays. The project's Issues tab draws what the
+// sampler records: its Legion columns and its Board by Legion phase read the board it feeds
+// (`GET /api/v1/projects/{key}/legion/board`).
 //
 // No route lists every project's daemon, so the section reads each project's
 // `GET /api/v1/projects/{key}/legion/daemon` (`useLegionDaemons`), and a write changes the one
@@ -246,9 +247,10 @@ export function LegionDaemonsSection(): ReactNode {
       </h2>
       <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
         Naming a project&apos;s Legion daemon here makes Dispatch read that daemon&apos;s state once
-        a minute and record what changed. No page shows that record yet. The address is the
-        daemon&apos;s base URL, with no path: Dispatch reads <code>/legion/v1/state</code> under it.
-        Removing one stops the reading; what was read stays.
+        a minute and record what changed. The project&apos;s Issues tab shows that record in its
+        Legion columns and its Board. The address is the daemon&apos;s base URL, with no path:
+        Dispatch reads <code>/legion/v1/state</code> under it. Removing one stops the reading. What
+        was read stays.
         {human ? "" : " Sign in to name one."}
       </p>
 

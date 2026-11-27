@@ -227,7 +227,7 @@ bandsTest(
     await expect(shippedLink).toHaveCount(0);
     await pickFilterOption(page, "Status", "Done");
     await expect(shippedLink).toBeVisible();
-    await chooseDisplay(page, "Group by", "status");
+    await chooseDisplay(page, "Group by", "status", "Group by");
     await page.keyboard.press("Escape");
     const done = page.getByRole("button", { name: /Done.*1 issue/ });
     await done.click();

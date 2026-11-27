@@ -28,7 +28,7 @@ export async function openFilterPanel(page: Page, within: Locator | Page = page)
   const trigger = control(controlRow(within), CONTROL.panelTrigger);
   if ((await expandedState("the row's filter trigger", trigger)) === "shut") await trigger.click();
   // `Filter` on the Inbox, the Agents page, the Delivery page and the search bar; `Filters` on
-  // the project List and Board, where the trigger also counts what is on.
+  // the project's Issues table and Board, where the trigger also counts what is on.
   const panel = page.getByRole("dialog", { name: /^Filters?$/ });
   await expect(panel).toHaveCount(1);
   return panel;
@@ -36,8 +36,8 @@ export async function openFilterPanel(page: Page, within: Locator | Page = page)
 
 /**
  * The page's display menu, opened unless it is open already: the panel is the `dialog` named
- * after the trigger, and `label` is what that trigger reads (`View` on every page that draws
- * one today).
+ * after the trigger, and `label` is what that trigger reads: `View` on the Inbox, `Group by` on
+ * the Issues tab and the priority pages.
  */
 export async function openDisplayMenu(page: Page, label = "View"): Promise<Locator> {
   const menu = page.getByRole("dialog", { name: label });

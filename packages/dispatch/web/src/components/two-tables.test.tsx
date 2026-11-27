@@ -149,7 +149,7 @@ function PrefixedTable({
 }): ReactNode {
   const { params, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
     useTableAddress(grammar);
-  const layout = useTableLayout(layoutKey, layoutColumns);
+  const layout = useTableLayout(layoutKey, layoutColumns, view.sorting);
   const [openFilter, setOpenFilter] = useState<string>();
   const model = useDataTable<Line>({
     columns,

@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { PRIORITY_ID_MAX } from "@legion/contracts";
 
 import { SEND_DEADLINE_MS } from "../web/src/features/writes/keyed-write";
+import { issueStatusScale } from "../web/src/theme/classes";
 
 import {
   claimIssue,
@@ -63,9 +64,9 @@ const LONG_CASE = idFixture.cases
   .filter((one) => !HASHED_ID.test(one.id))
   .reduce((longest, one) => (one.title.length > longest.title.length ? one : longest));
 
-/** The two fault tables, by the names the Issues table gives them: the `label` each fault list of
- *  `PrioritiesPage.tsx` passes, which `features/project/IssuesTable.tsx` names its table by with
- *  " table" after it. */
+/** The two fault tables, by the names the listing table gives them: the `label` each fault list
+ *  of `PrioritiesPage.tsx` passes to `features/project/ListingTable.tsx`, whose table
+ *  `issues-table-frame.tsx` names by it with " table" after it. */
 const NO_PRIORITY_TABLE = "Active under no priority table";
 const BACKLOG_TABLE = "Priority work in backlog or icebox table";
 
@@ -86,12 +87,12 @@ const BACKLOG_COLUMNS = ["Advances", "Moved there"] as const;
 const HIDDEN_COLUMNS = [
   "Priority",
   "Queue",
-  "Epic",
   "Assignee",
   "Created by",
   "Labels",
   "Open asks",
   "Created",
+  "Closed",
   "Advances",
 ] as const;
 
@@ -312,7 +313,7 @@ function documentOverflow(page: Page): Promise<number> {
  *  than its box shows. A header whose words wrap onto a second line shows them whole. */
 function cutHeaders(table: Locator): Promise<string[]> {
   return table
-    .locator('thead th button[title^="Sort"]')
+    .locator('thead th button:not([aria-label^="Filter"])')
     .evaluateAll((buttons) =>
       buttons
         .filter((button) => button.scrollWidth > button.clientWidth)
@@ -532,12 +533,10 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     await expect.poll(() => documentOverflow(page)).toBeLessThanOrEqual(0);
     await expect.poll(() => pagerBelowWindow(page)).toBeLessThanOrEqual(0);
 
-    // The grouping control reads "Group by", inside the View display menu (INFRA-3135, R2).
-    await priorities.getByRole("button", { exact: true, name: "View" }).click();
+    // The display menu reads "Group by", the one section it holds (INFRA-3221, R13).
+    await priorities.getByRole("button", { exact: true, name: "Group by" }).click();
     await expect(
-      page
-        .getByRole("dialog", { name: "View" })
-        .getByRole("group", { exact: true, name: "Group by" })
+      page.getByRole("dialog", { name: "Group by" }).getByRole("radio", { name: "Nothing" })
     ).toBeVisible();
     await page.keyboard.press("Escape");
 
@@ -574,7 +573,7 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     for (const header of ["Active", "Triage, Todo", "Backlog, icebox", "Closed, 7 days"]) {
       const column = prioritiesTable.getByRole("columnheader", { name: new RegExp(`^${header}`) });
       await expect(column.getByRole("button", { name: /^Filter/ })).toHaveCount(0);
-      const words = await textRight(column.locator('button[title^="Sort"]'));
+      const words = await textRight(column.locator('button:not([aria-label^="Filter"])'));
       const count = await textRight(
         (await cellUnder(prioritiesTable, firstRow, header)).locator("span")
       );
@@ -829,7 +828,11 @@ test("a fault tab of more than one page counts every row, keeps its status strip
     // row the first left over, the fifty-first. The rows of a page are drawn as they scroll into
     // the box, so the second page's one row is what this reads.
     const pager = page.getByTestId("issues-table-pager");
-    await expect(pager).toContainText("51");
+    // The pager draws the range of rows, the page and its steps, and no total (INFRA-3221, R13):
+    // the tab's own count, 51, is on its tab.
+    await expect(pager).toContainText("Rows 1–50");
+    await expect(pager).toContainText("Page 1 of 2");
+    await expect(pager).not.toContainText("51");
     await pager.getByRole("button", { name: "Next ›" }).click();
     // The second page's one row, read until it is the only row drawn: its key is one of the
     // fifty-one written, taken as the row name's first word.
@@ -1466,7 +1469,9 @@ test("a priority's own page writes its title and description and lists only its 
     await expect.poll(() => tablesOverflow(page)).toEqual({ "Priority issues table": 0 });
     expect(
       await work.getByRole("columnheader", { name: /^Title/ }).evaluate((header) => {
-        const name = header.querySelector('button[title^="Sort"]')?.getBoundingClientRect();
+        const name = header
+          .querySelector('button:not([aria-label^="Filter"])')
+          ?.getBoundingClientRect();
         const filter = header.querySelector('[aria-label="Filter Title"]')?.getBoundingClientRect();
         const cell = header.getBoundingClientRect();
         const padding = Number.parseFloat(getComputedStyle(header).paddingLeft);
@@ -1898,7 +1903,7 @@ test("on a phone the priorities tab keeps each place and title together as wide 
         headers.flatMap((header) => {
           const parts: DOMRect[] = [];
           for (const part of header.querySelectorAll(
-            'button[title^="Sort"], [aria-label^="Filter"]'
+            'button:not([aria-label^="Filter"]), [aria-label^="Filter"]'
           )) {
             const range = document.createRange();
             range.selectNodeContents(part);
@@ -2067,7 +2072,7 @@ test("on a phone the priorities tab keeps each place and title together as wide 
             y,
             right: x + width,
             bottom: y + height,
-            sort: control.matches('button[title^="Sort"]'),
+            sort: control.matches('button:not([aria-label^="Filter"])'),
           };
         });
         const overlaps: string[] = [];
@@ -2294,7 +2299,9 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
         let title = 0;
         const wide: string[] = [];
         headers.forEach((header, at) => {
-          const name = (header.querySelector('button[title^="Sort"]')?.textContent ?? "").trim();
+          const name = (
+            header.querySelector('button:not([aria-label^="Filter"])')?.textContent ?? ""
+          ).trim();
           const width = header.getBoundingClientRect().width;
           if (name.startsWith("Title")) {
             title = Math.round(width);
@@ -2318,17 +2325,19 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
     const sortingColumns = (table: Locator) =>
       table.locator("thead th").evaluateAll((headers) =>
         headers
-          .filter((header) => header.querySelector('button[title^="Sort"]') !== null)
+          .filter((header) => header.querySelector('button:not([aria-label^="Filter"])') !== null)
           .map((header) => ({
             filters: header.querySelectorAll("button").length > 1,
             id: header.getAttribute("data-column") ?? "",
-            words: (header.querySelector('button[title^="Sort"]')?.textContent ?? "").trim(),
+            words: (
+              header.querySelector('button:not([aria-label^="Filter"])')?.textContent ?? ""
+            ).trim(),
           }))
       );
     // Sorts `table` by one column, and waits for its header to say so.
     const sortBy = async (table: Locator, column: string) => {
       const header = table.locator(`thead th[data-column="${column}"]`);
-      const sort = header.locator('button[title^="Sort"]');
+      const sort = header.locator('button:not([aria-label^="Filter"])');
       const isSorted = async () =>
         /ascending|descending/.test((await header.getAttribute("aria-sort")) ?? "");
       await sort.click();
@@ -2384,7 +2393,7 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
         const header = await sortBy(table, column);
         const read = await settledValue(`the ${column} header's sort arrow`, () =>
           header.evaluate((element) => {
-            const button = element.querySelector('button[title^="Sort"]');
+            const button = element.querySelector('button:not([aria-label^="Filter"])');
             const filter = [...element.querySelectorAll("button")].find((b) => b !== button);
             const arrow = [...(button?.querySelectorAll("span") ?? [])].find((span) =>
               /^[▲▼]$/.test((span.textContent ?? "").trim())
@@ -2550,10 +2559,294 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
   }
 });
 
+// dispatch://INFRA-3221 (the architect's decision of comment 8b253417, item 5): a claim chip that
+// wraps starts no line with its separator. At 1440 by 900, on each fault tab, the chip of a claim
+// held by a session whose title takes the chip onto three lines or more, and which the registry
+// does not list, so its state, "not running", holds a separator of its own: read off the
+// characters it draws, no line of the chip starts with "·", and the line of the claim's age holds
+// no part of the holder's name, so the age and the state stand on a line of their own. Nothing
+// of the chip clips, so every character that has a box is drawn; a space starts no line.
+// SLOW(>=2s): a priority and two issues written and claimed, and two tabs read.
+test("a claim chip that wraps on a fault tab at 1440 starts no line with its separator, and draws its age and state on a line of their own", async ({
+  browser,
+}) => {
+  await Promise.all([
+    createProject({ key: "OPS", name: "Ops" }),
+    createProject({ key: "WEB", name: "Web" }),
+  ]);
+  const priority = await createPriority({ owner: "alice", title: "Ship the daemon everywhere" });
+  // A session named by a title with no "·" of its own, so each "·" the chip draws is one of its
+  // separators.
+  const holder = {
+    id: "019a1c12-9a7e-7bb3-8c6d-7d4e8f1a2b12",
+    kind: "session" as const,
+    origin: {
+      session_title:
+        "Legion implementer for INFRA-3221 on build host rack 42, reading the claim chips " +
+        "the priorities page draws in its fault lists",
+    },
+  };
+  const unplaced = await createIssue({ project: "OPS", title: "Claimed under no priority" });
+  const inBacklog = await createIssue({ project: "WEB", title: "Claimed and in backlog under #1" });
+  await patchIssue(unplaced.key, { status: "in_progress" });
+  await patchIssue(inBacklog.key, { advances: [priority.id], status: "backlog" });
+  for (const key of [unplaced.key, inBacklog.key]) {
+    await claimIssue(key, { actor: holder, as: "agent" });
+  }
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const soft = expect.configure({ soft: true });
+    await page.setViewportSize(WIDE);
+    await page.goto(PRIORITIES_PATH);
+    for (const [tab, name, key] of [
+      ["none", NO_PRIORITY_TABLE, unplaced.key],
+      ["backlog", BACKLOG_TABLE, inBacklog.key],
+    ] as const) {
+      await chooseTab(page, tab);
+      // The row by its own key: its name starts with the key and a space.
+      const chip = page
+        .getByRole("table", { exact: true, name })
+        .locator(`tr[data-issue-row][aria-label^="${key} "]`)
+        .getByTestId("issue-claim");
+      await expect(chip).toContainText("not running");
+      const read = await settledValue(`the ${tab} tab's claim chip`, () =>
+        chip.evaluate((element) => {
+          const holderName = element.querySelector("[data-agent-name]");
+          const age = element.querySelector("time");
+          const half = Number.parseFloat(getComputedStyle(element).lineHeight) / 2 || 8;
+          const drawn: { age: boolean; char: string; left: number; name: boolean; top: number }[] =
+            [];
+          const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+          for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+            let end = 0;
+            for (const char of node.textContent ?? "") {
+              const start = end;
+              end += char.length;
+              if (char.trim() === "") continue;
+              const range = document.createRange();
+              range.setStart(node, start);
+              range.setEnd(node, end);
+              const rect = range.getBoundingClientRect();
+              if (rect.width === 0 || rect.height === 0) continue;
+              drawn.push({
+                age: age?.contains(node) === true,
+                char,
+                left: rect.left,
+                name: holderName?.contains(node) === true,
+                top: rect.top,
+              });
+            }
+          }
+          // The chip's lines: its drawn characters by their tops, two on one line when their tops
+          // lie within half a line of each other, each line's characters from left to right.
+          const lines: (typeof drawn)[] = [];
+          for (const one of [...drawn].sort((a, b) => a.top - b.top)) {
+            const line = lines[lines.length - 1];
+            if (line !== undefined && one.top - (line[0]?.top ?? one.top) <= half) line.push(one);
+            else lines.push([one]);
+          }
+          const ordered = lines.map((line) => [...line].sort((a, b) => a.left - b.left));
+          return {
+            lines: ordered.map((line) => line.map((one) => one.char).join("")),
+            nameBesideAge: ordered.some(
+              (line) => line.some((one) => one.age) && line.some((one) => one.name)
+            ),
+          };
+        })
+      );
+      const drawnLines = read.lines.join(" | ");
+      soft(
+        read.lines.length,
+        `the ${tab} tab's claim chip takes three lines or more (${drawnLines})`
+      ).toBeGreaterThanOrEqual(3);
+      soft(
+        read.lines.filter((line) => line.startsWith("·")),
+        `no line of the ${tab} tab's claim chip starts with "·" (${drawnLines})`
+      ).toEqual([]);
+      soft(
+        read.nameBesideAge,
+        `the ${tab} tab's claim chip draws its age on a line holding no part of the holder's name (${drawnLines})`
+      ).toBe(false);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+/** The lines a claim chip draws, read off the characters it draws: two characters on one line
+ *  when their tops lie within half a line of each other, each line from left to right, spaces
+ *  left out. */
+function chipLines(chip: Locator): Promise<string[]> {
+  return chip.evaluate((element) => {
+    const half = Number.parseFloat(getComputedStyle(element).lineHeight) / 2 || 8;
+    const drawn: { char: string; left: number; top: number }[] = [];
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      let end = 0;
+      for (const char of node.textContent ?? "") {
+        const start = end;
+        end += char.length;
+        if (char.trim() === "") continue;
+        const range = document.createRange();
+        range.setStart(node, start);
+        range.setEnd(node, end);
+        const rect = range.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        drawn.push({ char, left: rect.left, top: rect.top });
+      }
+    }
+    const lines: (typeof drawn)[] = [];
+    for (const one of [...drawn].sort((a, b) => a.top - b.top)) {
+      const line = lines[lines.length - 1];
+      if (line !== undefined && one.top - (line[0]?.top ?? one.top) <= half) line.push(one);
+      else lines.push([one]);
+    }
+    return lines.map((line) =>
+      [...line]
+        .sort((a, b) => a.left - b.left)
+        .map((one) => one.char)
+        .join("")
+    );
+  });
+}
+
+// dispatch://INFRA-3221 (the architect's decision of comment 8b253417, item 5: "A line that opens
+// with '·' is a defect in a component this change draws (`ClaimChip`)"), found by INFRA-3221's
+// tester. Each Legion session's title names its role and its issue with a "·" of its own
+// ("Legion planner · INFRA-455"), and on a fault tab the claim chip wraps the holder's whole
+// title. At 1440 by 900, on the none tab, the chip of each such holder breaks no line before a
+// "·": read off the characters it draws, each chip takes two lines or more, and no line of it
+// starts with "·".
+// SLOW(>=2s): seven issues written and claimed, and one tab read.
+test("a claim chip whose holder's title holds a separator starts no line with it on a fault tab at 1440", async ({
+  browser,
+}) => {
+  await createProject({ key: "OPS", name: "Ops" });
+  // Titles as Legion names its sessions: each role, then its issue or its project.
+  const titles = [
+    "Legion architect · INFRA-3320",
+    "Legion implementer · INFRA-3221",
+    "Legion tester · INFRA-3221",
+    "Legion reviewer · INFRA-1192",
+    "Legion planner · INFRA-455",
+    "Legion merger · INFRA-14",
+    "Legion controller · INFRA",
+  ];
+  const keys: string[] = [];
+  for (const [index, title] of titles.entries()) {
+    const made = await createIssue({
+      project: "OPS",
+      title: `Claimed by a Legion role ${index + 1}`,
+    });
+    await patchIssue(made.key, { status: "in_progress" });
+    await claimIssue(made.key, {
+      actor: {
+        id: `019a1c12-9a7e-7bb3-8c6d-7d4e8f1a2c1${index}`,
+        kind: "session" as const,
+        origin: { session_title: title },
+      },
+      as: "agent",
+    });
+    keys.push(made.key);
+  }
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const soft = expect.configure({ soft: true });
+    await page.setViewportSize(WIDE);
+    await page.goto(PRIORITIES_PATH);
+    await chooseTab(page, "none");
+    const table = page.getByRole("table", { exact: true, name: NO_PRIORITY_TABLE });
+    for (const [index, key] of keys.entries()) {
+      const chip = table.locator(`tr[data-issue-row="${key}"]`).getByTestId("issue-claim");
+      await expect(chip).toContainText(titles[index]?.split(" · ")[1] ?? "");
+      const lines = await settledValue(`${key}'s claim chip`, () => chipLines(chip));
+      const drawn = lines.join(" | ");
+      soft(lines.length, `${key}'s claim chip wraps (${drawn})`).toBeGreaterThanOrEqual(2);
+      soft(
+        lines.filter((line) => line.startsWith("·")),
+        `no line of ${key}'s claim chip starts with "·" (${drawn})`
+      ).toEqual([]);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+// dispatch://INFRA-3221 (the architect's decision of comment 8b253417, item 5: "A line that opens
+// with '·' is a defect in a component this change draws (`ClaimChip`)"), found by INFRA-3221's
+// tester. The chip's tooltip is drawn by this change, 288 px wide at most, and its first sentence
+// reads "Claimed by <the holder's title> · since <the moment>.": a holder whose title takes
+// the sentence near the end of the tooltip's first line must not push the "·" to the start of
+// the next. At 1440 by 900, on the none tab, each chip's tooltip is read off the characters it
+// draws, for the titles Legion gives its roles and for 21 titles whose second word grows one
+// letter at a time, so one of them ends the first line just where only the " ·" overflows it: no
+// line of the tooltip starts with "·".
+// SLOW(>=2s): 28 issues written and claimed, and 28 tooltips opened in turn.
+test("a claim chip's tooltip on a fault tab at 1440 starts no line with its separator", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  await createProject({ key: "OPS", name: "Ops" });
+  const sweep = "strictly".repeat(4);
+  const titles = [
+    "Legion architect · INFRA-3320",
+    "Legion implementer · INFRA-3221",
+    "Legion tester · INFRA-3221",
+    "Legion reviewer · INFRA-1192",
+    "Legion planner · INFRA-455",
+    "Legion merger · INFRA-14",
+    "Legion controller · INFRA",
+    ...Array.from({ length: 21 }, (_, at) => `Legion ${sweep.slice(0, at + 4)} · INFRA-455`),
+  ];
+  const keys: string[] = [];
+  for (const [index, title] of titles.entries()) {
+    const made = await createIssue({ project: "OPS", title: `Claim tooltip ${index + 1}` });
+    await patchIssue(made.key, { status: "in_progress" });
+    await claimIssue(made.key, {
+      actor: {
+        id: `019a1c12-9a7e-7bb3-8c6d-7d4e8f1a2d${String(index).padStart(2, "0")}`,
+        kind: "session" as const,
+        origin: { session_title: title },
+      },
+      as: "agent",
+    });
+    keys.push(made.key);
+  }
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const soft = expect.configure({ soft: true });
+    await page.setViewportSize(WIDE);
+    await page.goto(PRIORITIES_PATH);
+    await chooseTab(page, "none");
+    const table = page.getByRole("table", { exact: true, name: NO_PRIORITY_TABLE });
+    const tooltip = page.getByRole("tooltip");
+    for (const [index, key] of keys.entries()) {
+      const chip = table.locator(`tr[data-issue-row="${key}"]`).getByTestId("issue-claim");
+      await chip.scrollIntoViewIfNeeded();
+      await chip.hover();
+      await expect(tooltip).toContainText("Claimed by");
+      const lines = await settledValue(`${key}'s claim tooltip`, () =>
+        chipLines(tooltip.locator("p").first())
+      );
+      soft(
+        lines.filter((line) => line.startsWith("·")),
+        `no line of the tooltip of ${titles[index]}'s chip starts with "·" (${lines.join(" | ")})`
+      ).toEqual([]);
+      await page.mouse.move(0, 0);
+      await expect(tooltip).toHaveCount(0);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
 // INFRA-2947 R15 and check 0abe1d81 (Verification v69): a project's Issues tab, the one page
-// outside the priorities pages this change reaches. At 1280 by 800 the search box, View, Columns
-// and Filters each stand 34 px high; at 900 px wide the search box takes a row of its own above
-// the other controls; and at 390 by 844 each of those controls is at least 44 px high.
+// outside the priorities pages this change reaches. At 1280 by 800 the search box, Group by,
+// Columns and Filters each stand 34 px high; at 900 px wide the search box takes a row of its
+// own above the other controls; and at 390 by 844 each of those controls is at least 44 px high.
 // SLOW(>=2s): a project and one issue written, and the tab read at three sizes.
 test("a project's Issues tab draws its toolbar 34 px high at 1280, its search box on a row of its own at 900, and each control 44 px or more on a phone", async ({
   browser,
@@ -2562,9 +2855,9 @@ test("a project's Issues tab draws its toolbar 34 px high at 1280, its search bo
   await createIssue({ project: "TOOLS", title: "An issue the table draws" });
   // Each control of the toolbar the search box stands in, by its name and its box: the shared
   // control row (`data-control="control-row"`), the search box itself and each button in it.
-  // Group by is a section of the row's display menu, so its control is that menu's trigger,
-  // `View`; Needs you and Unread are in the row's filter panel, so their control is that panel's
-  // trigger, `Filters` (dispatch://INFRA-3135, R2).
+  // Group by is the row's display menu, whose trigger reads `Group by`, the one section it
+  // holds; Needs you and Unread are in the row's filter panel, so their control is that panel's
+  // trigger, `Filters` (dispatch://INFRA-3135, R2; dispatch://INFRA-3221, R13).
   const toolbar = (page: Page) =>
     page.getByRole("searchbox", { exact: true, name: "Search issues" }).evaluate((box) =>
       [
@@ -2589,7 +2882,7 @@ test("a project's Issues tab draws its toolbar 34 px high at 1280, its search bo
           };
         })
     );
-  const named = ["Search issues", "View", "Columns", "Filters"];
+  const named = ["Search issues", "Group by", "Columns", "Filters"];
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -3429,6 +3722,465 @@ test("a priority's page offers no versions and no delete, and carries no line ab
     await expect(main.getByRole("link", { exact: true, name: "Open in CORE" })).toHaveAttribute(
       "href",
       /^\/projects\/CORE\/issues\?/
+    );
+  } finally {
+    await context.close();
+  }
+});
+
+// The priority pages with less text (dispatch://INFRA-3221, Verification k17), read on the pages
+// #4316 gave them. Their tabs, headings, column names and widths are the base's, and the rows
+// above read them. What this change adds there is read below, at 1280 and at 390 px: no text
+// uses the word the person refused, each table's display menu reads Group by, each pager draws
+// no total, and each issue table draws its status strip in `issueStatusScale`'s colours with
+// none of the three numbers, no Epic column, no view tab and no Legion column in its menus.
+
+/** The word the person refused, as the expression the row above reads it by. The bracket keeps
+ *  the word out of this file. */
+const REFUSED_WORD = "(?<![sS])p[a]rk";
+
+/** Every text of the page that holds the refused word: every text node of the main content, the
+ *  ones only a screen reader reads included, and the names and hints its elements carry
+ *  (`aria-label`, `title`, `placeholder`), read once the page is drawn; then each filter's
+ *  choices, the Filters panel, the display menu and the Columns menu of every table, each opened
+ *  in turn; then the tooltip of every sort button, each focused in turn. */
+async function refusedTexts(page: Page): Promise<string[]> {
+  const hitsIn = (scope: Locator) =>
+    scope.evaluateAll((nodes, source) => {
+      const word = new RegExp(source, "i");
+      const found: string[] = [];
+      for (const node of nodes) {
+        const text = node.textContent ?? "";
+        if (word.test(text))
+          found.push(`text: ${text.match(new RegExp(`.{0,60}${source}.{0,60}`, "i"))?.[0]}`);
+        for (const element of [node, ...node.querySelectorAll("*")])
+          for (const name of ["aria-label", "title", "placeholder"]) {
+            const value = element.getAttribute(name);
+            if (value !== null && word.test(value)) found.push(`${name}: ${value}`);
+          }
+      }
+      return found;
+    }, REFUSED_WORD);
+  const main = page.getByTestId("main-content");
+  const found = await hitsIn(main);
+  const popups = page.locator('[role="dialog"], [role="listbox"], [role="menu"]');
+  // The callers' waits drew every table of the page with its controls, so one read lists them.
+  const openers = await main
+    .getByRole("button", { name: /^(?:Filter |Filters\b|Columns$|Group by$)/ })
+    .filter({ visible: true })
+    .all();
+  for (const opener of openers) {
+    const name = await opener.evaluate(
+      (node) => node.getAttribute("aria-label") ?? node.textContent ?? "a control"
+    );
+    await opener.click();
+    await expect(popups.first(), `${name} opens its choices`).toBeVisible();
+    found.push(...(await hitsIn(popups)).map((text) => `${name}: ${text}`));
+    await page.keyboard.press("Escape");
+    await expect(popups).toHaveCount(0);
+  }
+  const tooltip = page.getByRole("tooltip");
+  // The pointer rests on no control, so the one tooltip drawn is the focused anchor's.
+  await page.mouse.move(0, 0);
+  await expect(tooltip).toHaveCount(0);
+  // The same waits drew every sort button of the page.
+  const tipped = await main
+    .locator('thead th button:not([aria-label^="Filter"])')
+    .filter({ visible: true })
+    .all();
+  for (const anchor of tipped) {
+    await anchor.focus();
+    await expect(tooltip).toBeVisible();
+    found.push(...(await hitsIn(tooltip)).map((text) => `tooltip: ${text}`));
+    await page.keyboard.press("Escape");
+    await expect(tooltip).toHaveCount(0);
+  }
+  return found;
+}
+
+/** One table of the page as k17 reads it. */
+interface TableRead {
+  readonly label: string;
+  readonly box: number;
+  readonly headers: readonly { label: string; width: number }[];
+  readonly rows: readonly string[];
+  readonly strip: readonly { text: string; fill: string; scale: string }[];
+  readonly stripText: string;
+  readonly tabs: number;
+  readonly pager: string;
+  readonly menu: string;
+}
+
+/** Every table of the page: its headers with their widths, its rows, its strip with each
+ *  status's fill beside the fill `issueStatusScale` gives that status, any tab in its section,
+ *  its pager and its display menu's words. */
+function readTables(page: Page): Promise<TableRead[]> {
+  return page.evaluate((scale: Record<string, string>) => {
+    const text = (node: Element | null | undefined) =>
+      (node?.textContent ?? "").replace(/\s+/g, " ").trim();
+    const statuses: Record<string, string> = {
+      Triage: "triage",
+      Icebox: "icebox",
+      Backlog: "backlog",
+      Todo: "todo",
+      "In progress": "in_progress",
+      Testing: "testing",
+      "Needs review": "needs_review",
+      Retro: "retro",
+      Done: "done",
+    };
+    return [...document.querySelectorAll('[data-control="data-table"] table')].map((table) => {
+      const box = table.closest('[data-control="data-table"]') as HTMLElement;
+      const scope = box.closest("section[aria-label]") ?? box.parentElement;
+      const strip = scope?.querySelector('[aria-label="Issues by status"]');
+      return {
+        label: table.getAttribute("aria-label") ?? "",
+        box: Math.round(box.getBoundingClientRect().width),
+        headers: [...table.querySelectorAll("thead th")].map((cell) => ({
+          // A column with no sort has no button: its words are the cell's own.
+          label: (text(cell.querySelector("button")) || text(cell).replace(/Filter$/, ""))
+            .replace(/[▲▼]/g, "")
+            .trim(),
+          width: cell.getBoundingClientRect().width,
+        })),
+        rows: [...table.querySelectorAll("tr[data-issue-row], tr[data-priority-row]")].map(
+          (row) => row.getAttribute("aria-label") ?? ""
+        ),
+        strip: [...(strip?.querySelectorAll("button") ?? [])].map((button) => {
+          // A segment names its status by its tooltip, or by its text where it draws the name.
+          const named = (
+            button.getAttribute("title") ??
+            button.getAttribute("aria-label") ??
+            text(button)
+          ).split(":")[0];
+          const status = statuses[(named ?? "").replace(/\s*\d+$/, "").trim()];
+          const probe = document.createElement("span");
+          probe.className = status === undefined ? "" : (scale[status] ?? "");
+          document.body.appendChild(probe);
+          const wanted = getComputedStyle(probe).backgroundColor;
+          probe.remove();
+          return {
+            text: text(button),
+            fill: getComputedStyle(button).backgroundColor,
+            scale: status === undefined ? "" : wanted,
+          };
+        }),
+        stripText: text(strip),
+        tabs: scope?.querySelectorAll('[role="tablist"], [role="tab"]').length ?? 0,
+        pager: text(scope?.querySelector('[data-control="pager"]')),
+        menu: text(scope?.querySelector('button[data-control="display-menu"]')),
+      };
+    });
+  }, issueStatusScale);
+}
+
+/** What an embedded issue table draws that k17 holds: its strip in `issueStatusScale`'s colours
+ *  with none of the three numbers, no Epic column, no tab, a pager with no total, and a display
+ *  menu named Group by. */
+function embeddedDiffers(read: TableRead, where: string): string[] {
+  const wrong: string[] = [];
+  const name = `${where} ${read.label}`;
+  const scaled = read.strip.filter((part) => part.scale !== "");
+  if (scaled.length === 0) wrong.push(`${name}: no status of the strip is read`);
+  for (const part of scaled)
+    if (part.fill !== part.scale)
+      wrong.push(`${name}: ${part.text} is ${part.fill}, ${part.scale} is its scale's`);
+  if (/queue|running|epics/i.test(read.stripText))
+    wrong.push(`${name}: the strip reads ${read.stripText}`);
+  if (read.headers.some((header) => header.label === "Epic")) wrong.push(`${name}: an Epic column`);
+  if (read.tabs !== 0) wrong.push(`${name}: a tab is drawn`);
+  if (
+    !/^Rows \d+–\d+‹ PreviousPage \d+ of \d+Next ›/.test(read.pager) ||
+    /Rows \d+–\d+ of/.test(read.pager)
+  )
+    wrong.push(`${name}: the pager reads ${read.pager}`);
+  if (read.menu !== "Group by") wrong.push(`${name}: the display menu reads ${read.menu}`);
+  return wrong;
+}
+
+/** Opens the display menu or the Columns menu `control` names in `scope` and reads its choices,
+ *  each with whether it is taken. */
+async function menuChoices(page: Page, scope: Locator, control: string): Promise<string[]> {
+  const trigger = scope.locator(`button[data-control="${control}"]`).first();
+  await trigger.click();
+  const menu = page.getByRole("dialog").last();
+  await expect(menu).toBeVisible();
+  const choices = await menu
+    .locator("label")
+    .evaluateAll((labels) =>
+      labels.map(
+        (label) =>
+          `${(label.textContent ?? "").replace(/\s+/g, " ").trim()}${label.querySelector("input")?.checked ? " (on)" : ""}`
+      )
+    );
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  return choices;
+}
+
+/** The headings, column headers and labels of the page that use the word Active for anything
+ *  but the four-status set, and the headings and column headers that name that set In progress
+ *  or running. Active is the priorities table's column and its header's controls, and the tab,
+ *  the section and the table of the work in those statuses under no priority. */
+async function wrongStatusWords(page: Page): Promise<string[]> {
+  const main = page.getByTestId("main-content");
+  const labels = await main.evaluate((node) =>
+    [...node.querySelectorAll("h1, h2, th, legend, [role='tab'], button")].map((one) =>
+      (one.textContent ?? "").replace(/\s+/g, " ").trim()
+    )
+  );
+  const headings = await main.locator("h1, h2, th").allTextContents();
+  return [
+    ...labels.filter(
+      (label) =>
+        /\bActive\b/.test(label) &&
+        !/^(?:Filter )?Active(?: under no priority\s*\d*)?(?:Filter)?$/.test(label)
+    ),
+    ...headings.filter((heading) => /running|In progress/.test(heading)),
+  ];
+}
+
+// SLOW(>=2s): the seed, then each tab of /priorities read at two widths, with each table's menus,
+// filters and sort tooltips opened.
+test("on /priorities at 1280 and 390 px no text uses the refused word, each table's display menu reads Group by, each pager draws no total, and each issue table keeps its strip's colours and has no Epic, no view tab and no Legion column", async ({
+  browser,
+}) => {
+  test.setTimeout(300_000);
+  await seedPriorities();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    for (const [size, where] of [
+      [DESKTOP, "at 1280 px"],
+      [PHONE, "at 390 px"],
+    ] as const) {
+      await page.setViewportSize(size);
+      await page.goto(PRIORITIES_PATH);
+
+      // The Priorities tab: its table's display menu, its pager and its sort buttons.
+      const priorities = section(page, "Priorities");
+      await expect(priorities.locator("tr[data-priority-row]").first()).toBeVisible();
+      expect(
+        await refusedTexts(page),
+        `${where}: the Priorities tab uses the refused word`
+      ).toEqual([]);
+      // The table draws its headers, its rows and its pager in one commit, so the pager drawn
+      // under it is the whole table drawn.
+      await expect(priorities.getByTestId("priorities-table-pager")).toBeVisible();
+      // The waits above drew the table with its rows and its pager, so one read is the whole.
+      const [table] = await readTables(page);
+      if (table === undefined) throw new Error(`${where}: no priorities table`);
+      expect(table.label).toBe("Priorities table");
+      expect(table.menu, `${where}: the priorities table's grouping control`).toBe("Group by");
+      expect(table.pager, `${where}: the priorities table's pager`).toMatch(
+        /^Rows 1–3‹ PreviousPage 1 of 1Next ›/
+      );
+      expect(table.pager).not.toMatch(/Rows \d+–\d+ of/);
+      for (const header of table.headers)
+        expect(header.label.length, `${where}: ${header.label} is long`).toBeLessThanOrEqual(16);
+      const grouping = await menuChoices(page, priorities, "display-menu");
+      expect(grouping[0]).toBe("Nothing (on)");
+      expect(grouping).toContain("Owner");
+      expect(await wrongStatusWords(page), `${where}: the Priorities tab`).toEqual([]);
+
+      // Each fault's tab: its one issue table.
+      for (const [tab, label, name] of [
+        ["none", NO_PRIORITY_TABLE, "Active under no priority"],
+        ["backlog", BACKLOG_TABLE, "Priority work in backlog or icebox"],
+      ] as const) {
+        await chooseTab(page, tab);
+        const scope = section(page, name);
+        await expect(scope.locator("tr[data-issue-row]").first()).toBeVisible();
+        expect(await refusedTexts(page), `${where}: the ${tab} tab uses the refused word`).toEqual(
+          []
+        );
+        // The table draws its strip, its headers and its pager once its rows have arrived, so
+        // the pager drawn under it is the whole table drawn.
+        await expect(scope.getByTestId("issues-table-pager")).toBeVisible();
+        // The waits above drew the tab's table with its rows, strip and pager: one read is whole.
+        const read = (await readTables(page)).find((one) => one.label === label);
+        if (read === undefined) throw new Error(`${where}: no ${label}`);
+        expect(embeddedDiffers(read, where)).toEqual([]);
+        const group = await menuChoices(page, scope, "display-menu");
+        expect(group[0]).toBe("Nothing (on)");
+        expect(group.join(", ")).not.toMatch(/Epic/);
+        // The Columns menu: no Epic, no Legion column, and Closed offered, hidden. The row wait
+        // above drew the tab's toolbar with its table, so one read says if it offers that menu.
+        if ((await scope.locator('button[data-control="columns-menu"]').count()) > 0) {
+          const columns = await menuChoices(page, scope, "columns-menu");
+          expect(columns).not.toContainEqual(expect.stringMatching(/^Epic/));
+          expect(columns).not.toContainEqual(
+            expect.stringMatching(
+              /^(?:Legion|Workers|Waiting|Time in phase|Work time|Time per phase|Review rounds)/
+            )
+          );
+          expect(columns).toContain("Closed");
+        }
+        expect(await wrongStatusWords(page), `${where}: the ${tab} tab`).toEqual([]);
+        // A sort button carries no native title: its hint is in the shared tooltip.
+        const titled = await scope
+          .locator('thead th button:not([aria-label^="Filter"])')
+          .evaluateAll(
+            (buttons) => buttons.filter((button) => button.hasAttribute("title")).length
+          );
+        expect(titled, `${where}: sort buttons of the ${tab} tab with a native title`).toBe(0);
+      }
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): the seed, then a priority's page read at two widths, with its table's menus,
+// filters and sort tooltips opened, a header dragged and the page reloaded at each.
+test("a priority's own page at 1280 and 390 px has no line of counts or of order, links Open in its project, keeps its table's strip, Group by menu and pager with no total, and draws a dragged Title where it was after a reload", async ({
+  browser,
+}) => {
+  test.setTimeout(300_000);
+  const seed = await seedPriorities();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    for (const [size, where] of [
+      [DESKTOP, "at 1280 px"],
+      [PHONE, "at 390 px"],
+    ] as const) {
+      await page.setViewportSize(size);
+      await page.goto(`/priorities/${seed.ids[2]}`);
+      const table = page.getByRole("table", { name: "Priority issues table" });
+      await expect(table.locator("tr[data-issue-row]").first()).toBeVisible();
+      await expect(page.getByTestId("priority-header")).not.toContainText(
+        /dragged|·|In flight|waiting/
+      );
+      expect(await refusedTexts(page), `${where}: the page uses the refused word`).toEqual([]);
+      await expect(page.getByRole("link", { name: "Open in WEB" })).toBeVisible();
+      await expect(page.getByText(/Leave this scope/)).toHaveCount(0);
+      // The row wait above drew the one table of this page, which draws all of its rows at once.
+      const [read] = await readTables(page);
+      if (read === undefined) throw new Error(`${where}: no work table`);
+      // A priority's page draws its table in a box under 640 px at both widths: the phone layout.
+      expect(read.box, `${where}: the table's box`).toBeLessThan(640);
+      expect(embeddedDiffers(read, where)).toEqual([]);
+      expect(read.rows.filter((row) => row !== "")).toEqual(
+        expect.arrayContaining([
+          `${seed.child} Ledger client migration`,
+          `${seed.cutover} Ledger cut-over`,
+          `${seed.ledger} Ledger read path`,
+          `${seed.archive} Ledger archive`,
+        ])
+      );
+
+      // Title dragged 300 px wider, and the page reloaded: the reload draws Title where the drag
+      // left it, read off the stored layout. On a phone (390 px) the table stands in the phone
+      // layout, whose Title takes what Select and Key leave, so the drag moves nothing: Title ends
+      // where it ended before the drag. At 1280 px the table stands beside the page's margin in a
+      // box under 640 px that it fits with Title at its minimum, which #4316 draws as a desktop's
+      // box (`PHONE_BOX_BELOW` in `table-layout.ts`): there a Title the reader dragged keeps its
+      // width within the pinned columns' share of the box, 60%, and past it narrows to that share
+      // (`LayoutPins.wide`), so it ends at that share's edge, where the base draws it (R13, k17).
+      const title = table
+        .locator("thead th")
+        .filter({ hasText: /^Title/ })
+        .first();
+      await expect(title).toBeVisible();
+      // The wait above drew the Title header, and a drawn element has a box, so the box is there.
+      const before = await title.boundingBox();
+      if (before === null) throw new Error("the Title header has no box");
+      // Where Title ends, from the inner left edge of the table's box, and where the pinned
+      // columns' share of that box ends.
+      const ends = async () =>
+        title.evaluate((node) => {
+          const box = node.closest<HTMLElement>('[data-control="data-table"]');
+          const left = (box?.getBoundingClientRect().left ?? 0) + (box?.clientLeft ?? 0);
+          return {
+            share: 0.6 * (box?.getBoundingClientRect().width ?? 0),
+            title: node.getBoundingClientRect().right - left,
+          };
+        });
+      const end = (await ends()).title;
+      await page.mouse.move(before.x + before.width - 2, before.y + before.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(before.x + before.width + 300, before.y + before.height / 2, {
+        steps: 12,
+      });
+      await page.mouse.up();
+      const dragged = await settledValue(`${where}: where Title ends after the drag`, ends);
+      await page.reload();
+      await expect(table.locator("tr[data-issue-row]").first()).toBeVisible();
+      const reloaded = await settledValue(`${where}: where Title ends after the reload`, ends);
+      expect(
+        Math.abs(reloaded.title - dragged.title),
+        `${where}: where Title ends after the reload, against after the drag`
+      ).toBeLessThanOrEqual(1);
+      expect(
+        Math.abs(reloaded.title - (size === PHONE ? end : reloaded.share)),
+        `${where}: where Title ends`
+      ).toBeLessThanOrEqual(1);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): the seed with two Todo issues labelled legion, then the Open asks filter read on
+// both pages and Start next pressed on a priority's page.
+test("on the priority pages the Open asks filter picks With open asks or No open asks, and Start next's texts name the Todo issues labelled legion", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  const seed = await seedPriorities();
+  const context = await asUser(browser, "alice");
+  try {
+    const first = await createIssue({ project: "CORE", title: "Queue the fleet probe" });
+    const second = await createIssue({ project: "CORE", title: "Queue the fleet report" });
+    for (const issue of [first, second])
+      await patchIssue(issue.key, { advances: [seed.ids[0]], labels: ["legion"], status: "todo" });
+    const page = await context.newPage();
+    await priorityPage(page);
+    for (const path of [
+      `${PRIORITIES_PATH}?tab=none`,
+      `${PRIORITIES_PATH}?tab=backlog`,
+      `/priorities/${seed.ids[0]}`,
+    ]) {
+      await page.goto(path);
+      await expect(page.locator("tr[data-issue-row]").first()).toBeVisible();
+      // The Open asks column opens hidden on these tables, one tick away under Columns.
+      await page.getByRole("button", { exact: true, name: "Columns" }).click();
+      await page
+        .getByRole("dialog", { name: "Columns" })
+        .getByRole("checkbox", { name: "Open asks" })
+        .check();
+      await page.keyboard.press("Escape");
+      const trigger = page
+        .getByRole("button", { name: /^Filter Open asks(?:: \d+ picked)?$/ })
+        .first();
+      await trigger.click();
+      const options = page.getByRole("listbox", { name: "Open asks options" });
+      await expect(options).toBeVisible();
+      expect(
+        (await options.getByRole("option").allTextContents()).map((one) =>
+          one.replace(/\s*\d+$/, "").trim()
+        ),
+        `${path}: the Open asks picks`
+      ).toEqual(["With open asks", "No open asks"]);
+      await page.keyboard.press("Escape");
+    }
+
+    // The work table draws no row's actions, so Start next is the selection bar's. A selection
+    // with none of the Todo issues labelled legion is refused in words that name that set.
+    const work = page.getByRole("table", { name: "Priority issues table" });
+    const bar = page.locator('[data-control="selection-bar"]');
+    await work.getByRole("checkbox", { name: `Select ${seed.rollout}` }).check();
+    await bar.getByRole("button", { exact: true, name: "Start next" }).click();
+    await expect(page.getByRole("alert").filter({ hasText: "Start next" })).toHaveText(
+      "Start next moves only Todo issues labelled legion."
+    );
+    // Start next on the second of the two moves it ahead, in words that say it starts next.
+    await page.getByRole("button", { exact: true, name: "Clear selection" }).click();
+    await work.getByRole("checkbox", { name: `Select ${second.key}` }).check();
+    await bar.getByRole("button", { exact: true, name: "Start next" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "starts next" })).toContainText(
+      "now starts next"
     );
   } finally {
     await context.close();

@@ -1,21 +1,11 @@
 import { useCallback } from "react";
 
-import type { IssueSummary } from "../../api/types";
-import type { FilterChip } from "../../components/filter-chips";
-import {
-  cappedTextParam,
-  flagParam,
-  repeatedParam,
-  useAddressFields,
-} from "../../lib/page-address";
-import { claimIsTakeable } from "../issue/ClaimChip";
+import { flagParam, repeatedParam, useAddressFields } from "../../lib/page-address";
 import { useAgentRegistry } from "../refs/agent-registry";
-import { issueIsUnread } from "./UnreadDot";
 
 export interface IssueFiltersState {
   /** The project's `?label=` values (every one required, case-insensitively). */
   readonly labels: readonly string[];
-  readonly search: string;
   readonly needsYou: boolean;
   readonly unread: boolean;
   /** Only issues an agent could pick up: nobody has claimed them, or the server would hand the
@@ -29,29 +19,19 @@ export interface IssueFiltersState {
    *  claim counts as held - no claim is called free from a list that did not answer - and the
    *  control row says so. `undefined` while the filter is off or the list is current or loading. */
   readonly unclaimedUnchecked: "refilling" | "unreachable" | undefined;
-  readonly activeFilterCount: number;
-  /** The Board's chips, one per narrowing that is on, as `filterChips` draws them. */
-  readonly activeFilters: FilterChip[];
   readonly setLabels: (next: string[]) => void;
-  readonly setSearch: (next: string) => void;
   readonly setNeedsYou: (next: boolean) => void;
   readonly setUnclaimed: (next: boolean) => void;
   readonly setUnread: (next: boolean) => void;
-  /** Whether `issue` passes every active filter. */
-  readonly matches: (issue: IssueSummary, lastReadSequence: number) => boolean;
 }
 
-/** The one query key for a project's issue list: the plain list, or the server-filtered list
- *  when labels are active. List and Board build their keys here, so one set of labels is one
- *  key in both; `api/queries.ts` then forks on `open`, so the open-only read of a view that
- *  hides closed issues is a key of its own under the same prefix. */
-export function projectIssuesQueryKey(
-  project: string,
-  labels: readonly string[]
-): readonly unknown[] {
-  return labels.length === 0
-    ? ["issues", "project", project]
-    : ["issues", "project", project, "labels", labels];
+/** The one query key prefix of a project's issue listings. `api/queries.ts` builds every listing
+ *  of the project under it: the plain list under the prefix alone, and the open listing the
+ *  Issues tab reads (`open`), its done reads and Open's count each under a suffix of its own. A
+ *  Board move cancels the array listings under it that hold the moved card, and reads every
+ *  listing under it again (`board-moves.ts`). */
+export function projectIssuesQueryKey(project: string): readonly unknown[] {
+  return ["issues", "project", project];
 }
 
 /** The project page's own parameters, under the names they have always had. A module-level
@@ -60,75 +40,46 @@ export function projectIssuesQueryKey(
 const ISSUE_FILTER_PARAMS = {
   label: repeatedParam(),
   "needs-you": flagParam(),
-  q: cappedTextParam(),
   unclaimed: flagParam(),
   unread: flagParam(),
 };
 
+/** The Needs you and Unread flags `params` sets, read as the page reads its own (`?needs-you=1`,
+ *  `?unread=1`): for an address that is not the page's, as a view's own address. */
+export function readIssueFlags(
+  params: URLSearchParams
+): Pick<IssueFiltersState, "needsYou" | "unread"> {
+  return {
+    needsYou: ISSUE_FILTER_PARAMS["needs-you"].read(params, "needs-you"),
+    unread: ISSUE_FILTER_PARAMS.unread.read(params, "unread"),
+  };
+}
+
 /**
  * The project page's issue filters, read from and written to the URL - `?label=` (repeatable),
- * `?q=`, `?needs-you=1`, `?unread=1`, `?unclaimed=1` - so the control row and the issues table share
- * one filter state and a filtered view survives a reload. Every write replaces the history
- * entry, as the label filter always has. The table's own `?status=` column filter is its
+ * `?needs-you=1`, `?unread=1`, `?unclaimed=1` - so the control row and the issues table share one
+ * filter state and a filtered view survives a reload. Every write replaces the history entry, as
+ * the label filter always has. The table's own `?q=` search and `?status=` column filter are its
  * business, not this hook's.
  */
 export function useIssueFilters(): IssueFiltersState {
   const [params, setParams] = useAddressFields(ISSUE_FILTER_PARAMS);
   const labels = params.label;
-  const search = params.q;
   const needsYou = params["needs-you"];
   const unread = params.unread;
   const unclaimed = params.unclaimed;
   // The one ["agents"] registry read every claim chip on the page already shares, fetched only
   // while the filter that needs it is on.
   const registry = useAgentRegistry(unclaimed);
-  const setSearch = useCallback((next: string) => setParams({ q: next }), [setParams]);
   const setLabels = useCallback((next: string[]) => setParams({ label: next }), [setParams]);
   const setNeedsYou = useCallback((next: boolean) => setParams({ "needs-you": next }), [setParams]);
   const setUnread = useCallback((next: boolean) => setParams({ unread: next }), [setParams]);
   const setUnclaimed = useCallback((next: boolean) => setParams({ unclaimed: next }), [setParams]);
-  const matches = useCallback(
-    (issue: IssueSummary, lastReadSequence: number): boolean => {
-      const query = search.trim().toLocaleLowerCase();
-      return (
-        (!needsYou || issue.open_asks > 0) &&
-        (!unread || issueIsUnread(issue, lastReadSequence)) &&
-        (!unclaimed || issue.claim === null || claimIsTakeable(issue.claim, registry)) &&
-        (query === "" ||
-          issue.key.toLocaleLowerCase().includes(query) ||
-          issue.title.toLocaleLowerCase().includes(query))
-      );
-    },
-    [needsYou, registry, search, unclaimed, unread]
-  );
-  const activeFilterCount =
-    labels.length +
-    Number(search.trim() !== "") +
-    Number(needsYou) +
-    Number(unread) +
-    Number(unclaimed);
-  const activeFilters: FilterChip[] = [
-    ...labels.map((label) => ({
-      label: `Label: ${label}`,
-      remove: () => setLabels(labels.filter((current) => current !== label)),
-    })),
-    ...(search.trim() === ""
-      ? []
-      : [{ label: `Search: ${search.trim()}`, remove: () => setSearch("") }]),
-    ...(needsYou ? [{ label: "Needs you", remove: () => setNeedsYou(false) }] : []),
-    ...(unread ? [{ label: "Unread", remove: () => setUnread(false) }] : []),
-    ...(unclaimed ? [{ label: "Unclaimed", remove: () => setUnclaimed(false) }] : []),
-  ];
   return {
-    activeFilterCount,
-    activeFilters,
     labels,
-    matches,
     needsYou,
-    search,
     setLabels,
     setNeedsYou,
-    setSearch,
     setUnclaimed,
     setUnread,
     unclaimed,

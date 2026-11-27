@@ -57,6 +57,7 @@ function List({
   enabled,
   groups,
   headings,
+  holdAtTop,
   leaving,
   rows,
   scroller,
@@ -73,6 +74,7 @@ function List({
   /** The rows a heading is drawn right before, as a group's heading is drawn before its first
    *  row. */
   headings?: readonly string[];
+  holdAtTop?: boolean;
   /** The rows a press of the reader's is taking away, as the host names them. */
   leaving?: (id: string) => boolean;
   rows: string[];
@@ -83,6 +85,7 @@ function List({
     <ViewportAnchor
       enabled={enabled}
       group="data-group"
+      holdAtTop={holdAtTop}
       item="data-row"
       leaving={leaving}
       ref={anchor}
@@ -232,6 +235,157 @@ test("a reader at the top sees new rows arrive without the view following the ce
     view.rerender(<List rows={["new-a", ...ids(12)]} />);
     expect(window.scrollY).toBe(0);
     expect(viewportTop("new-a")).toBe(LIST_TOP);
+  } finally {
+    view.unmount();
+  }
+});
+
+/** Waits until the frame the last commit went into is painted: a frame's callbacks, then a task. */
+function painted(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  requestAnimationFrame(() => setTimeout(resolve, 0));
+  return promise;
+}
+
+/** A scroll of the reader's own, as the browser reports it: the window, or the box they scroll. */
+function scrollTo(top: number, box?: HTMLElement): void {
+  if (box === undefined) {
+    setScrollY(top);
+    document.dispatchEvent(new Event("scroll"));
+    return;
+  }
+  box.scrollTop = top;
+  box.dispatchEvent(new Event("scroll"));
+}
+
+// A host that holds a reader at the top too (`holdAtTop`: the Issues and priorities tables, the
+// Board) keeps the first row on screen there once the reader has seen it: a row added above it
+// lands out of view above, and the rows on screen keep their tops.
+test("a host that holds a reader at the top keeps the first row on screen it painted as rows arrive above", async () => {
+  const view = render(<List holdAtTop rows={ids(12)} />);
+  try {
+    await painted();
+    expect(chosen()).toEqual({ id: "r1", via: "top" });
+    const before = viewportTop("r1");
+    view.rerender(<List holdAtTop rows={["new-a", ...ids(12)]} />);
+    expect(viewportTop("r1")).toBe(before);
+    expect(window.scrollY).toBe(ROW_HEIGHT);
+    expect(viewportTop("new-a")).toBe(LIST_TOP - ROW_HEIGHT);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a host that holds a reader at the top keeps the first row on screen in its own scroller", async () => {
+  const view = render(<List holdAtTop rows={ids(12)} scroller={scrollerRef} />);
+  try {
+    const scroller = scrollerRef.current;
+    if (scroller === null) throw new Error("no scroller");
+    await painted();
+    expect(chosen()).toEqual({ id: "r1", via: "top" });
+    const before = viewportTop("r1");
+    view.rerender(<List holdAtTop rows={["new-a", "new-b", ...ids(12)]} scroller={scrollerRef} />);
+    expect(viewportTop("r1")).toBe(before);
+    expect(scroller.scrollTop).toBe(2 * ROW_HEIGHT);
+    expect(window.scrollY).toBe(0);
+  } finally {
+    view.unmount();
+  }
+});
+
+// Where the middle of the list holds no row (the gap between two Board columns, an empty column)
+// the first row of the column nearest the middle is the one kept.
+test("a host that holds a reader at the top keeps the first row of the column nearest the middle", async () => {
+  // The middle of a 300 px list is at 150, and rows answer the hit test only from 0 to 100.
+  contentWidth = 300;
+  const view = render(<List holdAtTop rows={ids(12)} />);
+  try {
+    await painted();
+    expect(chosen()).toEqual({ id: "r1", via: "top" });
+  } finally {
+    view.unmount();
+  }
+});
+
+// Rows drawn but not yet painted are rows no reader has seen: a draw before the first frame
+// (the table's second draw at the width it measured) holds nothing, and the rows start at the top.
+test("a host that holds a reader at the top holds nothing before the rows are first painted", async () => {
+  const view = render(<List holdAtTop rows={ids(12)} />);
+  try {
+    expect(chosen()).toBeNull();
+    view.rerender(<List holdAtTop rows={["new-a", ...ids(12)]} />);
+    expect(window.scrollY).toBe(0);
+    expect(viewportTop("new-a")).toBe(LIST_TOP);
+    await painted();
+    expect(chosen()).toEqual({ id: "new-a", via: "top" });
+  } finally {
+    view.unmount();
+  }
+});
+
+// The Board draws nothing when the window scrolls, so a reader who scrolled down, saw a change
+// land there and scrolled back to the top has no commit at the top to record: the scroll that
+// ends there records the first row on screen once it is painted.
+test("a scroll of the reader's own that ends at the top records the first row on screen there", async () => {
+  const view = render(<List holdAtTop rows={ids(12)} />);
+  try {
+    await painted();
+    scrollTo(100);
+    expect(chosen()).toEqual({ id: "r7", via: "center" });
+    // A change lands while the reader is scrolled, and is painted there.
+    view.rerender(<List holdAtTop rows={[...ids(12), "r13"]} />);
+    await painted();
+    scrollTo(0);
+    await painted();
+    expect(chosen()).toEqual({ id: "r1", via: "top" });
+    const before = viewportTop("r1");
+    view.rerender(<List holdAtTop rows={["new-a", ...ids(13)]} />);
+    expect(viewportTop("r1")).toBe(before);
+    expect(window.scrollY).toBe(ROW_HEIGHT);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a scroll of the reader's own that ends at the top of its own scroller records the first row there", async () => {
+  const view = render(<List holdAtTop rows={ids(12)} scroller={scrollerRef} />);
+  try {
+    const scroller = scrollerRef.current;
+    if (scroller === null) throw new Error("no scroller");
+    await painted();
+    scrollTo(100, scroller);
+    view.rerender(<List holdAtTop rows={[...ids(12), "r13"]} scroller={scrollerRef} />);
+    await painted();
+    scrollTo(0, scroller);
+    await painted();
+    expect(chosen()).toEqual({ id: "r1", via: "top" });
+    view.rerender(<List holdAtTop rows={["new-a", ...ids(13)]} scroller={scrollerRef} />);
+    expect(scroller.scrollTop).toBe(ROW_HEIGHT);
+  } finally {
+    view.unmount();
+  }
+});
+
+// In a project with a Legion daemon the board's first snapshot is part of a view's first draw:
+// Open draws its rows before the board answers, and the snapshot sorts them again. The host holds
+// nothing for that commit (the table's view key), and the row it puts first is the one held once
+// it is painted.
+test("a host that holds a reader at the top holds the row the board's first snapshot puts first, once it is painted", async () => {
+  const view = render(<List holdAtTop rows={ids(12)} />);
+  try {
+    await painted();
+    expect(chosen()).toEqual({ id: "r1", via: "top" });
+    const sorted = ["r5", ...ids(12).filter((id) => id !== "r5")];
+    view.rerender(<List enabled={() => false} holdAtTop rows={sorted} />);
+    expect(window.scrollY).toBe(0);
+    expect(viewportTop("r5")).toBe(LIST_TOP);
+    // Drawn but not yet painted: the row that was first is not the first row on screen.
+    expect(chosen()).toBeNull();
+    await painted();
+    expect(chosen()).toEqual({ id: "r5", via: "top" });
+    view.rerender(<List holdAtTop rows={["new-a", ...sorted]} />);
+    expect(viewportTop("r5")).toBe(LIST_TOP);
+    expect(window.scrollY).toBe(ROW_HEIGHT);
   } finally {
     view.unmount();
   }

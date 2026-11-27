@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  The `GET /api/v1/issues` query's `sort?: "closed_at" | "-closed_at"`, which orders the
+  listing by its issues' close time, oldest or newest first, and `IssueSummaryPage`'s
+  `sort?: "closed_at" | "-closed_at"`, the sort the route applied to the page, as the request
+  sent it, absent where it sent none. A page that does not name the sort a caller sent comes
+  from a server older than `sort`, which answers the route's own order.
+time: 2026-11-22T05:34:24Z
+custom:
+    Issue: pr4959

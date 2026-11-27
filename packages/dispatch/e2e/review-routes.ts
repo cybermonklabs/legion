@@ -328,9 +328,10 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   // priorities`, and a fault's tab stands over its table while that fault list's own issue
   // listing is still out, so each entry waits for a row the seed wrote: the first priority of
   // the order, the issue active under no priority, and the issue in backlog that advances one.
-  // Each fault list is the Issues table, named by the label the page passes it with " table"
-  // after it (`features/project/IssuesTable.tsx`). The rows are `e2e/review-seed.ts`'s, so a
-  // change to that corpus fails these entries rather than a baseline.
+  // Each fault list is the listing table, named by the label the page passes it with " table"
+  // after it (`features/project/ListingTable.tsx`, drawn by `issues-table-frame.tsx`). The rows
+  // are `e2e/review-seed.ts`'s, so a change to that corpus fails these entries rather than a
+  // baseline.
   {
     kind: "reviewed",
     layers: [...bothLayers, "shoot-phone"],

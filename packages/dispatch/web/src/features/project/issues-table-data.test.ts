@@ -18,7 +18,6 @@ test("only a listing of named open statuses is answered whole by its open read",
   // A listing that names `done` holds closed issues the open read leaves out.
   expect(answeredWhole({ advances: "any", statuses: ["done"] })).toBe(false);
   expect(answeredWhole({ advances: "any", statuses: ["backlog", "done"] })).toBe(false);
-  // A listing that names no status, and a project's, hold every closed issue they have.
+  // A listing that names no status holds every closed issue it has.
   expect(answeredWhole({ advances: "ship-it" })).toBe(false);
-  expect(answeredWhole({ project: "CORE" })).toBe(false);
 });

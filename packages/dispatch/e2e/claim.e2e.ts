@@ -30,7 +30,14 @@ test("a long holder name never widens the issue page @pr", async ({ browser }, t
       await page.goto(`/issues/${issue.key}`);
       const chip = page.getByTestId("issue-claim");
       await expect(chip).toBeVisible();
-      await expect(chip).toHaveAttribute("title", /Claimed by Implementer whose session/);
+      // The chip's tooltip names the whole holder on its first line, which the keyboard focus
+      // opens; the focus leaves before the page is measured.
+      await chip.focus();
+      await expect(page.getByRole("tooltip")).toContainText(
+        /^Claimed by Implementer whose session/
+      );
+      await chip.blur();
+      await expect(page.getByRole("tooltip")).toHaveCount(0);
       // The holder ellipsizes inside the chip; the page itself never grows a scrollbar.
       const pageWidths = await page.evaluate(() => ({
         clientWidth: document.documentElement.clientWidth,

@@ -3,10 +3,12 @@ import type { IssueStatus } from "../project/board-model";
 import { ageOf, AGES as ISSUE_AGES, runningIssueStatuses } from "../project/issues-table-model";
 import { columnsById, phoneHidden, type TableColumn, tableLayout } from "./priority-table-model";
 
-/** The statuses each count column adds up. In flight is the statuses an issue is being worked
- *  in, which the issues table's own status bar counts (`runningIssueStatuses`); waiting is work
- *  admitted and not started; backlog is work that stands in the backlog or the icebox. The three
- *  together are every open status, so no open issue under a priority is uncounted. */
+/** The statuses each count column adds up. Active is the statuses an issue is being worked in
+ *  (`runningIssueStatuses`), which no status bar counts as one: Open's `IssueStatusBar` on the
+ *  Issues tab and `IssueTableStatus` on the priority pages' embedded tables count each status on
+ *  its own. Triage, Todo is work admitted and not started; Backlog, icebox is work that stands in
+ *  the backlog or the icebox. The three together are every open status, so no open issue under a
+ *  priority is uncounted. */
 const WAITING_STATUSES: readonly IssueStatus[] = ["todo", "triage"];
 /** The one list of the statuses backlog and icebox: the count here and the priorities page's
  *  fault list of the priority work in either (`PrioritiesPage.tsx`) both read it. */

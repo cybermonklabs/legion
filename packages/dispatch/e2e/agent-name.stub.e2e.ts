@@ -106,7 +106,7 @@ test("a claimed List row and Board card open their issue by keyboard, and the cl
 }) => {
   await page.setViewportSize({ height: 900, width: 1920 });
   await page.goto("/projects/AGT");
-  await page.getByRole("button", { name: "Board" }).click();
+  await page.getByRole("button", { exact: true, name: "Board" }).click();
   const card = page.locator(`[data-board-card="${scene.runIssue}"]`);
   const cardAgent = agentIn(card, runId);
   await expect(cardAgent).toHaveAttribute("data-agent-state", "running");
@@ -123,7 +123,7 @@ test("a claimed List row and Board card open their issue by keyboard, and the cl
   await expect(page).toHaveURL(new RegExp(`${livePath(runId)}$`));
 
   await page.goto("/projects/AGT");
-  await page.getByRole("button", { name: "List" }).click();
+  await page.getByRole("button", { exact: true, name: "Table" }).click();
   const row = page
     .getByRole("table", { name: "Project issues table" })
     .locator(`[data-issue-row="${scene.runIssue}"]`);
@@ -150,7 +150,7 @@ test("a tap on a board card's agent link opens the agent rather than dragging th
   scene,
 }) => {
   await page.goto("/projects/AGT");
-  await page.getByRole("button", { name: "Board" }).click();
+  await page.getByRole("button", { exact: true, name: "Board" }).click();
   const card = page.locator(`[data-board-card="${scene.runIssue}"]`);
   const cardLink = agentIn(card, runId).locator(`a[href="${livePath(runId)}"]`);
   await expect(cardLink).toBeVisible();

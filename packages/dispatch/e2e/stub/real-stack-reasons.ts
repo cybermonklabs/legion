@@ -90,7 +90,7 @@ export const realStackReasons: Record<string, string> = {
   "block-references.e2e.ts":
     "uploads, then asserts the server re-resolved the reference; an edit after load must arrive live; a delete after load must arrive live",
   "board.e2e.ts":
-    "drag writes a rank, read back after a reload; rank writes; the server's rank rejection is the assertion",
+    "drag writes a rank, read back after a reload; rank writes; a drop on a stale board is the server's rank, and its refusal of a closed issue's close is the assertion",
   "broadcast.e2e.ts": "broadcast sends, server-side exclusion, retry and idempotency",
   "broker-approval.e2e.ts":
     "decisions made on the real broker, with sign-in and cross-origin refusals",
@@ -203,7 +203,7 @@ export const realStackReasons: Record<string, string> = {
   "issue-page-v.e2e.ts":
     "the rows record and withdraw results and file a child through the server, and the view draws its coverage and results reads",
   "issues-table.e2e.ts":
-    "every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload",
+    "every row writes and then reads its own write: ranks and priorities patched through the API and read back through `getIssue`, plus a refused write kept in the store and an interrupted action finished after a reload",
   "issue-page-d.e2e.ts":
     "each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue",
   "issue-page-h.e2e.ts":

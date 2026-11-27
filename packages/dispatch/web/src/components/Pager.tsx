@@ -14,6 +14,10 @@ export interface PagerOptions {
   /** The page size that means every row, which reads as `All rows` rather than a count per
    *  page. Any size at least this big is that choice. */
   readonly allRows?: number;
+  /** Whether the line counts the rows: `3 of 40 issues in 4 groups`, `Rows 1–25 of 40` and
+   *  `All 40 rows`. True where unset. A page that counts its rows elsewhere passes false, and
+   *  the line keeps the range (`Rows 1–25`, `All rows`), the page, its steps and the page size. */
+  readonly totals?: boolean;
   readonly testId: string;
 }
 
@@ -51,15 +55,19 @@ export function Pager<TData>({
   size = "comfortable",
   table,
   testId,
+  totals = true,
 }: PagerProps<TData>): ReactNode {
   const [choosing, setChoosing] = useState(false);
   const { pageIndex, pageSize } = table.getState().pagination;
   const { grouping } = table.getState();
-  const rowsOnPages = table.getPrePaginationRowModel().rows.length;
+  // The rows every page holds together: the table's own count, which is the server's where the
+  // server answered one page of them (`useDataTable`'s `serverPage`).
+  const rowsOnPages = table.getRowCount();
   const leafCount = table.getFilteredRowModel().rows.length;
   const groupCount = table.getGroupedRowModel().rows.length;
   const total = table.options.data.length;
   const { group, line } = noun;
+  const range = `${sentence(line.many)} ${rowsOnPages === 0 ? 0 : pageIndex * pageSize + 1}–${Math.min((pageIndex + 1) * pageSize, rowsOnPages)}`;
   return (
     <div
       ref={pagerRef}
@@ -67,16 +75,22 @@ export function Pager<TData>({
       data-testid={testId}
       className={`flex shrink-0 flex-wrap items-center gap-3 text-sm ${textSecondaryOnCanvas}`}
     >
-      <span>
-        {leafCount} of {total} {total === 1 ? noun.one : noun.many}
-        {grouping.length > 0
-          ? ` in ${groupCount} ${groupCount === 1 ? group.one : group.many}`
-          : ""}
-      </span>
+      {totals ? (
+        <span>
+          {leafCount} of {total} {total === 1 ? noun.one : noun.many}
+          {grouping.length > 0
+            ? ` in ${groupCount} ${groupCount === 1 ? group.one : group.many}`
+            : ""}
+        </span>
+      ) : null}
       <span className="ml-auto">
         {pageSize >= allRows
-          ? `All ${rowsOnPages} ${rowsOnPages === 1 ? line.one : line.many}`
-          : `${sentence(line.many)} ${rowsOnPages === 0 ? 0 : pageIndex * pageSize + 1}–${Math.min((pageIndex + 1) * pageSize, rowsOnPages)} of ${rowsOnPages}`}
+          ? totals
+            ? `All ${rowsOnPages} ${rowsOnPages === 1 ? line.one : line.many}`
+            : `All ${line.many}`
+          : totals
+            ? `${range} of ${rowsOnPages}`
+            : range}
       </span>
       <StepButton
         ariaDisabled={!table.getCanPreviousPage()}

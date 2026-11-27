@@ -9,25 +9,20 @@ import { QueryError } from "../../components/QueryError";
 import { type TabDefinition, Tabs } from "../../components/Tabs";
 import { AddressRedirect, usePageAddress } from "../../lib/page-address";
 import {
-  borderDefault,
   dangerText,
-  surfaceMutedBg,
   surfaceMutedStrongBg,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryHoverToPrimary,
-  textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { ArchitecturePage } from "../architecture/ArchitecturePage";
 import { BlockedOnYou } from "../inbox/BlockedOnYou";
 import { buildProjectPath, parseProjectPath } from "../refs/routes";
-import { useKeymap, useKeymapScope } from "../shell/keymap";
+import { useKeymapScope } from "../shell/keymap";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { useUserPreference } from "../shell/userPreference";
 import { DocumentList } from "./DocumentList";
-import { IssueBoard } from "./IssueBoard";
 import { IssuesTable } from "./IssuesTable";
 
 type ProjectTab = "architecture" | "issues" | "documents";
@@ -38,26 +33,9 @@ const tabs: readonly TabDefinition<ProjectTab>[] = [
   { id: "documents", label: "Documents" },
 ];
 
-type IssueView = "list" | "board";
-
 export function ProjectPage(): ReactNode {
   const address = usePageAddress();
   const navigate = useNavigate();
-  const [issueView, setIssueView] = useUserPreference<IssueView>(
-    "project.issue-view",
-    (stored) => (stored === "board" ? "board" : "list"),
-    (view) => view
-  );
-  const [showEdges, setShowEdges] = useUserPreference(
-    "project.board-edges",
-    (stored) => stored === "shown",
-    (shown) => (shown ? "shown" : "hidden")
-  );
-  const [lanes, setLanes] = useUserPreference(
-    "project.board-lanes",
-    (stored) => stored === "shown",
-    (shown) => (shown ? "shown" : "hidden")
-  );
   const route = parseProjectPath(address.pathname, address.search);
   const projectKey = route?.project;
   const inbox = useQuery({
@@ -78,15 +56,6 @@ export function ProjectPage(): ReactNode {
   });
   const hasSource = (sources.data?.length ?? 0) > 0;
   useKeymapScope("project");
-  useKeymap("project", [
-    {
-      id: "toggle-view",
-      keys: "v",
-      label: "Toggle List / Board",
-      run: () => setIssueView(issueView === "list" ? "board" : "list"),
-      when: () => route?.kind === "issues",
-    },
-  ]);
   useDocumentTitle(
     project === undefined || route === undefined
       ? "Not found · Dispatch"
@@ -195,50 +164,6 @@ export function ProjectPage(): ReactNode {
             tabs={hasSource ? [architectureTab, ...tabs] : tabs}
           />
         </div>
-        {activeTab === "issues" ? (
-          <fieldset
-            className={`order-6 inline-flex shrink-0 rounded-xl border p-1 md:order-4 md:ml-auto ${borderDefault}`}
-          >
-            <legend className="sr-only">Issue view</legend>
-            {(["list", "board"] as const).map((view) => (
-              <button
-                aria-pressed={issueView === view}
-                className={`min-h-11 rounded-lg px-3 text-sm font-medium md:min-h-9 md:px-2 ${
-                  issueView === view ? surfaceMutedStrongBg : surfaceMutedBg
-                } ${textSecondaryOnCanvas}`}
-                key={view}
-                onClick={() => setIssueView(view)}
-                type="button"
-              >
-                {view === "list" ? "List" : "Board"}
-              </button>
-            ))}
-          </fieldset>
-        ) : null}
-        {activeTab === "issues" && issueView === "board" ? (
-          <button
-            aria-pressed={showEdges}
-            className={`order-7 min-h-11 shrink-0 rounded-xl border px-3 text-sm font-medium md:order-4 md:min-h-9 md:px-2 ${borderDefault} ${
-              showEdges ? surfaceMutedStrongBg : surfaceMutedBg
-            } ${textSecondaryOnCanvas}`}
-            onClick={() => setShowEdges(!showEdges)}
-            type="button"
-          >
-            {showEdges ? "Hide Icebox & Done" : "Show Icebox & Done"}
-          </button>
-        ) : null}
-        {activeTab === "issues" && issueView === "board" ? (
-          <button
-            aria-pressed={lanes}
-            className={`order-8 min-h-11 shrink-0 rounded-xl border px-3 text-sm font-medium md:order-4 md:min-h-9 md:px-2 ${borderDefault} ${
-              lanes ? surfaceMutedStrongBg : surfaceMutedBg
-            } ${textSecondaryOnCanvas}`}
-            onClick={() => setLanes(!lanes)}
-            type="button"
-          >
-            {lanes ? "Hide lanes" : "Show lanes"}
-          </button>
-        ) : null}
       </header>
       {hasSource ? (
         <div
@@ -261,19 +186,10 @@ export function ProjectPage(): ReactNode {
         role="tabpanel"
       >
         {activeTab === "issues" ? (
-          issueView === "list" ? (
-            <IssuesTable key={route.project} listing={{ project: route.project }} />
-          ) : (
-            // Keyed by the project, as the list is: the board holds what became of its last move,
-            // and a refusal of one project's move names that project's issue, so another
-            // project's board is drawn with none of it.
-            <IssueBoard
-              key={route.project}
-              lanes={lanes}
-              project={route.project}
-              showEdges={showEdges}
-            />
-          )
+          // The Issues tab's views, in the table or the Board, with their controls. Keyed by the
+          // project: the Board holds what became of its last move, and a refusal of one project's
+          // move names that project's issue, so another project's Board is drawn with none of it.
+          <IssuesTable key={route.project} project={route.project} />
         ) : null}
       </div>
       <div

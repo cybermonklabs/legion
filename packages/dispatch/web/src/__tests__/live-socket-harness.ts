@@ -1,5 +1,6 @@
-import { spyOn } from "bun:test";
+import { expect, spyOn } from "bun:test";
 import type { QueryClient } from "@tanstack/react-query";
+import { act, waitFor } from "@testing-library/react";
 
 import { RECONNECT_SPREAD_MS } from "../api/live-socket";
 import { deliveryRunQuery, deliveryTimelineQuery } from "../api/queries";
@@ -9,6 +10,7 @@ import type {
   DeliveryLiveSnapshot,
   DeliveryRunDetail,
   DeliveryTimelineWithMeasures,
+  LegionBoardResponse,
   LiveClientFrame,
   LiveError,
   LiveServerFrame,
@@ -152,6 +154,14 @@ export function installFakeLiveSockets(): FakeLiveSockets {
   };
 }
 
+/** The live sockets the page opens, for the rest of the test: `restores`, which the test file's
+ *  `afterEach` runs, puts the real WebSocket back. */
+export function liveSockets(restores: (() => void)[]): FakeLiveSockets {
+  const sockets = installFakeLiveSockets();
+  restores.push(() => sockets.restore());
+  return sockets;
+}
+
 /** What a page holds after a snapshot that names no revision; a test that sends no delta never
  *  reads them. */
 const NO_REVS: DeliveryLiveRevs = { items: {}, maps: {}, counts: {}, fields: {} };
@@ -175,6 +185,31 @@ export function snapshotFrame(
 /** Dispatch refusing subscription `sub` with the code the matching GET route would answer. */
 export function errorFrame(sub: string, code: string, message: string): LiveError {
   return { type: "error", sub, code, message };
+}
+
+/** Dispatch answers the page's board subscription with `answer`: the board, or a refusal. */
+export async function answerBoard(
+  sockets: FakeLiveSockets,
+  answer: LegionBoardResponse | { readonly code: string; readonly message: string }
+): Promise<void> {
+  await waitFor(() => expect(sockets.sockets.length).toBeGreaterThan(0));
+  const socket = sockets.latest();
+  if (socket.readyState !== 1) act(() => socket.open());
+  const { sub } = await waitFor(() => socket.subscribed("legion"));
+  act(() =>
+    socket.receive(
+      "code" in answer ? errorFrame(sub, answer.code, answer.message) : snapshotFrame(sub, answer)
+    )
+  );
+}
+
+/** Lets `ms` of real time pass, and React draw whatever it set off. */
+export async function waitMs(ms: number): Promise<void> {
+  await act(async () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, ms);
+    await promise;
+  });
 }
 
 /** A live-owned timeline query and an ordinary run read, both held in `queryClient`'s cache with

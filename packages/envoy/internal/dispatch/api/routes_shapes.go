@@ -328,6 +328,10 @@ type issueListQuery struct {
 	Limit int `query:"limit"`
 	// Offset is where the page starts, 0 or more; alone it pages at the default limit.
 	Offset int `query:"offset"`
+	// Sort orders the listing by closed_at, oldest close first, or by -closed_at, newest first,
+	// the issues with no closed_at last in both, then in the listing's own order (status, rank,
+	// creation time, key), which is the whole order without it.
+	Sort string `query:"sort" enum:"closed_at,-closed_at"`
 }
 
 // prioritiesQuery is GET /api/v1/priorities's query. The list of priorities is the whole
@@ -889,8 +893,8 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/priorities/{id}/history": {Status: http.StatusOK, Response: []model.PriorityAct{}},
 	"GET /api/v1/issues": {
 		Status: http.StatusOK, Response: []model.IssueSummary{}, Params: issueListQuery{},
-		// A request naming limit or offset is answered the page wrapper instead
-		// (issue_page.go).
+		// A request naming limit or offset is answered the page wrapper instead, which names the
+		// sort the request sent (issue_page.go).
 		Also: []routeAnswer{{Status: http.StatusOK, Body: model.IssueSummaryPage{}}},
 	},
 	"POST /api/v1/issues": {

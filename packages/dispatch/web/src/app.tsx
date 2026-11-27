@@ -82,6 +82,7 @@ import { NotFoundPage } from "./features/shell/NotFoundPage";
 import { RailButton } from "./features/shell/RailButton";
 import { ShortcutHelp } from "./features/shell/ShortcutHelp";
 import {
+  PAGE_LOCKS,
   SIGN_OUT_SETTLE_MS,
   SignInChannel,
   type UnsentChange,
@@ -1217,12 +1218,12 @@ function AuthenticatedApp({ user }: { user: AuthenticatedUser }): ReactNode {
 
 /** Where the tabs of one browser tell each other who is signed in, and what a sign-out in one of
  *  them does to the person's writes in all of them (`SignInChannel`). A page outside a secure
- *  context has no `navigator.locks` (`null` where nothing implements it at all), and holds a
- *  sign-out on its renewal lease instead. */
+ *  context has no lock manager (`PAGE_LOCKS`), and holds a sign-out on its renewal lease
+ *  instead. */
 const signIns = new SignInChannel(
   typeof BroadcastChannel === "undefined" ? undefined : new BroadcastChannel("dispatch-sign-in"),
   typeof window === "undefined" ? undefined : window,
-  typeof navigator === "undefined" ? undefined : (navigator.locks ?? undefined)
+  PAGE_LOCKS
 );
 
 /** What of `login`'s a sign-out would discard here: every write of theirs they can see that

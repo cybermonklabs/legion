@@ -298,6 +298,11 @@ test("the header carries the title in place and the owner, and no line of order 
   // a plain field.
   await user.click(screen.getByRole("button", { name: "Owner BET and LINUX controllers" }));
   expect(screen.getByRole("combobox", { name: "Owner" })).toBeDefined();
+  const header = document.querySelector("header");
+  expect(header?.querySelectorAll("p")).toHaveLength(0);
+  const text = document.body.textContent ?? "";
+  expect(text).not.toMatch(/dragged on the priorities page|Order P2/);
+  expect(text).not.toMatch(/In flight|waiting \d|backlog or icebox \d|Active \d/i);
   expect(screen.getByRole("link", { name: "‹ Priorities" }).getAttribute("href")).toBe(
     "/priorities"
   );
@@ -522,12 +527,22 @@ test("the page carries no tab strip, no version control and no delete", async ()
   expect(/\bv\d+\b|Versions|Comments on this description/.test(text)).toBe(false);
 });
 
-test("one link out leaves the scope, naming the issues and why", async () => {
-  page("rocq-lean", [issue("CORE-1", ["rocq-lean"]), issue("CORE-4", ["rocq-lean"])]);
+// R13: the link to a project's issues reads "Open in <KEY>", one for each project the work is in.
+test("each link out reads Open in its project, naming the issues and why", async () => {
+  page("rocq-lean", [
+    issue("CORE-1", ["rocq-lean"]),
+    issue("CORE-4", ["rocq-lean"]),
+    issue("OPS-2", ["rocq-lean"]),
+  ]);
   const out = await screen.findByRole("link", { name: "Open in CORE" });
   expect(out.getAttribute("href")).toBe(
     "/projects/CORE/issues?only=CORE-1%2CCORE-4&onlyLabel=Rocq+and+Lean+speed+work+restarted&nofilter=1"
   );
+  expect(screen.getByRole("link", { name: "Open in OPS" }).getAttribute("href")).toBe(
+    "/projects/OPS/issues?only=OPS-2&onlyLabel=Rocq+and+Lean+speed+work+restarted&nofilter=1"
+  );
+  const text = document.body.textContent ?? "";
+  expect(text).not.toMatch(/Leave this scope|issues table/);
 });
 
 test("the work under the priority is the issues table, scoped and under its own prefix", async () => {
@@ -540,9 +555,66 @@ test("the work under the priority is the issues table, scoped and under its own 
   expect(listing).toHaveBeenCalledWith({ advances: ["rocq-lean"], open: true });
 });
 
+// R13: the work table's display menu reads Group by, its pager draws no total, each sortable
+// header's hint is in the shared tooltip with no native title, and Open asks picks With open
+// asks or No open asks.
+test("the work table names its display menu Group by, pages with no total and keeps its sort hints in the tooltip", async () => {
+  const user = userEvent.setup();
+  page("rocq-lean", [issue("CORE-1", ["rocq-lean"]), issue("CORE-4", ["rocq-lean"])]);
+  const work = await screen.findByRole("region", { name: "Work advancing this priority" });
+  const table = await within(work).findByRole("table");
+  await within(table).findByRole("row", { name: "CORE-4 Work CORE-4" }, { timeout: 3000 });
+
+  await user.click(within(work).getByRole("button", { name: "Group by" }));
+  expect(screen.getByRole("dialog", { name: "Group by" })).toBeDefined();
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("button", { name: "View" })).toBeNull();
+  expect(screen.queryByRole("group", { name: "Layout" })).toBeNull();
+
+  const pager = within(work).getByTestId("issues-table-pager");
+  expect(within(pager).getByText("Rows 1–2")).toBeDefined();
+  expect(within(pager).getByText("Page 1 of 1")).toBeDefined();
+  expect(pager.textContent).not.toMatch(/of 2|issue/);
+
+  // Each header of the columns the table opens with that sorts holds one sort button, which
+  // carries no native title: its hint is in the shared tooltip.
+  const sorts = within(table)
+    .getAllByRole("columnheader")
+    .flatMap((header) => {
+      const sort = header.querySelector("button:not([data-control])");
+      return sort === null ? [] : [sort];
+    });
+  expect(sorts.map((button) => button.textContent?.replace(/[▲▼]/g, "").trim())).toEqual(
+    expect.arrayContaining(["Key", "Title", "Status"])
+  );
+  expect(sorts.filter((button) => button.hasAttribute("title"))).toEqual([]);
+  await user.hover(within(table).getByRole("button", { name: "Status" }));
+  expect(screen.getByRole("tooltip").textContent).toBe(
+    "Sort (shift-click to add a second sort); drag to move the column"
+  );
+  await user.unhover(within(table).getByRole("button", { name: "Status" }));
+
+  // The Open asks column opens hidden here, one tick away under Columns.
+  await user.click(within(work).getByRole("button", { name: "Columns" }));
+  await user.click(
+    within(screen.getByRole("dialog", { name: "Columns" })).getByRole("checkbox", {
+      name: "Open asks",
+    })
+  );
+  await user.keyboard("{Escape}");
+  await user.click(await within(table).findByRole("button", { name: "Filter Open asks" }));
+  const picks = screen.getByRole("listbox", { name: "Open asks options" });
+  expect(
+    within(picks)
+      .getAllByRole("option")
+      .map((option) => option.textContent?.replace(/\d+$/, ""))
+  ).toEqual(["With open asks", "No open asks"]);
+});
+
 // The work table opens with what a reader of one priority's work reads first, so Title, which
 // takes what the others leave, is wide enough to read beside the margin. Every other column of
-// the Issues table is one tick away under Columns.
+// the Issues table is one tick away under Columns. The Epic column is gone (R14), and Closed
+// joins the menu, hidden (R13).
 test("the work table opens with the issue, its title, its status and its project", async () => {
   const user = userEvent.setup();
   page("rocq-lean", [issue("CORE-1", ["rocq-lean"])]);
@@ -552,8 +624,9 @@ test("the work table opens with the issue, its title, its status and its project
   const menu = screen.getByRole("dialog", { name: "Columns" });
   for (const name of ["Key", "Title", "Status", "Project"])
     expect(within(menu).getByRole("checkbox", { name })).toBeChecked();
-  for (const name of ["Claimed by", "Updated", "Priority", "Queue", "Epic", "Assignee"])
+  for (const name of ["Claimed by", "Updated", "Priority", "Queue", "Assignee", "Closed"])
     expect(within(menu).getByRole("checkbox", { name })).not.toBeChecked();
+  expect(within(menu).queryByRole("checkbox", { name: "Epic" })).toBeNull();
   await user.keyboard("{Escape}");
 });
 

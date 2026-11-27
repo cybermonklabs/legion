@@ -109,16 +109,21 @@ test("project table filters narrow issues; documents stay scoped to the project"
       throw new Error("project header is not visible");
     }
     expect(blockerBox.x + blockerBox.width).toBeLessThanOrEqual(mainBox.x + mainBox.width);
-    await expect(page.getByRole("tab", { name: "Issues" })).toHaveAttribute(
+    // The project's tab, by its exact name: the Issues tab's own view tabs count issues too.
+    await expect(page.getByRole("tab", { name: "Issues", exact: true })).toHaveAttribute(
       "aria-selected",
       "true"
     );
-    // Closed issues load when the Status filter lets Done through; the bar's own Done cell,
-    // which only exists once they are loaded, then narrows to them.
+    // Closed issues load when the Status filter lets Done through; the bar's own Done entry,
+    // which only exists once they are loaded, then narrows to them, and a second press gives the
+    // view's own statuses back.
     await pickFilterOption(page, "Status", "Done");
-    await page.getByRole("button", { name: "Done 1", exact: true }).click();
+    const doneEntry = page.getByRole("button", { name: "Done 1", exact: true });
+    await doneEntry.click();
     await expect(page.getByText("Done work", { exact: true })).toBeVisible();
     await expect(page.getByText("Child work", { exact: true })).toHaveCount(0);
+    await doneEntry.click();
+    await expect(page.getByText("Child work", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Testing 1", exact: true }).click();
     await expect(page.getByText("Child work", { exact: true })).toBeVisible();
     await expect(page.getByText("Backlog work", { exact: true })).toHaveCount(0);

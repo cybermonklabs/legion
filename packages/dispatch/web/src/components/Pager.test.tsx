@@ -51,7 +51,7 @@ function PagedDeploys({ onPaged, size }: { onPaged?: () => void; size?: ControlS
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [globalFilter, setGlobalFilter] = useState("");
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 5 });
-  const layout = useTableLayout("paged-deploys", LAYOUT_COLUMNS);
+  const layout = useTableLayout("paged-deploys", LAYOUT_COLUMNS, sorting);
   const state = { columnFilters, globalFilter, grouping, pagination, sorting };
   const model = useDataTable<Deploy>({
     columns: COLUMNS,

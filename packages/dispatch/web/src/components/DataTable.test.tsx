@@ -6,12 +6,13 @@ import type {
   PaginationState,
   SortingState,
 } from "@tanstack/react-table";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: a column's drag and drop, which user-event has no form for.
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MOUSE_CSS, SIZE_CSS, sizeUnder } from "../__tests__/control-size";
 import { DEPLOY_NAMES, DEPLOY_NOUN } from "../__tests__/deploy-table";
-import { openList, optionNames, rows as optionsOf, pickNamed } from "../__tests__/list-picks";
+import { openList, optionNames, rows as optionsOf, pick, pickNamed } from "../__tests__/list-picks";
 import { endWindowScroll } from "../__tests__/scroll-box";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { useKeymapScope } from "../features/shell/keymap";
@@ -28,7 +29,7 @@ import {
   useDataTable,
 } from "./DataTable";
 import type { PagerOptions } from "./Pager";
-import { type LayoutColumns, useTableLayout } from "./table-layout";
+import { type LayoutColumns, SORT_MARK_WIDTH, useTableLayout } from "./table-layout";
 
 /** A row that is not an issue: the core knows nothing of what its rows are. */
 interface Deploy {
@@ -137,6 +138,7 @@ function Deploys({
   counts,
   fillColumn,
   filterCounted,
+  fixedColumns,
   focusTarget,
   groupSlot,
   grouping: initialGrouping = [],
@@ -151,8 +153,9 @@ function Deploys({
   renderFilter,
   rowHeight,
   rows = DEPLOYS,
+  serverPage,
   size,
-  stackColumn,
+  stackColumns,
   trailingWidth,
 }: {
   columns?: ColumnDef<Deploy>[];
@@ -163,6 +166,8 @@ function Deploys({
   fillColumn?: string;
   /** Which values of the open filter's column the counts have counted. */
   filterCounted?: DataTableProps<Deploy>["filterCounted"];
+  /** The columns this caller's order keeps in their place without pinning them. */
+  fixedColumns?: readonly string[];
   /** An undrawn row whose trailing control this caller asks to show whole. */
   focusTarget?: string;
   /** What this caller draws beside a group's heading, in place of the count of its deploys. */
@@ -184,9 +189,12 @@ function Deploys({
   /** The one height this caller draws every row at. */
   rowHeight?: number;
   rows?: Deploy[];
+  /** The rows are one page a server answered, of this many rows in all. */
+  serverPage?: { readonly rowCount: number };
   /** The size the page draws its controls at, which the table hands its own. */
   size?: ControlSize;
-  stackColumn?: string;
+  /** The columns whose headers stack their sort over their filter in a phone's box. */
+  stackColumns?: readonly string[];
   /** The width of the action cell each row draws after its columns. */
   trailingWidth?: number;
 }): ReactNode {
@@ -197,7 +205,7 @@ function Deploys({
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize });
   const [openFilter, setOpenFilter] = useState<string>();
   const [rolledBack, setRolledBack] = useState<ReadonlySet<string>>(new Set());
-  const layout = useTableLayout(layoutKey, layoutColumns);
+  const layout = { ...useTableLayout(layoutKey, layoutColumns, sorting), fixedColumns };
   const state = { columnFilters, globalFilter, grouping, pagination, sorting };
   const model = useDataTable<Deploy>({
     columns,
@@ -219,6 +227,7 @@ function Deploys({
     onSortingChange: setSorting,
     rowHeight,
     rows,
+    serverPage,
     state,
     viewKey: JSON.stringify(state),
   });
@@ -241,13 +250,13 @@ function Deploys({
         openFilter={openFilter}
         pager={pager ?? undefined}
         renderFilter={renderFilter}
-        renderGroup={({ entry: { row }, index, measure }) => (
+        renderGroup={({ entry: { continued, row }, index, measure }) => (
           <DataTableGroupRow
             columns={model.table.getVisibleLeafColumns().length}
             expanded={row.getIsExpanded()}
             heading={<em>{String(row.groupingValue)}</em>}
             index={index}
-            label={`${row.getIsExpanded() ? "Collapse" : "Expand"} ${String(row.groupingValue)}`}
+            label={`${row.getIsExpanded() ? "Collapse" : "Expand"} ${String(row.groupingValue)}${continued ? ", continued" : ""}`}
             measure={measure}
             onToggle={row.getToggleExpandedHandler()}
             slot={groupSlot ?? <span>{row.getLeafRows().length} deploys</span>}
@@ -276,7 +285,7 @@ function Deploys({
         )}
         scrollTestId={`${layoutKey}-scroll`}
         size={size}
-        stackColumn={stackColumn}
+        stackColumns={stackColumns}
         trailingWidth={trailingWidth}
       />
     </section>
@@ -412,6 +421,66 @@ test("pages its rows and moves to the next page", async () => {
   expect(screen.getByText("Page 2 of 2")).toBeInTheDocument();
 });
 
+// A server's page: the rows are the page on screen, so the table slices none of them and counts
+// its pages by the server's row count; a step asks the caller for the next page.
+test("a server's page is drawn whole and paged by the server's row count", async () => {
+  const user = userEvent.setup();
+  const rows = Array.from({ length: 10 }, (_, index) => ({
+    id: `d${index + 1}`,
+    minutes: index,
+    region: "eu",
+    service: `service ${index + 1}`,
+    state: "live",
+  }));
+  // Pages of 10 rows: the server holds 23, so 3 pages, and it answered the first.
+  draw(<Deploys pageSize={10} rows={rows} serverPage={{ rowCount: 23 }} />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  expect(listed(table)).toHaveLength(10);
+  expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+  expect(screen.getByText("Rows 1–10 of 23")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Next ›" }));
+
+  // The page index moved; the rows are the caller's until it hands the next page in. The range
+  // is counted against the server's rows, not the one page the table holds.
+  expect(screen.getByText("Page 2 of 3")).toBeInTheDocument();
+  expect(screen.getByText("Rows 11–20 of 23")).toBeInTheDocument();
+  expect(listed(table)).toEqual(rows.map((row) => row.id));
+});
+
+// A caller that counts its rows elsewhere (the Issues tab, on its tabs) asks for no total: the
+// line keeps the range, the page, its steps and the page size. Every other caller keeps it.
+test("a pager with no total draws the range, the page, its steps and the page size", async () => {
+  const user = userEvent.setup();
+  const rows = Array.from({ length: 12 }, (_, index) => ({
+    id: `d${index + 1}`,
+    minutes: index,
+    region: "eu",
+    service: `service ${index + 1}`,
+    state: "live",
+  }));
+  draw(
+    <Deploys
+      pageSize={10}
+      pager={{ allRows: 50, pageSizes: [10, 50], testId: "deploys-pager", totals: false }}
+      rows={rows}
+    />
+  );
+
+  await screen.findByRole("table", { name: "Deploys deploys" });
+  const pager = screen.getByTestId("deploys-pager");
+  expect(within(pager).getByText("Rows 1–10")).toBeInTheDocument();
+  expect(within(pager).getByText("Page 1 of 2")).toBeInTheDocument();
+  expect(within(pager).getByRole("button", { name: "‹ Previous" })).toBeInTheDocument();
+  expect(within(pager).getByRole("button", { name: "Next ›" })).toBeInTheDocument();
+  expect(pager.textContent).not.toMatch(/12|deploys/);
+
+  await pick(user, "Rows per page", "All rows");
+  expect(within(pager).getAllByText("All rows")).toHaveLength(2);
+  expect(pager.textContent).not.toMatch(/12|deploys/);
+});
+
 // The press that reaches the last page, or the first, leaves the reader on the button they
 // pressed: a step with no page for it is refused with `aria-disabled` rather than `disabled`,
 // which the browser would take the focus off, and a press on it then does nothing.
@@ -481,6 +550,51 @@ test("a group's heading row folds its rows away and opens them again, with the c
   expect(folded).toHaveAttribute("aria-expanded", "false");
   await user.click(folded);
   expect(listed(table)).toEqual(["d1", "d3", "d2"]);
+});
+
+// k18 Three (R14): a page that starts with a leaf draws its group's heading first, and that
+// heading reads continued only when the page before held a leaf of the group. A heading that was
+// the page before's last row, with none of its rows there, opens its group on the next page.
+test.each([
+  // Page 1: the eu heading, 8 eu rows, then the us heading with no us row.
+  ["first leaf opens page 2", 8, "Collapse us"],
+  // Page 1: the eu heading and 9 of eu's 12 rows; its other 3 rows open page 2.
+  ["leaves run onto page 2", 12, "Collapse eu, continued"],
+])("the heading at page 2's top of the group whose %s", async (_name, eu, heading) => {
+  const user = userEvent.setup();
+  const rows = [
+    ...Array.from({ length: eu }, (_, index) => ({
+      id: `eu${index + 1}`,
+      minutes: index,
+      region: "eu",
+      service: `service ${index + 1}`,
+      state: "live",
+    })),
+    ...Array.from({ length: 4 }, (_, index) => ({
+      id: `us${index + 1}`,
+      minutes: index,
+      region: "us",
+      service: `service ${index + 1}`,
+      state: "live",
+    })),
+  ];
+  draw(
+    <Deploys
+      groupOrder={(_column, a, b) => a.localeCompare(b)}
+      grouping={["region"]}
+      pageSize={10}
+      rows={rows}
+    />
+  );
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  await user.click(screen.getByRole("button", { name: "Next ›" }));
+  // The page's first line, which the box draws at index 0 below its spacer row.
+  const first = table.querySelector('tbody tr[data-index="0"]');
+  if (!(first instanceof HTMLElement)) throw new Error("Page 2 draws no line");
+  const toggle = within(first).getByRole("button", { name: /^Collapse / });
+  // The words the caller wrote, then the name a screen reader reads from them.
+  expect(toggle.getAttribute("aria-label")).toBe(heading);
+  expect(toggle).toHaveAccessibleName(heading);
 });
 
 test("says the caller's own words when no row is listed", async () => {
@@ -560,7 +674,7 @@ test("a phone stacks the header its caller names, and no other table's title", a
         columns={NAMESAKE_COLUMNS}
         layoutColumns={NAMESAKE_LAYOUT}
         layoutKey="stacked"
-        stackColumn="title"
+        stackColumns={["title"]}
       />
       <Deploys columns={NAMESAKE_COLUMNS} layoutColumns={NAMESAKE_LAYOUT} layoutKey="unstacked" />
     </>,
@@ -721,16 +835,137 @@ test("a header cell draws the filter its caller gives it, not one of its own", a
   expect(listed(table)).toEqual(["d3"]);
 });
 
-// The caller that asked for it: the project List stacks `title`, and the priorities page stacks
-// a column of its own. The core holds no column name of any page.
-test("the column the caller names stacks its controls in a box under 640 px", async () => {
-  draw(<Deploys stackColumn="service" />, 390);
+const SORT_HINT = "Sort (shift-click to add a second sort)";
+
+// INFRA-3221's R9: the sort hint moved from each sort button's native title into the shared
+// tooltip, which a keyboard reaches too, so two tooltips never show at once. A pinned column
+// cannot be dragged, so its hint says nothing of a drag.
+test("a sort button carries no native title and opens its hint in the tooltip, on hover and on focus", async () => {
+  const user = userEvent.setup();
+  draw(<Deploys layoutColumns={PINNED_LAYOUT} layoutKey="pinned" />, 1400);
+
+  const table = await screen.findByRole("table", { name: "Deploys pinned" });
+  const sort = (name: string) => within(table).getByRole("button", { name });
+  for (const name of ["Deploy", "Service", "State", "Minutes", "Region"])
+    expect(sort(name)).not.toHaveAttribute("title");
+  await user.hover(sort("Minutes"));
+  expect(screen.getByRole("tooltip")).toHaveTextContent(`${SORT_HINT}; drag to move the column`, {
+    normalizeWhitespace: true,
+  });
+  expect(sort("Minutes")).toHaveAccessibleDescription(`${SORT_HINT}; drag to move the column`);
+  await user.hover(sort("Deploy"));
+  expect(screen.getAllByRole("tooltip")).toHaveLength(1);
+  expect(screen.getByRole("tooltip").textContent).toBe(SORT_HINT);
+  await user.unhover(sort("Deploy"));
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  act(() => sort("State").focus());
+  expect(screen.getByRole("tooltip").textContent).toBe(`${SORT_HINT}; drag to move the column`);
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  expect(sort("State")).toHaveFocus();
+  // The filter trigger keeps the native title that names it.
+  expect(screen.getByRole("button", { name: "Filter Service" })).toHaveAttribute(
+    "title",
+    "Filter Service"
+  );
+});
+
+test("a column that says how its value is taken says it first in its sort tooltip, the hint under it", async () => {
+  const user = userEvent.setup();
+  const method = "The minutes from the first push to the rollout's end.";
+  const columns = COLUMNS.map((column) =>
+    column.id === "minutes" ? { ...column, meta: { describe: method } } : column
+  );
+  draw(<Deploys columns={columns} />);
 
   const table = await screen.findByRole("table", { name: "Deploys deploys" });
-  const controls = (name: RegExp) =>
-    within(table).getByRole("columnheader", { name }).querySelector("span")?.className ?? "";
-  expect(controls(/Service/)).toContain("flex-col");
-  expect(controls(/Minutes/)).not.toContain("flex-col");
+  await user.hover(within(table).getByRole("button", { name: "Minutes" }));
+  const lines = [...screen.getByRole("tooltip").querySelectorAll("p")];
+  expect(lines.map((line) => line.textContent)).toEqual([
+    method,
+    `${SORT_HINT}; drag to move the column`,
+  ]);
+  // A column with no method has the hint alone.
+  await user.hover(within(table).getByRole("button", { name: "Region" }));
+  const hint = [...screen.getByRole("tooltip").querySelectorAll("p")];
+  expect(hint.map((line) => line.textContent)).toEqual([`${SORT_HINT}; drag to move the column`]);
+});
+
+test("a column drag shuts the sort tooltip, and no hover opens one until the drop", async () => {
+  const user = userEvent.setup();
+  draw(<Deploys />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  const sort = (name: string) => within(table).getByRole("button", { name });
+  await user.hover(sort("Minutes"));
+  expect(screen.getByRole("tooltip")).toBeDefined();
+  // A header's drag start: HTML5 drag and drop, which user-event has no form for.
+  fireEvent.dragStart(sort("Minutes"));
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  await user.hover(sort("Region"));
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  // The drop that ends that drag, which user-event has no form for either.
+  fireEvent.drop(within(table).getByRole("columnheader", { name: /Region/ }));
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  await user.unhover(sort("Region"));
+  await user.hover(sort("Region"));
+  expect(screen.getByRole("tooltip").textContent).toBe(`${SORT_HINT}; drag to move the column`);
+});
+
+// The caller that asked for it: the Issues tab on a phone, whose order keeps Title right after Key
+// without pinning it. A column the caller's order keeps in its place is not dragged, and its hint
+// names no drag, since no drag would move it; a column dropped onto it still moves before it.
+test("a column the caller's order keeps in place is not dragged and names no drag, and takes a drop", async () => {
+  const user = userEvent.setup();
+  draw(<Deploys fixedColumns={["service"]} />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  const sort = (name: string) => within(table).getByRole("button", { name });
+  expect(sort("Service")).toHaveAttribute("draggable", "false");
+  expect(sort("Minutes")).toHaveAttribute("draggable", "true");
+  await user.hover(sort("Service"));
+  expect(screen.getByRole("tooltip").textContent).toBe(SORT_HINT);
+  await user.unhover(sort("Service"));
+
+  const service = within(table).getByRole("columnheader", { name: /Service/ });
+  // The drag start, drag over and drop of one header onto another: HTML5 drag and drop, which
+  // user-event has no form for.
+  fireEvent.dragStart(sort("Minutes"));
+  fireEvent.dragOver(service);
+  fireEvent.drop(service);
+  expect(
+    within(table)
+      .getAllByRole("columnheader")
+      .map((header) => header.querySelector("button")?.textContent)
+  ).toEqual(["Deploy", "Minutes", "Service", "State", "Region"]);
+});
+
+test("a column's own control stands in its header beside the filter, outside the sort button", async () => {
+  const columns = COLUMNS.map((column) =>
+    column.id === "service"
+      ? {
+          ...column,
+          meta: {
+            text: true,
+            headerControl: (
+              <button aria-pressed={false} type="button">
+                Bars
+              </button>
+            ),
+          },
+        }
+      : column
+  );
+  draw(<Deploys columns={columns} />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  const control = within(table).getByRole("button", { name: "Bars" });
+  const cell: HTMLElement | null = control.closest("th");
+  expect(cell).toBe(within(table).getByRole("columnheader", { name: /Service/ }));
+  expect(within(table).getByRole("button", { name: "Service" })).not.toContainElement(control);
+  expect(control.parentElement).toContainElement(
+    within(table).getByRole("button", { name: "Filter Service" })
+  );
 });
 
 // The caller that asked for it: the Delivery list, whose Title took what its box had over the
@@ -760,6 +995,45 @@ test("the column the caller names takes what the box has over the other columns'
   const plain = await screen.findByRole("table", { name: "Deploys deploys" });
   expect(plain.style.minWidth).toBe("");
   expect(widths(plain)).toEqual(["150px", "150px", "150px", "150px", "150px"]);
+});
+
+// dispatch://INFRA-3221/comment/141bbad2-b75e-4bb4-b0a7-b5b1af541a3c, on every table the core
+// draws: a column's minimum holds its header with its filter button, and while the table is
+// sorted by the column its sort mark too. Only a sorted column grows, by the mark, and only while
+// it is sorted, a second sort's column too; one whose caller names a sorted minimum that holds
+// the mark already does not.
+test("a sorted column at its minimum grows by the sort mark, and gives it back once the sort moves", async () => {
+  const user = userEvent.setup();
+  const atMinimums: LayoutColumns = {
+    ids: LAYOUT_COLUMNS.ids,
+    minimums: { deploy: 100, minutes: 100, region: 100, service: 150, state: 100 },
+    rowAttribute: "data-deploy-row",
+    sizes: { deploy: 100, minutes: 100, region: 100, service: 150, state: 100 },
+    sortedMinimums: { region: 100 },
+  };
+  draw(<Deploys layoutColumns={atMinimums} layoutKey="marks" />, 1400);
+  const table = await screen.findByRole("table", { name: "Deploys marks" });
+  const widths = () =>
+    within(table)
+      .getAllByRole("columnheader")
+      .map((header) => header.style.width);
+  const sort = (name: string) =>
+    within(table).getByRole("button", { name: new RegExp(`^${name}`) });
+  const marked = `${100 + SORT_MARK_WIDTH}px`;
+  expect(widths()).toEqual(["100px", "150px", "100px", "100px", "100px"]);
+
+  await user.click(sort("Minutes"));
+  expect(widths()).toEqual(["100px", "150px", "100px", marked, "100px"]);
+  await user.click(sort("State"));
+  expect(widths()).toEqual(["100px", "150px", marked, "100px", "100px"]);
+  // A second sort draws its mark too.
+  await user.keyboard("{Shift>}");
+  await user.click(sort("Minutes"));
+  await user.keyboard("{/Shift}");
+  expect(widths()).toEqual(["100px", "150px", marked, marked, "100px"]);
+  // Region's minimum holds its mark already, as its caller says.
+  await user.click(sort("Region"));
+  expect(widths()).toEqual(["100px", "150px", "100px", "100px", "100px"]);
 });
 
 // The caller that asked for it: the project List's Start next, which sits in a last cell with no
@@ -827,9 +1101,9 @@ test("the rows carry the caller's own data attribute and no word of another page
   expect(DEPLOY_NAMES.rowAttribute).toBe("data-deploy-row");
 });
 
-// The caller that asked for it: the project List draws an epic's actions beside its heading, and
-// the priorities page a "Start all" beside a priority's. The heading itself is a node, since a
-// group can stand for a row elsewhere.
+// The caller that asked for it: the project List draws a group's issues by status beside its
+// heading, and the priorities page a "Start all" beside a priority's. The heading itself is a
+// node, since a group can stand for a row elsewhere.
 test("a group's heading is the caller's node, with the caller's slot beside it", async () => {
   const user = userEvent.setup();
   draw(
@@ -971,7 +1245,7 @@ function Priorities({ layoutKey = "priorities" }: { layoutKey?: string }): React
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [globalFilter, setGlobalFilter] = useState("");
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
-  const layout = useTableLayout(layoutKey, PRIORITY_LAYOUT);
+  const layout = useTableLayout(layoutKey, PRIORITY_LAYOUT, sorting);
   const state = { columnFilters, globalFilter, grouping, pagination, sorting };
   const model = useDataTable<Priority>({
     columns: PRIORITY_COLUMNS,
@@ -1183,8 +1457,59 @@ test("the table counts every row of its page for a screen reader, drawn or not, 
   expect(grouped).toHaveAttribute("aria-rowcount", "6");
   expect(places(grouped)).toEqual(["2", "3", "4", "5", "6"]);
   expect(
-    within(grouped).getByRole("button", { name: "Collapse us" }).closest("tr")
+    within(grouped).getByRole("button", { name: "Collapse us, continued" }).closest("tr")
   ).toHaveAttribute("aria-rowindex", "2");
+});
+
+// R11: a table that does not ask to hold a reader at the top (`holdAtTop`, the Delivery page's
+// list) keeps main's rule there, and a row added above lands in view. A commit that only scrolls -
+// the same rows, the virtualizer's window moved - is the reader's own move: the anchor measures
+// nothing for it, so a scroll alone reads no row's place. A commit that changes the rows is
+// anchored, and finds the row nearest the middle of the box.
+test("a table holds no row at the top unless it asks, and a commit that only scrolls measures no place", async () => {
+  linesTall();
+  const view = draw(
+    <Deploys layoutKey="flat" pageSize={100} pager={null} rows={manyDeploys(60)} />
+  );
+  const table = await screen.findByRole("table", { name: "Deploys flat" });
+  const box = screen.getByTestId("flat-scroll");
+  const point = spyOn(document, "elementFromPoint").mockReturnValue(null);
+  restores.push(() => point.mockRestore());
+  await act(async () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 50);
+    await promise;
+  });
+  const arrival = (id: string): Deploy => ({
+    id,
+    minutes: 1,
+    region: "eu",
+    service: "arrival",
+    state: "live",
+  });
+  const arrived = [arrival("d0"), ...manyDeploys(60)];
+  view.rerender(<Deploys layoutKey="flat" pageSize={100} pager={null} rows={arrived} />);
+  expect(listed(table)[0]).toBe("d0");
+  expect(box.scrollTop).toBe(0);
+  expect(point).not.toHaveBeenCalled();
+
+  scrollBoxTo(box, 1000);
+  expect(listed(table)).toContain("d40");
+  expect(point).not.toHaveBeenCalled();
+  // The virtualizer reads the scroll as over 150 ms after its last event (`isScrollingResetDelay`
+  // in @tanstack/virtual-core) and draws again then: let that commit land here, inside `act`,
+  // rather than wherever the row has got to by then, which a slow run reached before the
+  // rerender below ended (seed 2 at 5a9a6b66). It is a commit that only scrolls too.
+  await act(async () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 200);
+    await promise;
+  });
+  expect(point).not.toHaveBeenCalled();
+  view.rerender(
+    <Deploys layoutKey="flat" pageSize={100} pager={null} rows={[...arrived, arrival("d61")]} />
+  );
+  expect(point).toHaveBeenCalled();
 });
 
 // The caller that asked for it: the Delivery list, whose every row is the 36 px it was before the
@@ -1201,6 +1526,99 @@ test("a table whose rows are all one height counts the rows it has not drawn at 
   expect(table.querySelector<HTMLElement>("tbody > tr[aria-hidden]:last-child")?.style.height).toBe(
     `${(60 - drawn) * LINE_PX}px`
   );
+});
+
+/** A ResizeObserver the test delivers by hand: the unit DOM has none, and the virtualizer measures
+ *  a drawn line again only when its observer reports the line's new size. */
+class HandResizeObserver {
+  static readonly made: HandResizeObserver[] = [];
+  readonly targets = new Set<Element>();
+  constructor(readonly callback: ResizeObserverCallback) {
+    HandResizeObserver.made.push(this);
+  }
+  observe(target: Element, _options?: ResizeObserverOptions): void {
+    this.targets.add(target);
+  }
+  unobserve(target: Element): void {
+    this.targets.delete(target);
+  }
+  disconnect(): void {
+    this.targets.clear();
+  }
+}
+
+/** Reports `line` at `height` px to the observer that watches it, as a browser does once the
+ *  line has been laid out at that height. */
+function reportHeight(line: Element, height: number): void {
+  const observer = HandResizeObserver.made.find((made) => made.targets.has(line));
+  if (observer === undefined) throw new Error("no observer watches that line");
+  const size = { blockSize: height, inlineSize: 600 };
+  const entry: ResizeObserverEntry = {
+    borderBoxSize: [size],
+    contentBoxSize: [size],
+    contentRect: new DOMRect(0, 0, 600, height),
+    devicePixelContentBoxSize: [size],
+    target: line,
+  };
+  act(() => observer.callback([entry], observer));
+}
+
+// R11 (k13, "a title above R changed"): a row the box has drawn that then changes height is a
+// change the anchor answers in the commit that draws it (`ViewportAnchor`), so the virtualizer
+// moves the box for it no more. The two together moved it twice: at 1440 px a title that wrapped
+// a row 12 px taller left the row under the pointer 12 px above where the reader saw it. A row
+// the virtualizer measures for the first time, drawn as the reader scrolls, is still put where
+// its height says: no commit of the anchor's answers that one.
+test("a drawn row that changes height above the box's top leaves the box to the anchor, and a row first measured there still moves it", async () => {
+  linesTall();
+  HandResizeObserver.made.length = 0;
+  const native = Object.getOwnPropertyDescriptor(window, "ResizeObserver");
+  Object.defineProperty(window, "ResizeObserver", {
+    configurable: true,
+    value: HandResizeObserver,
+    writable: true,
+  });
+  restores.push(() => {
+    if (native) Object.defineProperty(window, "ResizeObserver", native);
+    else Reflect.deleteProperty(window, "ResizeObserver");
+  });
+  // The unit DOM lays nothing out, so the box would hold nothing to scroll, and a correction past
+  // its end would be held rather than written: give it more height than the test scrolls.
+  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get() {
+      return this.dataset.testid?.endsWith("-scroll")
+        ? 10_000
+        : (scrollHeight?.get?.call(this) ?? 0);
+    },
+  });
+  restores.push(() => {
+    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+    else Reflect.deleteProperty(HTMLElement.prototype, "scrollHeight");
+  });
+  const point = spyOn(document, "elementFromPoint").mockReturnValue(null);
+  restores.push(() => point.mockRestore());
+  draw(<Deploys pageSize={100} pager={null} rowHeight={LINE_PX} rows={manyDeploys(60)} />);
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  const box = screen.getByTestId("deploys-scroll");
+  const line = (index: number) => {
+    const found = table.querySelector(`tbody tr[data-index="${index}"]`);
+    if (found === null) throw new Error(`line ${index} is not drawn`);
+    return found;
+  };
+
+  // Line 20 was drawn and measured at the first draw, and lies wholly above the box's top once
+  // the box is 1000 px down. It grows by 20 px, which the anchor answers in its own commit.
+  scrollBoxTo(box, 1000);
+  reportHeight(line(20), LINE_PX + 20);
+  expect(box.scrollTop).toBe(1000);
+
+  // Line 45 is first drawn by the scroll to 1000 and measured for the first time once the box
+  // is 2000 px down, above its top: the box moves by what it takes over its estimate.
+  scrollBoxTo(box, 2000);
+  reportHeight(line(45), LINE_PX + 20);
+  expect(box.scrollTop).toBe(2020);
 });
 
 test("a nearest-edge hand-off waits for an undrawn row and places its measured control whole", async () => {

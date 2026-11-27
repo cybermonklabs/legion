@@ -41,7 +41,10 @@ import { focusLost } from "./focus-place";
 import { TruncatedText } from "./TruncatedText";
 import { useTooltips } from "./tooltips";
 
-function fold(value: string | undefined): string {
+/** A value as a pick compares it: trimmed and lower-cased, as the server compares a label. The
+ *  list ticks and unpicks by it, and a table that matches its rows to the picks folds by it too,
+ *  so a ticked pick lists the rows of the option it ticks. */
+export function fold(value: string | undefined): string {
   return (value ?? "").trim().toLocaleLowerCase();
 }
 
@@ -349,7 +352,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const showsEmpty = visibleOptions.length === 0 && (single || createValue === undefined);
 
   // What the reader picked, compared as the server compares a label: a URL that lower-cased
-  // `Epic` still ticks the option the project spells `Epic`, and ticking it again removes it
+  // `Legion` still ticks the option the project spells `Legion`, and ticking it again removes it
   // rather than adding a second spelling.
   const isPicked = (value: string) => selected.some((current) => fold(current) === fold(value));
   // A single pick opens on the option its value picks - in the option's own spelling, which is
@@ -693,7 +696,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     ? (children ?? pickedLabel ?? label)
     : (children ?? (selected.length === 0 ? label : `${label} · ${selected.length}`));
   // A single pick's trigger is named for its list and then for what it shows - "Assignee of
-  // CORE-1 alice", "Merge into another epic Choose an epic…" - so the words on it, the ones a
+  // CORE-1 alice", "Source project Choose a project" - so the words on it, the ones a
   // sighted reader reads and a speech-input reader says to press it, are in its name (WCAG 2.5.3,
   // Label in Name), and a screen reader hears the list and the value staged in it. The list's
   // name is a hidden element beside the trigger, outside it so the trigger's text stays the words

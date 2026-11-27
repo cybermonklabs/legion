@@ -1,161 +1,115 @@
 import { expect, test } from "bun:test";
 
-import type { IssueSummary } from "../../api/types";
-import { announceMove, focusTarget, keyboardMove } from "./board-keys";
-import { groupIssuesByStatus, type IssueStatus } from "./board-model";
+import { announceMove, focusTarget, type KeyColumn, keyboardMove } from "./board-keys";
 
-function issue(key: string, status: IssueStatus): IssueSummary {
-  return {
-    advances: [],
-    advances_revision: 0,
-    route: null,
-    repo: null,
-    resolved_repo: null,
-    route_status: null,
-    route_holder: null,
-    route_status_reason: null,
-    key,
-    labels: [],
-    last_seq: 1,
-    open_asks: 0,
-    progress: { tasks: null, children: null },
-    parent: null,
-    blocked_by: [],
-    primary_artifact_id: "artifact-1",
-    assignee: null,
-    claim: null,
-    components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
-    priority: null,
-    rank: "U",
-    status,
-    title: key,
-    updated_at: "2026-09-15T00:00:00Z",
-    closed_at: status === "done" ? "2026-09-15T00:00:00Z" : null,
-    created_by: null,
-    created_at: "2026-09-15T00:00:00Z",
-  };
-}
-
-// Todo: Alpha, Bravo, Charlie; In progress: Delta; Retro: Echo, Foxtrot; everything else empty.
-const columns = groupIssuesByStatus([
-  issue("Alpha", "todo"),
-  issue("Bravo", "todo"),
-  issue("Charlie", "todo"),
-  issue("Delta", "in_progress"),
-  issue("Echo", "retro"),
-  issue("Foxtrot", "retro"),
-]);
-const rails = (status: IssueStatus) => status === "icebox" || status === "done";
-const none = () => false;
+/** Open's Board by Status with two cards in Todo and one in In progress: Icebox and Done rails,
+ *  and the empty columns between. */
+const COLUMNS: readonly KeyColumn[] = [
+  { id: "triage", rail: false, size: 0 },
+  { id: "icebox", rail: true, size: 3 },
+  { id: "backlog", rail: false, size: 0 },
+  { id: "todo", rail: false, size: 2 },
+  { id: "in_progress", rail: false, size: 1 },
+  { id: "done", rail: true, size: 0 },
+];
 
 test("j and k rove within a column and clamp at both ends", () => {
-  expect(focusTarget(columns, rails, { status: "todo", index: 0 }, "j")).toEqual({
-    status: "todo",
+  expect(focusTarget(COLUMNS, { column: "todo", index: 0 }, "j")).toEqual({
+    column: "todo",
     index: 1,
   });
-  expect(focusTarget(columns, rails, { status: "todo", index: 2 }, "j")).toEqual({
-    status: "todo",
-    index: 2,
+  expect(focusTarget(COLUMNS, { column: "todo", index: 1 }, "j")).toEqual({
+    column: "todo",
+    index: 1,
   });
-  expect(focusTarget(columns, rails, { status: "todo", index: 1 }, "k")).toEqual({
-    status: "todo",
+  expect(focusTarget(COLUMNS, { column: "todo", index: 0 }, "k")).toEqual({
+    column: "todo",
     index: 0,
   });
-  expect(focusTarget(columns, rails, { status: "todo", index: 0 }, "k")).toEqual({
-    status: "todo",
-    index: 0,
-  });
-  // A focused empty column stays the column.
-  expect(focusTarget(columns, rails, { status: "testing", index: null }, "j")).toEqual({
-    status: "testing",
+  // On a column itself, j and k stay there.
+  expect(focusTarget(COLUMNS, { column: "backlog", index: null }, "j")).toEqual({
+    column: "backlog",
     index: null,
   });
 });
 
-test("h and l step to the adjacent status, clamping the index into a shorter column", () => {
-  expect(focusTarget(columns, rails, { status: "todo", index: 2 }, "l")).toEqual({
-    status: "in_progress",
+test("h and l step to the next column in the Board's order, rails included, clamping the index", () => {
+  expect(focusTarget(COLUMNS, { column: "todo", index: 1 }, "l")).toEqual({
+    column: "in_progress",
     index: 0,
   });
-  expect(focusTarget(columns, rails, { status: "in_progress", index: 0 }, "h")).toEqual({
-    status: "todo",
+  expect(focusTarget(COLUMNS, { column: "todo", index: 1 }, "h")).toEqual({
+    column: "backlog",
+    index: null,
+  });
+  // A rail draws no card: the focus lands on the rail itself.
+  expect(focusTarget(COLUMNS, { column: "triage", index: null }, "l")).toEqual({
+    column: "icebox",
+    index: null,
+  });
+  expect(focusTarget(COLUMNS, { column: "in_progress", index: 0 }, "l")).toEqual({
+    column: "done",
+    index: null,
+  });
+  // At the Board's ends the focus stays.
+  expect(focusTarget(COLUMNS, { column: "done", index: null }, "l")).toEqual({
+    column: "done",
+    index: null,
+  });
+  expect(focusTarget(COLUMNS, { column: "triage", index: null }, "h")).toEqual({
+    column: "triage",
+    index: null,
+  });
+});
+
+test("with nothing focused, j and l pick the first card and k and h the last, past rails", () => {
+  expect(focusTarget(COLUMNS, null, "j")).toEqual({ column: "todo", index: 0 });
+  expect(focusTarget(COLUMNS, null, "k")).toEqual({ column: "in_progress", index: 0 });
+  const empty: KeyColumn[] = [
+    { id: "queue", rail: false, size: 0 },
+    { id: "none", rail: true, size: 4 },
+  ];
+  expect(focusTarget(empty, null, "l")).toEqual({ column: "queue", index: null });
+  expect(focusTarget(empty, null, "h")).toEqual({ column: "none", index: null });
+  expect(focusTarget([], null, "j")).toBeUndefined();
+});
+
+test("keyboardMove shifts a card one place within its column and stops at its ends", () => {
+  expect(keyboardMove(COLUMNS, { column: "todo", index: 0 }, "down")).toEqual({
+    column: "todo",
+    index: 1,
+  });
+  expect(keyboardMove(COLUMNS, { column: "todo", index: 1 }, "down")).toBeUndefined();
+  expect(keyboardMove(COLUMNS, { column: "todo", index: 1 }, "up")).toEqual({
+    column: "todo",
     index: 0,
   });
+  expect(keyboardMove(COLUMNS, { column: "todo", index: 0 }, "up")).toBeUndefined();
 });
 
-test("h and l land on an empty column or a collapsed rail itself, and stay at the board's ends", () => {
-  expect(focusTarget(columns, rails, { status: "in_progress", index: 0 }, "l")).toEqual({
-    status: "testing",
-    index: null,
-  });
-  expect(focusTarget(columns, rails, { status: "testing", index: null }, "l")).toEqual({
-    status: "needs_review",
-    index: null,
-  });
-  // From a column into a non-empty one: index null lands on the first card.
-  expect(focusTarget(columns, rails, { status: "needs_review", index: null }, "l")).toEqual({
-    status: "retro",
+test("keyboardMove puts a card at the top of the next column, rails included, and stops at the Board's ends", () => {
+  expect(keyboardMove(COLUMNS, { column: "todo", index: 1 }, "next")).toEqual({
+    column: "in_progress",
     index: 0,
   });
-  // Done is collapsed: the rail, never a card, even though it would hold cards when expanded.
-  const withDone = groupIssuesByStatus([issue("Golf", "done"), issue("Hotel", "retro")]);
-  expect(focusTarget(withDone, rails, { status: "retro", index: 0 }, "l")).toEqual({
-    status: "done",
-    index: null,
-  });
-  expect(focusTarget(withDone, none, { status: "retro", index: 0 }, "l")).toEqual({
-    status: "done",
+  expect(keyboardMove(COLUMNS, { column: "in_progress", index: 0 }, "next")).toEqual({
+    column: "done",
     index: 0,
   });
-  expect(focusTarget(columns, rails, { status: "done", index: null }, "l")).toEqual({
-    status: "done",
-    index: null,
+  expect(keyboardMove(COLUMNS, { column: "backlog", index: 0 }, "prev")).toEqual({
+    column: "icebox",
+    index: 0,
   });
-  expect(focusTarget(columns, rails, { status: "triage", index: null }, "h")).toEqual({
-    status: "triage",
-    index: null,
-  });
+  expect(keyboardMove(COLUMNS, { column: "done", index: 0 }, "next")).toBeUndefined();
+  expect(keyboardMove(COLUMNS, { column: "triage", index: 0 }, "prev")).toBeUndefined();
 });
 
-test("with nothing focused, j/l pick the first card and k/h the last, skipping collapsed rails", () => {
-  expect(focusTarget(columns, rails, null, "j")).toEqual({ status: "todo", index: 0 });
-  expect(focusTarget(columns, rails, null, "l")).toEqual({ status: "todo", index: 0 });
-  expect(focusTarget(columns, rails, null, "k")).toEqual({ status: "retro", index: 1 });
-  expect(focusTarget(columns, rails, null, "h")).toEqual({ status: "retro", index: 1 });
-  // A card in a collapsed rail is not focusable; the edges expanded, it is the last card.
-  const doneOnly = groupIssuesByStatus([issue("Golf", "done"), issue("India", "icebox")]);
-  expect(focusTarget(doneOnly, rails, null, "j")).toEqual({ status: "triage", index: null });
-  expect(focusTarget(doneOnly, rails, null, "k")).toEqual({ status: "done", index: null });
-  expect(focusTarget(doneOnly, none, null, "j")).toEqual({ status: "icebox", index: 0 });
-  expect(focusTarget(doneOnly, none, null, "k")).toEqual({ status: "done", index: 0 });
-});
-
-test("keyboardMove down/up use moveIssue's insertion index (the column without the card) and stop at the ends", () => {
-  expect(keyboardMove(columns, "Alpha", "down")).toEqual({ status: "todo", insertionIndex: 1 });
-  expect(keyboardMove(columns, "Bravo", "down")).toEqual({ status: "todo", insertionIndex: 2 });
-  expect(keyboardMove(columns, "Charlie", "down")).toBeUndefined();
-  expect(keyboardMove(columns, "Bravo", "up")).toEqual({ status: "todo", insertionIndex: 0 });
-  expect(keyboardMove(columns, "Alpha", "up")).toBeUndefined();
-  expect(keyboardMove(columns, "Zulu", "down")).toBeUndefined();
-});
-
-test("keyboardMove prev/next target the top of the adjacent status, Done and Triage included, and stop at the ends", () => {
-  expect(keyboardMove(columns, "Bravo", "next")).toEqual({
-    status: "in_progress",
-    insertionIndex: 0,
-  });
-  expect(keyboardMove(columns, "Echo", "next")).toEqual({ status: "done", insertionIndex: 0 });
-  expect(keyboardMove(columns, "Delta", "prev")).toEqual({ status: "todo", insertionIndex: 0 });
-  const withTriage = groupIssuesByStatus([issue("Golf", "triage"), issue("Hotel", "done")]);
-  expect(keyboardMove(withTriage, "Golf", "prev")).toBeUndefined();
-  expect(keyboardMove(withTriage, "Hotel", "next")).toBeUndefined();
-  expect(keyboardMove(withTriage, "Hotel", "prev")).toEqual({ status: "retro", insertionIndex: 0 });
-});
-
-test("announceMove names the card, the column and its position, or that Done closed it", () => {
-  expect(announceMove("CORE-12", "todo", 2, 5)).toBe("CORE-12 → Todo, position 2 of 5");
-  expect(announceMove("CORE-12", "in_progress", 1, 2)).toBe(
-    "CORE-12 → In progress, position 1 of 2"
+test("announceMove names the card, its column and its place, or that Done closed it", () => {
+  expect(announceMove("CORE-12", "todo", "Todo", { at: 2, of: 5 })).toBe(
+    "CORE-12 → Todo, position 2 of 5"
   );
-  expect(announceMove("CORE-12", "done", 1, 1)).toBe("CORE-12 → Done, closed");
+  expect(announceMove("CORE-12", "done", "Done", { at: 1, of: 1 })).toBe("CORE-12 → Done, closed");
+  expect(announceMove("CORE-12", "done", "Done", undefined)).toBe("CORE-12 → Done, closed");
+  // A card that left the view has no place in it.
+  expect(announceMove("CORE-12", "backlog", "Backlog", undefined)).toBe("CORE-12 → Backlog");
 });

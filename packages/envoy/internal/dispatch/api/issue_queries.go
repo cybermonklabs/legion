@@ -34,18 +34,48 @@ func issueStatusOrderSQL() string {
 
 var issueStatusCase = issueStatusOrderSQL()
 
-// The listing has four statement texts: unpaged and paged, each of them pinned or not
-// (issueSummaryQuery writes them). A request that names a page and no route_status filter runs
-// the paged text, which cuts the page in SQL and answers `total` beside it; a route_status
-// request keeps the unpaged text and listIssues' own page cut, because that filter runs in Go
-// after the Envoy roster enrichment and total must count what is left after it. pgx caches a
-// plan for each text, so neither shape replans the other's.
-var (
-	listIssuesQuery           = issueSummaryQuery(false, false, true)
-	listPinnedIssuesQuery     = issueSummaryQuery(true, false, true)
-	listIssuesPageQuery       = issueSummaryQuery(false, true, true)
-	listPinnedIssuesPageQuery = issueSummaryQuery(true, true, true)
-)
+// issueListTexts are the listing's four statement texts for one order it answers in: unpaged and
+// paged, each of them pinned or not (issueSummaryQuery writes them). A request that names a page
+// and no route_status filter runs the paged text, which cuts the page in SQL and answers `total`
+// beside it; a route_status request keeps the unpaged text and listIssues' own page cut, because
+// that filter runs in Go after the Envoy roster enrichment and total must count what is left
+// after it. Each order is written into texts of its own rather than passed as a statement
+// parameter, so no positional parameter moves, and pgx caches a plan for each text, so no shape
+// or order replans another's.
+type issueListTexts struct{ unpaged, pinned, paged, pinnedPaged string }
+
+// issueListTextsOrderedBy writes the four listing texts of one order.
+func issueListTextsOrderedBy(order string) issueListTexts {
+	return issueListTexts{
+		unpaged:     issueSummaryQuery(false, false, true, order),
+		pinned:      issueSummaryQuery(true, false, true, order),
+		paged:       issueSummaryQuery(false, true, true, order),
+		pinnedPaged: issueSummaryQuery(true, true, true, order),
+	}
+}
+
+// text is the one of the four a request runs: pinned or not, and paged when SQL cuts its page.
+func (texts issueListTexts) text(pinned, paged bool) string {
+	switch {
+	case pinned && paged:
+		return texts.pinnedPaged
+	case pinned:
+		return texts.pinned
+	case paged:
+		return texts.paged
+	}
+	return texts.unpaged
+}
+
+// issueListTextsBySort are the texts of each order a request may ask for (parseIssueSort):
+// the listing's own, and closed_at ascending or descending ahead of it. The issues with no
+// closed_at sort last in both, which a descending order in Postgres does not do unless told,
+// and issueListOrder then orders the ties, so each order stays total and its offset pages exact.
+var issueListTextsBySort = map[issueSort]issueListTexts{
+	issueSortListing:            issueListTextsOrderedBy(issueListOrder),
+	issueSortClosedAt:           issueListTextsOrderedBy(`i.closed_at asc nulls last, ` + issueListOrder),
+	issueSortClosedAtDescending: issueListTextsOrderedBy(`i.closed_at desc nulls last, ` + issueListOrder),
+}
 
 // issueSummaryQuery writes one listing statement. `matched` applies every filter to `issues i`
 // alone, so `total` is a count over `filtered`, which runs none of the six joins that resolve a
@@ -68,7 +98,10 @@ var (
 // An empty page still carries the count the caller asked for, so `listed` answers one issue of
 // the filtered set marked `in_page` false when the page holds nothing, and scanIssuePage drops
 // it without resolving it; an empty filtered set answers no row at all, and the total is then 0.
-// The order ends on the key, the one column no two issues share, so it is total and consecutive
+// The order is issueListOrder, or a sort ahead of it, over the issue aliased `i`: `filtered`
+// carries every column an order reads, and the paged text orders the filtered keys by it and
+// the statement orders its answer by it again, since a join keeps no order of its own. Every
+// order ends on the key, the one column no two issues share, so it is total and consecutive
 // offsets cannot show a row twice or never while the listing does not change between the reads
 // (issuePage.of says what a change does). Without the key they could: ranks repeat across
 // projects (every project's first issue is "U"), nothing makes one unique within a project, and
@@ -82,7 +115,7 @@ var (
 // `advances` key leaves its seed gated off (issueAdvancesFilterTerms), so the text without the
 // read measures the read alone. The move into `backlog` or `icebox` stays in both for the same
 // reason: it is read only under `?moved=true` ($14), and a request without it reads no event.
-func issueSummaryQuery(pinned, paged, readAdvances bool) string {
+func issueSummaryQuery(pinned, paged, readAdvances bool, order string) string {
 	parameter := 18
 	pinnedJoin := ""
 	if pinned {
@@ -94,7 +127,7 @@ func issueSummaryQuery(pinned, paged, readAdvances bool) string {
 		from issues i` + pinnedJoin + `
 		` + issueListFilters + `
 	), filtered as (
-		select i.key, i.status, i.rank, i.created_at
+		select i.key, i.status, i.rank, i.created_at, i.closed_at
 		from (select array_agg(address) as addresses from matched) m
 		cross join generate_subscripts(m.addresses, 1) as place(n)
 		join issues i on i.ctid = m.addresses[place.n]
@@ -116,7 +149,7 @@ func issueSummaryQuery(pinned, paged, readAdvances bool) string {
 		select p.key, true as in_page from page p
 		union all
 		select (select f.key from filtered f limit 1), false where not exists (select 1 from page)
-	)`, issueListOrder, parameter, parameter+1)
+	)`, order, parameter, parameter+1)
 		rows = "listed"
 		columns = "(select count(*) from filtered) as total, listed.in_page,\n\t       " + columns
 	}
@@ -126,7 +159,7 @@ func issueSummaryQuery(pinned, paged, readAdvances bool) string {
 	select ` + columns + `
 	from ` + rows + ` join issues i on i.key = ` + rows + `.key
 	` + issueSummaryJoins(readAdvances) + `
-	order by ` + issueListOrder + `
+	order by ` + order + `
 `
 }
 
@@ -178,9 +211,9 @@ const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		           or ($12::boolean and i.key not in (select key from advancing))))
 		       or ($15::boolean and i.key in (select key from advances_originating where named or $13::boolean)))`
 
-// issueListOrder is the listing's order, over the issue aliased `i`: the lifecycle status, the
-// rank, the creation time, then the key. The paged text orders the filtered keys by it and the
-// statement orders its answer by it again, since a join keeps no order of its own.
+// issueListOrder is the listing's own order, over the issue aliased `i`: the lifecycle status,
+// the rank, the creation time, then the key. A `sort` puts its column ahead of it
+// (issueListTextsBySort).
 var issueListOrder = issueStatusCase + `, i.rank asc, i.created_at asc, i.key asc`
 
 // issueClaimColumns is the claim half of an issue select, named once like
@@ -754,6 +787,11 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	sort, err := parseIssueSort(query)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// A route matters only while there is work to reach, so the route_status filter reads open
 	// issues alone: the owner audit is every open issue whose route reaches nobody.
 	open := query.Get("open") == "true" || routeStatus != ""
@@ -770,17 +808,10 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		arguments = append(arguments, login)
 	}
 	// SQL cuts the page only when no route_status filter runs after the read: that filter needs
-	// the Envoy roster, which this read cannot reach, and total counts what is left after it.
+	// the Envoy roster, which this read cannot reach, and total counts what is left after it. A
+	// route_status page is cut from its sort's unpaged text, so it keeps the sort's order too.
 	inSQL := page != nil && routeStatus == ""
-	listQuery := listIssuesQuery
-	switch {
-	case pinned && inSQL:
-		listQuery = listPinnedIssuesPageQuery
-	case pinned:
-		listQuery = listPinnedIssuesQuery
-	case inSQL:
-		listQuery = listIssuesPageQuery
-	}
+	listQuery := issueListTextsBySort[sort].text(pinned, inSQL)
 	var issues []model.IssueSummary
 	total := 0
 	if inSQL {
@@ -828,13 +859,13 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if inSQL {
-		WriteJSON(w, http.StatusOK, page.holding(issues, total))
+		WriteJSON(w, http.StatusOK, page.holding(issues, total, sort))
 		return
 	}
 	// A route_status page is cut from the listing every filter has narrowed, that one included,
 	// so total counts what the caller's filters match.
 	if page != nil {
-		WriteJSON(w, http.StatusOK, page.of(issues))
+		WriteJSON(w, http.StatusOK, page.of(issues, sort))
 		return
 	}
 	WriteJSON(w, http.StatusOK, issues)

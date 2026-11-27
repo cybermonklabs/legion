@@ -5280,7 +5280,8 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/projects/{key}/legion/board` (GET; cookie, trusted header, or bearer)
 
-  The Legion board of the project its path names, from what the sampler recorded of that project's daemon and from the per-issue Legion facts the facts consumer stored; the `/ws/live` `legion` view carries the same body and pushes each change, and no page draws it.
+  The Legion board of the project its path names, from what the sampler recorded of that project's daemon and from the per-issue Legion facts the facts consumer stored; the `/ws/live` `legion` view carries the same body and pushes each change.
+  The project's Issues tab reads that view for its Legion columns, its Board by Legion phase and its (i) hint, in a project whose daemon setting names a daemon.
   Twelve columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro`, `merging`, `awaiting_children`, `awaiting_person`, `held`), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds with what that slot is used for and when it was taken, its tree's slot, the roles in a turn now, the issues a blocker link holds it on (for a parent in `awaiting_children`, the open children the daemon lists it as blocked on, not blocker links), what it waits on from a person, why it waits with its place in the daemon's line, its tree root and the children of its tree that have not started.
   Beside them `issues`, a map keyed by issue key of the stored facts of every open issue with Legion phase work and of every issue the board shows: each card's issue and every issue of a tree a card stands in, those on no card included.
   A closed issue the board does not show has no entry: `GET /api/v1/projects/{key}/evals/{slug}/items` serves its facts by its close day, so every issue has one source and the body follows the open work and what the daemon runs, not the project's history.
@@ -5289,9 +5290,12 @@ Each item below names a path with its method and identity, then its purpose.
   An entry none of whose values grows carries null for both, and its values are the same at any clock: a closed issue's, but for a slot it never gave up, and an open issue's whose every part stands still.
   The null is for size: each closed row's own `as_of` is a different timestamp, which gzip barely shortens, and carried on every entry the two took the body of a project of INFRA's size past the 300 KB compressed a first payload may reach.
   The `legion` view sends an `issues` entry only when its stored row moves (its `updated_at`, its growth, why it waits, its close or any other stored value): an entry's revision leaves out the values that grow and `as_of`, so a recompute that only moved the clock sends none, and an entry sent is sent whole, at the moment of its recompute.
-  The rows are read in three index reads that share no row: the open rows through `issue_facts_closed` (`closed_at is null`), the closed rows of the shown trees by root through `issue_facts_root` (`20261117100000`) and the closed rows of the cards outside those trees by key through the primary key, each planned with its values (`plan_cache_mode = force_custom_plan`), never as the project's rows filtered after the read; the open rows test no list of cards or roots.
-  The header carries the slots in use, the slot cap, the queue's length, the last read of the daemon with its failure, the oldest `updated_at` of the rows served (those the map carries, not every row of the project) and the age of the facts consumer's cursor.
-  The cursor age is of the deployment's one consumer and not of the project, so it says how fresh the facts are and is null on a deployment whose consumer has never run.
+
+  - The rows are read in three index reads that share no row: the open rows through `issue_facts_closed` (`closed_at is null`), the closed rows of the shown trees by root through `issue_facts_root` (`20261117100000`) and the closed rows of the cards outside those trees by key through the primary key, each planned with its values (`plan_cache_mode = force_custom_plan`), never as the project's rows filtered after the read; the open rows test no list of cards or roots.
+
+  - The header carries the slots in use, the slot cap, the queue's length, the last read of the daemon with its failure, the oldest `updated_at` of the rows served (those the map carries, not every row of the project) and the age of the facts consumer's cursor.
+    The cursor age is of the deployment's one consumer and not of the project, so it says how fresh the facts are and is null on a deployment whose consumer has never run.
+
   `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for a project that does not exist.
 
 - `/api/v1/projects/{key}/evals?from=&to=&compare_from=&compare_to=&kind=&repo=&limit=&offset=` (GET; cookie, trusted header, or bearer)
@@ -5533,14 +5537,11 @@ Each item below names a path with its method and identity, then its purpose.
   The dashboard offers "A new version is available" only when `live` holds exactly one entry and it is not the tab's own, so no tab is told to reload while a rolling update or a rollback still runs two builds.
   An older process answers `404`, which the dashboard reads as no new version.
 
-- `/api/v1/issues?project=&status=&parent=&priority=&advances=&own=&updated_since=&closed_since=&closed_before=&route_status=&moved=&limit=&offset=` (GET; cookie, trusted header, or bearer)
+- `/api/v1/issues?project=&status=&parent=&priority=&advances=&own=&updated_since=&closed_since=&closed_before=&route_status=&moved=&limit=&offset=&sort=` (GET; cookie, trusted header, or bearer)
 
   List issue summaries: every matching issue as an array, or, with `limit` (1–250) or `offset` (0 or more;
   alone it pages 50), one page `{issues, total, limit, offset}` cut after every filter, `total` counting the issues they match.
   A repeated, blank, non-integer or out-of-range `limit` or `offset`, or any `cursor`, is `400 INVALID_QUERY` naming the parameter.
-  The order is status, rank, creation time and key, so consecutive offsets cover the listing once while it does not change between reads;
-  an issue that enters or leaves what the filters match, or whose status or rank changes, between two reads shifts rows across a page boundary, so one issue is served twice and another never.
-  Only the unpaged array is an exact set in one read.
   Filters are optional; `updated_since` is RFC3339 and inclusive, matching issue changes and later issue events.
   `closed_since` and `closed_before` are RFC3339 bounds on the time an issue was closed, `closed_since` inclusive and `closed_before` exclusive, so `closed_since=2026-11-03T00:00:00Z&closed_before=2026-11-04T00:00:00Z` keeps an issue closed at midnight on the 3rd and not one closed at midnight on the 4th, and an open issue matches neither bound.
   A malformed `updated_since`, `closed_since` or `closed_before` is `400 INVALID_UPDATED_SINCE`, `400 INVALID_CLOSED_SINCE` or `400 INVALID_CLOSED_BEFORE`, and a `closed_before` at or before `closed_since` is `400 INVALID_CLOSED_WINDOW`.
@@ -5558,6 +5559,13 @@ Each item below names a path with its method and identity, then its purpose.
     `advances=none&status=in_progress&status=testing&status=needs_review&status=retro` and `advances=any&own=true&status=backlog&status=icebox` are the two fault lists of `GET /api/v1/priorities` whole and uncut.
     `moved=true` adds `moved_at` and `moved_by` to each summary standing in `backlog` or `icebox`: when the issue was moved there and who moved it, read from its newest `issue.updated` event that set one of the two statuses, as the second fault of `GET /api/v1/priorities` reads them;
     a summary standing elsewhere, or whose events do not reach back to the move, carries neither field, and a listing without `moved=true` reads no event and carries neither on any summary.
+
+  - The order is status, rank, creation time and key, so consecutive offsets cover the listing once while it does not change between reads;
+    an issue that enters or leaves what the filters match, or whose status or rank changes, between two reads shifts rows across a page boundary, so one issue is served twice and another never.
+    Only the unpaged array is an exact set in one read.
+    `sort=closed_at` and `sort=-closed_at` order the listing by `closed_at`, oldest or newest close first, with the issues that have no `closed_at` last in both, then by status, rank, creation time and key, paged or not, so a sorted listing's offsets cover it once in the same way;
+    a paged answer names the sort it applied in `sort`, as the request sent it, and names none where the request sent none;
+    a blank, repeated or any other `sort` is `400 INVALID_QUERY` naming the parameter, and with no `sort` the order is the listing's own.
 
   - Summaries contain `key`, `title`, `status`, `priority`, `parent`, `assignee`, `route`, `route_status`, `route_holder`, `route_status_reason`, `updated_at`, `closed_at` (when the issue was closed, null while it is open), `last_seq`, and `open_asks`.
     Every issue read (this list, `?pinned=true`, and `GET /api/v1/issues/{key}`) resolves `route_status` against the process's one copy of the listener's `GET /v1/sessions`, stored in no table:

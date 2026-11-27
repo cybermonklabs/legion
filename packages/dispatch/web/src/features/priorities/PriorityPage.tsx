@@ -10,8 +10,8 @@ import { QueryError } from "../../components/QueryError";
 import { issueProject } from "../../lib/issue-key";
 import { addressPath, copyAddress } from "../../lib/page-address";
 import { card, linkHoverText, linkText, textSecondaryOnCanvas } from "../../theme/classes";
-import { IssuesTable } from "../project/IssuesTable";
 import { selectIssues } from "../project/issues-table-model";
+import { ListingTable } from "../project/ListingTable";
 import { buildProjectPath } from "../refs/routes";
 import { useKeymapScope } from "../shell/keymap";
 import { FIELD_CHIP, HEADING_BOX, InPlaceField } from "./InPlaceField";
@@ -24,7 +24,7 @@ import { textWriteLabel, usePriorityWrites } from "./priority-writes";
 /** The address prefix the work under the priority keeps its own view under. */
 const WORK_PREFIX = "w";
 
-/** The work table's own stored layout (`IssuesTable`): the issue, its title, its status and its
+/** The work table's own stored layout (`ListingTable`): the issue, its title, its status and its
  *  project. Every other column is one tick away under Columns, who holds the issue and when it
  *  last changed among them; a project's own table keeps its own layout. The key, the project and
  *  the status are each as wide as what they hold (`fit`), as on each fault list
@@ -41,7 +41,7 @@ const WORK_PREFIX = "w";
  *  with the whole title in its tooltip. It pins the checkbox, the key and Title (`pins`), so its
  *  pinned divider falls after Title as each fault list's does: the registry's pins count the
  *  Priority column this table opens hidden, which in that box left Title no room to stay pinned.
- *  Its key is its own, not the one a scoped table without a layout keeps (`IssuesTable`), whose
+ *  Its key is its own, not the one a scoped table without a layout keeps (`ListingTable`), whose
  *  stored layouts were written for a project's opening set and would show that set again here.
  *  Its status bar draws the counts alone, with the names in a legend under it, where the
  *  segments with their names are wider than the bar (`statusLegend`): beside the margin at
@@ -272,12 +272,12 @@ function PriorityShown({
 
         <section aria-label="Work advancing this priority" className="space-y-2">
           {byProject.size === 0 ? null : (
-            <p className={`text-sm ${textSecondaryOnCanvas}`}>
+            <p className={`flex flex-wrap gap-x-3 text-sm ${textSecondaryOnCanvas}`}>
               {[...byProject.entries()]
                 .sort((a, b) => a[0].localeCompare(b[0]))
                 .map(([project, keys]) => (
                   <Link
-                    className={`mr-3 ${linkText} ${linkHoverText}`}
+                    className={`${linkText} ${linkHoverText}`}
                     key={project}
                     to={addressPath(
                       buildProjectPath({ kind: "issues", project }),
@@ -289,7 +289,7 @@ function PriorityShown({
                 ))}
             </p>
           )}
-          <IssuesTable
+          <ListingTable
             layout={WORK_LAYOUT}
             listing={{ advances: id }}
             priorityTitles={titles}

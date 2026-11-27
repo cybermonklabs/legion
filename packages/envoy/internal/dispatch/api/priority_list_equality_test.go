@@ -200,7 +200,7 @@ func compareWithMergeBase(t *testing.T, handler http.Handler, trace *speedTrace,
 
 // listStatementAnswer runs one listing statement on s's connections, through the scan the route
 // reads it with, and encodes the rows as the route writes them: the page it cut beside its count,
-// or every row.
+// or every row. The requests of this test send no sort, so a page names none (issueSortListing).
 func listStatementAnswer(t *testing.T, s *server, statement string, arguments []any, page *issuePage) listAnswer {
 	t.Helper()
 	var (
@@ -219,7 +219,7 @@ func listStatementAnswer(t *testing.T, s *server, statement string, arguments []
 	}
 	response := httptest.NewRecorder()
 	if page != nil {
-		WriteJSON(response, http.StatusOK, page.holding(issues, total))
+		WriteJSON(response, http.StatusOK, page.holding(issues, total, issueSortListing))
 	} else {
 		WriteJSON(response, http.StatusOK, issues)
 	}

@@ -1,5 +1,11 @@
 import { newSendKey } from "../../lib/send-key";
 
+/** The browser's lock manager (`navigator.locks`), read once as the page loads. A page outside a
+ *  secure context has none: `navigator.locks` is `undefined` there, and `null` where nothing
+ *  implements it, as in the unit DOM. */
+export const PAGE_LOCKS: LockManager | undefined =
+  typeof navigator === "undefined" ? undefined : (navigator.locks ?? undefined);
+
 /** How long a sign-out waits for the other tabs to say what of the person's it would discard
  *  there before it asks the person (`SignInChannel.unsentElsewhere`). */
 export const OTHER_TABS_ANSWER_MS = 300;

@@ -203,7 +203,7 @@ async function openProjectList(page: Page, issueKey: string): Promise<void> {
 }
 
 async function openProjectBoard(page: Page, issueKey: string): Promise<void> {
-  await page.getByRole("button", { name: "Board" }).click();
+  await page.getByRole("button", { exact: true, name: "Board" }).click();
   await expect(page.locator(`[data-board-card="${issueKey}"]`)).toHaveCount(1);
 }
 
@@ -250,6 +250,8 @@ async function expectFreshViewsRefilling(page: Page, fixture: RefillFixture): Pr
   await expect(page.getByTestId("issue-route-unreachable")).toHaveCount(0);
 }
 
+// SLOW(>=2s): every refilling view read twice, each waiting on the listener's list to change
+// state under it.
 test("a list that starts refilling after a complete read claims no agent absent, and recovers", async ({
   browser,
 }) => {
@@ -348,6 +350,8 @@ test("a list that starts refilling after a complete read claims no agent absent,
   }
 });
 
+// SLOW(>=2s): an empty list read on six views, then each of them waited on while the list
+// starts refilling.
 test("an empty list that starts refilling never says nobody is connected", async ({ browser }) => {
   test.setTimeout(120_000);
   const fixture = await seedRefillFixture([]);
@@ -394,8 +398,8 @@ test("an empty list that starts refilling never says nobody is connected", async
     await expect(page.getByTestId("issue-route-unreachable")).toHaveCount(1);
     await openProjectBoard(page, fixture.issueKey);
     await expect(page.getByTestId("issue-route-unreachable")).toHaveCount(1);
-    // The view choice is remembered; the refilling pass opens the List first, as here.
-    await page.getByRole("button", { name: "List" }).click();
+    // The layout is remembered; the refilling pass opens the table first, as here.
+    await page.getByRole("button", { exact: true, name: "Table" }).click();
 
     await setListsState("refilling", { retryAfterSeconds: ROW_RETRY_AFTER_SECONDS });
 
@@ -417,6 +421,7 @@ test("an empty list that starts refilling never says nobody is connected", async
   }
 });
 
+// SLOW(>=2s): every view a fresh page shows, each waited on until it says the list is refilling.
 test("a listener refilling from the first read shows every view refilling", async ({ browser }) => {
   test.setTimeout(120_000);
   const fixture = await seedRefillFixture([planner, watcher]);
@@ -460,6 +465,7 @@ test("a listener refilling from the first read shows every view refilling", asyn
   }
 });
 
+// SLOW(>=2s): every view read while the listener cannot answer, each waiting out its own retries.
 test("a listener that cannot answer reads as unreachable on every view, never as refilling", async ({
   browser,
 }) => {

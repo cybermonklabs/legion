@@ -41,6 +41,7 @@ import type {
   Project,
   UpdateIssueInput,
 } from "../../api/types";
+import type { BoardChange } from "../project/board-model";
 import { useBoardMoves } from "../project/board-moves";
 import { MAX_BACKOFF_MS, SEND_DEADLINE_MS, stoppedWriteNote } from "../writes/keyed-write";
 import { PendingWritesIndicator } from "../writes/PendingWritesIndicator";
@@ -126,6 +127,12 @@ const inboxRow: InboxRow = {
 const detailKey = issueQuery(issue.key).queryKey;
 const listKey = ["issues", "project", issue.project] as const;
 const inboxKey = ["inbox"] as const;
+
+/** A drag of a card into the lane of `priority` in its own column, which holds no other card
+ *  there, as the Board plans it (`planMove`): the move writes that priority and no rank. */
+function toLane(priority: IssuePriority): BoardChange {
+  return { input: { priority } };
+}
 
 /** What Dispatch stores of CORE-1 that a pick or a read of it carries. */
 type Stored = Pick<Issue, "assignee" | "priority" | "updated_at">;
@@ -416,7 +423,7 @@ test("a pick takes out no waiting write of the issue but a pick of its own field
     plain("CORE-1 set to done", { status: "done" });
     plain("Labels of CORE-1", { labels: ["ui"] });
     act(() => {
-      void board.result.current.moveCardToLane(issue.key, "todo", 2, 0).catch(() => undefined);
+      void board.result.current.move(issue.key, toLane(2)).catch(() => undefined);
     });
     await act(async () => {
       assignee.result.current.submit("bob");
@@ -2755,7 +2762,7 @@ test("a board move to another priority lane made over a live pick is the priorit
     // line behind it, and Dispatch will store the move's priority last.
     let moved: Promise<void> | undefined;
     act(() => {
-      moved = board.result.current.moveCardToLane(issue.key, "todo", 3, 0);
+      moved = board.result.current.move(issue.key, toLane(3));
     });
     await waitFor(() => expect(writesOf(client).rows()).toHaveLength(2));
     expect(cachedPriorities(client)).toEqual({ detail: 3, inbox: 3, list: 3 });
@@ -2793,7 +2800,7 @@ function storedPriority(patchIssue: { mock: { calls: unknown[][] } }): IssuePrio
  *  it recorded there with the card's priority. */
 function BoardCard({ commits }: { commits?: Commits<IssuePriority | null> }): ReactNode {
   const board = useQuery({
-    ...projectIssuesQuery(issue.project, []),
+    ...projectIssuesQuery(issue.project),
     staleTime: Number.POSITIVE_INFINITY,
   });
   const card = board.data?.find((row) => row.key === issue.key);
@@ -2900,12 +2907,12 @@ test("two drags of a card over its live pick show the card in the newest drag's 
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
     see("pick P2 out");
     act(() => {
-      void board.moves().moveCardToLane(issue.key, "todo", 3, 0);
+      void board.moves().move(issue.key, toLane(3));
     });
     await waitFor(() => expect(writesOf(client).rows()).toHaveLength(2));
     see("drag 1 to P3");
     act(() => {
-      void board.moves().moveCardToLane(issue.key, "todo", 0, 0);
+      void board.moves().move(issue.key, toLane(0));
     });
     see("drag 2 to P0");
 
@@ -2966,7 +2973,7 @@ test("a read composed before a drag of the card landed as the last write of its 
   try {
     await pickPriority(user, "P2");
     act(() => {
-      void board.moves().moveCardToLane(issue.key, "todo", 0, 0);
+      void board.moves().move(issue.key, toLane(0));
     });
     await waitFor(() => expect(writesOf(client).rows()).toHaveLength(2));
     see("pick P2 out, drag to P0");
@@ -3022,7 +3029,7 @@ test("a refused drag of a card over its pick puts the pick back on every surface
   try {
     await pickPriority(user, "P2");
     act(() => {
-      void board.moves().moveCardToLane(issue.key, "todo", 3, 0);
+      void board.moves().move(issue.key, toLane(3));
     });
     await waitFor(() => expect(writesOf(client).rows()).toHaveLength(2));
     expect(board.shown()).toBe("P3");
@@ -3075,7 +3082,7 @@ test("a pick made behind a live drag of its card and refused after the drag puts
   try {
     await pickPriority(user, "P2");
     act(() => {
-      void board.moves().moveCardToLane(issue.key, "todo", 0, 0);
+      void board.moves().move(issue.key, toLane(0));
     });
     await waitFor(() => expect(writesOf(client).rows()).toHaveLength(2));
     stored = 2;
@@ -3140,7 +3147,7 @@ test("a pick made on a card while its drag is out and refused after the drag nev
   const see = (step: string) => seen.push(`${step}: ${board.shown()}`);
   try {
     act(() => {
-      void board.moves().moveCardToLane(issue.key, "todo", 0, 0);
+      void board.moves().move(issue.key, toLane(0));
     });
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
     see("drag to P0 out");
@@ -3199,11 +3206,11 @@ test("a pick refused while a later drag of its card still waits behind another c
     await pickPriority(user, "P0");
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
     act(() => {
-      void board.moves().moveCardToLane(neighbour.key, "todo", 2, 0);
+      void board.moves().move(neighbour.key, toLane(2));
     });
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
     act(() => {
-      void board.moves().moveCardToLane(issue.key, "todo", 3, 0);
+      void board.moves().move(issue.key, toLane(3));
     });
     // The drag waits in the board's scope, so it is not in the store.
     expect(
@@ -3290,11 +3297,11 @@ for (const first of ["the pick", "the other card's move"] as const) {
     };
     try {
       act(() => {
-        void board.moves().moveCardToLane(neighbour.key, "todo", 2, 0);
+        void board.moves().move(neighbour.key, toLane(2));
       });
       await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
       act(() => {
-        void board.moves().moveCardToLane(issue.key, "todo", 3, 0);
+        void board.moves().move(issue.key, toLane(3));
       });
       // The drag waits in the board's scope, out of the store.
       expect(
@@ -3366,16 +3373,16 @@ test("two drags of a card that wait behind another card's move, made over its li
     await pickPriority(user, "P2");
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
     act(() => {
-      void board.moves().moveCardToLane(neighbour.key, "todo", 2, 0);
+      void board.moves().move(neighbour.key, toLane(2));
     });
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
     see("pick P2 out, another card's move out");
     act(() => {
-      void board.moves().moveCardToLane(issue.key, "todo", 3, 0);
+      void board.moves().move(issue.key, toLane(3));
     });
     see("drag 1 to P3 waits");
     act(() => {
-      void board.moves().moveCardToLane(issue.key, "todo", 0, 0);
+      void board.moves().move(issue.key, toLane(0));
     });
     see("drag 2 to P0 waits");
     // Neither drag is in the store: both wait in the board's scope.
@@ -3447,7 +3454,7 @@ test("a refused pick puts back the priority of the newest read across the caches
     await waitFor(() => expect(board.shown()).toBe("P3"));
     await waitFor(() => expect(priorityTriggers()).toHaveLength(1));
     act(() => {
-      void board.moves().moveCardToLane(issue.key, "todo", 1, 0);
+      void board.moves().move(issue.key, toLane(1));
     });
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
     stored = 1;
@@ -3512,7 +3519,7 @@ test("a drag saved while no pick is live is the priority a later refused pick pu
     // Every read from now on - the board's after the drag, those the refusal starts - waits.
     const answerReads = board.hold();
     act(() => {
-      void board.moves().moveCardToLane(issue.key, "todo", 1, 0);
+      void board.moves().move(issue.key, toLane(1));
     });
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
     stored = 1;
@@ -3574,7 +3581,7 @@ test("a drag that landed with no answer while no pick is live is the priority a 
     const answerReads = board.hold();
     stored = 1;
     act(() => {
-      void board.moves().moveCardToLane(issue.key, "todo", 1, 0);
+      void board.moves().move(issue.key, toLane(1));
     });
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
     await waitFor(() => expect(client.isMutating()).toBe(0));
@@ -3663,7 +3670,7 @@ test("a refused pick puts back the priority the reads a drag's landing with no a
     await waitFor(() => expect(priorityTriggers()).toHaveLength(1));
     await waitFor(() => expect(client.isFetching()).toBe(0));
     act(() => {
-      void page.moves().moveCardToLane(issue.key, "todo", 1, 0);
+      void page.moves().move(issue.key, toLane(1));
     });
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
     // Dispatch stores the drag's P1 and loses its answer; another person then sets P2.
@@ -3728,7 +3735,7 @@ test("a refused pick puts back the priority a read of the board that waited for 
     await waitFor(() => expect(priorityTriggers()).toHaveLength(1));
     await waitFor(() => expect(client.isFetching()).toBe(0));
     act(() => {
-      void board.moves().moveCardToLane(issue.key, "todo", 1, 0);
+      void board.moves().move(issue.key, toLane(1));
     });
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
     // The board is read again while the drag is out, as an event of the project has it: the read
@@ -3882,13 +3889,13 @@ test("a refused pick puts back the priority a read's retry answered, not the old
 });
 
 /** The key of CORE's open issues, as the issues table reads them. */
-const openKey = projectIssuesQuery(issue.project, [], true).queryKey;
+const openKey = projectIssuesQuery(issue.project, true).queryKey;
 
 /** CORE's open issues as the issues table reads them (`projectIssuesQuery` with `open`, whose
  *  read waits until every board move on the project is answered), showing CORE-1's priority. */
 function OpenIssues(): ReactNode {
   const open = useQuery({
-    ...projectIssuesQuery(issue.project, [], true),
+    ...projectIssuesQuery(issue.project, true),
     staleTime: Number.POSITIVE_INFINITY,
   });
   return (
@@ -3944,7 +3951,7 @@ test("a refused pick puts back the priority a retried read of the open issues an
     await waitFor(() => expect(priorityTriggers()).toHaveLength(1));
     await waitFor(() => expect(client.isFetching()).toBe(0));
     act(() => {
-      void board.result.current.moveCardToLane(issue.key, "todo", 1, 0);
+      void board.result.current.move(issue.key, toLane(1));
     });
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
     // The open issues are read again while the drag is out, as an event of the project has it:
@@ -3967,7 +3974,7 @@ test("a refused pick puts back the priority a retried read of the open issues an
     });
     await waitFor(() => expect(client.getQueryState(openKey)?.fetchStatus).toBe("paused"));
     act(() => {
-      void board.result.current.moveCardToLane(issue.key, "todo", 0, 0);
+      void board.result.current.move(issue.key, toLane(0));
     });
     await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
     // The page is shown: the retry starts, and waits for the second drag.

@@ -14,11 +14,10 @@ export const PANEL_FRAME =
 
 export interface PanelTriggerProps {
   readonly align?: "left" | "right";
-  /** Holds the trigger while a write it leads to is out - an epic's actions while a table action
-   *  is out (`heldPress`): it keeps the focus and its Tab stop, says it cannot be pressed
-   *  (`aria-disabled`), and a press on it opens nothing. A press still closes a panel it has
-   *  open, so a hold that comes while the panel is open never leaves the reader unable to shut
-   *  it. */
+  /** Holds the trigger while a write it leads to is out (`heldPress`): it keeps the focus and its
+   *  Tab stop, says it cannot be pressed (`aria-disabled`), and a press on it opens nothing. A
+   *  press still closes a panel it has open, so a hold that comes while the panel is open never
+   *  leaves the reader unable to shut it. */
   readonly ariaDisabled?: boolean;
   /** The panel's content, handed the one way to close it: a choice taken closes the panel and
    *  puts the reader back on the trigger they came from. */

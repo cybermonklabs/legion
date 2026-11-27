@@ -9,8 +9,9 @@ import {
 } from "../theme/classes";
 import { CONTROL, type ControlSize } from "./control-names";
 import type { RowNoun } from "./DataTable";
-import { MultiSelect } from "./MultiSelect";
+import { fold, MultiSelect } from "./MultiSelect";
 import { PanelTrigger } from "./PanelTrigger";
+import { RangeFilter } from "./RangeFilter";
 
 function FunnelIcon(): ReactNode {
   return (
@@ -59,9 +60,9 @@ export interface ColumnFilterProps<TData> {
 
 /**
  * The one filter a table's header holds: the funnel that opens either a search over the column's
- * values or, for a column of free text, a box to type what it must contain. Which of the two it
- * is comes from the column's `meta`, so a column says once how it filters and every table filters
- * it the same way.
+ * values or, for a column of free text, a box to type what it must contain; or, for a column of
+ * moments, the date range filter (`RangeFilter`). Which of them it is comes from the column's
+ * `meta`, so a column says once how it filters and every table filters it the same way.
  */
 export function ColumnFilter<TData>({
   column,
@@ -75,6 +76,15 @@ export function ColumnFilter<TData>({
 }: ColumnFilterProps<TData>): ReactNode {
   const meta = column.columnDef.meta;
   const name = String(column.columnDef.header);
+  if (meta?.range)
+    return (
+      <RangeFilter
+        column={column}
+        onOpenChange={onOpenChange}
+        open={open}
+        triggerClass={(active) => filterTrigger(active, size)}
+      />
+    );
   if (meta?.text) {
     const value = (column.getFilterValue() as string | undefined) ?? "";
     return (
@@ -103,11 +113,22 @@ export function ColumnFilter<TData>({
   }
   const picks = (column.getFilterValue() as string[] | undefined) ?? [];
   const order = meta?.order;
-  const options = [...new Set([...counts.keys(), ...picks, ...(meta?.always ?? [])])].sort(
-    (a, b) =>
-      order === undefined
-        ? (counts.get(b) ?? 0) - (counts.get(a) ?? 0)
-        : order.indexOf(a) - order.indexOf(b)
+  // `MultiSelect` ticks and unpicks a value by its `fold`, so a pick in another case than an
+  // option's own (`?status=Done`, `?label=Legion` for the project's `legion`) is that option,
+  // drawn once: ticked, and one press unpicks it. Only a pick no option names is drawn as an
+  // option of its own, once whatever cases the address spells it in.
+  const offered = [...new Set([...counts.keys(), ...(meta?.always ?? [])])];
+  const named = new Set(offered.map(fold));
+  const outside = picks.filter((pick) => {
+    const folded = fold(pick);
+    if (named.has(folded)) return false;
+    named.add(folded);
+    return true;
+  });
+  const options = [...offered, ...outside].sort((a, b) =>
+    order === undefined
+      ? (counts.get(b) ?? 0) - (counts.get(a) ?? 0)
+      : order.indexOf(a) - order.indexOf(b)
   );
   const show = meta?.show ?? ((value: string) => value);
   const countOf = (value: string) => counts.get(value) ?? 0;

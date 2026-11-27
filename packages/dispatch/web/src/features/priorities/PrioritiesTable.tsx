@@ -37,6 +37,7 @@ import { priorityTableGrammar } from "./priority-table-view";
 import { type EditedText, textWriteLabel, usePriorityWrites } from "./priority-writes";
 
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
+
 /** What a row of this table is, which its filters, its pager and its group headings count in. */
 const NOUN: RowNoun = {
   group: { one: "group", many: "groups" },
@@ -60,11 +61,13 @@ const NAMES: DataTableNames = {
   linkAttribute: PRIORITY_LINK_ATTRIBUTE,
   rowAttribute: PRIORITY_ROW_ATTRIBUTE,
 };
-/** The line under the table: the page sizes the issue tables offer, and its own test id. */
+/** The line under the table: the page sizes the issue tables offer, and its own test id. It
+ *  counts no total, as on the Issues tab (R13). */
 const PAGER: PagerOptions = {
   allRows: ALL_ROWS,
   pageSizes: PAGE_SIZES,
   testId: "priorities-table-pager",
+  totals: false,
 };
 /** The whole key the priorities table keeps its layout under: one table, one deployment, one
  *  stored layout, under the key the page has always written it to. */
@@ -97,7 +100,7 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
   // phone's box draws the place and the title alone, whatever the reader shows, and the title's
   // cell names what the others hold (`PRIORITY_PHONE_HIDDEN`); what the reader shows stays
   // theirs, since a change under Columns writes the reader's own visibility, never this one.
-  const stored = useTableLayout(LAYOUT_KEY, PRIORITY_LAYOUT);
+  const stored = useTableLayout(LAYOUT_KEY, PRIORITY_LAYOUT, view.sorting);
   const { compact } = stored.responsive;
   const visibility = useMemo(
     () => (compact ? { ...stored.visibility, ...PRIORITY_PHONE_HIDDEN } : stored.visibility),
@@ -304,6 +307,8 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
           empty="No priorities match these filters."
           filterCounts={facets}
           fitRows
+          // A reader at the top keeps the first row on screen too (R11).
+          holdAtTop
           label="Priorities table"
           model={model}
           noun={NOUN}

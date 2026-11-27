@@ -18,9 +18,9 @@ import {
   createIssue,
   createProject,
   getIssueEvents,
-  patchIssue,
   replyToMessageDelivery,
 } from "./api";
+import { seedRefusedMove } from "./foot-floats";
 import { expectFootClear } from "./foot-probe";
 import { pendingWrites } from "./keyed-writes";
 import { expectRailAgents } from "./rail";
@@ -606,10 +606,8 @@ test("scrolled to its end in a short window, the Agents page's broadcast compose
   ]);
   await seedUnreadReply(ENDED);
   await setSessionLive(ENDED, false);
-  await createProject({ key: "CORE", name: "Core" });
-  const epic = await createIssue({ project: "CORE", title: "Parser rollout" });
-  await patchIssue(epic.key, { labels: ["epic"] });
-  const refused = await createIssue({ project: "CORE", parent: epic.key, title: "Refused move" });
+  // The issue whose move up the queue, which the selection bar's Start next sends, is refused.
+  const refused = await seedRefusedMove();
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -621,7 +619,10 @@ test("scrolled to its end in a short window, the Agents page's broadcast compose
     });
     await page.goto("/projects/CORE/issues");
     await page.getByRole("checkbox", { name: `Select ${refused.key}`, exact: true }).check();
-    await page.getByRole("toolbar").getByRole("button", { name: "Take out of epic" }).click();
+    await page
+      .getByRole("toolbar")
+      .getByRole("button", { name: "Start next", exact: true })
+      .click();
     const pending = pendingWrites(page);
     await expect(pending).toContainText(refused.key);
     await page.goto("/agents");

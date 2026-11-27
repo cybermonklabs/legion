@@ -245,7 +245,7 @@ boardTest(
     }
     await expect(dialog.getByRole("listitem").filter({ hasText: "Open issue" })).toHaveCount(1);
     await expect(
-      project.getByRole("listitem").filter({ hasText: "Toggle List / Board" })
+      project.getByRole("listitem").filter({ hasText: "Toggle Table / Board" })
     ).toHaveCount(1);
   }
 );

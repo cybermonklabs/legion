@@ -7,7 +7,13 @@ import { SCOPE_LABELS, SCOPE_ORDER, ShortcutHelp } from "./ShortcutHelp";
 
 const snapshot: KeyBindingDescription[] = [
   { enabled: true, id: "next", keys: ["j"], label: "Next component", scope: "architecture" },
-  { enabled: true, id: "toggle-view", keys: ["v"], label: "Toggle List / Board", scope: "project" },
+  {
+    enabled: true,
+    id: "toggle-view",
+    keys: ["v"],
+    label: "Toggle Table / Board",
+    scope: "project",
+  },
   { enabled: true, id: "search", keys: ["$mod+k"], label: "Search", scope: "global" },
 ];
 

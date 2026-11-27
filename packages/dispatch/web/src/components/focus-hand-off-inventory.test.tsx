@@ -23,7 +23,7 @@ import {
   installFakeLiveSockets,
   snapshotFrame,
 } from "../__tests__/live-socket-harness";
-import { ApiError, api } from "../api/client";
+import { api } from "../api/client";
 import type {
   Agent,
   DeliveryMeasuresResponse,
@@ -177,10 +177,11 @@ function Deploys(): ReactNode {
   const [globalFilter, setGlobalFilter] = useState("");
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
   const [rolledBack, setRolledBack] = useState<ReadonlySet<string>>(new Set());
-  const layout = useTableLayout("inventory-deploys", {
-    ids: ["deploy", "service"],
-    rowAttribute: "data-deploy-row",
-  });
+  const layout = useTableLayout(
+    "inventory-deploys",
+    { ids: ["deploy", "service"], rowAttribute: "data-deploy-row" },
+    sorting
+  );
   const state = { columnFilters, globalFilter, grouping, pagination, sorting };
   const model = useDataTable<Deploy>({
     columns: DEPLOY_COLUMNS,
@@ -576,12 +577,37 @@ const EMPTY_MEASURES: DeliveryMeasuresResponse = {
   flags_source: "none",
   unowned_p0: [],
   targets: {
-    deploys_per_day: 20,
-    change_failure_rate: 0.05,
-    merge_to_production_minutes: 45,
-    opened_to_merge_median_minutes: 60,
-    deploy_run_success_rate: 0.9,
-    unowned_p0: 0,
+    deploys_per_day: {
+      value: 20,
+      inclusive: true,
+      direction: "higher_better",
+      judges: ["deploys.per_day"],
+    },
+    change_failure_rate: {
+      value: 0.05,
+      inclusive: false,
+      direction: "lower_better",
+      judges: ["per_deploy.rate"],
+    },
+    merge_to_production_minutes: {
+      value: 45,
+      inclusive: false,
+      direction: "lower_better",
+      judges: ["minutes.max", "minutes.median"],
+    },
+    opened_to_merge_median_minutes: {
+      value: 60,
+      inclusive: false,
+      direction: "lower_better",
+      judges: ["minutes.median"],
+    },
+    deploy_run_success_rate: {
+      value: 0.9,
+      inclusive: true,
+      direction: "higher_better",
+      judges: ["runs.rate"],
+    },
+    unowned_p0: { value: 0, inclusive: true, direction: "lower_better", judges: ["issues.value"] },
   },
   status: {
     deploys_per_day: false,
@@ -710,13 +736,26 @@ function savedIssue(key: string): Issue {
 }
 
 /** The project List over `issues` at `search`, as `IssuesTable.test.tsx`'s `table()` draws it,
- *  in the shell's main content. `open` answers the listing of the open issues alone in place of
- *  `issues`, as a read the case holds out. */
+ *  in the shell's main content: the listing route, and one page of it (`listIssuePage`, Open's
+ *  count and Done's pages), answer as the server does, `open` leaving the closed rows out and
+ *  `status` keeping the rows in those statuses. `open` answers the listing of the open issues
+ *  alone in place of `issues`, as a read the case holds out. */
 function drawList(issues: IssueSummary[], search = "", open?: Promise<IssueSummary[]>): void {
+  const answers =
+    (options: Parameters<typeof api.listIssues>[0] = {}) =>
+    (each: IssueSummary) =>
+      (!options.open || each.status !== "done") &&
+      (options.status === undefined || options.status.includes(each.status));
   answering(
     spyOn(api, "listIssues").mockImplementation(async (options = {}) => {
       if (options.open && open) return open;
-      return issues.filter((each) => !options.open || each.status !== "done");
+      return issues.filter(answers(options));
+    }),
+    spyOn(api, "listIssuePage").mockImplementation(async (options) => {
+      const rows = issues.filter(answers(options));
+      const offset = options.offset ?? 0;
+      const limit = options.limit ?? rows.length;
+      return { issues: rows.slice(offset, offset + limit), limit, offset, total: rows.length };
     }),
     spyOn(api, "getMyState").mockResolvedValue({}),
     spyOn(api, "listAgents").mockResolvedValue([]),
@@ -726,17 +765,17 @@ function drawList(issues: IssueSummary[], search = "", open?: Promise<IssueSumma
   scrollBoxHeight("issues-table-scroll");
   const client = plainClient();
   client.setQueryData(["whoami"], { event_head: "0", login: "alice", kind: "user" });
-  drawPage(<IssuesTable listing={{ project: "CORE" }} />, `/projects/CORE/issues${search}`, client);
+  drawPage(<IssuesTable project="CORE" />, `/projects/CORE/issues${search}`, client);
 }
 
-/** The List opened on its Done and Todo issues, its Status column filter opened, and the filter's
- *  text box, which holds the focus. */
-async function openStatusFilter(user: UserEvent, open?: Promise<IssueSummary[]>) {
-  drawList(
-    [issue("CORE-1"), issue("CORE-2", { status: "done" })],
-    "?status=done&status=todo",
-    open
-  );
+/** The List opened at `search` on its Done and Todo issues, its Status column filter opened, and
+ *  the filter's text box, which holds the focus. */
+async function openStatusFilter(
+  user: UserEvent,
+  search = "?status=done&status=todo",
+  open?: Promise<IssueSummary[]>
+) {
+  drawList([issue("CORE-1"), issue("CORE-2", { status: "done" })], search, open);
   await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
   await user.click(screen.getByRole("button", { name: /^Filter Status/ }));
   const box = await screen.findByRole("combobox", { name: "Search Status" });
@@ -783,32 +822,6 @@ async function interruptedList(): Promise<HTMLElement> {
   return screen.findByRole("region", { name: "Interrupted table action" });
 }
 
-/** The List over CORE-1 with a New epic from it refused as a possible duplicate, so the List draws
- *  the duplicate's notice with Create anyway and Cancel new epic. */
-async function duplicateEpicList(user: UserEvent): Promise<HTMLElement> {
-  answering(
-    spyOn(api, "createIssue").mockImplementation(async (input) => {
-      if (!input.force) {
-        throw new ApiError(409, {
-          code: "POSSIBLE_DUPLICATE",
-          error: "Possible duplicate of CORE-9",
-        });
-      }
-      return savedIssue("CORE-9");
-    }),
-    spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1"))
-  );
-  // On the backlog: main's parent-status rule (bcc5d7e66d) needs no epic in work for it, so the
-  // create is the action's first write, with no question before it.
-  drawList([issue("CORE-1", { status: "backlog" })]);
-  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
-  await user.click(screen.getByRole("button", { name: "New epic from these" }));
-  const dialog = await screen.findByRole("dialog", { name: /epic/i });
-  await user.type(within(dialog).getByRole("textbox", { name: "Name" }), "Existing epic");
-  await user.click(within(dialog).getByRole("button", { name: "Create epic" }));
-  return screen.findByRole("alert");
-}
-
 /** Waits until the List has settled what its notice's press started: the notice gone, and the
  *  promises the press's writes and reads chained, which the case's stubs answer at once, run as
  *  far as they go inside `act` (`settle`), so nothing of them lands after the case. */
@@ -825,31 +838,23 @@ for (const press of ["Finish", "Dismiss"]) {
   });
 }
 
-for (const press of ["Create anyway", "Cancel new epic"]) {
-  test(`the List: the possible duplicate's ${press} arms the List's hand-off`, async () => {
-    const user = userEvent.setup();
-    const duplicate = await duplicateEpicList(user);
-    expectArms(within(duplicate).getByRole("button", { name: press }));
-    await noticeSettled(duplicate);
-  });
-}
-
 // The List's armed hand-off (`IssuesTable`): a column filter's pick that sends the List off to
 // read the issues it has not loaded takes the table's head away with the filter's own list, and
 // the List's hand-off walks back over the main content it was in (`walkBackInRegion`), from the
 // place the head left, to the toolbar's Clear filters, never out to the navigation. The toolbar
 // draws the search box first and Clear filters last, after the Status chip (`ControlRow`), so the
 // walk reaches Clear filters before the search box. By the pointer's pick, and by Enter in the
-// filter's text box.
+// filter's text box. Opened on Done, whose listing answers: ticking Todo asks for the open issues
+// too, whose listing is still out.
 for (const way of ["a pointer's pick", "Enter in its text box"]) {
   test(`the List: a column filter pick by ${way} that sends the List to read its issues walks back to the toolbar's Clear filters`, async () => {
     const user = userEvent.setup();
     const open = Promise.withResolvers<IssueSummary[]>();
-    await openStatusFilter(user, open.promise);
+    await openStatusFilter(user, "?status=done", open.promise);
     if (way === "a pointer's pick") {
-      await user.click(screen.getByRole("option", { name: /^Done/ }));
+      await user.click(screen.getByRole("option", { name: /^Todo/ }));
     } else {
-      await user.paste("Done");
+      await user.paste("Todo");
       await user.keyboard("{Enter}");
     }
     await screen.findByRole("status", { name: "Loading issues" });
@@ -865,28 +870,16 @@ for (const way of ["a pointer's pick", "Enter in its text box"]) {
 
 // A notice's button that takes the notice away, by Enter, hands its focus on by the List's own
 // hand-off: the notices hold no other control, so it walks back over the main content to the
-// toolbar's nearest control before them that takes no typed text, the View menu, never into the
-// search box.
+// toolbar's nearest control before them that takes no typed text, the row's display menu, which
+// the Issues tab names Group by (R9), never into the search box.
 for (const press of ["Finish", "Dismiss"]) {
-  test(`the List: the interrupted action's ${press} hands its focus to the toolbar's View menu`, async () => {
+  test(`the List: the interrupted action's ${press} hands its focus to the toolbar's Group by menu`, async () => {
     const user = userEvent.setup();
     const recovery = await interruptedList();
     act(() => within(recovery).getByRole("button", { name: press }).focus());
     await user.keyboard("{Enter}");
     await waitFor(() => expect(recovery.isConnected).toBe(false));
-    await waitFor(() => expect(screen.getByRole("button", { name: /^View/ })).toHaveFocus());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Group by" })).toHaveFocus());
     await noticeSettled(recovery);
-  });
-}
-
-for (const press of ["Create anyway", "Cancel new epic"]) {
-  test(`the List: the possible duplicate's ${press} hands its focus to the toolbar's View menu`, async () => {
-    const user = userEvent.setup();
-    const duplicate = await duplicateEpicList(user);
-    act(() => within(duplicate).getByRole("button", { name: press }).focus());
-    await user.keyboard("{Enter}");
-    expect(screen.queryByRole("button", { name: press })).toBeNull();
-    await waitFor(() => expect(screen.getByRole("button", { name: /^View/ })).toHaveFocus());
-    await noticeSettled(duplicate);
   });
 }

@@ -732,10 +732,9 @@ test("project board: 20 title writes 250 ms apart send at most 7 list reads and 
 });
 
 // SLOW(>=2s): the 20 writes 250 ms apart the title names: their span is the measurement. The
-// default project view is the issues table, which reads two kinds of thing - the project
-// listing, and the detail of each parent neither listing carries, because it is closed - so
-// this budget counts both. The parents are read once, with no staleness of their own, so a
-// project event refreshes one listing and nothing else.
+// default project view is the issues table, which reads the project listing alone: every row
+// has a closed parent, and the table reads no issue's detail for it, so a read of one counts
+// against this budget too. A project event refreshes the listing and nothing else.
 test("project issues table: 20 title writes 250 ms apart send at most 7 project reads and the last title shows within 2 s", async ({
   browser,
 }, testInfo) => {
@@ -774,9 +773,8 @@ test("project issues table: 20 title writes 250 ms apart send at most 7 project 
     await expect(table).toBeVisible();
     const first = issues[0];
     if (first === undefined) throw new Error("no issues seeded");
-    await expect(page.getByText(`${issues.length} of ${issues.length} issues`)).toBeVisible();
-    // Every row knows its epic, so the closed parents have been read by now.
-    await expect(page.getByText("No epic").first()).toBeVisible();
+    // Every issue is read: the view's tab counts them. The closed parents are no row of Open.
+    await expect(page.getByRole("tab", { name: `Open, ${issues.length} issues` })).toBeVisible();
     // The table's barrier: a row shows a title only an event can have brought.
     let barrier = 0;
     await expect

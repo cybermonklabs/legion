@@ -115,7 +115,10 @@ test("an unresponsive holder keeps its claim: the issue page says unresponsive s
     const stalled = page.getByTestId("issue-claim-unresponsive");
     await expect(stalled).toBeVisible();
     await expect(page.getByTestId("issue-claim-lapsed")).toHaveCount(0);
-    await expect(chip).toHaveAttribute("title", /missed its heartbeats without ending/);
+    // The chip's help is its tooltip, which the keyboard focus opens.
+    await chip.focus();
+    await expect(page.getByRole("tooltip")).toContainText("missed its heartbeats without ending");
+    await chip.blur();
     // R5's wording: the state, and the heartbeat the silence is dated from.
     await expect(stalled).toContainText("unresponsive since");
     await expectInstant(
@@ -184,7 +187,9 @@ test("an unresponsive holder past its takeable moment reads takeable now, is lis
     await expect(stalled).toContainText("unresponsive since");
     await expect(stalled.getByTestId("issue-claim-takeable")).toHaveText(", takeable now");
     await expect(page.getByTestId("issue-claim-lapsed")).toHaveCount(0);
-    await expect(chip).toHaveAttribute("title", /another agent may take it now/);
+    await chip.focus();
+    await expect(page.getByRole("tooltip")).toContainText("another agent may take it now");
+    await chip.blur();
     await expect(chip.locator(`[data-agent-name="${holder.session_id}"]`)).toHaveAttribute(
       "data-agent-state",
       "unresponsive"

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -454,6 +455,96 @@ func TestListIssuesFiltersByClosedWindow(t *testing.T) {
 		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"`+code+`"`) {
 			t.Errorf("?%s: status=%d body=%s, want 400 %s", query, response.Code, response.Body.String(), code)
 		}
+	}
+}
+
+// sort=closed_at and sort=-closed_at order the listing by closed_at, oldest or newest first, with
+// the issues that have no closed_at last in both, then in the listing's own order, so two issues
+// closed at one instant keep their rank order whichever way the sort runs. status=done is listed
+// each way unpaged and in pages of two, each page counting every done issue; a done issue with no
+// closed_at, one closed before the column was written, is last on the last page. Without a
+// status the open issue joins it after every closed one, the two in the lifecycle's order, and
+// the pinned texts and a closed window sort as the rest do.
+func TestListIssuesSortsByClosedAt(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	keys := createListedIssues(t, handler, "TEST", 6)
+	createListedIssues(t, handler, "OTHER", 1)
+	late, earliest, unclosed, tied, middle, open := keys[0], keys[1], keys[2], keys[3], keys[4], keys[5]
+	lateAt := time.Date(2026, time.November, 3, 12, 0, 0, 0, time.UTC)
+	// unclosed is done with no closed_at, which the statement stores as null.
+	for key, at := range map[string]any{
+		late:     lateAt,
+		earliest: time.Date(2026, time.November, 1, 12, 0, 0, 0, time.UTC),
+		unclosed: nil,
+		tied:     lateAt,
+		middle:   time.Date(2026, time.November, 2, 12, 0, 0, 0, time.UTC),
+	} {
+		if _, err := database.Pool.Exec(context.Background(),
+			"update issues set status = 'done', closed_at = $2 where key = $1", key, at); err != nil {
+			t.Fatalf("close %s at %v: %v", key, at, err)
+		}
+	}
+	oldestFirst := []string{earliest, middle, late, tied, unclosed}
+	newestFirst := []string{late, tied, middle, earliest, unclosed}
+	if got := listedKeys(t, handler, "project=TEST&status=done"); !slices.Equal(got, keys[:5]) {
+		t.Fatalf("?project=TEST&status=done lists %v, want the listing's own rank order %v", got, keys[:5])
+	}
+
+	for _, listing := range []struct {
+		query string
+		want  []string
+	}{
+		{"project=TEST&status=done&sort=closed_at", oldestFirst},
+		{"project=TEST&status=done&sort=-closed_at", newestFirst},
+		{"project=TEST&sort=closed_at", []string{earliest, middle, late, tied, open, unclosed}},
+		{"project=TEST&sort=-closed_at", []string{late, tied, middle, earliest, open, unclosed}},
+	} {
+		if got := listedKeys(t, handler, listing.query); !slices.Equal(got, listing.want) {
+			t.Errorf("?%s lists %v, want %v", listing.query, got, listing.want)
+		}
+		for offset := 0; offset < len(listing.want); offset += 2 {
+			query := listing.query + "&limit=2&offset=" + strconv.Itoa(offset)
+			page, ok := readPage(t, handler, query)
+			if !ok {
+				continue
+			}
+			want := listing.want[offset:min(offset+2, len(listing.want))]
+			if got := summaryKeys(page.Issues); !slices.Equal(got, want) || page.Total != len(listing.want) ||
+				page.Limit != 2 || page.Offset != offset {
+				t.Errorf("?%s: page %v total %d limit %d offset %d, want %v total %d limit 2 offset %d",
+					query, got, page.Total, page.Limit, page.Offset, want, len(listing.want), offset)
+			}
+		}
+	}
+
+	// Done's own read: a window's closes newest first, a page at a time, the window leaving out
+	// the issue with no closed_at.
+	window := "closed_since=" + url.QueryEscape("2026-11-01T00:00:00Z") + "&closed_before=" + url.QueryEscape("2026-11-04T00:00:00Z")
+	for _, read := range []struct {
+		query string
+		want  []string
+	}{
+		{"project=TEST&status=done&sort=-closed_at&" + window + "&limit=2", []string{late, tied}},
+		{"project=TEST&status=done&sort=-closed_at&" + window + "&limit=2&offset=2", []string{middle, earliest}},
+	} {
+		if page, ok := readPage(t, handler, read.query); ok && (!slices.Equal(summaryKeys(page.Issues), read.want) || page.Total != 4) {
+			t.Errorf("?%s: page %v total %d, want %v total 4", read.query, summaryKeys(page.Issues), page.Total, read.want)
+		}
+	}
+
+	for _, key := range []string{earliest, unclosed, tied} {
+		if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/me/issues/"+key+"/state", map[string]bool{"pinned": true}, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("pin %s: status=%d body=%s", key, response.Code, response.Body.String())
+		}
+	}
+	pinned := []string{tied, earliest, unclosed}
+	if got := listedKeys(t, handler, "pinned=true&sort=-closed_at"); !slices.Equal(got, pinned) {
+		t.Errorf("?pinned=true&sort=-closed_at lists %v, want %v", got, pinned)
+	}
+	if page, ok := readPage(t, handler, "pinned=true&sort=-closed_at&limit=2&offset=1"); ok &&
+		(!slices.Equal(summaryKeys(page.Issues), pinned[1:]) || page.Total != len(pinned)) {
+		t.Errorf("pinned page = %v total %d, want %v total %d", summaryKeys(page.Issues), page.Total, pinned[1:], len(pinned))
 	}
 }
 
