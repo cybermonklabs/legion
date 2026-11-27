@@ -309,10 +309,12 @@ export interface LegionDaemonClient {
   readonly signOff: (
     input: z.input<typeof LegionSignOffRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
-  /** A phase worker's or the owning architect's `report_defect` (the defect-calls entry): a defect
-   * in the merged change of an issue, at the head it was seen at. It moves no phase. The answer is
-   * the defect's id, whether the daemon recorded it, found it the same as one it holds or joined it
-   * to one, and the generation of the change that will carry it. */
+  /** `report_defect` (the defect-calls entry): a defect of the change of an issue, found once its
+   * task's last step passed, at the head it was seen at. The implementer reports in retro, the
+   * merger in merging and in verifying until its completion lands, and the owning architect from
+   * retro on. It moves no phase. The answer is the defect's id, whether the daemon recorded it,
+   * found it the same as one it holds or joined it to one, and the generation of the change that
+   * will carry it. */
   readonly reportDefect: (
     input: z.input<typeof LegionDefectReportRequest>
   ) => Promise<z.output<typeof LegionDefectReportResponse>>;

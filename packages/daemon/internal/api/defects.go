@@ -55,15 +55,21 @@ type DefectWithdrawResponse struct {
 // defectHeadForm is the form of a head report_defect takes: a full commit id, 40 lowercase hex.
 var defectHeadForm = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
+// defectCheckForm is the form of the check a report names: a block id of a Verification document,
+// the letters, digits, `_` and `-` Dispatch spells a block id with (its text.IsBlockIDByte), at
+// most as long as the longest block id a plan's reason quotes (plan.MostQuotedBytes). close-wait.md
+// writes it inline, so nothing else of the call reaches the document's lines by it.
+var defectCheckForm = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+
 // reportDefect is report_defect: a role reports a defect of its issue's change once the task's
 // last step passed, which the workflow records and moves no phase for (workflow's defectReport).
 // The route refuses what it can judge from the body alone, before anything is recorded: a blank
 // defect (DEFECT_TEXT_REQUIRED), one Dispatch would refuse in a message, by the rule a backward
-// move's reason is held to (DEFECT_TEXT_TOO_LONG, DEFECT_TEXT_DECISION_BLOCK), and a head that is
-// no full commit id (DEFECT_HEAD_REQUIRED). The controller reports nothing, and a phase worker
-// reports only on its own issue (DEFECT_CALLER_NOT_ALLOWED). Who may report and when is judged
-// under the fact lock (DEFECT_BEFORE_LAST_STEP, DEFECT_CALLER_NOT_ALLOWED, DEFECT_ISSUE_CLOSED,
-// TREE_LINGERING).
+// move's reason is held to (DEFECT_TEXT_TOO_LONG, DEFECT_TEXT_DECISION_BLOCK), a head that is no
+// full commit id (DEFECT_HEAD_REQUIRED), and a check that is no block id (DEFECT_CHECK_INVALID).
+// The controller reports nothing, and a phase worker reports only on its own issue
+// (DEFECT_CALLER_NOT_ALLOWED). Who may report and when is judged under the fact lock
+// (DEFECT_BEFORE_LAST_STEP, DEFECT_CALLER_NOT_ALLOWED, DEFECT_ISSUE_CLOSED, TREE_LINGERING).
 func (s *server) reportDefect(w http.ResponseWriter, r *http.Request) {
 	var req DefectReportRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r, field{"grantId", req.GrantID}, field{"issue", req.Issue}) {
@@ -93,6 +99,11 @@ func (s *server) reportDefect(w http.ResponseWriter, r *http.Request) {
 			"head is required: the 40 lowercase hex of the pull request's head where you saw the defect; nothing was recorded")
 		return
 	}
+	if req.Check != "" && !defectCheckForm.MatchString(req.Check) {
+		s.writeFailure(w, r, http.StatusBadRequest, "DEFECT_CHECK_INVALID",
+			"check is the block id of the issue's check the defect is about: letters, digits, `_` and `-`, at most 128 of them; nothing was recorded")
+		return
+	}
 	grant, ok := s.redeem(w, r, req.GrantID)
 	if !ok {
 		return
@@ -102,7 +113,7 @@ func (s *server) reportDefect(w http.ResponseWriter, r *http.Request) {
 			"a phase worker reports a defect of its own issue alone, and the controller reports none; %s is no issue of this grant, and nothing was recorded", req.Issue))
 		return
 	}
-	fact := intake.DefectReport{Issue: req.Issue, Role: grant.Role, By: grant.Claim, Text: req.Defect, Head: req.Head, Check: strings.TrimSpace(req.Check)}
+	fact := intake.DefectReport{Issue: req.Issue, Role: grant.Role, By: grant.Claim, Text: req.Defect, Head: req.Head, Check: req.Check}
 	answer, ok := s.applyDefectFact(w, r, "defects/report", fact)
 	if !ok {
 		return
@@ -112,9 +123,10 @@ func (s *server) reportDefect(w http.ResponseWriter, r *http.Request) {
 }
 
 // withdrawDefect is withdraw_defect: the owning architect ends a reported defect with a reason
-// (workflow's defectWithdrawal). The route refuses a blank reason (DEFECT_REASON_REQUIRED), an id
-// that is no number (DEFECT_NOT_FOUND) and a grant that is no architect's
-// (DEFECT_WITHDRAW_NOT_OWNER); the workflow judges the rest under the fact lock.
+// (workflow's defectWithdrawal). The route refuses a blank reason (DEFECT_REASON_REQUIRED), one
+// close-wait.md could not carry, by the rule the defect's text is held to (DEFECT_REASON_TOO_LONG,
+// DEFECT_REASON_DECISION_BLOCK), an id that is no number (DEFECT_NOT_FOUND) and a grant that is no
+// architect's (DEFECT_WITHDRAW_NOT_OWNER); the workflow judges the rest under the fact lock.
 func (s *server) withdrawDefect(w http.ResponseWriter, r *http.Request) {
 	var req DefectWithdrawRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) ||
@@ -128,6 +140,16 @@ func (s *server) withdrawDefect(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.Reason) == "" {
 		s.writeFailure(w, r, http.StatusBadRequest, "DEFECT_REASON_REQUIRED",
 			"reason is required: close-wait.md names the withdrawn defect with it; nothing was withdrawn")
+		return
+	}
+	if over := dispatchbody.Check(record.LongestPost(req.Reason)); over != nil {
+		if dispatchbody.IsDecisionBlock(over) {
+			s.writeFailure(w, r, http.StatusBadRequest, "DEFECT_REASON_DECISION_BLOCK", fmt.Sprintf(
+				"the reason holds a decision block, which close-wait.md would carry where nobody can answer it: %s; nothing was withdrawn, so withdraw it again stating why rather than asking", over))
+			return
+		}
+		s.writeFailure(w, r, http.StatusBadRequest, "DEFECT_REASON_TOO_LONG", fmt.Sprintf(
+			"the reason makes a message Dispatch refuses: %s; nothing was withdrawn, so withdraw it again with a shorter reason", over))
 		return
 	}
 	grant, ok := s.redeem(w, r, req.GrantID)

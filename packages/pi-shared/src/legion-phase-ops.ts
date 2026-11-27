@@ -284,10 +284,10 @@ export const PhaseOpArguments = z.discriminatedUnion(
     // `read_build` takes no field: it reports this process's own build and asks the daemon for
     // the contract it states, and names no issue.
     operation("read_build", {}),
-    // A defect in the merged change of `issue`: what is wrong with its evidence, the head the
-    // pull request stood at when the role saw it, and the check it is about where it is about
-    // one. Which roles may report on which issue is the daemon's to hold
-    // (DEFECT_CALLER_NOT_ALLOWED), so the issue is sent as named.
+    // A defect of the change of `issue`, found once its task's last step passed: what is wrong
+    // with its evidence, the head the pull request stood at when the role saw it, and the check it
+    // is about where it is about one. Which roles may report on which issue is the daemon's to
+    // hold (DEFECT_CALLER_NOT_ALLOWED), so the issue is sent as named.
     operation("report_defect", {
       issue: requiredString("report_defect", "issue"),
       defect: requiredString("report_defect", "defect"),
@@ -375,7 +375,7 @@ export const PHASE_OP_SENTENCES = {
     "The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. " +
     "That move counts no review round: only a review that requests changes counts one. ",
   reportDefect:
-    "report_defect (`issue`, `defect`, `head`, and `check` where the defect is about a check) records a defect in the merged change of `issue`: " +
+    "report_defect (`issue`, `defect`, `head`, and `check` where the defect is about a check) records a defect of the change of `issue`, found once its task's last step passed: " +
     "`defect` says what is wrong, with its evidence, `head` is the 40-character lower-case commit the pull request's head stood at when you saw it, " +
     "and `check` is the block id of the issue's check it is about; the answer is the defect's id, whether the daemon `recorded` it, found it the " +
     "`same` as one it holds or `joined` it to one, and `nextChange`, the change that will carry it, and the call moves no phase, so go on with your step. ",

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // The lines the close_wait_publish executor logs: a version of close-wait.md the daemon's write
@@ -25,7 +27,11 @@ const (
 // closeWaitPublish writes the stored wait of the row's issue onto its Dispatch document
 // close-wait.md (record.CloseWaitPublish). It renders the wait the issue's row holds when the row
 // runs (record.CloseWaitDocument), not the one it held when the row was queued, so one row that
-// stands while the wait changes writes the newest wait.
+// stands while the wait changes writes the newest wait. The withdrawals that wait holds
+// (record.StoredWait.Withdrawn) are said once: the workflow keeps each in the wait until a version
+// holding it is written, and once Dispatch takes this version the row takes the withdrawals it
+// showed out of the wait (record.Store.ClearWaitWithdrawals), under the lock the workflow writes
+// the wait under, keeping any the wait gained while the row ran.
 //
 // Each write names the document's whole-document token, read just before (ArtifactToken), so it
 // replaces exactly the version it read. The first write names none, since no document stands. A
@@ -55,6 +61,10 @@ func (r *outbox) closeWaitPublish(ctx context.Context, row record.OutboxRow, pay
 	if err != nil {
 		return err
 	}
+	var shown record.StoredWait
+	if err := json.Unmarshal(issue.CloseWait, &shown); err != nil {
+		return fmt.Errorf("read the stored wait of %s: %w", row.Issue, err)
+	}
 	token := ""
 	read, err := r.dispatch.ArtifactToken(ctx, row.Issue, record.CloseWaitDocumentSlug)
 	switch {
@@ -70,10 +80,22 @@ func (r *outbox) closeWaitPublish(ctx context.Context, row record.OutboxRow, pay
 		r.log.Warn(closeWaitEditReplaced, "row", row.ID, "issue", row.Issue, "read", token, "standing", stale.Current)
 		err = r.uploadCloseWait(ctx, row, content, stale.Current)
 	}
-	if err == nil {
+	if err != nil {
+		return r.closeWaitFailed(row, err)
+	}
+	if len(shown.Withdrawn) == 0 {
 		return nil
 	}
-	return r.closeWaitFailed(row, err)
+	// A failure here fails the run, and the row writes the same version again before it clears.
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := treelifecycle.Serialize(ctx, tx); err != nil {
+			return err
+		}
+		return r.records.ClearWaitWithdrawals(ctx, tx, row.Issue, shown.Withdrawn)
+	}); err != nil {
+		return fmt.Errorf("take the withdrawals close-wait.md of %s showed out of its stored wait: %w", row.Issue, err)
+	}
+	return nil
 }
 
 // uploadCloseWait writes content as close-wait.md of the row's issue over the version token names

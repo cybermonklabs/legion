@@ -1617,7 +1617,7 @@ const countingTool = (
     session: () => active,
   });
 
-// report_defect records a defect of the merged change and moves no phase: the role goes on with
+// report_defect records a defect of the change, found once its task's last step passed, and moves no phase: the role goes on with
 // its step. The implementer in retro, the merger in merging and the owning architect report
 // through the one phase op, and no report that succeeded tells the session its phase closed.
 test("report_defect does not close the phase", async () => {

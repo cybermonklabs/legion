@@ -2270,7 +2270,7 @@ test("every request the plugin sends parses and names its required fields", () =
       },
     ],
     ["stop task", LegionTaskStopRequest, { grantId: "grant-208", issue: "LEGION-209", task: "a" }],
-    // The defect routes (the defect-calls entry): a report of a defect of the merged change, at
+    // The defect routes (the defect-calls entry): a report of a defect of the change, at
     // the head it was seen at, and the owning architect's withdrawal of one by its id.
     [
       "defect report",
