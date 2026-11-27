@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -82,5 +83,19 @@ func TestProfilesCheckRefusesWhatTheBootRefusesOfADPoPBlock(t *testing.T) {
 	}
 	if code, _, stderr := checkProfiles(t, right, "--private-upstream", destination+" "+destination); code != 2 || !strings.Contains(stderr, "twice") {
 		t.Errorf("profiles check with a host named twice = exit %d, stderr %q; want exit 2 naming the host twice", code, stderr)
+	}
+}
+
+// TestProfilesCheckSaysADPoPProfileIsBehindItsDPoPBlock: a file of a dpop block, compared with
+// itself and with a store of one unrelated secret, lists its name as served behind its dpop block,
+// the words the report keeps for a block of the dpop block kind, and not behind a proxy block,
+// which is an old file's block of another kind.
+func TestProfilesCheckSaysADPoPProfileIsBehindItsDPoPBlock(t *testing.T) {
+	profiles := mintedProfiles(`"dispatch.test"`, []string{"FIRST_TOKEN"})
+	store := `[{"name": "projects/example/secrets/agent-secrets-other-token", "annotations": {}}]`
+	code, stdout, stderr := checkProfiles(t, profiles, "--against", profilesFile(t, profiles),
+		"--secrets-json", writeTempFile(t, "secrets.json", []byte(store)))
+	if code != 0 || !slices.Contains(strings.Split(stdout, "\n"), `served "FIRST_TOKEN": behind its dpop block`) {
+		t.Fatalf("profiles check of a dpop block against itself = exit %d, stdout %q, stderr %q; want exit 0 and the line served \"FIRST_TOKEN\": behind its dpop block", code, stdout, stderr)
 	}
 }

@@ -656,7 +656,7 @@ func servingOf(file policy.Profiles, name string, tags *storeTags) serving {
 	if p := file.Lookup(name); p != nil {
 		if b := cmp.Or(file.LegacyProxy(name), p.Proxy); b != nil {
 			words := "its proxy block"
-			if b.Kind == proxyrules.WayDPoP {
+			if b.Kind == policy.BlockKindDPoP {
 				words = "its dpop block"
 			}
 			return serving{state: behindProxy, how: "behind " + words, allow: b.Allow, allowKnown: true, hosts: b.Hosts, hostsKnown: true}
