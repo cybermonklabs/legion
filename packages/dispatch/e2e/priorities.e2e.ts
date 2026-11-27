@@ -2564,9 +2564,8 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
 // held by a session whose title takes the chip onto three lines or more, and which the registry
 // does not list, so its state, "not running", holds a separator of its own: read off the
 // characters it draws, no line of the chip starts with "·", and the line of the claim's age holds
-// no part of the holder's name, so the age and the state stand on a line of their own. A
-// character is drawn where it has a box and its middle stands inside each box of the chip that
-// clips it; a space starts no line.
+// no part of the holder's name, so the age and the state stand on a line of their own. Nothing
+// of the chip clips, so every character that has a box is drawn; a space starts no line.
 // SLOW(>=2s): a priority and two issues written and claimed, and two tabs read.
 test("a claim chip that wraps on a fault tab at 1440 starts no line with its separator, and draws its age and state on a line of their own", async ({
   browser,
@@ -2613,24 +2612,6 @@ test("a claim chip that wraps on a fault tab at 1440 starts no line with its sep
       await expect(chip).toContainText("not running");
       const read = await settledValue(`the ${tab} tab's claim chip`, () =>
         chip.evaluate((element) => {
-          // The boxes of the chip, the chip among them, that cut what overflows them.
-          const clips = [element, ...element.querySelectorAll("*")].filter((box) => {
-            const style = getComputedStyle(box);
-            return style.overflowX !== "visible" || style.overflowY !== "visible";
-          });
-          // Whether a point of `node`'s text stands inside each box that clips it.
-          const drawnAt = (node: Node, x: number, y: number) =>
-            clips.every((box) => {
-              if (!box.contains(node)) return true;
-              const style = getComputedStyle(box);
-              const edge = box.getBoundingClientRect();
-              const left = edge.left + box.clientLeft;
-              const top = edge.top + box.clientTop;
-              return (
-                (style.overflowX === "visible" || (x >= left && x <= left + box.clientWidth)) &&
-                (style.overflowY === "visible" || (y >= top && y <= top + box.clientHeight))
-              );
-            });
           const holderName = element.querySelector("[data-agent-name]");
           const age = element.querySelector("time");
           const half = Number.parseFloat(getComputedStyle(element).lineHeight) / 2 || 8;
@@ -2648,7 +2629,6 @@ test("a claim chip that wraps on a fault tab at 1440 starts no line with its sep
               range.setEnd(node, end);
               const rect = range.getBoundingClientRect();
               if (rect.width === 0 || rect.height === 0) continue;
-              if (!drawnAt(node, rect.left + rect.width / 2, rect.top + rect.height / 2)) continue;
               drawn.push({
                 age: age?.contains(node) === true,
                 char,
