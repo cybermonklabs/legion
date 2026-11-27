@@ -38,7 +38,8 @@ import (
 // (a file, a subdirectory and a symbolic link); a run into a directory that does not exist, which
 // the lock makes; a run where the system refuses each hard link, so print copies each file that it
 // keeps; a run over such entries where the system refuses a rename that keeps an existing name, so
-// each move back takes its name and renames over it; and a run that print refuses, because the
+// each file and link moves back by a second name and a removal, and each directory by taking its
+// name and renaming over it; and a run that print refuses, because the
 // system refuses the exchange, whose next run is refused too and leaves the tree as it was. No run
 // of print removes a spec file: the files that it
 // leaves hold each file that it read (specgraph.ReadLayout keeps each), and Layout.Place empties

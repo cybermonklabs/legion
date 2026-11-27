@@ -223,11 +223,13 @@
 // runner's log or names a workflow command. Each statement, check and wait line starts with its
 // fixed word and passes through runnerlog.Printable for the same reason. A JSON line holds no raw
 // line break, as encoding/json escapes each control character, and checks and state write the "["
-// of each "##[" in it as \u005b, which a JSON reader reads back as "[". A line cuts a long value of
-// the input, except a value that the line tells the reader to type or to open (a path, an
-// argument, an id of a way out): a node id, a value or a line of a file, a name of code or a value
-// of a scenario is cut (specgraph.Cut), whole up to 100 bytes, else its first and its last 50 bytes
-// with … between them, so no line grows with the files, and a JSON line holds each value whole, as
+// of each "##[" in it as \u005b, which a JSON reader reads back as "[". A line of tree, compare,
+// print and state cuts a long value of the input, except a value that the line tells the reader to
+// type or to open (a path, an argument, an id of a way out): a node id, a value or a line of a
+// file, a name of code or a value of a scenario is cut (specgraph.Cut), whole up to 100 bytes, else
+// its first and its last 50 bytes with … between them, so no line of them grows with the files. A
+// line of citations prints its check id, selector and job whole, as they are what a person types to
+// find the test; and a JSON line holds each value whole, as
 // data for a program. print writes each document into the spec files of its directory itself, as
 // the approved spec holds it, byte for byte; no CI job runs print.
 package main

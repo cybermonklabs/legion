@@ -19,13 +19,14 @@ import (
 const (
 	citedCheck     = "the-answer-is-forty-two"
 	citedStatement = "the-answer-is-known"
-	// citedCheckLine is the line of the check's document: the statement's document is six lines.
-	citedCheckLine = 7
 )
 
 // citedSpecTop is the document of the statement that the check of every citations row serves.
 var citedSpecTop = mustPrint(specgraph.Statement{ID: citedStatement, Kind: specgraph.KindBehavior,
 	Text: "The service answers each question with the known answer."})
+
+// citedCheckLine is the line of the check's document: the one after the statement's document.
+var citedCheckLine = strings.Count(citedSpecTop, "\n") + 1
 
 // citedSpec is spec.yaml with the program check whose test part is test, nil for none.
 func citedSpec(test *specgraph.Test) string {

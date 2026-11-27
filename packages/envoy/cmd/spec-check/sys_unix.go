@@ -77,13 +77,24 @@ func sameOwner(fsys fileSystem, path, what, of string, old fs.FileInfo) error {
 		return nil
 	}
 	if err := fsys.lchown(path, uid, gid); err != nil {
-		asked, wayOut := fmt.Sprintf("the owner and the group of %s, %d:%d", of, want.Uid, want.Gid), "run print as the owner of "+of+" or as root"
-		if uid < 0 {
-			asked, wayOut = fmt.Sprintf("the group of %s, %d", of, want.Gid), "run print as a member of that group or as root"
-		}
+		asked, wayOut := refusedOwner(of, uid, gid)
 		return fmt.Errorf("print gives %s %s, and the system refused it (%w): %s, then run print again", what, asked, err, wayOut)
 	}
 	return nil
+}
+
+// refusedOwner is what print asked the system to give an entry in the place of of, the owner uid
+// and the group gid with -1 for one that it did not ask for, and the way out of a refusal of it:
+// the one that it asked for, or both, as the ids say.
+func refusedOwner(of string, uid, gid int) (asked, wayOut string) {
+	switch {
+	case uid >= 0 && gid >= 0:
+		return fmt.Sprintf("the owner and the group of %s, %d:%d", of, uid, gid), "run print as the owner of " + of + " or as root"
+	case uid >= 0:
+		return fmt.Sprintf("the owner of %s, %d", of, uid), "run print as the owner of " + of
+	default:
+		return fmt.Sprintf("the group of %s, %d", of, gid), "run print as a member of that group or as root"
+	}
 }
 
 // mayGive is the owner and the group that this process may give an entry that it owns, of the

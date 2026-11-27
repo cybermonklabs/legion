@@ -16,7 +16,7 @@ import (
 
 // Each file that print writes keeps the mode, the owner and the group of the file of that name
 // that it replaces, and a new file gets the owner and the group of the spec directory, where the
-// process may give them (TestSameOwnerGivesOnlyAnOwnerThatTheProcessMayGive): a run as root in a
+// process may give them (TestSameOwnerAsksForWhatTheProcessMayGive): a run as root in a
 // container over a bind-mounted checkout leaves the host user's files as they were. A file that
 // the run does not change, which print links or, where the system refuses the link, copies, keeps
 // them too. The group tells the writer from the owner of the file: the test gives the file and the
@@ -106,7 +106,20 @@ func TestSameOwnerAsksForWhatTheProcessMayGive(t *testing.T) {
 		return
 	}
 	if os.Geteuid() == 0 {
-		skipOutsideCI(t, "the process is root, which may give any owner, so it never gives a group alone")
+		// As root, the process may give any owner and group, so it asks for each that differs:
+		// the owner alone, the group alone, both, or nothing where the entry already has them.
+		for _, row := range []struct {
+			name     string
+			uid, gid int
+			want     string
+		}{
+			{"as root: another user and the group that the entry already has", 1, 0, "1:-1"},
+			{"as root: root and another group", 0, group, fmt.Sprintf("-1:%d", group)},
+			{"as root: another user and another group", 1, group, fmt.Sprintf("1:%d", group)},
+			{"the control as root: root and its group, which the entry already has", 0, 0, ""},
+		} {
+			sameOwnerAsks(t, row.name, row.uid, row.gid, row.want)
+		}
 		return
 	}
 	notOurs := 0
@@ -124,23 +137,48 @@ func TestSameOwnerAsksForWhatTheProcessMayGive(t *testing.T) {
 		{"the control: another user and the group that the entry already has", os.Geteuid() + 1, os.Getegid(), ""},
 		{"the control: the process's own user and group, which the entry already has", os.Geteuid(), os.Getegid(), ""},
 	} {
-		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
-			path := filepath.Join(t.TempDir(), "spec.yaml")
-			writeFile(t, path, []byte("---\n"))
-			info, err := os.Lstat(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var asked []string
-			fsys := ownerFS{callFS{func(op, p string, do func() error) error { return do() }}, &asked}
-			if err := sameOwner(fsys, path, "the new file spec.yaml", path, ownedBy{info, uint32(row.uid), uint32(row.gid)}); err != nil {
-				t.Fatalf("sameOwner: %v", err)
-			}
-			if got := strings.Join(asked, " "); got != row.want {
-				t.Errorf("sameOwner asked the system for %q, want %q", got, row.want)
-			}
-		})
+		sameOwnerAsks(t, row.name, row.uid, row.gid, row.want)
+	}
+}
+
+// sameOwnerAsks runs sameOwner on a new file whose old entry has the owner uid and the group gid,
+// through a stand-in that records what it is asked for, and holds it to want.
+func sameOwnerAsks(t *testing.T, name string, uid, gid int, want string) {
+	t.Run(name, func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "spec.yaml")
+		writeFile(t, path, []byte("---\n"))
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var asked []string
+		fsys := ownerFS{callFS{func(op, p string, do func() error) error { return do() }}, &asked}
+		if err := sameOwner(fsys, path, "the new file spec.yaml", path, ownedBy{info, uint32(uid), uint32(gid)}); err != nil {
+			t.Fatalf("sameOwner: %v", err)
+		}
+		if got := strings.Join(asked, " "); got != want {
+			t.Errorf("sameOwner asked the system for %q, want %q", got, want)
+		}
+	})
+}
+
+// A refusal names what print asked the system for, the owner alone, the group alone or both, and
+// the way out that fits it: a run as root that asked for the owner alone is told to run as the
+// owner, not as root, which it already is.
+func TestARefusalOfAnOwnerNamesWhatPrintAskedFor(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		uid, gid      int
+		asked, wayOut string
+	}{
+		{7, 8, "the owner and the group of f, 7:8", "run print as the owner of f or as root"},
+		{7, -1, "the owner of f, 7", "run print as the owner of f"},
+		{-1, 8, "the group of f, 8", "run print as a member of that group or as root"},
+	} {
+		if asked, wayOut := refusedOwner("f", row.uid, row.gid); asked != row.asked || wayOut != row.wayOut {
+			t.Errorf("refusedOwner(%d, %d) = %q, %q; want %q, %q", row.uid, row.gid, asked, wayOut, row.asked, row.wayOut)
+		}
 	}
 }
 

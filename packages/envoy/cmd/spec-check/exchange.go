@@ -649,12 +649,15 @@ func makeEmpty(fsys fileSystem, path string, directory bool) error {
 	return f.Close()
 }
 
-// cutKept is name without the "-kept-<time>" that keep adds, and whether it had one: what is left
-// is the name of the directory that print kept, which cleanLeftovers reads by the one rule of its
-// number form.
+// cutKept is name without the "-kept-<time>" that keep adds, and whether it had one: the time
+// must read back as keep writes it (strconv.FormatInt of the time in nanoseconds), so a name of
+// another number form, such as one with a leading zero, is no kept name.
 func cutKept(name string) (string, bool) {
-	before, time, found := strings.Cut(name, "-kept-")
-	if !found || time == "" || strings.ContainsFunc(time, func(r rune) bool { return r < '0' || r > '9' }) {
+	before, at, found := strings.Cut(name, "-kept-")
+	if !found {
+		return name, false
+	}
+	if ns, err := strconv.ParseInt(at, 10, 64); err != nil || strconv.FormatInt(ns, 10) != at {
 		return name, false
 	}
 	return before, true
