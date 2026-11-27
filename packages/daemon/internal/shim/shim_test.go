@@ -1142,6 +1142,8 @@ func fakeJJ(t *testing.T) (record string, marks jjMarks) {
 			t.Errorf("release the hanging jj: %v", err)
 		}
 	})
+	// CONTROL: the first jj of a row stalls (0.5 s in mode hang, 11 s otherwise) once it has
+	// marked its start and before it writes its record, standing in for a loaded machine.
 	script := `#!/bin/sh
 if [ "$FAKE_JJ_MODE" = hang ]; then
   stopped() { ` + testexec.MarkStart(`"`+termedMark("$FAKE_JJ_RECORD")+`"`) + `; exit 143; }
@@ -1150,6 +1152,7 @@ if [ "$FAKE_JJ_MODE" = hang ]; then
 else
   ` + marks.started() + `
 fi
+[ -e "$FAKE_JJ_RECORD.stalled" ] || { : >"$FAKE_JJ_RECORD.stalled"; if [ "$FAKE_JJ_MODE" = hang ]; then sleep 0.5; else sleep 11; fi; }
 printf '%s\n' "$@" >> "$FAKE_JJ_RECORD"
 printf 'JJ_USER=%s\nJJ_EMAIL=%s\n' "$JJ_USER" "$JJ_EMAIL" >> "$FAKE_JJ_RECORD"
 case "$FAKE_JJ_MODE" in
@@ -1546,7 +1549,8 @@ func TestAdoptWorkingCopyRunsTheJJOnPATHWithNoLEGIONJJPATH(t *testing.T) {
 			record := filepath.Join(t.TempDir(), "jj-invocation")
 			marks := newJJMarks(t)
 			if tc.jjOnPath {
-				script := marks.script("printf '%s\\n' \"$@\" >> \"$FAKE_JJ_RECORD\"\nprintf 'JJ_USER=%s\\nJJ_EMAIL=%s\\n' \"$JJ_USER\" \"$JJ_EMAIL\" >> \"$FAKE_JJ_RECORD\"\nstatus=0\n")
+				// CONTROL: the first jj stalls 11 s, standing in for a loaded machine.
+				script := marks.script("[ -e \"$FAKE_JJ_RECORD.stalled\" ] || { : >\"$FAKE_JJ_RECORD.stalled\"; /bin/sleep 11; }\nprintf '%s\\n' \"$@\" >> \"$FAKE_JJ_RECORD\"\nprintf 'JJ_USER=%s\\nJJ_EMAIL=%s\\n' \"$JJ_USER\" \"$JJ_EMAIL\" >> \"$FAKE_JJ_RECORD\"\nstatus=0\n")
 				if err := execfile.Write(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
 					t.Fatalf("write the fake jj: %v", err)
 				}
@@ -1668,7 +1672,8 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 			record := filepath.Join(t.TempDir(), "jj-commands")
 			marks := newJJMarks(t)
 			bin := t.TempDir()
-			if err := execfile.Write(filepath.Join(bin, "jj"), []byte(marks.script("printf '%s\\n' \"$1\" >> "+record+"\n"+realJJ(jj))), 0o700); err != nil {
+			// CONTROL: the first jj stalls 11 s, standing in for a loaded machine.
+			if err := execfile.Write(filepath.Join(bin, "jj"), []byte(marks.script("[ -e "+record+".stalled ] || { : >"+record+".stalled; sleep 11; }\nprintf '%s\\n' \"$1\" >> "+record+"\n"+realJJ(jj))), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1743,7 +1748,8 @@ func TestAdoptWorkingCopyLeavesTheRepositoryTheShimRunsInUntouched(t *testing.T)
 
 	marks := newJJMarks(t)
 	bin := t.TempDir()
-	if err := execfile.Write(filepath.Join(bin, "jj"), []byte(marks.script(realJJ(jj))), 0o700); err != nil {
+	// CONTROL: the first jj stalls 11 s, standing in for a loaded machine.
+	if err := execfile.Write(filepath.Join(bin, "jj"), []byte(marks.script("[ -e '"+bin+"/stalled' ] || { : >'"+bin+"/stalled'; sleep 11; }\n"+realJJ(jj))), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1858,7 +1864,8 @@ func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 			}
 			marks := newJJMarks(t)
 			bin := t.TempDir()
-			if err := execfile.Write(filepath.Join(bin, "jj"), []byte(marks.script(tc.body(jj, lock))), 0o700); err != nil {
+			// CONTROL: the first jj stalls 11 s, standing in for a loaded machine.
+			if err := execfile.Write(filepath.Join(bin, "jj"), []byte(marks.script("[ -e '"+bin+"/stalled' ] || { : >'"+bin+"/stalled'; sleep 11; }\n"+tc.body(jj, lock))), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1922,7 +1929,8 @@ func TestAdoptWorkingCopyFailureOverOneLineKeepsItsStartAndItsLockNote(t *testin
 	}
 	marks := newJJMarks(t)
 	bin := t.TempDir()
-	script := marks.script(fmt.Sprintf("echo 'Error: the working copy is stale' >&2\nhead -c %d /dev/zero | tr '\\0' x >&2\n"+
+	// CONTROL: the jj stalls 11 s, standing in for a loaded machine.
+	script := marks.script(fmt.Sprintf("sleep 11\necho 'Error: the working copy is stale' >&2\nhead -c %d /dev/zero | tr '\\0' x >&2\n"+
 		"echo >&2\necho \"fatal: Unable to create '%s': File exists.\" >&2\nstatus=1\n", 2*shimwire.MaxFrameBytes, lock))
 	if err := execfile.Write(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
