@@ -265,6 +265,12 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		if !errors.Is(got, bus.ErrUnacknowledged) {
 			t.Fatalf("a cursor write whose answer the reconnect cut = %v, want ErrUnacknowledged", got)
 		}
+		// The answer is the stream's refusal of the resend, the case this row is about, and not the
+		// end of the write's own wait: a write that gave up before its resend reached the stream
+		// wraps ErrUnacknowledged too, and would pass both checks above without the refusal.
+		if !bus.IsCASConflict(got) {
+			t.Fatalf("a cursor write whose answer the reconnect cut = %v, want the stream's refusal of its resend (a wrong last sequence): the write ended before its resend reached the stream", got)
+		}
 		stored, err := client.JS().GetLastMsg(bus.Stream, subject)
 		if err != nil {
 			t.Fatalf("read the cursor back: %v", err)
