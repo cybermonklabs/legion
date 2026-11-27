@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  A read of which commits are a pull request's that no retry answers keeps no check states mark,
+  so it no longer holds every `test` handoff of the issue at `503 CHECK_STATES_UNSETTLED` with no
+  bound. The causes are a deployment with no GitHub App key, a repository no installation of the
+  App covers, and a repository GitHub refuses the installation's token
+  (`delivery.MembershipUnreadable`, `delivery.CommitMembership.Unreadable`). A read a retry can
+  still answer (a 404 of the pull request, a 5xx, a rate limit, a bound that ended, a stale head)
+  keeps its marks in the fence's wait as before. The candidate former heads of a pull request
+  that cannot be read stay no former head until a later settle of the issue reads them once access
+  returns, and a state published at such a commit before stays as it was. The route's description
+  and `cmd/dispatch/README.md` state the bound.
+time: 2026-11-27T07:19:44Z
+custom:
+  Issue: check-states-unreadable-membership

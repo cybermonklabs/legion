@@ -501,9 +501,10 @@ func (c *checkStatesSettler) formerHeadsNeeded(ctx context.Context, issue string
 const formerHeadsReadClaim = time.Minute
 
 // formerHeadsReads is what verifyFormerHeads made of the candidates of an issue's open pull
-// requests. unverified is true where a read GitHub did not answer left a candidate undecided,
-// where GitHub's read of the pull request names another head or base revision than the row
-// stores, or where the row stores no base revision: a read made again at once is refused the same
+// requests. unverified is true where a read GitHub did not answer left a candidate undecided and a
+// retry can change that (not delivery.MembershipUnreadable), where GitHub's read of the pull
+// request names another head or base revision than the row stores, or where the row stores no base
+// revision: a read made again at once is refused the same
 // way until a write stores the revisions, so all wait the failure backoff; pending where another
 // settle's claim holds a pull request's read, or where an answer applied nothing because what it
 // was read about moved before it was applied (a claim run out or taken over, a lifecycle ended, a
@@ -527,12 +528,17 @@ type formerHeadsReads struct {
 // commits the head the row stores holds and the base revision it stores does not, which GitHub's
 // comparison of those two commits answers (delivery.PullRequestMembership), so the answer is about
 // the two revisions Dispatch stores by construction, however GitHub moves the pull request while
-// it is read. Only an answer GitHub gave about a commit decides it: a commit no read
-// answered for, whether a deployment with no App key, a repository the App cannot read, a 404 that
-// says nothing alone, a 5xx or a bound that ended withheld the answer, stays as it is, unverified
-// answers true, and the settle keeps a mark that reads it again after the backoff, so the read
-// comes again once access or configuration returns. Until then a candidate is no former head. Only
-// a failed read of Dispatch's own database is an error.
+// it is read. Only an answer GitHub gave about a commit decides it: a commit no read answered for,
+// whether a deployment with no App key, a repository the App cannot read, a 404 that says nothing
+// alone, a 5xx or a bound that ended withheld the answer, stays as it is. Where a retry can change
+// the answer (a 404, a 5xx, a bound that ended, a rate limit), unverified answers true, and the
+// settle keeps a mark that reads it again after the backoff, so the read comes again once GitHub
+// answers. Where no retry changes it (delivery.MembershipUnreadable: no App key, no installation,
+// a token GitHub refuses the repository), unverified stays false and no mark waits for the read, so
+// no test handoff waits for it either: the candidates stay as they are, and the next settle of the
+// issue, which any later write owes, reads them again, once access or configuration returns. Until
+// a read decides a candidate it is no former head. Only a failed read of Dispatch's own database is
+// an error.
 //
 // It reads only the candidates needed names (formerHeadsNeeded): the commits a result of a
 // `before_merge` check of the issue's Verification document was recorded at, the only commits a
@@ -693,6 +699,11 @@ func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string
 			reads.unverified = true
 			slog.Info("dispatch: check states left the candidate former heads of a pull request undecided: GitHub names another head or base revision than Dispatch stores",
 				attrs...)
+		case membership.Unreadable:
+			// No retry changes the answer, so no mark waits for it: the candidates stay no former
+			// heads, and a later settle of the issue reads them again once access returns.
+			slog.Warn("dispatch: check states cannot read which candidate former heads are a pull request's commits, and no retry changes that: no mark waits for the read",
+				append(attrs, "error", readErr)...)
 		case len(membership.Unknown) > 0:
 			reads.unverified = true
 			slog.Warn("dispatch: read which candidate former heads are a pull request's commits", append(attrs, "error", readErr)...)
@@ -917,17 +928,21 @@ func (p publishedCheckState) sameState(state checkStateAt) bool {
 // that failed in this settle (readFailed, reads.unverified).
 //
 // A membership verifyFormerHeads left unresolved is another matter, since no state says so: a
-// candidate a read GitHub did not answer left undecided (reads.unverified), or one another
-// settle's claim holds or whose answer applied nothing (reads.pending), is no former head, so
-// nothing published replaces the state a reader holds at that commit. Such a settle keeps every
-// mark it read, each an obligation that asked for the read, with reads_from, so the fence waits
-// for each whatever its backoff, due after retryAfter for a failed read and a minimum gap
-// otherwise; the settle that resolves the membership deletes them. It keeps them all, not one for
-// the rest: a handoff waits for the marks it read when it began, and a mark of a lower id can
-// commit after that, so a mark kept in the others' place may be one no handoff waits for, and the
-// marks it waits for would go while the read is unresolved. Only the settler writes check_states,
-// under the issue's lease, so the rows it reads here are the newest published. It answers the
-// events, which the caller publishes once the transaction has committed.
+// candidate a read GitHub did not answer left undecided where a retry can change that
+// (reads.unverified), or one another settle's claim holds or whose answer applied nothing
+// (reads.pending), is no former head, so nothing published replaces the state a reader holds at
+// that commit. Such a settle keeps every mark it read, each an obligation that asked for the read,
+// with reads_from, so the fence waits for each whatever its backoff, due after retryAfter for a
+// failed read and a minimum gap otherwise; the settle that resolves the membership deletes them.
+// It keeps them all, not one for the rest: a handoff waits for the marks it read when it began,
+// and a mark of a lower id can commit after that, so a mark kept in the others' place may be one no
+// handoff waits for, and the marks it waits for would go while the read is unresolved. A read no
+// retry answers (delivery.MembershipUnreadable: no App key, no installation, a token GitHub refuses
+// the repository) keeps no mark, so a test handoff waits for it no longer than the fence's own wait,
+// whatever GitHub answers: a candidate of such a pull request stays no former head, and a state
+// published at that commit before stays until a settle reads it. Only the settler writes
+// check_states, under the issue's lease, so the rows it reads here are the newest published. It
+// answers the events, which the caller publishes once the transaction has committed.
 func (c *checkStatesSettler) publish(
 	ctx context.Context, issue string, marks []int64, failures int, artifact *string, computed []headStates, readFailed bool,
 	reads formerHeadsReads,

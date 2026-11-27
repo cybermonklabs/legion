@@ -915,14 +915,26 @@ func fetchCommitMessagesWithToken(ctx context.Context, client *githubapp.Client,
 // commits that are not, and Unknown each commit whose answer a read that failed withheld. Stale is
 // whether GitHub's read of the pull request names another head or base revision than those two:
 // GitHub has moved the pull request on where no write has stored it yet, and every commit is then
-// unknown. Complete is whether GitHub's comparison of the two revisions listed every commit
-// between them; Pages, PullReads, Compares and CommitReads count the reads the answer cost: the
-// pages of that comparison, the read of the pull request, the comparisons of one commit and the
-// reads of a commit.
+// unknown. Unreadable is whether GitHub cannot answer for the pull request at all and no retry
+// changes that: the deployment has no App key, the App is installed on no installation covering
+// the repository, or GitHub refuses the installation's token the repository (MembershipUnreadable);
+// every commit is then unknown too. Complete is whether GitHub's comparison of the two revisions
+// listed every commit between them; Pages, PullReads, Compares and CommitReads count the reads the
+// answer cost: the pages of that comparison, the read of the pull request, the comparisons of one
+// commit and the reads of a commit.
 type CommitMembership struct {
 	Members, Outside, Unknown               []string
-	Stale, Complete                         bool
+	Stale, Unreadable, Complete             bool
 	Pages, PullReads, Compares, CommitReads int
+}
+
+// MembershipUnreadable reports whether err, a failure of the token mint or of the read of the pull
+// request itself, is a cause no retry fixes: no App key (githubapp.ErrNoAppKey), no installation
+// covering the repository, or a token GitHub refuses the repository (RepositoryUnreadable). A 404 of
+// the pull request is none of these: GitHub answers it for a pull request it has not caught up
+// with as well as for one that is gone.
+func MembershipUnreadable(err error) bool {
+	return errors.Is(err, githubapp.ErrNoAppKey) || RepositoryUnreadable(err)
 }
 
 // PullRequestMembership tells, for each of candidates, whether it is a commit of pull request
@@ -951,8 +963,9 @@ type CommitMembership struct {
 // or base.sha is another, the answer is Stale and every commit unknown, so the settler keeps the
 // obligation that asked for the read and reads again once a write stores where the pull request
 // went. A read of the pull request that fails or names no head or base revision, and a head or base
-// Dispatch stores none of, leave every commit unknown too. A move after that read changes no
-// answer, since the comparisons name their commits.
+// Dispatch stores none of, leave every commit unknown too, and a token mint or a read of the pull
+// request that fails for a cause no retry fixes (MembershipUnreadable) is Unreadable besides. A
+// move after that read changes no answer, since the comparisons name their commits.
 //
 // Every other failure of a read leaves each commit that read would have decided in Unknown, and
 // the first such failure is the error; the commits other reads decided keep their answers. A
@@ -973,11 +986,13 @@ func PullRequestMembership(ctx context.Context, client *githubapp.Client, repoFu
 	token := func() (string, error) { return client.RepositoryToken(ctx, owner, repo) }
 	current, err := token()
 	if err != nil {
+		answer.Unreadable = MembershipUnreadable(err)
 		return unknown(fmt.Errorf("%w for %s: %w", ErrTokenMint, repoFull, err))
 	}
 	answer.PullReads++
 	pull, err := fetchPullRequestPayload(ctx, client, current, owner, repo, number)
 	if err != nil {
+		answer.Unreadable = MembershipUnreadable(err)
 		return unknown(err)
 	}
 	if pull.Head.SHA == "" || pull.Base.SHA == "" {
