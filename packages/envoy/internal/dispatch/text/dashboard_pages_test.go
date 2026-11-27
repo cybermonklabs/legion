@@ -35,7 +35,7 @@ func TestATabsPageAndReferenceNameItsIssueAndEachDocumentSegmentNamesTheDocument
 		{"dispatch://CORE-1/artifacts", issue},
 		{"dispatch://CORE-1/collaborators", issue},
 		{"dispatch://CORE-1/log", issue},
-		// Its other form, which the shared text table names too (main's `issueTabs`).
+		// Its page's segment, which a reference names too (issueTabPages).
 		{"dispatch://CORE-1/conversation", issue},
 		{server + "/issues/CORE-1/artifact/notes-md", notes},
 		{server + "/issues/CORE-1/artifact/notes-md?v=2", notes},

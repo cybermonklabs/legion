@@ -42,7 +42,10 @@ var dashboardPages = func() dashboardPagesShape {
 // issueTabPages and issueTabReferences are the tabs of the file by the path segment of their page
 // and by the segment of their reference: `/issues/<key>/activity` and `dispatch://<key>/activity`,
 // `/issues/<key>/conversation` and `dispatch://<key>/log`. Each names its issue: the tab is a view
-// of the issue, and no one document of it. issueDocumentSegments are the segments that open a
+// of the issue, and no one document of it. parseDispatch reads a tab in a reference by either
+// segment, and parseServer a tab's page by the first, so a tab the dashboard adds reaches both
+// with the file. The shared text table holds a row per tab in both forms, so a tab one reader
+// names and the other does not fails there. issueDocumentSegments are the segments that open a
 // document of an issue by slug, `artifacts` and the singular `artifact` the dashboard reads too.
 var issueTabPages, issueTabReferences, issueDocumentSegments = func() (map[string]bool, map[string]bool, map[string]bool) {
 	pages, references, segments := map[string]bool{}, map[string]bool{}, map[string]bool{}
