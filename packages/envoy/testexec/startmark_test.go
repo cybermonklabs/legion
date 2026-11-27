@@ -1,10 +1,13 @@
 package testexec
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 // The start helpers compare two clocks: /proc/uptime, which SinceBoot and MarkNow read, and a
@@ -50,5 +53,41 @@ func TestTheStartClockAgreesWithTheUptimeClock(t *testing.T) {
 	}
 	if _, err := ProcStart(os.Getpid()); err != nil {
 		t.Errorf("ProcStart of this test process: %v", err)
+	}
+}
+
+// ParseStartMark reads starttime as field 22 of the stat line counted from after its last ')', so
+// a command's name that holds one moves nothing, and the uptime from its line's first field, and
+// fails a stat line cut short of starttime, one with no ')', and an uptime that is no number.
+func TestParseStartMarkReadsTheTwoReadings(t *testing.T) {
+	stat := "4242 (a) (b) S" + strings.Repeat(" 0", 18) + " 12345 77 88"
+	want := StartMark{Started: 123450 * time.Millisecond, Reached: 130500 * time.Millisecond}
+	for _, uptime := range []string{"130.50 999.99", "130.50"} {
+		if mark, err := ParseStartMark(uptime, stat); err != nil || mark != want {
+			t.Errorf("ParseStartMark(%q, %q) = %+v, %v; want %+v", uptime, stat, mark, err, want)
+		}
+	}
+	for _, c := range []struct{ uptime, stat string }{
+		{"130.50", "4242 (a) S 0 0"},
+		{"130.50", "4242 a S" + strings.Repeat(" 0", 18) + " 12345"},
+		{"up", stat},
+	} {
+		if mark, err := ParseStartMark(c.uptime, c.stat); err == nil {
+			t.Errorf("ParseStartMark(%q, %q) = %+v; want an error", c.uptime, c.stat, mark)
+		}
+	}
+}
+
+// RunFromStart kills a run still going bound after its start and says it overran, and leaves a
+// run that exits on its own to that exit, which is no overrun, whatever its exit status.
+func TestRunFromStartKillsOnlyARunPastItsBound(t *testing.T) {
+	overran, err := RunFromStart(t, exec.Command("sleep", "60"), 100*time.Millisecond)
+	if !overran || err == nil {
+		t.Errorf("a sleep of 60 s bounded to 100 ms: overran %t, %v; want it killed as an overrun", overran, err)
+	}
+	overran, err = RunFromStart(t, exec.Command("sh", "-c", "exit 3"), time.Minute)
+	var exit *exec.ExitError
+	if overran || !errors.As(err, &exit) || exit.ExitCode() != 3 {
+		t.Errorf("a shell that exits 3, bounded to a minute: overran %t, %v; want exit 3 and no overrun", overran, err)
 	}
 }
