@@ -180,7 +180,7 @@ export interface ResolvedLine extends ReturnLine {
 export function classifyMergeBlocked(read: MergeBlockedRead): { state: RecordState; step: number } {
   if (read.head === null || read.head === "") return { state: "unread", step: 1 };
   if (read.transcript.state === "unread") return { state: "unread", step: 2 };
-  const about = (answer: Answer) => answer.head === read.head;
+  const about = (answer: Answer) => answer.head === read.head || answer.head === null;
   const eligible = read.transcript.answers.filter(
     (answer) => about(answer) && (answer.value === "blocked" || answer.value === "clear")
   );
