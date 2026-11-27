@@ -96,8 +96,8 @@ func (s modelCmds) without(c modelCmd) modelCmds { return s &^ (1 << c) }
 // all yields the set's members in their names' sorted order.
 func (s modelCmds) all() iter.Seq[modelCmd] {
 	return func(yield func(modelCmd) bool) {
-		for ; s != 0; s &= s - 1 {
-			if !yield(modelCmd(bits.TrailingZeros32(uint32(s)))) {
+		for t := s; t != 0; t &= t - 1 {
+			if !yield(modelCmd(bits.TrailingZeros32(uint32(t)))) {
 				return
 			}
 		}

@@ -656,10 +656,10 @@ var (
 // without DiskGoneRestore, without RestoreBack, without ReleasedPrepareAbort, without
 // ReleasedNoJournalAbort, and with each stop recording its own run alone.
 //
-// Cost, measured with getrusage(RUSAGE_CHILDREN) on the whole of TestTheHoldJournalModel at its
-// default (every profile at bound 2, and v62 at bound 3), GOMAXPROCS=4 and -test.parallel=4, two
-// large walks at once (failWalks) and a 4 GiB soft memory limit: peak RSS 829,824 kB, wall 18.1 s
-// on a dev box. Each large walk is about 1.3 to 1.5 million states.
+// Cost, measured with getrusage(RUSAGE_CHILDREN) in a local scoped run of the whole of
+// TestTheHoldJournalModel at its default (every profile at bound 2, and v62 at bound 3),
+// GOMAXPROCS=4 and -test.parallel=4, two large walks at once (failWalks) and a 4 GiB soft memory
+// limit: peak RSS 829,824 kB, wall 18.1 s. Each large walk is about 1.3 to 1.5 million states.
 var pinnedBound2 = map[string]modelCount{
 	"v63":                        {1450140, 0, nil},
 	"v63-WayOut":                 {1430444, 14517, map[string]int{classWayOut: 14517}},
@@ -681,6 +681,16 @@ var pinnedCurrentBound2 = map[string]int{"cutover": 55800, "rollback": 7197, "se
 // states each at bound 2), to two at once, so the test's peak memory stays inside a CI runner
 // whatever its CPU count.
 var failWalks = make(chan struct{}, 2)
+
+func TestTheModelCommandSetCanBeRangedTwice(t *testing.T) {
+	seq := modelCmds(0).with(cmdBackup).with(cmdRelease).all()
+	want := []modelCmd{cmdBackup, cmdRelease}
+	for pass := range 2 {
+		if got := slices.Collect(seq); !slices.Equal(got, want) {
+			t.Errorf("pass %d: commands %v, want %v", pass, got, want)
+		}
+	}
+}
 
 // The visited set keeps states whose hashes collide apart: with one hash for every state, each new
 // state goes under the next free key, and each state already added finds its own node.
@@ -723,7 +733,7 @@ func TestTheVisitedSetKeepsStatesWithOneHashApart(t *testing.T) {
 // over an earlier run's change (classEveryRun). At every hub-restore state of the current rules the
 // package's Step1, Proven, Epoch, Expected and Moved read the record as the model does.
 func TestTheHoldJournalModel(t *testing.T) {
-	// A soft memory limit bounds heap growth if the model grows. The complete default run at
+	// A soft memory limit keeps the heap near its live size if the model grows. The default run at
 	// parallelism 4 peaks below 1 GiB RSS (pinnedBound2). Cleanup restores the limit after the
 	// parallel subtests; a defer would run before they resume. Bound 3's opt-in walk has no measured
 	// live size with this representation, so it runs without the limit in the capped scope below.
